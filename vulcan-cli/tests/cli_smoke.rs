@@ -14294,6 +14294,60 @@ fn tasks_list_dql_filter_keeps_sort_and_group_options() {
 }
 
 #[test]
+fn tasks_list_dql_filters_agree_with_full_index_evaluation() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    fs::write(
+        vault_root.join("Inbox.md"),
+        "---\ntags: [inbox]\n---\n[[Other]]\n- [ ] Inline follow-up #ops\n- [x] Inline shipped #ops\n",
+    )
+    .expect("inline task fixture should be written");
+    run_scan(&vault_root);
+    let list = |filter: &str| {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                vault_root
+                    .to_str()
+                    .expect("vault path should be valid utf-8"),
+                "--output",
+                "json",
+                "tasks",
+                "list",
+                "--filter",
+                filter,
+            ])
+            .assert()
+            .success();
+        let json = parse_stdout_json(&assert);
+        json["tasks"].clone()
+    };
+    // The suffix is always true but reaches another note's file object, so
+    // it forces evaluation against the fully hydrated index.
+    let forces_full = "(\"[[Other]]\".asFile() == null || true)";
+    for filter in [
+        "completed",
+        "!completed && taskSource = \"inline\"",
+        "file.path = \"Inbox.md\"",
+        "length(file.outlinks) > 0",
+        "file.name != \"\"",
+    ] {
+        let tasks = list(filter);
+        assert!(
+            tasks.as_array().is_some_and(|tasks| !tasks.is_empty()),
+            "{filter}"
+        );
+        assert_eq!(
+            tasks,
+            list(&format!("({filter}) && {forces_full}")),
+            "{filter}"
+        );
+    }
+}
+
+#[test]
 fn tasks_next_and_graph_json_output_support_tasknotes_recurrence_and_dependencies() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

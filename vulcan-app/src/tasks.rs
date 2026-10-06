@@ -3113,7 +3113,14 @@ fn build_tasks_list_dql_filter(
 
     let base_source = tasks_query_source(config, prefilter_source, false);
     parse_tasks_query(&base_source).map_err(AppError::operation)?;
-    let note_index = scope.load(paths)?;
+    // The expression evaluates against each task's own note, which the task
+    // index hydrates; only reaching other notes' file objects needs more.
+    let note_index =
+        if vulcan_core::expression::analysis::reaches_other_file_objects(&expression, true) {
+            scope.load(paths)?
+        } else {
+            scope.load_tasks(paths)?
+        };
     let base_result =
         vulcan_core::tasks::evaluate_tasks_query_with_note_index(&base_source, &note_index)
             .map_err(AppError::operation)?;

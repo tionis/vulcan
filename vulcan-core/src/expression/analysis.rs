@@ -9,7 +9,8 @@ use super::ast::Expr;
 /// Conservative. A formula
 /// reference reaches whatever its formula reaches; callers that analyze
 /// every formula themselves pass `formula_refs_reach = false`.
-pub(crate) fn reaches_other_file_objects(expr: &Expr, formula_refs_reach: bool) -> bool {
+#[must_use]
+pub fn reaches_other_file_objects(expr: &Expr, formula_refs_reach: bool) -> bool {
     match expr {
         Expr::FieldAccess(base, field) => {
             (field.eq_ignore_ascii_case("file")
