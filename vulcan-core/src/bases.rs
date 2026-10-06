@@ -7,15 +7,17 @@ use crate::paths::{
 };
 use crate::permissions::{PermissionError, PermissionFilter, PermissionGuard};
 use crate::properties::{
-    build_note_lookup_index, load_note_index_with_filter, load_note_index_with_guard,
-    note_filter_expression_source, query_notes_with_scope,
+    build_note_lookup_index, hydrate_note_index_entries, load_note_index_with_filter,
+    load_note_index_with_filter_deferring_hydration, load_note_index_with_guard,
+    load_note_index_with_guard_deferring_hydration, note_filter_expression_source,
+    query_notes_with_scope, NoteIndexReadScope,
 };
 use crate::tasknotes::extract_tasknote;
 use crate::{load_vault_config, NoteQuery, NoteRecord, PropertyError, VaultPaths};
 use serde::Serialize;
 use serde_json::Value;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::path::Path;
@@ -380,6 +382,11 @@ impl BasesEvaluator {
                 BaseReadScope::Guard(guard) => Some(guard),
             },
             note_index: None,
+            defer_hydration: !base_reaches_other_file_objects(
+                &source,
+                &base_filters,
+                &parsed_views,
+            ),
         };
 
         for view in parsed_views {
@@ -437,6 +444,11 @@ struct BaseEvaluationContext<'a> {
     guard: Option<&'a dyn PermissionGuard>,
     /// Authorized lookup universe, loaded once per evaluation.
     note_index: Option<HashMap<String, NoteRecord>>,
+    /// Load `note_index` with stored fields and aliases only (QRY.3): no
+    /// expression in the base reaches another note's file object, and rows
+    /// are hydrated by their source. Entries for rows are hydrated before
+    /// guarded authorization copies their incoming links.
+    defer_hydration: bool,
 }
 
 impl BaseEvaluationContext<'_> {
@@ -445,16 +457,80 @@ impl BaseEvaluationContext<'_> {
         paths: &VaultPaths,
     ) -> Result<&HashMap<String, NoteRecord>, BasesError> {
         if self.note_index.is_none() {
-            let index = match self.guard {
+            let index = match (self.guard, self.defer_hydration) {
                 // A guarded universe must not silently degrade to empty.
-                Some(guard) => load_note_index_with_guard(paths, guard)?,
+                (Some(guard), false) => load_note_index_with_guard(paths, guard)?,
+                (Some(guard), true) => {
+                    load_note_index_with_guard_deferring_hydration(paths, guard)?
+                }
                 // Unguarded custom sources may run without a cache.
-                None => load_note_index_with_filter(paths, self.read_filter).unwrap_or_default(),
+                (None, false) => {
+                    load_note_index_with_filter(paths, self.read_filter).unwrap_or_default()
+                }
+                (None, true) => {
+                    load_note_index_with_filter_deferring_hydration(paths, self.read_filter)
+                        .unwrap_or_default()
+                }
             };
             self.note_index = Some(index);
         }
         Ok(self.note_index.get_or_insert_with(HashMap::new))
     }
+
+    /// Hydrate the index entries of `rows` when the index was deferred.
+    fn hydrate_rows(&mut self, paths: &VaultPaths, rows: &[NoteRecord]) -> Result<(), BasesError> {
+        if !self.defer_hydration {
+            return Ok(());
+        }
+        let scope = match self.guard {
+            Some(guard) => NoteIndexReadScope::Guard(guard),
+            None => NoteIndexReadScope::Filter(self.read_filter),
+        };
+        let row_paths = rows
+            .iter()
+            .map(|row| row.document_path.clone())
+            .collect::<HashSet<_>>();
+        self.note_index(paths)?;
+        let index = self.note_index.as_mut().expect("loaded above");
+        hydrate_note_index_entries(paths, scope, index, &row_paths)?;
+        Ok(())
+    }
+}
+
+/// Whether some expression of the base can reach another note's file
+/// object, or its source is not a built-in note source. Filters and
+/// formulas are what evaluate; columns, sorts, and groups name properties
+/// and formulas. Unparseable expressions count as reaching.
+fn base_reaches_other_file_objects(
+    source: &ParsedBaseSource,
+    base_filters: &[String],
+    views: &[ParsedBaseView],
+) -> bool {
+    if !matches!(
+        normalize_source_type(&source.source_type).as_str(),
+        "file" | "tasknotes"
+    ) {
+        return true;
+    }
+    let reaches = |source: &str| {
+        crate::expression::parse::Parser::new(source)
+            .and_then(crate::expression::parse::Parser::parse)
+            .map_or(true, |expr| {
+                crate::expression::analysis::reaches_other_file_objects(&expr, false)
+            })
+    };
+    let filter_reaches = |filter: &String| {
+        note_filter_expression_source(filter).map_or(true, |source| reaches(&source))
+    };
+    base_filters.iter().any(filter_reaches)
+        || views.iter().any(|view| {
+            view.filters.iter().any(filter_reaches)
+                // An empty formula evaluates nothing.
+                || view
+                    .formulas
+                    .values()
+                    .any(|formula| !formula.trim().is_empty() && reaches(formula))
+        })
 }
 
 /// Keep only rows inside the guarded universe. Indexed rows take incoming
@@ -1030,9 +1106,13 @@ fn evaluate_base_view(
     let source_rows = match context.guard {
         Some(guard) => {
             let authorized_index = context.note_index(paths)?;
-            source_impl
-                .rows_in_scope(paths, &request, authorized_index)
-                .and_then(|rows| authorize_guarded_rows(paths, rows, guard, authorized_index))
+            match source_impl.rows_in_scope(paths, &request, authorized_index) {
+                Ok(rows) => context.hydrate_rows(paths, &rows).and_then(|()| {
+                    let authorized_index = context.note_index(paths)?;
+                    authorize_guarded_rows(paths, rows, guard, authorized_index)
+                }),
+                Err(error) => Err(error),
+            }
         }
         None => source_impl.rows(paths, &request),
     };
@@ -2533,6 +2613,92 @@ mod tests {
         assert!(report.views[0].formulas.contains_key("isOverdue"));
         assert!(report.views[0].formulas.contains_key("urgencyScore"));
         assert!(report.views[0].formulas.contains_key("efficiencyRatio"));
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn deferred_hydration_equals_full_hydration() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".vulcan")).unwrap();
+        for (path, contents) in [
+            (
+                "A/One.md",
+                "---\ntags: [t, visible]\nstatus: open\nup: '[[Two]]'\n---\n[[Two]]\n- [ ] task one\n",
+            ),
+            ("A/Three.md", "---\ntags: [visible]\nstatus: done\n---\n[[Deux]]\n- [x] done\n"),
+            (
+                "B/Two.md",
+                "---\ntags: [t, visible]\naliases: [Deux]\nstatus: open\nup: '[[One]]'\n---\n[[One]]\n",
+            ),
+            ("Hidden.md", "---\ntags: [t]\nstatus: open\n---\n[[One]] [[Two]]\n"),
+        ] {
+            let target = root.join(path);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::write(target, contents).unwrap();
+        }
+        let paths = VaultPaths::new(root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let mut profile = crate::permissions::resolve_permission_profile(&paths, None).unwrap();
+        profile.grant.read = PathPermission {
+            allow: vec![ResourceSpecifier::Tag("visible".into())],
+            deny: Vec::new(),
+        };
+        let guard = crate::permissions::ProfilePermissionGuard::new(&paths, profile);
+        // Always true, and it reaches another note's file object, so the
+        // base is evaluated with a fully hydrated index.
+        let forces_full = "file.name != \"\" || \"[[One]]\".asFile() == null";
+        let rows = |filter: &str, formula: &str, full: bool, guarded: bool| {
+            let extra = if full {
+                format!("\n    - '{forces_full}'")
+            } else {
+                String::new()
+            };
+            let yaml = format!(
+                "filters:\n  and:\n    - '{filter}'{extra}\nformulas:\n  f: '{formula}'\nviews:\n  - type: table\n    name: all\n    order:\n      - file.name\n      - file.tags\n      - file.inlinks\n      - file.outlinks\n      - formula.f\n"
+            );
+            let evaluator = BasesEvaluator::new();
+            let report = if guarded {
+                evaluator.evaluate_yaml_with_guard(&paths, "v.base", &yaml, &guard)
+            } else {
+                evaluator.evaluate_yaml(&paths, "v.base", &yaml)
+            }
+            .unwrap_or_else(|error| panic!("{filter} / {formula}: {error}"));
+            serde_json::to_value((
+                &report.views[0].columns,
+                &report.views[0].rows,
+                &report.diagnostics,
+            ))
+            .unwrap()
+        };
+        for (filter, formula) in [
+            ("file.hasTag(\"t\")", "file.tags"),
+            ("status == \"open\"", "file.inlinks"),
+            ("file.inFolder(\"A\")", "length(file.tasks)"),
+            ("file.folder == \"B\"", "up"),
+            ("status != \"x\"", "up.status"),
+            ("status == \"open\"", "[[Deux]].status"),
+            ("status == \"open\"", "up.linksTo(\"[[Two]]\")"),
+            ("file.hasLink(\"[[One]]\")", "file.links"),
+            ("file.inFolder(\"A\")", ""),
+        ] {
+            let parsed = parse_base_file(&format!(
+                "filters:\n  and:\n    - '{filter}'\nformulas:\n  f: '{formula}'\nviews:\n  - type: table\n    name: all\n"
+            ))
+            .unwrap();
+            assert_eq!(
+                base_reaches_other_file_objects(&parsed.source, &parsed.filters, &parsed.views),
+                formula.contains("linksTo"),
+                "{filter} / {formula}"
+            );
+            for guarded in [false, true] {
+                assert_eq!(
+                    rows(filter, formula, false, guarded),
+                    rows(filter, formula, true, guarded),
+                    "{filter} / {formula} guarded={guarded}"
+                );
+            }
+        }
     }
 
     #[test]

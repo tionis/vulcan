@@ -20,7 +20,7 @@ use crate::permissions::{PermissionFilter, PermissionGuard};
 use crate::predicate::{Decision, Dialect, Predicate, RecordValues};
 use crate::properties::{
     hydrate_note_index_entries, load_note_index_with_filter, load_note_index_with_guard,
-    load_note_index_with_guard_deferring_hydration, NoteRecord, PropertyError,
+    load_note_index_with_guard_deferring_hydration, NoteIndexReadScope, NoteRecord, PropertyError,
 };
 use crate::resolve_note_reference as resolve_vault_note_reference;
 use crate::source::{SourceColumns, SourceExpr};
@@ -255,7 +255,12 @@ fn load_scoped_note_index(
         }
     }
     selected.extend(current_file.map(ToString::to_string));
-    hydrate_note_index_entries(paths, guard, &mut note_lookup, &selected)?;
+    hydrate_note_index_entries(
+        paths,
+        NoteIndexReadScope::Guard(guard),
+        &mut note_lookup,
+        &selected,
+    )?;
     Ok(note_lookup)
 }
 

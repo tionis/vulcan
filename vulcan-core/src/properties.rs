@@ -903,13 +903,29 @@ pub fn load_note_index_with_guard_deferring_hydration(
     )
 }
 
-/// Fully hydrate the notes at `note_paths` in an index from
-/// [`load_note_index_with_guard_deferring_hydration`], with the same read
-/// scope: incoming links come only from notes in the index's universe.
+/// [`load_note_index_with_filter`] hydrating only what resolving links
+/// needs; see [`load_note_index_with_guard_deferring_hydration`].
+pub fn load_note_index_with_filter_deferring_hydration(
+    paths: &VaultPaths,
+    filter: Option<&PermissionFilter>,
+) -> Result<HashMap<String, NoteRecord>, PropertyError> {
+    load_note_index_with_read_scope(paths, filter, None, NoteIndexHydration::AliasesOnly)
+}
+
+/// The read scope an index was loaded with, for hydrating its entries.
+#[derive(Clone, Copy)]
+pub enum NoteIndexReadScope<'a> {
+    Filter(Option<&'a PermissionFilter>),
+    Guard(&'a dyn PermissionGuard),
+}
+
+/// Fully hydrate the notes at `note_paths` in an index from a deferring
+/// loader, with the read scope it was loaded with: incoming links come only
+/// from notes in the index's universe.
 #[allow(clippy::implicit_hasher)]
 pub fn hydrate_note_index_entries(
     paths: &VaultPaths,
-    guard: &dyn PermissionGuard,
+    scope: NoteIndexReadScope<'_>,
     note_index: &mut HashMap<String, NoteRecord>,
     note_paths: &HashSet<String>,
 ) -> Result<(), PropertyError> {
@@ -921,7 +937,11 @@ pub fn hydrate_note_index_entries(
     if keys.is_empty() {
         return Ok(());
     }
-    let readable_sources = guard.has_policy_hook().then(|| {
+    let (filter, policy_scoped) = match scope {
+        NoteIndexReadScope::Filter(filter) => (filter.cloned(), false),
+        NoteIndexReadScope::Guard(guard) => (Some(guard.read_filter()), guard.has_policy_hook()),
+    };
+    let readable_sources = policy_scoped.then(|| {
         note_index
             .values()
             .map(|note| note.document_path.clone())
@@ -941,7 +961,7 @@ pub fn hydrate_note_index_entries(
         database.connection(),
         &config,
         &mut doc_ids_and_notes,
-        Some(&guard.read_filter()),
+        filter.as_ref(),
         readable_sources.as_ref(),
         true,
     )?;
