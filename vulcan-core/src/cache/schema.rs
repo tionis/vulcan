@@ -1,5 +1,12 @@
 use rusqlite::Transaction;
 
+/// Record `file.ctime` at scan time so note queries need no per-note
+/// `stat`. Existing rows stay NULL until the next scan records them;
+/// readers fall back to the filesystem meanwhile.
+pub fn apply_schema_v26(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch("ALTER TABLE documents ADD COLUMN file_ctime INTEGER;")
+}
+
 /// Link-hash invalidation for incremental scan checkpoints. A document's
 /// checkpoint link hash covers its link rows and the paths of their resolved
 /// targets, so link writes and target renames or deletions mark the source.

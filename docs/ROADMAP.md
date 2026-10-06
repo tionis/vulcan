@@ -8567,6 +8567,7 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 
 #### QRY.3 Lazy note lookup
 
+- [x] Record `file.ctime` at scan time (schema v26, nullable `documents.file_ctime`). Loading the note index and querying notes stat'ed every note for its creation time (3,079 `statx` calls for one DQL folder query on the 2,941-note vault, about 60% of syscall time). Scans write it with the other file metadata; an unchanged file whose recorded ctime is missing or different gets a metadata-only update, so older caches backfill on the next scan without reindexing (0.74 s for 2,943 files), and readers fall back to `stat` only while the column is NULL. The same query now makes 136 `statx` calls, and its CPU time fell from 140 to 113 ms (p50 of 40 runs; wall-clock comparison was impossible under a load average of 5–8).
 - [ ] Introduce a `NoteLookup` interface for expression evaluation with path, basename, and alias resolution identical to today's, backed by cached identity facts and on-demand field-group hydration; the eager map implements it so call sites migrate one at a time.
 - [ ] Migrate DQL so it hydrates only candidates, the page, `this`, and link targets actually dereferenced; retire `query_reaches_other_file_objects` once dereferences load lazily.
 - [ ] Migrate Bases, the Tasks DSL, and DataviewJS `dv.pages()`.

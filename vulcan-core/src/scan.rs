@@ -182,6 +182,8 @@ struct DiscoveredFile {
     kind: DocumentKind,
     file_size: i64,
     file_mtime: i64,
+    /// Birth time, else modification time, as `file.ctime` reports it.
+    file_ctime: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,6 +191,8 @@ struct CachedDocument {
     id: String,
     file_size: i64,
     file_mtime: i64,
+    /// `None` until a scan records it (caches from before schema v26).
+    file_ctime: Option<i64>,
     content_hash: Vec<u8>,
     parser_version: u32,
 }
@@ -638,7 +642,7 @@ fn watched_inventory(
     if changed.is_empty() {
         return Ok(None);
     }
-    let mut statement = connection.prepare("SELECT id, file_size, file_mtime, content_hash, parser_version FROM documents WHERE path = ?1")?;
+    let mut statement = connection.prepare("SELECT id, file_size, file_mtime, content_hash, parser_version, file_ctime FROM documents WHERE path = ?1")?;
     let mut files = Vec::new();
     let mut cached = HashMap::new();
     let root = fs::canonicalize(paths.vault_root())?;
@@ -659,6 +663,7 @@ fn watched_inventory(
                     id: row.get(0)?,
                     file_size: row.get(1)?,
                     file_mtime: row.get(2)?,
+                    file_ctime: row.get(5)?,
                     content_hash: row.get(3)?,
                     parser_version: row.get(4)?,
                 })
@@ -695,6 +700,7 @@ fn watched_inventory(
                 path: absolute_path.clone(),
             })?,
             file_mtime: system_time_to_millis(metadata.modified()?, &absolute_path)?,
+            file_ctime: file_ctime_millis(&metadata, &absolute_path)?,
             absolute_path,
         });
         // A native write signal is evidence even when size and timestamp were
@@ -899,6 +905,7 @@ fn apply_incremental_scan(
             Some(cached)
                 if cached.file_size == file.file_size
                     && cached.file_mtime == file.file_mtime
+                    && cached.file_ctime == Some(file.file_ctime)
                     && cached.parser_version == expected_version =>
             {
                 result.summary.unchanged += 1;
@@ -1420,6 +1427,7 @@ fn discover_files(vault_root: &Path) -> Result<Vec<DiscoveredFile>, ScanError> {
                     kind: detect_document_kind(path),
                     file_size,
                     file_mtime,
+                    file_ctime: file_ctime_millis(&metadata, path).unwrap_or(file_mtime),
                 });
 
             ignore::WalkState::Continue
@@ -1531,12 +1539,25 @@ fn system_time_to_millis(time: SystemTime, path: &Path) -> Result<i64, ScanError
     })
 }
 
+/// `file.ctime`: the birth time where the platform records one, else the
+/// modification time.
+fn file_ctime_millis(metadata: &fs::Metadata, path: &Path) -> Result<i64, ScanError> {
+    match metadata
+        .created()
+        .ok()
+        .and_then(|created| system_time_to_millis(created, path).ok())
+    {
+        Some(created) => Ok(created),
+        None => system_time_to_millis(metadata.modified()?, path),
+    }
+}
+
 fn load_cached_documents(
     connection: &Connection,
 ) -> Result<HashMap<String, CachedDocument>, rusqlite::Error> {
     let mut statement = connection.prepare(
         "
-        SELECT id, path, file_size, file_mtime, content_hash, parser_version
+        SELECT id, path, file_size, file_mtime, content_hash, parser_version, file_ctime
         FROM documents
         ",
     )?;
@@ -1547,6 +1568,7 @@ fn load_cached_documents(
                 id: row.get(0)?,
                 file_size: row.get(2)?,
                 file_mtime: row.get(3)?,
+                file_ctime: row.get(6)?,
                 content_hash: row.get(4)?,
                 parser_version: row.get(5)?,
             },
@@ -1579,9 +1601,10 @@ fn insert_or_update_document(
             file_size,
             file_mtime,
             parser_version,
-            indexed_at
+            indexed_at,
+            file_ctime
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
         ON CONFLICT(path) DO UPDATE SET
             filename = excluded.filename,
             extension = excluded.extension,
@@ -1592,7 +1615,8 @@ fn insert_or_update_document(
             file_size = excluded.file_size,
             file_mtime = excluded.file_mtime,
             parser_version = excluded.parser_version,
-            indexed_at = excluded.indexed_at
+            indexed_at = excluded.indexed_at,
+            file_ctime = excluded.file_ctime
         ",
         params![
             id,
@@ -1611,6 +1635,7 @@ fn insert_or_update_document(
             file.file_mtime,
             parser_version,
             current_timestamp()?,
+            file.file_ctime,
         ],
     )?;
 
@@ -1669,7 +1694,8 @@ fn update_document_metadata(
         SET filename = ?2,
             extension = ?3,
             file_size = ?4,
-            file_mtime = ?5
+            file_mtime = ?5,
+            file_ctime = ?6
         WHERE id = ?1
         ",
         params![
@@ -1677,7 +1703,8 @@ fn update_document_metadata(
             file.filename,
             file.extension,
             file.file_size,
-            file.file_mtime
+            file.file_mtime,
+            file.file_ctime
         ],
     )?;
 
@@ -4794,6 +4821,58 @@ mod tests {
                 deleted: 0,
             }
         );
+    }
+
+    #[test]
+    fn scans_record_file_ctimes_and_backfill_missing_ones() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        copy_fixture_vault("basic", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("initial full scan should succeed");
+        let ctimes = |paths: &VaultPaths| {
+            let database = CacheDatabase::open(paths).unwrap();
+            let mut statement = database
+                .connection()
+                .prepare("SELECT path, file_ctime FROM documents ORDER BY path")
+                .unwrap();
+            statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        let recorded = ctimes(&paths);
+        assert_eq!(recorded.len(), 3);
+        for (path, ctime) in &recorded {
+            let metadata = fs::metadata(vault_root.join(path)).unwrap();
+            let expected = file_ctime_millis(&metadata, &vault_root.join(path)).unwrap();
+            assert_eq!(*ctime, Some(expected), "{path}");
+        }
+        // Notes report the recorded value without touching the filesystem.
+        let index = load_note_index(&paths).unwrap();
+        for (path, ctime) in &recorded {
+            let note = index
+                .values()
+                .find(|note| &note.document_path == path)
+                .unwrap();
+            assert_eq!(Some(note.file_ctime), *ctime, "{path}");
+        }
+
+        // Caches from before the column existed are backfilled by the next
+        // incremental scan without reindexing any note.
+        CacheDatabase::open(&paths)
+            .unwrap()
+            .connection()
+            .execute("UPDATE documents SET file_ctime = NULL", [])
+            .unwrap();
+        let summary =
+            scan_vault(&paths, ScanMode::Incremental).expect("incremental scan should succeed");
+        assert_eq!((summary.updated, summary.unchanged), (0, 3));
+        assert_eq!(ctimes(&paths), recorded);
     }
 
     #[test]

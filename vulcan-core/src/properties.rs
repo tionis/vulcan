@@ -552,6 +552,14 @@ pub(crate) fn note_paths_matching_filters(
     )
 }
 
+/// Row fields read only for rows that remain after deciding filters.
+struct DeferredNoteFields {
+    raw_yaml: String,
+    /// The scan-recorded `file.ctime`; NULL in caches not rescanned since
+    /// schema v26, which fall back to the filesystem.
+    file_ctime: Option<i64>,
+}
+
 /// What [`query_notes_core`] must produce for each matching note.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NoteQueryOutput {
@@ -600,7 +608,8 @@ fn query_notes_core(
             COALESCE(properties.canonical_json, '{}'),
             COALESCE(properties.raw_yaml, ''),
             documents.periodic_type,
-            documents.periodic_date
+            documents.periodic_date,
+            documents.file_ctime
         FROM documents
         LEFT JOIN properties ON properties.document_id = documents.id
         WHERE documents.extension = 'md'",
@@ -632,7 +641,7 @@ fn query_notes_core(
     let mut statement = connection.prepare(&sql)?;
     let rows = statement.query_map(
         params_from_iter(params.iter()),
-        |row| -> Result<(String, NoteRecord, String), rusqlite::Error> {
+        |row| -> Result<(String, NoteRecord, DeferredNoteFields), rusqlite::Error> {
             let doc_id: String = row.get(0)?;
             let document_path: String = row.get(1)?;
             let file_mtime: i64 = row.get(4)?;
@@ -673,7 +682,10 @@ fn query_notes_core(
                     raw_inline_expressions: Vec::new(),
                     inline_expressions: Vec::new(),
                 },
-                raw_yaml,
+                DeferredNoteFields {
+                    raw_yaml,
+                    file_ctime: row.get(10)?,
+                },
             ))
         },
     )?;
@@ -724,10 +736,11 @@ fn query_notes_core(
         .partition(|(doc_id, _, _)| output == NoteQueryOutput::Notes || undecided.contains(doc_id));
     let mut doc_ids_and_notes = to_hydrate
         .into_iter()
-        .map(|(doc_id, mut note, raw_yaml)| {
-            note.frontmatter = parse_frontmatter_json_object(&raw_yaml);
-            note.file_ctime =
-                file_ctime_for_document(&vault_root, &note.document_path, note.file_mtime);
+        .map(|(doc_id, mut note, deferred)| {
+            note.frontmatter = parse_frontmatter_json_object(&deferred.raw_yaml);
+            note.file_ctime = deferred.file_ctime.unwrap_or_else(|| {
+                file_ctime_for_document(&vault_root, &note.document_path, note.file_mtime)
+            });
             (doc_id, note)
         })
         .collect::<Vec<_>>();
@@ -917,7 +930,8 @@ fn load_note_index_with_read_scope(
     sql.push_str(
         "SELECT documents.id, documents.path, documents.filename, documents.extension, \
          documents.file_mtime, documents.file_size, COALESCE(properties.canonical_json, '{}'), \
-         COALESCE(properties.raw_yaml, ''), documents.periodic_type, documents.periodic_date \
+         COALESCE(properties.raw_yaml, ''), documents.periodic_type, documents.periodic_date, \
+         documents.file_ctime \
          FROM documents LEFT JOIN properties ON properties.document_id = documents.id \
          WHERE 1 = 1",
     );
@@ -941,6 +955,7 @@ fn load_note_index_with_read_scope(
             row.get::<_, String>(7)?,
             row.get::<_, Option<String>>(8)?,
             row.get::<_, Option<String>>(9)?,
+            row.get::<_, Option<i64>>(10)?,
         ))
     })?;
     // Policy hooks may be stateful, so they are consulted in order; parsing
@@ -970,6 +985,7 @@ fn load_note_index_with_read_scope(
                     raw_yaml,
                     periodic_type,
                     periodic_date,
+                    file_ctime,
                 )| {
                     let properties = serde_json::from_str(&props_json)
                         .unwrap_or(Value::Object(serde_json::Map::default()));
@@ -981,7 +997,9 @@ fn load_note_index_with_read_scope(
                             file_name,
                             file_ext,
                             file_mtime,
-                            file_ctime: file_ctime_for_document(&vault_root, &path, file_mtime),
+                            file_ctime: file_ctime.unwrap_or_else(|| {
+                                file_ctime_for_document(&vault_root, &path, file_mtime)
+                            }),
                             file_size,
                             properties,
                             tags: vec![],

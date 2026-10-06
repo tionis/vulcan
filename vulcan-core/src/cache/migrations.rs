@@ -145,6 +145,11 @@ impl MigrationRegistry {
                 "track link changes for incremental scan checkpoints",
                 schema::apply_schema_v25,
             ),
+            Migration::new(
+                26,
+                "record file creation times at scan time",
+                schema::apply_schema_v26,
+            ),
         ])
     }
 
