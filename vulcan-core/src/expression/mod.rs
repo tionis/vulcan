@@ -1,3 +1,4 @@
+pub(crate) mod analysis;
 pub mod ast;
 pub mod eval;
 pub mod functions;

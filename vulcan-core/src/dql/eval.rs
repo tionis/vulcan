@@ -28,6 +28,7 @@ use crate::source::{SourceColumns, SourceExpr};
 use super::ast::{DqlDataCommand, DqlLinkTarget, DqlNamedExpr, DqlProjection, DqlQuery};
 use super::compile::{compile_dql, CompiledDqlCommand, CompiledDqlSourceExpr, CompiledWhereClause};
 use super::{parse_dql, DqlDiagnostic};
+use crate::expression::analysis::reaches_other_file_objects;
 use crate::expression::eval::{canonical_file_field_name, normalize_field_name};
 use std::borrow::Cow;
 
@@ -393,45 +394,7 @@ fn query_reaches_other_file_objects(query: &DqlQuery) -> bool {
         .chain(query.list_expression.iter())
         .chain(query.calendar_expression.iter())
         .chain(commands)
-        .any(expr_reaches_other_file_objects)
-}
-
-fn expr_reaches_other_file_objects(expr: &Expr) -> bool {
-    match expr {
-        Expr::FieldAccess(base, field) => {
-            (field.eq_ignore_ascii_case("file")
-                && !matches!(&**base, Expr::Identifier(name) if name.eq_ignore_ascii_case("this")))
-                || expr_reaches_other_file_objects(base)
-        }
-        Expr::IndexAccess(base, key) => {
-            !matches!(&**key, Expr::Number(_) | Expr::Str(_))
-                || matches!(&**key, Expr::Str(name) if name.eq_ignore_ascii_case("file"))
-                || expr_reaches_other_file_objects(base)
-        }
-        Expr::MethodCall(base, method, args) => {
-            method.eq_ignore_ascii_case("asFile")
-                || expr_reaches_other_file_objects(base)
-                || args.iter().any(expr_reaches_other_file_objects)
-        }
-        Expr::FunctionCall(_, args) | Expr::Array(args) => {
-            args.iter().any(expr_reaches_other_file_objects)
-        }
-        Expr::Object(fields) => fields
-            .iter()
-            .any(|(_, value)| expr_reaches_other_file_objects(value)),
-        Expr::BinaryOp(left, _, right) => {
-            expr_reaches_other_file_objects(left) || expr_reaches_other_file_objects(right)
-        }
-        Expr::UnaryOp(_, operand) => expr_reaches_other_file_objects(operand),
-        Expr::Lambda(_, body) => expr_reaches_other_file_objects(body),
-        Expr::FormulaRef(_) => true,
-        Expr::Null
-        | Expr::Bool(_)
-        | Expr::Number(_)
-        | Expr::Str(_)
-        | Expr::Regex { .. }
-        | Expr::Identifier(_) => false,
-    }
+        .any(|expr| reaches_other_file_objects(expr, true))
 }
 
 pub(crate) fn evaluate_dql_with_note_index_and_config(
@@ -1854,7 +1817,7 @@ LIMIT 1"#,
             ("A/Three.md", "---\nstatus: open\n---\n- a\n- [x] done\n"),
             (
                 "B/Two.md",
-                "---\ntags: [t]\naliases: [Deux]\nstatus: closed\n---\n- b item\n- [ ] task two\nx:: `= this.status`\n",
+                "---\ntags: [t]\naliases: [Deux]\nstatus: closed\nup: '[[One]]'\n---\n- b item\n- [ ] task two\nx:: `= this.status`\n",
             ),
             ("Here.md", "---\ntags: [here]\n---\n- here\n- [ ] here task\n[[One]]\n"),
         ] {
@@ -1930,6 +1893,8 @@ LIMIT 1"#,
                 false,
             ),
             ("TASK WHERE status = \"open\"", false),
+            // `linksTo` reads the outgoing links of the note a link names.
+            ("TABLE up.linksTo(\"[[Two]]\") AS l FROM \"B\"", true),
             (
                 "TABLE file.tags AS tags WHERE file.name != this.file.name AND status = \"open\"",
                 false,
