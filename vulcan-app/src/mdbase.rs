@@ -17,8 +17,8 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use vulcan_core::mdbase::{
     apply_mdbase_write_transaction_with_control_filter, authorize_mdbase_write_validation_scope,
-    build_mdbase_write_preview_with_control_filter, discover_mdbase_files, is_mdbase_record_path,
-    load_mdbase_collection, load_mdbase_records_with_contracts_filtered, mdbase_content_revision,
+    discover_mdbase_files, is_mdbase_record_path, load_mdbase_collection,
+    load_mdbase_records_with_contracts_filtered, mdbase_content_revision,
     MdbaseAuthorizedValidationScope, MdbaseCollection, MdbaseConsistentReadGuard,
     MdbaseContractDefinition, MdbaseContractImplementation, MdbaseContractRegistry,
     MdbaseDiagnostic, MdbaseDiagnosticLevel, MdbaseQueryResult, MdbaseRecordDiagnostic,
@@ -271,17 +271,54 @@ struct LoadedCollection {
     collection: MdbaseCollection,
     types: MdbaseTypeRegistry,
     contracts: MdbaseContractRegistry,
+    /// Write planning and apply: fingerprint-proven revisions and cached
+    /// local derivations that spare re-reading and re-parsing unchanged
+    /// records. Absent without an initialized cache or lockfile authority.
+    known_revisions: Option<std::sync::Arc<vulcan_core::mdbase::MdbaseKnownRevisions>>,
+    cached_local: Option<std::sync::Arc<vulcan_core::mdbase::MdbaseCachedLocalRecords>>,
 }
 
 impl LoadedCollection {
+    /// Load fingerprint-proven revisions for preview snapshots. Optional:
+    /// every failure leaves snapshots reading sources.
+    fn load_known_revisions(&mut self, paths: &VaultPaths) {
+        self.known_revisions = indexed_query_allowed(self.control_filter.as_ref())
+            .then(|| open_query_cache(paths))
+            .flatten()
+            .and_then(|connection| {
+                vulcan_core::mdbase::load_mdbase_known_revisions(&connection, &self.collection).ok()
+            })
+            .map(std::sync::Arc::new);
+    }
+
+    /// Load cached local derivations valid under the current registries.
+    fn load_cached_local(&mut self, paths: &VaultPaths) {
+        self.cached_local = indexed_query_allowed(self.control_filter.as_ref())
+            .then(|| open_query_cache(paths))
+            .flatten()
+            .and_then(|connection| {
+                vulcan_core::mdbase::load_mdbase_cached_local_records(
+                    &connection,
+                    &self.collection,
+                    &self.types,
+                    &self.contracts,
+                    self.control_filter.as_ref(),
+                )
+                .ok()
+                .flatten()
+            })
+            .map(std::sync::Arc::new);
+    }
+
     fn capture_preview(
         &self,
         request: MdbaseWritePreviewRequest,
     ) -> Result<MdbaseWritePreview, AppError> {
-        let preview = build_mdbase_write_preview_with_control_filter(
+        let preview = vulcan_core::mdbase::build_mdbase_write_preview_with_known(
             &self.collection,
             request,
             self.control_filter.as_ref(),
+            self.known_revisions.as_deref(),
         )
         .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
         let controls = vulcan_core::mdbase::verify_mdbase_control_snapshots(
@@ -921,6 +958,12 @@ fn plan_mdbase_write_in_mode(
     preview_request
         .relevant_record_namespaces
         .clone_from(&authorization.collection_record_namespaces);
+    // Only a collection-wide validation scope reads unchanged records; the
+    // cache then spares re-reading and re-parsing them.
+    if !preview_request.relevant_record_namespaces.is_empty() {
+        loaded.load_known_revisions(paths);
+        loaded.load_cached_local(paths);
+    }
     let preview = loaded.capture_preview(preview_request.clone())?;
     write_validation::check_snapshot_stability(&initial, &preview)?;
     let preview = write_lifecycle::prepare_preview(
@@ -992,6 +1035,9 @@ pub fn apply_mdbase_write(
     let guard = ProfilePermissionGuard::new(paths, selection);
     let filter = write_control_filter(&guard)?;
     let mut loaded = load_collection_authorized(paths, Some(&filter))?;
+    if !plan.preview.directory_memberships.is_empty() {
+        loaded.load_known_revisions(paths);
+    }
     let affected_paths = plan
         .preview
         .changes
@@ -1042,6 +1088,7 @@ pub fn apply_mdbase_write(
             permission_revision: &permission_revision,
             config_revision: &config_revision,
             now,
+            known_revisions: loaded.known_revisions.as_deref(),
         },
         idempotency_key: &options.idempotency_key,
     };
@@ -1471,6 +1518,8 @@ fn load_collection_authorized(
         collection,
         types,
         contracts,
+        known_revisions: None,
+        cached_local: None,
     })
 }
 
@@ -2052,6 +2101,7 @@ mod tests {
                 permission_revision: "grant:v1",
                 config_revision: "config:v1",
                 now: Utc.with_ymd_and_hms(2026, 9, 13, 12, 1, 0).unwrap(),
+                known_revisions: None,
             },
             idempotency_key: "read-boundary",
         };

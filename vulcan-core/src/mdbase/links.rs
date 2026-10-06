@@ -174,17 +174,14 @@ pub(super) fn resolve_collection_links_with_body_facts(
     records: &mut [MdbaseRecordDocument],
     body_facts: &BTreeMap<String, BodyLinkFacts>,
 ) {
+    use rayon::prelude::*;
     let id_field = collection.config.settings.id_field.as_str();
     let index = LinkTargetIndex::new(records, id_field);
-    for record in records {
-        resolve_record_links(
-            collection,
-            types,
-            record,
-            body_facts.get(&record.path),
-            &index,
-        );
-    }
+    // Each record resolves only its own links against the shared index.
+    records.par_iter_mut().for_each(|record| {
+        let facts = body_facts.get(&record.path);
+        resolve_record_links(collection, types, record, facts, &index);
+    });
 }
 
 /// Resolve one record's frontmatter and body links against `index`.

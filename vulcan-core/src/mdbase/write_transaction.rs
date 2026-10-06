@@ -1943,6 +1943,7 @@ mod tests {
             permission_revision: "grant:v1",
             config_revision: "config:v1",
             now: Utc.with_ymd_and_hms(2026, 9, 13, 12, 1, 0).unwrap(),
+            known_revisions: None,
         }
     }
 

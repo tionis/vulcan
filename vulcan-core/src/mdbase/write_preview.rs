@@ -51,6 +51,8 @@ pub struct MdbaseWritePreviewVerification<'a> {
     pub permission_revision: &'a str,
     pub config_revision: &'a str,
     pub now: DateTime<Utc>,
+    /// Fingerprint-proven revisions that spare re-reading unchanged records.
+    pub known_revisions: Option<&'a super::MdbaseKnownRevisions>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -163,6 +165,19 @@ pub fn build_mdbase_write_preview_with_control_filter(
     request: MdbaseWritePreviewRequest,
     control_filter: Option<&PermissionFilter>,
 ) -> Result<MdbaseWritePreview, MdbaseWritePreviewError> {
+    build_mdbase_write_preview_with_known(collection, request, control_filter, None)
+}
+
+/// [`build_mdbase_write_preview_with_control_filter`] taking accepted
+/// revisions of unchanged records from `known` where their stat still proves
+/// them, instead of reading and hashing every record in scope. Changed paths
+/// are always read.
+pub fn build_mdbase_write_preview_with_known(
+    collection: &MdbaseCollection,
+    request: MdbaseWritePreviewRequest,
+    control_filter: Option<&PermissionFilter>,
+    known: Option<&super::MdbaseKnownRevisions>,
+) -> Result<MdbaseWritePreview, MdbaseWritePreviewError> {
     validate_request(&request)?;
     let collection_root = canonical_collection_root(collection)?;
     let control_revisions = mdbase_control_revisions_authorized(collection, control_filter)
@@ -205,7 +220,7 @@ pub fn build_mdbase_write_preview_with_control_filter(
     let matched_types = normalize_names(&request.matched_types, "matched type")?;
     let namespaces = normalize_namespaces(&request.relevant_record_namespaces)?;
     let (directory_memberships, mut accepted_revisions) =
-        snapshot_record_scope(collection, &namespaces)?;
+        snapshot_record_scope(collection, &namespaces, known)?;
     for change in &changes {
         if let Some(revision) = &change.before_revision {
             accepted_revisions.insert(change.path.clone(), revision.clone());
@@ -316,8 +331,9 @@ pub fn verify_mdbase_write_preview_with_control_filter(
         .iter()
         .map(|membership| membership.namespace.clone())
         .collect::<Vec<_>>();
-    let (memberships, mut revisions) = snapshot_record_scope(collection, &namespaces)
-        .map_err(|_| MdbaseWritePreviewError::stale())?;
+    let (memberships, mut revisions) =
+        snapshot_record_scope(collection, &namespaces, verification.known_revisions)
+            .map_err(|_| MdbaseWritePreviewError::stale())?;
     for change in &preview.changes {
         if let Some(revision) = &change.before_revision {
             revisions.insert(change.path.clone(), revision.clone());
@@ -373,6 +389,7 @@ fn validate_request(request: &MdbaseWritePreviewRequest) -> Result<(), MdbaseWri
 fn snapshot_record_scope(
     collection: &MdbaseCollection,
     namespaces: &[String],
+    known: Option<&super::MdbaseKnownRevisions>,
 ) -> Result<(Vec<MdbaseDirectoryMembership>, BTreeMap<String, String>), MdbaseWritePreviewError> {
     let discovery = discover_mdbase_files(collection).map_err(|error| {
         MdbaseWritePreviewError::new("preview_dependency_error", error.to_string())
@@ -392,6 +409,10 @@ fn snapshot_record_scope(
             .cloned()
             .collect::<Vec<_>>();
         for path in &paths {
+            if let Some(revision) = known.and_then(|known| known.current(collection, path)) {
+                accepted_revisions.insert(path.clone(), revision.to_string());
+                continue;
+            }
             let source = read_optional_source(collection, path)?.ok_or_else(|| {
                 MdbaseWritePreviewError::new(
                     "preview_dependency_error",
@@ -589,6 +610,7 @@ mod tests {
             permission_revision: "grant:v1",
             config_revision: "config:v1",
             now,
+            known_revisions: None,
         };
         for contents in [None, Some("invalid: [SECRET"), Some("{}\n")] {
             let path = directory.path().join("schemas/task.json");
@@ -667,6 +689,7 @@ mod tests {
                 permission_revision: "grant:v1",
                 config_revision: "config:v1",
                 now,
+                known_revisions: None,
             },
         )
     }
@@ -808,6 +831,7 @@ mod tests {
                     permission_revision: "grant:v2",
                     config_revision: "config:v1",
                     now,
+                    known_revisions: None,
                 },
             )
             .unwrap_err()
@@ -825,6 +849,7 @@ mod tests {
                     permission_revision: "grant:v1",
                     config_revision: "config:v2",
                     now,
+                    known_revisions: None,
                 },
             )
             .unwrap_err()
@@ -890,6 +915,7 @@ mod tests {
                     permission_revision: "grant:v1",
                     config_revision: "config:v1",
                     now,
+                    known_revisions: None,
                 },
             )
             .unwrap_err()

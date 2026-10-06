@@ -1,0 +1,66 @@
+{
+  "measurement": "managed_write_diagnostic",
+  "acceptance_gate_result": "not_evaluated",
+  "boundary": "in-process plan_mdbase_write plus apply_mdbase_write for one single-record body edit, including the durable transaction, record-cache publication, and note-index scan; no concurrent readers",
+  "build": "cargo +1.88.0 test --release -p vulcan-app shared_query_stage_benchmark -- --ignored (VULCAN_MDB_PROFILE_WRITE_SAMPLES=30)",
+  "fixtures": {
+    "default": {
+      "generator": "scripts/generate_mdb_fixture.py --records 10000 --seed 42",
+      "payload_sha256": "ba3b33b62cbbcea1e68628920268cd143416d1216345c5aeb029220c28e9a348"
+    },
+    "constrained": {
+      "generator": "scripts/generate_mdb_fixture.py --records 10000 --seed 42 --constraints",
+      "payload_sha256": "7da926fc09a38b1257918fea57575fcb775d68889d3e05298f266bb275b02603",
+      "constraints": "collection-unique id; validated task projects links"
+    }
+  },
+  "samples": "31 sequential writes after warming the note index and record cache; the first is reported separately as first_seconds",
+  "runs": [
+    {
+      "acceptance_gate_result": "not_evaluated",
+      "constraints": null,
+      "first_seconds": 0.483249679,
+      "measurement": "benchmark_write_summary",
+      "p50": 0.424476922,
+      "p95": 0.484192129,
+      "p99": 0.559388731,
+      "records": 10000,
+      "samples": 30
+    },
+    {
+      "acceptance_gate_result": "not_evaluated",
+      "constraints": "collection-unique id; validated task projects links",
+      "first_seconds": 1.8109460830000002,
+      "measurement": "benchmark_write_summary",
+      "p50": 1.60078495,
+      "p95": 3.302550947,
+      "p99": 3.366400811,
+      "records": 10000,
+      "samples": 30
+    }
+  ],
+  "constrained_progression": [
+    {
+      "change": "before this work",
+      "plan_seconds": 162.0,
+      "apply_seconds": 1.5,
+      "note": "first write only; quadratic uniqueness"
+    },
+    {
+      "change": "linear uniqueness, single parse, lifecycle skip, parallel analysis",
+      "plan_seconds": 5.8,
+      "apply_seconds": 1.9
+    },
+    {
+      "change": "cache-backed validation and snapshots, parallel link resolution",
+      "plan_seconds": 0.9,
+      "apply_seconds": 0.73
+    }
+  ],
+  "host_conditions": "shared development host with browser and agent sessions; not the designated reference machine",
+  "findings": [
+    "Collection-wide rules (uniqueness, validated links) make every write validate the whole collection. With stat-proven cached local derivations a 10K constrained write now costs p50 1.6 s; the remaining plan cost is two full overlay passes (before and after) over 10K records plus loading cached payloads, and apply is dominated by preview verification, fsyncs, cache publication, and the note scan.",
+    "Writes without collection-wide rules are unaffected: p50 0.42 s.",
+    "The constrained p95 (3.3 s) has not been investigated."
+  ]
+}

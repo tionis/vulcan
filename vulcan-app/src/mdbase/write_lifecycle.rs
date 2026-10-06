@@ -8,11 +8,10 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use vulcan_core::mdbase::{
-    analyze_mdbase_record_set_sources, analyze_mdbase_record_source_with_clock,
-    compose_mdbase_type_behavior, is_mdbase_record_path, mdbase_cel_file_value,
-    mdbase_lifecycle_requires_link_index, prepare_mdbase_record_draft, MdbaseCelClock,
-    MdbaseCelEngine, MdbaseCelLinkIndex, MdbaseLifecycleProviderError, MdbaseRecordDiagnostic,
-    MdbaseRecordDraftRequest, MdbaseRecordSet,
+    analyze_mdbase_record_source_with_clock, compose_mdbase_type_behavior, is_mdbase_record_path,
+    mdbase_cel_file_value, mdbase_lifecycle_requires_link_index, prepare_mdbase_record_draft,
+    MdbaseCelClock, MdbaseCelEngine, MdbaseCelLinkIndex, MdbaseLifecycleProviderError,
+    MdbaseRecordDiagnostic, MdbaseRecordDraftRequest, MdbaseRecordSet,
 };
 use vulcan_core::paths::secure_open_read;
 
@@ -31,7 +30,6 @@ pub(super) fn prepare_preview(
         return Ok(scoped);
     }
     reject_optional_events(loaded, &scoped, operation, clock)?;
-    let mut sources = write_validation::proposed_sources(loaded, &scoped)?;
     // Only lifecycle evaluation reads the collection-resolved file value. When
     // no affected type declares lifecycle actions, the drafts need no other
     // records, so the rest of the collection is not analyzed here.
@@ -42,11 +40,12 @@ pub(super) fn prepare_preview(
                 .iter()
                 .any(|name| name.eq_ignore_ascii_case(&definition.name))
     });
-    if !lifecycle {
-        sources.retain(|path, _| scoped.changes.iter().any(|change| change.path == *path));
-    }
-    let mut records =
-        analyze_mdbase_record_set_sources(&loaded.collection, &loaded.types, &sources, clock);
+    let scope = if lifecycle {
+        write_validation::Scope::After
+    } else {
+        write_validation::Scope::ChangedAfter
+    };
+    let mut records = write_validation::analyze_scope(loaded, &scoped, clock, scope)?;
     add_existing_metadata(loaded, &scoped, &mut records)?;
     let index =
         mdbase_lifecycle_requires_link_index(&loaded.types, &scoped.matched_types).then(|| {

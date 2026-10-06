@@ -277,6 +277,17 @@ pub fn load_mdbase_records_with_contracts_filtered(
     Ok(apply_record_set_contracts(collection, contracts, set))
 }
 
+/// Collection overlays without contract views, as source analysis applies
+/// them, over records whose body facts are already parsed.
+pub(super) fn finish_record_set_with_facts(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    records: Vec<MdbaseRecordDocument>,
+    body_facts: &BTreeMap<String, super::links::BodyLinkFacts>,
+) -> MdbaseRecordSet {
+    finish_record_set_with_body_facts(collection, types, records, Some(body_facts))
+}
+
 pub(super) fn finish_local_record_set(
     collection: &MdbaseCollection,
     types: &MdbaseTypeRegistry,

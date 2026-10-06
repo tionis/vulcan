@@ -2,8 +2,9 @@ use super::{AppError, LoadedCollection, MdbaseManagedWriteMode, MdbaseWritePrevi
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use vulcan_core::mdbase::{
-    analyze_mdbase_record_set_sources, analyze_mdbase_record_source_with_clock,
-    is_mdbase_record_path, mdbase_content_revision, MdbaseCelClock, MdbaseRecordDiagnostic,
+    analyze_mdbase_record_set_sources, analyze_mdbase_record_set_with_cached,
+    analyze_mdbase_record_source_with_clock, is_mdbase_record_path, mdbase_content_revision,
+    MdbaseCelClock, MdbaseRecordDiagnostic,
 };
 use vulcan_core::paths::secure_read_to_string;
 
@@ -117,26 +118,12 @@ fn blocking_diagnostics(
     clock: &MdbaseCelClock,
     diagnostics: &[MdbaseRecordDiagnostic],
 ) -> Result<Vec<MdbaseRecordDiagnostic>, AppError> {
-    let mut before = BTreeMap::new();
-    for (path, revision) in &preview.accepted_revisions {
-        if !is_mdbase_record_path(&loaded.collection, path).map_err(AppError::operation)? {
-            continue;
-        }
-        let source = match preview.changes.iter().find(|change| change.path == *path) {
-            Some(change) => change.before.clone(),
-            None => secure_read_to_string(&loaded.collection.root, Path::new(path)).ok(),
-        };
-        if let Some(source) = source.filter(|source| mdbase_content_revision(source) == *revision) {
-            before.insert(path.clone(), source);
-        }
-    }
-    let existing: BTreeSet<_> =
-        analyze_mdbase_record_set_sources(&loaded.collection, &loaded.types, &before, clock)
-            .records
-            .into_iter()
-            .flat_map(|record| record.diagnostics)
-            .map(|diagnostic| diagnostic_key(&diagnostic))
-            .collect();
+    let existing: BTreeSet<_> = analyze_scope(loaded, preview, clock, Scope::Before)?
+        .records
+        .into_iter()
+        .flat_map(|record| record.diagnostics)
+        .map(|diagnostic| diagnostic_key(&diagnostic))
+        .collect();
     let changed: BTreeSet<&str> = preview
         .changes
         .iter()
@@ -170,14 +157,118 @@ pub(super) fn final_diagnostics(
     preview: &MdbaseWritePreview,
     clock: &MdbaseCelClock,
 ) -> Result<Vec<MdbaseRecordDiagnostic>, AppError> {
-    let sources = proposed_sources(loaded, preview)?;
-    Ok(
-        analyze_mdbase_record_set_sources(&loaded.collection, &loaded.types, &sources, clock)
-            .records
-            .into_iter()
-            .flat_map(|record| record.diagnostics)
-            .collect(),
-    )
+    Ok(analyze_scope(loaded, preview, clock, Scope::After)?
+        .records
+        .into_iter()
+        .flat_map(|record| record.diagnostics)
+        .collect())
+}
+
+/// Which state of the accepted validation scope to analyze.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Scope {
+    /// Every accepted record as it was when the preview was captured.
+    Before,
+    /// Every accepted record with the proposed changes applied.
+    After,
+    /// Only the changed records' proposed sources.
+    ChangedAfter,
+}
+
+/// Analyze `scope`. Unchanged records come from cached local derivations
+/// when they cover every one at its accepted revision (the revision the
+/// preview's snapshot proved) under the preview's controls; otherwise every
+/// source is read again and must still match its accepted revision.
+pub(super) fn analyze_scope(
+    loaded: &LoadedCollection,
+    preview: &MdbaseWritePreview,
+    clock: &MdbaseCelClock,
+    scope: Scope,
+) -> Result<vulcan_core::mdbase::MdbaseRecordSet, AppError> {
+    let mut changed = BTreeMap::new();
+    for change in &preview.changes {
+        if !is_mdbase_record_path(&loaded.collection, &change.path).map_err(AppError::operation)? {
+            continue;
+        }
+        let source = if scope == Scope::Before {
+            &change.before
+        } else {
+            &change.after
+        };
+        if let Some(source) = source {
+            changed.insert(change.path.clone(), source.clone());
+        }
+    }
+    if scope == Scope::ChangedAfter {
+        return Ok(analyze_mdbase_record_set_sources(
+            &loaded.collection,
+            &loaded.types,
+            &changed,
+            clock,
+        ));
+    }
+    if let Some(local) = loaded
+        .cached_local
+        .as_deref()
+        .filter(|local| *local.controls() == preview.control_revisions)
+    {
+        // Unchanged accepted paths are records by construction: the preview
+        // snapshot takes them from collection discovery.
+        let changed_paths = preview
+            .changes
+            .iter()
+            .map(|change| change.path.as_str())
+            .collect::<BTreeSet<_>>();
+        let cached = preview
+            .accepted_revisions
+            .iter()
+            .filter(|(path, _)| !changed_paths.contains(path.as_str()))
+            .map(|(path, revision)| (path.clone(), revision.clone()))
+            .collect::<BTreeMap<_, _>>();
+        if let Some(set) = analyze_mdbase_record_set_with_cached(
+            &loaded.collection,
+            &loaded.types,
+            local,
+            &changed,
+            &cached,
+            clock,
+        ) {
+            return Ok(set);
+        }
+    }
+    let sources = if scope == Scope::Before {
+        accepted_sources(loaded, preview)?
+    } else {
+        proposed_sources(loaded, preview)?
+    };
+    Ok(analyze_mdbase_record_set_sources(
+        &loaded.collection,
+        &loaded.types,
+        &sources,
+        clock,
+    ))
+}
+
+/// Accepted record sources as captured, skipping any that no longer match:
+/// such a record cannot have pre-existing diagnostics to excuse.
+fn accepted_sources(
+    loaded: &LoadedCollection,
+    preview: &MdbaseWritePreview,
+) -> Result<BTreeMap<String, String>, AppError> {
+    let mut before = BTreeMap::new();
+    for (path, revision) in &preview.accepted_revisions {
+        if !is_mdbase_record_path(&loaded.collection, path).map_err(AppError::operation)? {
+            continue;
+        }
+        let source = match preview.changes.iter().find(|change| change.path == *path) {
+            Some(change) => change.before.clone(),
+            None => secure_read_to_string(&loaded.collection.root, Path::new(path)).ok(),
+        };
+        if let Some(source) = source.filter(|source| mdbase_content_revision(source) == *revision) {
+            before.insert(path.clone(), source);
+        }
+    }
+    Ok(before)
 }
 
 pub(super) fn proposed_sources(
@@ -268,6 +359,49 @@ mod tests {
 
     fn now() -> chrono::DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 9, 13, 12, 0, 0).unwrap()
+    }
+
+    #[test]
+    fn cached_planning_equals_source_planning() {
+        let (dir, paths) = fixture(
+            "  unique: [{field: id, scope: collection}]\n  links:\n    parent: {target_type: task, validate_exists: true}\n",
+        );
+        for (name, id) in [("a.md", "one"), ("b.md", "two"), ("c.md", "two")] {
+            fs::write(dir.path().join(name), source(id)).unwrap();
+        }
+        fs::write(
+            dir.path().join("d.md"),
+            "---\ntype: task\nid: four\nparent: '[[b]]'\n---\nBody\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("e.md"), "---\ntitle: untyped\n---\n").unwrap();
+        vulcan_core::initialize_vulcan_dir(&paths).unwrap();
+        // Populate the record cache through the ordinary unrestricted service.
+        build_mdbase_query_report(&paths, &serde_json::json!({}), None).unwrap();
+        let cache = paths.cache_db();
+        let hidden = cache.with_extension("hidden");
+        let outcome = |plan: Result<MdbaseWritePlanReport, AppError>| match plan {
+            Ok(plan) => Ok((
+                plan.diagnostics,
+                plan.preview.accepted_revisions,
+                plan.preview.matched_types,
+            )),
+            Err(error) => Err((error.code().map(str::to_string), error.to_string())),
+        };
+        let scenarios = [
+            vec![("a.md", Some(source("five")))],
+            vec![("a.md", Some(source("two")))],
+            vec![("b.md", None)],
+            vec![("f.md", Some(source("six")))],
+            vec![("e.md", Some(source("seven"))), ("c.md", None)],
+        ];
+        for changes in scenarios {
+            let with = outcome(plan_mdbase_write(&paths, &request(&changes), now()));
+            fs::rename(cache, &hidden).unwrap();
+            let without = outcome(plan_mdbase_write(&paths, &request(&changes), now()));
+            fs::rename(&hidden, cache).unwrap();
+            assert_eq!(with, without, "{changes:?}");
+        }
     }
 
     #[test]

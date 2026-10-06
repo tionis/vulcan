@@ -455,6 +455,8 @@ fn load_retained(
         collection,
         types,
         contracts,
+        known_revisions: None,
+        cached_local: None,
     })
 }
 

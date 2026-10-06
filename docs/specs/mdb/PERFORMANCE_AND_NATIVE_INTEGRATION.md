@@ -60,6 +60,8 @@ Cache population requires an initialized vault; standalone uninitialized collect
 
 Readers lacking lockfile-read authority retain the existing source-only path: cache dependency verification includes lockfile absence, and optimization must not broaden their grants or inspect a denied control path.
 
+**Collection-wide write validation.** When uniqueness or validated-link rules make a write's validation scope the whole collection, planning and apply-time verification accept unchanged records by the same stat-fingerprint proof as indexed reads: a record whose current stat equals the fingerprint published with a cached revision has that revision without being read, and its cached record-local derivation and body facts stand in for re-parsing. Changed records are always read and derived from their proposed sources, and any record without a matching cached derivation sends the whole analysis back to sources. The proof's limit is the indexed reads' limit: an in-place same-size rewrite within one timestamp tick of an unchanged record is not observed.
+
 **Retained host sessions.** `MdbaseQuerySession` (vulcan-app) is the long-lived host form of the indexed path. The daemon's vault HTTP API serves it as `GET /mdbase/query?query=<JSON or YAML>` and creates it on first use.
 
 - **Retained state.** The session keeps authorized control registries per read scope, compiled plans, pooled read-only cache connections, and decoded indexed rows shared by concurrent requests. It never keeps results or grants. Every request verifies controls.

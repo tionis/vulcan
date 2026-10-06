@@ -1663,6 +1663,158 @@ fn load_collection_headers(
     rows.collect()
 }
 
+/// Content revisions the record cache published together with the stat
+/// fingerprint of the exact bytes they hash. While a file's current stat
+/// equals that fingerprint it has that revision without being read, the same
+/// proof indexed reads rely on. Revisions are content hashes, so they hold
+/// regardless of control digest or record model.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct MdbaseKnownRevisions {
+    by_path: std::collections::HashMap<String, (MdbaseStatFingerprint, String)>,
+}
+
+impl MdbaseKnownRevisions {
+    /// The cached revision of `path` if its current stat still proves it.
+    #[must_use]
+    pub fn current(&self, collection: &MdbaseCollection, path: &str) -> Option<&str> {
+        let (fingerprint, revision) = self.by_path.get(path)?;
+        let metadata = fs::symlink_metadata(collection.root.join(path)).ok()?;
+        (stat_fingerprint(&metadata)? == *fingerprint).then_some(revision.as_str())
+    }
+}
+
+/// Every fingerprinted revision the cache holds for this collection.
+pub fn load_mdbase_known_revisions(
+    connection: &Connection,
+    collection: &MdbaseCollection,
+) -> Result<MdbaseKnownRevisions, MdbaseRecordCacheError> {
+    let root = cache_collection_root(collection)?;
+    let mut statement = connection.prepare(
+        "SELECT path, stat_fingerprint, revision FROM mdbase_record_query
+         WHERE collection_root = ?1 AND stat_fingerprint IS NOT NULL",
+    )?;
+    let rows = statement.query_map([&root], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            (
+                row.get::<_, MdbaseStatFingerprint>(1)?,
+                row.get::<_, String>(2)?,
+            ),
+        ))
+    })?;
+    Ok(MdbaseKnownRevisions {
+        by_path: rows.collect::<Result<_, _>>()?,
+    })
+}
+
+/// Cached record-local derivations (before collection overlays) under the
+/// current controls, each tied to the content revision it derives from.
+#[derive(Debug)]
+pub struct MdbaseCachedLocalRecords {
+    controls: MdbaseControlRevisions,
+    records: BTreeMap<String, LocalRecordSnapshot>,
+}
+
+impl MdbaseCachedLocalRecords {
+    /// The control revisions these derivations are valid under; callers must
+    /// match them to the controls their own snapshot bound.
+    #[must_use]
+    pub fn controls(&self) -> &MdbaseControlRevisions {
+        &self.controls
+    }
+}
+
+/// Load every cached local derivation valid under the current controls, or
+/// `None` when local derivations are not reusable (clock-dependent CEL
+/// membership). Callers pair each with a revision they proved themselves.
+pub fn load_mdbase_cached_local_records(
+    connection: &Connection,
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    contracts: &MdbaseContractRegistry,
+    filter: Option<&PermissionFilter>,
+) -> Result<Option<MdbaseCachedLocalRecords>, MdbaseRecordCacheError> {
+    use rayon::prelude::*;
+    if has_dynamic_local_membership(types) {
+        return Ok(None);
+    }
+    let controls = verify_mdbase_control_snapshots(collection, types, contracts, filter)?;
+    let root = cache_collection_root(collection)?;
+    let mut statement = connection.prepare(
+        "SELECT path, local_record_json FROM mdbase_record_cache
+         WHERE collection_root = ?1 AND dependency_digest = ?2
+           AND record_model_version = ?3 AND local_record_json IS NOT NULL",
+    )?;
+    let rows = statement
+        .query_map(
+            params![root, &controls.combined, MDBASE_RECORD_MODEL_VERSION],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    // Damaged payloads are skipped; their paths are analyzed from source.
+    let records = rows
+        .into_par_iter()
+        .filter_map(|(path, json)| {
+            let record = serde_json::from_str::<LocalRecordSnapshot>(&json).ok()?;
+            (record.path == path && is_local_record(&record)).then_some((path, record))
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .collect();
+    Ok(Some(MdbaseCachedLocalRecords { controls, records }))
+}
+
+/// [`super::analyze_mdbase_record_set_sources`] where `cached` names paths
+/// (with the revision the caller proved for them) taken from cached local
+/// derivations instead of being read and parsed again. `None` when a cached
+/// path has no derivation at that revision; callers then analyze sources.
+#[must_use]
+pub fn analyze_mdbase_record_set_with_cached(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    local: &MdbaseCachedLocalRecords,
+    sources: &BTreeMap<String, String>,
+    cached: &BTreeMap<String, String>,
+    clock: &super::MdbaseCelClock,
+) -> Option<super::MdbaseRecordSet> {
+    use rayon::prelude::*;
+    let mut records = Vec::with_capacity(sources.len() + cached.len());
+    let mut facts = BTreeMap::new();
+    for (path, revision) in cached {
+        let snapshot = local
+            .records
+            .get(path)
+            .filter(|snapshot| snapshot.record.revision == *revision)?;
+        facts.insert(path.clone(), snapshot.body_facts.clone());
+        records.push(snapshot.record.clone());
+    }
+    let built = sources
+        .par_iter()
+        .filter(|(path, _)| !cached.contains_key(*path))
+        .map(|(path, source)| {
+            let record = super::records::build_mdbase_record(
+                collection,
+                types,
+                path,
+                source.clone(),
+                None,
+                true,
+                clock,
+            );
+            let body_facts = super::links::BodyLinkFacts::parse(&record.body);
+            (record, body_facts)
+        })
+        .collect::<Vec<_>>();
+    for (record, body_facts) in built {
+        facts.insert(record.path.clone(), body_facts);
+        records.push(record);
+    }
+    records.sort_by(|left, right| left.path.cmp(&right.path));
+    Some(super::records::finish_record_set_with_facts(
+        collection, types, records, &facts,
+    ))
+}
+
 fn load_local_records(
     connection: &Connection,
     root: &str,
@@ -3362,6 +3514,129 @@ mod tests {
                 "spec_version: 0.3.0\n",
             );
         }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn cached_local_analysis_equals_source_analysis() {
+        use crate::mdbase::{analyze_mdbase_record_set_sources, MdbaseRecordSet};
+        fn summary(set: &MdbaseRecordSet) -> Vec<String> {
+            set.records
+                .iter()
+                .map(|record| {
+                    serde_json::json!([
+                        record.path,
+                        record.types,
+                        record.effective_frontmatter,
+                        record.diagnostics,
+                        record.links,
+                        record.tags
+                    ])
+                    .to_string()
+                })
+                .collect()
+        }
+        let directory = tempdir().expect("collection directory");
+        let root = directory.path();
+        write(&root.join("mdbase.yaml"), "spec_version: 0.3.0\n");
+        write(
+            &root.join("_types/task.md"),
+            "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value: {type: object, required: [id]}\ncollection:\n  unique: [{field: id, scope: collection}]\n  links:\n    parent: {target_type: task, validate_exists: true}\n---\n",
+        );
+        let originals = [
+            (
+                "a.md",
+                "---\ntype: task\nid: one\nparent: '[[b]]'\n---\n[[b]] #tag\n",
+            ),
+            ("b.md", "---\ntype: task\nid: two\n---\nb\n"),
+            ("c.md", "---\ntype: task\nid: two\n---\nduplicate\n"),
+            ("d.md", "---\ntype: task\n---\nmissing id\n"),
+            ("e.md", "---\ntitle: untyped\n---\n[[a]]\n"),
+        ];
+        for (path, contents) in originals {
+            write(&root.join(path), contents);
+        }
+        let paths = VaultPaths::new(root);
+        crate::initialize_vulcan_dir(&paths).unwrap();
+        let mut database = CacheDatabase::open(&paths).unwrap();
+        let (collection, types, contracts) = load_registries(root);
+        refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        let local = load_mdbase_cached_local_records(
+            database.connection(),
+            &collection,
+            &types,
+            &contracts,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        let clock = crate::mdbase::records::operation_clock(&collection);
+        let scenarios: [&[(&str, Option<&str>)]; 5] = [
+            &[(
+                "a.md",
+                Some("---\ntype: task\nid: two\nparent: '[[b]]'\n---\n[[c]]\n"),
+            )],
+            &[("b.md", None)],
+            &[(
+                "f.md",
+                Some("---\ntype: task\nid: three\nparent: '[[e]]'\n---\nnew\n"),
+            )],
+            &[
+                ("d.md", Some("---\ntype: task\nid: four\n---\nfixed\n")),
+                ("c.md", None),
+            ],
+            &[],
+        ];
+        for changes in scenarios {
+            let mut sources = originals
+                .iter()
+                .map(|(path, contents)| ((*path).to_string(), (*contents).to_string()))
+                .collect::<BTreeMap<_, _>>();
+            let mut overrides = BTreeMap::new();
+            for (path, after) in changes {
+                match after {
+                    Some(after) => {
+                        sources.insert((*path).to_string(), (*after).to_string());
+                        overrides.insert((*path).to_string(), (*after).to_string());
+                    }
+                    None => {
+                        sources.remove(*path);
+                    }
+                }
+            }
+            let cached = originals
+                .iter()
+                .filter(|(path, _)| !changes.iter().any(|(changed, _)| changed == path))
+                .map(|(path, contents)| {
+                    (
+                        (*path).to_string(),
+                        crate::mdbase::mdbase_content_revision(contents),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            let expected = analyze_mdbase_record_set_sources(&collection, &types, &sources, &clock);
+            let actual = analyze_mdbase_record_set_with_cached(
+                &collection,
+                &types,
+                &local,
+                &overrides,
+                &cached,
+                &clock,
+            )
+            .expect("every unchanged record is cached");
+            assert_eq!(summary(&actual), summary(&expected), "{changes:?}");
+        }
+        // A revision the cache does not hold declines instead of guessing.
+        let stale = BTreeMap::from([("a.md".to_string(), "sha256:other".to_string())]);
+        assert!(analyze_mdbase_record_set_with_cached(
+            &collection,
+            &types,
+            &local,
+            &BTreeMap::new(),
+            &stale,
+            &clock
+        )
+        .is_none());
     }
 
     #[test]
