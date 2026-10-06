@@ -392,3 +392,51 @@ fn dataview_prefix_atoms_agree_with_the_evaluator_and_sql() {
         Decision::NoMatch
     );
 }
+
+#[test]
+fn dataview_contains_atoms_agree_with_the_evaluator_and_sql() {
+    let mut decided = 0;
+    let mut extra = values();
+    extra.extend(
+        [
+            json!(["task", "other"]),
+            json!(["tasks"]),
+            json!([["nested task"]]),
+            json!({"task": 1}),
+            json!("my task list"),
+            json!([1, "task"]),
+        ]
+        .into_iter()
+        .map(Some),
+    );
+    for value in extra {
+        let properties = value.map_or_else(|| json!({}), |value| json!({ "k": value }));
+        let note = note(properties, "folder/n.md", "n", "md");
+        for needle in ["task", "", "a", "1", "é", "2026-01-01"] {
+            for source in [
+                format!("contains(k, \"{needle}\")"),
+                format!("contains(K, \"{needle}\")"),
+                format!("!contains(k, \"{needle}\")"),
+                format!("contains(k, \"{needle}\") && k != null"),
+            ] {
+                if check(&source, &note) != Decision::Undecided {
+                    decided += 1;
+                }
+            }
+        }
+    }
+    assert!(decided > 300, "{decided}");
+    let note = note(json!({"tags": ["task", "x"]}), "n.md", "n", "md");
+    assert_eq!(check("contains(tags, \"task\")", &note), Decision::Match);
+    assert_eq!(check("contains(tags, \"nope\")", &note), Decision::NoMatch);
+    assert_eq!(
+        check("contains(missing, \"task\")", &note),
+        Decision::NoMatch
+    );
+    // File fields and non-literal needles stay with the evaluator.
+    assert_eq!(
+        check("contains(file.path, \"n\")", &note),
+        Decision::Undecided
+    );
+    assert_eq!(check("contains(tags, tags)", &note), Decision::Undecided);
+}

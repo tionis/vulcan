@@ -38,6 +38,9 @@ pub(crate) enum Comparison {
     GreaterEqual,
     /// Byte-wise string prefix (CEL `startsWith`).
     StartsWith,
+    /// Dataview `contains(field, "text")`: a substring of text, recursively
+    /// in lists, or a key of an object. Decided in memory only.
+    Contains,
 }
 
 impl Comparison {
@@ -64,11 +67,12 @@ impl Comparison {
         }
     }
 
-    /// `StartsWith` is not an ordering; callers decide it separately.
+    /// `StartsWith` and `Contains` are not orderings; callers decide them
+    /// separately.
     fn holds(self, ordering: std::cmp::Ordering) -> bool {
         use std::cmp::Ordering::{Equal, Greater, Less};
         match self {
-            Self::StartsWith => false,
+            Self::StartsWith | Self::Contains => false,
             Self::Equal => ordering == Equal,
             Self::NotEqual => ordering != Equal,
             Self::Less => ordering == Less,
@@ -81,6 +85,7 @@ impl Comparison {
     fn sql(self) -> &'static str {
         match self {
             Self::StartsWith => unreachable!("prefixes render separately"),
+            Self::Contains => unreachable!("contains is decided in memory only"),
             Self::Equal => "=",
             Self::NotEqual => "!=",
             Self::Less => "<",
@@ -190,6 +195,16 @@ impl Predicate {
                         field,
                         comparison: Comparison::StartsWith,
                         literal: Literal::Text(prefix.clone()),
+                    }),
+                    _ => Self::Unknown,
+                }
+            }
+            Expr::FunctionCall(name, args) if name == "contains" && args.len() == 2 => {
+                match (dataview_field(&args[0]), &args[1]) {
+                    (Some(field @ Field::Property(_)), Expr::Str(needle)) => Self::Atom(Atom {
+                        field,
+                        comparison: Comparison::Contains,
+                        literal: Literal::Text(needle.clone()),
                     }),
                     _ => Self::Unknown,
                 }
@@ -401,6 +416,9 @@ impl Atom {
         if self.comparison == Comparison::StartsWith {
             return self.decide_dataview_prefix(record);
         }
+        if self.comparison == Comparison::Contains {
+            return self.decide_dataview_contains(record);
+        }
         if matches!(self.literal, Literal::Number(literal) if literal.abs() >= EXACT_INTEGER_BOUND)
         {
             return Decision::Undecided;
@@ -467,6 +485,25 @@ impl Atom {
         }
     }
 
+    /// The evaluator's own `contains` on the value it would read.
+    fn decide_dataview_contains(&self, record: &RecordValues<'_>) -> Decision {
+        let (Field::Property(key), Literal::Text(needle)) = (&self.field, &self.literal) else {
+            return Decision::Undecided;
+        };
+        let Some(value) = dataview_property(record.properties, key) else {
+            return Decision::Undecided;
+        };
+        if crate::expression::functions::contains_value(
+            value,
+            &Value::String(needle.clone()),
+            crate::expression::functions::ContainsMode::Recursive,
+        ) {
+            Decision::Match
+        } else {
+            Decision::NoMatch
+        }
+    }
+
     fn decide_dataview_prefix(&self, record: &RecordValues<'_>) -> Decision {
         let Literal::Text(prefix) = &self.literal else {
             return Decision::Undecided;
@@ -495,6 +532,10 @@ impl Atom {
             Text(&'a str),
             Boolean(bool),
             Integer(i64),
+        }
+        // Only the Dataview frontend lowers `contains`.
+        if self.comparison == Comparison::Contains {
+            return Decision::Undecided;
         }
         let value = match &self.field {
             Field::FilePath => Scalar::Text(record.path),
@@ -549,6 +590,10 @@ impl Atom {
         }
         if self.comparison == Comparison::StartsWith {
             return self.render_dataview_prefix(columns, params);
+        }
+        // Recursive substring and key semantics stay with the decider.
+        if self.comparison == Comparison::Contains {
+            return "1".to_string();
         }
         let column = match &self.field {
             Field::Property(key) => return self.render_property(columns.properties, key, params),

@@ -26,8 +26,10 @@ use crate::resolve_note_reference as resolve_vault_note_reference;
 use crate::source::{SourceColumns, SourceExpr};
 
 use super::ast::{DqlDataCommand, DqlLinkTarget, DqlNamedExpr, DqlProjection, DqlQuery};
-use super::compile::{compile_dql, CompiledDqlCommand, CompiledDqlSourceExpr};
+use super::compile::{compile_dql, CompiledDqlCommand, CompiledDqlSourceExpr, CompiledWhereClause};
 use super::{parse_dql, DqlDiagnostic};
+use crate::expression::eval::{canonical_file_field_name, normalize_field_name};
+use std::borrow::Cow;
 
 #[derive(Debug)]
 pub enum DqlEvalError {
@@ -184,10 +186,11 @@ pub fn evaluate_dql_with_guard(
 }
 
 /// Load the note index `query` needs. When no expression can reach another
-/// note's file object, only the notes its `FROM` selects and `this` are
-/// hydrated (tags, links, inlinks, tasks, list items, inline expressions);
-/// every other note keeps its stored fields and the aliases link resolution
-/// reads. Otherwise, and without `FROM`, every note is hydrated.
+/// note's file object, only `this` and the notes its `FROM` selects (every
+/// note without `FROM`) that a leading `WHERE` does not decide as
+/// non-matches are hydrated (tags, links, inlinks, tasks, list items, inline
+/// expressions); every other note keeps its stored fields and the aliases
+/// link resolution reads. Otherwise every note is hydrated.
 fn load_scoped_note_index(
     paths: &VaultPaths,
     query: &DqlQuery,
@@ -203,7 +206,7 @@ fn load_scoped_note_index(
             CompiledDqlCommand::From(source) => Some(source),
             _ => None,
         });
-    let (Some(source), None) = (sources.next(), sources.next()) else {
+    let (source, None) = (sources.next(), sources.next()) else {
         return Ok(load_note_index_with_guard(paths, guard)?);
     };
     if query_reaches_other_file_objects(query) {
@@ -211,17 +214,166 @@ fn load_scoped_note_index(
     }
     let mut note_lookup = load_note_index_with_guard_deferring_hydration(paths, guard)?;
     let all_notes = sorted_notes(&note_lookup);
-    let mut selected = source_paths(
-        paths,
-        source,
-        current_file,
-        &note_lookup,
-        &all_notes,
-        Some(filter),
-    )?;
+    let mut selected = match source {
+        Some(source) => source_paths(
+            paths,
+            source,
+            current_file,
+            &note_lookup,
+            &all_notes,
+            Some(filter),
+        )?,
+        None => all_notes
+            .iter()
+            .map(|note| note.document_path.clone())
+            .collect(),
+    };
+    // Rows a leading `WHERE` decides as non-matches from stored fields are
+    // removed before anything reads their file objects.
+    if let Some(where_clause) = leading_page_where(query.query_type, &compiled) {
+        let this = current_file
+            .and_then(|path| note_lookup.values().find(|note| note.document_path == path));
+        let predicate = where_predicate_with_this(where_clause, this);
+        let decided_out = all_notes
+            .iter()
+            .filter(|note| {
+                predicate.decide(
+                    Dialect::Dataview,
+                    &RecordValues {
+                        properties: &note.properties,
+                        path: &note.document_path,
+                        name: &note.file_name,
+                        ext: &note.file_ext,
+                    },
+                ) == Decision::NoMatch
+            })
+            .map(|note| note.document_path.clone())
+            .collect::<Vec<_>>();
+        for path in decided_out {
+            selected.remove(&path);
+        }
+    }
     selected.extend(current_file.map(ToString::to_string));
     hydrate_note_index_entries(paths, guard, &mut note_lookup, &selected)?;
     Ok(note_lookup)
+}
+
+/// The predicate of a `WHERE` that sees the page rows exactly as `FROM`
+/// produced them: the first data command, in a page (non-task) query.
+fn leading_page_where(
+    query_type: super::DqlQueryType,
+    compiled: &super::compile::CompiledDqlQuery,
+) -> Option<&CompiledWhereClause> {
+    if query_type == super::DqlQueryType::Task {
+        return None;
+    }
+    match compiled
+        .commands
+        .iter()
+        .find(|command| !matches!(command, CompiledDqlCommand::From(_)))?
+    {
+        CompiledDqlCommand::Where(where_clause) => Some(where_clause),
+        _ => None,
+    }
+}
+
+/// `where_clause`'s predicate with `this` bound to what the evaluator reads
+/// for it: the file path, name, and extension of the note containing the
+/// query, or null when there is none. Conditions comparing rows with
+/// `this`, such as `file.name != this.file.name`, then lower too; the
+/// original expression is still what undecided rows evaluate.
+fn where_predicate_with_this<'a>(
+    where_clause: &'a CompiledWhereClause,
+    this: Option<&NoteRecord>,
+) -> Cow<'a, Predicate> {
+    if !mentions_this(&where_clause.expr) {
+        return Cow::Borrowed(&where_clause.predicate);
+    }
+    Cow::Owned(Predicate::lower_dataview(&bind_this(
+        &where_clause.expr,
+        this,
+    )))
+}
+
+fn is_this(expr: &Expr) -> bool {
+    matches!(expr, Expr::Identifier(name) if normalize_field_name(name) == "this")
+}
+
+fn mentions_this(expr: &Expr) -> bool {
+    let mut found = false;
+    let _ = map_expr(expr, &mut |expr| {
+        found |= is_this(expr);
+        None
+    });
+    found
+}
+
+fn bind_this(expr: &Expr, this: Option<&NoteRecord>) -> Expr {
+    map_expr(expr, &mut |expr| {
+        let Expr::FieldAccess(base, field) = expr else {
+            return is_this(expr)
+                .then_some(this.is_none())
+                .and_then(|missing| missing.then_some(Expr::Null));
+        };
+        match (base.as_ref(), this) {
+            // A missing `this` is null, and so is every field of it.
+            (base, None) if is_this(base) => Some(Expr::Null),
+            (Expr::FieldAccess(inner, file), None)
+                if is_this(inner) && normalize_field_name(file) == "file" =>
+            {
+                Some(Expr::Null)
+            }
+            (Expr::FieldAccess(inner, file), Some(note))
+                if is_this(inner) && normalize_field_name(file) == "file" =>
+            {
+                match canonical_file_field_name(field).as_str() {
+                    "path" => Some(Expr::Str(note.document_path.clone())),
+                    "name" | "basename" => Some(Expr::Str(note.file_name.clone())),
+                    "ext" => Some(Expr::Str(note.file_ext.clone())),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    })
+}
+
+/// Rebuild `expr`, replacing each subexpression for which `replace` returns
+/// a value; lambda bodies are kept as written, since they bind names.
+fn map_expr(expr: &Expr, replace: &mut impl FnMut(&Expr) -> Option<Expr>) -> Expr {
+    if let Some(replacement) = replace(expr) {
+        return replacement;
+    }
+    let mut map = |expr: &Expr| Box::new(map_expr(expr, replace));
+    match expr {
+        Expr::Array(items) => Expr::Array(items.iter().map(|item| *map(item)).collect()),
+        Expr::Object(fields) => Expr::Object(
+            fields
+                .iter()
+                .map(|(key, value)| (key.clone(), *map(value)))
+                .collect(),
+        ),
+        Expr::FieldAccess(base, field) => Expr::FieldAccess(map(base), field.clone()),
+        Expr::IndexAccess(base, index) => Expr::IndexAccess(map(base), map(index)),
+        Expr::BinaryOp(left, operator, right) => Expr::BinaryOp(map(left), *operator, map(right)),
+        Expr::UnaryOp(operator, operand) => Expr::UnaryOp(*operator, map(operand)),
+        Expr::FunctionCall(name, args) => {
+            Expr::FunctionCall(name.clone(), args.iter().map(|arg| *map(arg)).collect())
+        }
+        Expr::MethodCall(base, method, args) => Expr::MethodCall(
+            map(base),
+            method.clone(),
+            args.iter().map(|arg| *map(arg)).collect(),
+        ),
+        Expr::Lambda(..)
+        | Expr::Null
+        | Expr::Bool(_)
+        | Expr::Number(_)
+        | Expr::Str(_)
+        | Expr::Regex { .. }
+        | Expr::Identifier(_)
+        | Expr::FormulaRef(_) => expr.clone(),
+    }
 }
 
 /// Whether evaluating `query` can build the file object (and so read the
@@ -398,8 +550,8 @@ pub(crate) fn evaluate_parsed_dql_with_note_index_and_config(
                 // Page rows still hold exactly their note's properties, so the
                 // shared Dataview predicate decides what it can; every other
                 // row is evaluated (QRY.1).
-                let predicate = (page_rows_are_pristine && where_clause.predicate.is_useful())
-                    .then_some(&where_clause.predicate);
+                let bound = where_predicate_with_this(where_clause, source_note);
+                let predicate = (page_rows_are_pristine && bound.is_useful()).then_some(&*bound);
                 rows = apply_where_expression(
                     rows,
                     &where_clause.expr,
@@ -1516,6 +1668,7 @@ LIMIT 1"#,
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn where_predicates_match_full_evaluation() {
         let temp_dir = tempdir().expect("temp dir should be created");
         let root = temp_dir.path();
@@ -1592,6 +1745,44 @@ LIMIT 1"#,
             let evaluated = format!("TABLE WITHOUT ID file.path AS File WHERE true AND ({clause})");
             assert_eq!(names(&lowered), names(&evaluated), "{clause}");
         }
+        // `this` binds to the note containing the query, or null without one.
+        let with_this = |source: &str, this: Option<&str>| {
+            let mut names = evaluate_dql(&paths, source, this)
+                .expect("query should evaluate")
+                .rows
+                .into_iter()
+                .map(|row| row["File"].as_str().unwrap_or_default().to_string())
+                .collect::<Vec<_>>();
+            names.sort();
+            names
+        };
+        for clause in [
+            "file.name != this.file.name",
+            "file.name = this.file.name",
+            "file.path != this.file.path AND status = \"done\"",
+            "file.ext = this.file.ext AND priority > 2",
+            "this.status = null AND status = \"open\"",
+            "this = null OR status = \"open\"",
+            "file.name != this.file.name AND this.file.mtime > 0",
+        ] {
+            for this in [None, Some("B.md"), Some("Daily/2026-01-01.md")] {
+                let lowered = format!("TABLE WITHOUT ID file.path AS File WHERE {clause}");
+                let evaluated =
+                    format!("TABLE WITHOUT ID file.path AS File WHERE true AND ({clause})");
+                assert_eq!(
+                    with_this(&lowered, this),
+                    with_this(&evaluated, this),
+                    "{clause} in {this:?}"
+                );
+            }
+        }
+        // The bound condition decides rows without evaluation.
+        let compiled = compile_dql(&parse_dql("LIST WHERE file.name != this.file.name").unwrap());
+        let Some(CompiledDqlCommand::Where(where_clause)) = compiled.commands.first() else {
+            panic!("expected WHERE");
+        };
+        assert!(!where_clause.predicate.is_useful());
+        assert!(where_predicate_with_this(where_clause, None).is_useful());
     }
 
     #[test]
@@ -1718,6 +1909,31 @@ LIMIT 1"#,
                 false,
             ),
             ("TABLE parent.file.tags AS ptags FROM \"A\"", true),
+            // Without FROM, a leading WHERE bounds what is hydrated.
+            (
+                "TABLE file.tags AS tags, file.inlinks AS inl WHERE status = \"open\"",
+                false,
+            ),
+            ("TABLE file.lists AS lists WHERE status != \"open\"", false),
+            ("LIST WHERE contains(file.tags, \"#t\")", false),
+            (
+                "TABLE file.tasks.text AS tasks FROM #t WHERE status = \"closed\" GROUP BY status",
+                false,
+            ),
+            // A WHERE after SORT/LIMIT or FLATTEN, and task queries, do not.
+            (
+                "TABLE file.tags AS tags SORT file.name DESC LIMIT 2 WHERE status = \"open\"",
+                false,
+            ),
+            (
+                "TABLE x FLATTEN file.tags AS x WHERE status = \"open\"",
+                false,
+            ),
+            ("TASK WHERE status = \"open\"", false),
+            (
+                "TABLE file.tags AS tags WHERE file.name != this.file.name AND status = \"open\"",
+                false,
+            ),
         ] {
             let query = parse_dql(source).unwrap();
             assert_eq!(

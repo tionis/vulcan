@@ -112,7 +112,7 @@ pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Val
 }
 
 #[derive(Clone, Copy)]
-enum ContainsMode {
+pub(crate) enum ContainsMode {
     Recursive,
     Insensitive,
     Exact,
@@ -1198,7 +1198,7 @@ where
     op(first, second, third)
 }
 
-fn contains_value(haystack: &Value, needle: &Value, mode: ContainsMode) -> bool {
+pub(crate) fn contains_value(haystack: &Value, needle: &Value, mode: ContainsMode) -> bool {
     match mode {
         ContainsMode::Recursive => contains_recursive(haystack, needle, false),
         ContainsMode::Insensitive => contains_recursive(haystack, needle, true),
