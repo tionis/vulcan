@@ -407,6 +407,11 @@ fn write_move_journal(paths: &VaultPaths, journal: &MoveJournal) -> std::io::Res
     )
 }
 
+/// Whether an interrupted move awaits recovery by the next scan.
+pub(crate) fn move_journal_exists(paths: &VaultPaths) -> std::io::Result<bool> {
+    move_journal_path(paths)?.try_exists()
+}
+
 pub(crate) fn remove_move_journal(paths: &VaultPaths) -> std::io::Result<()> {
     match fs::remove_file(move_journal_path(paths)?) {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),

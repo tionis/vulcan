@@ -636,6 +636,80 @@ where
     Ok(summary)
 }
 
+/// Whether the note store is provably current (QRY.4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoteStoreFreshness {
+    /// An incremental scan would add, update, and delete nothing.
+    Fresh,
+    /// A scan is needed; the reason names the first difference found.
+    Stale(String),
+}
+
+/// Prove without writing that an incremental scan would change nothing:
+/// no recovery journal is pending, the scanned configuration is unchanged,
+/// the walked files are exactly the indexed ones, and every file's stat
+/// fingerprint and expected parser version match its `note_query` row. Uses
+/// the scan's own discovery, so ignore rules and file kinds agree. Two
+/// writes within one timestamp tick that keep a file's size and inode are
+/// indistinguishable ([`crate::fingerprint`]); off Unix there are no
+/// fingerprints and the store is never proven fresh.
+pub fn prove_note_store_fresh(paths: &VaultPaths) -> Result<NoteStoreFreshness, ScanError> {
+    let stale = |reason: &str| Ok(NoteStoreFreshness::Stale(reason.to_string()));
+    if !paths.cache_db().exists() {
+        return stale("no cache");
+    }
+    if crate::move_rewrite::move_journal_exists(paths)? {
+        return stale("an interrupted move awaits recovery");
+    }
+    if crate::ordinary_write::ensure_no_pending_ordinary_write_batch(paths).is_err() {
+        return stale("an ordinary write batch awaits recovery");
+    }
+    let config = crate::load_vault_config(paths).config;
+    let database = CacheDatabase::open(paths)?;
+    let connection = database.connection();
+    let signature = serde_json::to_string(&config.property_types)
+        .map_err(|error| ScanError::Io(std::io::Error::other(error)))?;
+    let recorded: Option<String> = connection
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'property_catalog_config'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if recorded.as_ref() != Some(&signature) {
+        return stale("configured property types changed");
+    }
+    let mut statement =
+        connection.prepare("SELECT path, stat_fingerprint, parser_version FROM note_query")?;
+    let indexed = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                (row.get::<_, Option<Vec<u8>>>(1)?, row.get::<_, u32>(2)?),
+            ))
+        })?
+        .collect::<Result<HashMap<_, _>, _>>()?;
+    let discovered = discover_files(paths.vault_root())?;
+    if discovered.len() != indexed.len() {
+        return stale("files were added or removed");
+    }
+    for file in &discovered {
+        let Some((fingerprint, version)) = indexed.get(&file.relative_path) else {
+            return stale("files were added or renamed");
+        };
+        let Some(current) = &file.stat_fingerprint else {
+            return stale("this platform records no stat fingerprints");
+        };
+        if fingerprint.as_deref() != Some(current.as_slice()) {
+            return stale("a file changed");
+        }
+        if *version != document_index_version(file.kind, &config) {
+            return stale("indexing rules changed");
+        }
+    }
+    Ok(NoteStoreFreshness::Fresh)
+}
+
 type ScanInventory = (Vec<DiscoveredFile>, HashMap<String, CachedDocument>);
 
 fn watched_inventory(
@@ -5026,6 +5100,85 @@ mod tests {
             .unwrap();
         assert_eq!(status, "bbbb");
         assert_eq!(note_query_drift(&paths), Vec::<String>::new());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn freshness_proofs_imply_no_op_scans() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).unwrap();
+        copy_fixture_vault("basic", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+        assert!(matches!(
+            prove_note_store_fresh(&paths).unwrap(),
+            NoteStoreFreshness::Stale(_)
+        ));
+        scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
+        let settle = |label: &str| {
+            assert!(
+                matches!(
+                    prove_note_store_fresh(&paths).unwrap(),
+                    NoteStoreFreshness::Stale(_)
+                ),
+                "{label}: proven fresh before scanning"
+            );
+            scan_vault(&paths, ScanMode::Incremental).expect("incremental scan should succeed");
+            assert_eq!(
+                prove_note_store_fresh(&paths).unwrap(),
+                NoteStoreFreshness::Fresh,
+                "{label}: not fresh after scanning"
+            );
+            let again =
+                scan_vault(&paths, ScanMode::Incremental).expect("incremental scan should succeed");
+            assert_eq!(
+                (again.added, again.updated, again.deleted),
+                (0, 0, 0),
+                "{label}: a fresh proof must mean a no-op scan"
+            );
+        };
+        assert_eq!(
+            prove_note_store_fresh(&paths).unwrap(),
+            NoteStoreFreshness::Fresh
+        );
+
+        fs::write(vault_root.join("Home.md"), "# Home\nedited\n").unwrap();
+        settle("edit");
+        let note = vault_root.join("Home.md");
+        let mtime = fs::metadata(&note).unwrap().modified().unwrap();
+        fs::write(&note, "# Home\nEDITED\n").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&note)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        settle("same-size edit with a restored mtime");
+        fs::write(vault_root.join("Added.md"), "new\n").unwrap();
+        settle("add");
+        fs::remove_file(vault_root.join("Added.md")).unwrap();
+        settle("delete");
+        fs::rename(vault_root.join("Home.md"), vault_root.join("Renamed.md")).unwrap();
+        settle("rename");
+        fs::create_dir_all(vault_root.join(".obsidian")).unwrap();
+        fs::write(
+            vault_root.join(".obsidian/types.json"),
+            "{\"types\": {\"status\": \"text\"}}",
+        )
+        .unwrap();
+        settle("property type configuration");
+        fs::write(
+            paths
+                .operational_state_dir()
+                .unwrap()
+                .join("move-journal.json"),
+            "{}",
+        )
+        .unwrap();
+        assert!(matches!(
+            prove_note_store_fresh(&paths).unwrap(),
+            NoteStoreFreshness::Stale(_)
+        ));
     }
 
     #[test]

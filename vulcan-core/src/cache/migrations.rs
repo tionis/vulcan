@@ -657,7 +657,9 @@ mod tests {
     fn note_query_migration_backfills_existing_documents() {
         let mut connection = Connection::open_in_memory().unwrap();
         let mut old_registry = MigrationRegistry::schema_v1();
-        old_registry.migrations.retain(|migration| migration.version <= 26);
+        old_registry
+            .migrations
+            .retain(|migration| migration.version <= 26);
         old_registry.migrate(&mut connection).unwrap();
         connection
             .execute_batch(

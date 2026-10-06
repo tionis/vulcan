@@ -3801,6 +3801,14 @@ fn maybe_auto_refresh_command_cache(
     match refresh_mode_for_target(paths, cli, RefreshTarget::Command) {
         AutoScanMode::Off => Ok(()),
         AutoScanMode::Blocking | AutoScanMode::Background => {
+            // A read-only freshness proof (QRY.4) avoids the scan's write lock
+            // and transaction when nothing changed; any doubt falls back to it.
+            if matches!(
+                vulcan_core::prove_note_store_fresh(paths),
+                Ok(vulcan_core::NoteStoreFreshness::Fresh)
+            ) {
+                return Ok(());
+            }
             run_incremental_scan(paths, cli.output, use_stderr_color, cli.quiet)?;
             Ok(())
         }
