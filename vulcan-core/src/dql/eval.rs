@@ -17,6 +17,7 @@ use crate::expression::value::DataviewTimeZone;
 use crate::file_metadata::FileMetadataResolver;
 use crate::paths::VaultPaths;
 use crate::permissions::{combine_cte_fragments, PermissionFilter, PermissionGuard};
+use crate::predicate::{Decision, Dialect, Predicate, RecordValues};
 use crate::properties::{
     build_note_filter_clause_from_expressions, hydrate_note_list_items,
     load_note_index_with_filter, load_note_index_with_guard,
@@ -368,36 +369,21 @@ pub(crate) fn evaluate_parsed_dql_with_note_index_and_config(
         match command {
             CompiledDqlCommand::From(_) => {}
             CompiledDqlCommand::Where(where_clause) => {
-                // Only use the fast SQL filter path when there is no `this` reference in the WHERE
-                // expression; SQL filtering has no knowledge of the source note so `this.*` fields
-                // would evaluate incorrectly there.
-                let has_this_reference =
-                    source_note.is_some() && where_clause_uses_this(&where_clause.expr);
-                if page_rows_are_pristine
-                    && !has_this_reference
-                    && query.query_type != super::DqlQueryType::Task
-                    && where_clause.filters.is_some()
-                {
-                    let matching_paths = matching_note_paths_for_filters(
-                        paths,
-                        where_clause
-                            .filters
-                            .as_deref()
-                            .expect("filters presence checked above"),
-                        filter,
-                    )?;
-                    rows.retain(|row| matching_paths.contains(row.note.document_path.as_str()));
-                } else {
-                    rows = apply_where_expression(
-                        rows,
-                        &where_clause.expr,
-                        query,
-                        note_lookup,
-                        source_note,
-                        time_zone,
-                        &mut diagnostics,
-                    )?;
-                }
+                // Page rows still hold exactly their note's properties, so the
+                // shared Dataview predicate decides what it can; every other
+                // row is evaluated (QRY.1).
+                let predicate = (page_rows_are_pristine && where_clause.predicate.is_useful())
+                    .then_some(&where_clause.predicate);
+                rows = apply_where_expression(
+                    rows,
+                    &where_clause.expr,
+                    predicate,
+                    query,
+                    note_lookup,
+                    source_note,
+                    time_zone,
+                    &mut diagnostics,
+                )?;
             }
             CompiledDqlCommand::Sort(keys) => {
                 let mut decorated = Vec::with_capacity(rows.len());
@@ -696,37 +682,11 @@ fn task_rows_for_note(note: &NoteRecord) -> Vec<ExecutionRow> {
 /// Returns true if the expression tree contains a reference to `this` (the Dataview identifier
 /// for the note that contains the query).  Used to decide whether to fall back from the fast SQL
 /// filter path to the full expression evaluator, which can properly resolve `this.*`.
-fn where_clause_uses_this(expr: &crate::expression::ast::Expr) -> bool {
-    use crate::expression::ast::Expr;
-    match expr {
-        Expr::Identifier(name) => crate::expression::eval::normalize_field_name(name) == "this",
-        Expr::FieldAccess(receiver, _) => where_clause_uses_this(receiver),
-        Expr::IndexAccess(receiver, index) => {
-            where_clause_uses_this(receiver) || where_clause_uses_this(index)
-        }
-        Expr::FunctionCall(_, args) => args.iter().any(where_clause_uses_this),
-        Expr::MethodCall(receiver, _, args) => {
-            where_clause_uses_this(receiver) || args.iter().any(where_clause_uses_this)
-        }
-        Expr::BinaryOp(left, _, right) => {
-            where_clause_uses_this(left) || where_clause_uses_this(right)
-        }
-        Expr::UnaryOp(_, operand) => where_clause_uses_this(operand),
-        Expr::Lambda(_, body) => where_clause_uses_this(body),
-        Expr::Array(elements) => elements.iter().any(where_clause_uses_this),
-        Expr::Object(entries) => entries.iter().any(|(_, v)| where_clause_uses_this(v)),
-        Expr::Null
-        | Expr::Bool(_)
-        | Expr::Number(_)
-        | Expr::Str(_)
-        | Expr::Regex { .. }
-        | Expr::FormulaRef(_) => false,
-    }
-}
-
+#[allow(clippy::too_many_arguments)]
 fn apply_where_expression(
     rows: Vec<ExecutionRow>,
     expr: &crate::expression::ast::Expr,
+    predicate: Option<&Predicate>,
     query: &DqlQuery,
     note_lookup: &HashMap<String, NoteRecord>,
     source_note: Option<&NoteRecord>,
@@ -737,6 +697,23 @@ fn apply_where_expression(
     let mut directly_matched_task_ids = HashSet::new();
 
     for row in rows {
+        // A decided row is exact: deciding evaluates nothing that could
+        // report a diagnostic.
+        let decision = predicate.map_or(Decision::Undecided, |predicate| {
+            predicate.decide(
+                Dialect::Dataview,
+                &RecordValues {
+                    properties: &row.note.properties,
+                    path: &row.note.document_path,
+                    name: &row.note.file_name,
+                    ext: &row.note.file_ext,
+                },
+            )
+        });
+        if decision != Decision::Undecided {
+            decorated.push((decision == Decision::Match, row));
+            continue;
+        }
         let value = match row.evaluate_with_source(expr, note_lookup, time_zone, source_note) {
             Ok(value) => value,
             Err(error) => recover_unsupported_feature(
@@ -1651,6 +1628,85 @@ LIMIT 1"#,
             Value::String("backlog".to_string())
         );
         assert_eq!(result.rows[0]["priority"].as_f64(), Some(5.0));
+    }
+
+    #[test]
+    fn where_predicates_match_full_evaluation() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".vulcan")).unwrap();
+        for (path, contents) in [
+            ("A.md", "---\nstatus: done\npriority: 3\n---\n"),
+            ("B.md", "---\nstatus: open\npriority: \"3\"\n---\n"),
+            ("C.md", "no frontmatter\n"),
+            ("D.md", "---\nstatus:\npriority: 1\n---\n"),
+            ("E.md", "---\nstatus: [done]\nflag: true\n---\n"),
+            ("Daily/2026-01-01.md", "---\nstatus: 2026-01-02\n---\n"),
+        ] {
+            let target = root.join(path);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::write(target, contents).unwrap();
+        }
+        let paths = VaultPaths::new(root);
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+        let names = |source: &str| {
+            let mut names = evaluate_dql(&paths, source, None)
+                .expect("query should evaluate")
+                .rows
+                .into_iter()
+                .map(|row| row["File"].as_str().unwrap_or_default().to_string())
+                .collect::<Vec<_>>();
+            names.sort();
+            names
+        };
+        // Cases the former exact SQL path got wrong, against the evaluator.
+        for (clause, expected) in [
+            (
+                "status != \"done\"",
+                vec!["B", "C", "D", "E", "Daily/2026-01-01"],
+            ),
+            ("status != null", vec!["A", "B", "E", "Daily/2026-01-01"]),
+            ("status = null", vec!["C", "D"]),
+            ("priority > 2", vec!["A"]),
+        ] {
+            let source = format!("TABLE WITHOUT ID file.path AS File WHERE {clause}");
+            let mut expected = expected
+                .into_iter()
+                .map(|name| format!("{name}.md"))
+                .collect::<Vec<_>>();
+            expected.sort();
+            let table = |source: &str| {
+                let mut paths = evaluate_dql(&paths, source, None)
+                    .unwrap()
+                    .rows
+                    .into_iter()
+                    .map(|row| row["File"].as_str().unwrap().to_string())
+                    .collect::<Vec<_>>();
+                paths.sort();
+                paths
+            };
+            assert_eq!(table(&source), expected, "{clause}");
+        }
+        // Lowered and fully evaluated forms agree on every shape.
+        for clause in [
+            "status = \"done\"",
+            "status != \"done\"",
+            "status < \"p\"",
+            "status >= \"done\"",
+            "priority = 3",
+            "priority != 3",
+            "priority <= 1",
+            "flag = true",
+            "status = null OR priority > 2",
+            "status = \"open\" AND priority = \"3\"",
+            "file.name = \"2026-01-01\"",
+            "file.path != \"A.md\" AND missing = 1",
+            "status = \"done\" AND length(file.name) > 0",
+        ] {
+            let lowered = format!("TABLE WITHOUT ID file.path AS File WHERE {clause}");
+            let evaluated = format!("TABLE WITHOUT ID file.path AS File WHERE true AND ({clause})");
+            assert_eq!(names(&lowered), names(&evaluated), "{clause}");
+        }
     }
 
     #[test]

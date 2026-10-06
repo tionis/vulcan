@@ -86,6 +86,7 @@ pub mod parser;
 pub mod paths;
 pub mod periodic;
 pub mod permissions;
+pub(crate) mod predicate;
 pub mod properties;
 pub mod query;
 pub mod refactor;

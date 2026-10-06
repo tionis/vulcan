@@ -11350,9 +11350,11 @@ fn dataview_eval_json_output_evaluates_selected_block() {
         json["blocks"][0]["result"]["data"]["columns"],
         serde_json::json!(["File", "status", "priority"])
     );
+    // Dashboard has `reviewed: true` and `reviewed:: false`, so its
+    // `reviewed` is `[true, false]` and `reviewed = true` does not hold.
     assert_eq!(
         json["blocks"][0]["result"]["data"]["result_count"],
-        Value::Number(2.into())
+        Value::Number(1.into())
     );
     assert_eq!(
         json["blocks"][0]["result"]["data"]["rows"][0],
@@ -11363,12 +11365,10 @@ fn dataview_eval_json_output_evaluates_selected_block() {
         })
     );
     assert_eq!(
-        json["blocks"][0]["result"]["data"]["rows"][1],
-        serde_json::json!({
-            "File": "[[Dashboard]]",
-            "status": "draft",
-            "priority": [2.0, 3.0]
-        })
+        json["blocks"][0]["result"]["data"]["rows"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
     );
 }
 
@@ -11449,8 +11449,9 @@ fn dataview_eval_human_output_keeps_empty_table_headers() {
     assert!(stdout.contains("| File | status | priority |"));
     assert!(stdout.contains("| --- | --- | --- |"));
     assert!(stdout.contains("| [[Projects/Alpha]] | active | 1.0 |"));
-    assert!(stdout.contains("| [[Dashboard]] | draft | [2.0,3.0] |"));
-    assert!(stdout.contains("2 result(s)"));
+    // Dashboard's `reviewed` is `[true, false]`, so it is not reviewed.
+    assert!(!stdout.contains("[[Dashboard]]"));
+    assert!(stdout.contains("1 result(s)"));
 }
 
 #[test]
