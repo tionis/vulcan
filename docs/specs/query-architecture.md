@@ -140,10 +140,17 @@ whose type makes the dialect's result certain, and are undecided otherwise.
 
 ### 4.4 Shared source algebra
 
-`SourceExpr` covers folder (recursive), exact path, tag (with nested tags), mdbase type,
-incoming and outgoing link (including `this`), and `and`/`or`/`not`. DQL `FROM`, `QueryAst`
-sources, Bases folder and tag filters, Tasks path and tag filters, and mdbase `types` and path
-prefixes all compile into it. Candidate selection for a source runs in SQL against the store.
+`SourceExpr` covers folder (recursive), exact path, tag (with nested tags), incoming and
+outgoing link (including `this`), and `and`/`or`/`not`. DQL `FROM`, `dv.pages(source)`, tag and
+folder-shaped note filters (`--where`, `QueryAst`, Bases `file.inFolder`/`file.hasTag`) compile
+into it. Candidate selection for a source runs in SQL against the store.
+
+Two kinds of selection deliberately stay outside it. Tasks `path includes`/`tag includes` are
+Tasks-plugin text predicates on task rows (case-insensitive substrings, task-level tags), not
+note sources. mdbase `types` belong to the mdbase record store: membership is declared or
+inferred per collection, matched case-insensitively, may depend on the clock (and is then
+proven per query), and drives an index join over `mdbase_record_types`. mdbase path conditions
+lower to the shared CEL predicate atoms (§4.3), so the stores share atoms, not sources.
 
 `vulcan-core::source::SourceExpr` implements the note-store part: folder, exact path, tag,
 links-to, linked-from, and `and`/`or`/`not`, rendered as one SQL boolean that is never NULL, so
