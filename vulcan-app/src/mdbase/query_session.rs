@@ -25,8 +25,9 @@
 
 use super::query_profile::{time, MdbaseQueryMetrics};
 use super::{
-    allowed, build_mdbase_query_report_profiled, control_permission_denied, indexed_query_allowed,
-    load_control_registries, open_query_cache, registry_diagnostics, LoadedCollection,
+    allowed, build_mdbase_metadata_read_report, build_mdbase_query_report_profiled,
+    control_permission_denied, indexed_query_allowed, load_control_registries, open_query_cache,
+    registry_diagnostics, LoadedCollection, MdbaseMetadataReadReport, MdbaseRecordMetadata,
 };
 use crate::AppError;
 use chrono::{DateTime, Utc};
@@ -36,8 +37,9 @@ use std::time::Duration;
 use std::time::{Instant, SystemTime};
 use vulcan_core::mdbase::{
     compile_mdbase_prepared_query, execute_retained_mdbase_query, load_mdbase_collection,
-    mdbase_query_is_retainable, walk_mdbase_retained_scope, MdbaseChangeMonitor,
-    MdbasePreparedQuery, MdbaseQueryResult, MdbaseRetainedProof, MdbaseRetainedRows,
+    mdbase_query_is_retainable, read_retained_mdbase_record, walk_mdbase_retained_scope,
+    MdbaseChangeMonitor, MdbasePreparedQuery, MdbaseQueryResult, MdbaseRetainedProof,
+    MdbaseRetainedRows,
 };
 use vulcan_core::{PermissionFilter, VaultPaths};
 
@@ -207,6 +209,117 @@ impl MdbaseQuerySession {
         build_mdbase_query_report_profiled(&self.paths, query, filter, metrics)
     }
 
+    /// Read one record's metadata with exactly the result, errors, and
+    /// authorization of [`super::build_mdbase_metadata_read_report`]. Once
+    /// the retained proof holds, unrestricted readers are answered from one
+    /// cached row; restricted readers also overlay that record's links and
+    /// uniqueness against only the records they can see.
+    pub fn read_metadata(
+        &self,
+        path: &str,
+        filter: Option<&PermissionFilter>,
+    ) -> Result<MdbaseMetadataReadReport, AppError> {
+        self.read_metadata_profiled(path, filter, &mut MdbaseQueryMetrics::default())
+    }
+
+    /// [`Self::read_metadata`] with diagnostic metrics, reset first.
+    pub fn read_metadata_profiled(
+        &self,
+        path: &str,
+        filter: Option<&PermissionFilter>,
+        metrics: &mut MdbaseQueryMetrics,
+    ) -> Result<MdbaseMetadataReadReport, AppError> {
+        *metrics = MdbaseQueryMetrics::default();
+        let start = Instant::now();
+        let result = self.read_metadata_inner(path, filter, metrics);
+        metrics.total_seconds = start.elapsed().as_secs_f64();
+        result
+    }
+
+    fn read_metadata_inner(
+        &self,
+        path: &str,
+        filter: Option<&PermissionFilter>,
+        metrics: &mut MdbaseQueryMetrics,
+    ) -> Result<MdbaseMetadataReadReport, AppError> {
+        let admitted = allowed(filter, path)
+            && allowed(filter, "mdbase.yaml")
+            && indexed_query_allowed(filter)
+            && time(&mut metrics.collection_seconds, || {
+                vulcan_core::mdbase::check_mdbase_lock_free_read(&self.paths).is_ok()
+            });
+        if admitted {
+            let scope = scope_key(filter);
+            let loaded = time(&mut metrics.collection_seconds, || {
+                self.scope(&scope, filter)
+            })?;
+            let read = |rows: &MdbaseRetainedRows,
+                        proof: &MdbaseRetainedProof,
+                        trusted: bool,
+                        metrics: &mut MdbaseQueryMetrics| {
+                metrics.indexed_attempts += 1;
+                // `Some(None)`: not a visible record.
+                let record = self.with_connection(|connection| {
+                    read_retained_mdbase_record(
+                        connection,
+                        &loaded.collection,
+                        &loaded.types,
+                        &loaded.contracts,
+                        filter,
+                        rows,
+                        proof,
+                        trusted,
+                        path,
+                    )
+                    .ok()
+                    .flatten()
+                })?;
+                metrics.indexed_hits += 1;
+                metrics.indexed.trusted_proof = trusted;
+                Some(record)
+            };
+            let record = self.with_connection(|connection| {
+                self.proven(connection, &scope, &loaded, filter, metrics, read)
+            });
+            if let Some(Some(record)) = record {
+                let metadata = record.metadata.unwrap_or_else(|| unreachable!());
+                let mut diagnostics = registry_diagnostics(&loaded, filter);
+                diagnostics.extend(
+                    record
+                        .diagnostics
+                        .iter()
+                        .map(vulcan_core::mdbase::MdbaseDiagnostic::from_record),
+                );
+                let valid = diagnostics.iter().all(|diagnostic| {
+                    diagnostic.severity != vulcan_core::mdbase::MdbaseDiagnosticLevel::Error
+                });
+                return Ok(MdbaseMetadataReadReport {
+                    valid,
+                    record: MdbaseRecordMetadata {
+                        path: record.path,
+                        revision: record.revision,
+                        types: record.types,
+                        frontmatter: metadata.frontmatter,
+                        effective_frontmatter: record.effective_frontmatter,
+                        file: metadata.file,
+                        display: record.display,
+                        contract_views: record.contract_views,
+                        diagnostics: record.diagnostics,
+                    },
+                    diagnostics,
+                });
+            }
+            // Unknown paths take the ordinary read for its exact error;
+            // the retained state stays proven.
+            if record.is_none() {
+                lock(&self.scopes).remove(&scope);
+                lock(&self.proofs).clear();
+            }
+        }
+        *metrics = MdbaseQueryMetrics::default();
+        build_mdbase_metadata_read_report(&self.paths, path, filter)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn query_retained(
         &self,
@@ -244,6 +357,28 @@ impl MdbaseQuerySession {
             }
             result
         };
+        self.proven(connection, scope, loaded, filter, metrics, execute)
+    }
+
+    /// Run `answer` over the retained rows with a proof that they describe
+    /// the scope's current visible records: a trusted watched proof when one
+    /// holds, else a fresh walk, reconciling changed rows when needed.
+    /// `answer` receives whether the proof was trusted without a walk.
+    /// `None` when no proof can be established or `answer` declines.
+    fn proven<T>(
+        &self,
+        connection: &rusqlite::Connection,
+        scope: &str,
+        loaded: &LoadedCollection,
+        filter: Option<&PermissionFilter>,
+        metrics: &mut MdbaseQueryMetrics,
+        answer: impl Fn(
+            &MdbaseRetainedRows,
+            &MdbaseRetainedProof,
+            bool,
+            &mut MdbaseQueryMetrics,
+        ) -> Option<T>,
+    ) -> Option<T> {
         // Read both counters before any walk, so a change racing this request
         // invalidates the proof it produces. The epoch advances only when a
         // write section ends, after its cache publication.
@@ -253,7 +388,7 @@ impl MdbaseQuerySession {
                 .rows
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let result = execute(&rows, &proof, true, metrics);
+            let result = answer(&rows, &proof, true, metrics);
             if result.is_none() {
                 // Another request reconciled past this proof; walk instead.
                 metrics.indexed = vulcan_core::mdbase::MdbaseIndexedQueryMetrics::default();
@@ -290,7 +425,7 @@ impl MdbaseQuerySession {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             walk.proof_if_retained(&rows).map(|proof| {
                 metrics.indexed.freshness_seconds = walked;
-                let result = execute(&rows, &proof, false, metrics);
+                let result = answer(&rows, &proof, false, metrics);
                 (result, proof)
             })
         };
@@ -320,7 +455,7 @@ impl MdbaseQuerySession {
                 proof
             };
             metrics.indexed.freshness_seconds = start.elapsed().as_secs_f64();
-            (execute(&rows, &proof, false, metrics), proof)
+            (answer(&rows, &proof, false, metrics), proof)
         };
         let result = result?;
         self.remember(scope, proof, generation, epoch);
@@ -470,8 +605,8 @@ fn scope_key(filter: Option<&PermissionFilter>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mdbase::build_mdbase_query_report;
     use crate::mdbase::tests::{fixture, read_control_grant};
+    use crate::mdbase::{build_mdbase_metadata_read_report, build_mdbase_query_report};
     use serde_json::json;
     use std::fs;
     use std::time::Duration;
@@ -608,6 +743,223 @@ mod tests {
         assert_eq!(
             report,
             build_mdbase_query_report(&paths, &scoped, Some(&filter)).unwrap()
+        );
+    }
+
+    #[test]
+    fn metadata_reads_equal_the_ordinary_read_and_use_one_cached_row() {
+        let (directory, paths) = initialized();
+        // An invalid record, so diagnostics and validity are compared too.
+        fs::write(
+            directory.path().join("tasks/untitled.md"),
+            "---\ntype: task\n---\nBody\n",
+        )
+        .unwrap();
+        build_mdbase_query_report(&paths, &json!({"types": ["task"]}), None).unwrap();
+        let session = MdbaseQuerySession::new(paths.clone()).with_change_monitor(
+            MdbaseChangeMonitor::watch(&directory.path().canonicalize().unwrap()).unwrap(),
+            Duration::from_secs(60),
+        );
+        let filter = restricted();
+        let ordinary = |path: &str, scope: Option<&PermissionFilter>| {
+            build_mdbase_metadata_read_report(&paths, path, scope)
+                .map_err(|error| error.to_string())
+        };
+        let read = |path: &str, scope: Option<&PermissionFilter>| {
+            session
+                .read_metadata(path, scope)
+                .map_err(|error| error.to_string())
+        };
+        for path in [
+            "tasks/public.md",
+            "tasks/untitled.md",
+            "tasks/private/secret.md",
+        ] {
+            for scope in [None, Some(&filter)] {
+                assert_eq!(read(path, scope), ordinary(path, scope), "{path}");
+            }
+        }
+        assert!(!read("tasks/untitled.md", None).unwrap().valid);
+        for missing in ["tasks/missing.md", "_types/task.md", "../outside.md"] {
+            assert!(read(missing, None).is_err(), "{missing}");
+            assert_eq!(read(missing, None), ordinary(missing, None));
+        }
+
+        let mut metrics = MdbaseQueryMetrics::default();
+        session
+            .read_metadata_profiled("tasks/public.md", None, &mut metrics)
+            .unwrap();
+        assert_eq!(metrics.indexed_hits, 1);
+        assert!(metrics.indexed.trusted_proof);
+        assert_eq!(metrics.indexed.reloaded_rows, 0);
+        session
+            .read_metadata_profiled("tasks/public.md", Some(&filter), &mut metrics)
+            .unwrap();
+        assert_eq!(metrics.indexed_hits, 1);
+
+        // A cooperating write is observed immediately.
+        {
+            let _lock = vulcan_core::write_lock::acquire_write_lock(&paths).unwrap();
+            fs::write(
+                directory.path().join("tasks/public.md"),
+                "---\ntype: task\ntitle: Renamed\n---\nBody\n",
+            )
+            .unwrap();
+        }
+        let report = read("tasks/public.md", None).unwrap();
+        assert_eq!(report.record.frontmatter["title"], "Renamed");
+        assert_eq!(Ok(report), ordinary("tasks/public.md", None));
+    }
+
+    #[test]
+    fn restricted_metadata_reads_overlay_only_visible_records() {
+        let (directory, paths) = fixture();
+        let write = |path: &str, source: &str| {
+            fs::write(directory.path().join(path), source).unwrap();
+        };
+        write(
+            "_types/task.md",
+            "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value: {type: object}\ncollection:\n  unique:\n    - {field: code}\n  links:\n    related: {target_type: any, validate_exists: true}\n---\n",
+        );
+        // Duplicates of a hidden record, of a visible one, and of both; links
+        // to a hidden record, a visible one, and nothing.
+        write(
+            "tasks/public.md",
+            "---\ntype: task\ncode: A\nrelated: '[[tasks/private/secret]]'\n---\nSee [[secret]].\n",
+        );
+        write(
+            "tasks/private/secret.md",
+            "---\ntype: task\ncode: A\nrelated: '[[tasks/public]]'\n---\n",
+        );
+        write(
+            "tasks/b1.md",
+            "---\ntype: task\ncode: B\nrelated: '[[tasks/b2]]'\n---\n",
+        );
+        write("tasks/b2.md", "---\ntype: task\ncode: B\n---\n");
+        write("tasks/private/b3.md", "---\ntype: task\ncode: B\n---\n");
+        write(
+            "tasks/c1.md",
+            "---\ntype: task\ncode: C\nrelated: '[[missing]]'\n---\n",
+        );
+        vulcan_core::initialize_vulcan_dir(&paths).unwrap();
+        build_mdbase_query_report(&paths, &json!({"types": ["task"]}), None).unwrap();
+        let session = MdbaseQuerySession::new(paths.clone());
+        let filter = restricted();
+        let mut metrics = MdbaseQueryMetrics::default();
+        for path in [
+            "tasks/public.md",
+            "tasks/b1.md",
+            "tasks/b2.md",
+            "tasks/c1.md",
+        ] {
+            for scope in [None, Some(&filter)] {
+                let expected = build_mdbase_metadata_read_report(&paths, path, scope).unwrap();
+                let actual = session
+                    .read_metadata_profiled(path, scope, &mut metrics)
+                    .unwrap();
+                assert_eq!(actual, expected, "{path} {}", scope.is_some());
+                assert_eq!(metrics.indexed_hits, 1, "{path}");
+            }
+        }
+        // The scopes do differ: the hidden duplicate and link target vanish.
+        let codes = |scope| {
+            session
+                .read_metadata("tasks/public.md", scope)
+                .unwrap()
+                .record
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.code.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_ne!(codes(None), codes(Some(&filter)));
+        // A renamed link target invalidates the retained visible index.
+        fs::rename(
+            directory.path().join("tasks/b2.md"),
+            directory.path().join("tasks/b2-renamed.md"),
+        )
+        .unwrap();
+        build_mdbase_query_report(&paths, &json!({"types": ["task"]}), None).unwrap();
+        let expected =
+            build_mdbase_metadata_read_report(&paths, "tasks/b1.md", Some(&filter)).unwrap();
+        assert_eq!(
+            session
+                .read_metadata_profiled("tasks/b1.md", Some(&filter), &mut metrics)
+                .unwrap(),
+            expected
+        );
+        assert_eq!(metrics.indexed_hits, 1);
+        assert!(expected
+            .record
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.field == "related"));
+        assert!(!serde_json::to_string(
+            &session.read_metadata("tasks/b2-renamed.md", Some(&filter)).unwrap()
+        )
+        .unwrap()
+        .contains("private"));
+    }
+
+    /// MDB.10 work bounds: a warm request rederives nothing, reads no record
+    /// source, and decodes no retained row again; one edited record costs one
+    /// decoded row, and only the returned page is hydrated.
+    #[test]
+    fn warm_requests_do_bounded_work_independent_of_collection_size() {
+        let (directory, paths) = initialized();
+        for index in 0..40 {
+            fs::write(
+                directory.path().join(format!("tasks/t{index:02}.md")),
+                format!("---\ntype: task\ntitle: T{index:02}\nstatus: open\n---\nBody\n"),
+            )
+            .unwrap();
+        }
+        let query = json!({"types": ["task"], "where": "status == 'open'",
+            "order_by": [{"field": "title"}], "select": ["title"], "limit": 5});
+        let expected = build_mdbase_query_report(&paths, &query, None).unwrap();
+        let session = MdbaseQuerySession::new(paths.clone());
+        let mut metrics = MdbaseQueryMetrics::default();
+        session.query_profiled(&query, None, &mut metrics).unwrap();
+        let visible = metrics.indexed.visible_records;
+        assert_eq!(visible, 42);
+        assert_eq!(metrics.indexed.reloaded_rows, visible);
+
+        let warm = |metrics: &MdbaseQueryMetrics| {
+            assert_eq!(metrics.indexed_hits, 1);
+            assert_eq!(metrics.source_loads, 0);
+            assert_eq!(metrics.completed_manifests, 0);
+            assert_eq!(metrics.cache_attempts, 0);
+            assert_eq!(metrics.cache_refresh_attempts, 0);
+        };
+        assert_eq!(
+            session.query_profiled(&query, None, &mut metrics).unwrap(),
+            expected
+        );
+        warm(&metrics);
+        assert_eq!(metrics.indexed.reloaded_rows, 0);
+        assert_eq!(metrics.indexed.type_candidates, visible);
+        assert_eq!(metrics.indexed.sql_decided, visible);
+        assert_eq!(metrics.indexed.residual_evaluations, 0);
+        assert_eq!(metrics.indexed.hydrated, 5);
+        session
+            .read_metadata_profiled("tasks/t07.md", None, &mut metrics)
+            .unwrap();
+        warm(&metrics);
+        assert_eq!(metrics.indexed.reloaded_rows, 0);
+
+        // One edit, published by an authorized refresh, decodes one row.
+        fs::write(
+            directory.path().join("tasks/t03.md"),
+            "---\ntype: task\ntitle: T03\nstatus: done\n---\nBody\n",
+        )
+        .unwrap();
+        build_mdbase_query_report(&paths, &query, None).unwrap();
+        let report = session.query_profiled(&query, None, &mut metrics).unwrap();
+        warm(&metrics);
+        assert_eq!(metrics.indexed.reloaded_rows, 1);
+        assert_eq!(
+            report,
+            build_mdbase_query_report(&paths, &query, None).unwrap()
         );
     }
 

@@ -38,6 +38,8 @@ pub const DEFAULT_VAULT_HTTP_DEADLINE: Duration = Duration::from_secs(30);
 pub const MDBASE_WATCHED_PROOF_MAX_AGE: Duration = Duration::from_secs(30);
 /// Routes served from the retained note-store session (QRY.6).
 const NOTE_SESSION_ROUTES: &[&str] = &["/notes", "/query", "/dataview/query", "/bases/eval"];
+/// Routes served by the retained mdbase session.
+const MDBASE_SESSION_ROUTES: &[&str] = &["/mdbase/query", "/mdbase/read"];
 
 #[derive(Clone)]
 pub struct VaultHttpState {
@@ -368,7 +370,8 @@ async fn dispatch(State(state): State<VaultHttpState>, request: Request<Body>) -
     let operation = tokio::task::spawn_blocking(move || {
         // Retained sessions exist only once a client uses their routes.
         let sessions = ServeSessions {
-            mdbase: (app_request.path == "/mdbase/query")
+            mdbase: MDBASE_SESSION_ROUTES
+                .contains(&app_request.path.as_str())
                 .then(|| mdbase.get_or_init(|| mdbase_session(paths.as_ref()))),
             notes: NOTE_SESSION_ROUTES
                 .contains(&app_request.path.as_str())
@@ -740,6 +743,26 @@ mod tests {
             let value = body(response).await;
             assert_eq!(value["result"], serde_json::to_value(&expected).unwrap());
         }
+        // Metadata reads share the session and answer like the one-shot read.
+        let read = vulcan_app::mdbase::build_mdbase_metadata_read_report(&paths, "a.md", None)
+            .expect("read");
+        let response = router
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/mdbase/read?path=a.md")
+                    .header(HOST, "127.0.0.1:3210")
+                    .header(VAULT_HTTP_TOKEN_HEADER, "secret")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            body(response).await["result"],
+            serde_json::to_value(&read).unwrap()
+        );
         std::fs::write(root.join("a.md"), "---\ntype: task\ntitle: B\n---\n").expect("edit");
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {

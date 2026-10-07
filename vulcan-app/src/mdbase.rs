@@ -265,6 +265,54 @@ pub struct MdbaseReadReport {
     pub diagnostics: Vec<MdbaseDiagnostic>,
 }
 
+/// A record's metadata without its body, source, links, or tags: what a
+/// single-record lookup needs and what the record cache can answer alone.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MdbaseRecordMetadata {
+    pub path: String,
+    pub revision: String,
+    pub types: Vec<String>,
+    pub frontmatter: serde_json::Value,
+    pub effective_frontmatter: serde_json::Value,
+    pub file: vulcan_core::mdbase::MdbaseRecordFileMetadata,
+    pub display: Option<serde_json::Value>,
+    pub contract_views: Vec<vulcan_core::mdbase::MdbaseContractView>,
+    pub diagnostics: Vec<MdbaseRecordDiagnostic>,
+}
+
+impl From<MdbaseRecordDocument> for MdbaseRecordMetadata {
+    fn from(record: MdbaseRecordDocument) -> Self {
+        Self {
+            path: record.path,
+            revision: record.revision,
+            types: record.types,
+            frontmatter: record.frontmatter,
+            effective_frontmatter: record.effective_frontmatter,
+            file: record.file,
+            display: record.display,
+            contract_views: record.contract_views,
+            diagnostics: record.diagnostics,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MdbaseMetadataReadReport {
+    pub valid: bool,
+    pub record: MdbaseRecordMetadata,
+    pub diagnostics: Vec<MdbaseDiagnostic>,
+}
+
+impl From<MdbaseReadReport> for MdbaseMetadataReadReport {
+    fn from(report: MdbaseReadReport) -> Self {
+        Self {
+            valid: report.valid,
+            record: report.record.into(),
+            diagnostics: report.diagnostics,
+        }
+    }
+}
+
 struct LoadedCollection {
     read_guard: Option<MdbaseConsistentReadGuard>,
     control_filter: Option<PermissionFilter>,
@@ -523,6 +571,15 @@ pub fn build_mdbase_read_report(
         record,
         diagnostics,
     })
+}
+
+/// [`build_mdbase_read_report`] without the body, source, links, or tags.
+pub fn build_mdbase_metadata_read_report(
+    paths: &VaultPaths,
+    path: &str,
+    filter: Option<&PermissionFilter>,
+) -> Result<MdbaseMetadataReadReport, AppError> {
+    build_mdbase_read_report(paths, path, false, filter).map(Into::into)
 }
 
 /// Execute a canonical mdbase query over the records visible to the caller.

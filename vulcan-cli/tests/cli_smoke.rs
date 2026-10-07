@@ -17933,6 +17933,13 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         .assert()
         .success()
         .stdout(predicate::str::contains("--file"));
+    assert!(vault_query.contains("`vulcan mdbase read <path> --metadata --output json`"));
+    Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args(["mdbase", "read", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--metadata"));
     assert!(vault_query.contains("Native query DSL starts with `from notes`"));
     assert!(vault_query.contains("A `--where` value is one predicate (`status != done`)"));
     assert!(vault_query.contains("vulcan repair ordinary-write status"));
@@ -36817,6 +36824,33 @@ fn mdbase_read_commands_are_json_capable_source_opt_in_and_non_mutating() {
         .as_str()
         .expect("document")
         .contains("Body"));
+
+    let metadata_output = Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("path"),
+            "--output",
+            "json",
+            "mdbase",
+            "read",
+            "record.md",
+            "--metadata",
+        ])
+        .output()
+        .expect("metadata read runs");
+    assert!(
+        metadata_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&metadata_output.stderr)
+    );
+    let metadata: Value = serde_json::from_slice(&metadata_output.stdout).expect("metadata JSON");
+    assert_eq!(metadata["result"]["path"], "record.md");
+    assert_eq!(
+        metadata["result"]["effective_frontmatter"]["status"],
+        "open"
+    );
+    assert!(metadata["result"].get("body").is_none());
     assert_eq!(
         fs::read(vault_root.join("record.md")).expect("record bytes"),
         before

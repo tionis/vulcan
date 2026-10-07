@@ -3,8 +3,8 @@ use crate::{selected_read_permission_filter, Cli, CliError, MdbaseCommand, Outpu
 use vulcan_app::mdbase::{
     build_mdbase_contracts_report, build_mdbase_query_report, build_mdbase_read_report,
     build_mdbase_status_report, build_mdbase_types_report, build_mdbase_validate_report,
-    parse_mdbase_query, MdbaseContractsReport, MdbaseReadReport, MdbaseStatusReport,
-    MdbaseTypesReport, MdbaseValidateReport,
+    parse_mdbase_query, MdbaseContractsReport, MdbaseMetadataReadReport, MdbaseQuerySession,
+    MdbaseReadReport, MdbaseStatusReport, MdbaseTypesReport, MdbaseValidateReport,
 };
 use vulcan_app::mdbase_conformance::{
     build_mdbase_conformance_claim, run_mdbase_core_read_conformance, MdbaseConformanceClaim,
@@ -38,7 +38,15 @@ pub(crate) fn handle_mdbase_command(
             cli.output,
             &build_mdbase_validate_report(paths, path.as_deref(), filter.as_ref())?,
         ),
-        MdbaseCommand::Read { path, source } => print_read(
+        MdbaseCommand::Read {
+            path,
+            metadata: true,
+            ..
+        } => print_metadata_read(
+            cli.output,
+            &MdbaseQuerySession::new(paths.clone()).read_metadata(path, filter.as_ref())?,
+        ),
+        MdbaseCommand::Read { path, source, .. } => print_read(
             cli.output,
             &build_mdbase_read_report(paths, path, *source, filter.as_ref())?,
         ),
@@ -246,6 +254,25 @@ fn print_read(output: OutputFormat, report: &MdbaseReadReport) -> Result<(), Cli
     println!("Types:    {}", report.record.types.join(", "));
     println!("Valid:    {}", report.valid);
     println!("\n{}", report.record.body);
+    print_diagnostics(&report.diagnostics);
+    Ok(())
+}
+
+fn print_metadata_read(
+    output: OutputFormat,
+    report: &MdbaseMetadataReadReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(&MdbaseOperationResult::new(
+            report.valid,
+            &report.record,
+            report.diagnostics.clone(),
+        ));
+    }
+    println!("Path:     {}", report.record.path);
+    println!("Revision: {}", report.record.revision);
+    println!("Types:    {}", report.record.types.join(", "));
+    println!("Valid:    {}", report.valid);
     print_diagnostics(&report.diagnostics);
     Ok(())
 }

@@ -167,6 +167,20 @@
                 "value_names": [
                   "SOURCE"
                 ]
+              },
+              {
+                "help": "Return only metadata (no body, links, or tags), answered from the record cache when it is current",
+                "id": "metadata",
+                "long": "metadata",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "METADATA"
+                ]
               }
             ],
             "subcommands": []

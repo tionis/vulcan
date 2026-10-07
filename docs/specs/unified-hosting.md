@@ -435,7 +435,8 @@ created retained note-store session to these routes (`ServeSessions`,
 [query architecture §4.6](query-architecture.md#46-retained-host-sessions)): each request reads one
 read transaction that shows only complete writes, without taking or waiting for the vault lock, and
 falls back to the direct, read-locked path only when an interrupted write needs recovery. Answers
-are identical either way. `GET /mdbase/query` keeps its own retained mdbase session.
+are identical either way. `GET /mdbase/query` and `GET /mdbase/read?path=` (one record's metadata
+without body, links, or tags) share their own retained mdbase session.
 
 The listener registration accepts either invocation-instance or registered-vault ownership while
 using the identical router. Acceptance tests run both ownership modes without a daemon process and

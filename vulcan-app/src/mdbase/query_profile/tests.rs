@@ -327,7 +327,55 @@ fn shared_query_stage_benchmark() {
         ("project", "active"),
         ("project", "done"),
     ];
+    // Metadata-read mode: single public records, spread over the collection.
+    let read_paths = std::env::var_os("VULCAN_MDB_PROFILE_READ").map(|_| {
+        let mut found = Vec::new();
+        let mut pending = vec![root.join("collection/public")];
+        while let Some(directory) = pending.pop() {
+            for entry in std::fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path.extension().is_some_and(|extension| extension == "md") {
+                    let relative = path.strip_prefix(root.join("collection")).unwrap();
+                    found.push(relative.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+        found.sort();
+        found
+    });
+    let read = |reader: usize, iteration: usize, record_paths: &[String]| -> f64 {
+        let path = &record_paths[(reader * 7919 + iteration * 104_729) % record_paths.len()];
+        let start = Instant::now();
+        let guard = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, profile.as_deref()).unwrap(),
+        );
+        let filter = guard.read_filter();
+        let mut metrics = MdbaseQueryMetrics::default();
+        let scoped = (!filter.path_permission().is_unrestricted()).then_some(&filter);
+        let report = match session.as_ref() {
+            Some(session) => session.read_metadata_profiled(path, scoped, &mut metrics),
+            None => crate::mdbase::build_mdbase_metadata_read_report(&paths, path, scoped),
+        }
+        .unwrap_or_else(|error| panic!("read failed: {error}; metrics={metrics:?}"));
+        let bytes = serde_json::to_vec(&report).unwrap();
+        let request_seconds = start.elapsed().as_secs_f64();
+        assert_eq!(report.record.path, *path);
+        println!(
+            "{}",
+            json!({"measurement": "shared_read_stage_diagnostic", "acceptance_gate_result": "not_evaluated",
+            "reader": reader, "iteration": iteration, "permission_profile": profile,
+            "records": count, "serialized_bytes": bytes.len(), "request_seconds": request_seconds,
+            "metrics": metrics})
+        );
+        request_seconds
+    };
     let run = |reader: usize, iteration: usize, kind: &str, parameter: &str| -> f64 {
+        if let Some(record_paths) = read_paths.as_deref() {
+            return read(reader, iteration, record_paths);
+        }
         let query_name = format!("{kind}-{parameter}.json");
         let query: serde_json::Value =
             serde_json::from_slice(&std::fs::read(root.join("queries").join(&query_name)).unwrap())
@@ -389,18 +437,42 @@ fn shared_query_stage_benchmark() {
         );
         request_seconds
     };
+    // Resident memory after the first request of reader 0 prepared the
+    // session, compared with the end of the run (Linux only).
+    let resident_kib = || {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|status| {
+                status
+                    .lines()
+                    .find_map(|line| line.strip_prefix("VmRSS:"))
+                    .and_then(|value| {
+                        value
+                            .trim()
+                            .trim_end_matches("kB")
+                            .trim()
+                            .parse::<u64>()
+                            .ok()
+                    })
+            })
+    };
+    let warm_resident = std::sync::Mutex::new(None);
     let reading = std::sync::atomic::AtomicUsize::new(readers);
     let mut writes = Vec::new();
     let mut repeated = std::thread::scope(|threads| {
         let workers = (0..readers)
             .map(|reader| {
                 let (run, cases, reading) = (&run, &cases, &reading);
+                let (warm_resident, resident_kib) = (&warm_resident, &resident_kib);
                 threads.spawn(move || {
                     let mut seconds = Vec::new();
                     for (iteration, (kind, parameter)) in
                         cases.iter().cycle().skip(reader).take(samples).enumerate()
                     {
                         let elapsed = run(reader, iteration, kind, parameter);
+                        if reader == 0 && iteration == 0 {
+                            *warm_resident.lock().unwrap() = resident_kib();
+                        }
                         // The first request of each reader prepares the session.
                         if iteration > 0 {
                             seconds.push(elapsed);
@@ -439,9 +511,11 @@ fn shared_query_stage_benchmark() {
             "{}",
             json!({"measurement": "shared_query_stage_summary", "acceptance_gate_result": "not_evaluated",
             "session": session.is_some(), "watched": watch, "permission_profile": profile,
+            "workload": if read_paths.is_some() { "metadata_read" } else { "query" },
             "readers": readers, "samples": repeated.len(),
             "p50": rank(&repeated, 50), "p95": rank(&repeated, 95), "p99": rank(&repeated, 99),
-            "write_latency": write_summary})
+            "write_latency": write_summary,
+            "resident_kib": {"warm": *warm_resident.lock().unwrap(), "end": resident_kib()}})
         );
     }
 }

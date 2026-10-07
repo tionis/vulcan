@@ -2124,6 +2124,12 @@ pub enum MdbaseCommand {
             help = "Include the exact source document in addition to parsed fields"
         )]
         source: bool,
+        #[arg(
+            long,
+            conflicts_with = "source",
+            help = "Return only metadata (no body, links, or tags), answered from the record cache when it is current"
+        )]
+        metadata: bool,
     },
     #[command(about = "Execute a canonical mdbase CEL query")]
     Query {

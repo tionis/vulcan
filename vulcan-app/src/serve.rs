@@ -2,7 +2,10 @@ use crate::browse::{
     build_dataview_eval_report, build_dataview_inline_report, build_dataview_query_js_report,
     build_dataview_query_report_in, evaluate_base_file_in,
 };
-use crate::mdbase::{build_mdbase_query_report, parse_mdbase_query, MdbaseQuerySession};
+use crate::mdbase::{
+    build_mdbase_metadata_read_report, build_mdbase_query_report, parse_mdbase_query,
+    MdbaseQuerySession,
+};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -55,6 +58,7 @@ enum ServeRouteId {
     DataviewQueryJs,
     DataviewEval,
     MdbaseQuery,
+    MdbaseRead,
     Query,
     BasesEval,
 }
@@ -109,6 +113,10 @@ const SERVE_ROUTES: &[ServeRouteDefinition] = &[
     ServeRouteDefinition {
         id: ServeRouteId::MdbaseQuery,
         path: "/mdbase/query",
+    },
+    ServeRouteDefinition {
+        id: ServeRouteId::MdbaseRead,
+        path: "/mdbase/read",
     },
     ServeRouteDefinition {
         id: ServeRouteId::Query,
@@ -178,6 +186,7 @@ fn route_capability(definition: ServeRouteDefinition) -> ServeRouteCapability {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn route_query_schema(route: ServeRouteId) -> Value {
     let (properties, required) = match route {
         ServeRouteId::Search => (
@@ -263,6 +272,11 @@ fn route_query_schema(route: ServeRouteId) -> Value {
             json!({ "query": { "type": "string", "minLength": 1,
                 "description": "canonical mdbase query as JSON or YAML" } }),
             json!(["query"]),
+        ),
+        ServeRouteId::MdbaseRead => (
+            json!({ "path": { "type": "string", "minLength": 1,
+                "description": "record path; returns its metadata without body, links, or tags" } }),
+            json!(["path"]),
         ),
         ServeRouteId::Root | ServeRouteId::Health | ServeRouteId::GraphStats => {
             (json!({}), json!([]))
@@ -488,6 +502,19 @@ pub fn route_request_with_sessions(
             let result = match mdbase {
                 Some(session) => session.query(&query, read_filter.as_ref()),
                 None => build_mdbase_query_report(paths, &query, read_filter.as_ref()),
+            };
+            match result {
+                Ok(result) => ServeResponse::ok(json!({ "ok": true, "result": result })),
+                Err(error) => ServeResponse::error(500, error.to_string()),
+            }
+        }
+        ServeRouteId::MdbaseRead => {
+            let Some(path) = first_param(&request.query, "path") else {
+                return ServeResponse::error(400, "missing required query parameter: path");
+            };
+            let result = match mdbase {
+                Some(session) => session.read_metadata(path, read_filter.as_ref()),
+                None => build_mdbase_metadata_read_report(paths, path, read_filter.as_ref()),
             };
             match result {
                 Ok(result) => ServeResponse::ok(json!({ "ok": true, "result": result })),
@@ -897,6 +924,7 @@ mod tests {
                 "/dataview/query-js",
                 "/dataview/eval",
                 "/mdbase/query",
+                "/mdbase/read",
                 "/query",
                 "/bases/eval"
             ])

@@ -602,6 +602,18 @@ pub struct MdbaseRetainedRows {
     /// against; once other requests reconcile them, its visible set may
     /// pair with newer rows that no single state ever had.
     version: u64,
+    /// Link-target indexes of restricted visible sets, for single-record
+    /// overlays; each is valid only for its rows version and visible set.
+    link_indexes: std::sync::Mutex<Vec<VisibleLinkIndex>>,
+}
+
+/// Restricted read scopes whose visible link index is kept.
+const RETAINED_LINK_INDEXES: usize = 8;
+
+struct VisibleLinkIndex {
+    rows_version: u64,
+    visible: Arc<BTreeSet<String>>,
+    index: Arc<crate::mdbase::links::LinkTargetIndex>,
 }
 
 struct RetainedRow {
@@ -612,6 +624,15 @@ struct RetainedRow {
     effective: serde_json::Value,
     file: serde_json::Value,
     evidence: crate::mdbase::MdbaseQueryInputEvidence,
+    /// How other records' links find this one; absent on rows published
+    /// before identity facts.
+    target: Option<LinkTarget>,
+}
+
+struct LinkTarget {
+    types: Vec<String>,
+    basename: String,
+    id: Option<String>,
 }
 
 /// The visible record set a strict walk proved current for one read scope.
@@ -627,6 +648,41 @@ pub struct MdbaseRetainedProof {
 }
 
 impl MdbaseRetainedRows {
+    /// The link-target index of `proof`'s visible records, built once per
+    /// rows version and visible set. `None` when a visible row lacks
+    /// identity facts.
+    fn visible_link_index(
+        &self,
+        proof: &MdbaseRetainedProof,
+    ) -> Option<Arc<crate::mdbase::links::LinkTargetIndex>> {
+        let same = |entry: &VisibleLinkIndex| {
+            Arc::ptr_eq(&entry.visible, &proof.visible) || entry.visible == proof.visible
+        };
+        let mut indexes = self
+            .link_indexes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        indexes.retain(|entry| entry.rows_version == self.version);
+        if let Some(entry) = indexes.iter().find(|entry| same(entry)) {
+            return Some(Arc::clone(&entry.index));
+        }
+        let mut index = crate::mdbase::links::LinkTargetIndex::default();
+        for path in proof.visible.iter() {
+            let target = self.rows.get(path)?.target.as_ref()?;
+            index.insert(path, &target.types, &target.basename, target.id.as_deref());
+        }
+        let index = Arc::new(index);
+        if indexes.len() >= RETAINED_LINK_INDEXES {
+            indexes.remove(0);
+        }
+        indexes.push(VisibleLinkIndex {
+            rows_version: self.version,
+            visible: Arc::clone(&proof.visible),
+            index: Arc::clone(&index),
+        });
+        Some(index)
+    }
+
     #[must_use]
     pub fn len(&self) -> usize {
         self.rows.len()
@@ -1037,6 +1093,105 @@ pub fn execute_retained_mdbase_query(
     Ok(Some(result))
 }
 
+/// One record's cached projection for the visible set `proof` establishes,
+/// read from a single cache row at the retained revision. The projection is
+/// the unrestricted derivation, so hosts serve it only to readers whose
+/// visibility cannot change its collection diagnostics. `verify_controls` is
+/// as for [`execute_retained_mdbase_query`]. `Ok(None)` means the host must
+/// take the ordinary read; `Ok(Some(None))` means `path` is not a visible
+/// record.
+#[allow(clippy::too_many_arguments)]
+pub fn read_retained_mdbase_record(
+    connection: &Connection,
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    contracts: &MdbaseContractRegistry,
+    filter: Option<&PermissionFilter>,
+    retained: &MdbaseRetainedRows,
+    proof: &MdbaseRetainedProof,
+    verify_controls: bool,
+    path: &str,
+) -> Result<Option<Option<super::MdbaseCachedRecord>>, MdbaseRecordCacheError> {
+    if has_dynamic_local_membership(types) {
+        return Ok(None);
+    }
+    let transaction = connection.unchecked_transaction()?;
+    if verify_controls {
+        let controls = verify_mdbase_control_snapshots(collection, types, contracts, filter)?;
+        if *controls.combined != *proof.dependency_digest {
+            return Ok(None);
+        }
+    }
+    if proof.rows_version != retained.version
+        || *retained.dependency_digest != *proof.dependency_digest
+    {
+        return Ok(None);
+    }
+    if !proof.visible.contains(path) {
+        return Ok(Some(None));
+    }
+    let Some(row) = retained.rows.get(path) else {
+        return Ok(None);
+    };
+    // The cache may have moved on since the row was retained.
+    let Some(published) = super::get_cached_mdbase_record(
+        &transaction,
+        collection,
+        path,
+        &row.revision,
+        &retained.dependency_digest,
+    )?
+    .filter(|record| record.metadata.is_some()) else {
+        return Ok(None);
+    };
+    if filter.is_none_or(|filter| filter.path_permission().is_unrestricted()) {
+        return Ok(Some(Some(published)));
+    }
+    // A restricted reader's overlays see only its visible records. The
+    // local derivation does not depend on visibility; uniqueness among
+    // visible records is the published uniqueness restricted to them, and
+    // links resolve against the visible records' identities.
+    let Some(local) = load_local_records(
+        &transaction,
+        collection,
+        &retained.dependency_digest,
+        std::iter::once(path),
+    )?
+    .remove(path)
+    .filter(|local| local.record.revision == row.revision) else {
+        return Ok(None);
+    };
+    let Some(index) = retained.visible_link_index(proof) else {
+        return Ok(None);
+    };
+    let uniqueness = published
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == "duplicate_value")
+        .filter_map(|diagnostic| {
+            let mut diagnostic = diagnostic.clone();
+            diagnostic
+                .related_paths
+                .retain(|related| proof.visible.contains(related));
+            (!diagnostic.related_paths.is_empty()).then_some(diagnostic)
+        })
+        .collect::<Vec<_>>();
+    let record = crate::mdbase::records::finish_identity_stable_record(
+        collection,
+        types,
+        contracts,
+        local.record,
+        uniqueness,
+        &local.body_facts,
+        &index,
+    );
+    Ok(Some(Some(super::cached_record(
+        &published.collection_root,
+        &published.dependency_digest,
+        record,
+    ))))
+}
+
 fn load_retained_rows(
     transaction: &Connection,
     root: &str,
@@ -1049,7 +1204,8 @@ fn load_retained_rows(
                 json(query.effective_frontmatter_jsonb), query.file_json,
                 (SELECT json_group_array(membership.type_name) FROM mdbase_record_types AS membership
                  WHERE membership.collection_root = query.collection_root
-                   AND membership.path = query.path)
+                   AND membership.path = query.path),
+                query.identity_json
          FROM mdbase_record_query AS query
          WHERE query.collection_root = ?1 AND query.dependency_digest = ?2
            AND query.record_model_version = ?3
@@ -1067,6 +1223,17 @@ fn load_retained_rows(
             let effective: String = row.get(8)?;
             let file: String = row.get(9)?;
             let types: String = row.get(10)?;
+            let target = row
+                .get::<_, Option<String>>(11)?
+                .map(|identity| {
+                    parse_json_column::<crate::mdbase::records::MdbaseRecordIdentity>(11, &identity)
+                })
+                .transpose()?
+                .map(|identity| LinkTarget {
+                    types: identity.types,
+                    basename: identity.basename,
+                    id: identity.id,
+                });
             Ok((
                 row.get::<_, String>(0)?,
                 RetainedRow {
@@ -1082,6 +1249,7 @@ fn load_retained_rows(
                         width: count(row.get(6)?),
                         links: count(row.get(7)?),
                     },
+                    target,
                 },
             ))
         },

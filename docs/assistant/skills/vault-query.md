@@ -1,7 +1,7 @@
 ---
 name: vault-query
 description: Choose between search, native queries, canonical mdbase collection queries, filters, and structured note listing.
-version: 9
+version: 10
 tools:
   - search
   - query
@@ -24,6 +24,7 @@ Use this skill when the task depends on metadata, frontmatter, tags, paths, or p
 - Use `search` when the question is about note text, snippets, or ranked content matches.
 - Use `query` when the answer depends on typed metadata, computed fields, or explicit sorting.
 - For a collection governed by `mdbase.yaml`, use `vulcan mdbase query --file query.yaml --output json` for canonical mdbase queries. Native `query` and DQL are not interchangeable with that query format. Inspect `vulcan mdbase query --help` for input options.
+- To inspect one known mdbase record's types, frontmatter, and diagnostics, prefer `vulcan mdbase read <path> --metadata --output json`; it skips body, links, and tags and is answered from the current cache. Use plain `mdbase read` (or `--source`) only when the body, links, or exact source are needed.
 - Use `path_prefix`, `filename_pattern`, explicit `sort`/`desc`, and `limit` for structural navigation. MCP query results default to 50 compact rows and report pagination metadata.
 - Treat MCP `offset` as relative to the query's own offset and reuse `next_offset` unchanged for the next page. Embedded query limits bound the whole selection; MCP `limit` is the page size.
 - Prefer explicit `file.*` fields for filesystem metadata and `properties.<key>` for frontmatter/inline properties. Unprefixed property keys remain compatible but are less self-documenting.
