@@ -2,8 +2,8 @@ use crate::commit::AutoCommitPolicy;
 use crate::output::print_json;
 use crate::{
     selected_permission_guard, selected_permission_profile, serve_forever,
-    warn_auto_commit_if_needed, Cli, CliError, IndexCommand, OrdinaryWriteRepairCommand,
-    OutputFormat, PermissionGuard, RepairCommand, ServeOptions,
+    warn_auto_commit_if_needed, Cli, CliError, IndexCommand, MdbaseWriteRepairCommand,
+    OrdinaryWriteRepairCommand, OutputFormat, PermissionGuard, RepairCommand, ServeOptions,
 };
 use serde_json::json;
 use vulcan_app::scan::scan_vault_with_automation;
@@ -169,6 +169,9 @@ pub(crate) fn handle_repair_command(
                 .map_err(CliError::operation)?;
             crate::print_repair_fts_report(cli.output, &report)
         }
+        RepairCommand::MdbaseWrite { command } => {
+            handle_mdbase_write_repair(cli.output, paths, cli.permissions.as_deref(), command)
+        }
         RepairCommand::OrdinaryWrite { command } => {
             let grant = selected_permission_profile(cli, paths)?.grant;
             if !grant.read.is_unrestricted() || !grant.write.is_unrestricted() {
@@ -177,6 +180,88 @@ pub(crate) fn handle_repair_command(
                 ));
             }
             handle_ordinary_write_repair(cli.output, paths, command)
+        }
+    }
+}
+
+fn handle_mdbase_write_repair(
+    output: OutputFormat,
+    paths: &VaultPaths,
+    profile: Option<&str>,
+    command: &MdbaseWriteRepairCommand,
+) -> Result<(), CliError> {
+    use vulcan_app::mdbase::{
+        accept_current_mdbase_write, build_mdbase_write_repair_status, recover_mdbase_write,
+    };
+    let print_review = |review: &vulcan_core::mdbase::MdbaseWriteReview| {
+        println!(
+            "Pending mdbase {}: {}",
+            review.operation, review.transaction_id
+        );
+        println!("Recovery: {}", review.recovery);
+        println!("Recoverable: {}", review.recoverable);
+        println!("Review token: {}", review.review_token);
+        for change in &review.changes {
+            println!("  {}: {}", change.path, change.state);
+        }
+    };
+    match command {
+        MdbaseWriteRepairCommand::Status => {
+            let status =
+                build_mdbase_write_repair_status(paths, profile).map_err(CliError::operation)?;
+            match output {
+                OutputFormat::Json => print_json(&status)?,
+                OutputFormat::Human | OutputFormat::Markdown => match status.review.as_ref() {
+                    Some(review) => print_review(review),
+                    None => println!("No pending mdbase write"),
+                },
+            }
+            Ok(())
+        }
+        MdbaseWriteRepairCommand::Recover { dry_run } => {
+            let report =
+                recover_mdbase_write(paths, profile, *dry_run).map_err(CliError::operation)?;
+            match output {
+                OutputFormat::Json => print_json(&report)?,
+                OutputFormat::Human | OutputFormat::Markdown => match report.review.as_ref() {
+                    None => println!("No pending mdbase write"),
+                    Some(review) if *dry_run => print_review(review),
+                    Some(review) => println!(
+                        "Recovered mdbase {} {} ({}); derived state refreshed",
+                        review.operation, review.transaction_id, review.recovery
+                    ),
+                },
+            }
+            Ok(())
+        }
+        MdbaseWriteRepairCommand::AcceptCurrent {
+            transaction_id,
+            review_token,
+            confirm,
+            dry_run,
+        } => {
+            if !confirm {
+                return Err(CliError::operation(
+                    "accept-current requires --confirm after reviewing every affected file",
+                ));
+            }
+            let report =
+                accept_current_mdbase_write(paths, profile, transaction_id, review_token, *dry_run)
+                    .map_err(CliError::operation)?;
+            match output {
+                OutputFormat::Json => print_json(&report)?,
+                OutputFormat::Human | OutputFormat::Markdown => {
+                    if *dry_run {
+                        println!("Current files reviewed; transaction remains pending");
+                    } else {
+                        println!(
+                            "Current files accepted; journal retired to {}",
+                            report.accepted.retired_journal.as_deref().unwrap_or("?")
+                        );
+                    }
+                }
+            }
+            Ok(())
         }
     }
 }

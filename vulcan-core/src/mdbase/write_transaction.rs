@@ -94,7 +94,7 @@ impl MdbaseWriteTransactionError {
     fn blocked(transaction_id: &str, path: &str) -> Self {
         Self {
             code: "recovery_blocked".to_string(),
-            message: "mdbase transaction recovery found externally changed bytes; explicit repair is required".to_string(),
+            message: "mdbase transaction recovery found externally changed bytes; review them with `vulcan repair mdbase-write status`".to_string(),
             transaction_id: Some(transaction_id.to_string()),
             path: Some(path.to_string()),
         }
@@ -261,6 +261,170 @@ where
     recover_locked(paths, collection, reconcile)
 }
 
+/// One path of a pending mdbase write as recovery would find it. Digests
+/// only; a review never exposes record contents.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MdbaseWriteReviewChange {
+    pub path: String,
+    /// `before`, `after`, or `diverged` (neither journaled version).
+    pub state: &'static str,
+    pub before_digest: Option<String>,
+    pub after_digest: Option<String>,
+    pub current_digest: Option<String>,
+}
+
+/// A pending mdbase write transaction and what recovery would do with it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MdbaseWriteReview {
+    pub transaction_id: String,
+    pub operation: String,
+    /// `roll_back` before the commit decision, `roll_forward` after it,
+    /// `finish` once files are consistent, or `blocked` after recovery found
+    /// files edited outside the transaction.
+    pub recovery: &'static str,
+    /// Recovery can complete without a manual decision.
+    pub recoverable: bool,
+    pub blocked_path: Option<String>,
+    pub changes: Vec<MdbaseWriteReviewChange>,
+    /// Binds an explicit repair decision to this journal and these bytes.
+    pub review_token: String,
+}
+
+/// Outcome of [`accept_current_mdbase_write_transaction`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MdbaseWriteAcceptCurrentOutcome {
+    pub transaction_id: String,
+    pub changed_paths: Vec<String>,
+    /// Where the retired journal, with both journaled versions, was kept.
+    pub retired_journal: Option<String>,
+    pub dry_run: bool,
+}
+
+/// Inspect a pending mdbase write without changing files. Callers authorize
+/// every reported path before showing the review.
+pub fn inspect_mdbase_write_transaction(
+    paths: &VaultPaths,
+    collection: &super::MdbaseCollection,
+) -> Result<Option<MdbaseWriteReview>, MdbaseWriteTransactionError> {
+    let Some(journal) = load_journal(paths)? else {
+        return Ok(None);
+    };
+    ensure_collection_identity(collection, &journal.preview.collection_root)?;
+    review_journal(collection, &journal).map(Some)
+}
+
+fn review_journal(
+    collection: &super::MdbaseCollection,
+    journal: &WriteJournal,
+) -> Result<MdbaseWriteReview, MdbaseWriteTransactionError> {
+    let mut changes = Vec::with_capacity(journal.preview.changes.len());
+    let mut diverged = false;
+    for change in &journal.preview.changes {
+        let current = read_optional(collection, &change.path).map_err(|error| {
+            MdbaseWriteTransactionError::io("failed to read pending mdbase record", error)
+        })?;
+        let state = if current == change.before {
+            "before"
+        } else if current == change.after {
+            "after"
+        } else {
+            diverged = true;
+            "diverged"
+        };
+        let digest =
+            |value: &Option<String>| value.as_deref().map(|value| sha256(value.as_bytes()));
+        changes.push(MdbaseWriteReviewChange {
+            path: change.path.clone(),
+            state,
+            before_digest: digest(&change.before),
+            after_digest: digest(&change.after),
+            current_digest: digest(&current),
+        });
+    }
+    let recovery = match journal.phase {
+        JournalPhase::Preparing | JournalPhase::Staged | JournalPhase::Applying => "roll_back",
+        JournalPhase::CommitDecided => "roll_forward",
+        JournalPhase::Consistent => "finish",
+        JournalPhase::Blocked => "blocked",
+    };
+    let token = serde_json::to_vec(&(&journal.digest, &changes)).map_err(|error| {
+        MdbaseWriteTransactionError::io("failed to serialize mdbase write review", error)
+    })?;
+    Ok(MdbaseWriteReview {
+        transaction_id: journal.transaction_id.clone(),
+        operation: journal.preview.operation.clone(),
+        recovery,
+        recoverable: journal.phase != JournalPhase::Blocked
+            && (journal.phase == JournalPhase::Consistent || !diverged),
+        blocked_path: journal
+            .conflict
+            .as_ref()
+            .map(|conflict| conflict.path.clone()),
+        changes,
+        review_token: sha256(&token),
+    })
+}
+
+/// Retire a pending mdbase write that recovery cannot complete, after a
+/// person has reconciled its files. Record bytes are not changed. The
+/// journal, with both journaled versions of every path, is kept under the
+/// transaction state's `retired/` directory as evidence. A stale review
+/// token or a recoverable transaction is refused.
+pub fn accept_current_mdbase_write_transaction(
+    paths: &VaultPaths,
+    collection: &super::MdbaseCollection,
+    transaction_id: &str,
+    review_token: &str,
+    dry_run: bool,
+) -> Result<MdbaseWriteAcceptCurrentOutcome, MdbaseWriteTransactionError> {
+    let _lock = acquire_write_lock(paths).map_err(|error| {
+        MdbaseWriteTransactionError::io("failed to acquire vault write lock", error)
+    })?;
+    let journal = load_journal(paths)?.ok_or_else(|| {
+        MdbaseWriteTransactionError::new("not_found", "mdbase write journal is no longer pending")
+    })?;
+    ensure_collection_identity(collection, &journal.preview.collection_root)?;
+    let review = review_journal(collection, &journal)?;
+    if review.transaction_id != transaction_id || review.review_token != review_token {
+        return Err(MdbaseWriteTransactionError::new(
+            "review_changed",
+            "mdbase write journal or files changed since review; inspect them again",
+        ));
+    }
+    if review.recoverable {
+        return Err(MdbaseWriteTransactionError::new(
+            "recoverable",
+            "mdbase write can still be recovered; use normal recovery instead",
+        ));
+    }
+    let changed_paths = journal
+        .preview
+        .changes
+        .iter()
+        .map(|change| change.path.clone())
+        .collect();
+    let mut retired_journal = None;
+    if !dry_run {
+        let retired = state_root(paths)
+            .join("retired")
+            .join(format!("{}.json", journal.transaction_id));
+        fs::create_dir_all(retired.parent().expect("retired journal has a parent")).map_err(
+            |error| {
+                MdbaseWriteTransactionError::io("failed to create retired journal directory", error)
+            },
+        )?;
+        durable_json_replace(&retired, &journal)?;
+        clear_transaction(paths, &journal.transaction_id)?;
+        retired_journal = Some(retired.display().to_string());
+    }
+    Ok(MdbaseWriteAcceptCurrentOutcome {
+        transaction_id: journal.transaction_id,
+        changed_paths,
+        retired_journal,
+        dry_run,
+    })
+}
+
 /// Hold the shared vault lock while a cooperating reader observes mdbase
 /// state. An interrupted or blocked write is reported before any record bytes
 /// are read; the caller can invoke recovery through its normal reconciliation
@@ -315,7 +479,7 @@ pub fn acquire_mdbase_consistent_read(
             };
             Err(MdbaseWriteTransactionError::new(
                 code,
-                "mdbase transaction recovery is required before records can be read",
+                "mdbase transaction recovery is required before records can be read; run `vulcan repair mdbase-write status`",
             ))
         }
     }
@@ -2419,6 +2583,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // One blocked journal, then its review and retirement.
     fn recovery_preserves_external_edits_and_blocks_the_transaction() {
         let (directory, paths, collection) = fixture();
         let preview = self::preview(
@@ -2468,6 +2633,53 @@ mod tests {
         assert_eq!(
             journal.conflict.unwrap().observed.as_deref(),
             Some("external\n")
+        );
+        // A review shows the divergence by digest only; accepting the current
+        // files needs its exact token, retires the journal as evidence, and
+        // leaves record bytes alone.
+        let review = inspect_mdbase_write_transaction(&paths, &collection)
+            .unwrap()
+            .expect("pending review");
+        assert_eq!(review.recovery, "blocked");
+        assert!(!review.recoverable);
+        assert_eq!(review.blocked_path.as_deref(), Some("records/a.md"));
+        assert_eq!(review.changes[0].state, "diverged");
+        assert!(!serde_json::to_string(&review).unwrap().contains("external"));
+        let stale = accept_current_mdbase_write_transaction(
+            &paths,
+            &collection,
+            &review.transaction_id,
+            "wrong",
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(stale.code, "review_changed");
+        let preview_only = accept_current_mdbase_write_transaction(
+            &paths,
+            &collection,
+            &review.transaction_id,
+            &review.review_token,
+            true,
+        )
+        .unwrap();
+        assert!(preview_only.retired_journal.is_none());
+        assert!(load_journal(&paths).unwrap().is_some());
+        let accepted = accept_current_mdbase_write_transaction(
+            &paths,
+            &collection,
+            &review.transaction_id,
+            &review.review_token,
+            false,
+        )
+        .unwrap();
+        assert_eq!(accepted.changed_paths, vec!["records/a.md".to_string()]);
+        let retired = fs::read_to_string(accepted.retired_journal.unwrap()).unwrap();
+        assert!(retired.contains("after a"));
+        assert!(load_journal(&paths).unwrap().is_none());
+        acquire_mdbase_consistent_read(&paths).expect("recovered vault reads");
+        assert_eq!(
+            fs::read_to_string(directory.path().join("records/a.md")).unwrap(),
+            "external\n"
         );
 
         let (directory, paths, collection) = fixture();

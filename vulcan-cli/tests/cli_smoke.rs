@@ -18117,6 +18117,13 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         fs::read_to_string(vault_root.join(".agents/skills/diagnostics-and-repair/SKILL.md"))
             .expect("diagnostics skill should be readable");
     assert!(diagnostics_skill.contains("`possibly_lost_hidden_ref_namespaces`"));
+    assert!(diagnostics_skill.contains("vulcan --output json repair mdbase-write status"));
+    Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args(["repair", "mdbase-write", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("accept-current"));
     assert!(diagnostics_skill.contains("unpushed candidates, old epochs, conflicts"));
     assert!(diagnostics_skill.contains("vulcan self-update apply --dry-run"));
     assert!(diagnostics_skill.contains("vulcan self-update schedule install --at 03:00"));
@@ -30242,6 +30249,13 @@ fn replace_field_recursively(value: &mut Value, field: &str, replacement: &Value
 
 fn assert_json_snapshot(name: &str, value: &Value) {
     let snapshot_path = snapshot_path(name);
+    // Regenerate with VULCAN_UPDATE_SNAPSHOTS=1, then review the diff.
+    if std::env::var_os("VULCAN_UPDATE_SNAPSHOTS").is_some() {
+        let mut actual = serde_json::to_string_pretty(value).expect("json should serialize");
+        actual.push('\n');
+        fs::write(&snapshot_path, actual).expect("snapshot should be writable");
+        return;
+    }
     let expected = fs::read_to_string(snapshot_path)
         .expect("snapshot should be readable")
         .replace("\r\n", "\n");
@@ -36942,6 +36956,51 @@ fn mdbase_shell_and_python_examples_use_the_shared_service() {
     assert_eq!(rows[0]["valid"], true);
     assert_eq!(rows[2]["path"], "untitled.md");
     assert_eq!(rows[2]["valid"], false);
+}
+
+#[test]
+fn repair_mdbase_write_reports_an_empty_journal() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let vault_root = temp_dir.path().join("collection");
+    fs::create_dir_all(vault_root.join("_types")).expect("types directory");
+    vulcan_core::initialize_vulcan_dir(&VaultPaths::new(&vault_root)).unwrap();
+    fs::write(vault_root.join("mdbase.yaml"), "spec_version: \"0.3.0\"\n").expect("config");
+    for args in [
+        vec!["status"],
+        vec!["recover", "--dry-run"],
+        vec!["recover"],
+    ] {
+        let output = Command::cargo_bin("vulcan")
+            .expect("binary")
+            .arg("--vault")
+            .arg(&vault_root)
+            .args(["--output", "json", "repair", "mdbase-write"])
+            .args(&args)
+            .output()
+            .expect("repair runs");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: Value = serde_json::from_slice(&output.stdout).expect("JSON");
+        assert!(report.get("review").is_none(), "{report}");
+    }
+    let unconfirmed = Command::cargo_bin("vulcan")
+        .expect("binary")
+        .arg("--vault")
+        .arg(&vault_root)
+        .args([
+            "repair",
+            "mdbase-write",
+            "accept-current",
+            "tx",
+            "--review-token",
+            "t",
+        ])
+        .output()
+        .expect("repair runs");
+    assert!(!unconfirmed.status.success());
 }
 
 /// Moving a collection record is a validated mdbase rename; rewritten

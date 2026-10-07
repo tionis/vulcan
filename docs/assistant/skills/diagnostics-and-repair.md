@@ -1,7 +1,7 @@
 ---
 name: diagnostics-and-repair
 description: Diagnose vault health, broken links, parser diagnostics, suspicious state, synchronization pauses or conflicts, and repairable problems. Use when the user asks why something is broken, wants a health check, sees diagnostics, or needs safe repair steps before editing notes.
-version: 32
+version: 33
 tools:
   - doctor
   - cache_verify
@@ -57,6 +57,7 @@ diagnostics, orphaned assets, search mismatches, and unexpected graph/query resu
 ## Guardrails
 
 - For a blocked ordinary TaskNotes conversion or archive, run `vulcan --output json repair ordinary-write status` with a full-vault read/write profile and inspect every listed path. A `recoverable: true` batch can use `repair ordinary-write roll-forward --dry-run` followed by `roll-forward`. For a diverged batch, manually reconcile both paths, then use `repair ordinary-write accept-current <transaction-id> --review-token <review-token> --confirm --dry-run` and rerun without `--dry-run` only after review. The review token is bound to observed file bytes; stale reviews are rejected. Accepting current files retires the pending plan without changing note bytes and refreshes the index. Never delete the journal as a cache repair.
+- When an mdbase read or write reports `recovery_required` or `recovery_blocked`, run `vulcan --output json repair mdbase-write status` under a profile that can read and write every affected record (other profiles get a generic denial). `recovery` says whether recovery rolls back, rolls forward, or finishes; when `recoverable` is true, run `repair mdbase-write recover --dry-run`, then `recover`, which refreshes the record cache and index. For a `blocked` transaction, reconcile every `diverged` path by hand, then `repair mdbase-write accept-current <transaction-id> --review-token <review-token> --confirm --dry-run`, and rerun without `--dry-run` after review; current files are kept and the journal is retired as evidence. Never delete the journal.
 - A full, incremental, or watcher scan recovers an ordinary-write batch before indexing. If scan reports externally changed ordinary-write bytes, the cache has not indexed that partial transaction; inspect and reconcile the journal before rerunning scan. A watcher event for only one path may rescan the whole vault after recovery so the other journal paths are reflected too.
 - Do not "fix" diagnostics by deleting content unless the user explicitly wants deletion.
 - Parser unsupported-syntax diagnostics are not always data loss; preserve source where possible.

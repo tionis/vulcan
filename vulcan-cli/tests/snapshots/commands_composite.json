@@ -491,6 +491,97 @@
                     "subcommands": []
                   }
                 ]
+              },
+              {
+                "about": "Inspect, recover, or retire an interrupted mdbase write transaction",
+                "name": "mdbase-write",
+                "options": [],
+                "subcommands": [
+                  {
+                    "about": "Show the pending transaction and how each path compares to its journaled versions",
+                    "name": "status",
+                    "options": [],
+                    "subcommands": []
+                  },
+                  {
+                    "about": "Roll the pending transaction back or forward as its journal decides, then refresh derived state",
+                    "name": "recover",
+                    "options": [
+                      {
+                        "help": "Inspect the pending transaction without recovering it",
+                        "id": "dry_run",
+                        "long": "dry-run",
+                        "possible_values": [
+                          "true",
+                          "false"
+                        ],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "DRY_RUN"
+                        ]
+                      }
+                    ],
+                    "subcommands": []
+                  },
+                  {
+                    "about": "Retire a transaction that recovery cannot complete, keeping the current files",
+                    "name": "accept-current",
+                    "options": [
+                      {
+                        "help": "Transaction ID shown by mdbase-write status",
+                        "id": "transaction_id",
+                        "long": null,
+                        "possible_values": [],
+                        "required": true,
+                        "short": null,
+                        "value_names": [
+                          "TRANSACTION_ID"
+                        ]
+                      },
+                      {
+                        "help": "Review token shown by mdbase-write status",
+                        "id": "review_token",
+                        "long": "review-token",
+                        "possible_values": [],
+                        "required": true,
+                        "short": null,
+                        "value_names": [
+                          "REVIEW_TOKEN"
+                        ]
+                      },
+                      {
+                        "help": "Confirm that every affected file was manually reviewed",
+                        "id": "confirm",
+                        "long": "confirm",
+                        "possible_values": [
+                          "true",
+                          "false"
+                        ],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "CONFIRM"
+                        ]
+                      },
+                      {
+                        "help": "Check the review token without retiring the journal",
+                        "id": "dry_run",
+                        "long": "dry-run",
+                        "possible_values": [
+                          "true",
+                          "false"
+                        ],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "DRY_RUN"
+                        ]
+                      }
+                    ],
+                    "subcommands": []
+                  }
+                ]
               }
             ]
           },

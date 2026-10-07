@@ -1569,6 +1569,39 @@ pub enum RepairCommand {
         #[command(subcommand)]
         command: OrdinaryWriteRepairCommand,
     },
+    #[command(about = "Inspect, recover, or retire an interrupted mdbase write transaction")]
+    MdbaseWrite {
+        #[command(subcommand)]
+        command: MdbaseWriteRepairCommand,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum MdbaseWriteRepairCommand {
+    #[command(
+        about = "Show the pending transaction and how each path compares to its journaled versions"
+    )]
+    Status,
+    #[command(
+        about = "Roll the pending transaction back or forward as its journal decides, then refresh derived state"
+    )]
+    Recover {
+        #[arg(long, help = "Inspect the pending transaction without recovering it")]
+        dry_run: bool,
+    },
+    #[command(
+        about = "Retire a transaction that recovery cannot complete, keeping the current files"
+    )]
+    AcceptCurrent {
+        #[arg(help = "Transaction ID shown by mdbase-write status")]
+        transaction_id: String,
+        #[arg(long, help = "Review token shown by mdbase-write status")]
+        review_token: String,
+        #[arg(long, help = "Confirm that every affected file was manually reviewed")]
+        confirm: bool,
+        #[arg(long, help = "Check the review token without retiring the journal")]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
