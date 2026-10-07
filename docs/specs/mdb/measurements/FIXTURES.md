@@ -64,3 +64,24 @@ Request timing starts after reading/parsing the canonical query and includes per
 Counters describe completed visible manifests/bytes, decoded authorized cached records, overlay passes/records, cache attempts/hits, refresh/rebuild attempts, and source loads. Metrics reset before each operation, contain no record paths/values, and survive errors with partial work counts. They are not a complete I/O audit: partial failed manifest reads and source-fallback/refresh internals are not counted as completed manifests; schema/CEL compilation, query-candidate work, watcher freshness, and syscall counts remain separate instrumentation work. Neither these ten diagnostic requests nor the presence of a cache proves a warm indexed generation or an acceptance pass. Assistant-skill review: developer instrumentation only; installed query workflows and canonical envelopes are unchanged.
 
 This document supplies reproducible tooling, not a performance pass. The full baseline and acceptance procedure in the parent performance contract remains outstanding.
+
+## Note-query service diagnostics
+
+The developer-only `note_session_benchmark` test runs the vault HTTP note routes (`/dataview/query`,
+`/query`, `/bases/eval`, `/notes`, `/mdbase/query`) in process, with or without the retained
+note-store session, under closed-loop readers and an optional paced writer:
+
+```sh
+VULCAN_NOTE_BENCH_FIXTURE=/tmp/mdb-10k/collection VULCAN_NOTE_BENCH_SAMPLES=5000 \
+  VULCAN_NOTE_BENCH_READERS=1 \
+  cargo +1.88.0 test --release -p vulcan-app --test note_session_benchmark -- --ignored --nocapture --test-threads=1
+```
+
+`VULCAN_NOTE_BENCH_READERS`, `VULCAN_NOTE_BENCH_WRITES_PER_SECOND`, `VULCAN_NOTE_BENCH_SESSION=0`
+(direct path), `VULCAN_NOTE_BENCH_SCOPE=benchmark_public`, and `VULCAN_NOTE_BENCH_FRONTENDS`
+(comma-separated `dql,query,bases,notes,mdbase`) vary the run. The first scan indexes an
+unindexed fixture; the test adds `public/_bench/*.base` files for its Bases views and removes them
+afterwards. It checks every response against the ordered paths the direct path returned before the
+run and prints a JSON report labeled `not_evaluated`. Results:
+[note-query-frontends.json](note-query-frontends.json) and
+[note-query-session-mixed-10k.json](note-query-session-mixed-10k.json).
