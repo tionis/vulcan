@@ -2180,6 +2180,17 @@ pub enum MdbaseCommand {
         )]
         file: Option<PathBuf>,
     },
+    #[command(
+        about = "Report the effective schema of a record matched by these types: fields, required rules, defaults, generated and editable fields, conflicts, and revisions"
+    )]
+    Schema {
+        #[arg(
+            value_name = "TYPE",
+            required = true,
+            help = "Matched type names, in composition order"
+        )]
+        types: Vec<String>,
+    },
     #[command(about = "List saved-view records and their named views")]
     Views,
     #[command(about = "Execute a named view from a saved-view record")]

@@ -464,6 +464,22 @@ pub fn build_mdbase_types_report(
     })
 }
 
+/// Effective schema of one matched type composition, for forms and Apps.
+/// Every control must be readable (as for any mdbase read), so a caller who
+/// cannot read a type file gets `permission_denied` for the whole report,
+/// never a less restrictive schema without it.
+pub fn build_mdbase_schema_report(
+    paths: &VaultPaths,
+    types: &[String],
+    filter: Option<&PermissionFilter>,
+) -> Result<vulcan_core::mdbase::MdbaseSchemaReport, AppError> {
+    let loaded = load_collection_authorized(paths, filter)?;
+    Ok(vulcan_core::mdbase::build_mdbase_schema_report(
+        &loaded.types,
+        types,
+    ))
+}
+
 pub fn build_mdbase_contracts_report(
     paths: &VaultPaths,
     filter: Option<&PermissionFilter>,
@@ -1911,6 +1927,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn schema_report_needs_every_control_and_reports_unknown_types() {
+        let (directory, paths) = fixture();
+        fs::write(
+            directory.path().join("_types/secret.md"),
+            "---\nkind: mdbase.type\nname: secret\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    properties:\n      codename: {type: string}\n---\n",
+        )
+        .unwrap();
+        let types = [
+            "task".to_string(),
+            "secret".to_string(),
+            "ghost".to_string(),
+        ];
+        let report = build_mdbase_schema_report(&paths, &types, None).unwrap();
+        assert!(report.fields.iter().any(|field| field.name == "codename"));
+        let status = report
+            .fields
+            .iter()
+            .find(|field| field.name == "status")
+            .unwrap();
+        assert_eq!(status.default, Some(serde_json::json!("open")));
+        assert_eq!(
+            report
+                .conflicts
+                .iter()
+                .map(|conflict| conflict.code.as_str())
+                .collect::<Vec<_>>(),
+            ["type_not_found"]
+        );
+
+        let filter = PermissionFilter::new(PathPermission {
+            allow: read_control_grant(),
+            deny: vec![ResourceSpecifier::Note("_types/secret.md".to_string())],
+        });
+        let error =
+            build_mdbase_schema_report(&paths, &["task".to_string()], Some(&filter)).unwrap_err();
+        assert_eq!(error.code(), Some("permission_denied"));
+    }
+
     pub(super) fn read_control_grant() -> Vec<ResourceSpecifier> {
         vec![
             ResourceSpecifier::Note("mdbase.yaml".to_string()),
@@ -1929,6 +1984,7 @@ mod tests {
             build_mdbase_read_report(paths, "tasks/public.md", false, Some(filter)).map(|_| ()),
             build_mdbase_query_report(paths, &serde_json::json!({}), Some(filter)).map(|_| ()),
             build_mdbase_view_list_report(paths, Some(filter)).map(|_| ()),
+            build_mdbase_schema_report(paths, &["task".to_string()], Some(filter)).map(|_| ()),
             build_mdbase_view_report(
                 paths,
                 &vulcan_core::mdbase::MdbaseViewInvocation {

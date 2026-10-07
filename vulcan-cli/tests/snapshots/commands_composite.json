@@ -215,6 +215,24 @@
             "subcommands": []
           },
           {
+            "about": "Report the effective schema of a record matched by these types: fields, required rules, defaults, generated and editable fields, conflicts, and revisions",
+            "name": "schema",
+            "options": [
+              {
+                "help": "Matched type names, in composition order",
+                "id": "types",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "TYPE"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
             "about": "List saved-view records and their named views",
             "name": "views",
             "options": [],

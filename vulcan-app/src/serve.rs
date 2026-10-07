@@ -3,7 +3,8 @@ use crate::browse::{
     build_dataview_query_report_in, evaluate_base_file_in,
 };
 use crate::mdbase::{
-    build_mdbase_metadata_read_report, build_mdbase_query_report, build_mdbase_view_list_report,
+    build_mdbase_contracts_report, build_mdbase_metadata_read_report, build_mdbase_query_report,
+    build_mdbase_schema_report, build_mdbase_types_report, build_mdbase_view_list_report,
     build_mdbase_view_report, parse_mdbase_query, MdbaseQuerySession,
 };
 use serde::Serialize;
@@ -60,6 +61,9 @@ enum ServeRouteId {
     DataviewEval,
     MdbaseQuery,
     MdbaseRead,
+    MdbaseTypes,
+    MdbaseContracts,
+    MdbaseSchema,
     MdbaseViews,
     MdbaseView,
     Query,
@@ -120,6 +124,18 @@ const SERVE_ROUTES: &[ServeRouteDefinition] = &[
     ServeRouteDefinition {
         id: ServeRouteId::MdbaseRead,
         path: "/mdbase/read",
+    },
+    ServeRouteDefinition {
+        id: ServeRouteId::MdbaseTypes,
+        path: "/mdbase/types",
+    },
+    ServeRouteDefinition {
+        id: ServeRouteId::MdbaseContracts,
+        path: "/mdbase/contracts",
+    },
+    ServeRouteDefinition {
+        id: ServeRouteId::MdbaseSchema,
+        path: "/mdbase/schema",
     },
     ServeRouteDefinition {
         id: ServeRouteId::MdbaseViews,
@@ -289,7 +305,11 @@ fn route_query_schema(route: ServeRouteId) -> Value {
                 "description": "record path; returns its metadata without body, links, or tags" } }),
             json!(["path"]),
         ),
-        ServeRouteId::MdbaseViews => (json!({}), json!([])),
+        ServeRouteId::MdbaseSchema => (
+            json!({ "type": { "type": "string", "minLength": 1,
+                "description": "matched type name; repeat for a composition" } }),
+            json!(["type"]),
+        ),
         ServeRouteId::MdbaseView => (
             json!({
                 "source": { "type": "string", "minLength": 1,
@@ -304,9 +324,12 @@ fn route_query_schema(route: ServeRouteId) -> Value {
             }),
             json!(["source", "view"]),
         ),
-        ServeRouteId::Root | ServeRouteId::Health | ServeRouteId::GraphStats => {
-            (json!({}), json!([]))
-        }
+        ServeRouteId::Root
+        | ServeRouteId::Health
+        | ServeRouteId::GraphStats
+        | ServeRouteId::MdbaseTypes
+        | ServeRouteId::MdbaseContracts
+        | ServeRouteId::MdbaseViews => (json!({}), json!([])),
     };
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -543,6 +566,26 @@ pub fn route_request_with_sessions(
                 None => build_mdbase_metadata_read_report(paths, path, read_filter.as_ref()),
             };
             match result {
+                Ok(result) => ServeResponse::ok(json!({ "ok": true, "result": result })),
+                Err(error) => ServeResponse::error(500, error.to_string()),
+            }
+        }
+        ServeRouteId::MdbaseTypes => match build_mdbase_types_report(paths, read_filter.as_ref()) {
+            Ok(result) => ServeResponse::ok(json!({ "ok": true, "result": result })),
+            Err(error) => ServeResponse::error(500, error.to_string()),
+        },
+        ServeRouteId::MdbaseContracts => {
+            match build_mdbase_contracts_report(paths, read_filter.as_ref()) {
+                Ok(result) => ServeResponse::ok(json!({ "ok": true, "result": result })),
+                Err(error) => ServeResponse::error(500, error.to_string()),
+            }
+        }
+        ServeRouteId::MdbaseSchema => {
+            let types = request.query.get("type").cloned().unwrap_or_default();
+            if types.is_empty() {
+                return ServeResponse::error(400, "missing required query parameter: type");
+            }
+            match build_mdbase_schema_report(paths, &types, read_filter.as_ref()) {
                 Ok(result) => ServeResponse::ok(json!({ "ok": true, "result": result })),
                 Err(error) => ServeResponse::error(500, error.to_string()),
             }
@@ -1003,6 +1046,9 @@ mod tests {
                 "/dataview/eval",
                 "/mdbase/query",
                 "/mdbase/read",
+                "/mdbase/types",
+                "/mdbase/contracts",
+                "/mdbase/schema",
                 "/mdbase/views",
                 "/mdbase/view",
                 "/query",

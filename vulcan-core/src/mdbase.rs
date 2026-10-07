@@ -30,6 +30,8 @@ mod query;
 pub use query::*;
 mod views;
 pub use views::*;
+mod schema_report;
+pub use schema_report::*;
 mod query_sql;
 pub use query_sql::MdbaseSqlPredicate;
 mod api;
@@ -1036,9 +1038,15 @@ pub struct MdbaseTypeDefinition {
     pub path: String,
     pub version: Option<u64>,
     pub description: Option<String>,
+    /// The effective schema: the inline schema, or the referenced document.
     pub schema: serde_json::Value,
     pub schema_ref: Option<String>,
     pub frontmatter: serde_json::Value,
+    /// Revision of the type file's exact source.
+    pub revision: String,
+    /// Digest of the effective schema, so a change to a referenced schema
+    /// file changes it even when the type file itself is unchanged.
+    pub schema_revision: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2478,7 +2486,7 @@ fn build_mdbase_type_registry_with_access(
                 candidates
                     .entry(definition.normalized_name.clone())
                     .or_default()
-                    .push(definition);
+                    .push(*definition);
             }
             TypeFileLoad::Invalid(mut file_diagnostics) => {
                 diagnostics.append(&mut file_diagnostics);
@@ -2533,7 +2541,10 @@ fn build_mdbase_type_registry_with_access(
 }
 
 enum TypeFileLoad {
-    Valid(MdbaseTypeDefinition, std::sync::Arc<MdbaseCompiledSchema>),
+    Valid(
+        Box<MdbaseTypeDefinition>,
+        std::sync::Arc<MdbaseCompiledSchema>,
+    ),
     Invalid(Vec<MdbaseTypeDiagnostic>),
 }
 
@@ -2609,7 +2620,7 @@ fn load_mdbase_type_file(
         .expect("validated type frontmatter should contain a string name")
         .to_string();
     Ok(TypeFileLoad::Valid(
-        MdbaseTypeDefinition {
+        Box::new(MdbaseTypeDefinition {
             normalized_name: normalize_type_name(&name),
             name,
             path: path.to_string(),
@@ -2620,12 +2631,50 @@ fn load_mdbase_type_file(
                 .get("description")
                 .and_then(serde_json::Value::as_str)
                 .map(ToOwned::to_owned),
+            schema_revision: mdbase_schema_revision(&schema),
             schema,
             schema_ref,
             frontmatter,
-        },
+            revision: mdbase_content_revision(&source),
+        }),
         std::sync::Arc::new(compiled),
     ))
+}
+
+/// Order-independent digest of a resolved schema value.
+fn mdbase_schema_revision(schema: &serde_json::Value) -> String {
+    fn canonical(value: &serde_json::Value, out: &mut String) {
+        match value {
+            serde_json::Value::Object(members) => {
+                let mut members = members.iter().collect::<Vec<_>>();
+                members.sort_by(|left, right| left.0.cmp(right.0));
+                out.push('{');
+                for (index, (name, member)) in members.into_iter().enumerate() {
+                    if index > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(&serde_json::Value::String(name.clone()).to_string());
+                    out.push(':');
+                    canonical(member, out);
+                }
+                out.push('}');
+            }
+            serde_json::Value::Array(items) => {
+                out.push('[');
+                for (index, item) in items.iter().enumerate() {
+                    if index > 0 {
+                        out.push(',');
+                    }
+                    canonical(item, out);
+                }
+                out.push(']');
+            }
+            scalar => out.push_str(&scalar.to_string()),
+        }
+    }
+    let mut text = String::new();
+    canonical(schema, &mut text);
+    mdbase_content_revision(&text)
 }
 
 fn parse_type_frontmatter(
@@ -3567,6 +3616,44 @@ schema:
                 .collect::<Vec<_>>(),
             ["Contact", "Task"]
         );
+    }
+
+    #[test]
+    fn type_revisions_track_the_type_source_and_the_effective_schema_separately() {
+        let directory = tempdir().expect("temporary collection should exist");
+        write_config(directory.path(), "spec_version: \"0.3.0\"\n");
+        let type_file = "kind: mdbase.type\nname: Contact\nschema:\n  dialect: json-schema-2020-12\n  ref: ./contact.schema.json\n";
+        write_type_file(directory.path(), "_types/Contact.md", type_file);
+        let schema_path = directory.path().join("_types/contact.schema.json");
+        let load = || {
+            let collection = load_mdbase_collection(directory.path()).unwrap().unwrap();
+            let registry = load_mdbase_type_registry(&collection).unwrap();
+            let contact = registry.get("contact").unwrap();
+            (contact.revision.clone(), contact.schema_revision.clone())
+        };
+        fs::write(&schema_path, r#"{"type":"object","required":["name"]}"#).unwrap();
+        let (revision, schema_revision) = load();
+        assert_eq!(
+            revision,
+            mdbase_content_revision(
+                &fs::read_to_string(directory.path().join("_types/Contact.md")).unwrap()
+            )
+        );
+        // Member order is not part of the schema's identity.
+        fs::write(&schema_path, r#"{"required":["name"],"type":"object"}"#).unwrap();
+        assert_eq!(load(), (revision.clone(), schema_revision.clone()));
+        // A referenced-schema change changes only the schema revision.
+        fs::write(&schema_path, r#"{"type":"object","required":["email"]}"#).unwrap();
+        let (unchanged, changed) = load();
+        assert_eq!(unchanged, revision);
+        assert_ne!(changed, schema_revision);
+        // A type-file change changes the source revision.
+        write_type_file(
+            directory.path(),
+            "_types/Contact.md",
+            &format!("{type_file}description: People\n"),
+        );
+        assert_ne!(load().0, revision);
     }
 
     #[test]

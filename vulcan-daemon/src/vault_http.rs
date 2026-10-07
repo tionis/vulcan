@@ -800,7 +800,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mdbase_view_routes_list_execute_and_report_canonical_failures() {
+    #[allow(clippy::too_many_lines)]
+    async fn mdbase_discovery_and_view_routes_report_revisions_and_canonical_failures() {
         let vault = tempfile::tempdir().expect("vault");
         let root = vault.path();
         std::fs::create_dir(root.join(".vulcan")).expect("config directory");
@@ -855,6 +856,32 @@ mod tests {
         let result = body(response).await;
         assert_eq!(result["result"]["results"][0]["values"]["title"], "A");
         assert_eq!(result["result"]["meta"]["view"]["id"], "all");
+
+        // Discovery routes carry revisions for change detection.
+        let response = router.clone().oneshot(get("/mdbase/types")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let types = body(response).await;
+        assert!(types["result"]["types"][0]["revision"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:"));
+        let response = router
+            .clone()
+            .oneshot(get("/mdbase/contracts"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = router
+            .clone()
+            .oneshot(get("/mdbase/schema?type=task&type=ghost"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let schema = body(response).await;
+        assert_eq!(schema["result"]["fields"][0]["name"], "title");
+        assert_eq!(schema["result"]["conflicts"][0]["code"], "type_not_found");
+        let response = router.clone().oneshot(get("/mdbase/schema")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
         for (uri, status, code) in [
             (

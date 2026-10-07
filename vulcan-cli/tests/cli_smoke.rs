@@ -17968,6 +17968,13 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(properties.contains("Rerun the query"));
     assert!(properties.contains("preflight every selected mdbase record"));
     assert!(properties.contains("one validated journal batch"));
+    assert!(properties.contains("`vulcan mdbase schema <type>... --output json`"));
+    Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args(["mdbase", "schema", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("TYPE"));
     assert!(properties.contains("never implies raw repair"));
     assert!(properties
         .contains("Ordinary `update`, `unset`, property rename, and tag merge workflows refuse"));
@@ -37652,6 +37659,33 @@ fn mdbase_views_list_and_execute_named_views() {
         source["views"][0]["properties"],
         serde_json::json!([{"key": "title", "label": "Task"}, {"key": "doubled"}])
     );
+
+    let output = run(&["schema", "task", "project"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let schema: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(schema["valid"], true);
+    assert_eq!(
+        schema["result"]["types"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|source| source["path"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["_types/task.md", "_types/project.md"]
+    );
+    assert!(schema["result"]["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|field| field["name"] == "priority" && field["editable"] == true));
+    let output = run(&["schema", "task", "ghost"]);
+    let schema: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(schema["valid"], false);
+    assert_eq!(schema["result"]["conflicts"][0]["code"], "type_not_found");
 
     let output = run(&[
         "view",

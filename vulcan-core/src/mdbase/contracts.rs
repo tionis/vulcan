@@ -37,6 +37,9 @@ pub struct MdbaseContractDefinition {
     pub behavior: Option<serde_json::Value>,
     pub digest: String,
     pub frontmatter: serde_json::Value,
+    /// Revision of the contract file's exact source; `digest` identifies the
+    /// canonical contract content instead.
+    pub revision: String,
     validation_schemas: BTreeMap<String, serde_json::Value>,
     #[serde(skip)]
     compiled_schemas: BTreeMap<String, Arc<MdbaseCompiledSchema>>,
@@ -332,6 +335,7 @@ fn load_contract_file(
         behavior,
         digest,
         frontmatter,
+        revision: super::mdbase_content_revision(&source),
         validation_schemas,
         compiled_schemas,
     }))
@@ -1256,6 +1260,14 @@ binding_schema:
             .expect("exact contract should exist");
         assert!(contract.digest.starts_with("sha256:"));
         assert_eq!(contract.digest.len(), 71);
+        // The source revision identifies the exact file, while the digest
+        // identifies canonical semantics.
+        assert_eq!(
+            contract.revision,
+            crate::mdbase::mdbase_content_revision(
+                &std::fs::read_to_string(collection.root.join(&contract.path)).unwrap()
+            )
+        );
         assert!(registry.get("example.note", "1.1.0").is_none());
         let implementations = registry.implementations("example.note", "1.0.0");
         assert_eq!(implementations.len(), 2);
