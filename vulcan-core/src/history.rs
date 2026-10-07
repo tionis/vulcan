@@ -204,7 +204,7 @@ pub fn query_change_report(
     anchor: &ChangeAnchor,
 ) -> Result<ChangeReport, CheckpointError> {
     let database = open_existing_cache(paths)?;
-    let current = load_document_states(database.connection())?;
+    let current = load_document_states(database.connection(), current_unix_timestamp()?)?;
     let baseline = load_anchor_snapshot(database.connection(), anchor)?;
     let current_map = current
         .into_iter()
@@ -287,24 +287,127 @@ pub fn query_change_report(
 
 pub(crate) fn record_scan_checkpoint(connection: &Connection) -> Result<(), CheckpointError> {
     let transaction = connection.unchecked_transaction()?;
-    insert_checkpoint_snapshot(&transaction, None, "scan")?;
+    insert_full_scan_checkpoint(&transaction)?;
     prune_automatic_scan_checkpoints(&transaction)?;
     transaction.commit()?;
     Ok(())
 }
 
-/// Reuse unchanged property/vector hashes while refreshing graph and age state.
-/// Writes are proportional to changed state, including indirect graph changes.
+/// Record a scan checkpoint touching only documents whose state can have
+/// changed since the previous one: tracked path, link, orphan, and property
+/// changes, the given IDs, vector-input changes, and documents whose age
+/// crossed the staleness threshold since then. Falls back to a full snapshot
+/// when tracking is not continuous from the newest generation.
 pub(crate) fn record_scan_checkpoint_incremental(
     connection: &Connection,
     changed_document_ids: &[String],
 ) -> Result<(), CheckpointError> {
     let transaction = connection.unchecked_transaction()?;
-    let snapshot = build_incremental_snapshot(&transaction, changed_document_ids)?;
-    insert_snapshot(&transaction, None, "scan", snapshot)?;
+    match previous_scan_generation(&transaction)? {
+        Some(previous) => insert_incremental_scan(&transaction, &previous, changed_document_ids)?,
+        None => insert_full_scan_checkpoint(&transaction)?,
+    }
     prune_automatic_scan_checkpoints(&transaction)?;
     transaction.commit()?;
     Ok(())
+}
+
+fn insert_full_scan_checkpoint(
+    transaction: &rusqlite::Transaction<'_>,
+) -> Result<(), CheckpointError> {
+    let now = current_unix_timestamp()?;
+    let snapshot = build_snapshot_state_at(transaction, now)?;
+    insert_snapshot(transaction, None, "scan", snapshot)?;
+    finish_scan_checkpoint(transaction, now)
+}
+
+/// Close out change tracking for the checkpoint just written at `now`.
+fn finish_scan_checkpoint(
+    transaction: &rusqlite::Transaction<'_>,
+    now: i64,
+) -> Result<(), CheckpointError> {
+    reconcile_vector_inputs(transaction)?;
+    transaction.execute_batch(
+        "DELETE FROM checkpoint_dirty_documents;
+         DELETE FROM checkpoint_link_dirty_documents;
+         DELETE FROM checkpoint_path_dirty;
+         DELETE FROM checkpoint_orphan_dirty_documents;
+         DELETE FROM meta WHERE key = 'checkpoint_reset';",
+    )?;
+    transaction.execute(
+        "INSERT INTO meta(key, value) VALUES ('checkpoint_clock', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [now.to_string()],
+    )?;
+    Ok(())
+}
+
+/// The newest scan generation and the clock its staleness was evaluated at.
+struct PreviousScan {
+    generation: i64,
+    clock: i64,
+    note_count: i64,
+    orphan_notes: i64,
+    stale_notes: i64,
+}
+
+/// The newest automatic generation, when change tracking has been
+/// continuous since it was written.
+fn previous_scan_generation(
+    connection: &Connection,
+) -> Result<Option<PreviousScan>, CheckpointError> {
+    let tracked: bool = connection.query_row(
+        "SELECT NOT EXISTS(SELECT 1 FROM meta WHERE key = 'checkpoint_reset')",
+        [],
+        |row| row.get(0),
+    )?;
+    let clock: Option<String> = connection
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'checkpoint_clock'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(clock) = clock.and_then(|clock| clock.parse::<i64>().ok()) else {
+        return Ok(None);
+    };
+    if !tracked {
+        return Ok(None);
+    }
+    // The newest scan header must be the newest generation.
+    Ok(connection
+        .query_row(
+            "SELECT generation, note_count, orphan_notes, stale_notes FROM checkpoints
+             WHERE source = 'scan' ORDER BY created_at DESC, id DESC LIMIT 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, Option<i64>>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .optional()?
+        .and_then(|(generation, note_count, orphan_notes, stale_notes)| {
+            Some(PreviousScan {
+                generation: generation?,
+                clock,
+                note_count,
+                orphan_notes,
+                stale_notes,
+            })
+        })
+        .filter(|previous| {
+            connection
+                .query_row("SELECT max(generation) FROM checkpoints", [], |row| {
+                    row.get::<_, Option<i64>>(0)
+                })
+                .ok()
+                .flatten()
+                == Some(previous.generation)
+        }))
 }
 
 fn insert_checkpoint_snapshot(
@@ -322,13 +425,55 @@ fn insert_snapshot(
     source: &str,
     snapshot: SnapshotState,
 ) -> Result<CheckpointRecord, CheckpointError> {
-    let (created_at, checkpoint_id) = checkpoint_identity(transaction)?;
     let record = snapshot
         .records
         .into_iter()
         .next()
         .expect("snapshot state should include one record");
+    let record = insert_checkpoint_header(transaction, name, source, &record)?;
+    if source == "scan" {
+        insert_scan_versions(transaction, &record.id, &snapshot.documents)?;
+    } else {
+        let mut statement = transaction.prepare(
+            "
+        INSERT INTO checkpoint_documents (
+            checkpoint_id,
+            path,
+            document_kind,
+            content_hash,
+            link_hash,
+            property_hash,
+            embedding_hash,
+            orphan,
+            stale
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        ",
+        )?;
+        for state in snapshot.documents {
+            statement.execute(params![
+                &record.id,
+                &state.path,
+                &state.document_kind,
+                &state.content_hash,
+                &state.link_hash,
+                &state.property_hash,
+                &state.embedding_hash,
+                i64::from(state.orphan),
+                i64::from(state.stale),
+            ])?;
+        }
+    }
+    Ok(record)
+}
 
+fn insert_checkpoint_header(
+    transaction: &rusqlite::Transaction<'_>,
+    name: Option<&str>,
+    source: &str,
+    record: &CheckpointRecord,
+) -> Result<CheckpointRecord, CheckpointError> {
+    let (created_at, checkpoint_id) = checkpoint_identity(transaction)?;
     transaction.execute(
         "
         INSERT INTO checkpoints (
@@ -355,50 +500,12 @@ fn insert_snapshot(
         ],
     )?;
 
-    if source == "scan" {
-        insert_scan_versions(transaction, &checkpoint_id, &snapshot.documents)?;
-        reconcile_vector_inputs(transaction)?;
-        transaction.execute("DELETE FROM checkpoint_dirty_documents", [])?;
-        transaction.execute("DELETE FROM checkpoint_link_dirty_documents", [])?;
-        transaction.execute("DELETE FROM meta WHERE key = 'checkpoint_reset'", [])?;
-    } else {
-        let mut statement = transaction.prepare(
-            "
-        INSERT INTO checkpoint_documents (
-            checkpoint_id,
-            path,
-            document_kind,
-            content_hash,
-            link_hash,
-            property_hash,
-            embedding_hash,
-            orphan,
-            stale
-        )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-        ",
-        )?;
-        for state in snapshot.documents {
-            statement.execute(params![
-                &checkpoint_id,
-                &state.path,
-                &state.document_kind,
-                &state.content_hash,
-                &state.link_hash,
-                &state.property_hash,
-                &state.embedding_hash,
-                i64::from(state.orphan),
-                i64::from(state.stale),
-            ])?;
-        }
-    }
-
     Ok(CheckpointRecord {
         id: checkpoint_id,
         name: name.map(ToOwned::to_owned),
         source: source.to_string(),
         created_at,
-        ..record
+        ..record.clone()
     })
 }
 
@@ -522,7 +629,14 @@ fn prune_automatic_scan_checkpoints(
 }
 
 fn build_snapshot_state(connection: &Connection) -> Result<SnapshotState, CheckpointError> {
-    let documents = load_document_states(connection)?;
+    build_snapshot_state_at(connection, current_unix_timestamp()?)
+}
+
+fn build_snapshot_state_at(
+    connection: &Connection,
+    now: i64,
+) -> Result<SnapshotState, CheckpointError> {
+    let documents = load_document_states(connection, now)?;
     snapshot_from_documents(connection, documents)
 }
 
@@ -577,113 +691,257 @@ fn reconcile_vector_inputs(connection: &Connection) -> Result<(), CheckpointErro
     Ok(())
 }
 
-fn build_incremental_snapshot(
-    connection: &Connection,
+/// A scan checkpoint written as versions for candidate documents only; see
+/// [`record_scan_checkpoint_incremental`]. Each candidate's state is
+/// recomputed exactly as a full snapshot would, reusing its previous link,
+/// property, and embedding hashes when their inputs are unchanged; every
+/// other document's open version is already current. Header counts are the
+/// previous ones adjusted by the candidates' changes.
+#[allow(clippy::too_many_lines)]
+fn insert_incremental_scan(
+    transaction: &rusqlite::Transaction<'_>,
+    previous: &PreviousScan,
     changed_ids: &[String],
-) -> Result<SnapshotState, CheckpointError> {
-    let previous_id: Option<String> = connection
-        .query_row(
-            "SELECT CASE WHEN generation IS NOT NULL THEN id END
-         FROM checkpoints WHERE source = 'scan' ORDER BY created_at DESC, id DESC LIMIT 1",
-            [],
-            |row| row.get::<_, Option<String>>(0),
-        )
-        .optional()?
-        .flatten();
-    let Some(previous_id) = previous_id else {
-        return build_snapshot_state(connection);
-    };
-    let reset: bool = connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM meta WHERE key = 'checkpoint_reset')",
-        [],
-        |row| row.get(0),
-    )?;
-    if reset {
-        return build_snapshot_state(connection);
-    }
-    let previous: HashMap<_, _> = load_checkpoint_documents(connection, &previous_id)?
-        .into_iter()
-        .map(|state| (state.path.clone(), state))
-        .collect();
-    let mut dirty: std::collections::HashSet<String> = changed_ids.iter().cloned().collect();
-    let mut statement = connection.prepare("SELECT document_id FROM checkpoint_dirty_documents")?;
-    dirty.extend(
-        statement
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?,
-    );
-    dirty.extend(changed_vector_documents(connection)?);
-    // Graph changes can affect an unedited source's resolved link hash, which
-    // triggers record as link-dirty, and an unedited target's orphan flag.
-    // Age changes do not require any hashing.
-    let link_dirty = link_dirty_documents(connection)?;
-    let unlinked = unlinked_documents(connection)?;
+) -> Result<(), CheckpointError> {
+    use std::collections::HashSet;
     let now = current_unix_timestamp()?;
-    // The narrow table mirrors these columns (`revision` is the content hash).
-    let mut statement = connection.prepare_cached("SELECT document_id, path, extension, lower(hex(revision)), file_mtime FROM note_query ORDER BY path")?;
-    let rows = statement.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, String>(3)?,
-            row.get::<_, i64>(4)?,
-        ))
-    })?;
-    let mut documents = Vec::new();
-    let mut hash_ids = Vec::new();
-    let mut hash_slots = Vec::new();
+    let ids = |sql: &str| -> Result<HashSet<String>, CheckpointError> {
+        let mut statement = transaction.prepare(sql)?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    };
+    let mut hash_dirty: HashSet<String> = changed_ids.iter().cloned().collect();
+    hash_dirty.extend(ids("SELECT document_id FROM checkpoint_dirty_documents")?);
+    hash_dirty.extend(changed_vector_documents(transaction)?);
+    let link_dirty = link_dirty_documents(transaction)?;
+    let orphan_dirty = ids("SELECT document_id FROM checkpoint_orphan_dirty_documents")?;
+
+    let mut candidates = ids("SELECT path FROM checkpoint_path_dirty")?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let by_id = hash_dirty
+        .iter()
+        .chain(&link_dirty)
+        .chain(&orphan_dirty)
+        .cloned()
+        .collect::<Vec<_>>();
+    for chunk in by_id.chunks(256) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let mut statement = transaction.prepare(&format!(
+            "SELECT path FROM note_query WHERE document_id IN ({placeholders})"
+        ))?;
+        let rows = statement.query_map(rusqlite::params_from_iter(chunk), |row| row.get(0))?;
+        for path in rows {
+            candidates.insert(path?);
+        }
+    }
+    // Staleness flips exactly for mtimes between the two thresholds.
+    let low = previous.clock.min(now) - STALE_AGE_SECS;
+    let high = previous.clock.max(now) - STALE_AGE_SECS;
+    {
+        let mut statement = transaction.prepare(
+            "SELECT path FROM note_query WHERE file_mtime > 0 AND file_mtime BETWEEN ?1 AND ?2",
+        )?;
+        let rows = statement.query_map([low, high], |row| row.get(0))?;
+        for path in rows {
+            candidates.insert(path?);
+        }
+    }
+
+    let mut current_row = transaction.prepare_cached(
+        "SELECT document_id, extension, lower(hex(revision)), file_mtime
+         FROM note_query WHERE path = ?1",
+    )?;
+    let mut previous_row = transaction.prepare_cached(
+        "SELECT document_kind, content_hash, link_hash, property_hash, embedding_hash,
+                orphan, stale
+         FROM checkpoint_document_versions WHERE path = ?1 AND valid_to IS NULL",
+    )?;
+    let mut unlinked = transaction.prepare_cached(
+        "SELECT NOT EXISTS (
+             SELECT 1 FROM links WHERE source_document_id = ?1
+               AND resolved_target_id IS NOT NULL)
+           AND NOT EXISTS (SELECT 1 FROM links WHERE resolved_target_id = ?1)",
+    )?;
+    // (path, previous open version, new state and document ID if present)
+    let mut changes = Vec::new();
     let mut link_ids = Vec::new();
-    let mut link_slots = Vec::new();
-    for row in rows {
-        let (id, path, extension, content_hash, mtime) = row?;
-        let old = previous.get(&path);
-        if dirty.contains(&id) || old.is_none_or(|state| state.content_hash != content_hash) {
-            hash_ids.push(id.clone());
-            hash_slots.push(documents.len());
-        }
-        if old.is_none() || link_dirty.contains(&id) {
-            link_ids.push(id.clone());
-            link_slots.push(documents.len());
-        }
-        let kind = match extension.as_str() {
-            "md" => "note",
-            "base" => "base",
-            _ => "attachment",
+    let mut hash_ids = Vec::new();
+    for path in candidates {
+        let old = previous_row
+            .query_row([&path], |row| {
+                Ok(DocumentState {
+                    path: path.clone(),
+                    document_kind: row.get(0)?,
+                    content_hash: row.get(1)?,
+                    link_hash: row.get(2)?,
+                    property_hash: row.get(3)?,
+                    embedding_hash: row.get(4)?,
+                    orphan: row.get::<_, i64>(5)? != 0,
+                    stale: row.get::<_, i64>(6)? != 0,
+                })
+            })
+            .optional()?;
+        let current = current_row
+            .query_row([&path], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .optional()?;
+        let state = match current {
+            None => None,
+            Some((id, extension, content_hash, mtime)) => {
+                let kind = match extension.as_str() {
+                    "md" => "note",
+                    "base" => "base",
+                    _ => "attachment",
+                };
+                let slot = changes.len();
+                if old.is_none() || link_dirty.contains(&id) {
+                    link_ids.push((id.clone(), slot));
+                }
+                if old.is_none()
+                    || hash_dirty.contains(&id)
+                    || old
+                        .as_ref()
+                        .is_some_and(|state| state.content_hash != content_hash)
+                {
+                    hash_ids.push((id.clone(), slot));
+                }
+                let orphan =
+                    kind == "note" && unlinked.query_row([&id], |row| row.get::<_, bool>(0))?;
+                Some(DocumentState {
+                    path: path.clone(),
+                    document_kind: kind.into(),
+                    content_hash,
+                    link_hash: old
+                        .as_ref()
+                        .map(|state| state.link_hash.clone())
+                        .unwrap_or_default(),
+                    property_hash: old
+                        .as_ref()
+                        .map(|state| state.property_hash.clone())
+                        .unwrap_or_default(),
+                    embedding_hash: old
+                        .as_ref()
+                        .map(|state| state.embedding_hash.clone())
+                        .unwrap_or_default(),
+                    orphan,
+                    stale: kind == "note"
+                        && mtime > 0
+                        && now.saturating_sub(mtime) >= STALE_AGE_SECS,
+                })
+            }
         };
-        documents.push(DocumentState {
-            path,
-            document_kind: kind.into(),
-            content_hash,
-            link_hash: old.map(|state| state.link_hash.clone()).unwrap_or_default(),
-            property_hash: old
-                .map(|state| state.property_hash.clone())
-                .unwrap_or_default(),
-            embedding_hash: old
-                .map(|state| state.embedding_hash.clone())
-                .unwrap_or_default(),
-            orphan: kind == "note" && unlinked.contains(&id),
-            stale: kind == "note" && mtime > 0 && now.saturating_sub(mtime) >= STALE_AGE_SECS,
-        });
+        changes.push((path, old, state));
     }
     // Bound bind parameters even for a large update or model switch.
-    for (ids, slots) in link_ids.chunks(256).zip(link_slots.chunks(256)) {
+    for chunk in link_ids.chunks(256) {
+        let ids = chunk.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
         let placeholders = vec!["?"; ids.len()].join(",");
-        let links = document_link_hashes_for_ids(connection, &placeholders, ids)?;
-        for (id, slot) in ids.iter().zip(slots) {
-            documents[*slot].link_hash = links.get(id).cloned().unwrap_or_default();
+        let links = document_link_hashes_for_ids(transaction, &placeholders, &ids)?;
+        for (id, slot) in chunk {
+            if let Some(state) = changes[*slot].2.as_mut() {
+                state.link_hash = links.get(id).cloned().unwrap_or_default();
+            }
         }
     }
-    for (ids, slots) in hash_ids.chunks(256).zip(hash_slots.chunks(256)) {
+    for chunk in hash_ids.chunks(256) {
+        let ids = chunk.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
         let placeholders = vec!["?"; ids.len()].join(",");
-        let properties = document_property_hashes_for_ids(connection, &placeholders, ids)?;
-        let embeddings = document_embedding_hashes_for_ids(connection, &placeholders, ids)?;
-        for (id, slot) in ids.iter().zip(slots) {
-            documents[*slot].property_hash = properties.get(id).cloned().unwrap_or_default();
-            documents[*slot].embedding_hash = embeddings.get(id).cloned().unwrap_or_default();
+        let properties = document_property_hashes_for_ids(transaction, &placeholders, &ids)?;
+        let embeddings = document_embedding_hashes_for_ids(transaction, &placeholders, &ids)?;
+        for (id, slot) in chunk {
+            if let Some(state) = changes[*slot].2.as_mut() {
+                state.property_hash = properties.get(id).cloned().unwrap_or_default();
+                state.embedding_hash = embeddings.get(id).cloned().unwrap_or_default();
+            }
         }
     }
-    snapshot_from_documents(connection, documents)
+
+    let (mut notes, mut orphans, mut stale) = (
+        previous.note_count,
+        previous.orphan_notes,
+        previous.stale_notes,
+    );
+    let mut count = |state: &DocumentState, sign: i64| {
+        if state.document_kind == "note" {
+            notes += sign;
+            orphans += sign * i64::from(state.orphan);
+            stale += sign * i64::from(state.stale);
+        }
+    };
+    for (_, old, state) in &changes {
+        if let Some(old) = old {
+            count(old, -1);
+        }
+        if let Some(state) = state {
+            count(state, 1);
+        }
+    }
+    let size = |value: i64| usize::try_from(value).unwrap_or(0);
+    let resolved_links = usize::try_from(transaction.query_row(
+        "SELECT COUNT(*) FROM links WHERE resolved_target_id IS NOT NULL",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?)
+    .unwrap_or(usize::MAX);
+    let record = insert_checkpoint_header(
+        transaction,
+        None,
+        "scan",
+        &CheckpointRecord {
+            id: String::new(),
+            name: None,
+            source: String::new(),
+            created_at: 0,
+            note_count: size(notes),
+            orphan_notes: size(orphans),
+            stale_notes: size(stale),
+            resolved_links,
+        },
+    )?;
+    let generation = previous.generation + 1;
+    transaction.execute(
+        "UPDATE checkpoints SET generation = ?2 WHERE id = ?1",
+        params![record.id, generation],
+    )?;
+    let mut close = transaction.prepare_cached(
+        "UPDATE checkpoint_document_versions SET valid_to = ?2
+         WHERE path = ?1 AND valid_to IS NULL",
+    )?;
+    let mut insert = transaction.prepare_cached(
+        "INSERT INTO checkpoint_document_versions
+         (path, valid_from, document_kind, content_hash, link_hash,
+          property_hash, embedding_hash, orphan, stale)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+    )?;
+    for (path, old, state) in changes {
+        if old == state {
+            continue;
+        }
+        if old.is_some() {
+            close.execute(params![path, generation])?;
+        }
+        if let Some(state) = state {
+            insert.execute(params![
+                state.path,
+                generation,
+                state.document_kind,
+                state.content_hash,
+                state.link_hash,
+                state.property_hash,
+                state.embedding_hash,
+                i64::from(state.orphan),
+                i64::from(state.stale),
+            ])?;
+        }
+    }
+    finish_scan_checkpoint(transaction, now)
 }
 
 fn snapshot_from_documents(
@@ -724,8 +982,10 @@ fn snapshot_from_documents(
     })
 }
 
-fn load_document_states(connection: &Connection) -> Result<Vec<DocumentState>, CheckpointError> {
-    let now = current_unix_timestamp()?;
+fn load_document_states(
+    connection: &Connection,
+    now: i64,
+) -> Result<Vec<DocumentState>, CheckpointError> {
     // The narrow table mirrors these columns (`revision` is the content hash).
     let mut statement = connection.prepare_cached(
         "

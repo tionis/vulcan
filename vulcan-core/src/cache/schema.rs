@@ -13,6 +13,67 @@ pub fn apply_schema_v29(transaction: &Transaction<'_>) -> Result<(), rusqlite::E
 /// Widen the identity index (QRY.6) so read scopes on path and extension
 /// apply per row, and document ids for incremental refreshes, come from the
 /// index alone.
+/// Change tracking that lets a scan checkpoint touch only documents whose
+/// state can have changed. A document's checkpoint row depends on its
+/// `note_query` path, kind, revision, and mtime (tracked here by path, so
+/// renames and deletions record the old path), its own links (already
+/// link-dirty), and its inbound resolved links: link writes mark their old
+/// and new resolved targets as orphan candidates. Earlier changes were not
+/// tracked, so the next checkpoint is full.
+///
+/// The record cache's completeness count tests two wide-row columns; the
+/// expression index answers it without reading overflow pages.
+pub fn apply_schema_v31(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "CREATE TABLE checkpoint_path_dirty (path TEXT PRIMARY KEY);
+         CREATE TRIGGER checkpoint_path_insert AFTER INSERT ON note_query BEGIN
+             INSERT INTO checkpoint_path_dirty SELECT new.path
+             WHERE NOT EXISTS (SELECT 1 FROM checkpoint_path_dirty WHERE path = new.path);
+         END;
+         CREATE TRIGGER checkpoint_path_delete AFTER DELETE ON note_query BEGIN
+             INSERT INTO checkpoint_path_dirty SELECT old.path
+             WHERE NOT EXISTS (SELECT 1 FROM checkpoint_path_dirty WHERE path = old.path);
+         END;
+         CREATE TRIGGER checkpoint_path_update AFTER UPDATE ON note_query
+         WHEN old.path IS NOT new.path OR old.extension IS NOT new.extension
+           OR old.revision IS NOT new.revision OR old.file_mtime IS NOT new.file_mtime BEGIN
+             INSERT INTO checkpoint_path_dirty SELECT old.path
+             WHERE NOT EXISTS (SELECT 1 FROM checkpoint_path_dirty WHERE path = old.path);
+             INSERT INTO checkpoint_path_dirty SELECT new.path
+             WHERE NOT EXISTS (SELECT 1 FROM checkpoint_path_dirty WHERE path = new.path);
+         END;
+         CREATE TABLE checkpoint_orphan_dirty_documents (document_id TEXT PRIMARY KEY);
+         CREATE TRIGGER checkpoint_orphan_link_insert AFTER INSERT ON links
+         WHEN new.resolved_target_id IS NOT NULL BEGIN
+             INSERT INTO checkpoint_orphan_dirty_documents SELECT new.resolved_target_id
+             WHERE NOT EXISTS (SELECT 1 FROM checkpoint_orphan_dirty_documents
+                               WHERE document_id = new.resolved_target_id);
+         END;
+         CREATE TRIGGER checkpoint_orphan_link_delete AFTER DELETE ON links
+         WHEN old.resolved_target_id IS NOT NULL BEGIN
+             INSERT INTO checkpoint_orphan_dirty_documents SELECT old.resolved_target_id
+             WHERE NOT EXISTS (SELECT 1 FROM checkpoint_orphan_dirty_documents
+                               WHERE document_id = old.resolved_target_id);
+         END;
+         CREATE TRIGGER checkpoint_orphan_link_update AFTER UPDATE ON links
+         WHEN old.resolved_target_id IS NOT new.resolved_target_id
+           OR old.source_document_id IS NOT new.source_document_id BEGIN
+             INSERT INTO checkpoint_orphan_dirty_documents SELECT old.resolved_target_id
+             WHERE old.resolved_target_id IS NOT NULL AND NOT EXISTS (
+                 SELECT 1 FROM checkpoint_orphan_dirty_documents
+                 WHERE document_id = old.resolved_target_id);
+             INSERT INTO checkpoint_orphan_dirty_documents SELECT new.resolved_target_id
+             WHERE new.resolved_target_id IS NOT NULL AND NOT EXISTS (
+                 SELECT 1 FROM checkpoint_orphan_dirty_documents
+                 WHERE document_id = new.resolved_target_id);
+         END;
+         CREATE INDEX idx_mdbase_record_cache_complete ON mdbase_record_cache(
+             collection_root, dependency_digest, record_model_version,
+             metadata_json IS NOT NULL, local_record_json IS NOT NULL);
+         INSERT OR IGNORE INTO meta(key, value) VALUES ('checkpoint_reset', '1');",
+    )
+}
+
 pub fn apply_schema_v30(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
     transaction.execute_batch(
         "DROP INDEX idx_note_query_identity;
@@ -1170,6 +1231,8 @@ pub fn clear_cache_tables(transaction: &Transaction<'_>) -> Result<(), rusqlite:
     for table in [
         "checkpoint_dirty_documents",
         "checkpoint_link_dirty_documents",
+        "checkpoint_path_dirty",
+        "checkpoint_orphan_dirty_documents",
         "checkpoint_vector_inputs",
     ] {
         let exists: bool = transaction.query_row(

@@ -391,8 +391,8 @@ fn single_edit_row_writes_and_wal_measurements() {
         let shared_writes = c.total_changes() - before;
         let shared_wal = wal_bytes(&paths);
         assert_eq!(
-            shared_writes, 4,
-            "header insert/update, one close, one insert"
+            shared_writes, 6,
+            "header insert/update, one close, one insert, the clock, the consumed path mark"
         );
         c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)").unwrap();
         // The preserved full-snapshot writer is the copying baseline. The old
@@ -421,10 +421,61 @@ fn single_edit_row_writes_and_wal_measurements() {
         let before = c.total_changes();
         record_scan_checkpoint_incremental(c, &["0".into()]).unwrap();
         let retained_writes = c.total_changes() - before;
-        assert_eq!(retained_writes, 6, "also delete expired header and version");
+        assert_eq!(retained_writes, 8, "also delete expired header and version");
         eprintln!(
             "checkpoint retention: notes={count}, rows={retained_writes}, wal={}",
             wal_bytes(&paths)
         );
     }
+}
+
+/// Incremental checkpoints need no IDs to see a target orphaned by its
+/// sources' link edits, or a document that aged past the staleness
+/// threshold since the previous checkpoint without being edited.
+#[test]
+fn incremental_checkpoints_track_orphaned_targets_and_aging_without_ids() {
+    let (_temp, _paths, database) = synthetic_cache(4);
+    let c = database.connection();
+    record_scan_checkpoint(c).unwrap();
+    c.execute_batch(
+        "INSERT INTO links (id, source_document_id, raw_text, link_kind,
+         resolved_target_id, origin_context, byte_offset)
+         VALUES ('a', '0', '[[1]]', 'wikilink', '1', 'body', 0),
+                ('b', '2', '[[1]]', 'wikilink', '1', 'body', 0);",
+    )
+    .unwrap();
+    record_scan_checkpoint_incremental(c, &[]).unwrap();
+    let (_, linked) = assert_current_snapshot(c);
+    assert!(!linked[1].orphan && linked[3].orphan);
+    c.execute("DELETE FROM links WHERE id = 'a'", []).unwrap();
+    record_scan_checkpoint_incremental(c, &[]).unwrap();
+    assert!(assert_current_snapshot(c).1[0].orphan);
+    // The target's last inbound link goes; only the trigger names it.
+    c.execute("DELETE FROM links WHERE id = 'b'", []).unwrap();
+    record_scan_checkpoint_incremental(c, &[]).unwrap();
+    assert!(assert_current_snapshot(c).1[1].orphan);
+
+    // Aging: present the previous checkpoint as evaluated just before
+    // document 3 crossed the threshold, as if time had passed since.
+    let now = current_unix_timestamp().unwrap();
+    let mtime = now - STALE_AGE_SECS + 1_000;
+    c.execute(
+        "UPDATE documents SET file_mtime = ?1 WHERE id = '3'",
+        [mtime],
+    )
+    .unwrap();
+    record_scan_checkpoint_incremental(c, &[]).unwrap();
+    assert!(!assert_current_snapshot(c).1[3].stale);
+    c.execute_batch(&format!(
+        "UPDATE documents SET file_mtime = {old} WHERE id = '3';
+         UPDATE checkpoint_document_versions SET stale = 0
+         WHERE path = '3.md' AND valid_to IS NULL;
+         DELETE FROM checkpoint_path_dirty;
+         UPDATE meta SET value = '{clock}' WHERE key = 'checkpoint_clock';",
+        old = now - STALE_AGE_SECS - 10,
+        clock = now - 1_000,
+    ))
+    .unwrap();
+    record_scan_checkpoint_incremental(c, &[]).unwrap();
+    assert!(assert_current_snapshot(c).1[3].stale);
 }

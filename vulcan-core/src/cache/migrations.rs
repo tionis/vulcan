@@ -172,6 +172,11 @@ impl MigrationRegistry {
                 "widen the note identity index for scopes and refreshes",
                 schema::apply_schema_v30,
             ),
+            Migration::new(
+                31,
+                "track checkpoint candidates and index record cache completeness",
+                schema::apply_schema_v31,
+            ),
         ])
     }
 
