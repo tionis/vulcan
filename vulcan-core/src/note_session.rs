@@ -77,7 +77,11 @@ type ScopeRecords = (Arc<HashSet<String>>, Arc<[Arc<NoteRecord>]>);
 /// identity order once a request needed all of them.
 struct RetainedScope {
     clock: Clock,
+    /// Identity facts; shared with the predecessor when a refresh changed
+    /// no path, file name, or alias, so its row versions may be stale.
     index: Arc<IdentityIndex>,
+    /// Each identity's current row version, aligned with `index`.
+    versions: Arc<[i64]>,
     /// The universe's paths when it is narrower than the vault; incoming
     /// links come only from them.
     sources: Option<Arc<HashSet<String>>>,
@@ -85,6 +89,17 @@ struct RetainedScope {
     records: Mutex<Option<ScopeRecords>>,
     /// The scope this one was refreshed from, until its records carry over.
     predecessor: Mutex<Option<Arc<RetainedScope>>>,
+    /// When refreshed with unchanged identity facts: the predecessor's
+    /// clock and the rows that changed since, so hydrated notes the change
+    /// cannot reach carry over.
+    hydrated_carry: Option<Arc<HydratedCarry>>,
+}
+
+/// Rows changed between two clocks while every identity fact stayed.
+struct HydratedCarry {
+    from: Clock,
+    /// (document id, path) of each changed row.
+    changed: Vec<(String, String)>,
 }
 
 /// Hydrated records of one scope, valid for one key.
@@ -112,6 +127,8 @@ pub struct NoteSessionCounters {
     pub stored_reused: AtomicU64,
     pub hydrated_loaded: AtomicU64,
     pub hydrated_reused: AtomicU64,
+    /// Hydrated notes kept across a clock change.
+    pub hydrated_carried: AtomicU64,
 }
 
 fn count(counter: &AtomicU64, by: usize) {
@@ -333,12 +350,19 @@ impl NoteStoreSnapshot<'_> {
         } else {
             count(&self.session.counters.identity_loads, 1);
             let readable = load_readable_identities(self.database(), scope, None)?;
+            let versions = readable
+                .identities
+                .iter()
+                .map(|identity| identity.row_version)
+                .collect();
             Arc::new(RetainedScope {
                 clock: self.clock.clone(),
                 index: Arc::new(IdentityIndex::new(readable.identities)),
+                versions,
                 sources: readable.readable_sources.map(Arc::new),
                 records: Mutex::new(None),
                 predecessor: Mutex::new(None),
+                hydrated_carry: None,
             })
         };
         let mut identities = lock(&self.session.identities);
@@ -361,7 +385,48 @@ impl NoteStoreSnapshot<'_> {
     ) -> Result<Option<RetainedScope>, PropertyError> {
         let changed = scoped_identity_rows(self.database(), filter, Some(previous.clock.version))?;
         let count = count_scoped_identities(self.database(), filter)?;
+        // Usually only row contents changed: the identity facts stay and
+        // only versions move.
+        let same_facts = |identity: &crate::note_lookup::IndexedIdentity| {
+            previous
+                .index
+                .position(&identity.path)
+                .map(|position| &previous.index.identities()[position])
+                .is_some_and(|known| {
+                    known.document_id == identity.document_id
+                        && known.file_name == identity.file_name
+                        && known.aliases == identity.aliases
+                })
+        };
+        if count == previous.index.len() && changed.iter().all(same_facts) {
+            let mut versions = previous.versions.to_vec();
+            for identity in &changed {
+                if let Some(position) = previous.index.position(&identity.path) {
+                    versions[position] = identity.row_version;
+                }
+            }
+            lock(&previous.predecessor).take();
+            let hydrated_carry = Some(Arc::new(HydratedCarry {
+                from: previous.clock.clone(),
+                changed: changed
+                    .into_iter()
+                    .map(|identity| (identity.document_id, identity.path))
+                    .collect(),
+            }));
+            return Ok(Some(RetainedScope {
+                clock: self.clock.clone(),
+                index: Arc::clone(&previous.index),
+                versions: versions.into(),
+                sources: previous.sources.clone(),
+                records: Mutex::new(None),
+                predecessor: Mutex::new(Some(Arc::clone(previous))),
+                hydrated_carry,
+            }));
+        }
         let mut identities = previous.index.identities().to_vec();
+        for (identity, version) in identities.iter_mut().zip(previous.versions.iter()) {
+            identity.row_version = *version;
+        }
         let positions = previous
             .index
             .identities()
@@ -390,12 +455,18 @@ impl NoteStoreSnapshot<'_> {
         });
         // Keep at most one predecessor alive.
         lock(&previous.predecessor).take();
+        let versions = identities
+            .iter()
+            .map(|identity| identity.row_version)
+            .collect();
         Ok(Some(RetainedScope {
             clock: self.clock.clone(),
             index: Arc::new(IdentityIndex::new(identities)),
+            versions,
             sources,
             records: Mutex::new(None),
             predecessor: Mutex::new(Some(Arc::clone(previous))),
+            hydrated_carry: None,
         }))
     }
 
@@ -421,7 +492,7 @@ impl NoteStoreSnapshot<'_> {
             return Ok(Some(carried));
         }
         let mut by_path = self
-            .load_stored_retained(&scope.index, None)?
+            .load_stored_retained(&scope.index, &scope.versions, None)?
             .into_iter()
             .map(|record| (record.document_path.clone(), record))
             .collect::<HashMap<_, _>>();
@@ -453,30 +524,43 @@ impl NoteStoreSnapshot<'_> {
         if *bookmarks != *self.bookmarks {
             return Ok(None);
         }
-        let previous_identities = predecessor.index.identities();
+        let unchanged =
+            |version: i64, previous_version: i64| version != 0 && version == previous_version;
         let mut carried = Vec::with_capacity(scope.index.len());
         let mut missing = Vec::new();
-        let mut cursor = 0;
-        for identity in scope.index.identities() {
-            while cursor < previous_identities.len()
-                && previous_identities[cursor].path < identity.path
-            {
-                cursor += 1;
+        if Arc::ptr_eq(&scope.index, &predecessor.index) {
+            // Same identities in the same order: compare versions in place.
+            for (position, identity) in scope.index.identities().iter().enumerate() {
+                if unchanged(scope.versions[position], predecessor.versions[position]) {
+                    carried.push(Some(Arc::clone(&previous[position])));
+                } else {
+                    missing.push(identity.path.as_str());
+                    carried.push(None);
+                }
             }
-            let unchanged = previous_identities.get(cursor).is_some_and(|previous| {
-                previous.path == identity.path
-                    && identity.row_version != 0
-                    && previous.row_version == identity.row_version
-            });
-            if unchanged {
-                carried.push(Some(Arc::clone(&previous[cursor])));
-            } else {
-                missing.push(identity.path.as_str());
-                carried.push(None);
+        } else {
+            let previous_identities = predecessor.index.identities();
+            let mut cursor = 0;
+            for (position, identity) in scope.index.identities().iter().enumerate() {
+                while cursor < previous_identities.len()
+                    && previous_identities[cursor].path < identity.path
+                {
+                    cursor += 1;
+                }
+                let same = previous_identities
+                    .get(cursor)
+                    .is_some_and(|previous| previous.path == identity.path)
+                    && unchanged(scope.versions[position], predecessor.versions[cursor]);
+                if same {
+                    carried.push(Some(Arc::clone(&previous[cursor])));
+                } else {
+                    missing.push(identity.path.as_str());
+                    carried.push(None);
+                }
             }
         }
         let mut loaded = self
-            .load_stored_retained(&scope.index, Some(&missing))?
+            .load_stored_retained(&scope.index, &scope.versions, Some(&missing))?
             .into_iter()
             .map(|record| (record.document_path.clone(), record))
             .collect::<HashMap<_, _>>();
@@ -498,11 +582,20 @@ impl NoteStoreSnapshot<'_> {
     ) -> Result<IndexedNoteLookup<'_>, PropertyError> {
         let index = Arc::clone(&scope.index);
         let stored_index = Arc::clone(&index);
-        let load_stored =
-            move |wanted: Option<&[&str]>| self.load_stored_retained(&stored_index, wanted);
+        let versions = Arc::clone(&scope.versions);
+        let load_stored = move |wanted: Option<&[&str]>| {
+            self.load_stored_retained(&stored_index, &versions, wanted)
+        };
         let sources = scope.sources.clone();
+        let carry = scope.hydrated_carry.clone();
         let hydrate = move |notes: Vec<Arc<NoteRecord>>| {
-            self.hydrate_retained(&scope_key, filter.as_ref(), sources.as_deref(), notes)
+            self.hydrate_retained(
+                &scope_key,
+                filter.as_ref(),
+                sources.as_deref(),
+                carry.as_deref(),
+                notes,
+            )
         };
         let lookup = match self.scope_records(scope)? {
             Some(records) => IndexedNoteLookup::from_index_with_records(
@@ -517,9 +610,12 @@ impl NoteStoreSnapshot<'_> {
         Ok(lookup.with_database(Rc::clone(self.database())))
     }
 
+    /// Stored records of `wanted` (every identity when `None`), reusing
+    /// retained ones at their current `versions` (aligned with `index`).
     fn load_stored_retained(
         &self,
         index: &IdentityIndex,
+        versions: &[i64],
         wanted: Option<&[&str]>,
     ) -> Result<Vec<Arc<NoteRecord>>, PropertyError> {
         let wanted = wanted.map_or_else(
@@ -538,14 +634,13 @@ impl NoteStoreSnapshot<'_> {
             let current =
                 retained.store_id == self.clock.store_id && retained.bookmarks == *self.bookmarks;
             for path in wanted {
-                let Some(identity) = index.get(path) else {
+                let Some(position) = index.position(path) else {
                     continue;
                 };
+                let row_version = versions[position];
                 match retained.notes.get(path) {
                     Some((version, note))
-                        if current
-                            && identity.row_version != 0
-                            && *version == identity.row_version =>
+                        if current && row_version != 0 && *version == row_version =>
                     {
                         found.push(Arc::clone(note));
                     }
@@ -579,20 +674,18 @@ impl NoteStoreSnapshot<'_> {
             if !missing.contains(path) {
                 continue;
             }
-            let Some(identity) = index.get(path) else {
+            let Some(position) = index.position(path) else {
                 continue;
             };
+            let identity = &index.identities()[position];
+            let row_version = versions[position];
             let mut record = stored.record;
             record.aliases.clone_from(&identity.aliases);
             let record = Arc::new(record);
-            if stored.ctime_recorded
-                && identity.row_version != 0
-                && retained.notes.len() < RETAINED_NOTES
-            {
-                retained.notes.insert(
-                    identity.path.clone(),
-                    (identity.row_version, Arc::clone(&record)),
-                );
+            if stored.ctime_recorded && row_version != 0 && retained.notes.len() < RETAINED_NOTES {
+                retained
+                    .notes
+                    .insert(identity.path.clone(), (row_version, Arc::clone(&record)));
             }
             found.push(record);
         }
@@ -604,6 +697,7 @@ impl NoteStoreSnapshot<'_> {
         scope_key: &str,
         filter: Option<&crate::PermissionFilter>,
         sources: Option<&HashSet<String>>,
+        carry: Option<&HydratedCarry>,
         notes: Vec<Arc<NoteRecord>>,
     ) -> Result<Vec<Arc<NoteRecord>>, PropertyError> {
         let is_current = |retained: &RetainedHydrated| {
@@ -611,6 +705,9 @@ impl NoteStoreSnapshot<'_> {
                 && retained.config == self.config
                 && retained.bookmarks == self.bookmarks
         };
+        if let Some(carry) = carry {
+            self.carry_hydrated(scope_key, carry)?;
+        }
         let mut hydrated = Vec::with_capacity(notes.len());
         let mut missing = Vec::new();
         {
@@ -666,6 +763,70 @@ impl NoteStoreSnapshot<'_> {
         }
         hydrated.extend(loaded);
         Ok(hydrated)
+    }
+
+    /// Bring `scope_key`'s hydrated notes from `carry.from` to this clock,
+    /// dropping those the changed rows can reach: the changed notes, the
+    /// notes they link to now (new incoming links), and notes whose incoming
+    /// links name a changed note (old targets). Nothing else a hydrated note
+    /// shows changed: no path, file name, or alias moved, so no other link
+    /// resolved differently.
+    fn carry_hydrated(&self, scope_key: &str, carry: &HydratedCarry) -> Result<(), PropertyError> {
+        let carries = |retained: &RetainedHydrated| {
+            retained.clock == carry.from
+                && retained.config == self.config
+                && retained.bookmarks == self.bookmarks
+        };
+        if !read(&self.session.hydrated)
+            .get(scope_key)
+            .is_some_and(carries)
+        {
+            return Ok(());
+        }
+        let ids = serde_json::to_string(
+            &carry
+                .changed
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+        )
+        .expect("ids serialize");
+        let mut invalid = self
+            .database()
+            .connection()
+            .prepare_cached(
+                "SELECT DISTINCT note_query.path FROM links
+                 JOIN note_query ON note_query.document_id = links.resolved_target_id
+                 WHERE links.source_document_id IN (SELECT value FROM json_each(?1))",
+            )?
+            .query_map([ids], |row| row.get::<_, String>(0))?
+            .collect::<Result<HashSet<_>, _>>()?;
+        let changed_links = carry
+            .changed
+            .iter()
+            .map(|(_, path)| {
+                let extension = std::path::Path::new(path)
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .unwrap_or_default();
+                crate::file_metadata::synthetic_file_link(path, extension)
+            })
+            .collect::<HashSet<_>>();
+        invalid.extend(carry.changed.iter().map(|(_, path)| path.clone()));
+        let mut retained = write(&self.session.hydrated);
+        let Some(entry) = retained.get_mut(scope_key).filter(|entry| carries(entry)) else {
+            return Ok(());
+        };
+        entry.notes.retain(|path, note| {
+            !invalid.contains(path)
+                && !note
+                    .inlinks
+                    .iter()
+                    .any(|inlink| changed_links.contains(inlink))
+        });
+        entry.clock = self.clock.clone();
+        count(&self.session.counters.hydrated_carried, entry.notes.len());
+        Ok(())
     }
 
     /// A lookup over the pinned transaction that retains nothing.

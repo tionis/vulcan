@@ -660,7 +660,8 @@ fn update_link_suggestion_status(
                 &target_id,
                 score,
             )?;
-            crate::cache::advance_note_store_clock(&transaction)?;
+            // Both endpoints show the edge; give their rows new versions.
+            crate::cache::touch_note_rows(&transaction, &[&source_id, &target_id])?;
             transaction.commit()?;
         }
     }

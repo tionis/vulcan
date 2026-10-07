@@ -371,6 +371,7 @@ fn note_query_service_benchmark() {
             "stored_reused": counter(&counters.stored_reused),
             "hydrated_loaded": counter(&counters.hydrated_loaded),
             "hydrated_reused": counter(&counters.hydrated_reused),
+            "hydrated_carried": counter(&counters.hydrated_carried),
         },
     });
     println!("{}", serde_json::to_string_pretty(&report).unwrap());

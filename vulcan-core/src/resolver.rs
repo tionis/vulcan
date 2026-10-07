@@ -257,6 +257,65 @@ impl ResolverIndex {
     }
 }
 
+/// What a set of links can match: a superset of every document any
+/// [`ResolverIndex`] lookup could return for them. Exact and suffix path
+/// matches share the target's last path segment, file-name matches its name,
+/// and alias matches its text, all compared case-insensitively, so an index
+/// built from [`ResolverCandidates::admits`] documents resolves the links
+/// exactly like one built from every document, ambiguity included.
+pub struct ResolverCandidates {
+    segments: std::collections::HashSet<String>,
+    aliases: std::collections::HashSet<String>,
+}
+
+impl ResolverCandidates {
+    #[must_use]
+    pub fn for_links(links: &[&ResolverLink]) -> Self {
+        let mut segments = std::collections::HashSet::new();
+        let mut aliases = std::collections::HashSet::new();
+        for link in links {
+            if matches!(link.link_kind, LinkKind::External) {
+                continue;
+            }
+            let Some(target) = link.target_path_candidate.as_deref() else {
+                continue;
+            };
+            let source_dir = source_directory(&link.source_path);
+            for key in [
+                normalize_path(target),
+                normalize_joined_path(&source_dir, target),
+            ] {
+                let segment = last_segment(&key).to_ascii_lowercase();
+                segments.insert(strip_markdown_extension(&segment));
+                segments.insert(segment);
+            }
+            segments
+                .insert(file_name_without_extension(&normalize_path(target)).to_ascii_lowercase());
+            aliases.insert(target.to_ascii_lowercase());
+        }
+        Self { segments, aliases }
+    }
+
+    /// Whether `document` could match one of the links.
+    #[must_use]
+    pub fn admits(&self, document: &ResolverDocument) -> bool {
+        let segment = last_segment(&normalize_path(&document.path)).to_ascii_lowercase();
+        self.segments.contains(&segment)
+            || self.segments.contains(&strip_markdown_extension(&segment))
+            || self
+                .segments
+                .contains(&document.filename.to_ascii_lowercase())
+            || document
+                .aliases
+                .iter()
+                .any(|alias| self.aliases.contains(&alias.to_ascii_lowercase()))
+    }
+}
+
+fn last_segment(path: &str) -> &str {
+    path.rsplit_once('/').map_or(path, |(_, segment)| segment)
+}
+
 /// Compute folder distance from pre-normalized directory strings.
 fn folder_distance_precomputed(left: &str, right: &str) -> usize {
     if left == right {
@@ -818,6 +877,76 @@ mod tests {
 
         assert_eq!(result.resolved_target_id, None);
         assert_eq!(result.problem, Some(LinkResolutionProblem::Unresolved));
+    }
+
+    #[test]
+    fn candidate_indexes_resolve_like_full_indexes() {
+        let mut documents = fixture_documents();
+        for (id, path, filename, aliases) in [
+            ("a", "A/Topic.md", "Topic", vec![]),
+            ("b", "B/sub/topic.md", "topic", vec!["Other".to_string()]),
+            ("c", "C/Note%20One.md", "Note%20One", vec![]),
+            ("d", "D/Plain.txt", "Plain", vec![]),
+            (
+                "e",
+                "E/Deep/Leaf.md",
+                "Leaf",
+                vec!["second name".to_string()],
+            ),
+            ("f", "F/Unrelated.md", "Unrelated", vec![]),
+        ] {
+            documents.push(ResolverDocument {
+                id: id.to_string(),
+                path: path.to_string(),
+                filename: filename.to_string(),
+                aliases,
+            });
+        }
+        let full = ResolverIndex::build(&documents);
+        for source in ["projects/source.md", "B/x.md", "E/Deep/y.md", "root.md"] {
+            for target in [
+                "Topic",
+                "topic",
+                "Topic.md",
+                "sub/topic",
+                "A/Topic",
+                "../A/Topic.md",
+                "./Leaf",
+                "Deep/Leaf",
+                "Note One",
+                "Note%20One",
+                "Plain.txt",
+                "Second Name",
+                "OTHER",
+                "missing",
+            ] {
+                let link = ResolverLink {
+                    source_document_id: "source".to_string(),
+                    source_path: source.to_string(),
+                    target_path_candidate: Some(target.to_string()),
+                    link_kind: LinkKind::Wikilink,
+                };
+                let candidates = ResolverCandidates::for_links(&[&link]);
+                let admitted = documents
+                    .iter()
+                    .filter(|document| candidates.admits(document))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                assert!(admitted.len() < documents.len(), "{target}");
+                let narrow = ResolverIndex::build(&admitted);
+                for mode in [
+                    LinkResolutionMode::Shortest,
+                    LinkResolutionMode::Absolute,
+                    LinkResolutionMode::Relative,
+                ] {
+                    assert_eq!(
+                        narrow.resolve(&link, mode),
+                        full.resolve(&link, mode),
+                        "{source} -> {target} ({mode:?})"
+                    );
+                }
+            }
+        }
     }
 
     fn fixture_documents() -> Vec<ResolverDocument> {

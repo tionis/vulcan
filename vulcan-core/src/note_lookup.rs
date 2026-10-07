@@ -233,6 +233,12 @@ impl IdentityIndex {
         self.by_path.get(path).map(|index| &self.identities[*index])
     }
 
+    /// The position of the note at `path` in path order, if readable.
+    #[must_use]
+    pub fn position(&self, path: &str) -> Option<usize> {
+        self.by_path.get(path).copied()
+    }
+
     #[must_use]
     pub fn len(&self) -> usize {
         self.identities.len()

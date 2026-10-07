@@ -617,10 +617,10 @@ fn build_incremental_snapshot(
     // triggers record as link-dirty, and an unedited target's orphan flag.
     // Age changes do not require any hashing.
     let link_dirty = link_dirty_documents(connection)?;
-    let outbound = count_map(connection, "SELECT source_document_id, COUNT(*) FROM links WHERE resolved_target_id IS NOT NULL GROUP BY source_document_id")?;
-    let inbound = count_map(connection, "SELECT resolved_target_id, COUNT(*) FROM links WHERE resolved_target_id IS NOT NULL GROUP BY resolved_target_id")?;
+    let unlinked = unlinked_documents(connection)?;
     let now = current_unix_timestamp()?;
-    let mut statement = connection.prepare("SELECT id, path, extension, lower(hex(content_hash)), file_mtime FROM documents ORDER BY path")?;
+    // The narrow table mirrors these columns (`revision` is the content hash).
+    let mut statement = connection.prepare_cached("SELECT document_id, path, extension, lower(hex(revision)), file_mtime FROM note_query ORDER BY path")?;
     let rows = statement.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -662,7 +662,7 @@ fn build_incremental_snapshot(
             embedding_hash: old
                 .map(|state| state.embedding_hash.clone())
                 .unwrap_or_default(),
-            orphan: kind == "note" && !outbound.contains_key(&id) && !inbound.contains_key(&id),
+            orphan: kind == "note" && unlinked.contains(&id),
             stale: kind == "note" && mtime > 0 && now.saturating_sub(mtime) >= STALE_AGE_SECS,
         });
     }
@@ -726,10 +726,11 @@ fn snapshot_from_documents(
 
 fn load_document_states(connection: &Connection) -> Result<Vec<DocumentState>, CheckpointError> {
     let now = current_unix_timestamp()?;
-    let mut statement = connection.prepare(
+    // The narrow table mirrors these columns (`revision` is the content hash).
+    let mut statement = connection.prepare_cached(
         "
-        SELECT id, path, extension, lower(hex(content_hash)), file_mtime
-        FROM documents
+        SELECT document_id, path, extension, lower(hex(revision)), file_mtime
+        FROM note_query
         ORDER BY path
         ",
     )?;
@@ -743,14 +744,7 @@ fn load_document_states(connection: &Connection) -> Result<Vec<DocumentState>, C
         ))
     })?;
     let documents = rows.collect::<Result<Vec<_>, _>>()?;
-    let outbound = count_map(
-        connection,
-        "SELECT source_document_id, COUNT(*) FROM links WHERE resolved_target_id IS NOT NULL GROUP BY source_document_id",
-    )?;
-    let inbound = count_map(
-        connection,
-        "SELECT resolved_target_id, COUNT(*) FROM links WHERE resolved_target_id IS NOT NULL GROUP BY resolved_target_id",
-    )?;
+    let unlinked = unlinked_documents(connection)?;
     let link_hashes = document_link_hashes(connection)?;
     let property_hashes = document_property_hashes(connection)?;
     let embedding_hashes = document_embedding_hashes(connection)?;
@@ -764,9 +758,7 @@ fn load_document_states(connection: &Connection) -> Result<Vec<DocumentState>, C
                 _ => "attachment",
             }
             .to_string();
-            let orphan = document_kind == "note"
-                && outbound.get(&id).copied().unwrap_or(0) == 0
-                && inbound.get(&id).copied().unwrap_or(0) == 0;
+            let orphan = document_kind == "note" && unlinked.contains(&id);
             let stale = document_kind == "note"
                 && file_mtime > 0
                 && now.saturating_sub(file_mtime) >= STALE_AGE_SECS;
@@ -785,18 +777,22 @@ fn load_document_states(connection: &Connection) -> Result<Vec<DocumentState>, C
         .collect())
 }
 
-fn count_map(
+/// Documents with no resolved outbound or inbound link: two index probes
+/// per document rather than grouping every link.
+fn unlinked_documents(
     connection: &Connection,
-    sql: &str,
-) -> Result<HashMap<String, usize>, CheckpointError> {
-    let mut statement = connection.prepare(sql)?;
-    let rows = statement.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            usize::try_from(row.get::<_, i64>(1)?).unwrap_or(usize::MAX),
-        ))
-    })?;
-    Ok(rows.collect::<Result<HashMap<_, _>, _>>()?)
+) -> Result<std::collections::HashSet<String>, CheckpointError> {
+    let mut statement = connection.prepare_cached(
+        "SELECT document_id FROM note_query
+         WHERE NOT EXISTS (
+             SELECT 1 FROM links
+             WHERE links.source_document_id = note_query.document_id
+               AND links.resolved_target_id IS NOT NULL)
+           AND NOT EXISTS (
+             SELECT 1 FROM links WHERE links.resolved_target_id = note_query.document_id)",
+    )?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    Ok(rows.collect::<Result<_, _>>()?)
 }
 
 /// Documents whose link rows or resolved target paths changed since the last

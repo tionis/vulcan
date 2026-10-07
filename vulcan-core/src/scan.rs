@@ -3330,7 +3330,18 @@ fn resolve_changed_links(
     if links.is_empty() {
         return Ok(());
     }
-    let documents = load_resolver_documents(transaction)?;
+    // Index only the documents these links could match: resolution is the
+    // same, without building lookups for the whole vault.
+    let candidates = crate::resolver::ResolverCandidates::for_links(
+        &links
+            .iter()
+            .map(|link| &link.resolver_link)
+            .collect::<Vec<_>>(),
+    );
+    let documents = load_resolver_documents(transaction)?
+        .into_iter()
+        .filter(|document| candidates.admits(document))
+        .collect::<Vec<_>>();
     let index = ResolverIndex::build(&documents);
 
     let mut update_statement =
@@ -3365,32 +3376,27 @@ fn resolve_changed_links(
 fn load_resolver_documents(
     transaction: &Transaction<'_>,
 ) -> Result<Vec<ResolverDocument>, ScanError> {
-    let mut alias_statement = transaction
-        .prepare("SELECT document_id, alias_text FROM aliases ORDER BY document_id, alias_text")?;
-    let alias_rows = alias_statement.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?;
-    let mut aliases_by_document = HashMap::new();
-    for row in alias_rows {
-        let (document_id, alias_text) = row?;
-        aliases_by_document
-            .entry(document_id)
-            .or_insert_with(Vec::new)
-            .push(alias_text);
-    }
-
-    let mut statement =
-        transaction.prepare("SELECT id, path, filename FROM documents ORDER BY path")?;
+    // The narrow table mirrors every document's path, file name, and
+    // aliases in this transaction (triggers), and its covering identity
+    // index serves them without reading wide `documents` rows.
+    let mut statement = transaction.prepare_cached(
+        "SELECT document_id, path, filename, aliases FROM note_query ORDER BY path",
+    )?;
     let rows = statement.query_map([], |row| {
-        let id: String = row.get(0)?;
+        let aliases = row.get::<_, String>(3)?;
+        let mut aliases = if aliases == "[]" {
+            Vec::new()
+        } else {
+            serde_json::from_str::<Vec<String>>(&aliases).unwrap_or_default()
+        };
+        aliases.sort();
         Ok(ResolverDocument {
-            aliases: aliases_by_document.remove(&id).unwrap_or_default(),
+            id: row.get(0)?,
             path: row.get(1)?,
             filename: row.get(2)?,
-            id,
+            aliases,
         })
     })?;
-
     rows.collect::<Result<Vec<_>, _>>().map_err(ScanError::from)
 }
 

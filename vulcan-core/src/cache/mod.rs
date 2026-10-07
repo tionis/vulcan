@@ -196,6 +196,22 @@ fn sync_runtime_metadata_tx(transaction: &Transaction<'_>) -> Result<(), CacheEr
     Ok(())
 }
 
+/// Give the `note_query` rows of `document_ids` new row versions (and
+/// advance the clock) in the caller's transaction, for a change that alters
+/// what those notes show without rewriting their rows, such as an inferred
+/// link between them. Retained readers then treat both as changed.
+pub(crate) fn touch_note_rows(
+    connection: &Connection,
+    document_ids: &[&str],
+) -> rusqlite::Result<()> {
+    let mut statement =
+        connection.prepare_cached("UPDATE note_query SET path = path WHERE document_id = ?1")?;
+    for id in document_ids {
+        statement.execute([id])?;
+    }
+    Ok(())
+}
+
 /// Advance the note store clock (schema v28) in the caller's transaction.
 /// `note_query` triggers advance it for row changes; writers that change
 /// what a hydrated note shows without touching its row (link resolution,

@@ -146,9 +146,11 @@ fn snapshots_answer_like_the_direct_store_and_reuse_unchanged_notes() {
     assert_session_equals_direct(&session, &paths, "after edit");
     assert!(counter(&counters.stored_reused) > reused);
     assert!(counter(&counters.hydrated_loaded) > hydrated);
-    // Scopes refresh from the rows that changed rather than reloading.
+    // Scopes refresh from the rows that changed rather than reloading, and
+    // hydrated notes the edit cannot reach carry over.
     let refreshes = counter(&counters.identity_refreshes);
     assert!(refreshes > 0);
+    assert!(counter(&counters.hydrated_carried) > 0);
 
     // A rename keeps the document; a note leaving the restricted scope and
     // a deletion make the scope's count disagree, so it reloads whole.

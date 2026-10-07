@@ -229,8 +229,8 @@ current, and the direct path reads it under the shared vault lock. A session sna
 transaction on a pooled read-only connection, begun per request without taking or waiting for the
 vault lock. This is consistent because every write section commits what a note query can observe
 in a single transaction that also advances the store clock: a scan's rows, link resolution, and
-durable link decisions together, and an accepted suggestion's inferred link with its own clock
-advance. Any read transaction therefore sees the cache between complete writes, a write is visible
+durable link decisions together, and an accepted suggestion's inferred link with new row
+versions for both endpoints. Any read transaction therefore sees the cache between complete writes, a write is visible
 to every request that begins after it commits, and readers never queue behind writers. (An earlier
 design pinned transactions at the cooperating write epoch; under two writes per second the writer
 held the lock almost continuously, so readers could rarely pin and fell back to waiting.) Only an
@@ -248,14 +248,17 @@ version and load from a covering index (v29, widened in v30 to apply path scopes
 - identity facts per read scope (scopes with the same universe share them) while the store clock
   is unchanged, loaded single-flight; after a write a scope is refreshed from its predecessor with
   only the rows whose version is newer, and reloaded whole when its row count shows a deletion or
-  a row leaving the scope;
+  a row leaving the scope. When no path, file name, or alias changed, the refresh shares the
+  predecessor's identity index and only its row-version vector changes;
 - stored-field records per path while the row version equals the identity's (and the bookmark set
   and `store_id` match), assembled once per scope and clock into a vector in identity order that
   lookups index directly and the planner decides over in memory, carried over from the
   predecessor's vector for unchanged rows; records whose `file.ctime` came from a filesystem
   fallback are not retained;
-- hydrated file objects per scope while the clock, configuration, and bookmark set are unchanged,
-  because incoming links, tasks, and lists depend on rows other than the note's own.
+- hydrated file objects per scope while the clock, configuration, and bookmark set are unchanged.
+  Across a refresh that changed no identity fact they carry over except for the changed notes,
+  the notes the changed notes now link to, and notes whose incoming links name a changed note:
+  with no path, file name, or alias moved, no other link resolves differently.
 
 Restricted scopes stay as cheap as unrestricted ones: identity loads apply path grants to each
 `note_query` row through the covering index instead of a CTE of permitted ids, the planner's
