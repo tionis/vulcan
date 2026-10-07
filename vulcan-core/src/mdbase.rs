@@ -28,6 +28,8 @@ mod cel;
 pub use cel::*;
 mod query;
 pub use query::*;
+mod views;
+pub use views::*;
 mod query_sql;
 pub use query_sql::MdbaseSqlPredicate;
 mod api;
@@ -70,6 +72,8 @@ pub const MDBASE_V03_DATA_CONTRACTS_SUITE: &str =
     include_str!("../resources/mdbase/v0.3/upstream/tests/data-contracts/data-contracts.yaml");
 pub const MDBASE_V03_CEL_SUITE: &str =
     include_str!("../resources/mdbase/v0.3/upstream/tests/cel/cel-profile.yaml");
+pub const MDBASE_V03_VIEWS_SUITE: &str =
+    include_str!("../resources/mdbase/v0.3/upstream/tests/views/view-records.yaml");
 pub const MDBASE_V03_TASKNOTES_CONTRACT: &str = include_str!(
     "../resources/mdbase/v0.3/upstream/examples/v0.3/tasknotes-migration/v0.3/_contracts/tasknotes.task.md"
 );

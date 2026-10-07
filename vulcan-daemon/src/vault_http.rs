@@ -800,6 +800,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mdbase_view_routes_list_execute_and_report_canonical_failures() {
+        let vault = tempfile::tempdir().expect("vault");
+        let root = vault.path();
+        std::fs::create_dir(root.join(".vulcan")).expect("config directory");
+        std::fs::write(root.join("mdbase.yaml"), "spec_version: \"0.3.0\"\n").expect("config");
+        std::fs::create_dir(root.join("_types")).expect("types");
+        for (path, contents) in [
+            (
+                "_types/task.md",
+                "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    properties:\n      title: {type: string}\n---\n",
+            ),
+            (
+                "_types/view.md",
+                "---\nkind: mdbase.type\nname: view\nmatch:\n  where:\n    type: view\nschema:\n  dialect: json-schema-2020-12\n  value: {type: object}\n---\n",
+            ),
+            ("a.md", "---\ntype: task\ntitle: A\n---\n"),
+            (
+                "views.md",
+                "---\ntype: view\nid: tasks\nversion: 1\nname: Tasks\nquery:\n  types: [task]\nviews:\n  - id: all\n    name: All\n    select: [title]\n  - id: needs-context\n    name: Needs context\n    context:\n      this:\n        on_missing: error\n---\n",
+            ),
+        ] {
+            std::fs::write(root.join(path), contents).expect("fixture");
+        }
+        let state = VaultHttpState::new(
+            VaultPaths::new(root),
+            ServeRouteOptions {
+                permissions: None,
+                watch_enabled: false,
+            },
+            VaultHttpSecurity::new("secret", vec!["127.0.0.1:3210".to_string()], Vec::new()),
+        )
+        .expect("state");
+        let router = vault_router(state);
+        let get = |uri: &str| {
+            HttpRequest::builder()
+                .uri(uri)
+                .header(HOST, "127.0.0.1:3210")
+                .header(VAULT_HTTP_TOKEN_HEADER, "secret")
+                .body(Body::empty())
+                .expect("request")
+        };
+        let response = router.clone().oneshot(get("/mdbase/views")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let list = body(response).await;
+        assert_eq!(list["result"]["views"][0]["source"]["path"], "views.md");
+
+        let response = router
+            .clone()
+            .oneshot(get("/mdbase/view?source=tasks&view=all"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let result = body(response).await;
+        assert_eq!(result["result"]["results"][0]["values"]["title"], "A");
+        assert_eq!(result["result"]["meta"]["view"]["id"], "all");
+
+        for (uri, status, code) in [
+            (
+                "/mdbase/view?source=tasks&view=missing",
+                StatusCode::NOT_FOUND,
+                Some("view_not_found"),
+            ),
+            (
+                "/mdbase/view?source=tasks&view=needs-context",
+                StatusCode::BAD_REQUEST,
+                Some("context_required"),
+            ),
+            (
+                "/mdbase/view?source=tasks&view=needs-context&context=gone.md",
+                StatusCode::NOT_FOUND,
+                Some("context_not_found"),
+            ),
+            (
+                "/mdbase/view?source=tasks&view=all&context=a.md&no_context=true",
+                StatusCode::BAD_REQUEST,
+                None,
+            ),
+            ("/mdbase/view?source=tasks", StatusCode::BAD_REQUEST, None),
+        ] {
+            let response = router.clone().oneshot(get(uri)).await.unwrap();
+            assert_eq!(response.status(), status, "{uri}");
+            let value = body(response).await;
+            assert_eq!(value["ok"], false, "{uri}");
+            assert_eq!(value["code"].as_str(), code, "{uri}");
+        }
+    }
+
+    #[tokio::test]
     async fn router_publishes_exactly_the_routes_it_installs() {
         let (_vault, state) = fixture();
         let response = vault_router(state)

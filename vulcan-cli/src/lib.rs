@@ -663,6 +663,13 @@ impl From<vulcan_app::AppError> for CliError {
     fn from(error: vulcan_app::AppError) -> Self {
         let code = match error.code() {
             Some("concurrent_modification") => "concurrent_modification",
+            // Canonical saved-view failures, so scripts can branch on them.
+            Some("view_not_found") => "view_not_found",
+            Some("invalid_view") => "invalid_view",
+            Some("context_required") => "context_required",
+            Some("context_not_found") => "context_not_found",
+            Some("context_type_mismatch") => "context_type_mismatch",
+            Some("unsupported_presentation") => "unsupported_presentation",
             _ => "operation_failed",
         };
         Self {

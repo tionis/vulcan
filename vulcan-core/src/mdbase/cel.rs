@@ -71,12 +71,18 @@ pub struct MdbaseCelProgramStats {
     pub estimated_work: usize,
 }
 
+#[derive(Debug, Default)]
+struct ProjectionReads {
+    names: BTreeSet<String>,
+    dynamic: bool,
+}
+
 #[derive(Debug)]
 pub struct MdbaseCelProgram {
     source: String,
     program: Program,
     stats: MdbaseCelProgramStats,
-    projection_dependencies: BTreeSet<String>,
+    projection_reads: ProjectionReads,
     uses_link_resolution: bool,
     sql_predicate: Option<super::MdbaseSqlPredicate>,
 }
@@ -100,7 +106,14 @@ impl MdbaseCelProgram {
     }
 
     pub fn projection_dependencies(&self) -> impl Iterator<Item = &str> {
-        self.projection_dependencies.iter().map(String::as_str)
+        self.projection_reads.names.iter().map(String::as_str)
+    }
+
+    /// Whether the expression indexes `projection` with a computed key, so
+    /// its projection dependencies are not statically known.
+    #[must_use]
+    pub const fn reads_dynamic_projection(&self) -> bool {
+        self.projection_reads.dynamic
     }
 
     /// Static dependency, including calls in branches that may not execute.
@@ -203,8 +216,8 @@ impl MdbaseCelEngine {
             })?
             .map_err(|error| MdbaseCelError::new("expression_compile_error", error.to_string()))?;
         let stats = inspect_ast(&expression, &self.limits)?;
-        let mut projection_dependencies = BTreeSet::new();
-        collect_projection_dependencies(&expression, &mut projection_dependencies);
+        let mut projection_reads = ProjectionReads::default();
+        collect_projection_dependencies(&expression, &mut projection_reads);
         let program = catch_unwind(AssertUnwindSafe(|| Program::compile(source)))
             .map_err(|_| {
                 MdbaseCelError::new(
@@ -223,7 +236,7 @@ impl MdbaseCelEngine {
             source: source.to_string(),
             program,
             stats,
-            projection_dependencies,
+            projection_reads,
             uses_link_resolution,
         })
     }
@@ -365,15 +378,31 @@ impl MdbaseCelEngine {
     }
 }
 
-fn collect_projection_dependencies(expression: &IdedExpr, dependencies: &mut BTreeSet<String>) {
+/// Named projections this expression reads: `projection.x` and
+/// `projection["x"]` name `x`; `projection[key]` with any other key cannot be
+/// resolved statically, so it is recorded as dynamic access.
+fn collect_projection_dependencies(expression: &IdedExpr, dependencies: &mut ProjectionReads) {
     match &expression.expr {
         Expr::Select(select) => {
             if matches!(&select.operand.expr, Expr::Ident(name) if name == "projection") {
-                dependencies.insert(select.field.clone());
+                dependencies.names.insert(select.field.clone());
             }
             collect_projection_dependencies(&select.operand, dependencies);
         }
         Expr::Call(call) => {
+            if call.func_name == cel_parser::ast::operators::INDEX
+                && matches!(
+                    call.args.first().map(|operand| &operand.expr),
+                    Some(Expr::Ident(name)) if name == "projection"
+                )
+            {
+                match call.args.get(1).map(|key| &key.expr) {
+                    Some(Expr::Literal(cel_parser::reference::Val::String(name))) => {
+                        dependencies.names.insert(name.clone());
+                    }
+                    _ => dependencies.dynamic = true,
+                }
+            }
             if let Some(target) = &call.target {
                 collect_projection_dependencies(target, dependencies);
             }
@@ -601,13 +630,38 @@ impl MdbaseCelLinkIndex {
     }
 }
 
+/// A query's invocation context record as bound to `this`.
+///
+/// Built once per execution, before any candidate is evaluated, from the
+/// context record's own type fields: `this.missing` and `this.present.raw.x`
+/// follow the context's schema, not each candidate's.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MdbaseCelInvocationContext {
+    value: serde_json::Value,
+}
+
+impl MdbaseCelInvocationContext {
+    #[must_use]
+    pub fn new(
+        record: &MdbaseRecordDocument,
+        known_fields: impl IntoIterator<Item = String>,
+    ) -> Self {
+        Self {
+            value: invocation_context_value(
+                record,
+                &known_fields.into_iter().collect::<BTreeSet<_>>(),
+            ),
+        }
+    }
+}
+
 impl MdbaseCelContext {
     pub fn query(
         kind: MdbaseCelContextKind,
         record: &MdbaseRecordDocument,
         known_fields: impl IntoIterator<Item = String>,
         projection: serde_json::Value,
-        invocation_context: Option<&MdbaseRecordDocument>,
+        invocation_context: Option<&MdbaseCelInvocationContext>,
         clock: MdbaseCelClock,
     ) -> Result<Self, MdbaseCelError> {
         if !matches!(
@@ -624,9 +678,7 @@ impl MdbaseCelContext {
         bindings.insert("projection".to_string(), projection);
         bindings.insert(
             "this".to_string(),
-            invocation_context.map_or(serde_json::Value::Null, |record| {
-                invocation_context_value(record, &known_fields)
-            }),
+            invocation_context.map_or(serde_json::Value::Null, |context| context.value.clone()),
         );
         Ok(Self {
             kind,

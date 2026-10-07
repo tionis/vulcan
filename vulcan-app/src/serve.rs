@@ -3,12 +3,13 @@ use crate::browse::{
     build_dataview_query_report_in, evaluate_base_file_in,
 };
 use crate::mdbase::{
-    build_mdbase_metadata_read_report, build_mdbase_query_report, parse_mdbase_query,
-    MdbaseQuerySession,
+    build_mdbase_metadata_read_report, build_mdbase_query_report, build_mdbase_view_list_report,
+    build_mdbase_view_report, parse_mdbase_query, MdbaseQuerySession,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use vulcan_core::mdbase::{MdbaseViewContextArg, MdbaseViewInvocation};
 use vulcan_core::note_session::NoteStoreSession;
 use vulcan_core::{
     query_graph_analytics_with_filter, resolve_permission_profile, search_vault_with_filter,
@@ -59,6 +60,8 @@ enum ServeRouteId {
     DataviewEval,
     MdbaseQuery,
     MdbaseRead,
+    MdbaseViews,
+    MdbaseView,
     Query,
     BasesEval,
 }
@@ -117,6 +120,14 @@ const SERVE_ROUTES: &[ServeRouteDefinition] = &[
     ServeRouteDefinition {
         id: ServeRouteId::MdbaseRead,
         path: "/mdbase/read",
+    },
+    ServeRouteDefinition {
+        id: ServeRouteId::MdbaseViews,
+        path: "/mdbase/views",
+    },
+    ServeRouteDefinition {
+        id: ServeRouteId::MdbaseView,
+        path: "/mdbase/view",
     },
     ServeRouteDefinition {
         id: ServeRouteId::Query,
@@ -277,6 +288,21 @@ fn route_query_schema(route: ServeRouteId) -> Value {
             json!({ "path": { "type": "string", "minLength": 1,
                 "description": "record path; returns its metadata without body, links, or tags" } }),
             json!(["path"]),
+        ),
+        ServeRouteId::MdbaseViews => (json!({}), json!([])),
+        ServeRouteId::MdbaseView => (
+            json!({
+                "source": { "type": "string", "minLength": 1,
+                    "description": "view record path or stable view-record ID" },
+                "view": { "type": "string", "minLength": 1, "description": "named-view ID" },
+                "context": { "type": "string", "minLength": 1,
+                    "description": "record path bound to `this`" },
+                "no_context": boolean_query_schema(),
+                "limit": nonnegative_integer_query_schema(),
+                "offset": nonnegative_integer_query_schema(),
+                "timezone": { "type": "string", "minLength": 1 }
+            }),
+            json!(["source", "view"]),
         ),
         ServeRouteId::Root | ServeRouteId::Health | ServeRouteId::GraphStats => {
             (json!({}), json!([]))
@@ -519,6 +545,58 @@ pub fn route_request_with_sessions(
             match result {
                 Ok(result) => ServeResponse::ok(json!({ "ok": true, "result": result })),
                 Err(error) => ServeResponse::error(500, error.to_string()),
+            }
+        }
+        ServeRouteId::MdbaseViews => {
+            match build_mdbase_view_list_report(paths, read_filter.as_ref()) {
+                Ok(result) => ServeResponse::ok(json!({ "ok": true, "result": result })),
+                Err(error) => ServeResponse::error(500, error.to_string()),
+            }
+        }
+        ServeRouteId::MdbaseView => {
+            let (Some(source), Some(view)) = (
+                first_param(&request.query, "source"),
+                first_param(&request.query, "view"),
+            ) else {
+                return ServeResponse::error(
+                    400,
+                    "missing required query parameters: source, view",
+                );
+            };
+            let context = match (
+                first_param(&request.query, "context"),
+                parse_optional_bool(&request.query, "no_context").unwrap_or(false),
+            ) {
+                (Some(_), true) => {
+                    return ServeResponse::error(400, "context and no_context are exclusive")
+                }
+                (Some(path), false) => MdbaseViewContextArg::Path(path.to_string()),
+                (None, true) => MdbaseViewContextArg::Null,
+                (None, false) => MdbaseViewContextArg::Absent,
+            };
+            let invocation = MdbaseViewInvocation {
+                source: source.to_string(),
+                view: view.to_string(),
+                context,
+                limit: parse_optional_usize(&request.query, "limit"),
+                offset: parse_optional_usize(&request.query, "offset"),
+                timezone: first_param(&request.query, "timezone").map(ToString::to_string),
+                render: false,
+            };
+            match build_mdbase_view_report(paths, &invocation, read_filter.as_ref()) {
+                Ok(result) => ServeResponse::ok(json!({ "ok": true, "result": result })),
+                // Canonical view failures are the caller's to correct.
+                Err(error) => match error.code() {
+                    Some(code) => ServeResponse {
+                        status: if code.ends_with("_not_found") {
+                            404
+                        } else {
+                            400
+                        },
+                        body: json!({ "ok": false, "error": error.to_string(), "code": code }),
+                    },
+                    None => ServeResponse::error(500, error.to_string()),
+                },
             }
         }
         ServeRouteId::DataviewQuery => {
@@ -925,6 +1003,8 @@ mod tests {
                 "/dataview/eval",
                 "/mdbase/query",
                 "/mdbase/read",
+                "/mdbase/views",
+                "/mdbase/view",
                 "/query",
                 "/bases/eval"
             ])

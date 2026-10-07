@@ -1,14 +1,15 @@
 //! Native contract gates for the Vulcan-owned features
-//! `vulcan.record_write.v1` and `vulcan.lifecycle.v1`
-//! (`docs/specs/mdb/IMPLEMENTATION_CONTRACTS.md` §1–5). Each gate drives the
-//! shared App write pipeline in a fresh temporary collection; a feature is
-//! claimed only when every one of its gates passes. These are feature claims
-//! in Vulcan's namespace, not upstream `core_write` or `lifecycle` profiles.
+//! `vulcan.record_write.v1`, `vulcan.lifecycle.v1`, and
+//! `vulcan.saved_views.v1` (`docs/specs/mdb/IMPLEMENTATION_CONTRACTS.md`).
+//! Each gate drives the shared App pipeline in a fresh temporary collection; a
+//! feature is claimed only when every one of its gates passes. These are
+//! feature claims in Vulcan's namespace, not upstream profiles.
 
 use super::{
-    apply_mdbase_write, build_mdbase_read_report, plan_mdbase_write, MdbaseWriteApplyReport,
-    MdbaseWriteChangeRequest, MdbaseWriteExecutionOptions, MdbaseWriteOperation,
-    MdbaseWritePlanReport, MdbaseWritePlanRequest,
+    apply_mdbase_write, build_mdbase_read_report, build_mdbase_view_list_report,
+    build_mdbase_view_report, plan_mdbase_write, MdbaseWriteApplyReport, MdbaseWriteChangeRequest,
+    MdbaseWriteExecutionOptions, MdbaseWriteOperation, MdbaseWritePlanReport,
+    MdbaseWritePlanRequest,
 };
 use crate::mdbase_conformance::{MdbaseConformanceCaseResult, MdbaseConformanceCaseStatus};
 use crate::AppError;
@@ -16,10 +17,13 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::fs;
-use vulcan_core::VaultPaths;
+use vulcan_core::mdbase::{MdbaseViewContextArg, MdbaseViewInvocation};
+use vulcan_core::permissions::{PathPermission, ResourceSpecifier};
+use vulcan_core::{PermissionFilter, VaultPaths};
 
 pub const RECORD_WRITE_FEATURE: &str = "vulcan.record_write.v1";
 pub const LIFECYCLE_FEATURE: &str = "vulcan.lifecycle.v1";
+pub const SAVED_VIEWS_FEATURE: &str = "vulcan.saved_views.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MdbaseFeatureResult {
@@ -32,9 +36,12 @@ pub struct MdbaseFeatureResult {
 
 type Gate = fn() -> Result<(), String>;
 
-/// Run every gate of both features.
+/// Run every native feature gate. `upstream` is the pinned fixture evidence:
+/// saved views also require the upstream `view_records` suite to pass.
 #[must_use]
-pub fn run_mdbase_feature_gates() -> Vec<MdbaseFeatureResult> {
+pub fn run_mdbase_feature_gates(
+    upstream: &[MdbaseConformanceCaseResult],
+) -> Vec<MdbaseFeatureResult> {
     let record_write: [(&str, &str, Gate); 6] = [
         (
             "vulcan.record_write.crud",
@@ -84,41 +91,91 @@ pub fn run_mdbase_feature_gates() -> Vec<MdbaseFeatureResult> {
             events_gate,
         ),
     ];
-    [
+    let saved_views: [(&str, &str, Gate); 3] = [
+        (
+            "vulcan.saved_views.scoping",
+            "listing and execution see only the caller's sources, contexts, and candidates",
+            saved_view_scoping_gate,
+        ),
+        (
+            "vulcan.saved_views.freshness",
+            "source and record edits reach the next listing and execution",
+            saved_view_freshness_gate,
+        ),
+        (
+            "vulcan.saved_views.headless",
+            "unknown presentations run headlessly; rendering is reported unsupported",
+            saved_view_headless_gate,
+        ),
+    ];
+    let mut results = [
         (RECORD_WRITE_FEATURE, &record_write[..]),
         (LIFECYCLE_FEATURE, &lifecycle[..]),
+        (SAVED_VIEWS_FEATURE, &saved_views[..]),
     ]
     .into_iter()
-    .map(|(feature, gates)| {
-        let cases = gates
+    .map(|(feature, gates)| run_feature(feature, gates))
+    .collect::<Vec<_>>();
+    let upstream_views = crate::mdbase_conformance::optional_feature_passed(
+        upstream,
+        crate::mdbase_conformance::MDBASE_VIEW_RECORDS_FEATURE,
+    );
+    if let Some(views) = results
+        .iter_mut()
+        .find(|result| result.feature == SAVED_VIEWS_FEATURE)
+    {
+        views.cases.push(MdbaseConformanceCaseResult {
+            id: "vulcan.saved_views.upstream".to_string(),
+            name: "the pinned upstream view_records suite passes".to_string(),
+            fixture_set: "views".to_string(),
+            operation: "execute_view".to_string(),
+            covers: vec![SAVED_VIEWS_FEATURE.to_string()],
+            status: if upstream_views {
+                MdbaseConformanceCaseStatus::Pass
+            } else {
+                MdbaseConformanceCaseStatus::Fail
+            },
+            message: (!upstream_views)
+                .then(|| "upstream view_records evidence is missing or failing".to_string()),
+        });
+        views.passed &= upstream_views;
+    }
+    results
+}
+
+fn run_feature(feature: &str, gates: &[(&str, &str, Gate)]) -> MdbaseFeatureResult {
+    let (fixture_set, operation) = if feature == SAVED_VIEWS_FEATURE {
+        ("vulcan-view-gates", "view")
+    } else {
+        ("vulcan-write-gates", "write")
+    };
+    let cases = gates
+        .iter()
+        .map(|(id, name, gate)| {
+            let result = gate();
+            MdbaseConformanceCaseResult {
+                id: (*id).to_string(),
+                name: (*name).to_string(),
+                fixture_set: fixture_set.to_string(),
+                operation: operation.to_string(),
+                covers: vec![feature.to_string()],
+                status: if result.is_ok() {
+                    MdbaseConformanceCaseStatus::Pass
+                } else {
+                    MdbaseConformanceCaseStatus::Fail
+                },
+                message: result.err(),
+            }
+        })
+        .collect::<Vec<_>>();
+    MdbaseFeatureResult {
+        feature: feature.to_string(),
+        namespace: "vulcan".to_string(),
+        passed: cases
             .iter()
-            .map(|(id, name, gate)| {
-                let result = gate();
-                MdbaseConformanceCaseResult {
-                    id: (*id).to_string(),
-                    name: (*name).to_string(),
-                    fixture_set: "vulcan-write-gates".to_string(),
-                    operation: "write".to_string(),
-                    covers: vec![feature.to_string()],
-                    status: if result.is_ok() {
-                        MdbaseConformanceCaseStatus::Pass
-                    } else {
-                        MdbaseConformanceCaseStatus::Fail
-                    },
-                    message: result.err(),
-                }
-            })
-            .collect::<Vec<_>>();
-        MdbaseFeatureResult {
-            feature: feature.to_string(),
-            namespace: "vulcan".to_string(),
-            passed: cases
-                .iter()
-                .all(|case| case.status == MdbaseConformanceCaseStatus::Pass),
-            cases,
-        }
-    })
-    .collect()
+            .all(|case| case.status == MdbaseConformanceCaseStatus::Pass),
+        cases,
+    }
 }
 
 struct Collection {
@@ -490,11 +547,169 @@ fn events_gate() -> Result<(), String> {
     )
 }
 
+const VIEW_TYPE: &str = "---\nkind: mdbase.type\nname: view\nmatch:\n  where:\n    type: view\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n---\n";
+
+/// A view record whose `context` view needs a task context; the `all` view
+/// lists task titles; presentation names a renderer Vulcan does not ship.
+const VIEW_RECORD: &str = "---\ntype: view\nid: tasks\nversion: 1\nname: Tasks\nquery:\n  types: [task]\nviews:\n  - id: all\n    name: All\n    select: [title]\n    order_by:\n      - field: title\n    presentation:\n      type: example.unknown-renderer\n  - id: context\n    name: Context\n    context:\n      this:\n        on_missing: error\n    where: 'title == this.title'\n    select: [title]\n---\n";
+
+impl Collection {
+    fn with_views() -> Result<Self, String> {
+        let collection = Self::new("")?;
+        let root = collection.directory.path();
+        for (path, contents) in [
+            ("_types/view.md", VIEW_TYPE),
+            ("views/tasks.md", VIEW_RECORD),
+            ("open/a.md", RECORD),
+            ("hidden/b.md", "---\ntype: task\ntitle: Beta\n---\n"),
+        ] {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().expect("fixture path has a parent"))
+                .and_then(|()| fs::write(path, contents))
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(collection)
+    }
+
+    fn view(
+        &self,
+        view: &str,
+        context: MdbaseViewContextArg,
+        render: bool,
+        filter: Option<&PermissionFilter>,
+    ) -> Result<Vec<String>, AppError> {
+        build_mdbase_view_report(
+            &self.paths,
+            &MdbaseViewInvocation {
+                source: "tasks".to_string(),
+                view: view.to_string(),
+                context,
+                render,
+                ..MdbaseViewInvocation::default()
+            },
+            filter,
+        )
+        .map(|report| {
+            report
+                .results
+                .iter()
+                .filter_map(|row| row.values.as_ref()?["title"].as_str().map(str::to_string))
+                .collect()
+        })
+    }
+}
+
+fn hide_folder(folder: &str) -> PermissionFilter {
+    PermissionFilter::new(PathPermission {
+        allow: vec![ResourceSpecifier::Folder("**".to_string())],
+        deny: vec![ResourceSpecifier::Folder(format!("{folder}/**"))],
+    })
+}
+
+fn saved_view_scoping_gate() -> Result<(), String> {
+    let collection = Collection::with_views()?;
+    let all = |filter| {
+        collection
+            .view("all", MdbaseViewContextArg::Absent, false, filter)
+            .map_err(|error| error.to_string())
+    };
+    ensure(
+        all(None)? == ["Alpha", "Beta"],
+        "unrestricted view lost records",
+    )?;
+    let hidden = hide_folder("hidden");
+    ensure(
+        all(Some(&hidden))? == ["Alpha"],
+        "a view returned a hidden candidate",
+    )?;
+    ensure(
+        collection
+            .view(
+                "context",
+                MdbaseViewContextArg::Path("hidden/b.md".to_string()),
+                false,
+                Some(&hidden),
+            )
+            .is_err_and(|error| error.code() == Some("context_not_found")),
+        "a hidden context record was bound",
+    )?;
+    let no_views = hide_folder("views");
+    ensure(
+        build_mdbase_view_list_report(&collection.paths, Some(&no_views))
+            .map_err(|error| error.to_string())?
+            .views
+            .is_empty(),
+        "a hidden view source was listed",
+    )?;
+    ensure(
+        all(Some(&no_views)).is_err_and(|error| error.contains("no view record")),
+        "a hidden view source executed",
+    )
+}
+
+fn saved_view_freshness_gate() -> Result<(), String> {
+    let collection = Collection::with_views()?;
+    let titles = || {
+        collection
+            .view("all", MdbaseViewContextArg::Absent, false, None)
+            .map_err(|error| error.to_string())
+    };
+    titles()?;
+    collection.write(
+        MdbaseWriteOperation::Update,
+        "open/a.md",
+        Some("---\ntype: task\ntitle: Gamma\n---\nBody\n"),
+    )?;
+    ensure(
+        titles()? == ["Beta", "Gamma"],
+        "a record edit was not visible to the next execution",
+    )?;
+    fs::write(
+        collection.directory.path().join("views/tasks.md"),
+        VIEW_RECORD.replace("name: All", "name: Everything"),
+    )
+    .map_err(|error| error.to_string())?;
+    let list = build_mdbase_view_list_report(&collection.paths, None)
+        .map_err(|error| error.to_string())?;
+    ensure(
+        list.views
+            .first()
+            .and_then(|source| source.views.first())
+            .is_some_and(|view| view.name == "Everything"),
+        "a view source edit was not visible to the next listing",
+    )
+}
+
+fn saved_view_headless_gate() -> Result<(), String> {
+    let collection = Collection::with_views()?;
+    ensure(
+        collection
+            .view("all", MdbaseViewContextArg::Absent, false, None)
+            .is_ok_and(|titles| titles.len() == 2),
+        "an unknown presentation blocked headless execution",
+    )?;
+    ensure(
+        collection
+            .view("all", MdbaseViewContextArg::Absent, true, None)
+            .is_err_and(|error| error.code() == Some("unsupported_presentation")),
+        "a rendered request was not reported unsupported",
+    )?;
+    ensure(
+        collection
+            .view("context", MdbaseViewContextArg::Absent, false, None)
+            .is_err_and(|error| error.code() == Some("context_required")),
+        "a required context was not enforced",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
     fn every_feature_gate_passes() {
-        for feature in super::run_mdbase_feature_gates() {
+        let upstream = crate::mdbase_conformance::run_mdbase_core_read_conformance()
+            .expect("conformance runs")
+            .cases;
+        for feature in super::run_mdbase_feature_gates(&upstream) {
             for case in &feature.cases {
                 assert_eq!(
                     case.status,
@@ -506,5 +721,19 @@ mod tests {
             }
             assert!(feature.passed, "{}", feature.feature);
         }
+    }
+
+    #[test]
+    fn saved_views_require_upstream_view_evidence() {
+        let features = super::run_mdbase_feature_gates(&[]);
+        let views = features
+            .iter()
+            .find(|feature| feature.feature == super::SAVED_VIEWS_FEATURE)
+            .expect("saved views are gated");
+        assert!(!views.passed);
+        assert!(features
+            .iter()
+            .filter(|feature| feature.feature != super::SAVED_VIEWS_FEATURE)
+            .all(|feature| feature.passed));
     }
 }

@@ -8,16 +8,18 @@ use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
 use vulcan_core::mdbase::{
-    compile_mdbase_query, compose_mdbase_type_behavior, execute_mdbase_query,
-    load_mdbase_collection, load_mdbase_contract_registry, load_mdbase_records_with_contracts,
-    load_mdbase_type_registry, match_mdbase_record_types, project_mdbase_contract_view,
-    render_mdbase_path_pattern, validate_mdbase_schema_value, MdbaseCelClock, MdbaseCelContext,
-    MdbaseCelContextKind, MdbaseCelEngine, MdbaseCelLimits, MdbaseRecordDiagnostic,
+    compile_mdbase_query, compose_mdbase_type_behavior, execute_mdbase_query, execute_mdbase_view,
+    list_mdbase_views, load_mdbase_collection, load_mdbase_contract_registry,
+    load_mdbase_records_with_contracts, load_mdbase_type_registry, match_mdbase_record_types,
+    project_mdbase_contract_view, render_mdbase_path_pattern, validate_mdbase_schema_value,
+    MdbaseCelClock, MdbaseCelContext, MdbaseCelContextKind, MdbaseCelEngine, MdbaseCelLimits,
+    MdbaseRecordDiagnostic, MdbaseViewContextArg, MdbaseViewInvocation,
     MDBASE_BUNDLED_ASSET_DIGEST, MDBASE_CANONICAL_SCHEMA_BASE, MDBASE_SCHEMA_MAX_BYTES,
     MDBASE_SCHEMA_MAX_DEPTH, MDBASE_SCHEMA_MAX_FILES, MDBASE_SPEC_UPSTREAM_COMMIT,
     MDBASE_SPEC_VERSION, MDBASE_V03_CEL_SUITE, MDBASE_V03_CONFLICTING_TASKNOTES_CONTRACT,
     MDBASE_V03_CORE_COLLECTION_SUITE, MDBASE_V03_DATA_CONTRACTS_SUITE, MDBASE_V03_MANIFEST,
     MDBASE_V03_TASKNOTES_CONTRACT, MDBASE_V03_TASKNOTES_TYPE, MDBASE_V03_VALID_TASK,
+    MDBASE_V03_VIEWS_SUITE,
 };
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 
@@ -68,6 +70,8 @@ pub struct MdbaseConformanceEvidenceReport {
     pub artifact_digest: String,
     pub profiles: Vec<MdbaseConformanceProfileResult>,
     pub cases: Vec<MdbaseConformanceCaseResult>,
+    /// Upstream optional features (Chapter 16) whose pinned evidence passed.
+    pub optional_features: Vec<String>,
     /// Vulcan-owned feature gates, reported apart from upstream profiles.
     pub features: Vec<crate::mdbase::MdbaseFeatureResult>,
 }
@@ -82,6 +86,8 @@ pub struct MdbaseConformanceClaim {
     pub json_schema: MdbaseConformanceJsonSchema,
     pub limits: BTreeMap<String, serde_json::Value>,
     pub evidence: Vec<MdbaseConformanceEvidence>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub optional_features: Vec<String>,
     #[serde(rename = "x-vulcan-upstream-commit")]
     pub upstream_commit: String,
     /// Vulcan-owned features whose native gates passed. These are not
@@ -183,6 +189,8 @@ pub fn run_mdbase_core_read_conformance() -> Result<MdbaseConformanceEvidenceRep
         serde_yaml::from_str::<FixtureSuite>(MDBASE_V03_DATA_CONTRACTS_SUITE)
             .map_err(AppError::operation)?,
         serde_yaml::from_str::<FixtureSuite>(MDBASE_V03_CEL_SUITE).map_err(AppError::operation)?,
+        serde_yaml::from_str::<FixtureSuite>(MDBASE_V03_VIEWS_SUITE)
+            .map_err(AppError::operation)?,
     ];
     let manifest = serde_yaml::from_str::<FixtureManifest>(MDBASE_V03_MANIFEST)
         .map_err(AppError::operation)?;
@@ -192,7 +200,10 @@ pub fn run_mdbase_core_read_conformance() -> Result<MdbaseConformanceEvidenceRep
             let selected = group
                 .tests
                 .iter()
-                .filter(|case| case_covers(case).iter().any(|cover| target_cover(cover)))
+                .filter(|case| {
+                    suite.fixture_set == VIEWS_FIXTURE_SET
+                        || case_covers(case).iter().any(|cover| target_cover(cover))
+                })
                 .collect::<Vec<_>>();
             if selected.is_empty() {
                 continue;
@@ -219,7 +230,7 @@ pub fn run_mdbase_core_read_conformance() -> Result<MdbaseConformanceEvidenceRep
                     name: case.name.clone(),
                     fixture_set: suite.fixture_set.clone(),
                     operation: case.operation.clone(),
-                    covers: case_covers(case),
+                    covers: suite_case_covers(&suite.fixture_set, case),
                     status,
                     message,
                 });
@@ -259,8 +270,9 @@ pub fn run_mdbase_core_read_conformance() -> Result<MdbaseConformanceEvidenceRep
         upstream_commit: MDBASE_SPEC_UPSTREAM_COMMIT.to_string(),
         artifact_digest: format!("blake3:{MDBASE_BUNDLED_ASSET_DIGEST}"),
         profiles,
+        optional_features: passed_optional_features(&results),
+        features: crate::mdbase::run_mdbase_feature_gates(&results),
         cases: results,
-        features: crate::mdbase::run_mdbase_feature_gates(),
     })
 }
 
@@ -511,6 +523,7 @@ fn build_mdbase_conformance_claim_at(
                 report.upstream_commit, MDBASE_BUNDLED_ASSET_DIGEST
             ),
         }],
+        optional_features: report.optional_features.clone(),
         upstream_commit: report.upstream_commit.clone(),
         features: report
             .features
@@ -672,6 +685,43 @@ fn target_cover(cover: &str) -> bool {
     TARGET_PROFILES
         .iter()
         .any(|profile| cover.starts_with(&format!("{profile}.")))
+}
+
+/// The pinned saved-view suite, which is evidence for the `view_records`
+/// optional feature as well as for the `cel_query` requirements it covers.
+const VIEWS_FIXTURE_SET: &str = "views";
+/// Upstream optional feature claimed when every saved-view case passes.
+pub const MDBASE_VIEW_RECORDS_FEATURE: &str = "view_records";
+
+/// An optional feature is claimed only with evidence: at least one case
+/// covers it and every such case passed.
+fn passed_optional_features(results: &[MdbaseConformanceCaseResult]) -> Vec<String> {
+    [MDBASE_VIEW_RECORDS_FEATURE]
+        .into_iter()
+        .filter(|feature| optional_feature_passed(results, feature))
+        .map(ToString::to_string)
+        .collect()
+}
+
+pub(crate) fn optional_feature_passed(
+    results: &[MdbaseConformanceCaseResult],
+    feature: &str,
+) -> bool {
+    let prefix = format!("{feature}.");
+    let mut cases = results
+        .iter()
+        .filter(|case| case.covers.iter().any(|cover| cover.starts_with(&prefix)))
+        .peekable();
+    cases.peek().is_some() && cases.all(|case| case.status == MdbaseConformanceCaseStatus::Pass)
+}
+
+fn suite_case_covers(fixture_set: &str, case: &FixtureCase) -> Vec<String> {
+    let mut covers = case_covers(case);
+    if fixture_set == VIEWS_FIXTURE_SET {
+        covers.push(format!("{MDBASE_VIEW_RECORDS_FEATURE}.suite"));
+        covers.sort();
+    }
+    covers
 }
 
 fn case_covers(case: &FixtureCase) -> Vec<String> {
@@ -849,6 +899,8 @@ fn execute_case(
             execute_workflow_input(input, setup.unwrap_or(&FixtureSetup::default()))
         }
         "query" => execute_query(&collection, &types, &contracts, input),
+        "list_views" => execute_list_views(&collection, &types, &contracts),
+        "execute_view" => execute_view_case(&collection, &types, &contracts, input),
         "create" => execute_create(&types, input),
         "data_contract_implementation_validate" => {
             execute_contract_validation(&collection, &types, &contracts, input)
@@ -1027,7 +1079,10 @@ fn execute_query(
     input: &serde_yaml::Mapping,
 ) -> Result<CaseExecution, AppError> {
     let query = yaml_to_json(&serde_yaml::Value::Mapping(input.clone()))?;
-    let plan = compile_mdbase_query(&query).map_err(AppError::operation)?;
+    let plan = match compile_mdbase_query(&query) {
+        Ok(plan) => plan,
+        Err(error) => return Ok(CaseExecution::Actual(query_failure(&error))),
+    };
     let records = load_mdbase_records_with_contracts(collection, types, contracts, true)
         .map_err(AppError::operation)?;
     let report = execute_mdbase_query(
@@ -1037,15 +1092,120 @@ fn execute_query(
         &collection.config.settings.id_field,
         collection.config.settings.timezone.as_deref(),
         conformance_clock()?.now_utc(),
-    )
-    .map_err(AppError::operation)?;
+    );
+    Ok(CaseExecution::Actual(match report {
+        Ok(report) => query_success(&report),
+        Err(error) => query_failure(&error),
+    }))
+}
+
+fn execute_list_views(
+    collection: &vulcan_core::mdbase::MdbaseCollection,
+    types: &vulcan_core::mdbase::MdbaseTypeRegistry,
+    contracts: &vulcan_core::mdbase::MdbaseContractRegistry,
+) -> Result<CaseExecution, AppError> {
+    let records = load_mdbase_records_with_contracts(collection, types, contracts, false)
+        .map_err(AppError::operation)?;
+    let list = list_mdbase_views(&records);
     Ok(CaseExecution::Actual(serde_json::json!({
         "valid": true,
-        "results": report.results.iter().map(|row| {
-            serde_json::json!({"path": row.file["path"]})
-        }).collect::<Vec<_>>(),
-        "body_returned": report.results.iter().any(|row| row.body.is_some()),
+        "views": list.views,
+        "meta": list.meta,
+        "diagnostics": list.diagnostics,
     })))
+}
+
+fn execute_view_case(
+    collection: &vulcan_core::mdbase::MdbaseCollection,
+    types: &vulcan_core::mdbase::MdbaseTypeRegistry,
+    contracts: &vulcan_core::mdbase::MdbaseContractRegistry,
+    input: &serde_yaml::Mapping,
+) -> Result<CaseExecution, AppError> {
+    let input = yaml_to_json(&serde_yaml::Value::Mapping(input.clone()))?;
+    let invocation = view_invocation(&input)?;
+    let records = load_mdbase_records_with_contracts(collection, types, contracts, true)
+        .map_err(AppError::operation)?;
+    let report = execute_mdbase_view(
+        &records,
+        types,
+        &invocation,
+        &collection.config.settings.id_field,
+        collection.config.settings.timezone.as_deref(),
+        conformance_clock()?.now_utc(),
+    );
+    Ok(CaseExecution::Actual(match report {
+        Ok(report) => query_success(&report),
+        Err(error) => query_failure(&error),
+    }))
+}
+
+/// Map the operation input; a present `context: null` differs from absence.
+fn view_invocation(input: &serde_json::Value) -> Result<MdbaseViewInvocation, AppError> {
+    let text = |key: &str| input.get(key).and_then(serde_json::Value::as_str);
+    let count = |key: &str| {
+        input
+            .get(key)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+    };
+    let context = match input.get("context") {
+        None => MdbaseViewContextArg::Absent,
+        Some(serde_json::Value::Null) => MdbaseViewContextArg::Null,
+        Some(context) => MdbaseViewContextArg::Path(
+            context
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| AppError::operation("view context must name a record path"))?
+                .to_string(),
+        ),
+    };
+    Ok(MdbaseViewInvocation {
+        source: text("path")
+            .ok_or_else(|| AppError::operation("execute_view requires `path`"))?
+            .to_string(),
+        view: text("view")
+            .ok_or_else(|| AppError::operation("execute_view requires `view`"))?
+            .to_string(),
+        context,
+        limit: count("limit"),
+        offset: count("offset"),
+        timezone: text("timezone").map(ToString::to_string),
+        render: input
+            .get("render")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+    })
+}
+
+fn query_success(report: &vulcan_core::mdbase::MdbaseQueryResult) -> serde_json::Value {
+    let paths = report
+        .results
+        .iter()
+        .map(|row| row.file["path"].clone())
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "valid": true,
+        "results": report.results.iter().map(|row| {
+            let mut result = serde_json::json!({"path": row.file["path"]});
+            if let Some(values) = &row.values {
+                result["values"] = values.clone();
+            }
+            result
+        }).collect::<Vec<_>>(),
+        "paths": paths,
+        "context": report.meta.context,
+        "meta": report.meta,
+        "diagnostics": report.diagnostics,
+        "body_returned": report.results.iter().any(|row| row.body.is_some()),
+    })
+}
+
+fn query_failure(error: &vulcan_core::mdbase::MdbaseQueryError) -> serde_json::Value {
+    serde_json::json!({
+        "valid": false,
+        "results": [],
+        "diagnostics": error.diagnostics,
+    })
 }
 
 fn conformance_clock() -> Result<MdbaseCelClock, AppError> {
@@ -1197,6 +1357,18 @@ fn assert_expectation(
     for (key, expected_value) in expected {
         match key.as_str() {
             "issues" => assert_issue_subset(actual.get("issues"), expected_value)?,
+            "diagnostics" => assert_issue_subset(actual.get("diagnostics"), expected_value)?,
+            "views" | "meta" | "results" => {
+                if !actual
+                    .get(key)
+                    .is_some_and(|actual| json_is_ordered_subset(actual, expected_value))
+                {
+                    return Err(format!(
+                        "expected {key} subset {expected_value}, got {}",
+                        actual.get(key).unwrap_or(&serde_json::Value::Null)
+                    ));
+                }
+            }
             "effective_frontmatter" | "type" | "error" => {
                 assert_json_subset(actual.get(key), expected_value, key)?;
             }
@@ -1289,6 +1461,29 @@ fn json_is_subset(actual: &serde_json::Value, expected: &serde_json::Value) -> b
                     .get(key)
                     .is_some_and(|actual| json_is_subset(actual, expected))
             })
+        }
+        _ => actual == expected,
+    }
+}
+
+/// Like [`json_is_subset`], but arrays must have the same length and match
+/// element by element: result order and counts are part of the contract, while
+/// each element may carry members the fixture does not mention.
+fn json_is_ordered_subset(actual: &serde_json::Value, expected: &serde_json::Value) -> bool {
+    match (actual, expected) {
+        (serde_json::Value::Object(actual), serde_json::Value::Object(expected)) => {
+            expected.iter().all(|(key, expected)| {
+                actual
+                    .get(key)
+                    .is_some_and(|actual| json_is_ordered_subset(actual, expected))
+            })
+        }
+        (serde_json::Value::Array(actual), serde_json::Value::Array(expected)) => {
+            actual.len() == expected.len()
+                && actual
+                    .iter()
+                    .zip(expected)
+                    .all(|(actual, expected)| json_is_ordered_subset(actual, expected))
         }
         _ => actual == expected,
     }
@@ -1411,6 +1606,47 @@ mod tests {
         assert!(claim.evidence[0]
             .artifact
             .contains(MDBASE_SPEC_UPSTREAM_COMMIT));
+        assert_eq!(claim.optional_features, [MDBASE_VIEW_RECORDS_FEATURE]);
+        assert!(claim
+            .features
+            .contains(&crate::mdbase::SAVED_VIEWS_FEATURE.to_string()));
+        // The whole pinned saved-view suite ran, not only `cel_query` cases.
+        assert_eq!(
+            report
+                .cases
+                .iter()
+                .filter(|case| case.fixture_set == VIEWS_FIXTURE_SET)
+                .count(),
+            serde_yaml::from_str::<FixtureSuite>(MDBASE_V03_VIEWS_SUITE)
+                .unwrap()
+                .groups
+                .iter()
+                .map(|group| group.tests.len())
+                .sum::<usize>()
+        );
+    }
+
+    #[test]
+    fn optional_features_need_covering_evidence_and_every_case_passing() {
+        let case = |status| MdbaseConformanceCaseResult {
+            id: "case".to_string(),
+            name: "case".to_string(),
+            fixture_set: VIEWS_FIXTURE_SET.to_string(),
+            operation: "execute_view".to_string(),
+            covers: vec![format!("{MDBASE_VIEW_RECORDS_FEATURE}.suite")],
+            status,
+            message: None,
+        };
+        assert!(passed_optional_features(&[]).is_empty());
+        assert_eq!(
+            passed_optional_features(&[case(MdbaseConformanceCaseStatus::Pass)]),
+            [MDBASE_VIEW_RECORDS_FEATURE]
+        );
+        assert!(passed_optional_features(&[
+            case(MdbaseConformanceCaseStatus::Pass),
+            case(MdbaseConformanceCaseStatus::Unsupported),
+        ])
+        .is_empty());
     }
 
     #[test]

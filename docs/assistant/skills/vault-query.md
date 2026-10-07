@@ -1,7 +1,7 @@
 ---
 name: vault-query
-description: Choose between search, native queries, canonical mdbase collection queries, filters, and structured note listing.
-version: 10
+description: Choose between search, native queries, canonical mdbase collection queries and saved views, filters, and structured note listing.
+version: 11
 tools:
   - search
   - query
@@ -24,6 +24,7 @@ Use this skill when the task depends on metadata, frontmatter, tags, paths, or p
 - Use `search` when the question is about note text, snippets, or ranked content matches.
 - Use `query` when the answer depends on typed metadata, computed fields, or explicit sorting.
 - For a collection governed by `mdbase.yaml`, use `vulcan mdbase query --file query.yaml --output json` for canonical mdbase queries. Native `query` and DQL are not interchangeable with that query format. Inspect `vulcan mdbase query --help` for input options.
+- When an mdbase collection already has saved views (records of type `view`), discover them with `vulcan mdbase views --output json` and run one with `vulcan mdbase view <source> <view-id> --output json`, where `<source>` is the view record's path or stable `id`. Prefer this over re-deriving the query: the record's shared `query` and the named view combine exactly as the collection defines them. Pass `--context <record-path>` for views that read `this`; `--no-context` binds `this` to null. `--limit`, `--offset`, and `--timezone` override only this run. Failures carry stable codes: `view_not_found`, `invalid_view`, `context_required`, `context_not_found`, and `context_type_mismatch`. `presentation` metadata is advisory; results are always headless.
 - To inspect one known mdbase record's types, frontmatter, and diagnostics, prefer `vulcan mdbase read <path> --metadata --output json`; it skips body, links, and tags and is answered from the current cache. Use plain `mdbase read` (or `--source`) only when the body, links, or exact source are needed.
 - Use `path_prefix`, `filename_pattern`, explicit `sort`/`desc`, and `limit` for structural navigation. MCP query results default to 50 compact rows and report pagination metadata.
 - Treat MCP `offset` as relative to the query's own offset and reuse `next_offset` unchanged for the next page. Embedded query limits bound the whole selection; MCP `limit` is the page size.

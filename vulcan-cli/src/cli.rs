@@ -2180,6 +2180,40 @@ pub enum MdbaseCommand {
         )]
         file: Option<PathBuf>,
     },
+    #[command(about = "List saved-view records and their named views")]
+    Views,
+    #[command(about = "Execute a named view from a saved-view record")]
+    View {
+        #[arg(
+            value_name = "SOURCE",
+            help = "View record path or stable view-record ID"
+        )]
+        source: String,
+        #[arg(value_name = "VIEW", help = "Named-view ID within the record")]
+        view: String,
+        #[arg(
+            long,
+            value_name = "PATH",
+            conflicts_with = "no_context",
+            help = "Bind `this` to this collection-relative record"
+        )]
+        context: Option<String>,
+        #[arg(
+            long,
+            help = "Bind `this` to null, overriding the view's on_missing policy"
+        )]
+        no_context: bool,
+        #[arg(long, help = "Override the named view's limit")]
+        limit: Option<usize>,
+        #[arg(long, help = "Override the named view's offset")]
+        offset: Option<usize>,
+        #[arg(
+            long,
+            value_name = "IANA_ZONE",
+            help = "Evaluate today() and other calendar functions in this timezone"
+        )]
+        timezone: Option<String>,
+    },
     #[command(about = "Run pinned v0.3 conformance fixtures and emit evidence")]
     Conformance {
         #[arg(

@@ -17942,6 +17942,16 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         .assert()
         .success()
         .stdout(predicate::str::contains("--metadata"));
+    assert!(vault_query.contains("`vulcan mdbase view <source> <view-id> --output json`"));
+    assert!(vault_query.contains("`context_required`"));
+    for (command, flag) in [("views", "--output"), ("view", "--no-context")] {
+        Command::cargo_bin("vulcan")
+            .expect("binary")
+            .args(["mdbase", command, "--help"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(flag));
+    }
     assert!(vault_query.contains("Native query DSL starts with `from notes`"));
     assert!(vault_query.contains("A `--where` value is one predicate (`status != done`)"));
     assert!(vault_query.contains("vulcan repair ordinary-write status"));
@@ -37566,6 +37576,139 @@ fn mdbase_conformance_claim_is_canonical_and_verified() {
     // Vulcan-owned write features are claimed apart from upstream profiles.
     assert_eq!(
         claim["result"]["x-vulcan-features"],
-        serde_json::json!(["vulcan.record_write.v1", "vulcan.lifecycle.v1"])
+        serde_json::json!([
+            "vulcan.record_write.v1",
+            "vulcan.lifecycle.v1",
+            "vulcan.saved_views.v1"
+        ])
     );
+    assert_eq!(
+        claim["result"]["optional_features"],
+        serde_json::json!(["view_records"])
+    );
+}
+
+#[test]
+fn mdbase_views_list_and_execute_named_views() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let root = temp_dir.path().join("collection");
+    for (path, contents) in [
+        ("mdbase.yaml", "spec_version: \"0.3.0\"\n"),
+        (
+            "_types/task.md",
+            "---\nkind: mdbase.type\nname: task\nversion: 1\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    properties:\n      title: {type: string}\n      project: {type: string}\n      priority: {type: integer}\n---\n",
+        ),
+        (
+            "_types/project.md",
+            "---\nkind: mdbase.type\nname: project\nversion: 1\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    properties:\n      id: {type: string}\n---\n",
+        ),
+        (
+            "_types/view.md",
+            "---\nkind: mdbase.type\nname: view\nversion: 1\nmatch:\n  where:\n    type: view\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n---\n",
+        ),
+        ("projects/alpha.md", "---\ntype: project\nid: alpha\n---\n"),
+        (
+            "tasks/one.md",
+            "---\ntype: task\ntitle: One\nproject: alpha\npriority: 1\n---\n",
+        ),
+        (
+            "tasks/two.md",
+            "---\ntype: task\ntitle: Two\nproject: beta\npriority: 2\n---\n",
+        ),
+        (
+            "views/tasks.md",
+            "---\ntype: view\nid: task.views\nversion: 1\nname: Task views\nproperties:\n  title:\n    label: Task\nquery:\n  types: [task]\nviews:\n  - id: by-project\n    name: By project\n    context:\n      this:\n        on_missing: error\n        types: [project]\n    where: 'project == this.id'\n    select:\n      - title\n      - name: doubled\n        expr: 'priority * 2'\n  - id: all\n    name: All\n    select: [title]\n    order_by:\n      - field: priority\n        direction: desc\n---\n",
+        ),
+    ] {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, contents).unwrap();
+    }
+    let run = |arguments: &[&str]| {
+        let mut command = Command::cargo_bin("vulcan").unwrap();
+        command.args([
+            "--vault",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+            "mdbase",
+        ]);
+        command.args(arguments).output().unwrap()
+    };
+
+    let output = run(&["views"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let list: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(list["valid"], true);
+    assert_eq!(list["result"]["meta"]["total_count"], 1);
+    let source = &list["result"]["views"][0];
+    assert_eq!(source["source"]["path"], "views/tasks.md");
+    assert_eq!(source["source"]["format"], "mdbase.view");
+    assert_eq!(
+        source["views"][0]["properties"],
+        serde_json::json!([{"key": "title", "label": "Task"}, {"key": "doubled"}])
+    );
+
+    let output = run(&[
+        "view",
+        "task.views",
+        "by-project",
+        "--context",
+        "projects/alpha.md",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        report["results"][0]["values"],
+        serde_json::json!({"title": "One", "doubled": 2})
+    );
+    assert_eq!(
+        report["meta"]["view"],
+        serde_json::json!({"path": "views/tasks.md", "id": "by-project"})
+    );
+    assert_eq!(report["meta"]["context"]["path"], "projects/alpha.md");
+
+    let output = run(&["view", "views/tasks.md", "all", "--limit", "1"]);
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["results"][0]["values"]["title"], "Two");
+    assert_eq!(report["meta"]["has_more"], true);
+
+    for (arguments, code) in [
+        (
+            &["view", "task.views", "by-project"][..],
+            "context_required",
+        ),
+        (
+            &[
+                "view",
+                "task.views",
+                "by-project",
+                "--context",
+                "tasks/one.md",
+            ][..],
+            "context_type_mismatch",
+        ),
+        (&["view", "task.views", "missing"][..], "view_not_found"),
+    ] {
+        let output = run(arguments);
+        assert!(!output.status.success(), "{arguments:?} should fail");
+        let error: Value = serde_json::from_slice(&output.stdout)
+            .or_else(|_| serde_json::from_slice(&output.stderr))
+            .unwrap_or_else(|_| {
+                panic!(
+                    "{arguments:?}: {}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                )
+            });
+        assert_eq!(error["code"], code, "{arguments:?}: {error}");
+    }
 }

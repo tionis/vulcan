@@ -215,6 +215,99 @@
             "subcommands": []
           },
           {
+            "about": "List saved-view records and their named views",
+            "name": "views",
+            "options": [],
+            "subcommands": []
+          },
+          {
+            "about": "Execute a named view from a saved-view record",
+            "name": "view",
+            "options": [
+              {
+                "help": "View record path or stable view-record ID",
+                "id": "source",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "SOURCE"
+                ]
+              },
+              {
+                "help": "Named-view ID within the record",
+                "id": "view",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "VIEW"
+                ]
+              },
+              {
+                "help": "Bind `this` to this collection-relative record",
+                "id": "context",
+                "long": "context",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PATH"
+                ]
+              },
+              {
+                "help": "Bind `this` to null, overriding the view's on_missing policy",
+                "id": "no_context",
+                "long": "no-context",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_CONTEXT"
+                ]
+              },
+              {
+                "help": "Override the named view's limit",
+                "id": "limit",
+                "long": "limit",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "LIMIT"
+                ]
+              },
+              {
+                "help": "Override the named view's offset",
+                "id": "offset",
+                "long": "offset",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "OFFSET"
+                ]
+              },
+              {
+                "help": "Evaluate today() and other calendar functions in this timezone",
+                "id": "timezone",
+                "long": "timezone",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "IANA_ZONE"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
             "about": "Run pinned v0.3 conformance fixtures and emit evidence",
             "name": "conformance",
             "options": [

@@ -1,8 +1,9 @@
 use super::{
     bundled_mdbase_schema, validate_mdbase_schema_value, MdbaseCelClock, MdbaseCelContext,
-    MdbaseCelContextKind, MdbaseCelEngine, MdbaseCelError, MdbaseCelEvaluation, MdbaseCelLinkIndex,
-    MdbaseCelProgram, MdbaseDiagnostic, MdbaseDiagnosticLevel, MdbaseRecordDocument,
-    MdbaseRecordSet, MdbaseTypeRegistry, MDBASE_CANONICAL_SCHEMA_BASE,
+    MdbaseCelContextKind, MdbaseCelEngine, MdbaseCelError, MdbaseCelEvaluation,
+    MdbaseCelInvocationContext, MdbaseCelLinkIndex, MdbaseCelProgram, MdbaseDiagnostic,
+    MdbaseDiagnosticLevel, MdbaseRecordDocument, MdbaseRecordSet, MdbaseTypeRegistry,
+    MDBASE_CANONICAL_SCHEMA_BASE,
 };
 use crate::query::{
     QueryDirection, QueryExpressionLanguage, QueryExpressionSpec, QueryFrontmatterMode,
@@ -50,6 +51,15 @@ pub struct MdbaseQueryMeta {
     pub context: Option<MdbaseQueryContextMeta>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub groups: Option<Vec<MdbaseQueryGroup>>,
+    /// The saved view that produced this result, when executed as one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub view: Option<MdbaseQueryViewMeta>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MdbaseQueryViewMeta {
+    pub path: String,
+    pub id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -538,6 +548,9 @@ fn execute_prepared_query(
             })
         })
         .transpose()?;
+    // Snapshot the context once, with its own schema's fields.
+    let this = invocation_context
+        .map(|record| MdbaseCelInvocationContext::new(record, known_fields(record, types)));
     let mut diagnostics = Vec::new();
     let mut candidates = Vec::new();
     for record in &records.records {
@@ -546,7 +559,7 @@ fn execute_prepared_query(
             plan,
             record,
             types,
-            invocation_context,
+            this.as_ref(),
             &clock,
             link_index,
             &mut diagnostics,
@@ -575,6 +588,7 @@ fn execute_prepared_query(
                 path: record.path.clone(),
             }),
             groups,
+            view: None,
         },
         diagnostics,
     })
@@ -780,7 +794,7 @@ fn evaluate_query_candidate<'a>(
     plan: &StructuredQueryPlan,
     record: &'a MdbaseRecordDocument,
     types: &MdbaseTypeRegistry,
-    invocation_context: Option<&MdbaseRecordDocument>,
+    invocation_context: Option<&MdbaseCelInvocationContext>,
     clock: &MdbaseCelClock,
     link_index: &QueryLinkIndex<'_>,
     diagnostics: &mut Vec<MdbaseDiagnostic>,
@@ -872,7 +886,7 @@ fn evaluate_filter(
     record: &MdbaseRecordDocument,
     known_fields: &BTreeSet<String>,
     projection: &serde_json::Map<String, serde_json::Value>,
-    invocation_context: Option<&MdbaseRecordDocument>,
+    invocation_context: Option<&MdbaseCelInvocationContext>,
     clock: &MdbaseCelClock,
     link_index: &QueryLinkIndex<'_>,
     diagnostics: &mut Vec<MdbaseDiagnostic>,
@@ -919,7 +933,7 @@ fn evaluate_selection(
     record: &MdbaseRecordDocument,
     known_fields: &BTreeSet<String>,
     projection: &serde_json::Map<String, serde_json::Value>,
-    invocation_context: Option<&MdbaseRecordDocument>,
+    invocation_context: Option<&MdbaseCelInvocationContext>,
     clock: &MdbaseCelClock,
     link_index: &QueryLinkIndex<'_>,
     diagnostics: &mut Vec<MdbaseDiagnostic>,
@@ -1393,6 +1407,15 @@ fn order_named_expressions(
                     Some(&name),
                 )
             })?;
+            if program.reads_dynamic_projection() {
+                // Ordering and cycle detection need every dependency up front.
+                return Err(query_error(
+                    "invalid_query",
+                    "named projections may index `projection` only with a string literal",
+                    Some(field),
+                    Some(&name),
+                ));
+            }
             let dependencies = program
                 .projection_dependencies()
                 .map(str::to_string)
@@ -1641,6 +1664,137 @@ mod tests {
         });
         let error = compile_mdbase_query(&cycle).expect_err("cycle is invalid");
         assert_eq!(error.diagnostics[0].code, "invalid_query");
+    }
+
+    #[test]
+    fn indexed_projection_reads_are_ordered_and_computed_keys_are_rejected() {
+        let ordered = serde_json::json!({
+            "projections": {
+                "second": {"expr": "projection[\"first\"] + 1"},
+                "first": {"expr": "1"}
+            },
+            "select": ["projection.second"]
+        });
+        let plan = compile_mdbase_query(&ordered).expect("literal index resolves");
+        assert_eq!(
+            plan.named_projections
+                .iter()
+                .map(|projection| projection.name.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+        let records = MdbaseRecordSet {
+            records: vec![record("a.md", "A", "open")],
+        };
+        let result = execute_mdbase_query(
+            &records,
+            &MdbaseTypeRegistry::default(),
+            &plan,
+            "id",
+            None,
+            Utc::now(),
+        )
+        .unwrap();
+        assert_eq!(
+            result.results[0].values,
+            Some(serde_json::json!({"second": 2}))
+        );
+
+        let cycle = serde_json::json!({
+            "projections": {
+                "first": {"expr": "projection[\"second\"]"},
+                "second": {"expr": "projection.first"}
+            }
+        });
+        let error = compile_mdbase_query(&cycle).expect_err("indexed cycle is invalid");
+        assert_eq!(error.diagnostics[0].code, "invalid_query");
+
+        // A string that merely looks like a reference is not a dependency.
+        compile_mdbase_query(&serde_json::json!({
+            "projections": {
+                "first": {"expr": "\"projection.second\""},
+                "second": {"expr": "projection.first"}
+            }
+        }))
+        .expect("literal text is not a reference");
+
+        // A computed key hides the dependency, so named projections reject
+        // it; filters and selections run after every projection and may use it.
+        let error = compile_mdbase_query(&serde_json::json!({
+            "projections": {
+                "first": {"expr": "1"},
+                "second": {"expr": "projection[\"fir\" + \"st\"]"}
+            }
+        }))
+        .expect_err("computed projection key is invalid");
+        assert_eq!(error.diagnostics[0].code, "invalid_query");
+        assert_eq!(
+            error.diagnostics[0].details,
+            Some(serde_json::json!({"name": "second"}))
+        );
+        compile_mdbase_query(&serde_json::json!({
+            "projections": {"first": {"expr": "1"}},
+            "where": "projection[\"fir\" + \"st\"] == 1"
+        }))
+        .expect("computed key outside named projections");
+    }
+
+    #[test]
+    fn invocation_context_binds_with_its_own_schema_fields() {
+        let mut project = record("p.md", "Project", "active");
+        project.types = vec!["project".to_string()];
+        project.frontmatter = serde_json::json!({"type": "project", "title": "Project"});
+        project.effective_frontmatter =
+            serde_json::json!({"type": "project", "title": "Project", "category": "defaulted"});
+        let records = MdbaseRecordSet {
+            records: vec![record("a.md", "A", "open"), project],
+        };
+        let directory = tempfile::tempdir().unwrap();
+        for (name, properties) in [
+            ("task", "title: { type: string }\n      status: { type: string }"),
+            (
+                "project",
+                "title: { type: string }\n      category: { type: string }\n      missing: { type: string }",
+            ),
+        ] {
+            std::fs::create_dir_all(directory.path().join("_types")).unwrap();
+            std::fs::write(
+                directory.path().join(format!("_types/{name}.md")),
+                format!("---\nkind: mdbase.type\nname: {name}\nversion: 1\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    properties:\n      {properties}\n---\n"),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            directory.path().join("mdbase.yaml"),
+            "spec_version: \"0.3.0\"\n",
+        )
+        .unwrap();
+        let collection = crate::mdbase::load_mdbase_collection(directory.path())
+            .unwrap()
+            .unwrap();
+        let types = crate::mdbase::load_mdbase_type_registry(&collection).unwrap();
+        let plan = compile_mdbase_query(&serde_json::json!({
+            "types": ["task"],
+            "context": {"this": {"path": "p.md"}},
+            "select": [
+                {"name": "missing_is_null", "expr": "this.missing == null"},
+                {"name": "raw_present", "expr": "this.present.raw.category"},
+                {"name": "effective_present", "expr": "this.present.record.category"},
+                {"name": "status_unknown", "expr": "has(this.status)"},
+            ]
+        }))
+        .unwrap();
+        let result = execute_mdbase_query(&records, &types, &plan, "id", None, Utc::now()).unwrap();
+        assert_eq!(result.diagnostics, []);
+        assert_eq!(
+            result.results[0].values,
+            Some(serde_json::json!({
+                "missing_is_null": true,
+                "raw_present": false,
+                "effective_present": true,
+                "status_unknown": false,
+            }))
+        );
     }
 
     #[test]

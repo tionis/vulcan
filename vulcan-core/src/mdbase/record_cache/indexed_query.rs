@@ -344,6 +344,7 @@ fn execute_proven(
             has_more: end < total_count,
             context: None,
             groups: None,
+            view: None,
         },
         diagnostics,
     }))
@@ -1120,6 +1121,7 @@ pub fn execute_retained_mdbase_query(
             has_more: end < total_count,
             context: None,
             groups: None,
+            view: None,
         },
         diagnostics,
     };

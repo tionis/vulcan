@@ -3,8 +3,9 @@ use crate::{selected_read_permission_filter, Cli, CliError, MdbaseCommand, Outpu
 use vulcan_app::mdbase::{
     build_mdbase_contracts_report, build_mdbase_query_report, build_mdbase_read_report,
     build_mdbase_status_report, build_mdbase_types_report, build_mdbase_validate_report,
-    parse_mdbase_query, MdbaseContractsReport, MdbaseMetadataReadReport, MdbaseQuerySession,
-    MdbaseReadReport, MdbaseStatusReport, MdbaseTypesReport, MdbaseValidateReport,
+    build_mdbase_view_list_report, build_mdbase_view_report, parse_mdbase_query,
+    MdbaseContractsReport, MdbaseMetadataReadReport, MdbaseQuerySession, MdbaseReadReport,
+    MdbaseStatusReport, MdbaseTypesReport, MdbaseValidateReport,
 };
 use vulcan_app::mdbase_conformance::{
     build_mdbase_conformance_claim, run_mdbase_core_read_conformance, MdbaseConformanceClaim,
@@ -12,6 +13,7 @@ use vulcan_app::mdbase_conformance::{
 };
 use vulcan_core::mdbase::{
     MdbaseCompleteRecord, MdbaseDiagnosticLevel, MdbaseOperationResult, MdbaseQueryResult,
+    MdbaseViewContextArg, MdbaseViewInvocation, MdbaseViewList,
 };
 use vulcan_core::VaultPaths;
 
@@ -62,6 +64,37 @@ pub(crate) fn handle_mdbase_command(
                 &build_mdbase_query_report(paths, &value, filter.as_ref())?,
             )
         }
+        MdbaseCommand::Views => print_views(
+            cli.output,
+            &build_mdbase_view_list_report(paths, filter.as_ref())?,
+        ),
+        MdbaseCommand::View {
+            source,
+            view,
+            context,
+            no_context,
+            limit,
+            offset,
+            timezone,
+        } => {
+            let invocation = MdbaseViewInvocation {
+                source: source.clone(),
+                view: view.clone(),
+                context: match (context, no_context) {
+                    (Some(path), _) => MdbaseViewContextArg::Path(path.clone()),
+                    (None, true) => MdbaseViewContextArg::Null,
+                    (None, false) => MdbaseViewContextArg::Absent,
+                },
+                limit: *limit,
+                offset: *offset,
+                timezone: timezone.clone(),
+                render: false,
+            };
+            print_query(
+                cli.output,
+                &build_mdbase_view_report(paths, &invocation, filter.as_ref())?,
+            )
+        }
         MdbaseCommand::Conformance { claim } => {
             let report = run_mdbase_core_read_conformance()?;
             if *claim {
@@ -93,6 +126,25 @@ fn print_query(output: OutputFormat, report: &MdbaseQueryResult) -> Result<(), C
         }
     );
     print_diagnostics(&report.diagnostics);
+    Ok(())
+}
+
+fn print_views(output: OutputFormat, list: &MdbaseViewList) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        // Malformed sources are omitted with warnings; listing stays valid.
+        return print_json(&MdbaseOperationResult::new(
+            true,
+            serde_json::json!({"views": list.views, "meta": list.meta}),
+            list.diagnostics.clone(),
+        ));
+    }
+    for source in &list.views {
+        println!("{}\t{}\t{}", source.source.path, source.id, source.name);
+        for view in &source.views {
+            println!("  {}\t{}", view.id, view.name);
+        }
+    }
+    print_diagnostics(&list.diagnostics);
     Ok(())
 }
 

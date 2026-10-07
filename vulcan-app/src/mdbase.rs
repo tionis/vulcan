@@ -8,13 +8,16 @@ mod write_lifecycle;
 mod write_repair;
 pub use feature_gates::{
     run_mdbase_feature_gates, MdbaseFeatureResult, LIFECYCLE_FEATURE, RECORD_WRITE_FEATURE,
+    SAVED_VIEWS_FEATURE,
 };
 pub use write_repair::{
     accept_current_mdbase_write, build_mdbase_write_repair_status, recover_mdbase_write,
     MdbaseWriteAcceptCurrentReport, MdbaseWriteRecoveryReport, MdbaseWriteRepairStatus,
 };
+mod views;
 mod write_validation;
 pub use query_profile::{build_mdbase_query_report_profiled, MdbaseQueryMetrics};
+pub use views::{build_mdbase_view_list_report, build_mdbase_view_report};
 
 use crate::{plugins, AppError};
 use chrono::{DateTime, TimeDelta, Utc};
@@ -1925,6 +1928,17 @@ mod tests {
             build_mdbase_validate_report(paths, None, Some(filter)).map(|_| ()),
             build_mdbase_read_report(paths, "tasks/public.md", false, Some(filter)).map(|_| ()),
             build_mdbase_query_report(paths, &serde_json::json!({}), Some(filter)).map(|_| ()),
+            build_mdbase_view_list_report(paths, Some(filter)).map(|_| ()),
+            build_mdbase_view_report(
+                paths,
+                &vulcan_core::mdbase::MdbaseViewInvocation {
+                    source: "views.md".to_string(),
+                    view: "all".to_string(),
+                    ..vulcan_core::mdbase::MdbaseViewInvocation::default()
+                },
+                Some(filter),
+            )
+            .map(|_| ()),
         ];
         for result in attempts {
             let error = result.unwrap_err();
