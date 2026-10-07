@@ -58,9 +58,11 @@ impl SourceExpr {
                 params.push(SqlValue::Text(tag.clone()));
                 params.push(SqlValue::Text(format!("{tag}/")));
                 params.push(SqlValue::Text(format!("{tag}0")));
+                // Driven by the tag index rather than probed per row;
+                // `tags.document_id` is NOT NULL, so `IN` is never NULL.
                 format!(
-                    "EXISTS (SELECT 1 FROM tags WHERE tags.document_id = {id} \
-                     AND (tags.tag_text = ? OR (tags.tag_text >= ? AND tags.tag_text < ?)))",
+                    "{id} IN (SELECT tags.document_id FROM tags \
+                     WHERE tags.tag_text = ? OR (tags.tag_text >= ? AND tags.tag_text < ?))",
                     id = columns.id
                 )
             }
