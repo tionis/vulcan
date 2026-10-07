@@ -147,6 +147,22 @@ fn print_conformance(
             println!("  missing: {requirement}");
         }
     }
+    for feature in &report.features {
+        println!(
+            "{}\t{} (Vulcan feature)",
+            feature.feature,
+            if feature.passed {
+                "supported"
+            } else {
+                "failed"
+            }
+        );
+        for case in &feature.cases {
+            if let Some(message) = case.message.as_deref() {
+                println!("  {}: {message}", case.id);
+            }
+        }
+    }
     Ok(())
 }
 

@@ -37563,4 +37563,9 @@ fn mdbase_conformance_claim_is_canonical_and_verified() {
     );
     assert_eq!(claim["result"]["json_schema"]["remote_refs"], false);
     assert_eq!(claim["result"]["evidence"][0]["result"], "pass");
+    // Vulcan-owned write features are claimed apart from upstream profiles.
+    assert_eq!(
+        claim["result"]["x-vulcan-features"],
+        serde_json::json!(["vulcan.record_write.v1", "vulcan.lifecycle.v1"])
+    );
 }

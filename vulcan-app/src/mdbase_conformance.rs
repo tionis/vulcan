@@ -68,6 +68,8 @@ pub struct MdbaseConformanceEvidenceReport {
     pub artifact_digest: String,
     pub profiles: Vec<MdbaseConformanceProfileResult>,
     pub cases: Vec<MdbaseConformanceCaseResult>,
+    /// Vulcan-owned feature gates, reported apart from upstream profiles.
+    pub features: Vec<crate::mdbase::MdbaseFeatureResult>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -82,6 +84,10 @@ pub struct MdbaseConformanceClaim {
     pub evidence: Vec<MdbaseConformanceEvidence>,
     #[serde(rename = "x-vulcan-upstream-commit")]
     pub upstream_commit: String,
+    /// Vulcan-owned features whose native gates passed. These are not
+    /// upstream profiles; see `docs/specs/mdb/IMPLEMENTATION_CONTRACTS.md`.
+    #[serde(rename = "x-vulcan-features")]
+    pub features: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -254,6 +260,7 @@ pub fn run_mdbase_core_read_conformance() -> Result<MdbaseConformanceEvidenceRep
         artifact_digest: format!("blake3:{MDBASE_BUNDLED_ASSET_DIGEST}"),
         profiles,
         cases: results,
+        features: crate::mdbase::run_mdbase_feature_gates(),
     })
 }
 
@@ -505,6 +512,12 @@ fn build_mdbase_conformance_claim_at(
             ),
         }],
         upstream_commit: report.upstream_commit.clone(),
+        features: report
+            .features
+            .iter()
+            .filter(|feature| feature.passed)
+            .map(|feature| feature.feature.clone())
+            .collect(),
     };
     validate_claim(&claim)?;
     Ok(claim)

@@ -198,71 +198,87 @@ fn authorized_review(
     Ok(review)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::mdbase::tests::fixture;
-    use crate::mdbase::{
+/// Commit an update to `path` whose post-commit reconciliation fails,
+/// leaving its journal pending exactly as a process stopped before
+/// reconciling would. Used by the recovery conformance gate and tests.
+pub(super) fn interrupt_update_for_gate(
+    paths: &VaultPaths,
+    path: &str,
+    after: &str,
+) -> Result<(), String> {
+    use super::{
         config_revision, load_write_config, permission_revision, plan_mdbase_write,
         MdbaseWriteChangeRequest, MdbaseWriteOperation, MdbaseWritePlanRequest,
     };
-    use chrono::{TimeZone, Utc};
-    use std::fs;
     use vulcan_core::mdbase::{
         apply_mdbase_write_transaction_with_control_filter, MdbaseWriteApplyRequest,
         MdbaseWritePreviewVerification,
     };
+    let text = |error: AppError| error.to_string();
+    let now = chrono::Utc::now();
+    let plan = plan_mdbase_write(
+        paths,
+        &MdbaseWritePlanRequest {
+            caller_id: "interrupt".to_string(),
+            instance_id: "interrupt".to_string(),
+            operation: MdbaseWriteOperation::Update,
+            changes: vec![MdbaseWriteChangeRequest {
+                path: path.to_string(),
+                after: Some(after.to_string()),
+                if_revision: None,
+            }],
+            matched_types: Vec::new(),
+            generated_values: std::collections::BTreeMap::new(),
+            permission_profile: None,
+            ttl_seconds: Some(300),
+        },
+        now,
+    )
+    .map_err(text)?;
+    let guard = profile_guard(paths, None).map_err(text)?;
+    let (filter, loaded) = authorized_collection(paths, None).map_err(text)?;
+    let permission = permission_revision(guard.selection()).map_err(text)?;
+    let config = config_revision(&load_write_config(paths).map_err(text)?).map_err(text)?;
+    let outcome = apply_mdbase_write_transaction_with_control_filter(
+        paths,
+        &loaded.collection,
+        &MdbaseWriteApplyRequest {
+            preview: &plan.preview,
+            verification: MdbaseWritePreviewVerification {
+                caller_id: "interrupt",
+                instance_id: "interrupt",
+                operation: &plan.preview.operation,
+                permission_revision: &permission,
+                config_revision: &config,
+                now,
+                known_revisions: None,
+            },
+            idempotency_key: "interrupted",
+        },
+        Some(&filter),
+        || Ok(()),
+        |_| Err("process stopped before reconciling".to_string()),
+    )
+    .map_err(|error| error.message)?;
+    if outcome.follow_up_error.is_none() {
+        return Err("the write was reconciled".to_string());
+    }
+    Ok(())
+}
 
-    /// Commit an update whose post-commit reconciliation fails, leaving its
-    /// journal pending as an interrupted process would.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mdbase::tests::fixture;
+    use std::fs;
+
     fn interrupted_update(paths: &VaultPaths) {
-        let now = Utc.with_ymd_and_hms(2026, 10, 1, 12, 0, 0).unwrap();
-        let plan = plan_mdbase_write(
+        interrupt_update_for_gate(
             paths,
-            &MdbaseWritePlanRequest {
-                caller_id: "test".to_string(),
-                instance_id: "test".to_string(),
-                operation: MdbaseWriteOperation::Update,
-                changes: vec![MdbaseWriteChangeRequest {
-                    path: "tasks/public.md".to_string(),
-                    after: Some("---\ntype: task\ntitle: Recovered\n---\nBody\n".to_string()),
-                    if_revision: None,
-                }],
-                matched_types: vec!["task".to_string()],
-                generated_values: std::collections::BTreeMap::new(),
-                permission_profile: None,
-                ttl_seconds: Some(300),
-            },
-            now,
+            "tasks/public.md",
+            "---\ntype: task\ntitle: Recovered\n---\nBody\n",
         )
         .unwrap();
-        let guard = profile_guard(paths, None).unwrap();
-        let (filter, loaded) = authorized_collection(paths, None).unwrap();
-        let config = load_write_config(paths).unwrap();
-        let permission = permission_revision(guard.selection()).unwrap();
-        let config = config_revision(&config).unwrap();
-        let outcome = apply_mdbase_write_transaction_with_control_filter(
-            paths,
-            &loaded.collection,
-            &MdbaseWriteApplyRequest {
-                preview: &plan.preview,
-                verification: MdbaseWritePreviewVerification {
-                    caller_id: "test",
-                    instance_id: "test",
-                    operation: &plan.preview.operation,
-                    permission_revision: &permission,
-                    config_revision: &config,
-                    now,
-                    known_revisions: None,
-                },
-                idempotency_key: "interrupted",
-            },
-            Some(&filter),
-            || Ok(()),
-            |_| Err("process stopped before reconciling".to_string()),
-        )
-        .unwrap();
-        assert!(outcome.follow_up_error.is_some());
     }
 
     #[test]

@@ -3,8 +3,12 @@
 mod query_profile;
 mod query_session;
 pub use query_session::MdbaseQuerySession;
+mod feature_gates;
 mod write_lifecycle;
 mod write_repair;
+pub use feature_gates::{
+    run_mdbase_feature_gates, MdbaseFeatureResult, LIFECYCLE_FEATURE, RECORD_WRITE_FEATURE,
+};
 pub use write_repair::{
     accept_current_mdbase_write, build_mdbase_write_repair_status, recover_mdbase_write,
     MdbaseWriteAcceptCurrentReport, MdbaseWriteRecoveryReport, MdbaseWriteRepairStatus,

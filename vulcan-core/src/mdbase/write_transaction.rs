@@ -2924,6 +2924,151 @@ mod tests {
         }
     }
 
+    /// A rename with a reference rewrite is one transaction: interrupted at
+    /// any durable boundary it recovers to entirely before or entirely after.
+    #[test]
+    fn rename_with_reference_rewrite_recovers_atomically_at_every_boundary() {
+        let boundaries = [
+            ("journal_prepared", false),
+            ("replacements_staged", false),
+            ("before_replace", false),
+            ("after_replace", false),
+            ("commit_decided", true),
+            ("reconciled", true),
+            ("outbox_written", true),
+        ];
+        for (fault_boundary, committed) in boundaries {
+            let (directory, paths, collection) = fixture();
+            let preview = preview(
+                &collection,
+                vec![
+                    MdbaseWritePreviewChangeRequest {
+                        path: "records/a.md".to_string(),
+                        after: None,
+                        if_revision: None,
+                    },
+                    MdbaseWritePreviewChangeRequest {
+                        path: "records/moved/a.md".to_string(),
+                        after: Some("before a\n".to_string()),
+                        if_revision: None,
+                    },
+                    MdbaseWritePreviewChangeRequest {
+                        path: "records/b.md".to_string(),
+                        after: Some("links to [[moved/a]]\n".to_string()),
+                        if_revision: None,
+                    },
+                ],
+            );
+            let request = MdbaseWriteApplyRequest {
+                preview: &preview,
+                verification: verification(),
+                idempotency_key: fault_boundary,
+            };
+            let interrupted = apply_with_boundary_hook(
+                &paths,
+                &collection,
+                &request,
+                |_| Ok(()),
+                |boundary| {
+                    if boundary == fault_boundary {
+                        return Err(MdbaseWriteTransactionError::new(
+                            "interrupted",
+                            "fault injection",
+                        ));
+                    }
+                    Ok(())
+                },
+            );
+            assert_eq!(interrupted.unwrap_err().code, "interrupted");
+            recover_mdbase_write_transaction(&paths, &collection, |_| Ok(()))
+                .expect("boundary recovery");
+            let root = directory.path();
+            assert_eq!(
+                (
+                    root.join("records/a.md").exists(),
+                    root.join("records/moved/a.md").exists(),
+                    fs::read_to_string(root.join("records/b.md")).unwrap(),
+                ),
+                if committed {
+                    (false, true, "links to [[moved/a]]\n".to_string())
+                } else {
+                    (true, false, "before b\n".to_string())
+                },
+                "mixed state after {fault_boundary}"
+            );
+            assert_eq!(
+                root.join("records/moved").exists(),
+                committed,
+                "{fault_boundary}"
+            );
+            assert!(!journal_path(&paths).exists());
+        }
+    }
+
+    /// Two cooperating writers planned from the same revision: exactly one
+    /// commits and the other is rejected without overwriting it.
+    #[test]
+    fn racing_writers_commit_exactly_once() {
+        let (directory, paths, collection) = fixture();
+        let plans = ["first\n", "second\n"].map(|after| {
+            preview(
+                &collection,
+                vec![MdbaseWritePreviewChangeRequest {
+                    path: "records/a.md".to_string(),
+                    after: Some(after.to_string()),
+                    if_revision: None,
+                }],
+            )
+        });
+        let outcomes = std::thread::scope(|threads| {
+            let handles = plans
+                .iter()
+                .zip(["key-first", "key-second"])
+                .map(|(preview, key)| {
+                    let (paths, collection) = (&paths, &collection);
+                    threads.spawn(move || {
+                        apply_mdbase_write_transaction(
+                            paths,
+                            collection,
+                            &MdbaseWriteApplyRequest {
+                                preview,
+                                verification: verification(),
+                                idempotency_key: key,
+                            },
+                            |_| Ok(()),
+                        )
+                    })
+                })
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let committed = outcomes.iter().filter(|outcome| outcome.is_ok()).count();
+        assert_eq!(committed, 1, "{outcomes:?}");
+        let winner = if outcomes[0].is_ok() {
+            "first\n"
+        } else {
+            "second\n"
+        };
+        assert_eq!(
+            fs::read_to_string(directory.path().join("records/a.md")).unwrap(),
+            winner
+        );
+        let loser = outcomes
+            .iter()
+            .find_map(|outcome| outcome.as_ref().err())
+            .unwrap();
+        assert!(
+            matches!(
+                loser.code.as_str(),
+                "stale_state" | "concurrent_modification"
+            ),
+            "{loser:?}"
+        );
+    }
+
     #[test]
     fn first_path_revision_race_preserves_external_bytes_without_a_journal() {
         let (directory, paths, collection) = fixture();
