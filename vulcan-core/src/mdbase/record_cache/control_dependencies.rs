@@ -1,8 +1,8 @@
 use super::MdbaseRecordCacheError;
 use crate::mdbase::control_access::ControlAccess;
 use crate::mdbase::{
-    bundled_mdbase_schema, collect_external_schema_references, parse_local_schema,
-    schema_reference_path, MDBASE_SCHEMA_MAX_BYTES, MDBASE_SCHEMA_MAX_DEPTH,
+    bundled_mdbase_schema, collect_external_schema_references, decode_reference_path,
+    parse_local_schema, schema_reference_path, MDBASE_SCHEMA_MAX_BYTES, MDBASE_SCHEMA_MAX_DEPTH,
     MDBASE_SCHEMA_MAX_FILES,
 };
 use crate::paths::secure_open_regular_read;
@@ -105,10 +105,14 @@ impl Walker<'_> {
         {
             return Ok(());
         }
+        // The compiler names this file by its decoded path; so must its revision.
+        let Ok(file) = decode_reference_path(file) else {
+            return Ok(());
+        };
         let Ok(path) = schema_reference_path(
             self.root,
             base.parent().unwrap_or(Path::new("")),
-            Path::new(file),
+            Path::new(&file),
         ) else {
             return Ok(());
         };
@@ -198,6 +202,23 @@ mod tests {
             .into_iter(),
             &ControlAccess::new(None),
         )
+    }
+
+    #[test]
+    fn percent_encoded_references_capture_the_decoded_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        fs::create_dir_all(root.join("_types")).unwrap();
+        fs::write(root.join("common defs.yaml"), "type: string\n").unwrap();
+        let sources = capture(
+            root,
+            "{dialect: json-schema-2020-12, ref: '../common%20defs.yaml'}",
+        )
+        .unwrap();
+        assert_eq!(
+            sources.get(Path::new("common defs.yaml")),
+            Some(&Some(b"type: string\n".to_vec()))
+        );
     }
 
     #[test]

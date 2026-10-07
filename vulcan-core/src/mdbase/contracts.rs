@@ -404,8 +404,14 @@ fn load_contract_schemas(
             &|path, observation| access.observe_schema(path, observation),
         )
         .map_err(|error| {
+            // Unresolvable references keep their specific code.
+            let code = if error.code.starts_with("schema_ref_") {
+                error.code
+            } else {
+                "invalid_data_contract"
+            };
             Box::new(contract_diagnostic(
-                "invalid_data_contract",
+                code,
                 format!("failed to resolve or compile `{key}`: {error}"),
                 path,
                 key,

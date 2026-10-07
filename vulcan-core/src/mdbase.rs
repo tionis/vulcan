@@ -141,12 +141,33 @@ pub struct MdbaseSchemaDiagnostic {
     pub(crate) property: Option<String>,
 }
 
+/// Why a schema could not be resolved or compiled. `code` is stable for
+/// machines: `schema_invalid` in general, a `schema_ref_*` code when a local
+/// reference cannot be resolved, or `permission_denied`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MdbaseSchemaCompileError(pub String);
+pub struct MdbaseSchemaCompileError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl MdbaseSchemaCompileError {
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self::with_code("schema_invalid", message)
+    }
+
+    #[must_use]
+    pub fn with_code(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
 
 impl Display for MdbaseSchemaCompileError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
+        formatter.write_str(&self.message)
     }
 }
 
@@ -162,7 +183,7 @@ pub fn validate_mdbase_schema_value(
     let validator = jsonschema::draft202012::options()
         .should_validate_formats(true)
         .build(schema)
-        .map_err(|error| MdbaseSchemaCompileError(error.to_string()))?;
+        .map_err(|error| MdbaseSchemaCompileError::new(error.to_string()))?;
     Ok(schema_diagnostics(&validator, value))
 }
 
@@ -255,22 +276,25 @@ fn authorized_schema_base(
     authorize: &dyn Fn(&Path) -> Result<(), MdbaseSchemaCompileError>,
 ) -> Result<(PathBuf, PathBuf), MdbaseSchemaCompileError> {
     let absolute_root = std::path::absolute(collection_root)
-        .map_err(|error| MdbaseSchemaCompileError(error.to_string()))?;
+        .map_err(|error| MdbaseSchemaCompileError::new(error.to_string()))?;
     let absolute_base = std::path::absolute(base_file)
-        .map_err(|error| MdbaseSchemaCompileError(error.to_string()))?;
+        .map_err(|error| MdbaseSchemaCompileError::new(error.to_string()))?;
     let relative_base = absolute_base.strip_prefix(&absolute_root).map_err(|_| {
-        MdbaseSchemaCompileError("schema base file escapes collection root".to_string())
+        MdbaseSchemaCompileError::with_code(
+            "schema_ref_outside_collection",
+            "schema base file escapes collection root".to_string(),
+        )
     })?;
     let relative_base = schema_relative_path(Path::new(""), relative_base)?;
     authorize(&relative_base)?;
     let collection_root = fs::canonicalize(collection_root).map_err(|error| {
-        MdbaseSchemaCompileError(format!(
+        MdbaseSchemaCompileError::new(format!(
             "failed to resolve mdbase collection root {}: {error}",
             collection_root.display()
         ))
     })?;
     crate::paths::secure_open_regular_read(&collection_root, &relative_base).map_err(|error| {
-        MdbaseSchemaCompileError(format!(
+        MdbaseSchemaCompileError::new(format!(
             "failed to open schema base file {}: {error}",
             relative_base.display()
         ))
@@ -291,7 +315,7 @@ fn compile_schema_at_authorized_base(
     let mut schemas = HashMap::new();
     for bundled in MDBASE_BUNDLED_SCHEMAS {
         let parsed = serde_json::from_str(bundled.json).map_err(|error| {
-            MdbaseSchemaCompileError(format!(
+            MdbaseSchemaCompileError::new(format!(
                 "bundled mdbase schema {} is invalid JSON: {error}",
                 bundled.file_name
             ))
@@ -316,7 +340,7 @@ fn compile_schema_at_authorized_base(
         .with_base_uri(base_uri)
         .with_retriever(MdbaseSchemaRetriever { schemas })
         .build(schema)
-        .map_err(|error| MdbaseSchemaCompileError(error.to_string()))?;
+        .map_err(|error| MdbaseSchemaCompileError::new(error.to_string()))?;
     Ok(MdbaseCompiledSchema {
         validator,
         dependencies,
@@ -368,21 +392,24 @@ fn compile_mdbase_schema_wrapper_observed(
             ))
         }
         (None, Some(serde_json::Value::String(reference))) => {
+            check_reference_syntax(reference)?;
             let (file, fragment) = reference.split_once('#').unwrap_or((reference, ""));
             if file.is_empty()
                 || file.contains("://")
                 || file.starts_with("urn:")
                 || file.contains('?')
             {
-                return Err(MdbaseSchemaCompileError(
+                return Err(MdbaseSchemaCompileError::with_code(
+                    "schema_ref_unsupported",
                     "schema ref must name a local file".to_string(),
                 ));
             }
             let (root, base) = authorized_schema_base(base_file, collection_root, authorize)?;
+            let file = decode_reference_path(file)?;
             let path = schema_reference_path(
                 &root,
                 base.parent().expect("base file has a parent"),
-                Path::new(file),
+                Path::new(&file),
             )?;
             authorize(&path)?;
             let (document, bytes) = read_local_schema(&root, &path, observe)?;
@@ -390,12 +417,14 @@ fn compile_mdbase_schema_wrapper_observed(
                 document
             } else if fragment.starts_with('/') {
                 document.pointer(fragment).cloned().ok_or_else(|| {
-                    MdbaseSchemaCompileError(format!(
-                        "schema ref fragment does not exist: #{fragment}"
-                    ))
+                    MdbaseSchemaCompileError::with_code(
+                        "schema_ref_fragment",
+                        format!("schema ref fragment does not exist: #{fragment}"),
+                    )
                 })?
             } else {
-                return Err(MdbaseSchemaCompileError(
+                return Err(MdbaseSchemaCompileError::with_code(
+                    "schema_ref_fragment",
                     "schema ref fragment must be a JSON Pointer".to_string(),
                 ));
             };
@@ -411,13 +440,14 @@ fn compile_mdbase_schema_wrapper_observed(
             )?;
             compiled.dependencies.insert(path, bytes);
             if compiled.dependencies.len() > MDBASE_SCHEMA_MAX_FILES {
-                return Err(MdbaseSchemaCompileError(format!(
-                    "schema reference count exceeds {MDBASE_SCHEMA_MAX_FILES}"
-                )));
+                return Err(MdbaseSchemaCompileError::with_code(
+                    "schema_ref_limit",
+                    format!("schema reference count exceeds {MDBASE_SCHEMA_MAX_FILES}"),
+                ));
             }
             Ok((resolved, compiled))
         }
-        _ => Err(MdbaseSchemaCompileError(
+        _ => Err(MdbaseSchemaCompileError::new(
             "schema wrapper must contain exactly one value or ref".to_string(),
         )),
     }
@@ -496,10 +526,12 @@ impl LocalSchemaLoader<'_> {
         depth: usize,
     ) -> Result<(), MdbaseSchemaCompileError> {
         if depth > MDBASE_SCHEMA_MAX_DEPTH {
-            return Err(MdbaseSchemaCompileError(format!(
-                "schema reference depth exceeds {MDBASE_SCHEMA_MAX_DEPTH}"
-            )));
+            return Err(MdbaseSchemaCompileError::with_code(
+                "schema_ref_limit",
+                format!("schema reference depth exceeds {MDBASE_SCHEMA_MAX_DEPTH}"),
+            ));
         }
+        check_reference_scopes(schema, None)?;
         let mut references = Vec::new();
         collect_external_schema_references(schema, &mut references);
         references.sort_unstable();
@@ -516,9 +548,10 @@ impl LocalSchemaLoader<'_> {
                 continue;
             }
             if self.dependencies.len() >= MDBASE_SCHEMA_MAX_FILES {
-                return Err(MdbaseSchemaCompileError(format!(
-                    "schema reference count exceeds {MDBASE_SCHEMA_MAX_FILES}"
-                )));
+                return Err(MdbaseSchemaCompileError::with_code(
+                    "schema_ref_limit",
+                    format!("schema reference count exceeds {MDBASE_SCHEMA_MAX_FILES}"),
+                ));
             }
             let relative = resolved
                 .strip_prefix(self.collection_root)
@@ -542,22 +575,25 @@ impl LocalSchemaLoader<'_> {
         reference: &str,
         source_file: &Path,
     ) -> Result<Option<PathBuf>, MdbaseSchemaCompileError> {
+        check_reference_syntax(reference)?;
         let reference = reference.split('#').next().unwrap_or_default();
         if reference.is_empty() || bundled_mdbase_schema(reference).is_some() {
             return Ok(None);
         }
         if reference.contains("://") || reference.starts_with("urn:") {
-            return Err(MdbaseSchemaCompileError(format!(
-                "remote schema reference is not allowed: {reference}"
-            )));
+            return Err(MdbaseSchemaCompileError::with_code(
+                "schema_ref_unsupported",
+                format!("remote schema reference is not allowed: {reference}"),
+            ));
         }
         if reference.contains('?') {
-            return Err(MdbaseSchemaCompileError(format!(
-                "schema reference queries are not supported: {reference}"
-            )));
+            return Err(MdbaseSchemaCompileError::with_code(
+                "schema_ref_unsupported",
+                format!("schema reference queries are not supported: {reference}"),
+            ));
         }
         let parent = source_file.parent().ok_or_else(|| {
-            MdbaseSchemaCompileError(format!(
+            MdbaseSchemaCompileError::new(format!(
                 "schema base file has no parent: {}",
                 source_file.display()
             ))
@@ -565,10 +601,11 @@ impl LocalSchemaLoader<'_> {
         let parent = parent
             .strip_prefix(self.collection_root)
             .expect("schema source is collection confined");
+        let decoded = decode_reference_path(reference)?;
         Ok(Some(self.collection_root.join(schema_reference_path(
             self.collection_root,
             parent,
-            Path::new(reference),
+            Path::new(&decoded),
         )?)))
     }
 
@@ -578,10 +615,10 @@ impl LocalSchemaLoader<'_> {
             .map(|path| path.display().to_string())
             .collect::<Vec<_>>();
         cycle.push(resolved.display().to_string());
-        MdbaseSchemaCompileError(format!(
-            "schema reference cycle detected: {}",
-            cycle.join(" -> ")
-        ))
+        MdbaseSchemaCompileError::with_code(
+            "schema_ref_cycle",
+            format!("schema reference cycle detected: {}", cycle.join(" -> ")),
+        )
     }
 }
 
@@ -612,21 +649,30 @@ struct SchemaReadFailure {
 impl SchemaReadFailure {
     fn unavailable(message: String) -> Self {
         Self {
-            error: MdbaseSchemaCompileError(message),
+            error: MdbaseSchemaCompileError::with_code("schema_ref_unreadable", message),
             missing: false,
         }
     }
 }
 
 fn read_local_schema_bytes(root: &Path, path: &Path) -> Result<Vec<u8>, SchemaReadFailure> {
-    let file =
-        crate::paths::secure_open_regular_read(root, path).map_err(|error| SchemaReadFailure {
-            missing: error.kind() == std::io::ErrorKind::NotFound,
-            error: MdbaseSchemaCompileError(format!(
-                "failed to open schema reference {}: {error}",
-                path.display()
-            )),
-        })?;
+    let file = crate::paths::secure_open_regular_read(root, path).map_err(|error| {
+        let missing = error.kind() == std::io::ErrorKind::NotFound;
+        SchemaReadFailure {
+            missing,
+            error: MdbaseSchemaCompileError::with_code(
+                if missing {
+                    "schema_ref_not_found"
+                } else {
+                    "schema_ref_unreadable"
+                },
+                format!(
+                    "failed to open schema reference {}: {error}",
+                    path.display()
+                ),
+            ),
+        }
+    })?;
     let metadata = file.metadata().map_err(|error| {
         SchemaReadFailure::unavailable(format!(
             "failed to inspect schema reference {}: {error}",
@@ -668,17 +714,133 @@ fn parse_local_schema(
     path: &Path,
 ) -> Result<serde_json::Value, MdbaseSchemaCompileError> {
     let yaml: serde_yaml::Value = serde_yaml::from_slice(contents).map_err(|error| {
-        MdbaseSchemaCompileError(format!(
-            "failed to parse schema reference {}: {error}",
-            path.display()
-        ))
+        MdbaseSchemaCompileError::with_code(
+            "schema_ref_malformed",
+            format!(
+                "failed to parse schema reference {}: {error}",
+                path.display()
+            ),
+        )
     })?;
     serde_json::to_value(yaml).map_err(|error| {
-        MdbaseSchemaCompileError(format!(
-            "schema reference {} is not JSON-compatible: {error}",
-            path.display()
-        ))
+        MdbaseSchemaCompileError::with_code(
+            "schema_ref_malformed",
+            format!(
+                "schema reference {} is not JSON-compatible: {error}",
+                path.display()
+            ),
+        )
     })
+}
+
+/// A schema reference must be a URI reference: characters such as spaces
+/// are percent-encoded (`my%20schema.yaml`), never written literally.
+fn check_reference_syntax(reference: &str) -> Result<(), MdbaseSchemaCompileError> {
+    if reference.chars().any(|character| {
+        character.is_whitespace()
+            || character.is_control()
+            || matches!(
+                character,
+                '<' | '>' | '"' | '{' | '}' | '|' | '\\' | '^' | '`'
+            )
+    }) {
+        return Err(MdbaseSchemaCompileError::with_code(
+            "schema_ref_invalid",
+            format!(
+                "schema reference is not a valid URI reference (percent-encode it): {reference}"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// The file path a URI-reference path names: percent-escapes decoded as UTF-8.
+fn decode_reference_path(reference: &str) -> Result<String, MdbaseSchemaCompileError> {
+    let invalid = || {
+        MdbaseSchemaCompileError::with_code(
+            "schema_ref_invalid",
+            format!("schema reference has an invalid percent-escape: {reference}"),
+        )
+    };
+    let bytes = reference.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hex = bytes.get(index + 1..index + 3).ok_or_else(invalid)?;
+            let hex = std::str::from_utf8(hex).map_err(|_| invalid())?;
+            decoded.push(u8::from_str_radix(hex, 16).map_err(|_| invalid())?);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).map_err(|_| invalid())
+}
+
+/// Whether `uri` is absolute with a scheme other than `file`, so references
+/// relative to it would resolve remotely.
+fn is_remote_base(uri: &str) -> bool {
+    uri.split_once(':').is_some_and(|(scheme, _)| {
+        let mut characters = scheme.chars();
+        characters
+            .next()
+            .is_some_and(|first| first.is_ascii_alphabetic())
+            && characters.all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.')
+            })
+            && !scheme.eq_ignore_ascii_case("file")
+    })
+}
+
+/// Reject a relative file reference inside a schema resource whose `$id`
+/// sets a remote base: JSON Schema resolves it against that remote base, so
+/// it can never name a local file. References that resolve to a bundled
+/// mdbase schema stay allowed, since those are registered offline, and
+/// fragment-only references stay local.
+fn check_reference_scopes(
+    value: &serde_json::Value,
+    remote_base: Option<&str>,
+) -> Result<(), MdbaseSchemaCompileError> {
+    match value {
+        serde_json::Value::Object(object) => {
+            let remote_base = match object.get("$id").and_then(serde_json::Value::as_str) {
+                Some(id) if is_remote_base(id) => Some(id),
+                Some(id) if id.contains(':') => None,
+                _ => remote_base,
+            };
+            if let (Some(base), Some(reference)) = (
+                remote_base,
+                object.get("$ref").and_then(serde_json::Value::as_str),
+            ) {
+                let file = reference.split('#').next().unwrap_or_default();
+                let resolves_to_bundled = base
+                    .rsplit_once('/')
+                    .map(|(directory, _)| format!("{directory}/{}", file.trim_start_matches("./")))
+                    .is_some_and(|resolved| bundled_mdbase_schema(&resolved).is_some());
+                if !file.is_empty() && !file.contains(':') && !resolves_to_bundled {
+                    return Err(MdbaseSchemaCompileError::with_code(
+                        "schema_ref_unsupported",
+                        format!(
+                            "schema reference `{reference}` is relative to a remote `$id` base and cannot name a local file"
+                        ),
+                    ));
+                }
+            }
+            for child in object.values() {
+                check_reference_scopes(child, remote_base)?;
+            }
+            Ok(())
+        }
+        serde_json::Value::Array(values) => {
+            for child in values {
+                check_reference_scopes(child, remote_base)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 fn collect_external_schema_references<'a>(
@@ -715,7 +877,8 @@ fn schema_relative_path(
             Component::CurDir => {}
             Component::ParentDir if result.pop() => {}
             _ => {
-                return Err(MdbaseSchemaCompileError(
+                return Err(MdbaseSchemaCompileError::with_code(
+                    "schema_ref_outside_collection",
                     "schema reference escapes collection root".to_string(),
                 ))
             }
@@ -731,7 +894,10 @@ fn schema_reference_path(
 ) -> Result<PathBuf, MdbaseSchemaCompileError> {
     if reference.is_absolute() {
         let relative = reference.strip_prefix(root).map_err(|_| {
-            MdbaseSchemaCompileError("schema reference escapes collection root".to_string())
+            MdbaseSchemaCompileError::with_code(
+                "schema_ref_outside_collection",
+                "schema reference escapes collection root".to_string(),
+            )
         })?;
         schema_relative_path(Path::new(""), relative)
     } else {
@@ -741,7 +907,7 @@ fn schema_reference_path(
 
 fn schema_file_uri(path: &Path) -> Result<String, MdbaseSchemaCompileError> {
     let path = path.to_str().ok_or_else(|| {
-        MdbaseSchemaCompileError(format!(
+        MdbaseSchemaCompileError::new(format!(
             "schema path is not valid UTF-8: {}",
             path.display()
         ))
@@ -2426,7 +2592,7 @@ fn load_mdbase_type_file(
         Err(error) => {
             return Ok(TypeFileLoad::Invalid(vec![type_diagnostic(
                 path,
-                "schema_invalid",
+                error.code,
                 format!("failed to resolve or compile type schema: {error}"),
                 "schema",
             )]));

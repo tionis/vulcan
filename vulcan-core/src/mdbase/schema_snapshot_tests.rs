@@ -262,7 +262,7 @@ fn denied_schema_paths_are_not_probed_for_existence_or_parsed() {
     let dir = tempdir().unwrap();
     let base = dir.path().join("task.md");
     let schema = json!({"$ref": "hidden.yaml"});
-    let denied = || MdbaseSchemaCompileError("permission_denied".into());
+    let denied = || MdbaseSchemaCompileError::with_code("permission_denied", "permission_denied");
     // Base authority is checked before even checking that the base exists.
     assert_eq!(
         compile_mdbase_schema_with_local_refs(&schema, &base, dir.path(), &|_| Err(denied())).err(),
@@ -359,4 +359,55 @@ fn schema_snapshot_rejects_symlinked_files_and_parent_directories() {
         &|_| Ok(())
     )
     .is_err());
+}
+
+/// Local references are URI references: percent-escapes name files,
+/// unencoded spaces and similar characters are rejected, relative references
+/// under a remote `$id` base cannot name local files, and each failure has a
+/// stable `schema_ref_*` code.
+#[test]
+fn reference_profile_decodes_uris_and_reports_stable_codes() {
+    type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a str);
+    let case = |task: &str, files: &[(&str, &str)]| {
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join("_types")).unwrap();
+        fs::create_dir(dir.path().join("schemas")).unwrap();
+        fs::write(dir.path().join("mdbase.yaml"), "spec_version: '0.3.0'\n").unwrap();
+        fs::write(dir.path().join("_types/task.md"), "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  ref: ../schemas/task.yaml\n---\n").unwrap();
+        fs::write(dir.path().join("schemas/task.yaml"), task).unwrap();
+        for (name, body) in files {
+            fs::write(dir.path().join("schemas").join(name), body).unwrap();
+        }
+        let collection = load_mdbase_collection(dir.path()).unwrap().unwrap();
+        let types = load_mdbase_type_registry(&collection).unwrap();
+        if let Some(diagnostic) = types.diagnostics.first() {
+            return diagnostic.code.clone();
+        }
+        let analysis = analyze_mdbase_record_source(
+            &collection,
+            &types,
+            "a.md",
+            "---\ntype: task\nid: ab\n---\n",
+        );
+        analysis
+            .diagnostics
+            .first()
+            .map_or_else(|| "valid".to_string(), |diagnostic| diagnostic.code.clone())
+    };
+    let spaced = ("common defs.yaml", "type: string\nminLength: 3\n");
+    let short = ("idx.yaml", "type: string\nminLength: 3\n");
+    let cases: [Case<'_>; 9] = [
+        ("type: object\nproperties:\n  id: {$ref: 'common%20defs.yaml'}\n", &[spaced], "schema_min_length"),
+        ("type: object\nproperties:\n  id: {$ref: 'common defs.yaml'}\n", &[spaced], "schema_ref_invalid"),
+        ("type: object\nproperties:\n  id: {$ref: 'bad%zzescape.yaml'}\n", &[], "schema_ref_invalid"),
+        ("$id: 'https://example.com/task.yaml'\ntype: object\nproperties:\n  id: {$ref: 'idx.yaml'}\n", &[short], "schema_ref_unsupported"),
+        ("$id: 'https://example.com/task.yaml'\ntype: object\nproperties:\n  id: {type: string, minLength: 3}\n", &[], "schema_min_length"),
+        ("$id: 'https://example.com/task.yaml'\n$defs: {id: {type: string, minLength: 3}}\ntype: object\nproperties:\n  id: {$ref: '#/$defs/id'}\n", &[], "schema_min_length"),
+        ("type: object\nproperties:\n  id: {$ref: 'missing.yaml'}\n", &[], "schema_ref_not_found"),
+        ("type: object\nproperties:\n  id: {$ref: 'https://example.com/id.yaml'}\n", &[], "schema_ref_unsupported"),
+        ("type: object\nproperties:\n  id: {$ref: 'broken.yaml'}\n", &[("broken.yaml", "type: [")], "schema_ref_malformed"),
+    ];
+    for (task, files, expected) in cases {
+        assert_eq!(case(task, files), expected, "{task}");
+    }
 }

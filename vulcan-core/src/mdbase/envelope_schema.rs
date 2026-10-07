@@ -60,7 +60,7 @@ fn compile(kind: EnvelopeSchema) -> Result<jsonschema::Validator, MdbaseSchemaCo
     let canonical = format!("{MDBASE_CANONICAL_SCHEMA_BASE}{}", kind.name());
     let bundled = bundled_mdbase_schema(&canonical).expect("control envelope is bundled");
     let schema: Value = serde_json::from_str(bundled.json)
-        .map_err(|error| MdbaseSchemaCompileError(error.to_string()))?;
+        .map_err(|error| MdbaseSchemaCompileError::new(error.to_string()))?;
     let schemas = MDBASE_BUNDLED_SCHEMAS
         .iter()
         .map(|bundled| {
@@ -68,13 +68,13 @@ fn compile(kind: EnvelopeSchema) -> Result<jsonschema::Validator, MdbaseSchemaCo
                 .map(|value| (bundled.canonical_id.to_string(), value))
         })
         .collect::<Result<HashMap<String, Value>, _>>()
-        .map_err(|error| MdbaseSchemaCompileError(error.to_string()))?;
+        .map_err(|error| MdbaseSchemaCompileError::new(error.to_string()))?;
     jsonschema::draft202012::options()
         .should_validate_formats(true)
         .with_base_uri(canonical)
         .with_retriever(MdbaseSchemaRetriever { schemas })
         .build(&schema)
-        .map_err(|error| MdbaseSchemaCompileError(error.to_string()))
+        .map_err(|error| MdbaseSchemaCompileError::new(error.to_string()))
 }
 
 #[cfg(test)]

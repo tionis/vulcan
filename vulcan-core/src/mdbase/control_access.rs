@@ -38,7 +38,10 @@ impl<'a> ControlAccess<'a> {
             return Ok(());
         }
         self.denied.set(true);
-        Err(MdbaseSchemaCompileError("permission_denied".to_string()))
+        Err(MdbaseSchemaCompileError::with_code(
+            "permission_denied",
+            "permission_denied",
+        ))
     }
 
     pub(super) fn denied(&self) -> bool {
@@ -96,7 +99,7 @@ mod tests {
         assert!(access.path_allowed("_types/task.md"));
         assert!(!access.denied());
         assert_eq!(
-            access.schema(Path::new("hidden.yaml")).unwrap_err().0,
+            access.schema(Path::new("hidden.yaml")).unwrap_err().code,
             "permission_denied"
         );
         access.schema(Path::new("schema.yaml")).unwrap();
