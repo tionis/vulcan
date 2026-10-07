@@ -895,10 +895,125 @@ mod tests {
             .iter()
             .any(|diagnostic| diagnostic.field == "related"));
         assert!(!serde_json::to_string(
-            &session.read_metadata("tasks/b2-renamed.md", Some(&filter)).unwrap()
+            &session
+                .read_metadata("tasks/b2-renamed.md", Some(&filter))
+                .unwrap()
         )
         .unwrap()
         .contains("private"));
+    }
+
+    /// Retained state never outlives what it was proven for: narrowed grants,
+    /// edited controls, interrupted writes, and a lost cache all give the
+    /// ordinary service's answers, for queries and metadata reads alike.
+    #[test]
+    fn sessions_follow_revocation_control_edits_interrupted_writes_and_cache_loss() {
+        fn text<T>(result: Result<T, AppError>) -> Result<T, String> {
+            result.map_err(|error| error.to_string())
+        }
+        let (directory, paths) = initialized();
+        let session = MdbaseQuerySession::new(paths.clone()).with_change_monitor(
+            MdbaseChangeMonitor::watch(&directory.path().canonicalize().unwrap()).unwrap(),
+            Duration::from_secs(600),
+        );
+        let query = json!({"types": ["task"], "order_by": [{"field": "title"}],
+            "frontmatter_mode": "both"});
+        let check = |scope: Option<&PermissionFilter>| {
+            for _ in 0..2 {
+                assert_eq!(
+                    text(session.query(&query, scope)),
+                    text(build_mdbase_query_report(&paths, &query, scope))
+                );
+                for path in ["tasks/public.md", "tasks/private/secret.md"] {
+                    assert_eq!(
+                        text(session.read_metadata(path, scope)),
+                        text(build_mdbase_metadata_read_report(&paths, path, scope)),
+                        "{path}"
+                    );
+                }
+            }
+        };
+        let filter = restricted();
+        check(None);
+        check(Some(&filter));
+
+        // Revocation: a narrower grant sees only what it still allows.
+        let mut allow = read_control_grant();
+        allow.push(ResourceSpecifier::Note("mdbase.lock.yaml".into()));
+        let revoked = PermissionFilter::new(PathPermission {
+            allow,
+            deny: vec![ResourceSpecifier::Folder("tasks/**".into())],
+        });
+        check(Some(&revoked));
+        assert_eq!(
+            session
+                .query(&query, Some(&revoked))
+                .unwrap()
+                .meta
+                .total_count,
+            0
+        );
+        assert!(session
+            .read_metadata("tasks/public.md", Some(&revoked))
+            .is_err());
+
+        // A control edit changes defaults for every retained scope.
+        let task_type = directory.path().join("_types/task.md");
+        let controls = fs::read_to_string(&task_type).unwrap();
+        fs::write(
+            &task_type,
+            controls.replace(
+                "read_defaults: {status: open}",
+                "read_defaults: {status: later}",
+            ),
+        )
+        .unwrap();
+        check(None);
+        check(Some(&filter));
+        assert_eq!(
+            session
+                .read_metadata("tasks/public.md", None)
+                .unwrap()
+                .record
+                .effective_frontmatter["status"],
+            "later"
+        );
+
+        // An interrupted write's journal sends every request to the ordinary
+        // guarded path and its recovery error, until it is resolved.
+        let journal = paths
+            .operational_state_dir()
+            .unwrap_or_else(|_| paths.vulcan_dir().to_path_buf())
+            .join("mdbase-write/journal.json");
+        fs::create_dir_all(journal.parent().unwrap()).unwrap();
+        fs::write(&journal, "{}").unwrap();
+        assert!(session.query(&query, None).is_err());
+        assert!(session.read_metadata("tasks/public.md", None).is_err());
+        check(None);
+        fs::remove_file(&journal).unwrap();
+        check(None);
+
+        // A lost cache, then an edit: answers still follow the sources.
+        for name in ["cache.db", "cache.db-wal", "cache.db-shm"] {
+            let _ = fs::remove_file(paths.vulcan_dir().join(name));
+        }
+        check(None);
+        check(Some(&filter));
+        fs::write(
+            directory.path().join("tasks/public.md"),
+            "---\ntype: task\ntitle: After loss\n---\nBody\n",
+        )
+        .unwrap();
+        check(None);
+        check(Some(&filter));
+        assert_eq!(
+            session
+                .read_metadata("tasks/public.md", None)
+                .unwrap()
+                .record
+                .frontmatter["title"],
+            "After loss"
+        );
     }
 
     /// MDB.10 work bounds: a warm request rederives nothing, reads no record
