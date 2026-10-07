@@ -523,7 +523,7 @@ mod tests {
         use crate::shutdown::ShutdownSignal;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        async fn hosted_response(paths: VaultPaths, identity: VaultHttpServiceIdentity) -> Vec<u8> {
+        async fn hosted_response(paths: VaultPaths, identity: VaultHttpServiceIdentity) -> String {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
                 .await
                 .expect("listener");
@@ -571,7 +571,14 @@ mod tests {
             let mut response = Vec::new();
             stream.read_to_end(&mut response).await.expect("response");
             host.shutdown().expect("shutdown");
-            response
+            // The Date header has one-second resolution, so two requests can
+            // straddle a second; everything else must match exactly.
+            String::from_utf8(response)
+                .expect("UTF-8 response")
+                .split("\r\n")
+                .filter(|line| !line.to_ascii_lowercase().starts_with("date:"))
+                .collect::<Vec<_>>()
+                .join("\r\n")
         }
 
         let (vault, _state) = fixture();
