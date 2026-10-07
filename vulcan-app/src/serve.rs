@@ -5,7 +5,7 @@ use crate::browse::{
 use crate::mdbase::{
     build_mdbase_contracts_report, build_mdbase_metadata_read_report, build_mdbase_query_report,
     build_mdbase_schema_report, build_mdbase_types_report, build_mdbase_view_list_report,
-    build_mdbase_view_report, parse_mdbase_query, MdbaseQuerySession,
+    build_mdbase_view_report, parse_mdbase_query, MdbaseChangeFeed, MdbaseQuerySession,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -66,6 +66,7 @@ enum ServeRouteId {
     MdbaseSchema,
     MdbaseViews,
     MdbaseView,
+    MdbaseChanges,
     Query,
     BasesEval,
 }
@@ -144,6 +145,10 @@ const SERVE_ROUTES: &[ServeRouteDefinition] = &[
     ServeRouteDefinition {
         id: ServeRouteId::MdbaseView,
         path: "/mdbase/view",
+    },
+    ServeRouteDefinition {
+        id: ServeRouteId::MdbaseChanges,
+        path: "/mdbase/changes",
     },
     ServeRouteDefinition {
         id: ServeRouteId::Query,
@@ -310,6 +315,10 @@ fn route_query_schema(route: ServeRouteId) -> Value {
                 "description": "matched type name; repeat for a composition" } }),
             json!(["type"]),
         ),
+        ServeRouteId::MdbaseChanges => (
+            json!({ "after": nonnegative_integer_query_schema() }),
+            json!([]),
+        ),
         ServeRouteId::MdbaseView => (
             json!({
                 "source": { "type": "string", "minLength": 1,
@@ -393,6 +402,8 @@ pub fn route_request(
 pub struct ServeSessions<'a> {
     /// Serves `/mdbase/query`; without it the one-shot service runs.
     pub mdbase: Option<&'a MdbaseQuerySession>,
+    /// Serves `/mdbase/changes`; only a watching host feeds one.
+    pub mdbase_changes: Option<&'a MdbaseChangeFeed>,
     /// Serves `/notes`, `/query`, `/dataview/query`, and `/bases/eval` from
     /// retained snapshots (QRY.6); without it, or when no snapshot can be
     /// pinned, each request reads the cache directly with the same results.
@@ -586,6 +597,19 @@ pub fn route_request_with_sessions(
                 return ServeResponse::error(400, "missing required query parameter: type");
             }
             match build_mdbase_schema_report(paths, &types, read_filter.as_ref()) {
+                Ok(result) => ServeResponse::ok(json!({ "ok": true, "result": result })),
+                Err(error) => ServeResponse::error(500, error.to_string()),
+            }
+        }
+        ServeRouteId::MdbaseChanges => {
+            let Some(feed) = sessions.mdbase_changes else {
+                return ServeResponse::error(
+                    501,
+                    "mdbase change notifications require a watching host",
+                );
+            };
+            let after = parse_optional_usize(&request.query, "after").unwrap_or(0);
+            match feed.changes_since(paths, after as u64, read_filter.as_ref()) {
                 Ok(result) => ServeResponse::ok(json!({ "ok": true, "result": result })),
                 Err(error) => ServeResponse::error(500, error.to_string()),
             }
@@ -877,6 +901,7 @@ mod tests {
         let session = vulcan_core::note_session::NoteStoreSession::new(paths.clone());
         let sessions = ServeSessions {
             mdbase: None,
+            mdbase_changes: None,
             notes: Some(&session),
         };
         for round in 0..3 {
@@ -1051,6 +1076,7 @@ mod tests {
                 "/mdbase/schema",
                 "/mdbase/views",
                 "/mdbase/view",
+                "/mdbase/changes",
                 "/query",
                 "/bases/eval"
             ])

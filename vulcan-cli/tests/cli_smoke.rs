@@ -37821,3 +37821,306 @@ fn mdbase_views_list_and_execute_named_views() {
     assert_eq!(deleted["result"]["deleted"], true);
     assert!(!root.join("views/extra.md").exists());
 }
+
+/// MDB.9: loading a collection is passive. Opening configuration, types with
+/// lifecycle and match expressions, contracts, provider- and workflow-shaped
+/// records, views, and records containing scripts never runs hooks,
+/// lifecycle policies, plugins, or embedded code, and never changes a file
+/// outside the rebuildable cache.
+#[test]
+fn mdbase_reads_never_activate_executable_behavior() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let root = temp_dir.path().join("collection");
+    let files = [
+        ("mdbase.yaml", "spec_version: \"0.3.0\"\nx-obsidian:\n  bases:\n    include: ['*.base']\n"),
+        (
+            "_types/task.md",
+            "---\nkind: mdbase.type\nname: task\nmatch:\n  expr:\n    $expr: 'present.raw.title'\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    properties:\n      title: {type: string}\n      id: {type: string}\nlifecycle:\n  on_create:\n    set:\n      id: {ulid: true}\n  on_update:\n    set:\n      touched: {now: true}\n---\n",
+        ),
+        (
+            "_types/view.md",
+            "---\nkind: mdbase.type\nname: view\nmatch:\n  where:\n    type: view\nschema:\n  dialect: json-schema-2020-12\n  value: {type: object}\n---\n",
+        ),
+        (
+            "_contracts/note.md",
+            "---\nkind: mdbase.contract\nid: example.note\nversion: 1.0.0\ncontract_type: data\nschemas:\n  record:\n    type: object\n---\n",
+        ),
+        (
+            "workflows/cleanup.md",
+            "---\nkind: mdbase.workflow\nid: cleanup\ntrigger: {event: mdbase.record.modified}\nsteps:\n  - run: 'touch workflow-ran'\n---\n",
+        ),
+        (
+            "providers/shell.md",
+            "---\nkind: mdbase.provider\nid: shell\ncommand: ['sh', '-c', 'touch provider-ran']\n---\n",
+        ),
+        (
+            "tasks/a.md",
+            "---\ntitle: A\n---\n```dataviewjs\nvault.create('dataviewjs-ran.md', 'x')\n```\n<% tp.file.create_new('templater-ran') %>\n",
+        ),
+        (
+            "views/tasks.md",
+            "---\ntype: view\nid: tasks\nversion: 1\nname: Tasks\nviews:\n  - id: all\n    name: All\n    select: [title]\n---\n",
+        ),
+        ("board.base", "views:\n  - name: All\n    type: table\n    order: [file.name]\n"),
+        (
+            ".vulcan/config.toml",
+            "[permissions.profiles.plugin]\nread = \"all\"\nwrite = \"all\"\nrefactor = \"none\"\ngit = \"deny\"\nnetwork = \"deny\"\nindex = \"deny\"\nconfig = \"none\"\nexecute = \"allow\"\nshell = \"deny\"\n\n[plugins.tripwire]\nenabled = true\nevents = [\"on_note_write\", \"on_note_create\", \"on_note_delete\", \"on_pre_commit\", \"on_post_commit\", \"on_scan_complete\", \"on_refactor\"]\npermission_profile = \"plugin\"\nsandbox = \"fs\"\n",
+        ),
+    ];
+    for (path, contents) in files {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, contents).unwrap();
+    }
+    write_plugin_file(
+        &root,
+        "tripwire",
+        r#"
+function trip(event) {
+  throw new Error("plugin ran during a read");
+}
+function on_note_write(event) { trip(event); }
+function on_note_create(event) { trip(event); }
+function on_note_delete(event) { trip(event); }
+function on_pre_commit(event) { trip(event); }
+function on_post_commit(event) { trip(event); }
+function on_scan_complete(event) { trip(event); }
+function on_refactor(event) { trip(event); }
+"#,
+    );
+    let snapshot = || {
+        let mut files = std::collections::BTreeMap::new();
+        let mut pending = vec![root.clone()];
+        while let Some(directory) = pending.pop() {
+            for entry in fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                let relative = path
+                    .strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if !relative.starts_with(".vulcan/")
+                    || relative == ".vulcan/config.toml"
+                    || relative.starts_with(".vulcan/plugins/")
+                {
+                    // Everything else under `.vulcan/` is Vulcan's own
+                    // rebuildable or operational state (cache, locks).
+                    files.insert(relative, fs::read(&path).unwrap());
+                }
+            }
+        }
+        files
+    };
+    // Plugins run only in trusted vaults: trust it, so the tripwire is live.
+    let config_home = temp_dir.path().join("xdg");
+    fs::create_dir_all(&config_home).unwrap();
+    let config_home = config_home.to_str().unwrap().to_string();
+    cargo_vulcan_with_xdg_config(&config_home)
+        .args(["--vault", root.to_str().unwrap(), "trust", "add"])
+        .assert()
+        .success();
+    let before = snapshot();
+    let commands: &[&[&str]] = &[
+        &["status"],
+        &["types"],
+        &["contracts"],
+        &["validate"],
+        &["read", "tasks/a.md", "--source"],
+        &["read", "workflows/cleanup.md"],
+        &["read", "providers/shell.md", "--metadata"],
+        &["query", "{select: [title]}"],
+        &["views"],
+        &["view", "tasks", "all"],
+        &["view", "board.base", "all"],
+        &["view-source", "read", "views/tasks.md"],
+        &["schema", "task", "view"],
+    ];
+    for arguments in commands {
+        let output = cargo_vulcan_with_xdg_config(&config_home)
+            .args([
+                "--vault",
+                root.to_str().unwrap(),
+                "--output",
+                "json",
+                "mdbase",
+            ])
+            .args(*arguments)
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.status.success(), "{arguments:?}: {text}");
+        assert!(!text.contains("plugin ran"), "{arguments:?}: {text}");
+    }
+    let after = snapshot();
+    assert_eq!(
+        before.keys().collect::<Vec<_>>(),
+        after.keys().collect::<Vec<_>>(),
+        "a read created or removed files"
+    );
+    assert!(before == after, "a read changed a file outside the cache");
+
+    // Positive control: the tripwire does fire for an actual write.
+    let output = cargo_vulcan_with_xdg_config(&config_home)
+        .args(["--vault", root.to_str().unwrap(), "--output", "json"])
+        .args(["note", "append", "tasks/a.md", "more", "--no-commit"])
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "the plugin tripwire did not fire on a write: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout)
+        .chars()
+        .chain(String::from_utf8_lossy(&output.stderr).chars())
+        .collect::<String>()
+        .contains("plugin ran during a read"));
+}
+
+/// MDB.9: one permission profile governs every mdbase surface. A hidden
+/// record that collides with a visible one on a unique field must not leak
+/// through any path, diagnostic, view, schema, or change listing, and
+/// writes outside the grant are refused.
+#[test]
+fn mdbase_permission_profiles_scope_every_surface_without_leaks() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let root = temp_dir.path().join("collection");
+    let files = [
+        ("mdbase.yaml", "spec_version: \"0.3.0\"\n"),
+        (
+            "_types/task.md",
+            "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    properties:\n      id: {type: string}\n      title: {type: string}\n      owner: {type: string}\ncollection:\n  unique:\n    - fields: [id]\n      scope: collection\n  links:\n    owner: {target_type: any}\n---\n",
+        ),
+        (
+            "_types/view.md",
+            "---\nkind: mdbase.type\nname: view\nmatch:\n  where:\n    type: view\nschema:\n  dialect: json-schema-2020-12\n  value: {type: object}\n---\n",
+        ),
+        ("open/a.md", "---\ntype: task\nid: same\ntitle: Open\nowner: '[[hidden-target]]'\n---\n"),
+        ("secret/hidden-target.md", "---\ntype: task\nid: same\ntitle: Classified\n---\n"),
+        ("secret/views.md", "---\ntype: view\nid: secret.views\nversion: 1\nname: Secret\nviews:\n  - id: all\n    name: All\n---\n"),
+        (
+            "open/views.md",
+            "---\ntype: view\nid: open.views\nversion: 1\nname: Open\nquery:\n  types: [task]\nviews:\n  - id: all\n    name: All\n    select: [title]\n---\n",
+        ),
+        (
+            ".vulcan/config.toml",
+            "[permissions.profiles.open]\nread = { allow = [\"folder:open/**\", \"folder:_types/**\", \"folder:_contracts/**\", \"note:mdbase.yaml\", \"note:mdbase.lock.yaml\"] }\nwrite = { allow = [\"folder:open/**\"] }\nrefactor = \"none\"\ngit = \"deny\"\nnetwork = \"deny\"\nindex = \"deny\"\nconfig = \"read\"\nexecute = \"deny\"\nshell = \"deny\"\n",
+        ),
+    ];
+    for (path, contents) in files {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, contents).unwrap();
+    }
+    let run = |arguments: &[&str]| {
+        let output = Command::cargo_bin("vulcan")
+            .unwrap()
+            .args([
+                "--vault",
+                root.to_str().unwrap(),
+                "--permissions",
+                "open",
+                "--output",
+                "json",
+                "mdbase",
+            ])
+            .args(arguments)
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        (output.status.success(), text)
+    };
+    // Control: without the profile the hidden record and its collision show.
+    let unrestricted = Command::cargo_bin("vulcan")
+        .unwrap()
+        .args([
+            "--vault",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+            "mdbase",
+            "validate",
+        ])
+        .output()
+        .unwrap();
+    let unrestricted = String::from_utf8_lossy(&unrestricted.stdout).to_string();
+    assert!(
+        unrestricted.contains("secret/hidden-target.md"),
+        "{unrestricted}"
+    );
+    assert!(
+        unrestricted.contains("duplicate") || unrestricted.contains("unique"),
+        "{unrestricted}"
+    );
+    for arguments in [
+        &["status"][..],
+        &["types"],
+        &["validate"],
+        &["read", "open/a.md", "--source"],
+        &["read", "open/a.md", "--metadata"],
+        &["query", "{types: [task], select: [title, id]}"],
+        &["views"],
+        &["view", "open.views", "all"],
+        &["schema", "task"],
+    ] {
+        let (success, text) = run(arguments);
+        assert!(success, "{arguments:?}: {text}");
+        for secret in ["secret/", "Classified", "hidden-target.md"] {
+            assert!(
+                !text.contains(secret),
+                "{arguments:?} leaked {secret}: {text}"
+            );
+        }
+    }
+    // Hidden records are indistinguishable from missing ones.
+    for (arguments, missing) in [
+        (
+            &["read", "secret/hidden-target.md"][..],
+            &["read", "secret/absent.md"][..],
+        ),
+        (
+            &["view-source", "read", "secret/views.md"],
+            &["view-source", "read", "secret/absent.md"],
+        ),
+    ] {
+        let (success, hidden) = run(arguments);
+        let (_, absent) = run(missing);
+        assert!(!success, "{arguments:?}: {hidden}");
+        assert_eq!(
+            hidden
+                .replace("hidden-target", "absent")
+                .replace("views.md", "absent.md"),
+            absent,
+            "{arguments:?}"
+        );
+    }
+    // Writes outside the grant are refused before anything changes.
+    let draft = temp_dir.path().join("draft.md");
+    fs::write(
+        &draft,
+        "---\ntype: view\nid: probe\nversion: 1\nname: Probe\nviews:\n  - id: all\n    name: All\n---\n",
+    )
+    .unwrap();
+    let (success, text) = run(&[
+        "view-source",
+        "create",
+        "--path",
+        "secret/probe.md",
+        "--file",
+        draft.to_str().unwrap(),
+        "--no-commit",
+    ]);
+    assert!(!success, "{text}");
+    assert!(!text.contains("path_conflict"), "{text}");
+    assert!(!root.join("secret/probe.md").exists());
+}

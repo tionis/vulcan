@@ -279,6 +279,7 @@ fn note_query_service_benchmark() {
     );
     let sessions = ServeSessions {
         mdbase: use_session.then_some(&mdbase),
+        mdbase_changes: None,
         notes: use_session.then_some(&session),
     };
     // `VULCAN_NOTE_BENCH_FRONTENDS` selects frontends (comma-separated).

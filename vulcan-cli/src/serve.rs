@@ -183,6 +183,7 @@ impl TemporaryHostStart {
                 let watch = vault_watch_service(
                     paths,
                     state,
+                    Some(http_state.mdbase_change_feed()),
                     WatchOptions {
                         debounce_ms: options.debounce_ms,
                     },
@@ -606,6 +607,86 @@ mod tests {
         let refreshed = refreshed.expect("watch-backed search should refresh");
         assert_eq!(refreshed["result"]["hits"][0]["document_path"], "Home.md");
 
+        handle.shutdown().expect("server should shut down");
+    }
+
+    #[test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "FSEvents does not reliably deliver events in CI"
+    )]
+    fn serve_watch_announces_mdbase_changes_after_refreshing_derived_state() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join("_types")).unwrap();
+        fs::write(vault_root.join("mdbase.yaml"), "spec_version: \"0.3.0\"\n").unwrap();
+        fs::write(
+            vault_root.join("_types/task.md"),
+            "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    properties:\n      title: {type: string}\n---\n",
+        )
+        .unwrap();
+        fs::write(vault_root.join("a.md"), "---\ntype: task\ntitle: A\n---\n").unwrap();
+        vulcan_core::initialize_vulcan_dir(&VaultPaths::new(&vault_root)).unwrap();
+        scan_vault(&VaultPaths::new(&vault_root), ScanMode::Full).expect("scan should succeed");
+
+        let handle = spawn_server(
+            VaultPaths::new(&vault_root),
+            ServeOptions {
+                bind: "127.0.0.1:0".to_string(),
+                watch: true,
+                debounce_ms: 50,
+                auth_token: None,
+                permissions: None,
+            },
+        )
+        .expect("server should start");
+        for _ in 0..50 {
+            let health = get_json(handle.addr(), "/health", None);
+            if health["last_watch_report"].is_object() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        let start = get_json(handle.addr(), "/mdbase/changes", None)["result"]["generation"]
+            .as_u64()
+            .expect("generation");
+
+        fs::write(
+            vault_root.join("a.md"),
+            "---\ntype: task\ntitle: Moved on\n---\n",
+        )
+        .unwrap();
+        let mut announced = None;
+        // Allow for the watcher's safety reconciliation if events are lost.
+        let deadline = std::time::Instant::now() + Duration::from_secs(45);
+        while std::time::Instant::now() < deadline {
+            if let Some(changes) = try_get_json(
+                handle.addr(),
+                &format!("/mdbase/changes?after={start}"),
+                None,
+            ) {
+                if changes["result"]["notifications"]
+                    .as_array()
+                    .is_some_and(|notifications| !notifications.is_empty())
+                {
+                    announced = Some(changes);
+                    break;
+                }
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        let announced = announced.expect("the record edit should be announced");
+        assert_eq!(
+            announced["result"]["notifications"][0]["paths"],
+            serde_json::json!(["a.md"])
+        );
+        // An announced change is already visible to queries.
+        let query = get_json(
+            handle.addr(),
+            "/mdbase/query?query=%7B%22select%22%3A%5B%22title%22%5D%7D",
+            None,
+        );
+        assert_eq!(query["result"]["results"][0]["values"]["title"], "Moved on");
         handle.shutdown().expect("server should shut down");
     }
 

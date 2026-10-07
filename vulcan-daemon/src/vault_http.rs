@@ -22,6 +22,7 @@ use std::future::Future;
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use vulcan_app::mdbase::MdbaseChangeFeed;
 use vulcan_app::mdbase::MdbaseQuerySession;
 use vulcan_app::serve::{
     route_request_with_sessions, serve_route_paths, ServeHealthState, ServeRequest, ServeResponse,
@@ -50,6 +51,8 @@ pub struct VaultHttpState {
     request_deadline: Duration,
     mdbase: Arc<OnceLock<MdbaseQuerySession>>,
     notes: Arc<OnceLock<NoteStoreSession>>,
+    /// Fed by this host's watcher; served only when watching is enabled.
+    mdbase_changes: Arc<MdbaseChangeFeed>,
 }
 
 impl VaultHttpState {
@@ -67,6 +70,7 @@ impl VaultHttpState {
             request_deadline: DEFAULT_VAULT_HTTP_DEADLINE,
             mdbase: Arc::new(OnceLock::new()),
             notes: Arc::new(OnceLock::new()),
+            mdbase_changes: Arc::new(MdbaseChangeFeed::new()),
         })
     }
 
@@ -79,6 +83,12 @@ impl VaultHttpState {
     #[must_use]
     pub fn health_handle(&self) -> Arc<Mutex<ServeHealthState>> {
         Arc::clone(&self.health)
+    }
+
+    /// The feed [`vault_watch_service`] publishes mdbase changes to.
+    #[must_use]
+    pub fn mdbase_change_feed(&self) -> Arc<MdbaseChangeFeed> {
+        Arc::clone(&self.mdbase_changes)
     }
 }
 
@@ -252,6 +262,7 @@ pub fn vault_listener_service_for(
 pub fn vault_watch_service(
     paths: VaultPaths,
     health: Arc<Mutex<ServeHealthState>>,
+    mdbase_changes: Option<Arc<MdbaseChangeFeed>>,
     options: WatchOptions,
 ) -> Result<ServiceRegistration, HostRuntimeError> {
     let id = ServiceId::parse("observation.vault/temporary-http")?;
@@ -277,6 +288,12 @@ pub fn vault_watch_service(
                     if !ready {
                         service.ready()?;
                         ready = true;
+                    }
+                    // After the scan, so the feed refreshes derived state from
+                    // the indexed vault before announcing the change. A failed
+                    // refresh is retried with the next scan's changes.
+                    if let Some(feed) = mdbase_changes.as_deref().filter(|_| !report.startup) {
+                        let _ = feed.observe(&paths, &report.paths);
                     }
                     let mut state = health
                         .lock()
@@ -367,12 +384,17 @@ async fn dispatch(State(state): State<VaultHttpState>, request: Request<Body>) -
     );
     let mdbase = Arc::clone(&state.mdbase);
     let notes = Arc::clone(&state.notes);
+    let changes = state
+        .route_options
+        .watch_enabled
+        .then(|| Arc::clone(&state.mdbase_changes));
     let operation = tokio::task::spawn_blocking(move || {
         // Retained sessions exist only once a client uses their routes.
         let sessions = ServeSessions {
             mdbase: MDBASE_SESSION_ROUTES
                 .contains(&app_request.path.as_str())
                 .then(|| mdbase.get_or_init(|| mdbase_session(paths.as_ref()))),
+            mdbase_changes: changes.as_deref(),
             notes: NOTE_SESSION_ROUTES
                 .contains(&app_request.path.as_str())
                 .then(|| notes.get_or_init(|| NoteStoreSession::new(paths.as_ref().clone()))),
@@ -911,6 +933,50 @@ mod tests {
             let value = body(response).await;
             assert_eq!(value["ok"], false, "{uri}");
             assert_eq!(value["code"].as_str(), code, "{uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn mdbase_changes_are_served_only_by_a_watching_host() {
+        let vault = tempfile::tempdir().expect("vault");
+        let root = vault.path();
+        std::fs::create_dir(root.join(".vulcan")).expect("config directory");
+        std::fs::write(root.join("mdbase.yaml"), "spec_version: \"0.3.0\"\n").expect("config");
+        std::fs::write(root.join("a.md"), "---\ntitle: A\n---\n").expect("record");
+        let get = || {
+            HttpRequest::builder()
+                .uri("/mdbase/changes?after=0")
+                .header(HOST, "127.0.0.1:3210")
+                .header(VAULT_HTTP_TOKEN_HEADER, "secret")
+                .body(Body::empty())
+                .expect("request")
+        };
+        for watch_enabled in [false, true] {
+            let state = VaultHttpState::new(
+                VaultPaths::new(root),
+                ServeRouteOptions {
+                    permissions: None,
+                    watch_enabled,
+                },
+                VaultHttpSecurity::new("secret", vec!["127.0.0.1:3210".to_string()], Vec::new()),
+            )
+            .expect("state");
+            state
+                .mdbase_change_feed()
+                .observe(&VaultPaths::new(root), &["a.md".to_string()])
+                .expect("observe");
+            let response = vault_router(state).oneshot(get()).await.expect("response");
+            if watch_enabled {
+                assert_eq!(response.status(), StatusCode::OK);
+                let value = body(response).await;
+                assert_eq!(value["result"]["generation"], 1);
+                assert_eq!(
+                    value["result"]["notifications"][0]["paths"],
+                    serde_json::json!(["a.md"])
+                );
+            } else {
+                assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+            }
         }
     }
 

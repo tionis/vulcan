@@ -15,6 +15,10 @@ pub use write_repair::{
     MdbaseWriteAcceptCurrentReport, MdbaseWriteRecoveryReport, MdbaseWriteRepairStatus,
 };
 mod bases_views;
+mod change_feed;
+pub use change_feed::{
+    MdbaseChangeFeed, MdbaseChangeNotification, MdbaseChangesReport, MDBASE_CHANGE_FEED_CAPACITY,
+};
 mod views;
 mod write_validation;
 pub use query_profile::{build_mdbase_query_report_profiled, MdbaseQueryMetrics};
