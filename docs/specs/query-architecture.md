@@ -237,21 +237,31 @@ held the lock almost continuously, so readers could rarely pin and fell back to 
 interrupted ordinary write batch, found while no writer holds the lock, makes the session decline,
 so the direct path can report the recovery it needs.
 
-**Row versions (schema v28, v29).** `note_store_clock` holds a random `store_id` per cache file and
+**Row versions (schema v28-v30).** `note_store_clock` holds a random `store_id` per cache file and
 a version that every `note_query` insert, update, or delete advances; triggers stamp each changed
 row's `row_version` with it, and writers of note-visible state that touch no row (link resolution,
 inferred links) advance it explicitly in the same transaction. Identity facts carry their row
-version and load from a covering index (v29).
+version and load from a covering index (v29, widened in v30 to apply path scopes per row).
 
 **Retention.** Within a snapshot the session reuses:
 
-- identity facts per read scope while the store clock is unchanged, loaded single-flight;
+- identity facts per read scope (scopes with the same universe share them) while the store clock
+  is unchanged, loaded single-flight; after a write a scope is refreshed from its predecessor with
+  only the rows whose version is newer, and reloaded whole when its row count shows a deletion or
+  a row leaving the scope;
 - stored-field records per path while the row version equals the identity's (and the bookmark set
   and `store_id` match), assembled once per scope and clock into a vector in identity order that
-  lookups index directly and the planner decides over in memory; records whose `file.ctime` came
-  from a filesystem fallback are not retained;
+  lookups index directly and the planner decides over in memory, carried over from the
+  predecessor's vector for unchanged rows; records whose `file.ctime` came from a filesystem
+  fallback are not retained;
 - hydrated file objects per scope while the clock, configuration, and bookmark set are unchanged,
   because incoming links, tasks, and lists depend on rows other than the note's own.
+
+Restricted scopes stay as cheap as unrestricted ones: identity loads apply path grants to each
+`note_query` row through the covering index instead of a CTE of permitted ids, the planner's
+candidate SQL carries no permission clause (candidates are filtered by universe membership), and
+hydration keeps incoming links whose source is in the universe instead of scoping them in SQL
+(whose plan probed every permitted note's links: 250 ms for a 50-note page at 10K).
 
 Session lookups decide candidates on the request's thread: a host serving concurrent requests
 already uses its cores, and per-request fan-out only queued requests behind each other (eight

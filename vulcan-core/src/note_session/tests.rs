@@ -146,6 +146,30 @@ fn snapshots_answer_like_the_direct_store_and_reuse_unchanged_notes() {
     assert_session_equals_direct(&session, &paths, "after edit");
     assert!(counter(&counters.stored_reused) > reused);
     assert!(counter(&counters.hydrated_loaded) > hydrated);
+    // Scopes refresh from the rows that changed rather than reloading.
+    let refreshes = counter(&counters.identity_refreshes);
+    assert!(refreshes > 0);
+
+    // A rename keeps the document; a note leaving the restricted scope and
+    // a deletion make the scope's count disagree, so it reloads whole.
+    fs::rename(
+        paths.vault_root().join("A/Three.md"),
+        paths.vault_root().join("A/Four.md"),
+    )
+    .unwrap();
+    scan_vault(&paths, ScanMode::Incremental).unwrap();
+    assert_session_equals_direct(&session, &paths, "after rename");
+    assert!(counter(&counters.identity_refreshes) > refreshes);
+    fs::write(
+        paths.vault_root().join("A/One.md"),
+        "---\ntags: [t]\nstatus: open\nup: '[[Two]]'\n---\n[[Two]]\n- [ ] task one\n",
+    )
+    .unwrap();
+    scan_vault(&paths, ScanMode::Incremental).unwrap();
+    assert_session_equals_direct(&session, &paths, "after leaving the scope");
+    fs::remove_file(paths.vault_root().join("Hidden.md")).unwrap();
+    scan_vault(&paths, ScanMode::Incremental).unwrap();
+    assert_session_equals_direct(&session, &paths, "after deletion");
 
     // Bookmarks change starred records without a cache write.
     fs::create_dir_all(paths.vault_root().join(".obsidian")).unwrap();

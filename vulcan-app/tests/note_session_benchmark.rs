@@ -18,7 +18,8 @@
 //! `query`, `bases`, `notes`, and `mdbase`). The writer edits a record body
 //! outside mdbase's managed write path, so mixed runs that include mdbase
 //! measure its disk-reconciled fallback. The benchmark adds
-//! `_bench/*.base` files for the run and removes them afterwards. Its JSON
+//! `public/_bench/*.base` files (readable by the fixture's `benchmark_public`
+//! profile) for the run and removes them afterwards. Its JSON
 //! report labels the acceptance gate `not_evaluated`.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -89,7 +90,7 @@ fn requests() -> Vec<(&'static str, ServeRequest)> {
                 "bases",
                 get(
                     "/bases/eval",
-                    &[("file", format!("_bench/{kind}-{status}.base"))],
+                    &[("file", format!("public/_bench/{kind}-{status}.base"))],
                 ),
             ));
             requests.push((
@@ -205,11 +206,13 @@ fn note_query_service_benchmark() {
     let writes_per_second = env_number("VULCAN_NOTE_BENCH_WRITES_PER_SECOND", 0);
     let use_session = std::env::var("VULCAN_NOTE_BENCH_SESSION").map_or(true, |value| value != "0");
     let options = ServeRouteOptions {
-        permissions: std::env::var("VULCAN_NOTE_BENCH_SCOPE").ok(),
+        permissions: std::env::var("VULCAN_NOTE_BENCH_SCOPE")
+            .ok()
+            .filter(|scope| !scope.is_empty()),
         watch_enabled: false,
     };
 
-    let bases = paths.vault_root().join("_bench");
+    let bases = paths.vault_root().join("public/_bench");
     fs::create_dir_all(&bases).expect("bench directory");
     for kind in TYPES {
         for status in STATUSES {
@@ -362,6 +365,7 @@ fn note_query_service_benchmark() {
             "snapshots_unavailable": counter(&counters.snapshots_unavailable),
             "connections_opened": counter(&counters.connections_opened),
             "identity_loads": counter(&counters.identity_loads),
+            "identity_refreshes": counter(&counters.identity_refreshes),
             "identity_reuses": counter(&counters.identity_reuses),
             "stored_loaded": counter(&counters.stored_loaded),
             "stored_reused": counter(&counters.stored_reused),

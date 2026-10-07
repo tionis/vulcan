@@ -97,7 +97,6 @@ pub(crate) fn execute_note_plan(
     paths: &VaultPaths,
     lookup: &IndexedNoteLookup<'_>,
     plan: &NotePlan<'_>,
-    filter: Option<&PermissionFilter>,
 ) -> Result<PlannedRows, PropertyError> {
     let mut stages = Vec::new();
     let mut stage = |name: &str, started: Instant| {
@@ -153,7 +152,9 @@ pub(crate) fn execute_note_plan(
                     markdown_only: plan.markdown_only,
                     with_properties: !from_records,
                 },
-                filter,
+                // The lookup's universe is the read scope; membership below
+                // filters candidates without scanning permitted ids.
+                None,
             )?
             .into_iter()
             .filter(|candidate| lookup.contains(&candidate.path))
@@ -443,7 +444,7 @@ fn sql_candidates(
         &opened
     };
     let permission_sql = filter.map(|filter| {
-        filter.document_scope_sql_for("_permission_documents", "note_query.document_id")
+        filter.note_query_scope_sql("_permission_documents", "note_query.document_id")
     });
     let mut params = permission_sql
         .as_ref()
@@ -540,7 +541,7 @@ mod tests {
         let run = |plan: &NotePlan<'_>| {
             let lookup =
                 load_indexed_note_lookup(&paths, NoteIndexReadScope::Filter(None)).unwrap();
-            let planned = execute_note_plan(&paths, &lookup, plan, None).unwrap();
+            let planned = execute_note_plan(&paths, &lookup, plan).unwrap();
             let hydrated = ["A/Open.md", "A/Done.md", "A/Odd.md", "B.md", "image.png"]
                 .into_iter()
                 .filter(|path| lookup.is_hydrated(path))

@@ -178,6 +178,24 @@ pub struct IndexedIdentity {
     pub aliases: Vec<String>,
     /// The `note_query` row version (schema v28); 0 when unknown.
     pub row_version: i64,
+    /// The cache document id; empty when unknown.
+    pub document_id: String,
+}
+
+/// Give each identity its lookup key: its basename when no other identity
+/// shares it, `/path` otherwise.
+pub fn assign_lookup_keys(identities: &mut [IndexedIdentity]) {
+    let mut counts = HashMap::<String, usize>::new();
+    for identity in identities.iter() {
+        *counts.entry(identity.file_name.clone()).or_default() += 1;
+    }
+    for identity in identities.iter_mut() {
+        identity.key = if counts[&identity.file_name] > 1 {
+            format!("/{}", identity.path)
+        } else {
+            identity.file_name.clone()
+        };
+    }
 }
 
 /// A readable universe's identity facts, indexed by path and lookup key.
@@ -227,6 +245,12 @@ impl IdentityIndex {
 
     pub fn iter(&self) -> impl Iterator<Item = &IndexedIdentity> {
         self.identities.iter()
+    }
+
+    /// The identities in path order.
+    #[must_use]
+    pub fn identities(&self) -> &[IndexedIdentity] {
+        &self.identities
     }
 }
 

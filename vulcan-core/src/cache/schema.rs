@@ -10,6 +10,17 @@ pub fn apply_schema_v29(transaction: &Transaction<'_>) -> Result<(), rusqlite::E
     )
 }
 
+/// Widen the identity index (QRY.6) so read scopes on path and extension
+/// apply per row, and document ids for incremental refreshes, come from the
+/// index alone.
+pub fn apply_schema_v30(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "DROP INDEX idx_note_query_identity;
+         CREATE INDEX idx_note_query_identity
+             ON note_query(path, filename, extension, row_version, document_id, aliases);",
+    )
+}
+
 /// Row versions for the note store (QRY.6). Every insert or update of a
 /// `note_query` row (documents, properties, tags, and aliases all write
 /// through it) advances the store clock and stamps the row with the new

@@ -167,6 +167,11 @@ impl MigrationRegistry {
                 "cover note identity facts with an index",
                 schema::apply_schema_v29,
             ),
+            Migration::new(
+                30,
+                "widen the note identity index for scopes and refreshes",
+                schema::apply_schema_v30,
+            ),
         ])
     }
 
@@ -669,22 +674,28 @@ mod tests {
         MigrationRegistry::schema_v1()
             .migrate(&mut connection)
             .unwrap();
-        let plan = connection
-            .prepare(
-                "EXPLAIN QUERY PLAN SELECT note_query.path, note_query.filename, \
-                 note_query.aliases, note_query.row_version FROM note_query WHERE 1 = 1 \
-                 ORDER BY 1",
-            )
-            .unwrap()
-            .query_map([], |row| row.get::<_, String>(3))
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap()
-            .join("\n");
-        assert!(
-            plan.contains("COVERING INDEX idx_note_query_identity"),
-            "{plan}"
-        );
+        // Unrestricted, and with a path scope applied to each row.
+        for scope in [
+            "",
+            " AND note_query.extension = 'md' AND (note_query.path GLOB 'a/*')",
+        ] {
+            let plan = connection
+                .prepare(&format!(
+                    "EXPLAIN QUERY PLAN SELECT note_query.path, note_query.filename, \
+                     note_query.aliases, note_query.row_version FROM note_query WHERE 1 = 1{scope} \
+                     ORDER BY 1"
+                ))
+                .unwrap()
+                .query_map([], |row| row.get::<_, String>(3))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+                .join("\n");
+            assert!(
+                plan.contains("COVERING INDEX idx_note_query_identity"),
+                "{scope}: {plan}"
+            );
+        }
     }
 
     #[test]

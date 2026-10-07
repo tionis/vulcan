@@ -738,14 +738,67 @@ impl PermissionFilter {
 
     #[must_use]
     pub fn document_scope_sql(&self, cte_name: &str) -> PermissionSql {
-        self.document_scope_sql_for(cte_name, "documents.id")
+        self.scope_sql(cte_name, "documents", "documents.id", "documents.id")
     }
 
-    /// [`Self::document_scope_sql`] whose clause restricts `id_column`, a
-    /// document id column of the query's own table (such as
-    /// `note_query.document_id`).
+    /// [`Self::document_scope_sql`] over the narrow `note_query` table, whose
+    /// clause restricts `id_column` (such as `note_query.document_id`); wide
+    /// `documents` rows are never read.
     #[must_use]
-    pub fn document_scope_sql_for(&self, cte_name: &str, id_column: &str) -> PermissionSql {
+    pub fn note_query_scope_sql(&self, cte_name: &str, id_column: &str) -> PermissionSql {
+        self.scope_sql(cte_name, "note_query", "note_query.document_id", id_column)
+    }
+
+    /// The scope as a condition on the current `note_query` row (no CTE),
+    /// so a query reading `note_query` alone can use a covering index.
+    #[must_use]
+    pub fn note_query_scope_condition(&self) -> PermissionSql {
+        if self.path_permission.is_unrestricted() {
+            return PermissionSql::default();
+        }
+        if self.path_permission.allow.is_empty() {
+            return PermissionSql {
+                cte: String::new(),
+                clause: " AND 1 = 0".to_string(),
+                params: Vec::new(),
+            };
+        }
+        let mut params = Vec::new();
+        let allow_sql = specifier_group_sql(
+            &self.path_permission.allow,
+            "note_query",
+            "note_query.document_id",
+            &mut params,
+        );
+        let deny_sql = specifier_group_sql(
+            &self.path_permission.deny,
+            "note_query",
+            "note_query.document_id",
+            &mut params,
+        );
+        let mut clause = format!(" AND note_query.extension = 'md' AND ({allow_sql})");
+        if !deny_sql.is_empty() {
+            clause.push_str(" AND NOT (");
+            clause.push_str(&deny_sql);
+            clause.push(')');
+        }
+        PermissionSql {
+            cte: String::new(),
+            clause,
+            params,
+        }
+    }
+
+    /// The scope as a CTE of permitted ids selected from `table` (with
+    /// `path`, `extension`, and the document id `table_id`), and a clause
+    /// restricting `id_column` to them.
+    fn scope_sql(
+        &self,
+        cte_name: &str,
+        table: &str,
+        table_id: &str,
+        id_column: &str,
+    ) -> PermissionSql {
         if self.path_permission.is_unrestricted() {
             return PermissionSql::default();
         }
@@ -758,11 +811,13 @@ impl PermissionFilter {
         }
 
         let mut params = Vec::new();
-        let allow_sql = specifier_group_sql(&self.path_permission.allow, "documents", &mut params);
-        let deny_sql = specifier_group_sql(&self.path_permission.deny, "documents", &mut params);
+        let allow_sql =
+            specifier_group_sql(&self.path_permission.allow, table, table_id, &mut params);
+        let deny_sql =
+            specifier_group_sql(&self.path_permission.deny, table, table_id, &mut params);
 
         let mut cte = format!(
-            "WITH {cte_name} AS (SELECT documents.id FROM documents WHERE documents.extension = 'md' AND ({allow_sql})"
+            "WITH {cte_name} AS (SELECT {table_id} AS id FROM {table} WHERE {table}.extension = 'md' AND ({allow_sql})"
         );
         if !deny_sql.is_empty() {
             cte.push_str(" AND NOT (");
@@ -957,11 +1012,12 @@ fn namespace_deny_may_overlap(denied: &ResourceSpecifier, namespace: &str) -> bo
 fn specifier_group_sql(
     specifiers: &[ResourceSpecifier],
     document_alias: &str,
+    document_id: &str,
     params: &mut Vec<String>,
 ) -> String {
     specifiers
         .iter()
-        .map(|specifier| specifier_sql(specifier, document_alias, params))
+        .map(|specifier| specifier_sql(specifier, document_alias, document_id, params))
         .collect::<Vec<_>>()
         .join(" OR ")
 }
@@ -969,6 +1025,7 @@ fn specifier_group_sql(
 fn specifier_sql(
     specifier: &ResourceSpecifier,
     document_alias: &str,
+    document_id: &str,
     params: &mut Vec<String>,
 ) -> String {
     match specifier {
@@ -985,7 +1042,7 @@ fn specifier_sql(
             params.push(tag.trim_start_matches('#').to_string());
             params.push(format!("{}/{}", tag.trim_start_matches('#'), "*"));
             format!(
-                "EXISTS (SELECT 1 FROM tags WHERE tags.document_id = {document_alias}.id AND (tags.tag_text = ? OR tags.tag_text GLOB ?))"
+                "EXISTS (SELECT 1 FROM tags WHERE tags.document_id = {document_id} AND (tags.tag_text = ? OR tags.tag_text GLOB ?))"
             )
         }
     }

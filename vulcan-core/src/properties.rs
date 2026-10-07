@@ -691,7 +691,7 @@ fn query_notes_core_in(
             .collect::<HashSet<_>>()
     });
     let lookup = store.lookup(NoteIndexReadScope::Filter(filter), within.as_ref())?;
-    query_notes_over(paths, &lookup, &config, query, filter, output, page)
+    query_notes_over(paths, &lookup, &config, query, output, page)
 }
 
 /// [`query_notes_with_filter`] reading notes from `store` (QRY.6).
@@ -735,7 +735,6 @@ pub(crate) fn query_notes_shared_over(
     lookup: &crate::note_lookup::IndexedNoteLookup<'_>,
     config: &VaultConfig,
     query: &NoteQuery,
-    filter: Option<&PermissionFilter>,
     stored_only: bool,
 ) -> Result<SharedNotes, PropertyError> {
     let output = if stored_only {
@@ -743,7 +742,7 @@ pub(crate) fn query_notes_shared_over(
     } else {
         NoteQueryOutput::Notes
     };
-    match query_notes_over(paths, lookup, config, query, filter, output, None)? {
+    match query_notes_over(paths, lookup, config, query, output, None)? {
         NoteQueryOutcome::Notes(shared) => Ok(shared),
         NoteQueryOutcome::Paths(_) => unreachable!("notes output yields notes"),
     }
@@ -761,7 +760,6 @@ fn query_notes_over(
     lookup: &crate::note_lookup::IndexedNoteLookup<'_>,
     config: &VaultConfig,
     query: &NoteQuery,
-    filter: Option<&PermissionFilter>,
     output: NoteQueryOutput,
     page: Option<NotePage>,
 ) -> Result<NoteQueryOutcome, PropertyError> {
@@ -808,7 +806,7 @@ fn query_notes_over(
         },
         also_hydrate: Vec::new(),
     };
-    let planned = crate::plan::execute_note_plan(paths, lookup, &plan, filter)?;
+    let planned = crate::plan::execute_note_plan(paths, lookup, &plan)?;
 
     let (mut notes, mut matched_paths) =
         evaluate_planned_rows(lookup, &planned, &compiled, config, rows_output)?;
@@ -983,10 +981,6 @@ pub fn load_task_note_index_with_plan(
             })
             .map(|note| note.document_path.clone()),
     );
-    let filter = match scope {
-        NoteIndexReadScope::Filter(filter) => filter.cloned(),
-        NoteIndexReadScope::Guard(guard) => Some(guard.read_filter()),
-    };
     let planned = crate::plan::execute_note_plan(
         paths,
         &lookup,
@@ -998,7 +992,6 @@ pub fn load_task_note_index_with_plan(
             hydration: crate::plan::Hydration::Paths(&task_paths),
             also_hydrate: Vec::new(),
         },
-        filter.as_ref(),
     )?;
     Ok((lookup.into_index()?, planned.explain))
 }
@@ -1070,70 +1063,84 @@ fn load_note_identities(
     guard: Option<&dyn PermissionGuard>,
     within: Option<&HashSet<String>>,
 ) -> Result<Vec<crate::note_lookup::IndexedIdentity>, PropertyError> {
-    // Identity facts come from the narrow table alone, through its covering
-    // identity index (schema v29); the read scope restricts its document ids.
-    let permission_sql = filter
-        .map(|filter| {
-            filter.document_scope_sql_for("_note_identity_permission", "note_query.document_id")
-        })
-        .unwrap_or_default();
-    let mut sql = permission_sql.cte;
-    sql.push_str(
-        "SELECT note_query.path, note_query.filename, note_query.aliases, \
-         note_query.row_version FROM note_query WHERE 1 = 1",
-    );
-    sql.push_str(&permission_sql.clause);
-    sql.push_str(" ORDER BY 1");
-    let mut statement = database.connection().prepare_cached(&sql)?;
-    let rows = statement.query_map(params_from_iter(permission_sql.params.iter()), |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, i64>(3)?,
-        ))
-    })?;
     let mut admitted = Vec::new();
-    for row in rows {
-        let (path, file_name, aliases, row_version) = row?;
-        if within.is_some_and(|within| !within.contains(&path)) {
+    for identity in scoped_identity_rows(database, filter, None)? {
+        if within.is_some_and(|within| !within.contains(&identity.path)) {
             continue;
         }
-        if policy_allows_indexed_note(guard, &path)? {
-            let aliases = if aliases == "[]" {
+        if policy_allows_indexed_note(guard, &identity.path)? {
+            admitted.push(identity);
+        }
+    }
+    crate::note_lookup::assign_lookup_keys(&mut admitted);
+    Ok(admitted)
+}
+
+/// Identity rows in `filter`'s scope, in path order, without lookup keys;
+/// only rows newer than `since` (a store clock version) when given (QRY.6).
+/// Identity facts come from the narrow table alone, through its covering
+/// identity index (schema v29), with the scope applied to each row.
+pub(crate) fn scoped_identity_rows(
+    database: &CacheDatabase,
+    filter: Option<&PermissionFilter>,
+    since: Option<i64>,
+) -> Result<Vec<crate::note_lookup::IndexedIdentity>, PropertyError> {
+    let permission_sql = filter
+        .map(PermissionFilter::note_query_scope_condition)
+        .unwrap_or_default();
+    let mut sql = String::from(
+        "SELECT note_query.path, note_query.filename, note_query.aliases, \
+         note_query.row_version, note_query.document_id FROM note_query WHERE 1 = 1",
+    );
+    sql.push_str(&permission_sql.clause);
+    let mut params = permission_sql
+        .params
+        .into_iter()
+        .map(rusqlite::types::Value::from)
+        .collect::<Vec<_>>();
+    if let Some(since) = since {
+        sql.push_str(" AND note_query.row_version > ?");
+        params.push(rusqlite::types::Value::from(since));
+    }
+    sql.push_str(" ORDER BY 1");
+    let mut statement = database.connection().prepare_cached(&sql)?;
+    let rows = statement.query_map(params_from_iter(params.iter()), |row| {
+        let aliases = row.get::<_, String>(2)?;
+        Ok(crate::note_lookup::IndexedIdentity {
+            path: row.get(0)?,
+            key: String::new(),
+            file_name: row.get(1)?,
+            aliases: if aliases == "[]" {
                 Vec::new()
             } else {
                 serde_json::from_str::<Vec<String>>(&aliases).unwrap_or_default()
-            };
-            admitted.push((path, file_name, aliases, row_version));
-        }
-    }
-    drop(statement);
-    let mut counts = HashMap::<&str, usize>::new();
-    for (_, file_name, _, _) in &admitted {
-        *counts.entry(file_name.as_str()).or_default() += 1;
-    }
-    let duplicates = counts
-        .into_iter()
-        .filter(|(_, count)| *count > 1)
-        .map(|(name, _)| name.to_string())
-        .collect::<HashSet<_>>();
-    Ok(admitted
-        .into_iter()
-        .map(
-            |(path, file_name, aliases, row_version)| crate::note_lookup::IndexedIdentity {
-                key: if duplicates.contains(&file_name) {
-                    format!("/{path}")
-                } else {
-                    file_name.clone()
-                },
-                path,
-                file_name,
-                aliases,
-                row_version,
             },
-        )
-        .collect::<Vec<_>>())
+            row_version: row.get(3)?,
+            document_id: row.get(4)?,
+        })
+    })?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// How many notes `filter`'s scope holds (QRY.6).
+pub(crate) fn count_scoped_identities(
+    database: &CacheDatabase,
+    filter: Option<&PermissionFilter>,
+) -> Result<usize, PropertyError> {
+    let permission_sql = filter
+        .map(PermissionFilter::note_query_scope_condition)
+        .unwrap_or_default();
+    let sql = format!(
+        "SELECT count(*) FROM note_query WHERE 1 = 1{}",
+        permission_sql.clause
+    );
+    let count = database
+        .connection()
+        .prepare_cached(&sql)?
+        .query_row(params_from_iter(permission_sql.params.iter()), |row| {
+            row.get::<_, i64>(0)
+        })?;
+    Ok(usize::try_from(count).unwrap_or_default())
 }
 
 /// A note lookup over identity facts (QRY.4) for the readable universe of
@@ -1199,8 +1206,9 @@ pub(crate) struct ReadableIdentities {
     pub identities: Vec<crate::note_lookup::IndexedIdentity>,
     /// The scope's read filter.
     pub filter: Option<PermissionFilter>,
-    /// The universe's paths when a policy hook or an authorized universe
-    /// scopes incoming links; grants alone are applied in SQL.
+    /// The universe's paths when it is narrower than the vault (grants, a
+    /// policy hook, or an authorized universe); incoming links come only
+    /// from them.
     pub readable_sources: Option<HashSet<String>>,
 }
 
@@ -1217,8 +1225,14 @@ pub(crate) fn load_readable_identities(
         NoteIndexReadScope::Guard(guard) => (Some(guard.read_filter()), Some(guard)),
     };
     let identities = load_note_identities(database, filter.as_ref(), guard, within)?;
-    let policy_scoped = guard.is_some_and(PermissionGuard::has_policy_hook) || within.is_some();
-    let readable_sources = policy_scoped.then(|| {
+    // Incoming links are kept by universe membership whenever the universe is
+    // narrower than the vault: exact, and cheaper than scoping them in SQL.
+    let scoped = guard.is_some_and(PermissionGuard::has_policy_hook)
+        || within.is_some()
+        || filter
+            .as_ref()
+            .is_some_and(|filter| !filter.path_permission().is_unrestricted());
+    let readable_sources = scoped.then(|| {
         identities
             .iter()
             .map(|identity| identity.path.clone())
@@ -1666,13 +1680,18 @@ fn hydrate_note_records(
 
     let mut inlink_map: HashMap<String, Vec<String>> = HashMap::new();
     // Incoming sources must be readable, but need not match the user's query.
+    // A caller's readable universe filters them below; otherwise the filter
+    // scopes them over the narrow table.
     let permission_sql = filter
-        .map(|filter| filter.document_scope_sql("_inlink_source_permission"))
+        .filter(|_| readable_sources.is_none())
+        .map(|filter| {
+            filter.note_query_scope_sql("_inlink_source_permission", "note_query.document_id")
+        })
         .unwrap_or_default();
     let inlink_sql = format!(
-        "{}SELECT links.resolved_target_id, documents.path, documents.extension
+        "{}SELECT links.resolved_target_id, note_query.path, note_query.extension
          FROM links
-         JOIN documents ON documents.id = links.source_document_id
+         JOIN note_query ON note_query.document_id = links.source_document_id
          WHERE links.link_kind = 'wikilink'
            AND links.resolved_target_id IN ({placeholders}){}",
         permission_sql.cte, permission_sql.clause,

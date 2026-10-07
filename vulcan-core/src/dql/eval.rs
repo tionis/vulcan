@@ -211,7 +211,7 @@ pub fn evaluate_dql_in(
     // rows a leading `WHERE` keeps and `this` hydrate, and other notes load
     // only when an expression reads or dereferences them.
     let lookup = store.lookup(NoteIndexReadScope::Guard(guard), None)?;
-    let planned = select_candidate_rows(paths, &query, current_file, &lookup, &filter)?;
+    let planned = select_candidate_rows(paths, &query, current_file, &lookup)?;
     let result = evaluate_parsed_dql_with_note_index_and_config(
         paths,
         &query,
@@ -243,7 +243,6 @@ fn select_candidate_rows(
     query: &DqlQuery,
     current_file: Option<&str>,
     lookup: &IndexedNoteLookup<'_>,
-    filter: &PermissionFilter,
 ) -> Result<crate::plan::PlannedRows, DqlEvalError> {
     let compiled = compile_dql(query);
     let mut sources = compiled
@@ -293,12 +292,7 @@ fn select_candidate_rows(
         },
         also_hydrate: current_file.map(ToString::to_string).into_iter().collect(),
     };
-    Ok(crate::plan::execute_note_plan(
-        paths,
-        lookup,
-        &plan,
-        Some(filter),
-    )?)
+    Ok(crate::plan::execute_note_plan(paths, lookup, &plan)?)
 }
 
 /// Whether evaluating `query` may read a page row's hydrated file-object
@@ -2069,8 +2063,7 @@ LIMIT 1"#,
         let lookup =
             crate::properties::load_indexed_note_lookup(&paths, NoteIndexReadScope::Guard(&guard))
                 .unwrap();
-        let planned =
-            select_candidate_rows(&paths, &query, Some("Here.md"), &lookup, &filter).unwrap();
+        let planned = select_candidate_rows(&paths, &query, Some("Here.md"), &lookup).unwrap();
         assert_eq!(planned.rows, ["A/One.md", "A/Three.md"]);
         // `LIST` reads no file object: rows load stored fields only.
         assert_eq!(
@@ -2085,8 +2078,7 @@ LIMIT 1"#,
         assert!(!lookup.is_hydrated("A/One.md") && lookup.is_hydrated("Here.md"));
         assert!(!lookup.is_hydrated("B/Two.md"));
         let query = parse_dql("TABLE length(file.lists) FROM \"A\"").unwrap();
-        let planned =
-            select_candidate_rows(&paths, &query, Some("Here.md"), &lookup, &filter).unwrap();
+        let planned = select_candidate_rows(&paths, &query, Some("Here.md"), &lookup).unwrap();
         assert_eq!((planned.explain.stored, planned.explain.hydrated), (0, 2));
         assert_eq!(lookup.hydrated_at("A/One.md").unwrap().list_items.len(), 3);
     }

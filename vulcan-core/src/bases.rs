@@ -208,7 +208,6 @@ fn query_source_notes_planned(
             universe,
             &load_vault_config(paths).config,
             &query,
-            request.read_filter.as_ref(),
             request.stored_only,
         )
         .map(|shared| (shared.notes, Some(shared.plan))),

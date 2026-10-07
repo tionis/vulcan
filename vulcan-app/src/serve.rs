@@ -757,12 +757,10 @@ mod tests {
                 .load(std::sync::atomic::Ordering::Relaxed)
                 > 0
         );
-        assert!(
-            counters
-                .stored_reused
-                .load(std::sync::atomic::Ordering::Relaxed)
-                > 0
-        );
+        // Later requests reuse the scope; the edit refreshes it.
+        for reused in [&counters.identity_reuses, &counters.identity_refreshes] {
+            assert!(reused.load(std::sync::atomic::Ordering::Relaxed) > 0);
+        }
     }
 
     #[test]

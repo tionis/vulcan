@@ -36,6 +36,7 @@ fn identities(count: usize) -> Vec<IndexedIdentity> {
             file_name: format!("n{index}"),
             aliases: vec![format!("alias{index}")],
             row_version: 0,
+            document_id: String::new(),
         })
         .collect()
 }
