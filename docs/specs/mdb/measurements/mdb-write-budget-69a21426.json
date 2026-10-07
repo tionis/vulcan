@@ -1,0 +1,136 @@
+{
+ "measurement": "mdb_write_budget",
+ "acceptance_gate_result": "budget established from this evidence; see budget",
+ "commit": "69a214266fd04e1d50748abd947da08ac9eb99de",
+ "worktree_clean": true,
+ "machine": "designated evaluation host (Intel Core i7-10700, 31 GiB RAM, Debian 13)",
+ "method": "sequential managed single-record body edits through plan_mdbase_write and apply_mdbase_write_profiled (no auto-commit) on the public fixtures, without readers; after each write a watched MdbaseQuerySession reads the record's metadata and must show the new revision; the first write (one-time state) and the restoring write are excluded; nearest-rank percentiles",
+ "fixtures": {
+  "10k": {
+   "samples": 1001,
+   "failures": 0,
+   "write_ms": {
+    "p50": 123.58,
+    "p95": 136.91,
+    "p99": 160.46
+   },
+   "first_write_ms": 164.34,
+   "following_read_ms": {
+    "max": 40.81,
+    "p50": 10.77,
+    "p95": 11.38
+   },
+   "stages_ms": {
+    "plan": {
+     "p50": 24.04,
+     "p95": 26.74,
+     "p99": 35.53
+    },
+    "authorization": {
+     "p50": 2.4,
+     "p95": 2.48,
+     "p99": 3.83
+    },
+    "transaction": {
+     "p50": 43.5,
+     "p95": 47.34,
+     "p99": 62.19
+    },
+    "record_cache": {
+     "p50": 36.4,
+     "p95": 38.42,
+     "p99": 52.85
+    },
+    "note_scan": {
+     "p50": 16.19,
+     "p95": 26.32,
+     "p99": 27.71
+    },
+    "follow_up": {
+     "p50": 0.0,
+     "p95": 0.0,
+     "p99": 0.0
+    },
+    "total": {
+     "p50": 99.54,
+     "p95": 111.23,
+     "p99": 131.67
+    }
+   }
+  },
+  "100k": {
+   "samples": 201,
+   "failures": 0,
+   "write_ms": {
+    "p50": 730.65,
+    "p95": 952.5,
+    "p99": 1045.94
+   },
+   "first_write_ms": 763.95,
+   "following_read_ms": {
+    "max": 117.49,
+    "p50": 101.05,
+    "p95": 109.49
+   },
+   "stages_ms": {
+    "plan": {
+     "p50": 101.79,
+     "p95": 104.3,
+     "p99": 107.89
+    },
+    "authorization": {
+     "p50": 2.39,
+     "p95": 2.45,
+     "p99": 2.52
+    },
+    "transaction": {
+     "p50": 130.58,
+     "p95": 328.73,
+     "p99": 438.34
+    },
+    "record_cache": {
+     "p50": 384.65,
+     "p95": 399.49,
+     "p99": 412.89
+    },
+    "note_scan": {
+     "p50": 106.43,
+     "p95": 124.09,
+     "p99": 139.19
+    },
+    "follow_up": {
+     "p50": 0.0,
+     "p95": 0.0,
+     "p99": 0.0
+    },
+    "total": {
+     "p50": 627.74,
+     "p95": 850.91,
+     "p99": 941.92
+    }
+   }
+  }
+ },
+ "concurrent": {
+  "source": "mdb-reference-followup-ab65ea76.json (10k-read-8r2w-public-long, 10k-query-8r2w-long)",
+  "write_ms": {
+   "p50": 199.4,
+   "p95": 222.1,
+   "max": 237.5
+  },
+  "note": "writes at two per second while eight readers share one watched session"
+ },
+ "budget": {
+  "scope": "single-record managed write on the 10K reference fixture, plan through apply including durable journal, record-cache publication, and note indexing",
+  "single_client_p95_ms": 200,
+  "under_eight_readers_p95_ms": 300,
+  "following_read_p95_ms": 25,
+  "basis": "measured p95 137 ms single-client, 222 ms under eight readers, following read 11.4 ms; roughly 1.4-2x headroom for host variance",
+  "not_covered": [
+   "batches and multi-record transactions",
+   "collection-wide uniqueness or validated-link rules (constraints fixture)",
+   "auto-commit",
+   "100K, which is a scaling case: p95 953 ms, dominated by record-cache publication (385 ms p50)"
+  ]
+ }
+}

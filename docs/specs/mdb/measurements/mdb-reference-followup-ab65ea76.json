@@ -1,0 +1,214 @@
+{
+ "measurement": "mdb_reference_followup",
+ "acceptance_gate_result": "evaluated per gate; see gates",
+ "commit": "537f1f4e415d17b48bb80cbac8fee9808211cb8c",
+ "working_tree": "537f1f4e plus the permission matcher change committed as ab65ea76 (identical diff) and the benchmark memory trace from 53c4269d",
+ "machine": "designated evaluation host (Intel Core i7-10700, 31 GiB RAM, Debian 13)",
+ "runs": {
+  "100k-writes": {
+   "failures": 0,
+   "records": 100000,
+   "samples": 51,
+   "first_seconds": 3.362376745,
+   "p50": 0.737318751,
+   "p95": 0.757354796,
+   "p99": 0.788087459
+  },
+  "10k-query-8r2w-long": {
+   "failures": 0,
+   "samples": 79992,
+   "request_ms": {
+    "p50": 5.31,
+    "p95": 8.07,
+    "p99": 45.41
+   },
+   "workload": "query",
+   "permission_profile": null,
+   "readers": 8,
+   "freshness": "watched",
+   "resident_kib": {
+    "end": 236452,
+    "every_1000_requests": [
+     152720,
+     195688,
+     212188,
+     217032,
+     219716,
+     228572,
+     230088,
+     233884,
+     234296,
+     234508
+    ],
+    "warm": 152716
+   },
+   "writes": {
+    "max": 0.232850557,
+    "p50": 0.194812474,
+    "p95": 0.225125689,
+    "target_per_second": 2,
+    "writes": 133
+   }
+  },
+  "10k-query-strict-public": {
+   "failures": 0,
+   "samples": 1000,
+   "request_ms": {
+    "p50": 12.7,
+    "p95": 13.52,
+    "p99": 14.72
+   },
+   "workload": "query",
+   "permission_profile": "benchmark_public",
+   "readers": 1,
+   "freshness": "strict",
+   "resident_kib": {
+    "end": 118544,
+    "every_1000_requests": [
+     93956,
+     117884
+    ],
+    "warm": 93892
+   },
+   "writes": null
+  },
+  "10k-read-8r2w-public-long": {
+   "failures": 0,
+   "samples": 319992,
+   "request_ms": {
+    "p50": 1.43,
+    "p95": 2.29,
+    "p99": 2.9
+   },
+   "workload": "metadata_read",
+   "permission_profile": "benchmark_public",
+   "readers": 8,
+   "freshness": "watched",
+   "resident_kib": {
+    "end": 283500,
+    "every_1000_requests": [
+     158368,
+     223368,
+     241876,
+     242764,
+     243396,
+     250232,
+     250592,
+     257304,
+     260116,
+     261260,
+     261512,
+     262616,
+     262756,
+     262808,
+     266192,
+     267592,
+     267700,
+     268548,
+     271256,
+     270204,
+     270636,
+     270844,
+     273908,
+     275748,
+     275784,
+     276672,
+     276844,
+     276864,
+     279940,
+     283364,
+     279984,
+     279996,
+     280012,
+     280020,
+     280700,
+     283024,
+     283044,
+     284584,
+     283264,
+     284680
+    ],
+    "warm": 158360
+   },
+   "writes": {
+    "max": 0.237522544,
+    "p50": 0.19938639,
+    "p95": 0.22208396,
+    "target_per_second": 2,
+    "writes": 144
+   }
+  },
+  "10k-read-strict-public": {
+   "failures": 0,
+   "samples": 1000,
+   "request_ms": {
+    "p50": 8.88,
+    "p95": 9.33,
+    "p99": 9.57
+   },
+   "workload": "metadata_read",
+   "permission_profile": "benchmark_public",
+   "readers": 1,
+   "freshness": "strict",
+   "resident_kib": {
+    "end": 127328,
+    "every_1000_requests": [
+     99488,
+     126736
+    ],
+    "warm": 99424
+   },
+   "writes": null
+  },
+  "10k-read-strict": {
+   "failures": 0,
+   "samples": 1000,
+   "request_ms": {
+    "p50": 8.63,
+    "p95": 9.08,
+    "p99": 12.6
+   },
+   "workload": "metadata_read",
+   "permission_profile": null,
+   "readers": 1,
+   "freshness": "strict",
+   "resident_kib": {
+    "end": 121748,
+    "every_1000_requests": [
+     98940,
+     121156
+    ],
+    "warm": 98876
+   },
+   "writes": null
+  },
+  "10k-writes": {
+   "failures": 0,
+   "records": 10000,
+   "samples": 201,
+   "first_seconds": 0.366121821,
+   "p50": 0.131125499,
+   "p95": 0.13397883,
+   "p99": 0.145109494
+  }
+ },
+ "gates_10k": [
+  {
+   "gate": "warm single-record metadata read (read-strict-public)",
+   "target": "p95 < 10 ms",
+   "measured": "p95 9.33 ms",
+   "result": "pass"
+  },
+  {
+   "gate": "warm single-record metadata read (read-strict)",
+   "target": "p95 < 10 ms",
+   "measured": "p95 9.08 ms",
+   "result": "pass"
+  }
+ ],
+ "notes": [
+  "Resident memory under eight readers and two writes per second rises quickly at first and then slowly: restricted reads went from 158 to 223 MiB in the first 1,000 requests of reader 0 and from 262 to 285 MiB over the last 28,000; queries from 153 to 196 MiB, then 234 MiB after 10,000, with the last 3,000 nearly flat. Consistent with connection page caches and allocator retention warming up; not a proof of a bound.",
+  "Write samples here are sequential managed writes (plan and apply) without readers; the first write publishes one-time state and is reported separately.",
+  "Strict runs re-walk every visible record per request; the strict restricted read passes with about 0.7 ms of margin."
+ ]
+}

@@ -1,0 +1,1079 @@
+{
+ "measurement": "mdb_reference_run",
+ "commit": "503919d5e60eeb3beab88275228a8e1d4e3b9daf",
+ "worktree_clean": true,
+ "machine": "Intel Core i7-10700 (8 cores, 16 threads), 31 GiB RAM, Debian 13, Linux 6.12; designated evaluation host",
+ "binaries": {
+  "target/release/vulcan": "4e7f6392989167b62a8b9de8acad15e16a17e1b59b136aebdd3f0c219aef3a9e",
+  "target/release/deps/vulcan_app-522a9c32d810bcdd": "312623a099a228f7946418cbb67cc9f0e7dbfe0f5f6dd7341bf46e6e10c42fc6"
+ },
+ "protocol": "release builds; one documented warmup run per fixture; each reader's first request prepares the session and is excluded; every later request is a sample, queueing included; benchmark runs serialized; OS page cache warm; nearest-rank percentiles",
+ "service": {
+  "100k": {
+   "query-8r2w-public": {
+    "workload": "query",
+    "permission_profile": "benchmark_public",
+    "freshness": "watched",
+    "readers": 8,
+    "samples": 19992,
+    "failures": 0,
+    "request_ms": {
+     "p50": 60.47,
+     "p95": 420.85,
+     "p99": 644.69,
+     "max": 1048.07
+    },
+    "service_internal_ms": {
+     "p50": 60.31,
+     "p95": 420.7,
+     "p99": 644.52
+    },
+    "indexed_share": 1.0,
+    "trusted_proof_share": 0.9872,
+    "throughput_per_second_approx": 87.3,
+    "resident_kib": {
+     "end": 1240164,
+     "warm": 1001500
+    },
+    "writes": {
+     "count": 129,
+     "target_per_second": 2,
+     "p50_ms": 1682.51,
+     "p95_ms": 2172.22,
+     "max_ms": 2223.15
+    }
+   },
+   "query-8r2w": {
+    "workload": "query",
+    "permission_profile": null,
+    "freshness": "watched",
+    "readers": 8,
+    "samples": 19992,
+    "failures": 0,
+    "request_ms": {
+     "p50": 67.08,
+     "p95": 431.42,
+     "p99": 633.7,
+     "max": 826.48
+    },
+    "service_internal_ms": {
+     "p50": 66.92,
+     "p95": 431.18,
+     "p99": 633.5
+    },
+    "indexed_share": 1.0,
+    "trusted_proof_share": 0.9859,
+    "throughput_per_second_approx": 79.6,
+    "resident_kib": {
+     "end": 1313792,
+     "warm": 1072508
+    },
+    "writes": {
+     "count": 142,
+     "target_per_second": 2,
+     "p50_ms": 1679.96,
+     "p95_ms": 2168.69,
+     "max_ms": 2228.69
+    }
+   },
+   "query-oneshot": {
+    "workload": "query",
+    "permission_profile": null,
+    "freshness": "one-shot",
+    "readers": 1,
+    "samples": 100,
+    "failures": 0,
+    "request_ms": {
+     "p50": 148.51,
+     "p95": 155.57,
+     "p99": 158.29,
+     "max": 160.0
+    },
+    "service_internal_ms": {
+     "p50": 148.4,
+     "p95": 155.45,
+     "p99": 158.16
+    },
+    "indexed_share": 1.0,
+    "trusted_proof_share": 0.0,
+    "throughput_per_second_approx": 6.7,
+    "resident_kib": {
+     "end": 285824,
+     "warm": 77512
+    },
+    "writes": null
+   },
+   "query-strict-public": {
+    "workload": "query",
+    "permission_profile": "benchmark_public",
+    "freshness": "strict",
+    "readers": 1,
+    "samples": 1000,
+    "failures": 0,
+    "request_ms": {
+     "p50": 161.92,
+     "p95": 171.99,
+     "p99": 173.58,
+     "max": 207.83
+    },
+    "service_internal_ms": {
+     "p50": 161.76,
+     "p95": 171.77,
+     "p99": 173.41
+    },
+    "indexed_share": 1.0,
+    "trusted_proof_share": 0.0,
+    "throughput_per_second_approx": 6.0,
+    "resident_kib": {
+     "end": 818264,
+     "warm": 602004
+    },
+    "writes": null
+   },
+   "query-strict": {
+    "workload": "query",
+    "permission_profile": null,
+    "freshness": "strict",
+    "readers": 1,
+    "samples": 1000,
+    "failures": 0,
+    "request_ms": {
+     "p50": 126.31,
+     "p95": 140.0,
+     "p99": 144.96,
+     "max": 178.49
+    },
+    "service_internal_ms": {
+     "p50": 126.18,
+     "p95": 139.82,
+     "p99": 144.79
+    },
+    "indexed_share": 1.0,
+    "trusted_proof_share": 0.0,
+    "throughput_per_second_approx": 7.8,
+    "resident_kib": {
+     "end": 863068,
+     "warm": 659960
+    },
+    "writes": null
+   },
+   "query-watched-public": {
+    "workload": "query",
+    "permission_profile": "benchmark_public",
+    "freshness": "watched",
+    "readers": 1,
+    "samples": 1000,
+    "failures": 0,
+    "request_ms": {
+     "p50": 42.63,
+     "p95": 44.85,
+     "p99": 47.69,
+     "max": 162.67
+    },
+    "service_internal_ms": {
+     "p50": 42.54,
+     "p95": 44.76,
+     "p99": 47.57
+    },
+    "indexed_share": 1.0,
+    "trusted_proof_share": 0.999,
+    "throughput_per_second_approx": 23.3,
+    "resident_kib": {
+     "end": 671216,
+     "warm": 602764
+    },
+    "writes": null
+   },
+   "query-watched": {
+    "workload": "query",
+    "permission_profile": null,
+    "freshness": "watched",
+    "readers": 1,
+    "samples": 1000,
+    "failures": 0,
+    "request_ms": {
+     "p50": 46.26,
+     "p95": 51.13,
+     "p99": 53.11,
+     "max": 127.69
+    },
+    "service_internal_ms": {
+     "p50": 46.17,
+     "p95": 51.03,
+     "p99": 53.0
+    },
+    "indexed_share": 1.0,
+    "trusted_proof_share": 0.999,
+    "throughput_per_second_approx": 21.3,
+    "resident_kib": {
+     "end": 732020,
+     "warm": 661360
+    },
+    "writes": null
+   },
+   "read-8r2w-public": {
+    "workload": "metadata_read",
+    "permission_profile": "benchmark_public",
+    "freshness": "watched",
+    "readers": 8,
+    "samples": 79992,
+    "failures": 0,
+    "request_ms": {
+     "p50": 12.71,
+     "p95": 18.61,
+     "p99": 496.81,
+     "max": 629.15
+    },
+    "service_internal_ms": {
+     "p50": 12.66,
+     "p95": 18.54,
+     "p99": 496.67
+    },
+    "indexed_share": 1.0,
+    "trusted_proof_share": 0.9963,
+    "throughput_per_second_approx": 373.8,
+    "resident_kib": {
+     "end": 1951176,
+     "warm": 970000
+    },
+    "writes": {
+     "count": 149,
+     "target_per_second": 2,
+     "p50_ms": 1418.87,
+     "p95_ms": 1481.67,
+     "max_ms": 1532.71
+    }
+   },
+   "read-8r2w": {
+    "workload": "metadata_read",
+    "permission_profile": null,
+    "freshness": "watched",
+    "readers": 8,
+    "samples": 79992,
+    "failures": 0,
+    "request_ms": {
+     "p50": 1.36,
+     "p95": 2.23,
+     "p99": 2.84,
+     "max": 279.76
+    },
+    "service_internal_ms": {
+     "p50": 1.32,
+     "p95": 2.18,
+     "p99": 2.77
+    },
+    "indexed_share": 1.0,
+    "trusted_proof_share": 0.9995,
+    "throughput_per_second_approx": 3076.6,
+    "resident_kib": {
+     "end": 1374748,
+     "warm": 1000376
+    },
+    "writes": {
+     "count": 15,
+     "target_per_second": 2,
+     "p50_ms": 1605.05,
+     "p95_ms": 1872.74,
+     "max_ms": 1872.74
+    }
+   },
+   "read-strict-public": {
+    "workload": "metadata_read",
+    "permission_profile": "benchmark_public",
+    "freshness": "strict",
+    "readers": 1,
+    "samples": 1000,
+    "failures": 0,
+    "request_ms": {
+     "p50": 121.5,
+     "p95": 123.38,
+     "p99": 128.72,
+     "max": 139.59
+    },
+    "service_internal_ms": {
+     "p50": 121.43,
+     "p95": 123.3,
+     "p99": 128.65
+    },
+    "indexed_share": 1.0,
+    "trusted_proof_share": 0.0,
+    "throughput_per_second_approx": 8.2,
+    "resident_kib": {
+     "end": 891016,
+     "warm": 676592
+    },
+    "writes": null
+   },
+   "read-strict": {
+    "workload": "metadata_read",
+    "permission_profile": null,
+    "freshness": "strict",
+    "readers": 1,
+    "samples": 1000,
+    "failures": 0,
+    "request_ms": {
+     "p50": 79.13,
+     "p95": 84.74,
+     "p99": 86.49,
+     "max": 123.23
+    },
+    "service_internal_ms": {
+     "p50": 79.02,
+     "p95": 84.64,
+     "p99": 86.39
+    },
+    "indexed_share": 1.0,
+    "trusted_proof_share": 0.0,
+    "throughput_per_second_approx": 12.2,
+    "resident_kib": {
+     "end": 872880,
+     "warm": 672980
+    },
+    "writes": null
+   },
+   "read-watched-public": {
+    "workload": "metadata_read",
+    "permission_profile": "benchmark_public",
+    "freshness": "watched",
+    "readers": 1,
+    "samples": 1000,
+    "failures": 0,
+    "request_ms": {
+     "p50": 1.09,
+     "p95": 1.16,
+     "p99": 1.74,
+     "max": 2.49
+    },
+    "service_internal_ms": {
+     "p50": 1.05,
+     "p95": 1.11,
+     "p99": 1.7
+    },
+    "indexed_share": 1.0,
+    "trusted_proof_share": 1.0,
+    "throughput_per_second_approx": 333.3,
+    "resident_kib": {
+     "end": 677132,
+     "warm": 676356
+    },
+    "writes": null
+   },
+   "read-watched": {
+    "workload": "metadata_read",
+    "permission_profile": null,
+    "freshness": "watched",
+    "readers": 1,
+    "samples": 1000,
+    "failures": 0,
+    "request_ms": {
+     "p50": 1.02,
+     "p95": 1.02,
+     "p99": 1.06,
+     "max": 1.14
+    },
+    "service_internal_ms": {
+     "p50": 0.98,
+     "p95": 0.99,
+     "p99": 1.03
+    },
+    "indexed_share": 1.0,
+    "trusted_proof_share": 1.0,
+    "throughput_per_second_approx": 500.0,
+    "resident_kib": {
+     "end": 675068,
+     "warm": 674292
+    },
+    "writes": null
+   }
+  },
+  "10k": {
+   "query-8r2w-public": {
+    "workload": "query",
+    "permission_profile": "benchmark_public",
+    "freshness": "watched",
+    "readers": 8,
+    "samples": 19992,
+    "failures": 0,
+    "request_ms": {
+     "p50": 5.0,
+     "p95": 7.89,
+     "p99": 50.28,
+     "max": 89.52
+    },
+    "service_internal_ms": {
+     "p50": 4.87,
+     "p95": 7.69,
+     "p99": 50.15
+    },
+    "indexed_share": 1.0,
+    "trusted_proof_share": 0.9955,
+    "throughput_per_second_approx": 1249.5,
+    "resident_kib": {
+     "end": 201684,
+     "warm": 153336
+    },
+    "writes": {
+     "count": 33,
+     "target_per_second": 2,
+     "p50_ms": 276.15,
+     "p95_ms": 329.55,
+     "max_ms": 335.37
+    }
+   },
+   "query-8r2w": {
+    "workload": "query",
+    "permission_profile": null,
+    "freshness": "watched",
+    "readers": 8,
+    "samples": 19992,
+    "failures": 0,
+    "request_ms": {
+     "p50": 4.92,
+     "p95": 7.81,
+     "p99": 41.01,
+     "max": 75.48
+    },
+    "service_internal_ms": {
+     "p50": 4.8,
+     "p95": 7.62,
+     "p99": 40.88
+    },
+    "indexed_share": 1.0,
+    "trusted_proof_share": 0.996,
+    "throughput_per_second_approx": 1249.5,
+    "resident_kib": {
+     "end": 205316,
+     "warm": 161336
+    },
+    "writes": {
+     "count": 31,
+     "target_per_second": 2,
+     "p50_ms": 262.64,
+     "p95_ms": 303.46,
+     "max_ms": 336.1
+    }
+   },
+   "query-oneshot": {
+    "workload": "query",
+    "permission_profile": null,
+    "freshness": "one-shot",
+    "readers": 1,
+    "samples": 100,
+    "failures": 0,
+    "request_ms": {
+     "p50": 20.35,
+     "p95": 21.14,
+     "p99": 21.2,
+     "max": 21.5
+    },
+    "service_internal_ms": {
+     "p50": 20.24,
+     "p95": 21.01,
+     "p99": 21.1
+    },
+    "indexed_share": 1.0,
+    "trusted_proof_share": 0.0,
+    "throughput_per_second_approx": 50.0,
+    "resident_kib": {
+     "end": 59980,
+     "warm": 41220
+    },
+    "writes": null
+   },
+   "query-strict-public": {
+    "workload": "query",
+    "permission_profile": "benchmark_public",
+    "freshness": "strict",
+    "readers": 1,
+    "samples": 1000,
+    "failures": 0,
+    "request_ms": {
+     "p50": 16.02,
+     "p95": 16.81,
+     "p99": 17.29,
+     "max": 32.02
+    },
+    "service_internal_ms": {
+     "p50": 15.93,
+     "p95": 16.71,
+     "p99": 17.04
+    },
+    "indexed_share": 1.0,
+    "trusted_proof_share": 0.0,
+    "throughput_per_second_approx": 62.5,
+    "resident_kib": {
+     "end": 117252,
+     "warm": 93988
+    },
+    "writes": null
+   },
+   "query-strict": {
+    "workload": "query",
+    "permission_profile": null,
+    "freshness": "strict",
+    "readers": 1,
+    "samples": 1000,
+    "failures": 0,
+    "request_ms": {
+     "p50": 12.81,
+     "p95": 13.39,
+     "p99": 14.15,
+     "max": 24.39
+    },
+    "service_internal_ms": {
+     "p50": 12.7,
+     "p95": 13.29,
+     "p99": 14.04
+    },
+    "indexed_share": 1.0,
+    "trusted_proof_share": 0.0,
+    "throughput_per_second_approx": 76.9,
+    "resident_kib": {
+     "end": 123676,
+     "warm": 100116
+    },
+    "writes": null
+   },
+   "query-watched-public": {
+    "workload": "query",
+    "permission_profile": "benchmark_public",
+    "freshness": "watched",
+    "readers": 1,
+    "samples": 1000,
+    "failures": 0,
+    "request_ms": {
+     "p50": 3.72,
+     "p95": 4.31,
+     "p99": 4.91,
+     "max": 7.96
+    },
+    "service_internal_ms": {
+     "p50": 3.65,
+     "p95": 4.23,
+     "p99": 4.83
+    },
+    "indexed_share": 1.0,
+    "trusted_proof_share": 1.0,
+    "throughput_per_second_approx": 250.0,
+    "resident_kib": {
+     "end": 94984,
+     "warm": 94388
+    },
+    "writes": null
+   },
+   "query-watched": {
+    "workload": "query",
+    "permission_profile": null,
+    "freshness": "watched",
+    "readers": 1,
+    "samples": 1000,
+    "failures": 0,
+    "request_ms": {
+     "p50": 3.96,
+     "p95": 4.65,
+     "p99": 4.9,
+     "max": 6.24
+    },
+    "service_internal_ms": {
+     "p50": 3.88,
+     "p95": 4.57,
+     "p99": 4.82
+    },
+    "indexed_share": 1.0,
+    "trusted_proof_share": 1.0,
+    "throughput_per_second_approx": 200.0,
+    "resident_kib": {
+     "end": 100540,
+     "warm": 100008
+    },
+    "writes": null
+   },
+   "read-8r2w-public": {
+    "workload": "metadata_read",
+    "permission_profile": "benchmark_public",
+    "freshness": "watched",
+    "readers": 8,
+    "samples": 79992,
+    "failures": 0,
+    "request_ms": {
+     "p50": 1.46,
+     "p95": 2.39,
+     "p99": 3.67,
+     "max": 61.69
+    },
+    "service_internal_ms": {
+     "p50": 1.42,
+     "p95": 2.33,
+     "p99": 3.6
+    },
+    "indexed_share": 1.0,
+    "trusted_proof_share": 0.9985,
+    "throughput_per_second_approx": 3809.1,
+    "resident_kib": {
+     "end": 271956,
+     "warm": 154084
+    },
+    "writes": {
+     "count": 40,
+     "target_per_second": 2,
+     "p50_ms": 264.51,
+     "p95_ms": 314.23,
+     "max_ms": 335.68
+    }
+   },
+   "read-8r2w": {
+    "workload": "metadata_read",
+    "permission_profile": null,
+    "freshness": "watched",
+    "readers": 8,
+    "samples": 79992,
+    "failures": 0,
+    "request_ms": {
+     "p50": 1.35,
+     "p95": 2.18,
+     "p99": 3.34,
+     "max": 43.31
+    },
+    "service_internal_ms": {
+     "p50": 1.31,
+     "p95": 2.13,
+     "p99": 3.29
+    },
+    "indexed_share": 1.0,
+    "trusted_proof_share": 0.9987,
+    "throughput_per_second_approx": 4444.0,
+    "resident_kib": {
+     "end": 216476,
+     "warm": 163120
+    },
+    "writes": {
+     "count": 35,
+     "target_per_second": 2,
+     "p50_ms": 301.42,
+     "p95_ms": 331.57,
+     "max_ms": 336.11
+    }
+   },
+   "read-strict-public": {
+    "workload": "metadata_read",
+    "permission_profile": "benchmark_public",
+    "freshness": "strict",
+    "readers": 1,
+    "samples": 1000,
+    "failures": 0,
+    "request_ms": {
+     "p50": 12.42,
+     "p95": 12.87,
+     "p99": 13.04,
+     "max": 18.59
+    },
+    "service_internal_ms": {
+     "p50": 12.25,
+     "p95": 12.71,
+     "p99": 12.9
+    },
+    "indexed_share": 1.0,
+    "trusted_proof_share": 0.0,
+    "throughput_per_second_approx": 76.9,
+    "resident_kib": {
+     "end": 127652,
+     "warm": 99948
+    },
+    "writes": null
+   },
+   "read-strict": {
+    "workload": "metadata_read",
+    "permission_profile": null,
+    "freshness": "strict",
+    "readers": 1,
+    "samples": 1000,
+    "failures": 0,
+    "request_ms": {
+     "p50": 8.46,
+     "p95": 8.74,
+     "p99": 8.92,
+     "max": 13.61
+    },
+    "service_internal_ms": {
+     "p50": 8.4,
+     "p95": 8.68,
+     "p99": 8.86
+    },
+    "indexed_share": 1.0,
+    "trusted_proof_share": 0.0,
+    "throughput_per_second_approx": 125.0,
+    "resident_kib": {
+     "end": 123756,
+     "warm": 98528
+    },
+    "writes": null
+   },
+   "read-watched-public": {
+    "workload": "metadata_read",
+    "permission_profile": "benchmark_public",
+    "freshness": "watched",
+    "readers": 1,
+    "samples": 1000,
+    "failures": 0,
+    "request_ms": {
+     "p50": 1.09,
+     "p95": 1.41,
+     "p99": 2.08,
+     "max": 3.7
+    },
+    "service_internal_ms": {
+     "p50": 1.05,
+     "p95": 1.37,
+     "p99": 2.0
+    },
+    "indexed_share": 1.0,
+    "trusted_proof_share": 1.0,
+    "throughput_per_second_approx": 500.0,
+    "resident_kib": {
+     "end": 101260,
+     "warm": 100032
+    },
+    "writes": null
+   },
+   "read-watched": {
+    "workload": "metadata_read",
+    "permission_profile": null,
+    "freshness": "watched",
+    "readers": 1,
+    "samples": 1000,
+    "failures": 0,
+    "request_ms": {
+     "p50": 1.01,
+     "p95": 1.02,
+     "p99": 1.03,
+     "max": 1.16
+    },
+    "service_internal_ms": {
+     "p50": 0.97,
+     "p95": 0.98,
+     "p99": 0.99
+    },
+    "indexed_share": 1.0,
+    "trusted_proof_share": 1.0,
+    "throughput_per_second_approx": 1000.0,
+    "resident_kib": {
+     "end": 100052,
+     "warm": 99252
+    },
+    "writes": null
+   }
+  }
+ },
+ "cli": {
+  "100k": {
+   "blocking": {
+    "samples": 1000,
+    "failures": 0,
+    "first_request_ms": 174.29,
+    "wall_ms": {
+     "p50": 166.74,
+     "p95": 174.12,
+     "p99": 182.16
+    },
+    "child_peak_rss_kib": 107048,
+    "complete_and_valid": true,
+    "fixture_unchanged": true,
+    "permission_profile": null
+   },
+   "off": {
+    "samples": 1000,
+    "failures": 0,
+    "first_request_ms": 173.84,
+    "wall_ms": {
+     "p50": 167.15,
+     "p95": 174.43,
+     "p99": 186.1
+    },
+    "child_peak_rss_kib": 106348,
+    "complete_and_valid": true,
+    "fixture_unchanged": true,
+    "permission_profile": null
+   },
+   "restricted": {
+    "samples": 1000,
+    "failures": 0,
+    "first_request_ms": 243.34,
+    "wall_ms": {
+     "p50": 239.55,
+     "p95": 244.83,
+     "p99": 257.13
+    },
+    "child_peak_rss_kib": 106684,
+    "complete_and_valid": true,
+    "fixture_unchanged": true,
+    "permission_profile": "benchmark_public"
+   }
+  },
+  "10k": {
+   "blocking": {
+    "samples": 1000,
+    "failures": 0,
+    "first_request_ms": 34.15,
+    "wall_ms": {
+     "p50": 32.94,
+     "p95": 38.17,
+     "p99": 48.16
+    },
+    "child_peak_rss_kib": 100744,
+    "complete_and_valid": true,
+    "fixture_unchanged": true,
+    "permission_profile": null
+   },
+   "off": {
+    "samples": 1000,
+    "failures": 0,
+    "first_request_ms": 33.66,
+    "wall_ms": {
+     "p50": 32.76,
+     "p95": 33.56,
+     "p99": 34.07
+    },
+    "child_peak_rss_kib": 100860,
+    "complete_and_valid": true,
+    "fixture_unchanged": true,
+    "permission_profile": null
+   },
+   "restricted": {
+    "samples": 1000,
+    "failures": 0,
+    "first_request_ms": 40.03,
+    "wall_ms": {
+     "p50": 39.7,
+     "p95": 40.42,
+     "p99": 40.81
+    },
+    "child_peak_rss_kib": 100732,
+    "complete_and_valid": true,
+    "fixture_unchanged": true,
+    "permission_profile": "benchmark_public"
+   }
+  }
+ },
+ "cli_metadata_read": {
+  "100k": {
+   "samples": 101,
+   "wall_ms": {
+    "p50": 1144.03,
+    "p95": 1166.55
+   }
+  },
+  "10k": {
+   "samples": 101,
+   "wall_ms": {
+    "p50": 127.29,
+    "p95": 129.69
+   }
+  }
+ },
+ "cold": {
+  "100k": {
+   "repetitions": [
+    {
+     "scan_full": 115056,
+     "first_mdbase_query": 56077,
+     "warm_mdbase_query": 172,
+     "rebuild": 127018,
+     "query_after_rebuild": 57889,
+     "warm_after_rebuild": 171
+    },
+    {
+     "scan_full": 109405,
+     "first_mdbase_query": 56058,
+     "warm_mdbase_query": 174,
+     "rebuild": 126052,
+     "query_after_rebuild": 56221,
+     "warm_after_rebuild": 172
+    },
+    {
+     "scan_full": 115821,
+     "first_mdbase_query": 55779,
+     "warm_mdbase_query": 174,
+     "rebuild": 127079,
+     "query_after_rebuild": 56732,
+     "warm_after_rebuild": 184
+    }
+   ],
+   "method": "fresh rsync copy with the fixture's config; `scan --full`, first `mdbase query` (record-cache population), a warm query, `rebuild`, then the same two queries; process start to exit; OS page cache warm"
+  },
+  "10k": {
+   "repetitions": [
+    {
+     "scan_full": 8794,
+     "first_mdbase_query": 5593,
+     "warm_mdbase_query": 33,
+     "rebuild": 9675,
+     "query_after_rebuild": 5562,
+     "warm_after_rebuild": 33
+    },
+    {
+     "scan_full": 8805,
+     "first_mdbase_query": 5660,
+     "warm_mdbase_query": 33,
+     "rebuild": 9820,
+     "query_after_rebuild": 5629,
+     "warm_after_rebuild": 33
+    },
+    {
+     "scan_full": 8682,
+     "first_mdbase_query": 5622,
+     "warm_mdbase_query": 33,
+     "rebuild": 9880,
+     "query_after_rebuild": 5623,
+     "warm_after_rebuild": 33
+    }
+   ],
+   "method": "fresh rsync copy with the fixture's config; `scan --full`, first `mdbase query` (record-cache population), a warm query, `rebuild`, then the same two queries; process start to exit; OS page cache warm"
+  }
+ },
+ "acceptance_gate_result": "evaluated per gate; see gates",
+ "gates_10k": [
+  {
+   "gate": "shared-service metadata query (query-watched)",
+   "target": "p95 < 50 ms, p99 < 100 ms",
+   "measured": "p95 4.65 ms, p99 4.9 ms",
+   "result": "pass"
+  },
+  {
+   "gate": "internal execution (query-watched)",
+   "target": "p95 < 25 ms",
+   "measured": "p95 4.57 ms",
+   "result": "pass"
+  },
+  {
+   "gate": "shared-service metadata query (query-watched-public)",
+   "target": "p95 < 50 ms, p99 < 100 ms",
+   "measured": "p95 4.31 ms, p99 4.91 ms",
+   "result": "pass"
+  },
+  {
+   "gate": "internal execution (query-watched-public)",
+   "target": "p95 < 25 ms",
+   "measured": "p95 4.23 ms",
+   "result": "pass"
+  },
+  {
+   "gate": "shared-service metadata query (query-strict)",
+   "target": "p95 < 50 ms, p99 < 100 ms",
+   "measured": "p95 13.39 ms, p99 14.15 ms",
+   "result": "pass"
+  },
+  {
+   "gate": "internal execution (query-strict)",
+   "target": "p95 < 25 ms",
+   "measured": "p95 13.29 ms",
+   "result": "pass"
+  },
+  {
+   "gate": "shared-service metadata query (query-strict-public)",
+   "target": "p95 < 50 ms, p99 < 100 ms",
+   "measured": "p95 16.81 ms, p99 17.29 ms",
+   "result": "pass"
+  },
+  {
+   "gate": "internal execution (query-strict-public)",
+   "target": "p95 < 25 ms",
+   "measured": "p95 16.71 ms",
+   "result": "pass"
+  },
+  {
+   "gate": "shared-service metadata query (query-oneshot)",
+   "target": "p95 < 50 ms, p99 < 100 ms",
+   "measured": "p95 21.14 ms, p99 21.2 ms",
+   "result": "pass"
+  },
+  {
+   "gate": "internal execution (query-oneshot)",
+   "target": "p95 < 25 ms",
+   "measured": "p95 21.01 ms",
+   "result": "pass"
+  },
+  {
+   "gate": "shared-service metadata query (query-8r2w)",
+   "target": "p95 < 50 ms, p99 < 100 ms",
+   "measured": "p95 7.81 ms, p99 41.01 ms",
+   "result": "pass"
+  },
+  {
+   "gate": "internal execution (query-8r2w)",
+   "target": "p95 < 25 ms",
+   "measured": "p95 7.62 ms",
+   "result": "pass"
+  },
+  {
+   "gate": "shared-service metadata query (query-8r2w-public)",
+   "target": "p95 < 50 ms, p99 < 100 ms",
+   "measured": "p95 7.89 ms, p99 50.28 ms",
+   "result": "pass"
+  },
+  {
+   "gate": "internal execution (query-8r2w-public)",
+   "target": "p95 < 25 ms",
+   "measured": "p95 7.69 ms",
+   "result": "pass"
+  },
+  {
+   "gate": "warm single-record metadata read (read-watched)",
+   "target": "p95 < 10 ms",
+   "measured": "p95 1.02 ms",
+   "result": "pass"
+  },
+  {
+   "gate": "warm single-record metadata read (read-watched-public)",
+   "target": "p95 < 10 ms",
+   "measured": "p95 1.41 ms",
+   "result": "pass"
+  },
+  {
+   "gate": "warm single-record metadata read (read-strict)",
+   "target": "p95 < 10 ms",
+   "measured": "p95 8.74 ms",
+   "result": "pass"
+  },
+  {
+   "gate": "warm single-record metadata read (read-strict-public)",
+   "target": "p95 < 10 ms",
+   "measured": "p95 12.87 ms",
+   "result": "fail"
+  },
+  {
+   "gate": "warm single-record metadata read (read-8r2w)",
+   "target": "p95 < 10 ms",
+   "measured": "p95 2.18 ms",
+   "result": "pass"
+  },
+  {
+   "gate": "warm single-record metadata read (read-8r2w-public)",
+   "target": "p95 < 10 ms",
+   "measured": "p95 2.39 ms",
+   "result": "pass"
+  },
+  {
+   "gate": "direct CLI metadata query (blocking refresh)",
+   "target": "p95 < 100 ms",
+   "measured": "p95 38.17 ms",
+   "result": "pass"
+  },
+  {
+   "gate": "direct CLI metadata query (restricted, blocking refresh)",
+   "target": "p95 < 100 ms",
+   "measured": "p95 40.42 ms",
+   "result": "pass"
+  }
+ ],
+ "notes": [
+  "Service requests are measured in process from permission-profile resolution through execution and complete response serialization; no HTTP transport is included.",
+  "Watched freshness is the daemon's policy (30 s maximum proof age); strict re-walks every visible record per request and is the library default.",
+  "The strict restricted metadata read missed its gate (p95 12.87 ms); restricted walks spend about 3.5 ms more than unrestricted ones evaluating grants.",
+  "CLI refresh off: p95 33.56 ms (reported separately; not a substitute for the blocking-refresh gate).",
+  "Mixed runs use eight readers sharing one session and managed single-record writes at two per second through the real mdbase write path; write latency is the complete plan and apply.",
+  "Resident memory grows during mixed runs (for example 154 to 272 MiB over 80K restricted reads at 10K, and about 1 GiB at 100K); whether it levels off is not established by this run.",
+  "100K is a scaling case without latency gates. Its restricted mixed reads show a p99 of 497 ms: each write rebuilds the restricted readers' visible link-target index.",
+  "Throughput is approximate: samples over whole-run wall time at one-second resolution, including setup.",
+  "Cold timings are from fresh copies with a warm OS page cache; the first mdbase query populates the record cache."
+ ]
+}
