@@ -29,7 +29,7 @@ use crate::mdbase::{
 use crate::permissions::PermissionFilter;
 use chrono::{DateTime, Utc};
 use rusqlite::types::Value as SqlValue;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -518,6 +518,39 @@ fn load_local_records<'a>(
         },
     )?;
     Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// One record's cached local derivation at the query row's revision,
+/// without its body text.
+fn load_local_overlay(
+    connection: &Connection,
+    collection: &MdbaseCollection,
+    dependency_digest: &str,
+    path: &str,
+) -> Result<Option<super::LocalOverlaySnapshot>, MdbaseRecordCacheError> {
+    let mut statement = connection.prepare_cached(
+        "SELECT cache.local_record_json
+         FROM mdbase_record_query AS query
+         JOIN mdbase_record_cache AS cache
+           ON cache.collection_root = query.collection_root AND cache.path = query.path
+          AND cache.revision = query.revision
+         WHERE query.collection_root = ?1 AND query.path = ?2 AND query.dependency_digest = ?3
+           AND query.record_model_version = ?4 AND cache.local_record_json IS NOT NULL",
+    )?;
+    Ok(statement
+        .query_row(
+            rusqlite::params![
+                cache_collection_root(collection)?,
+                path,
+                dependency_digest,
+                MDBASE_RECORD_MODEL_VERSION
+            ],
+            |row| {
+                let json: String = row.get(0)?;
+                parse_json_column::<super::LocalOverlaySnapshot>(0, &json)
+            },
+        )
+        .optional()?)
 }
 
 fn needs_persisted(plan: &crate::query::StructuredQueryPlan) -> bool {
@@ -1151,14 +1184,11 @@ pub fn read_retained_mdbase_record(
     // local derivation does not depend on visibility; uniqueness among
     // visible records is the published uniqueness restricted to them, and
     // links resolve against the visible records' identities.
-    let Some(local) = load_local_records(
-        &transaction,
-        collection,
-        &retained.dependency_digest,
-        std::iter::once(path),
-    )?
-    .remove(path)
-    .filter(|local| local.record.revision == row.revision) else {
+    let Some((local, body_facts)) =
+        load_local_overlay(&transaction, collection, &retained.dependency_digest, path)?
+            .map(super::LocalOverlaySnapshot::into_parts)
+            .filter(|(local, _)| local.revision == row.revision)
+    else {
         return Ok(None);
     };
     let Some(index) = retained.visible_link_index(proof) else {
@@ -1180,9 +1210,9 @@ pub fn read_retained_mdbase_record(
         collection,
         types,
         contracts,
-        local.record,
+        local,
         uniqueness,
-        &local.body_facts,
+        &body_facts,
         &index,
     );
     Ok(Some(Some(super::cached_record(

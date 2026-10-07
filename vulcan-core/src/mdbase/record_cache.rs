@@ -30,6 +30,50 @@ struct LocalRecordSnapshot {
     body_facts: super::links::BodyLinkFacts,
 }
 
+/// A [`LocalRecordSnapshot`] read without its body and source text, which
+/// an overlay given body facts never reads: deserializing skips both
+/// strings without allocating them. Fields mirror the record document.
+#[derive(Deserialize)]
+struct LocalOverlaySnapshot {
+    path: String,
+    revision: String,
+    types: Vec<String>,
+    frontmatter: serde_json::Value,
+    effective_frontmatter: serde_json::Value,
+    file: MdbaseRecordFileMetadata,
+    #[serde(default)]
+    links: Vec<super::MdbaseLink>,
+    #[serde(default)]
+    tags: Vec<String>,
+    display: Option<serde_json::Value>,
+    #[serde(default)]
+    contract_views: Vec<MdbaseContractView>,
+    diagnostics: Vec<MdbaseRecordDiagnostic>,
+    body_facts: super::links::BodyLinkFacts,
+}
+
+impl LocalOverlaySnapshot {
+    /// The record with an empty body and no source, and its body facts.
+    fn into_parts(self) -> (MdbaseRecordDocument, super::links::BodyLinkFacts) {
+        let record = MdbaseRecordDocument {
+            path: self.path,
+            revision: self.revision,
+            types: self.types,
+            frontmatter: self.frontmatter,
+            effective_frontmatter: self.effective_frontmatter,
+            body: String::new(),
+            document: None,
+            file: self.file,
+            links: self.links,
+            tags: self.tags,
+            display: self.display,
+            contract_views: self.contract_views,
+            diagnostics: self.diagnostics,
+        };
+        (record, self.body_facts)
+    }
+}
+
 impl std::ops::Deref for LocalRecordSnapshot {
     type Target = MdbaseRecordDocument;
 
@@ -2978,6 +3022,54 @@ mod tests {
             ),
             Err(MdbaseRecordCacheError::PermissionDenied)
         ));
+    }
+
+    /// The body-less overlay payload reads every record field the full
+    /// payload does, so overlays computed from it equal those from the full
+    /// one; only the body and source are left empty.
+    #[test]
+    fn overlay_payloads_read_everything_but_the_body() {
+        let directory = tempdir().unwrap();
+        write(
+            &directory.path().join("mdbase.yaml"),
+            "spec_version: 0.3.0\n",
+        );
+        write(
+            &directory.path().join("_types/task.md"),
+            "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    required: [title]\ncollection:\n  display: {name_field: title}\n  links:\n    related: {target_type: any, validate_exists: true}\n---\n",
+        );
+        write(
+            &directory.path().join("a.md"),
+            "---\ntype: task\nrelated: '[[missing]]'\ntags: [x]\n---\n#tag [[target|Alias]] body text\n",
+        );
+        let paths = VaultPaths::new(directory.path());
+        crate::initialize_vulcan_dir(&paths).unwrap();
+        let mut database = CacheDatabase::open(&paths).unwrap();
+        let (collection, types, contracts) = load_registries(directory.path());
+        refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        let json: String = database
+            .connection()
+            .query_row(
+                "SELECT local_record_json FROM mdbase_record_cache WHERE path = 'a.md'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let full: LocalRecordSnapshot = serde_json::from_str(&json).unwrap();
+        assert!(full.record.body.contains("body text"));
+        assert!(!full.record.diagnostics.is_empty());
+        assert!(full.record.display.is_some());
+        let (record, body_facts) = serde_json::from_str::<LocalOverlaySnapshot>(&json)
+            .unwrap()
+            .into_parts();
+        let mut expected = full.record.clone();
+        expected.body.clear();
+        expected.document = None;
+        assert_eq!(record, expected);
+        assert_eq!(
+            serde_json::to_value(&body_facts).unwrap(),
+            serde_json::to_value(&full.body_facts).unwrap()
+        );
     }
 
     #[test]
