@@ -140,5 +140,11 @@ vulcan --output json help query
 This is usually the better boundary when the harness already provides orchestration, auditing, and
 process isolation.
 
+For mdbase collections, [`docs/examples/mdbase/`](../examples/mdbase/) has two standalone
+integrations over the same inspect, schema, read, and query service as the CLI: `task-list.sh`, a
+POSIX shell task list, and `collection.py`, a standard-library Python wrapper that returns each
+command's canonical JSON envelope and accepts a `--permissions` profile. Neither needs the daemon
+or an App package.
+
 See also `vulcan help sandbox`, `vulcan help js`, `vulcan help automation-surfaces`, and the
 [JS API reference](../reference/js-api/index.md).

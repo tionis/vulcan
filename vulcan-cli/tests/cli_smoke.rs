@@ -36858,6 +36858,90 @@ fn mdbase_read_commands_are_json_capable_source_opt_in_and_non_mutating() {
     assert!(!vault_root.join(".vulcan").exists());
 }
 
+/// The shipped shell and Python integrations use the same shared mdbase
+/// service as direct CLI calls, with no daemon or App package.
+#[cfg(unix)]
+#[test]
+fn mdbase_shell_and_python_examples_use_the_shared_service() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let vault_root = temp_dir.path().join("collection");
+    fs::create_dir_all(vault_root.join("_types")).expect("types directory");
+    vulcan_core::initialize_vulcan_dir(&VaultPaths::new(&vault_root)).unwrap();
+    fs::write(vault_root.join("mdbase.yaml"), "spec_version: \"0.3.0\"\n").expect("config");
+    fs::write(
+        vault_root.join("_types/task.md"),
+        "---\nkind: mdbase.type\nname: task\nversion: 1\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    required: [title]\ncollection:\n  read_defaults: {status: open}\n---\n",
+    )
+    .expect("type");
+    for (name, title, status) in [
+        ("b", "Beta", None),
+        ("a", "Alpha", None),
+        ("c", "Gamma", Some("done")),
+    ] {
+        let status = status.map_or(String::new(), |status| format!("status: {status}\n"));
+        fs::write(
+            vault_root.join(format!("{name}.md")),
+            format!("---\ntype: task\ntitle: {title}\n{status}---\nBody\n"),
+        )
+        .expect("record");
+    }
+    fs::write(vault_root.join("untitled.md"), "---\ntype: task\n---\n").expect("record");
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/examples/mdbase");
+    let binary = assert_cmd::cargo::cargo_bin("vulcan");
+
+    let shell = std::process::Command::new("sh")
+        .arg(examples.join("task-list.sh"))
+        .arg(&vault_root)
+        .env("VULCAN", &binary)
+        .output()
+        .expect("shell example runs");
+    assert!(
+        shell.status.success(),
+        "{}",
+        String::from_utf8_lossy(&shell.stderr)
+    );
+    let listed = String::from_utf8(shell.stdout).unwrap();
+    let paths = listed
+        .lines()
+        .filter(|line| !line.starts_with(char::is_whitespace) && !line.contains(" result"))
+        .collect::<Vec<_>>();
+    assert_eq!(paths, ["a.md", "b.md", "untitled.md"]);
+    let rejected = std::process::Command::new("sh")
+        .arg(examples.join("task-list.sh"))
+        .args([vault_root.as_os_str(), "x' || true".as_ref()])
+        .env("VULCAN", &binary)
+        .output()
+        .expect("shell example runs");
+    assert_eq!(rejected.status.code(), Some(2));
+
+    let Ok(python) = std::process::Command::new("python3")
+        .arg(examples.join("collection.py"))
+        .arg(&vault_root)
+        .env("VULCAN", &binary)
+        .output()
+    else {
+        eprintln!("python3 is unavailable; skipping the Python example");
+        return;
+    };
+    assert!(
+        python.status.success(),
+        "{}",
+        String::from_utf8_lossy(&python.stderr)
+    );
+    let rows = String::from_utf8(python.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("JSON line"))
+        .collect::<Vec<_>>();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0]["path"], "a.md");
+    assert_eq!(rows[0]["title"], "Alpha");
+    assert_eq!(rows[0]["types"], serde_json::json!(["task"]));
+    assert_eq!(rows[0]["valid"], true);
+    assert_eq!(rows[2]["path"], "untitled.md");
+    assert_eq!(rows[2]["valid"], false);
+}
+
 #[test]
 fn mdbase_query_executes_canonical_yaml_with_direct_json_output() {
     let temp_dir = TempDir::new().expect("temp dir");
