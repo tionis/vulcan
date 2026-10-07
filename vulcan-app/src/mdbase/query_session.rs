@@ -993,17 +993,21 @@ mod tests {
         fs::remove_file(&journal).unwrap();
         check(None);
 
-        // A lost cache, then an edit: answers still follow the sources.
+        // A lost cache, then a cooperating edit (external edits are observed
+        // only once their notification arrives): answers follow the sources.
         for name in ["cache.db", "cache.db-wal", "cache.db-shm"] {
             let _ = fs::remove_file(paths.vulcan_dir().join(name));
         }
         check(None);
         check(Some(&filter));
-        fs::write(
-            directory.path().join("tasks/public.md"),
-            "---\ntype: task\ntitle: After loss\n---\nBody\n",
-        )
-        .unwrap();
+        {
+            let _lock = vulcan_core::write_lock::acquire_write_lock(&paths).unwrap();
+            fs::write(
+                directory.path().join("tasks/public.md"),
+                "---\ntype: task\ntitle: After loss\n---\nBody\n",
+            )
+            .unwrap();
+        }
         check(None);
         check(Some(&filter));
         assert_eq!(
