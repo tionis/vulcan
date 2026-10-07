@@ -1046,6 +1046,7 @@ fn descendant_task_ids(rows: &[(bool, ExecutionRow)], roots: &HashSet<String>) -
 /// The notes a Dataview source string (what follows `FROM`) selects within
 /// `note_lookup`, the caller's readable universe, in one query (QRY.2). Used
 /// by `DataviewJS` `dv.pages(source)`.
+#[cfg(feature = "js_runtime")]
 pub(crate) fn select_source_paths(
     paths: &VaultPaths,
     source: &str,
