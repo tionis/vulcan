@@ -1056,10 +1056,28 @@ fn normalize_permission_path(path: &str) -> String {
     path.replace('\\', "/")
 }
 
+/// Whether `path` matches `pattern`, where `*` (and `**`, which is the
+/// same) matches any run of characters including `/` and `?` matches one.
+/// Literal and `prefix*` patterns, the common grant shapes, are decided
+/// without backtracking; nothing is allocated unless a backslash needs
+/// normalizing.
 fn glob_matches(pattern: &str, path: &str) -> bool {
-    let pattern = sqlite_glob_pattern(pattern);
-    let path = normalize_permission_path(path);
-    glob_matches_bytes(pattern.as_bytes(), path.as_bytes())
+    fn normalize(value: &str) -> std::borrow::Cow<'_, str> {
+        if value.contains('\\') {
+            std::borrow::Cow::Owned(normalize_permission_path(value))
+        } else {
+            std::borrow::Cow::Borrowed(value)
+        }
+    }
+    let (pattern, path) = (normalize(pattern), normalize(path));
+    let (pattern, path) = (pattern.as_bytes(), path.as_bytes());
+    match pattern.iter().position(|byte| matches!(byte, b'*' | b'?')) {
+        None => pattern == path,
+        Some(wildcard) if pattern[wildcard..].iter().all(|byte| *byte == b'*') => {
+            path.starts_with(&pattern[..wildcard])
+        }
+        Some(_) => glob_matches_bytes(pattern, path),
+    }
 }
 
 fn glob_pattern_covers_pattern(active: &str, requested: &str) -> bool {
@@ -1084,8 +1102,16 @@ fn glob_matches_bytes(pattern: &[u8], path: &[u8]) -> bool {
 
     match pattern[0] {
         b'*' => {
+            // A run of stars matches like one.
+            let rest = pattern
+                .iter()
+                .position(|byte| *byte != b'*')
+                .map_or(&[][..], |at| &pattern[at..]);
+            if rest.is_empty() {
+                return true;
+            }
             for index in 0..=path.len() {
-                if glob_matches_bytes(&pattern[1..], &path[index..]) {
+                if glob_matches_bytes(rest, &path[index..]) {
                     return true;
                 }
             }
@@ -1232,6 +1258,73 @@ fn extract_network_host(target: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn glob_fast_paths_match_the_backtracking_matcher() {
+        // The previous matcher: rewrite `**` to `*`, then backtrack.
+        fn backtrack(pattern: &[u8], path: &[u8]) -> bool {
+            match pattern.first() {
+                None => path.is_empty(),
+                Some(b'*') => (0..=path.len()).any(|at| backtrack(&pattern[1..], &path[at..])),
+                Some(b'?') => !path.is_empty() && backtrack(&pattern[1..], &path[1..]),
+                Some(byte) => path.first() == Some(byte) && backtrack(&pattern[1..], &path[1..]),
+            }
+        }
+        fn oracle(pattern: &str, path: &str) -> bool {
+            let pattern = pattern.replace('\\', "/").replace("**", "*");
+            backtrack(pattern.as_bytes(), path.replace('\\', "/").as_bytes())
+        }
+        let patterns = [
+            "",
+            "*",
+            "**",
+            "***",
+            "public/**",
+            "public/*",
+            "public",
+            "public/",
+            "pub*",
+            "*.md",
+            "**/*.md",
+            "a?c",
+            "a*c",
+            "a**c",
+            "dir\\**",
+            "x/*/y",
+            "?",
+            "??*",
+            "tasks/private/**",
+            "_types/**",
+        ];
+        let paths = [
+            "",
+            "public",
+            "public/",
+            "public/a.md",
+            "publicity.md",
+            "abc",
+            "ac",
+            "a/b/c",
+            "dir/x.md",
+            "dir\\x.md",
+            "x/a/y",
+            "x//y",
+            "tasks/private/secret.md",
+            "tasks/public.md",
+            "_types/task.md",
+            "a.md",
+            "z",
+        ];
+        for pattern in patterns {
+            for path in paths {
+                assert_eq!(
+                    glob_matches(pattern, path),
+                    oracle(pattern, path),
+                    "{pattern:?} vs {path:?}"
+                );
+            }
+        }
+    }
     use super::{
         combine_cte_fragments, glob_matches, interpret_policy_hook_result, network_target_matches,
         parse_resource_specifier, PathPermission, PermissionError, PermissionFilter,
