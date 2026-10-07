@@ -17922,6 +17922,36 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(js_api.contains("complete proposed change set through one journal batch"));
     assert!(js_api.contains("validation failure restores every original"));
     assert!(js_api.contains("including after the script's own writes"));
+    let mdbase = fs::read_to_string(vault_root.join(".agents/skills/mdbase-collections/SKILL.md"))
+        .expect("mdbase skill should be installed");
+    assert_eq!(
+        mdbase,
+        include_str!("../../docs/assistant/skills/mdbase-collections.md")
+    );
+    assert!(mdbase.contains("managed: true"));
+    for (command, flag) in [
+        ("status", "--output"),
+        ("schema", "TYPE"),
+        ("query", "--file"),
+        ("views", "--output"),
+        ("view", "--context"),
+        ("view-source", "update"),
+    ] {
+        assert!(mdbase.contains(&format!("mdbase {command}")), "{command}");
+        Command::cargo_bin("vulcan")
+            .expect("binary")
+            .args(["mdbase", command, "--help"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(flag));
+    }
+    assert!(mdbase.contains("vulcan repair mdbase-write status"));
+    Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args(["help", "mdbase"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("mdbase Collections"));
     let vault_query = fs::read_to_string(vault_root.join(".agents/skills/vault-query/SKILL.md"))
         .expect("vault query skill should be readable");
     assert_eq!(
@@ -18526,6 +18556,7 @@ fn skill_list_and_get_surface_bundled_skills() {
         "dataview-and-bases",
         "templates-and-capture",
         "publishing-and-export",
+        "mdbase-collections",
         "plugin-authoring",
         "diagnostics-and-repair",
         "conversation-export",
@@ -37843,7 +37874,7 @@ fn mdbase_reads_never_activate_executable_behavior() {
         ),
         (
             "_contracts/note.md",
-            "---\nkind: mdbase.contract\nid: example.note\nversion: 1.0.0\ncontract_type: data\nschemas:\n  record:\n    type: object\n---\n",
+            "---\nkind: mdbase.contract\ncontract_type: record\nid: example.note\nversion: 1.0.0\nrecord_schema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\nbinding_schema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n---\n",
         ),
         (
             "workflows/cleanup.md",
@@ -37957,6 +37988,22 @@ function on_refactor(event) { trip(event); }
         assert!(output.status.success(), "{arguments:?}: {text}");
         assert!(!text.contains("plugin ran"), "{arguments:?}: {text}");
     }
+    // Every control loaded, so the reads really exercised them.
+    let status = cargo_vulcan_with_xdg_config(&config_home)
+        .args([
+            "--vault",
+            root.to_str().unwrap(),
+            "--output",
+            "json",
+            "mdbase",
+            "status",
+        ])
+        .output()
+        .unwrap();
+    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["diagnostics"], serde_json::json!([]), "{status}");
+    assert_eq!(status["result"]["types"], 2);
+    assert_eq!(status["result"]["contracts"], 1);
     let after = snapshot();
     assert_eq!(
         before.keys().collect::<Vec<_>>(),
@@ -37995,7 +38042,7 @@ fn mdbase_permission_profiles_scope_every_surface_without_leaks() {
         ("mdbase.yaml", "spec_version: \"0.3.0\"\n"),
         (
             "_types/task.md",
-            "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    properties:\n      id: {type: string}\n      title: {type: string}\n      owner: {type: string}\ncollection:\n  unique:\n    - fields: [id]\n      scope: collection\n  links:\n    owner: {target_type: any}\n---\n",
+            "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    properties:\n      id: {type: string}\n      title: {type: string}\n      owner: {type: string}\ncollection:\n  unique:\n    - field: id\n      scope: collection\n  links:\n    owner: {target_type: any}\n---\n",
         ),
         (
             "_types/view.md",
@@ -38059,7 +38106,7 @@ fn mdbase_permission_profiles_scope_every_surface_without_leaks() {
         "{unrestricted}"
     );
     assert!(
-        unrestricted.contains("duplicate") || unrestricted.contains("unique"),
+        unrestricted.contains("duplicate_value") && !unrestricted.contains("schema_"),
         "{unrestricted}"
     );
     for arguments in [
@@ -38123,4 +38170,86 @@ fn mdbase_permission_profiles_scope_every_surface_without_leaks() {
     assert!(!success, "{text}");
     assert!(!text.contains("path_conflict"), "{text}");
     assert!(!root.join("secret/probe.md").exists());
+}
+
+/// The documented example collection stays valid and every documented
+/// command works against it.
+#[test]
+fn mdbase_example_collection_is_valid_and_documented_commands_run() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let root = temp_dir.path().join("collection");
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/examples/mdbase/collection");
+    let mut pending = vec![source.clone()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            let target = root.join(path.strip_prefix(&source).unwrap());
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                fs::create_dir_all(target.parent().unwrap()).unwrap();
+                fs::copy(&path, &target).unwrap();
+            }
+        }
+    }
+    let run = |arguments: &[&str]| -> Value {
+        let output = Command::cargo_bin("vulcan")
+            .unwrap()
+            .args(["--vault", root.to_str().unwrap(), "--output", "json"])
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{arguments:?}: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+    let validate = run(&["mdbase", "validate"]);
+    assert_eq!(validate["valid"], true, "{validate}");
+    assert_eq!(validate["diagnostics"], serde_json::json!([]));
+    let schema = run(&["mdbase", "schema", "task"]);
+    assert_eq!(
+        schema["result"]["required_features"],
+        serde_json::json!(["links", "vulcan.lifecycle.v1"])
+    );
+    let views = run(&["mdbase", "views"]);
+    assert_eq!(views["result"]["meta"]["total_count"], 2);
+    let open = run(&["mdbase", "view", "task.views", "by-priority"]);
+    assert_eq!(open["results"][0]["values"]["title"], "Write the guide");
+    assert_eq!(open["meta"]["total_count"], 3);
+    let project = run(&[
+        "mdbase",
+        "view",
+        "task.views",
+        "for-project",
+        "--context",
+        "projects/docs.md",
+    ]);
+    assert_eq!(project["meta"]["total_count"], 3);
+    assert_eq!(project["meta"]["groups"].as_array().unwrap().len(), 2);
+    run(&["init"]);
+    run(&["scan"]);
+    let base = run(&["mdbase", "view", "views/tasks.base", "all-tasks"]);
+    assert_eq!(base["meta"]["total_count"], 4);
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/examples/mdbase/task-list.sh");
+    let output = ProcessCommand::new("sh")
+        .arg(script)
+        .arg(&root)
+        .arg("open")
+        .env("VULCAN", assert_cmd::cargo::cargo_bin("vulcan"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let listed = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        listed.contains("Publish the release notes") && listed.contains("Review the skill"),
+        "{listed}"
+    );
 }

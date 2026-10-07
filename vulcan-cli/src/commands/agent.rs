@@ -169,6 +169,12 @@ const BUNDLED_SKILL_FILES: &[BundledTextFile] = &[
     },
     BundledTextFile {
         kind: "skill",
+        relative_path: "mdbase-collections/SKILL.md",
+        contents: include_str!("../../../docs/assistant/skills/mdbase-collections.md"),
+        target: BundledFileTarget::SkillsFolder,
+    },
+    BundledTextFile {
+        kind: "skill",
         relative_path: "publishing-and-export/SKILL.md",
         contents: include_str!("../../../docs/assistant/skills/publishing-and-export.md"),
         target: BundledFileTarget::SkillsFolder,

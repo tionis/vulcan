@@ -24,9 +24,9 @@ Start with the [query guide](docs/guide/query-dsl.md), [filter reference](docs/g
 
 Keep tasks, projects, contacts, and other records in readable Markdown with structured metadata. Vulcan supports inline tasks, TaskNotes task files, recurring tasks, dependencies, Kanban boards, periodic notes, templates, and capture workflows.
 
-The explicit `mdbase` commands add typed collection discovery, schema validation, record reads, CEL queries, and link semantics against a pinned mdbase v0.3 specification. Compatibility is scoped to tested profiles; collection writes and the optimized App backend remain planned. Ordinary vaults do not need mdbase schemas.
+The explicit `mdbase` commands add typed collection discovery, schema validation, record reads, CEL queries, link semantics, effective-schema reports, and saved views (including Obsidian `.base` sources) against a pinned mdbase v0.3 specification. Writes to collection records go through one validated, journaled pipeline. Compatibility is scoped to tested profiles and features, which `vulcan mdbase conformance` reports; the Collection Studio App backend remains planned. Ordinary vaults do not need mdbase schemas.
 
-See the [CLI reference](docs/cli.md) for task and metadata workflows, and the [mdbase roadmap](docs/ROADMAP.md#mdb-mdbase-typed-markdown-collection-interoperability-formerly-932) for implemented profiles and remaining work.
+See the [mdbase guide](docs/guide/mdbase.md) and its [example collection](docs/examples/mdbase/collection/README.md), the [CLI reference](docs/cli.md) for task and metadata workflows, and the [mdbase roadmap](docs/ROADMAP.md#mdb-mdbase-typed-markdown-collection-interoperability-formerly-932) for remaining work.
 
 ### Automate with scripts and agents
 

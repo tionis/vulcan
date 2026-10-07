@@ -19174,7 +19174,7 @@
       },
       {
         "about": "Show integrated command and concept documentation",
-        "after_help": "Topics:\n  Commands: help query, help note get, help refactor\n  Concepts: help filters, help query-dsl, help getting-started, help examples\n\nExamples:\n  vulcan help\n  vulcan help query\n  vulcan help note get --output json\n  vulcan help --search graph",
+        "after_help": "Topics:\n  Commands: help query, help note get, help refactor\n  Concepts: help filters, help query-dsl, help mdbase, help getting-started, help examples\n\nExamples:\n  vulcan help\n  vulcan help query\n  vulcan help note get --output json\n  vulcan help --search graph",
         "name": "help",
         "options": [
           {

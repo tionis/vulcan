@@ -1,0 +1,6 @@
+spec_version: "0.3.0"
+settings:
+  timezone: UTC
+x-obsidian:
+  bases:
+    include: ['views/*.base']

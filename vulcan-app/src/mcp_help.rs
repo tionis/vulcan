@@ -433,6 +433,13 @@ pub fn builtin_help_topics() -> Vec<HelpTopicReport> {
             &["query", "ls", "search"],
         ),
         static_help_topic(
+            "mdbase",
+            HelpTopicKind::Concept,
+            "mdbase collections: typed records, CEL queries, saved views, writes, permissions, and conformance.",
+            include_str!("../../docs/guide/mdbase.md"),
+            &["mdbase query", "mdbase view", "mdbase schema"],
+        ),
+        static_help_topic(
             "scripting",
             HelpTopicKind::Concept,
             "JavaScript runtime surfaces, reusable automation patterns, and capability boundaries.",
@@ -732,6 +739,16 @@ mod tests {
         assert!(filters.body.contains("`field != null`"));
         assert!(filters.body.contains("A missing property is `null`"));
         assert!(filters.body.contains("`has_tag`"));
+
+        let mdbase = builtin_help_topic("mdbase").expect("mdbase topic");
+        assert!(mdbase.body.starts_with("# mdbase Collections"));
+        for command in [
+            "`vulcan mdbase view SOURCE VIEW`",
+            "`vulcan mdbase schema TYPE...`",
+            "/mdbase/changes",
+        ] {
+            assert!(mdbase.body.contains(command), "{command}");
+        }
 
         let dsl = builtin_help_topic("query-dsl").expect("query-dsl topic");
         assert!(dsl.body.starts_with("# Native Query DSL"));

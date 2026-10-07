@@ -1,0 +1,12 @@
+filters:
+  and:
+    - 'type == "task"'
+properties:
+  title:
+    displayName: Task
+views:
+  - name: All tasks
+    type: table
+    order:
+      - title
+      - status

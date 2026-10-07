@@ -808,7 +808,7 @@ Examples:
 const HELP_COMMAND_AFTER_HELP: &str = "\
 Topics:
   Commands: help query, help note get, help refactor
-  Concepts: help filters, help query-dsl, help getting-started, help examples
+  Concepts: help filters, help query-dsl, help mdbase, help getting-started, help examples
 
 Examples:
   vulcan help
