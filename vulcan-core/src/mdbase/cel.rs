@@ -417,10 +417,35 @@ fn add_json_bindings(
 ) -> Result<(), MdbaseCelError> {
     for (name, value) in bindings {
         context
-            .add_variable(name, value)
+            .add_variable(name, CelJson(value))
             .map_err(|error| MdbaseCelError::new("expression_binding_error", error.to_string()))?;
     }
     Ok(())
+}
+
+/// JSON serialized for CEL with integral numbers as signed `int`.
+///
+/// `serde_json` emits every non-negative integer as `u64`, which CEL types as
+/// `uint`, and CEL has no mixed `int`/`uint` arithmetic, so `priority * 2` or
+/// `priority + 10` failed for every persisted number. YAML and JSON integers
+/// are signed, so they bind as `int`; only values above `i64::MAX` stay
+/// `uint`. Mixed comparisons and equality were already numeric.
+struct CelJson<'a>(&'a serde_json::Value);
+
+impl Serialize for CelJson<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            serde_json::Value::Number(number) => match number.as_i64() {
+                Some(integer) => serializer.serialize_i64(integer),
+                None => number.serialize(serializer),
+            },
+            serde_json::Value::Array(items) => serializer.collect_seq(items.iter().map(CelJson)),
+            serde_json::Value::Object(members) => {
+                serializer.collect_map(members.iter().map(|(name, value)| (name, CelJson(value))))
+            }
+            other => other.serialize(serializer),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1168,7 +1193,7 @@ fn link_as_file(
         .iter()
         .find(|target| target.path == path)
         .map_or(Ok(Value::Null), |target| {
-            cel_interpreter::to_value(&target.file)
+            cel_interpreter::to_value(CelJson(&target.file))
                 .map_err(|error| ExecutionError::function_error("asFile", error.to_string()))
         })
 }
@@ -1578,6 +1603,41 @@ mod tests {
             .compile("link('target')")
             .unwrap()
             .requires_link_index());
+    }
+
+    #[test]
+    fn persisted_integers_support_int_arithmetic_and_keep_numeric_comparisons() {
+        let engine = MdbaseCelEngine::default();
+        let bindings = BTreeMap::from([
+            ("priority".to_string(), serde_json::json!(3)),
+            ("debt".to_string(), serde_json::json!(-2)),
+            ("ratio".to_string(), serde_json::json!(1.5)),
+            ("huge".to_string(), serde_json::json!(u64::MAX)),
+            ("nested".to_string(), serde_json::json!({"list": [4, 5]})),
+        ]);
+        for (source, expected) in [
+            ("priority * 2", serde_json::json!(6)),
+            ("priority + 10", serde_json::json!(13)),
+            ("priority - 5", serde_json::json!(-2)),
+            ("priority + debt", serde_json::json!(1)),
+            ("nested.list[0] * nested.list[1]", serde_json::json!(20)),
+            ("nested.list.map(n, n * 2)", serde_json::json!([8, 10])),
+            (
+                "priority == 3 && priority > 2u && priority < 3.5",
+                serde_json::json!(true),
+            ),
+            ("ratio * 2.0", serde_json::json!(3.0)),
+            ("huge == 18446744073709551615u", serde_json::json!(true)),
+            // Above i64::MAX a value stays `uint` and keeps uint arithmetic.
+            ("huge - 1u", serde_json::json!(u64::MAX - 1)),
+        ] {
+            let program = engine.compile(source).unwrap();
+            assert_eq!(
+                engine.evaluate(&program, &bindings).unwrap(),
+                expected,
+                "{source}"
+            );
+        }
     }
 
     #[test]
