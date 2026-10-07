@@ -15,7 +15,8 @@
 //! (default 0), `VULCAN_NOTE_BENCH_SESSION` (`0` for the direct path),
 //! `VULCAN_NOTE_BENCH_SCOPE` (a permission profile), and
 //! `VULCAN_NOTE_BENCH_FRONTENDS` (a comma-separated subset of `dql`,
-//! `query`, `bases`, `notes`, and `mdbase`). The writer edits a record body
+//! `dql-tag`, `query`, `bases`, `bases-tag`, `notes`, and `mdbase`; DQL and
+//! Bases ask folder-and-property and tag-and-property questions). The writer edits a record body
 //! outside mdbase's managed write path, so mixed runs that include mdbase
 //! measure its disk-reconciled fallback. The benchmark adds
 //! `public/_bench/*.base` files (readable by the fixture's `benchmark_public`
@@ -56,10 +57,41 @@ fn get(path: &str, params: &[(&str, String)]) -> ServeRequest {
 }
 
 /// One parameter-varied request per frontend, type, and status.
+/// The fixture's tag for a (type, status) pair: `group-0` to `group-5`.
+fn group(kind: &str, status: &str) -> usize {
+    let kind = TYPES.iter().position(|known| *known == kind).unwrap_or(0);
+    let status = STATUSES
+        .iter()
+        .position(|known| *known == status)
+        .unwrap_or(0);
+    kind * STATUSES.len() + status
+}
+
 fn requests() -> Vec<(&'static str, ServeRequest)> {
     let mut requests = Vec::new();
     for kind in TYPES {
         for status in STATUSES {
+            let group = group(kind, status);
+            requests.push((
+                "dql-tag",
+                get(
+                    "/dataview/query",
+                    &[(
+                        "dql",
+                        format!(
+                            "TABLE title, status, priority FROM #group-{group} \
+                             WHERE status = \"{status}\" SORT title ASC LIMIT 50"
+                        ),
+                    )],
+                ),
+            ));
+            requests.push((
+                "bases-tag",
+                get(
+                    "/bases/eval",
+                    &[("file", format!("public/_bench/tag-{kind}-{status}.base"))],
+                ),
+            ));
             requests.push((
                 "dql",
                 get(
@@ -224,6 +256,15 @@ fn note_query_service_benchmark() {
                 ),
             )
             .expect("base file");
+            fs::write(
+                bases.join(format!("tag-{kind}-{status}.base")),
+                format!(
+                    "filters:\n  and:\n    - 'file.hasTag(\"group-{}\")'\n    - 'status == \"{status}\"'\n\
+                     views:\n  - type: table\n    name: rows\n    order:\n      - title\n      - status\n      - priority\n    sort:\n      - property: title\n        direction: ASC\n    limit: 50\n",
+                    group(kind, status)
+                ),
+            )
+            .expect("tag base file");
         }
     }
     vulcan_core::scan_vault(&paths, vulcan_core::ScanMode::Incremental).expect("scan bases");
