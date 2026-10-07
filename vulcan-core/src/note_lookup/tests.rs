@@ -35,6 +35,7 @@ fn identities(count: usize) -> Vec<IndexedIdentity> {
             key: format!("n{index}"),
             file_name: format!("n{index}"),
             aliases: vec![format!("alias{index}")],
+            row_version: 0,
         })
         .collect()
 }
@@ -57,14 +58,14 @@ fn lookup(count: usize, calls: &Calls) -> IndexedNoteLookup<'_> {
                 |paths| paths.iter().map(ToString::to_string).collect(),
             );
             calls.stored.borrow_mut().push(paths.len());
-            Ok(paths.iter().map(|path| note(path)).collect())
+            Ok(paths.iter().map(|path| Arc::new(note(path))).collect())
         }),
         Box::new(move |notes| {
             calls.hydrated.borrow_mut().push(notes.len());
             Ok(notes
                 .into_iter()
                 .map(|mut note| {
-                    note.tags.push("#hydrated".to_string());
+                    Arc::make_mut(&mut note).tags.push("#hydrated".to_string());
                     note
                 })
                 .collect())

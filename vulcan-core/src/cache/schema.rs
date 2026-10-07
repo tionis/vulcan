@@ -1,5 +1,41 @@
 use rusqlite::Transaction;
 
+/// Row versions for the note store (QRY.6). Every insert or update of a
+/// `note_query` row (documents, properties, tags, and aliases all write
+/// through it) advances the store clock and stamps the row with the new
+/// value, and every delete advances the clock, so a retained reader can tell
+/// exactly which rows changed. The clock is never cleared with the cache
+/// tables; `store_id` is random per cache file, so versions from a deleted
+/// and recreated cache never match retained ones.
+pub fn apply_schema_v28(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "CREATE TABLE note_store_clock (
+             id INTEGER PRIMARY KEY CHECK (id = 1),
+             store_id TEXT NOT NULL,
+             version INTEGER NOT NULL
+         );
+         INSERT INTO note_store_clock VALUES (1, lower(hex(randomblob(16))), 0);
+         ALTER TABLE note_query ADD COLUMN row_version INTEGER NOT NULL DEFAULT 0;
+         CREATE INDEX idx_note_query_row_version ON note_query(row_version);
+         CREATE TRIGGER note_query_version_insert AFTER INSERT ON note_query BEGIN
+             UPDATE note_store_clock SET version = version + 1;
+             UPDATE note_query SET row_version = (SELECT version FROM note_store_clock)
+             WHERE document_id = new.document_id;
+         END;
+         CREATE TRIGGER note_query_version_update AFTER UPDATE ON note_query
+         WHEN new.row_version = old.row_version BEGIN
+             UPDATE note_store_clock SET version = version + 1;
+             UPDATE note_query SET row_version = (SELECT version FROM note_store_clock)
+             WHERE document_id = new.document_id;
+         END;
+         CREATE TRIGGER note_query_version_delete AFTER DELETE ON note_query BEGIN
+             UPDATE note_store_clock SET version = version + 1;
+         END;
+         UPDATE note_query SET row_version = rowid;
+         UPDATE note_store_clock SET version = (SELECT coalesce(max(row_version), 0) FROM note_query);",
+    )
+}
+
 /// The narrow note query table (QRY.4): one row per document with its
 /// identity facts (path, file name, aliases), freshness evidence (stat
 /// fingerprint, revision, parser version), file metadata, JSONB properties,

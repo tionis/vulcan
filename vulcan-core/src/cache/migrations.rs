@@ -157,6 +157,11 @@ impl MigrationRegistry {
                 "add the narrow note query table and stat fingerprints",
                 schema::apply_schema_v27,
             ),
+            Migration::new(
+                28,
+                "version note query rows for retained readers",
+                schema::apply_schema_v28,
+            ),
         ])
     }
 
@@ -651,6 +656,81 @@ mod tests {
             })
             .expect("row should remain readable");
         assert_eq!(row, (7, "unknown".to_string()));
+    }
+
+    #[test]
+    fn note_store_clock_versions_every_note_query_change() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        let mut old_registry = MigrationRegistry::schema_v1();
+        old_registry
+            .migrations
+            .retain(|migration| migration.version <= 27);
+        old_registry.migrate(&mut connection).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO documents (id, path, filename, extension, content_hash,
+                     raw_frontmatter, file_size, file_mtime, parser_version, indexed_at, file_ctime)
+                 VALUES ('d1', 'A.md', 'A', 'md', X'01', NULL, 3, 4, 1, '1', 5),
+                        ('d2', 'B.md', 'B', 'md', X'02', NULL, 6, 7, 1, '1', 8);",
+            )
+            .unwrap();
+        MigrationRegistry::schema_v1()
+            .migrate(&mut connection)
+            .unwrap();
+        let clock = |connection: &Connection| -> (String, i64) {
+            connection
+                .query_row(
+                    "SELECT store_id, version FROM note_store_clock",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap()
+        };
+        let version = |connection: &Connection, id: &str| -> i64 {
+            connection
+                .query_row(
+                    "SELECT row_version FROM note_query WHERE document_id = ?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        // Backfilled rows get distinct versions no later than the clock.
+        let (store_id, backfilled) = clock(&connection);
+        assert_eq!(store_id.len(), 32);
+        let (v1, v2) = (version(&connection, "d1"), version(&connection, "d2"));
+        assert!(v1 != v2 && v1.max(v2) == backfilled);
+        // Writes through any source table stamp the row with a new version.
+        for statement in [
+            "UPDATE documents SET file_size = 9 WHERE id = 'd1'",
+            "INSERT INTO properties VALUES ('d1', 'a: 1', '{\"a\":1}')",
+            "UPDATE properties SET canonical_json = '{\"a\":2}' WHERE document_id = 'd1'",
+            "INSERT INTO tags VALUES ('t1', 'd1', 'x')",
+            "DELETE FROM tags WHERE id = 't1'",
+            "INSERT INTO aliases VALUES ('a1', 'd1', 'Alias')",
+        ] {
+            let before = clock(&connection).1;
+            connection.execute(statement, []).unwrap();
+            let after = clock(&connection).1;
+            assert!(after > before, "{statement}");
+            assert_eq!(version(&connection, "d1"), after, "{statement}");
+            assert_eq!(version(&connection, "d2"), v2, "{statement}");
+        }
+        // Inserts get fresh versions; deletes advance the clock.
+        connection
+            .execute_batch(
+                "INSERT INTO documents (id, path, filename, extension, content_hash,
+                     raw_frontmatter, file_size, file_mtime, parser_version, indexed_at, file_ctime)
+                 VALUES ('d3', 'C.md', 'C', 'md', X'03', NULL, 1, 1, 1, '1', 1);",
+            )
+            .unwrap();
+        let inserted = clock(&connection).1;
+        assert_eq!(version(&connection, "d3"), inserted);
+        connection
+            .execute("DELETE FROM documents WHERE id = 'd2'", [])
+            .unwrap();
+        assert!(clock(&connection).1 > inserted);
+        assert_eq!(clock(&connection).0, store_id);
     }
 
     #[test]

@@ -12,6 +12,7 @@ use std::borrow::Cow;
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
 use std::hash::BuildHasher;
+use std::sync::Arc;
 
 /// Link-reachable notes for expression evaluation.
 pub trait NoteLookup {
@@ -156,36 +157,88 @@ impl<S: BuildHasher> NoteLookup for HashMap<String, NoteRecord, S> {
 /// Loads stored-field records for the given paths (`None`: every readable
 /// note, in one scan), in any order.
 pub type StoredNoteLoader<'a> =
-    Box<dyn Fn(Option<&[&str]>) -> Result<Vec<NoteRecord>, PropertyError> + 'a>;
+    Box<dyn Fn(Option<&[&str]>) -> Result<Vec<Arc<NoteRecord>>, PropertyError> + 'a>;
 
 /// Hydrates stored-field records (tags, links, inlinks, tasks, lists),
 /// returning them in any order.
 pub type NoteHydrator<'a> =
-    Box<dyn Fn(Vec<NoteRecord>) -> Result<Vec<NoteRecord>, PropertyError> + 'a>;
+    Box<dyn Fn(Vec<Arc<NoteRecord>>) -> Result<Vec<Arc<NoteRecord>>, PropertyError> + 'a>;
 
 /// Distinct notes loaded one at a time before the rest load in one batch;
 /// bounds a query that touches many notes to the cost of an eager load.
 const LAZY_LOAD_LIMIT: usize = 32;
 
 /// One readable note's identity facts and lookup key.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexedIdentity {
     pub path: String,
     /// Unique basename, or `/path` when basenames collide.
     pub key: String,
     pub file_name: String,
     pub aliases: Vec<String>,
+    /// The `note_query` row version (schema v28); 0 when unknown.
+    pub row_version: i64,
+}
+
+/// A readable universe's identity facts, indexed by path and lookup key.
+/// Immutable, so hosts can share one across requests (QRY.6).
+#[derive(Debug, Default)]
+pub struct IdentityIndex {
+    identities: Vec<IndexedIdentity>,
+    by_path: HashMap<String, usize>,
+    by_key: HashMap<String, usize>,
+}
+
+impl IdentityIndex {
+    #[must_use]
+    pub fn new(identities: Vec<IndexedIdentity>) -> Self {
+        let by_path = identities
+            .iter()
+            .enumerate()
+            .map(|(index, identity)| (identity.path.clone(), index))
+            .collect();
+        let by_key = identities
+            .iter()
+            .enumerate()
+            .map(|(index, identity)| (identity.key.clone(), index))
+            .collect();
+        Self {
+            identities,
+            by_path,
+            by_key,
+        }
+    }
+
+    /// The identity of the note at `path`, if readable.
+    #[must_use]
+    pub fn get(&self, path: &str) -> Option<&IndexedIdentity> {
+        self.by_path.get(path).map(|index| &self.identities[*index])
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.identities.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.identities.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &IndexedIdentity> {
+        self.identities.iter()
+    }
 }
 
 /// A note lookup over identity facts (QRY.4): links resolve without loading
 /// any note, stored fields load for the notes a query prefetches or reads,
 /// and file objects hydrate only for the notes it dereferences. The
-/// identities are the caller's readable universe.
+/// identities are the caller's readable universe. Records are shared, so a
+/// host may hand out retained ones.
 pub struct IndexedNoteLookup<'a> {
-    identities: Vec<IndexedIdentity>,
-    by_path: HashMap<String, usize>,
-    by_key: HashMap<String, usize>,
-    stored: Vec<OnceCell<NoteRecord>>,
-    hydrated: Vec<OnceCell<NoteRecord>>,
+    index: Arc<IdentityIndex>,
+    stored: Vec<OnceCell<Arc<NoteRecord>>>,
+    hydrated: Vec<OnceCell<Arc<NoteRecord>>>,
     load_stored: StoredNoteLoader<'a>,
     hydrate: NoteHydrator<'a>,
     stored_misses: Cell<usize>,
@@ -213,22 +266,24 @@ impl<'a> IndexedNoteLookup<'a> {
         load_stored: StoredNoteLoader<'a>,
         hydrate: NoteHydrator<'a>,
     ) -> Self {
-        let by_path = identities
-            .iter()
-            .enumerate()
-            .map(|(index, identity)| (identity.path.clone(), index))
-            .collect();
-        let by_key = identities
-            .iter()
-            .enumerate()
-            .map(|(index, identity)| (identity.key.clone(), index))
-            .collect();
+        Self::from_index(
+            Arc::new(IdentityIndex::new(identities)),
+            load_stored,
+            hydrate,
+        )
+    }
+
+    /// A lookup over a shared identity index.
+    #[must_use]
+    pub fn from_index(
+        index: Arc<IdentityIndex>,
+        load_stored: StoredNoteLoader<'a>,
+        hydrate: NoteHydrator<'a>,
+    ) -> Self {
         Self {
-            stored: identities.iter().map(|_| OnceCell::new()).collect(),
-            hydrated: identities.iter().map(|_| OnceCell::new()).collect(),
-            identities,
-            by_path,
-            by_key,
+            stored: index.identities.iter().map(|_| OnceCell::new()).collect(),
+            hydrated: index.identities.iter().map(|_| OnceCell::new()).collect(),
+            index,
             load_stored,
             hydrate,
             stored_misses: Cell::new(0),
@@ -236,6 +291,12 @@ impl<'a> IndexedNoteLookup<'a> {
             error: RefCell::new(None),
             database: None,
         }
+    }
+
+    /// The identity facts of the universe.
+    #[must_use]
+    pub fn identity_index(&self) -> &Arc<IdentityIndex> {
+        &self.index
     }
 
     /// The first load failure, if any. Callers fail the evaluation: a note
@@ -251,7 +312,7 @@ impl<'a> IndexedNoteLookup<'a> {
     fn indexes<'b>(&self, paths: impl IntoIterator<Item = &'b str>) -> Vec<usize> {
         paths
             .into_iter()
-            .filter_map(|path| self.by_path.get(path).copied())
+            .filter_map(|path| self.index.by_path.get(path).copied())
             .collect()
     }
 
@@ -281,18 +342,21 @@ impl<'a> IndexedNoteLookup<'a> {
         }
         let paths = indexes
             .iter()
-            .map(|index| self.identities[*index].path.as_str())
+            .map(|index| self.index.identities[*index].path.as_str())
             .collect::<Vec<_>>();
         // Loading most of the universe scans it instead of listing paths.
-        let wanted = (paths.len() * 2 < self.identities.len()).then_some(paths.as_slice());
+        let wanted = (paths.len() * 2 < self.index.identities.len()).then_some(paths.as_slice());
         match (self.load_stored)(wanted) {
             Ok(records) => {
                 for mut record in records {
-                    if let Some(index) = self.by_path.get(&record.document_path) {
+                    if let Some(index) = self.index.by_path.get(&record.document_path) {
                         if self.stored[*index].get().is_some() {
                             continue;
                         }
-                        record.aliases.clone_from(&self.identities[*index].aliases);
+                        let aliases = &self.index.identities[*index].aliases;
+                        if record.aliases != *aliases {
+                            Arc::make_mut(&mut record).aliases.clone_from(aliases);
+                        }
                         let _ = self.stored[*index].set(record);
                     }
                 }
@@ -318,7 +382,7 @@ impl<'a> IndexedNoteLookup<'a> {
         match (self.hydrate)(records) {
             Ok(records) => {
                 for record in records {
-                    if let Some(index) = self.by_path.get(&record.document_path) {
+                    if let Some(index) = self.index.by_path.get(&record.document_path) {
                         let _ = self.hydrated[*index].set(record);
                     }
                 }
@@ -332,7 +396,7 @@ impl<'a> IndexedNoteLookup<'a> {
     fn on_miss(
         index: usize,
         misses: &Cell<usize>,
-        cells: &[OnceCell<NoteRecord>],
+        cells: &[OnceCell<Arc<NoteRecord>>],
         load: impl Fn(&[usize]),
     ) {
         misses.set(misses.get() + 1);
@@ -352,25 +416,25 @@ impl<'a> IndexedNoteLookup<'a> {
                 self.load_stored_batch(indexes);
             });
         }
-        self.stored[index].get()
+        self.stored[index].get().map(AsRef::as_ref)
     }
 
     /// The note at `path` with its file object hydrated.
     pub fn hydrated_at(&self, path: &str) -> Option<&NoteRecord> {
-        let index = *self.by_path.get(path)?;
+        let index = *self.index.by_path.get(path)?;
         if self.hydrated[index].get().is_none() {
             Self::on_miss(index, &self.hydrated_misses, &self.hydrated, |indexes| {
                 self.hydrate_batch(indexes);
             });
         }
-        self.hydrated[index].get()
+        self.hydrated[index].get().map(AsRef::as_ref)
     }
 
     /// Every readable note keyed like `build_note_lookup_index`: hydrated
     /// where it was hydrated, stored fields otherwise. Loads any note not yet
     /// loaded.
     pub fn into_index(self) -> Result<HashMap<String, NoteRecord>, PropertyError> {
-        let missing = (0..self.identities.len())
+        let missing = (0..self.index.identities.len())
             .filter(|index| {
                 self.stored[*index].get().is_none() && self.hydrated[*index].get().is_none()
             })
@@ -380,21 +444,27 @@ impl<'a> IndexedNoteLookup<'a> {
             return Err(error);
         }
         Ok(self
+            .index
             .identities
-            .into_iter()
+            .iter()
             .zip(self.stored.into_iter().zip(self.hydrated))
             .filter_map(|(identity, (stored, hydrated))| {
                 hydrated
                     .into_inner()
                     .or_else(|| stored.into_inner())
-                    .map(|note| (identity.key, note))
+                    .map(|note| {
+                        (
+                            identity.key.clone(),
+                            Arc::try_unwrap(note).unwrap_or_else(|shared| (*shared).clone()),
+                        )
+                    })
             })
             .collect())
     }
 
     /// Whether `path` is in the readable universe; loads nothing.
     pub fn contains(&self, path: &str) -> bool {
-        self.by_path.contains_key(path)
+        self.index.by_path.contains_key(path)
     }
 
     /// The path a link `target` written in `source_path` names, from
@@ -402,16 +472,17 @@ impl<'a> IndexedNoteLookup<'a> {
     pub fn resolve_path(&self, source_path: &str, target: &str) -> Option<&str> {
         resolve_identity(
             || {
-                self.identities.iter().map(|identity| NoteIdentity {
+                self.index.identities.iter().map(|identity| NoteIdentity {
                     path: &identity.path,
                     file_name: &identity.file_name,
                     aliases: &identity.aliases,
                 })
             },
             |key| {
-                self.by_key
+                self.index
+                    .by_key
                     .get(key)
-                    .map(|index| self.identities[*index].path.as_str())
+                    .map(|index| self.index.identities[*index].path.as_str())
             },
             source_path,
             target,
@@ -420,7 +491,8 @@ impl<'a> IndexedNoteLookup<'a> {
 
     /// Whether the note at `path` has been hydrated.
     pub fn is_hydrated(&self, path: &str) -> bool {
-        self.by_path
+        self.index
+            .by_path
             .get(path)
             .is_some_and(|index| self.hydrated[*index].get().is_some())
     }
@@ -428,18 +500,20 @@ impl<'a> IndexedNoteLookup<'a> {
 
 impl NoteLookup for IndexedNoteLookup<'_> {
     fn note(&self, key: &str) -> Option<&NoteRecord> {
-        self.stored_at(*self.by_key.get(key)?)
+        self.stored_at(*self.index.by_key.get(key)?)
     }
 
     fn notes(&self) -> Box<dyn Iterator<Item = &NoteRecord> + '_> {
-        let all = (0..self.identities.len()).collect::<Vec<_>>();
-        let missing = all
-            .iter()
-            .copied()
+        let missing = (0..self.index.identities.len())
             .filter(|index| self.stored[*index].get().is_none())
             .collect::<Vec<_>>();
         self.load_stored_batch(&missing);
-        Box::new(self.stored.iter().filter_map(OnceCell::get))
+        Box::new(
+            self.stored
+                .iter()
+                .filter_map(OnceCell::get)
+                .map(AsRef::as_ref),
+        )
     }
 
     fn hydrated<'b>(&'b self, note: &'b NoteRecord) -> Cow<'b, NoteRecord> {
@@ -449,14 +523,15 @@ impl NoteLookup for IndexedNoteLookup<'_> {
 
     fn paths(&self) -> Box<dyn Iterator<Item = &str> + '_> {
         Box::new(
-            self.identities
+            self.index
+                .identities
                 .iter()
                 .map(|identity| identity.path.as_str()),
         )
     }
 
     fn note_at(&self, path: &str) -> Option<&NoteRecord> {
-        self.stored_at(*self.by_path.get(path)?)
+        self.stored_at(*self.index.by_path.get(path)?)
     }
 
     fn resolve(&self, source_path: &str, target: &str) -> Option<&NoteRecord> {

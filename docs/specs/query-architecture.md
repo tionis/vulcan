@@ -218,6 +218,42 @@ The daemon's mdbase query session (per-scope proofs, retained decoded rows bound
 versions, single-flight proving, lock-free reads with pre-write proofs) generalizes to note
 stores, so every frontend served by the daemon gets the same warm path.
 
+Frontends take their readable universe from a `NoteStore` (`vulcan-core::note_store`): the
+direct store opens the cache for each lookup; a host's `NoteStoreSession`
+(`vulcan-core::note_session`) hands out snapshots. DQL (`evaluate_dql_in`), note filters and
+`QueryAst` (`query_notes_in`, `execute_query_report_in`), and Bases (`evaluate_base_file_in`)
+accept either.
+
+**Freshness.** A note store is the cache, not the files: the daemon's watcher keeps the cache
+current, and the direct path reads it under the shared vault lock. Every Vulcan cache write runs
+in an exclusive write section that advances the cooperating write epoch when it ends. A session
+snapshot is a pooled read-only connection holding an open read transaction begun while no writer
+held the lock (a non-blocking shared-lock attempt that also checks for an interrupted ordinary
+write batch), so a snapshot pinned at epoch `E` shows exactly the cache after every write section
+completed by `E`. It stays valid while the epoch is still `E`, including while a writer is inside
+its section: serving the state before an incomplete write is linearizable, and no reader ever
+waits for or observes a half-applied write section. When no idle snapshot is pinned at the
+current epoch and a writer holds the lock, the request takes the direct path, which waits. Idle
+snapshots of an earlier epoch are unpinned on the next request and periodically by the host, so
+they do not hold old WAL frames.
+
+**Row versions (schema v28).** `note_store_clock` holds a random `store_id` per cache file and a
+version that every `note_query` insert, update, or delete advances; triggers stamp each changed
+row's `row_version` with it. Identity facts carry their row version.
+
+**Retention.** Within a snapshot the session reuses:
+
+- identity facts per read scope while the store clock is unchanged;
+- stored-field records per path while the row version equals the identity's (and the bookmark
+  set and `store_id` match); records whose `file.ctime` came from a filesystem fallback are not
+  retained;
+- hydrated file objects per scope only within one write epoch, clock, configuration, and
+  bookmark set, because incoming links, tasks, and lists depend on rows other than the note's
+  own.
+
+Scopes with a policy hook, or restricted to an explicit universe, read the pinned snapshot
+without retention. Retained maps are bounded.
+
 ### 4.7 Filter language
 
 There are two expression families: the Vulcan expression language (Dataview DQL, Bases, and

@@ -81,6 +81,8 @@ pub mod mdbase;
 pub mod move_rewrite;
 pub mod note;
 pub mod note_lookup;
+pub mod note_session;
+pub mod note_store;
 #[cfg(feature = "oauth")]
 pub mod oauth;
 pub mod ordinary_write;
@@ -283,11 +285,12 @@ pub use properties::{
 };
 pub use query::{
     execute_query, execute_query_dsl, execute_query_json, execute_query_report,
-    execute_query_report_explained, execute_query_report_with_filter, execute_query_with_filter,
-    QueryAst, QueryError, QueryExpressionLanguage, QueryExpressionSpec, QueryFilter,
-    QueryFrontmatterMode, QueryNamedExpression, QueryOperator, QueryOrderKey, QueryPredicate,
-    QueryProjection, QueryReport, QuerySelection, QuerySort, QuerySource, QuerySummarySpec,
-    QueryValue, StructuredQueryGroupMeta, StructuredQueryPageMeta, StructuredQueryPlan,
+    execute_query_report_explained, execute_query_report_in, execute_query_report_with_filter,
+    execute_query_with_filter, QueryAst, QueryError, QueryExpressionLanguage, QueryExpressionSpec,
+    QueryFilter, QueryFrontmatterMode, QueryNamedExpression, QueryOperator, QueryOrderKey,
+    QueryPredicate, QueryProjection, QueryReport, QuerySelection, QuerySort, QuerySource,
+    QuerySummarySpec, QueryValue, StructuredQueryGroupMeta, StructuredQueryPageMeta,
+    StructuredQueryPlan,
 };
 pub use refactor::{
     bulk_set_property, bulk_set_property_on_paths, merge_tags, plan_property_mutations_on_paths,
@@ -390,4 +393,4 @@ pub fn current_time_override_ms() -> Option<i64> {
 
 pub const PARSER_VERSION: u32 = 8;
 pub const EXTRACTION_VERSION: u32 = 1;
-pub const SCHEMA_VERSION: u32 = 27;
+pub const SCHEMA_VERSION: u32 = 28;

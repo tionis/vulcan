@@ -24,9 +24,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use vulcan_app::mdbase::MdbaseQuerySession;
 use vulcan_app::serve::{
-    route_request_with_mdbase, serve_route_paths, ServeHealthState, ServeRequest, ServeResponse,
-    ServeRouteOptions,
+    route_request_with_sessions, serve_route_paths, ServeHealthState, ServeRequest, ServeResponse,
+    ServeRouteOptions, ServeSessions,
 };
+use vulcan_core::note_session::NoteStoreSession;
 use vulcan_core::{watch_vault_until, VaultPaths, WatchOptions};
 
 pub const VAULT_HTTP_MAX_REQUEST_BYTES: usize = 32 * 1024;
@@ -35,6 +36,11 @@ pub const DEFAULT_VAULT_HTTP_DEADLINE: Duration = Duration::from_secs(30);
 /// Longest a watched mdbase proof is trusted without a fresh walk, bounding
 /// the effect of a missed filesystem notification.
 pub const MDBASE_WATCHED_PROOF_MAX_AGE: Duration = Duration::from_secs(30);
+/// How often idle note-store snapshots of an earlier write epoch are
+/// released, so an idle daemon does not hold old WAL frames.
+pub const NOTE_SNAPSHOT_RELEASE_INTERVAL: Duration = Duration::from_secs(5);
+/// Routes served from the retained note-store session (QRY.6).
+const NOTE_SESSION_ROUTES: &[&str] = &["/notes", "/query", "/dataview/query", "/bases/eval"];
 
 #[derive(Clone)]
 pub struct VaultHttpState {
@@ -44,6 +50,7 @@ pub struct VaultHttpState {
     security: VaultHttpSecurity,
     request_deadline: Duration,
     mdbase: Arc<OnceLock<MdbaseQuerySession>>,
+    notes: Arc<OnceLock<NoteStoreSession>>,
 }
 
 impl VaultHttpState {
@@ -60,6 +67,7 @@ impl VaultHttpState {
             security,
             request_deadline: DEFAULT_VAULT_HTTP_DEADLINE,
             mdbase: Arc::new(OnceLock::new()),
+            notes: Arc::new(OnceLock::new()),
         })
     }
 
@@ -155,9 +163,27 @@ pub async fn serve_vault_with_shutdown<F>(
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    axum::serve(listener, vault_router(state))
+    let notes = Arc::clone(&state.notes);
+    let release = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(NOTE_SNAPSHOT_RELEASE_INTERVAL);
+        loop {
+            interval.tick().await;
+            if notes.get().is_some() {
+                let notes = Arc::clone(&notes);
+                let _ = tokio::task::spawn_blocking(move || {
+                    if let Some(session) = notes.get() {
+                        session.release_stale();
+                    }
+                })
+                .await;
+            }
+        }
+    });
+    let served = axum::serve(listener, vault_router(state))
         .with_graceful_shutdown(shutdown)
-        .await
+        .await;
+    release.abort();
+    served
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -359,11 +385,17 @@ async fn dispatch(State(state): State<VaultHttpState>, request: Request<Body>) -
         |health| health.clone(),
     );
     let mdbase = Arc::clone(&state.mdbase);
+    let notes = Arc::clone(&state.notes);
     let operation = tokio::task::spawn_blocking(move || {
-        // The retained session exists only once a client queries mdbase.
-        let session = (app_request.path == "/mdbase/query")
-            .then(|| mdbase.get_or_init(|| mdbase_session(paths.as_ref())));
-        route_request_with_mdbase(paths.as_ref(), &options, &health, &app_request, session)
+        // Retained sessions exist only once a client uses their routes.
+        let sessions = ServeSessions {
+            mdbase: (app_request.path == "/mdbase/query")
+                .then(|| mdbase.get_or_init(|| mdbase_session(paths.as_ref()))),
+            notes: NOTE_SESSION_ROUTES
+                .contains(&app_request.path.as_str())
+                .then(|| notes.get_or_init(|| NoteStoreSession::new(paths.as_ref().clone()))),
+        };
+        route_request_with_sessions(paths.as_ref(), &options, &health, &app_request, sessions)
     });
     match with_deadline(state.request_deadline, operation).await {
         Ok(Ok(response)) => app_response(response),
@@ -607,6 +639,77 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    #[tokio::test]
+    async fn note_routes_use_a_retained_session_and_observe_scans() {
+        let (vault, state) = fixture();
+        let root = vault.path();
+        std::fs::write(root.join("Task.md"), "---\nstatus: open\n---\n[[Home]]\n").expect("note");
+        std::fs::write(
+            root.join("open.base"),
+            "filters:\n  and:\n    - 'status == \"open\"'\nviews:\n  - type: table\n    name: open\n",
+        )
+        .expect("base");
+        let paths = VaultPaths::new(root);
+        scan_vault(&paths, ScanMode::Incremental).expect("scan");
+        let router = vault_router(state.clone());
+        let uris = [
+            format!("/notes?where={}", percent_encode("status = open")),
+            format!(
+                "/query?dsl={}",
+                percent_encode("from notes where status = open")
+            ),
+            format!(
+                "/dataview/query?dql={}",
+                percent_encode("TABLE status, file.inlinks FROM \"\" SORT file.name")
+            ),
+            "/bases/eval?file=open.base".to_string(),
+        ];
+        let options = ServeRouteOptions {
+            permissions: None,
+            watch_enabled: false,
+        };
+        for round in 0..3 {
+            if round == 2 {
+                std::fs::write(root.join("Task.md"), "---\nstatus: done\n---\n").expect("edit");
+                scan_vault(&paths, ScanMode::Incremental).expect("scan");
+            }
+            for uri in &uris {
+                let response = router
+                    .clone()
+                    .oneshot(
+                        HttpRequest::builder()
+                            .uri(uri)
+                            .header(HOST, "127.0.0.1:3210")
+                            .header(VAULT_HTTP_TOKEN_HEADER, "secret")
+                            .body(Body::empty())
+                            .expect("request"),
+                    )
+                    .await
+                    .expect("response");
+                assert_eq!(response.status(), StatusCode::OK, "{uri}");
+                let (path, query) = uri.split_once('?').expect("query");
+                let direct = vulcan_app::serve::route_request(
+                    &paths,
+                    &options,
+                    &ServeHealthState::default(),
+                    &ServeRequest {
+                        method: "GET".to_string(),
+                        path: path.to_string(),
+                        query: parse_query(query),
+                    },
+                );
+                assert_eq!(body(response).await, direct.body, "round {round}: {uri}");
+            }
+        }
+        let session = state.notes.get().expect("note routes create the session");
+        let reused = session
+            .counters()
+            .snapshots_reused
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert!(reused > 0);
+        assert!(state.mdbase.get().is_none());
     }
 
     #[tokio::test]

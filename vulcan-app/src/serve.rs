@@ -1,11 +1,12 @@
 use crate::browse::{
     build_dataview_eval_report, build_dataview_inline_report, build_dataview_query_js_report,
-    build_dataview_query_report_with_guard,
+    build_dataview_query_report_in, evaluate_base_file_in,
 };
 use crate::mdbase::{build_mdbase_query_report, parse_mdbase_query, MdbaseQuerySession};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use vulcan_core::note_session::NoteStoreSession;
 use vulcan_core::{
     query_graph_analytics_with_filter, query_notes_with_filter, resolve_permission_profile,
     search_vault_with_filter, NoteQuery, PermissionFilter, PermissionGuard, ProfilePermissionGuard,
@@ -54,6 +55,8 @@ enum ServeRouteId {
     DataviewQueryJs,
     DataviewEval,
     MdbaseQuery,
+    Query,
+    BasesEval,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,6 +109,14 @@ const SERVE_ROUTES: &[ServeRouteDefinition] = &[
     ServeRouteDefinition {
         id: ServeRouteId::MdbaseQuery,
         path: "/mdbase/query",
+    },
+    ServeRouteDefinition {
+        id: ServeRouteId::Query,
+        path: "/query",
+    },
+    ServeRouteDefinition {
+        id: ServeRouteId::BasesEval,
+        path: "/bases/eval",
     },
 ];
 
@@ -211,8 +222,28 @@ fn route_query_schema(route: ServeRouteId) -> Value {
             json!(["file"]),
         ),
         ServeRouteId::DataviewQuery => (
-            json!({ "dql": { "type": "string", "minLength": 1 } }),
+            json!({
+                "dql": { "type": "string", "minLength": 1 },
+                "explain": boolean_query_schema()
+            }),
             json!(["dql"]),
+        ),
+        ServeRouteId::Query => (
+            json!({
+                "dsl": { "type": "string", "minLength": 1,
+                    "description": "query DSL; give exactly one of dsl or json" },
+                "json": { "type": "string", "minLength": 1,
+                    "description": "canonical QueryAst JSON" },
+                "explain": boolean_query_schema()
+            }),
+            json!([]),
+        ),
+        ServeRouteId::BasesEval => (
+            json!({
+                "file": { "type": "string", "minLength": 1 },
+                "explain": boolean_query_schema()
+            }),
+            json!(["file"]),
         ),
         ServeRouteId::DataviewQueryJs => (
             json!({
@@ -291,19 +322,30 @@ pub fn route_request(
     state: &ServeHealthState,
     request: &ServeRequest,
 ) -> ServeResponse {
-    route_request_with_mdbase(paths, options, state, request, None)
+    route_request_with_sessions(paths, options, state, request, ServeSessions::default())
 }
 
-/// [`route_request`] with a host-retained mdbase query session. Without one,
-/// `/mdbase/query` runs the one-shot service with the same results.
+/// Retained query sessions a long-lived host attaches to requests.
+#[derive(Clone, Copy, Default)]
+pub struct ServeSessions<'a> {
+    /// Serves `/mdbase/query`; without it the one-shot service runs.
+    pub mdbase: Option<&'a MdbaseQuerySession>,
+    /// Serves `/notes`, `/query`, `/dataview/query`, and `/bases/eval` from
+    /// retained snapshots (QRY.6); without it, or when no snapshot can be
+    /// pinned, each request reads the cache directly with the same results.
+    pub notes: Option<&'a NoteStoreSession>,
+}
+
+/// [`route_request`] with host-retained sessions.
 #[allow(clippy::too_many_lines)]
-pub fn route_request_with_mdbase(
+pub fn route_request_with_sessions(
     paths: &VaultPaths,
     options: &ServeRouteOptions,
     state: &ServeHealthState,
     request: &ServeRequest,
-    mdbase: Option<&MdbaseQuerySession>,
+    sessions: ServeSessions<'_>,
 ) -> ServeResponse {
+    let mdbase = sessions.mdbase;
     if request.method != "GET" {
         return ServeResponse::error(405, "only GET requests are supported");
     }
@@ -376,7 +418,16 @@ pub fn route_request_with_mdbase(
                 sort_by: first_param(&request.query, "sort").map(ToOwned::to_owned),
                 sort_descending: parse_optional_bool(&request.query, "desc").unwrap_or(false),
             };
-            match query_notes_with_filter(paths, &query, read_filter.as_ref()) {
+            let report = match sessions.notes.and_then(NoteStoreSession::snapshot) {
+                Some(store) => vulcan_core::properties::query_notes_in(
+                    &store,
+                    paths,
+                    &query,
+                    read_filter.as_ref(),
+                ),
+                None => query_notes_with_filter(paths, &query, read_filter.as_ref()),
+            };
+            match report {
                 Ok(mut report) => {
                     let offset = parse_optional_usize(&request.query, "offset").unwrap_or(0);
                     let limit = parse_optional_usize(&request.query, "limit");
@@ -445,8 +496,27 @@ pub fn route_request_with_mdbase(
             let Some(dql) = first_param(&request.query, "dql") else {
                 return ServeResponse::error(400, "missing required query parameter: dql");
             };
-            match build_dataview_query_report_with_guard(paths, dql, None, &permissions) {
+            let explain = parse_optional_bool(&request.query, "explain").unwrap_or(false);
+            match build_dataview_query_report_in(
+                sessions.notes,
+                paths,
+                dql,
+                None,
+                &permissions,
+                explain,
+            ) {
                 Ok(result) => ServeResponse::ok(json!({ "ok": true, "result": result })),
+                Err(error) => ServeResponse::error(500, error.to_string()),
+            }
+        }
+        ServeRouteId::Query => query_route(paths, request, read_filter.as_ref(), sessions.notes),
+        ServeRouteId::BasesEval => {
+            let Some(file) = first_param(&request.query, "file") else {
+                return ServeResponse::error(400, "missing required query parameter: file");
+            };
+            let explain = parse_optional_bool(&request.query, "explain").unwrap_or(false);
+            match evaluate_base_file_in(sessions.notes, paths, file, &permissions, explain) {
+                Ok(report) => ServeResponse::ok(json!({ "ok": true, "result": report })),
                 Err(error) => ServeResponse::error(500, error.to_string()),
             }
         }
@@ -479,6 +549,49 @@ pub fn route_request_with_mdbase(
                 Err(error) => ServeResponse::error(500, error.to_string()),
             }
         }
+    }
+}
+
+/// `GET /query`: a canonical `QueryAst` from `dsl` or `json`, with its
+/// `offset` and `limit` applied to the matching notes.
+fn query_route(
+    paths: &VaultPaths,
+    request: &ServeRequest,
+    read_filter: Option<&PermissionFilter>,
+    session: Option<&NoteStoreSession>,
+) -> ServeResponse {
+    let ast = match (
+        first_param(&request.query, "dsl"),
+        first_param(&request.query, "json"),
+    ) {
+        (Some(dsl), None) => vulcan_core::QueryAst::from_dsl(dsl),
+        (None, Some(json)) => vulcan_core::QueryAst::from_json(json),
+        _ => {
+            return ServeResponse::error(400, "give exactly one query parameter: dsl or json");
+        }
+    };
+    let ast = match ast {
+        Ok(ast) => ast,
+        Err(error) => return ServeResponse::error(400, error.to_string()),
+    };
+    let (offset, limit) = (ast.offset, ast.limit);
+    let report = match session.and_then(NoteStoreSession::snapshot) {
+        Some(store) => vulcan_core::execute_query_report_in(&store, paths, ast, read_filter),
+        None => vulcan_core::execute_query_report_explained(paths, ast, read_filter),
+    };
+    match report {
+        Ok(mut report) => {
+            if !parse_optional_bool(&request.query, "explain").unwrap_or(false) {
+                report.plan = None;
+            }
+            let start = offset.min(report.notes.len());
+            let end = limit.map_or(report.notes.len(), |limit| {
+                start.saturating_add(limit).min(report.notes.len())
+            });
+            report.notes = report.notes[start..end].to_vec();
+            ServeResponse::ok(json!({ "ok": true, "result": report }))
+        }
+        Err(error) => ServeResponse::error(500, error.to_string()),
     }
 }
 
@@ -547,13 +660,144 @@ fn parse_optional_search_sort(
 #[cfg(test)]
 mod tests {
     use super::{
-        route_request, serve_route_capabilities, serve_route_paths, ServeHealthState, ServeRequest,
-        ServeRouteOptions,
+        route_request, route_request_with_sessions, serve_route_capabilities, serve_route_paths,
+        ServeHealthState, ServeRequest, ServeRouteOptions, ServeSessions,
     };
     use std::collections::HashMap;
     use std::fs;
     use tempfile::TempDir;
     use vulcan_core::{scan_vault, ScanMode, VaultPaths};
+
+    fn get(path: &str, params: &[(&str, &str)]) -> ServeRequest {
+        ServeRequest {
+            method: "GET".to_string(),
+            path: path.to_string(),
+            query: params
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), vec![(*value).to_string()]))
+                .collect(),
+        }
+    }
+
+    fn note_route_requests() -> Vec<ServeRequest> {
+        vec![
+            get("/notes", &[("where", "status = active")]),
+            get(
+                "/query",
+                &[("dsl", "from notes where status = active order by file.path")],
+            ),
+            get(
+                "/query",
+                &[("json", r#"{"source":"notes","limit":1,"offset":1}"#)],
+            ),
+            get(
+                "/dataview/query",
+                &[(
+                    "dql",
+                    "TABLE status, file.tags FROM \"Projects\" SORT file.name",
+                )],
+            ),
+            get("/bases/eval", &[("file", "Projects/view.base")]),
+        ]
+    }
+
+    #[test]
+    fn note_routes_answer_alike_with_and_without_a_retained_session() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        fs::write(
+            vault_root.join("Projects/view.base"),
+            "filters:\n  and:\n    - 'status == \"active\"'\nviews:\n  - type: table\n    name: all\n    order:\n      - file.name\n      - file.inlinks\n",
+        )
+        .expect("base");
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let options = ServeRouteOptions {
+            permissions: None,
+            watch_enabled: false,
+        };
+        let state = ServeHealthState::default();
+        let session = vulcan_core::note_session::NoteStoreSession::new(paths.clone());
+        let sessions = ServeSessions {
+            mdbase: None,
+            notes: Some(&session),
+        };
+        for round in 0..3 {
+            if round == 2 {
+                let note = vault_root.join("Projects/Alpha.md");
+                let text = fs::read_to_string(&note).expect("note");
+                fs::write(&note, text.replace("status: active", "status: done")).expect("edit");
+                scan_vault(&paths, ScanMode::Incremental).expect("scan");
+            }
+            for request in note_route_requests() {
+                let direct = route_request(&paths, &options, &state, &request);
+                let retained =
+                    route_request_with_sessions(&paths, &options, &state, &request, sessions);
+                assert_eq!(direct.status, 200, "{}: {}", request.path, direct.body);
+                assert_eq!(
+                    retained.body, direct.body,
+                    "round {round}: {}",
+                    request.path
+                );
+            }
+        }
+        let counters = session.counters();
+        assert!(
+            counters
+                .snapshots_reused
+                .load(std::sync::atomic::Ordering::Relaxed)
+                > 0
+        );
+        assert!(
+            counters
+                .stored_reused
+                .load(std::sync::atomic::Ordering::Relaxed)
+                > 0
+        );
+    }
+
+    #[test]
+    fn query_and_bases_routes_validate_their_parameters() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let options = ServeRouteOptions {
+            permissions: None,
+            watch_enabled: false,
+        };
+        let state = ServeHealthState::default();
+        for (request, status) in [
+            (get("/query", &[]), 400),
+            (get("/query", &[("dsl", "from notes"), ("json", "{}")]), 400),
+            (get("/query", &[("dsl", "from nowhere at all")]), 400),
+            (get("/bases/eval", &[]), 400),
+            (get("/bases/eval", &[("file", "missing.base")]), 500),
+        ] {
+            let response = route_request(&paths, &options, &state, &request);
+            assert_eq!(
+                response.status, status,
+                "{:?}: {}",
+                request.query, response.body
+            );
+        }
+        let explained = route_request(
+            &paths,
+            &options,
+            &state,
+            &get("/query", &[("dsl", "from notes"), ("explain", "true")]),
+        );
+        assert_eq!(explained.body["result"]["plan"]["frontend"], "notes");
+        let plain = route_request(
+            &paths,
+            &options,
+            &state,
+            &get("/query", &[("dsl", "from notes")]),
+        );
+        assert!(plain.body["result"].get("plan").is_none());
+    }
 
     #[test]
     fn route_request_reports_missing_search_query() {
@@ -646,7 +890,9 @@ mod tests {
                 "/dataview/query",
                 "/dataview/query-js",
                 "/dataview/eval",
-                "/mdbase/query"
+                "/mdbase/query",
+                "/query",
+                "/bases/eval"
             ])
         );
         assert_eq!(

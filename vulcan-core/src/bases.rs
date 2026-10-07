@@ -2,14 +2,15 @@ use crate::expression::eval::EvalContext;
 use crate::expression::parse_expression;
 use crate::expression::value::DataviewTimeZone;
 use crate::note_lookup::{IndexedNoteLookup, NoteLookup};
+use crate::note_store::{DirectNoteStore, NoteStore};
 use crate::paths::{
     normalize_relative_input_path, secure_read_to_string, secure_write, RelativePathError,
     RelativePathOptions,
 };
 use crate::permissions::{PermissionError, PermissionFilter, PermissionGuard};
 use crate::properties::{
-    build_note_lookup_index, load_indexed_note_lookup, note_filter_expression_source,
-    query_notes_report_over, query_notes_with_filter, NoteIndexReadScope,
+    build_note_lookup_index, note_filter_expression_source, query_notes_report_over,
+    query_notes_with_filter, NoteIndexReadScope,
 };
 use crate::tasknotes::extract_tasknote;
 use crate::{load_vault_config, NoteQuery, NoteRecord, PropertyError, VaultPaths};
@@ -344,13 +345,30 @@ impl BasesEvaluator {
         relative_path: &str,
         guard: &dyn PermissionGuard,
     ) -> Result<BasesEvalReport, BasesError> {
+        self.evaluate_file_with_guard_in(&DirectNoteStore::new(paths), paths, relative_path, guard)
+    }
+
+    /// [`Self::evaluate_file_with_guard`] reading notes from `store` (QRY.6).
+    pub fn evaluate_file_with_guard_in(
+        &self,
+        store: &dyn NoteStore,
+        paths: &VaultPaths,
+        relative_path: &str,
+        guard: &dyn PermissionGuard,
+    ) -> Result<BasesEvalReport, BasesError> {
         let normalized = normalize_base_path(relative_path)?;
         guard
             .check_read_path(&normalized)
             .map_err(|error| BasesError::Property(PropertyError::Permission(error)))?;
         let source = secure_read_to_string(paths.vault_root(), Path::new(&normalized))?;
         let parsed = parse_base_file(&source)?;
-        self.evaluate_parsed(paths, &normalized, parsed, BaseReadScope::Guard(guard))
+        self.evaluate_parsed(
+            store,
+            paths,
+            &normalized,
+            parsed,
+            BaseReadScope::Guard(guard),
+        )
     }
 
     /// Evaluate base YAML that does not come from a vault `.base` file (for
@@ -364,7 +382,13 @@ impl BasesEvaluator {
         guard: &dyn PermissionGuard,
     ) -> Result<BasesEvalReport, BasesError> {
         let parsed = parse_base_file(yaml)?;
-        self.evaluate_parsed(paths, normalized, parsed, BaseReadScope::Guard(guard))
+        self.evaluate_parsed(
+            &DirectNoteStore::new(paths),
+            paths,
+            normalized,
+            parsed,
+            BaseReadScope::Guard(guard),
+        )
     }
 
     pub fn evaluate_yaml(
@@ -385,6 +409,7 @@ impl BasesEvaluator {
     ) -> Result<BasesEvalReport, BasesError> {
         let parsed = parse_base_file(yaml)?;
         self.evaluate_parsed(
+            &DirectNoteStore::new(paths),
             paths,
             normalized,
             parsed,
@@ -394,6 +419,7 @@ impl BasesEvaluator {
 
     fn evaluate_parsed(
         &self,
+        store: &dyn NoteStore,
         paths: &VaultPaths,
         normalized: &str,
         parsed: ParsedBaseFile,
@@ -424,7 +450,7 @@ impl BasesEvaluator {
             stored_only: !self.force_hydrated_rows
                 && !base_reads_row_file_fields(&source, &base_filters, &parsed_views),
         };
-        context.load_universe(paths)?;
+        context.load_universe(store)?;
 
         for view in parsed_views {
             if let Some(evaluated_view) = evaluate_base_view(
@@ -489,17 +515,14 @@ struct BaseEvaluationContext<'a> {
 }
 
 impl<'a> BaseEvaluationContext<'a> {
-    fn load_universe(&mut self, paths: &'a VaultPaths) -> Result<(), BasesError> {
+    fn load_universe(&mut self, store: &'a dyn NoteStore) -> Result<(), BasesError> {
         self.universe = match self.guard {
             // A guarded universe must not silently degrade to empty.
-            Some(guard) => Some(load_indexed_note_lookup(
-                paths,
-                NoteIndexReadScope::Guard(guard),
-            )?),
+            Some(guard) => Some(store.lookup(NoteIndexReadScope::Guard(guard), None)?),
             // Unguarded custom sources may run without a cache.
-            None => {
-                load_indexed_note_lookup(paths, NoteIndexReadScope::Filter(self.read_filter)).ok()
-            }
+            None => store
+                .lookup(NoteIndexReadScope::Filter(self.read_filter), None)
+                .ok(),
         };
         Ok(())
     }
@@ -1135,6 +1158,20 @@ pub fn evaluate_base_file_with_guard_and_plan(
     BasesEvaluator::new()
         .with_explain(explain)
         .evaluate_file_with_guard(paths, relative_path, guard)
+}
+
+/// [`evaluate_base_file_with_guard_and_plan`] reading notes from `store`
+/// (QRY.6).
+pub fn evaluate_base_file_in(
+    store: &dyn NoteStore,
+    paths: &VaultPaths,
+    relative_path: &str,
+    guard: &dyn PermissionGuard,
+    explain: bool,
+) -> Result<BasesEvalReport, BasesError> {
+    BasesEvaluator::new()
+        .with_explain(explain)
+        .evaluate_file_with_guard_in(store, paths, relative_path, guard)
 }
 
 pub fn inspect_base_file(
@@ -3217,7 +3254,9 @@ mod tests {
     fn guarded_bases_inlinks_exclude_policy_and_statically_hidden_sources() {
         let (_temp_dir, paths) = guarded_bases_vault();
         let guard = PolicyGuard::new(&paths, false);
-        let universe = load_indexed_note_lookup(&paths, NoteIndexReadScope::Guard(&guard)).unwrap();
+        let universe =
+            crate::properties::load_indexed_note_lookup(&paths, NoteIndexReadScope::Guard(&guard))
+                .unwrap();
         let (rows, _) = query_source_notes_planned(
             &paths,
             &BasesSourceRequest {

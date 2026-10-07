@@ -184,14 +184,32 @@ pub fn evaluate_dql_with_guard_and_plan(
     guard: &dyn PermissionGuard,
     explain: bool,
 ) -> Result<DqlQueryResult, DqlEvalError> {
+    evaluate_dql_in(
+        &crate::note_store::DirectNoteStore::new(paths),
+        paths,
+        source,
+        current_file,
+        guard,
+        explain,
+    )
+}
+
+/// [`evaluate_dql_with_guard_and_plan`] reading notes from `store` (QRY.6).
+pub fn evaluate_dql_in(
+    store: &dyn crate::note_store::NoteStore,
+    paths: &VaultPaths,
+    source: &str,
+    current_file: Option<&str>,
+    guard: &dyn PermissionGuard,
+    explain: bool,
+) -> Result<DqlQueryResult, DqlEvalError> {
     let config = load_vault_config(paths).config;
     let query = parse_dql(source).map_err(DqlEvalError::Parse)?;
     let filter = guard.read_filter();
     // Identity facts only (QRY.4): candidates load their stored fields, the
     // rows a leading `WHERE` keeps and `this` hydrate, and other notes load
     // only when an expression reads or dereferences them.
-    let lookup =
-        crate::properties::load_indexed_note_lookup(paths, NoteIndexReadScope::Guard(guard))?;
+    let lookup = store.lookup(NoteIndexReadScope::Guard(guard), None)?;
     let planned = select_candidate_rows(paths, &query, current_file, &lookup, &filter)?;
     let result = evaluate_parsed_dql_with_note_index_and_config(
         paths,

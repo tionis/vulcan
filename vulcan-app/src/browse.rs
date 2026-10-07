@@ -5,6 +5,7 @@ use crate::{plugins, templates, tools, AppError};
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap};
 use std::process::Command as ProcessCommand;
+use vulcan_core::note_session::NoteStoreSession;
 use vulcan_core::properties::load_note_index;
 use vulcan_core::{
     doctor_vault as core_doctor_vault, evaluate_base_file as core_evaluate_base_file,
@@ -164,15 +165,31 @@ pub fn evaluate_base_file_with_guard_and_plan(
     guard: &ProfilePermissionGuard,
     explain: bool,
 ) -> Result<BasesEvalReport, AppError> {
+    evaluate_base_file_in(None, paths, path, guard, explain)
+}
+
+/// [`evaluate_base_file_with_guard_and_plan`] through a host's retained note
+/// session when one is attached (QRY.6). A session snapshot shows only
+/// completed writes and needs no read lock; without one the evaluation
+/// holds the shared vault lock as usual.
+pub fn evaluate_base_file_in(
+    session: Option<&NoteStoreSession>,
+    paths: &VaultPaths,
+    path: &str,
+    guard: &ProfilePermissionGuard,
+    explain: bool,
+) -> Result<BasesEvalReport, AppError> {
     recheck_read_authority(paths, guard, "bases")?;
-    let snapshot = guard.snapshot_read_policy().map_err(AppError::operation)?;
-    recheck_read_authority(paths, &snapshot, "bases")?;
-    let report = {
+    let policy = guard.snapshot_read_policy().map_err(AppError::operation)?;
+    recheck_read_authority(paths, &policy, "bases")?;
+    let report = if let Some(store) = session.and_then(NoteStoreSession::snapshot) {
+        vulcan_core::bases::evaluate_base_file_in(&store, paths, path, &policy, explain)
+    } else {
         let _read_guard = vulcan_core::ordinary_write::acquire_consistent_ordinary_read(paths)
             .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
-        vulcan_core::bases::evaluate_base_file_with_guard_and_plan(paths, path, &snapshot, explain)
+        vulcan_core::bases::evaluate_base_file_with_guard_and_plan(paths, path, &policy, explain)
     };
-    recheck_read_authority(paths, &snapshot, "bases")?;
+    recheck_read_authority(paths, &policy, "bases")?;
     report.map_err(AppError::operation)
 }
 
@@ -289,21 +306,37 @@ pub fn build_dataview_query_report_with_guard_and_plan(
     guard: &ProfilePermissionGuard,
     explain: bool,
 ) -> Result<DqlQueryResult, AppError> {
+    build_dataview_query_report_in(None, paths, source, source_path, guard, explain)
+}
+
+/// [`build_dataview_query_report_with_guard_and_plan`] through a host's
+/// retained note session when one is attached (QRY.6); see
+/// [`evaluate_base_file_in`].
+pub fn build_dataview_query_report_in(
+    session: Option<&NoteStoreSession>,
+    paths: &VaultPaths,
+    source: &str,
+    source_path: Option<&str>,
+    guard: &ProfilePermissionGuard,
+    explain: bool,
+) -> Result<DqlQueryResult, AppError> {
     recheck_read_authority(paths, guard, "dataview")?;
-    let snapshot = guard.snapshot_read_policy().map_err(AppError::operation)?;
-    recheck_read_authority(paths, &snapshot, "dataview")?;
-    let result = {
+    let policy = guard.snapshot_read_policy().map_err(AppError::operation)?;
+    recheck_read_authority(paths, &policy, "dataview")?;
+    let result = if let Some(store) = session.and_then(NoteStoreSession::snapshot) {
+        vulcan_core::dql::evaluate_dql_in(&store, paths, source, source_path, &policy, explain)
+    } else {
         let _read_guard = vulcan_core::ordinary_write::acquire_consistent_ordinary_read(paths)
             .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
         vulcan_core::dql::evaluate_dql_with_guard_and_plan(
             paths,
             source,
             source_path,
-            &snapshot,
+            &policy,
             explain,
         )
     };
-    recheck_read_authority(paths, &snapshot, "dataview")?;
+    recheck_read_authority(paths, &policy, "dataview")?;
     result.map_err(AppError::operation)
 }
 

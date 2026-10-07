@@ -21,6 +21,7 @@ use std::error::Error;
 use std::fmt::{Display, Formatter, Write as _};
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const PROPERTY_NAMESPACE_FRONTMATTER: &str = "frontmatter";
@@ -639,6 +640,24 @@ fn query_notes_core(
     authorized_index: Option<&HashMap<String, NoteRecord>>,
     output: NoteQueryOutput,
 ) -> Result<NoteQueryOutcome, PropertyError> {
+    query_notes_core_in(
+        &crate::note_store::DirectNoteStore::new(paths),
+        paths,
+        query,
+        filter,
+        authorized_index,
+        output,
+    )
+}
+
+fn query_notes_core_in(
+    store: &dyn crate::note_store::NoteStore,
+    paths: &VaultPaths,
+    query: &NoteQuery,
+    filter: Option<&PermissionFilter>,
+    authorized_index: Option<&HashMap<String, NoteRecord>>,
+    output: NoteQueryOutput,
+) -> Result<NoteQueryOutcome, PropertyError> {
     let config = crate::load_vault_config(paths).config;
     let within = authorized_index.map(|index| {
         index
@@ -646,12 +665,21 @@ fn query_notes_core(
             .map(|note| note.document_path.clone())
             .collect::<HashSet<_>>()
     });
-    let lookup = load_indexed_note_lookup_within(
-        paths,
-        NoteIndexReadScope::Filter(filter),
-        within.as_ref(),
-    )?;
+    let lookup = store.lookup(NoteIndexReadScope::Filter(filter), within.as_ref())?;
     query_notes_over(paths, &lookup, &config, query, filter, output)
+}
+
+/// [`query_notes_with_filter`] reading notes from `store` (QRY.6).
+pub fn query_notes_in(
+    store: &dyn crate::note_store::NoteStore,
+    paths: &VaultPaths,
+    query: &NoteQuery,
+    filter: Option<&PermissionFilter>,
+) -> Result<NotesReport, PropertyError> {
+    match query_notes_core_in(store, paths, query, filter, None, NoteQueryOutput::Notes)? {
+        NoteQueryOutcome::Notes(report) => Ok(report),
+        NoteQueryOutcome::Paths(_) => unreachable!("notes output yields notes"),
+    }
 }
 
 /// [`query_notes_with_filter`] over `lookup`, an already loaded universe
@@ -962,13 +990,14 @@ fn load_note_identities(
     let mut sql = permission_sql.cte;
     if filter.is_some() {
         sql.push_str(
-            "SELECT note_query.path, note_query.filename, note_query.aliases \
+            "SELECT note_query.path, note_query.filename, note_query.aliases, \
+             note_query.row_version \
              FROM documents JOIN note_query ON note_query.document_id = documents.id \
              WHERE 1 = 1",
         );
         sql.push_str(&permission_sql.clause);
     } else {
-        sql.push_str("SELECT path, filename, aliases FROM note_query");
+        sql.push_str("SELECT path, filename, aliases, row_version FROM note_query");
     }
     sql.push_str(" ORDER BY 1");
     let mut statement = database.connection().prepare(&sql)?;
@@ -977,11 +1006,12 @@ fn load_note_identities(
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,
         ))
     })?;
     let mut admitted = Vec::new();
     for row in rows {
-        let (path, file_name, aliases) = row?;
+        let (path, file_name, aliases, row_version) = row?;
         if within.is_some_and(|within| !within.contains(&path)) {
             continue;
         }
@@ -991,12 +1021,12 @@ fn load_note_identities(
             } else {
                 serde_json::from_str::<Vec<String>>(&aliases).unwrap_or_default()
             };
-            admitted.push((path, file_name, aliases));
+            admitted.push((path, file_name, aliases, row_version));
         }
     }
     drop(statement);
     let mut counts = HashMap::<&str, usize>::new();
-    for (_, file_name, _) in &admitted {
+    for (_, file_name, _, _) in &admitted {
         *counts.entry(file_name.as_str()).or_default() += 1;
     }
     let duplicates = counts
@@ -1007,7 +1037,7 @@ fn load_note_identities(
     Ok(admitted
         .into_iter()
         .map(
-            |(path, file_name, aliases)| crate::note_lookup::IndexedIdentity {
+            |(path, file_name, aliases, row_version)| crate::note_lookup::IndexedIdentity {
                 key: if duplicates.contains(&file_name) {
                     format!("/{path}")
                 } else {
@@ -1016,6 +1046,7 @@ fn load_note_identities(
                 path,
                 file_name,
                 aliases,
+                row_version,
             },
         )
         .collect::<Vec<_>>())
@@ -1027,7 +1058,7 @@ fn load_note_identities(
 /// note's fields load until a query prefetches, reads, or dereferences it.
 pub fn load_indexed_note_lookup<'a>(
     paths: &'a VaultPaths,
-    scope: NoteIndexReadScope<'a>,
+    scope: NoteIndexReadScope<'_>,
 ) -> Result<crate::note_lookup::IndexedNoteLookup<'a>, PropertyError> {
     load_indexed_note_lookup_within(paths, scope, None)
 }
@@ -1037,66 +1068,37 @@ pub fn load_indexed_note_lookup<'a>(
 /// bounds incoming links.
 pub(crate) fn load_indexed_note_lookup_within<'a>(
     paths: &'a VaultPaths,
-    scope: NoteIndexReadScope<'a>,
+    scope: NoteIndexReadScope<'_>,
     within: Option<&HashSet<String>>,
 ) -> Result<crate::note_lookup::IndexedNoteLookup<'a>, PropertyError> {
-    let (filter, guard) = match scope {
-        NoteIndexReadScope::Filter(filter) => (filter.cloned(), None),
-        NoteIndexReadScope::Guard(guard) => (Some(guard.read_filter()), Some(guard)),
-    };
-    let database = open_existing_cache(paths)?;
-    let identities = load_note_identities(&database, filter.as_ref(), guard, within)?;
-    let policy_scoped = guard.is_some_and(PermissionGuard::has_policy_hook) || within.is_some();
-    let readable_sources = policy_scoped.then(|| {
-        identities
-            .iter()
-            .map(|identity| identity.path.clone())
-            .collect::<HashSet<_>>()
-    });
+    let database = std::rc::Rc::new(open_existing_cache(paths)?);
+    let readable = load_readable_identities(&database, scope, within)?;
     let bookmarked_paths = load_bookmarked_paths(paths.vault_root());
     // One connection and one configuration serve every load of this lookup.
-    let database = std::rc::Rc::new(database);
     let config = std::rc::Rc::new(crate::load_vault_config(paths).config);
     let stored_database = std::rc::Rc::clone(&database);
-    let load_stored =
-        move |document_paths: Option<&[&str]>| -> Result<Vec<NoteRecord>, PropertyError> {
-            use rayon::prelude::*;
-            let connection = stored_database.connection();
-            let rows = if let Some(document_paths) = document_paths {
-                let mut statement = connection.prepare_cached(&format!(
-                    "SELECT {STORED_NOTE_COLUMNS} \
-                         FROM documents LEFT JOIN properties \
-                         ON properties.document_id = documents.id \
-                         WHERE documents.path IN (SELECT value FROM json_each(?1))"
-                ))?;
-                let wanted = serde_json::to_string(document_paths).expect("paths serialize");
-                let rows = statement
-                    .query_map([wanted], stored_note_row)?
-                    .collect::<Result<Vec<_>, _>>()?;
-                rows
-            } else {
-                let mut statement = connection.prepare_cached(&format!(
-                    "SELECT {STORED_NOTE_COLUMNS} \
-                         FROM documents LEFT JOIN properties \
-                         ON properties.document_id = documents.id"
-                ))?;
-                let rows = statement
-                    .query_map([], stored_note_row)?
-                    .collect::<Result<Vec<_>, _>>()?;
-                rows
-            };
-            Ok(rows
-                .into_par_iter()
-                .map(|row| stored_note_record(row, paths.vault_root(), &bookmarked_paths).1)
-                .collect())
-        };
-    let shared = std::rc::Rc::clone(&database);
+    let hydrate_database = std::rc::Rc::clone(&database);
+    let ReadableIdentities {
+        identities,
+        filter,
+        readable_sources,
+    } = readable;
     Ok(crate::note_lookup::IndexedNoteLookup::new(
         identities,
-        Box::new(load_stored),
+        Box::new(move |wanted: Option<&[&str]>| {
+            Ok(load_stored_notes(
+                stored_database.connection(),
+                paths.vault_root(),
+                &bookmarked_paths,
+                wanted,
+            )?
+            .into_iter()
+            .map(|stored| Arc::new(stored.record))
+            .collect())
+        }),
         Box::new(move |notes| {
-            hydrate_note_copies(
-                database.connection(),
+            hydrate_shared_notes(
+                hydrate_database.connection(),
                 &config,
                 filter.as_ref(),
                 readable_sources.as_ref(),
@@ -1104,7 +1106,120 @@ pub(crate) fn load_indexed_note_lookup_within<'a>(
             )
         }),
     )
-    .with_database(shared))
+    .with_database(database))
+}
+
+/// A scope's readable identities and what hydration needs to keep
+/// incoming links inside it.
+pub(crate) struct ReadableIdentities {
+    pub identities: Vec<crate::note_lookup::IndexedIdentity>,
+    /// The scope's read filter.
+    pub filter: Option<PermissionFilter>,
+    /// The universe's paths when a policy hook or an authorized universe
+    /// scopes incoming links; grants alone are applied in SQL.
+    pub readable_sources: Option<HashSet<String>>,
+}
+
+/// The readable identities of `scope` (restricted to `within`): grants and
+/// the policy hook select identities exactly as
+/// [`load_note_index_with_guard`] selects notes.
+pub(crate) fn load_readable_identities(
+    database: &CacheDatabase,
+    scope: NoteIndexReadScope<'_>,
+    within: Option<&HashSet<String>>,
+) -> Result<ReadableIdentities, PropertyError> {
+    let (filter, guard) = match scope {
+        NoteIndexReadScope::Filter(filter) => (filter.cloned(), None),
+        NoteIndexReadScope::Guard(guard) => (Some(guard.read_filter()), Some(guard)),
+    };
+    let identities = load_note_identities(database, filter.as_ref(), guard, within)?;
+    let policy_scoped = guard.is_some_and(PermissionGuard::has_policy_hook) || within.is_some();
+    let readable_sources = policy_scoped.then(|| {
+        identities
+            .iter()
+            .map(|identity| identity.path.clone())
+            .collect::<HashSet<_>>()
+    });
+    Ok(ReadableIdentities {
+        identities,
+        filter,
+        readable_sources,
+    })
+}
+
+/// A note's stored fields as loaded from the cache.
+pub(crate) struct StoredNote {
+    pub record: NoteRecord,
+    /// Whether `file.ctime` came from the cache rather than a filesystem
+    /// fallback that can change without a cache write.
+    pub ctime_recorded: bool,
+}
+
+/// Stored-field records for `document_paths` (`None`: every document, in
+/// one scan), without aliases.
+pub(crate) fn load_stored_notes(
+    connection: &rusqlite::Connection,
+    vault_root: &Path,
+    bookmarked_paths: &HashSet<String>,
+    document_paths: Option<&[&str]>,
+) -> Result<Vec<StoredNote>, PropertyError> {
+    use rayon::prelude::*;
+    let rows = if let Some(document_paths) = document_paths {
+        let mut statement = connection.prepare_cached(&format!(
+            "SELECT {STORED_NOTE_COLUMNS} \
+                 FROM documents LEFT JOIN properties \
+                 ON properties.document_id = documents.id \
+                 WHERE documents.path IN (SELECT value FROM json_each(?1))"
+        ))?;
+        let wanted = serde_json::to_string(document_paths).expect("paths serialize");
+        let rows = statement
+            .query_map([wanted], stored_note_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    } else {
+        let mut statement = connection.prepare_cached(&format!(
+            "SELECT {STORED_NOTE_COLUMNS} \
+                 FROM documents LEFT JOIN properties \
+                 ON properties.document_id = documents.id"
+        ))?;
+        let rows = statement
+            .query_map([], stored_note_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+    Ok(rows
+        .into_par_iter()
+        .map(|row| {
+            let ctime_recorded = row.10.is_some();
+            StoredNote {
+                record: stored_note_record(row, vault_root, bookmarked_paths).1,
+                ctime_recorded,
+            }
+        })
+        .collect())
+}
+
+/// [`hydrate_note_copies`] over shared records.
+pub(crate) fn hydrate_shared_notes(
+    connection: &rusqlite::Connection,
+    config: &VaultConfig,
+    filter: Option<&PermissionFilter>,
+    readable_sources: Option<&HashSet<String>>,
+    notes: Vec<Arc<NoteRecord>>,
+) -> Result<Vec<Arc<NoteRecord>>, PropertyError> {
+    Ok(hydrate_note_copies(
+        connection,
+        config,
+        filter,
+        readable_sources,
+        notes
+            .into_iter()
+            .map(|note| Arc::try_unwrap(note).unwrap_or_else(|shared| (*shared).clone()))
+            .collect(),
+    )?
+    .into_iter()
+    .map(Arc::new)
+    .collect())
 }
 
 /// Hydrated copies of `notes` under `filter`; incoming links come only from
@@ -1351,7 +1466,7 @@ fn policy_allows_indexed_note(
     }
 }
 
-fn load_bookmarked_paths(vault_root: &Path) -> HashSet<String> {
+pub(crate) fn load_bookmarked_paths(vault_root: &Path) -> HashSet<String> {
     let path = vault_root.join(".obsidian/bookmarks.json");
     let Ok(contents) = fs::read_to_string(path) else {
         return HashSet::new();

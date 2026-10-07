@@ -807,7 +807,25 @@ pub fn execute_query_report_explained(
     ast: QueryAst,
     filter: Option<&PermissionFilter>,
 ) -> Result<QueryReport, QueryError> {
-    let report = execute_query_with_filter(paths, &ast, filter)?;
+    execute_query_report_in(
+        &crate::note_store::DirectNoteStore::new(paths),
+        paths,
+        ast,
+        filter,
+    )
+}
+
+/// [`execute_query_report_explained`] reading notes from `store` (QRY.6).
+pub fn execute_query_report_in(
+    store: &dyn crate::note_store::NoteStore,
+    paths: &VaultPaths,
+    ast: QueryAst,
+    filter: Option<&PermissionFilter>,
+) -> Result<QueryReport, QueryError> {
+    if !paths.cache_db().exists() {
+        return Err(QueryError::CacheMissing);
+    }
+    let report = crate::properties::query_notes_in(store, paths, &ast.to_note_query(), filter)?;
     Ok(QueryReport {
         query: ast,
         notes: report.notes,
