@@ -9,6 +9,7 @@ use crate::{
     BulkNoteSelection, Cli, CliError, FolderNotePlacementArg, OutputFormat, RefactorCommand,
     SuggestCommand, SuggestLinkStatusArg,
 };
+use vulcan_app::browse::move_note_with_profile;
 use vulcan_app::decomposition::{
     split_note, MissingFragmentPolicy, SplitNoteReport, SplitNoteRequest,
 };
@@ -16,7 +17,7 @@ use vulcan_app::folder_notes::{
     convert_folder_notes, FolderNoteConversionReport, FolderNoteConversionRequest,
 };
 use vulcan_core::{
-    accept_link_suggestion, bulk_replace_on_paths, link_mentions, merge_tags, move_note,
+    accept_link_suggestion, bulk_replace_on_paths, link_mentions, merge_tags,
     query_notes_with_filter, reject_link_suggestion, rename_alias, rename_block_ref,
     rename_heading, rename_property, suggest_duplicates, suggest_links, suggest_mentions,
     FolderNotePlacement, FolderNotesConfig, LinkSuggestionStatus, NoteQuery, PermissionGuard,
@@ -264,7 +265,9 @@ pub(crate) fn handle_refactor_command(
             guard
                 .check_refactor_path(dest)
                 .map_err(CliError::operation)?;
-            let summary = move_note(paths, source, dest, *dry_run).map_err(CliError::operation)?;
+            let summary =
+                move_note_with_profile(paths, source, dest, *dry_run, cli.permissions.as_deref())
+                    .map_err(CliError::operation)?;
             if !dry_run {
                 let changed_paths = crate::move_changed_files(&summary);
                 auto_commit

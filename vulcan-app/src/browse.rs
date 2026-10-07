@@ -446,6 +446,59 @@ pub fn move_note(
     destination: &str,
     dry_run: bool,
 ) -> Result<MoveSummary, AppError> {
+    move_note_with_profile(paths, source_path, destination, dry_run, None)
+}
+
+/// Move a note and rewrite references to it. When the note or any rewritten
+/// reference is an mdbase record, the move, its reference rewrites, and any
+/// ordinary companions commit as one validated mdbase rename under
+/// `permission_profile`; validation or permission failures are returned,
+/// never retried as an ordinary move. Other moves use the ordinary move
+/// journal.
+pub fn move_note_with_profile(
+    paths: &VaultPaths,
+    source_path: &str,
+    destination: &str,
+    dry_run: bool,
+    permission_profile: Option<&str>,
+) -> Result<MoveSummary, AppError> {
+    use crate::mdbase::{
+        apply_managed_mdbase_note_writes, MdbaseManagedNoteWriteBatchRequest,
+        MdbaseManagedNoteWriteChange, MdbaseManagedWriteMode, MdbaseWriteOperation,
+    };
+    let plan = vulcan_core::move_rewrite::plan_ordinary_note_move(paths, source_path, destination)
+        .map_err(AppError::operation)?;
+    if !plan.changes.is_empty() {
+        let changes = plan
+            .changes
+            .iter()
+            .map(|change| MdbaseManagedNoteWriteChange {
+                path: &change.path,
+                before: change.before.as_deref(),
+                after: change.after.as_deref(),
+            })
+            .collect::<Vec<_>>();
+        let routed = apply_managed_mdbase_note_writes(
+            paths,
+            &MdbaseManagedNoteWriteBatchRequest {
+                changes: &changes,
+                operation: MdbaseWriteOperation::Rename {
+                    from: plan.summary.source_path.clone(),
+                    to: plan.summary.destination_path.clone(),
+                },
+                mode: MdbaseManagedWriteMode::Validated,
+                allow_mixed_paths: true,
+                dry_run,
+                permission_profile,
+                quiet: true,
+            },
+        )?;
+        if routed.is_some() {
+            let mut summary = plan.summary;
+            summary.dry_run = dry_run;
+            return Ok(summary);
+        }
+    }
     core_move_note(paths, source_path, destination, dry_run).map_err(AppError::operation)
 }
 

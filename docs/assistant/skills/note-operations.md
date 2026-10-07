@@ -1,7 +1,7 @@
 ---
 name: note-operations
 description: Read, create, append, and patch notes safely through Vulcan instead of raw filesystem edits.
-version: 4
+version: 5
 tools:
   - note_outline
   - note_get
@@ -43,6 +43,7 @@ Use this skill when the task is centered on one note or a small set of notes and
 - Routing vault note writes requires read authority for `mdbase.yaml`, even when that file is absent or the target is an ordinary note. A denied routing control is not evidence that a collection exists. Request an authorized profile change if needed; do not substitute the default profile or use a raw write to bypass the check.
 - Managed mdbase batches validate the proposed final state: duplicate values and broken declared incoming links can reject the entire edit before any file changes. A valid unique-value swap must be submitted together in one supported batch, not as sequential writes. `stale_state` means a validation dependency changed; reread and rebuild the preview instead of reusing it.
 - Managed mdbase create/update policies may generate IDs, timestamps, or other fields before validation. Read the resulting note rather than assuming the submitted frontmatter was persisted unchanged. Previews retain the generated values for apply/replay; a new preview may generate new values. A no-op policy preserves exact source; changed fields may reserialize frontmatter while preserving the body. `lifecycle_event_unsupported` blocks an optional rename/delete hook; it is not permission to bypass the managed write boundary.
+- Moving or renaming an mdbase collection record (`vulcan move`, `note rename`, `refactor move`) commits the move and every rewritten reference as one validated mdbase rename under the selected profile. A validation or permission failure leaves every file unchanged and is not retried as an ordinary move; fix the cause instead of moving the file by hand.
 - On Android, mdbase journals, staging, receipts, and outbox live in per-vault Termux-private state. A write returns `unsupported_storage` before changing records when shared storage cannot sync canonical directories; keep the worktree canonical and use a supported filesystem for that write workflow.
 - If a managed write reports `concurrent_modification`, reread the current note and rebuild the intended edit from its new revision. Never replay a stale whole-note replacement blindly.
 - If an ordinary `note set`, `note append`, `note patch`, or `note delete` reports that the note changed during editing, reread it and rebuild the edit; Vulcan leaves the newer content untouched. A create or periodic append also refuses to replace a file created concurrently.

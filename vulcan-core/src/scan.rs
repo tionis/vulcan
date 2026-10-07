@@ -322,13 +322,24 @@ pub fn scan_vault_paths_unlocked(
     paths: &VaultPaths,
     changed: &BTreeSet<String>,
 ) -> Result<ScanSummary, ScanError> {
+    scan_vault_paths_unlocked_with_renames(paths, changed, &HashMap::new())
+}
+
+/// [`scan_vault_paths_unlocked`] with rename hints (destination to source),
+/// so a moved document keeps its identity and incoming links.
+#[allow(clippy::implicit_hasher)]
+pub fn scan_vault_paths_unlocked_with_renames(
+    paths: &VaultPaths,
+    changed: &BTreeSet<String>,
+    renames: &HashMap<String, String>,
+) -> Result<ScanSummary, ScanError> {
     let recovered = recover_ordinary_write_batch_unlocked(paths)?;
     scan_inventory(
         paths,
         ScanMode::Incremental,
         &mut |_| {},
         recovered.is_none().then_some(changed),
-        &HashMap::new(),
+        renames,
     )
 }
 

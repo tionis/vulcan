@@ -1224,6 +1224,7 @@ fn apply_mdbase_write_timed(
                 &loaded,
                 &filter,
                 event,
+                rename_endpoints(&plan.preview),
                 &mut record_cache_seconds,
                 &mut note_scan_seconds,
             )?);
@@ -1265,6 +1266,7 @@ fn reconcile_committed_write(
     loaded: &LoadedCollection,
     filter: &PermissionFilter,
     event: &vulcan_core::mdbase::MdbaseWriteOutboxEvent,
+    rename: Option<(&str, &str)>,
     record_cache_seconds: &mut f64,
     note_scan_seconds: &mut f64,
 ) -> Result<vulcan_core::ScanSummary, String> {
@@ -1277,13 +1279,61 @@ fn reconcile_committed_write(
     );
     *record_cache_seconds += start.elapsed().as_secs_f64();
     let start = std::time::Instant::now();
+    // A renamed note keeps its document identity and incoming links.
+    let renames = rename
+        .and_then(|(from, to)| {
+            Some((
+                vault_relative_path(paths, &loaded.collection, to)?,
+                vault_relative_path(paths, &loaded.collection, from)?,
+            ))
+        })
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
     let scan = match written_vault_paths(paths, &loaded.collection, event) {
-        Some(changed) => vulcan_core::scan::scan_vault_paths_unlocked(paths, &changed),
+        Some(changed) => {
+            vulcan_core::scan::scan_vault_paths_unlocked_with_renames(paths, &changed, &renames)
+        }
         None => vulcan_core::scan::scan_vault_unlocked(paths, ScanMode::Incremental),
     }
     .map_err(|error| error.to_string());
     *note_scan_seconds += start.elapsed().as_secs_f64();
     scan
+}
+
+/// The source and destination of a rename preview: its only deleted and
+/// only created path. Reference rewrites are updates and do not count.
+fn rename_endpoints(preview: &MdbaseWritePreview) -> Option<(&str, &str)> {
+    if preview.operation != "rename" {
+        return None;
+    }
+    let only = |deleted: bool| {
+        let mut matching = preview.changes.iter().filter(|change| {
+            if deleted {
+                change.before.is_some() && change.after.is_none()
+            } else {
+                change.before.is_none() && change.after.is_some()
+            }
+        });
+        let first = matching.next()?;
+        matching.next().is_none().then_some(first.path.as_str())
+    };
+    Some((only(true)?, only(false)?))
+}
+
+/// A collection-relative path as a vault-relative one, or `None` when the
+/// collection root cannot be expressed inside the vault.
+fn vault_relative_path(
+    paths: &VaultPaths,
+    collection: &MdbaseCollection,
+    path: &str,
+) -> Option<String> {
+    let vault = std::fs::canonicalize(paths.vault_root()).ok()?;
+    let root = std::fs::canonicalize(&collection.root).ok()?;
+    let prefix = root.strip_prefix(&vault).ok()?;
+    prefix
+        .join(path)
+        .to_str()
+        .map(|path| path.replace(std::path::MAIN_SEPARATOR, "/"))
 }
 
 /// Vault-relative paths a committed write touched, or `None` when the
@@ -2290,6 +2340,117 @@ mod tests {
         assert!(replay.outcome.replayed);
         assert!(replay.scan.is_none());
         assert!(replay.auto_commit.is_none());
+    }
+
+    #[test]
+    fn moving_a_record_is_one_validated_rename_with_reference_rewrites() {
+        let (directory, paths) = fixture();
+        initialize_vulcan_dir(&paths).unwrap();
+        // Comments, quoting, CRLF, aliases, and anchors must survive the move.
+        let record = "---\r\ntype: task\r\ntitle: 'Public'  # kept\r\n---\r\nBody\r\n";
+        fs::write(directory.path().join("tasks/public.md"), record).unwrap();
+        fs::write(
+            directory.path().join("Home.md"),
+            "See [[public|Alias]] and [the task](tasks/public.md#Body).\r\nUnrelated *text*.\r\n",
+        )
+        .unwrap();
+        vulcan_core::scan_vault(&paths, ScanMode::Full).unwrap();
+        let identity = |path: &str| {
+            vulcan_core::CacheDatabase::open(&paths)
+                .unwrap()
+                .connection()
+                .query_row(
+                    "SELECT document_id FROM note_query WHERE path = ?1",
+                    [path],
+                    |row| row.get::<_, String>(0),
+                )
+                .ok()
+        };
+        let id = identity("tasks/public.md").expect("indexed record");
+        let home = fs::read_to_string(directory.path().join("Home.md")).unwrap();
+
+        // A dry run changes nothing.
+        let preview = crate::browse::move_note_with_profile(
+            &paths,
+            "tasks/public.md",
+            "tasks/done/public.md",
+            true,
+            None,
+        )
+        .unwrap();
+        assert!(preview.dry_run);
+        assert_eq!(preview.rewritten_files.len(), 1);
+        assert!(directory.path().join("tasks/public.md").exists());
+
+        // Without write access to the destination the move fails; it is
+        // never retried as an ordinary move.
+        fs::write(
+            paths.config_file(),
+            "[permissions.profiles.limited]\nread = \"all\"\nwrite = { allow = [\"folder:tasks/**\", \"note:Home.md\"], deny = [\"folder:tasks/done/**\"] }\n",
+        )
+        .unwrap();
+        assert!(crate::browse::move_note_with_profile(
+            &paths,
+            "tasks/public.md",
+            "tasks/done/public.md",
+            false,
+            Some("limited"),
+        )
+        .is_err());
+        assert!(directory.path().join("tasks/public.md").exists());
+        assert_eq!(
+            fs::read_to_string(directory.path().join("Home.md")).unwrap(),
+            home
+        );
+
+        let summary = crate::browse::move_note_with_profile(
+            &paths,
+            "tasks/public.md",
+            "tasks/done/public.md",
+            false,
+            None,
+        )
+        .unwrap();
+        assert!(!summary.dry_run);
+        assert!(!directory.path().join("tasks/public.md").exists());
+        let moved = build_mdbase_read_report(&paths, "tasks/done/public.md", false, None).unwrap();
+        assert!(moved.valid);
+        let home = fs::read_to_string(directory.path().join("Home.md")).unwrap();
+        assert!(!home.contains("tasks/public.md"), "{home}");
+        assert!(
+            home.contains("|Alias]]") && home.contains("#Body)"),
+            "{home}"
+        );
+        assert!(home.ends_with(".\r\nUnrelated *text*.\r\n"), "{home}");
+        assert_eq!(
+            fs::read_to_string(directory.path().join("tasks/done/public.md")).unwrap(),
+            record
+        );
+        assert_eq!(
+            vulcan_core::query_links(&paths, "Home.md")
+                .unwrap()
+                .links
+                .iter()
+                .filter_map(|link| link.resolved_target_path.as_deref())
+                .collect::<Vec<_>>(),
+            vec!["tasks/done/public.md"; 2]
+        );
+        // The rename went through the mdbase journal, whose outbox records it,
+        // and the moved note kept its document identity.
+        let outbox = paths
+            .operational_state_dir()
+            .unwrap_or_else(|_| paths.vulcan_dir().to_path_buf())
+            .join("mdbase-write/outbox");
+        let events = fs::read_dir(outbox)
+            .unwrap()
+            .map(|entry| fs::read_to_string(entry.unwrap().path()).unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            events.iter().any(|event| event.contains("\"rename\"")),
+            "{events:?}"
+        );
+        assert_eq!(identity("tasks/done/public.md"), Some(id));
+        assert_eq!(identity("tasks/public.md"), None);
     }
 
     #[test]

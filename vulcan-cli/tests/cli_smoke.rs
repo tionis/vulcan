@@ -17898,6 +17898,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(note_operations.contains("explicit repair is a separate workflow"));
     assert!(note_operations.contains("reports `concurrent_modification`"));
     assert!(note_operations.contains("Never replay a stale whole-note replacement blindly"));
+    assert!(note_operations
+        .contains("commits the move and every rewritten reference as one validated mdbase rename"));
     assert!(note_operations.contains("pending ordinary-write journal"));
     assert!(note_operations.contains("through the CLI or MCP"));
     assert!(note_operations.contains("`note info` reports a pending ordinary-write journal"));
@@ -36940,6 +36942,55 @@ fn mdbase_shell_and_python_examples_use_the_shared_service() {
     assert_eq!(rows[0]["valid"], true);
     assert_eq!(rows[2]["path"], "untitled.md");
     assert_eq!(rows[2]["valid"], false);
+}
+
+/// Moving a collection record is a validated mdbase rename; rewritten
+/// references join the same transaction.
+#[test]
+fn move_routes_collection_records_through_the_mdbase_rename() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let vault_root = temp_dir.path().join("collection");
+    fs::create_dir_all(vault_root.join("_types")).expect("types directory");
+    fs::create_dir_all(vault_root.join("tasks")).expect("tasks directory");
+    vulcan_core::initialize_vulcan_dir(&VaultPaths::new(&vault_root)).unwrap();
+    fs::write(vault_root.join("mdbase.yaml"), "spec_version: \"0.3.0\"\n").expect("config");
+    fs::write(
+        vault_root.join("_types/task.md"),
+        "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value: {type: object, required: [title]}\n---\n",
+    )
+    .expect("type");
+    fs::write(
+        vault_root.join("tasks/a.md"),
+        "---\ntype: task\ntitle: A\n---\n",
+    )
+    .expect("record");
+    fs::write(vault_root.join("Home.md"), "See [[tasks/a]].\n").expect("note");
+    let vulcan = |args: &[&str]| {
+        Command::cargo_bin("vulcan")
+            .expect("binary")
+            .arg("--vault")
+            .arg(&vault_root)
+            .args(args)
+            .output()
+            .expect("vulcan runs")
+    };
+    assert!(vulcan(&["scan", "--full"]).status.success());
+    let moved = vulcan(&["move", "tasks/a.md", "tasks/archive/a.md", "--no-commit"]);
+    assert!(
+        moved.status.success(),
+        "{}",
+        String::from_utf8_lossy(&moved.stderr)
+    );
+    assert!(vault_root.join("tasks/archive/a.md").exists());
+    assert_eq!(
+        fs::read_to_string(vault_root.join("Home.md")).unwrap(),
+        "See [[a]].\n"
+    );
+    let outbox = VaultPaths::new(&vault_root)
+        .operational_state_dir()
+        .unwrap()
+        .join("mdbase-write/outbox");
+    assert_eq!(fs::read_dir(outbox).expect("mdbase outbox").count(), 1);
 }
 
 #[test]

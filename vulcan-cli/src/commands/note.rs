@@ -18,6 +18,7 @@ use serde::Serialize;
 use std::fs;
 use std::io::{self, IsTerminal, Read};
 use std::path::{Path, PathBuf};
+use vulcan_app::browse::move_note_with_profile;
 use vulcan_app::notes::{
     apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
     build_note_info_report,
@@ -38,9 +39,9 @@ use vulcan_app::notes::{
 use vulcan_app::templates::parse_template_var_bindings;
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::{
-    git_log, move_note, query_backlinks_with_filter, query_links_with_filter,
-    resolve_note_reference, BacklinkRecord, DoctorDiagnosticIssue, GitLogEntry, GraphQueryError,
-    NoteMatchKind, PermissionGuard, PluginEvent, VaultPaths,
+    git_log, query_backlinks_with_filter, query_links_with_filter, resolve_note_reference,
+    BacklinkRecord, DoctorDiagnosticIssue, GitLogEntry, GraphQueryError, NoteMatchKind,
+    PermissionGuard, PluginEvent, VaultPaths,
 };
 
 fn check_read_note_access(cli: &Cli, paths: &VaultPaths, note: &str) -> Result<(), CliError> {
@@ -437,8 +438,14 @@ pub(crate) fn handle_note_command(
             check_refactor_note_access(cli, paths, note)?;
             let resolved = resolve_note_reference(paths, note).map_err(CliError::operation)?;
             let destination = note_rename_destination(&resolved.path, new_name);
-            let summary = move_note(paths, &resolved.path, &destination, *dry_run)
-                .map_err(CliError::operation)?;
+            let summary = move_note_with_profile(
+                paths,
+                &resolved.path,
+                &destination,
+                *dry_run,
+                cli.permissions.as_deref(),
+            )
+            .map_err(CliError::operation)?;
             if !*dry_run {
                 auto_commit
                     .commit(
