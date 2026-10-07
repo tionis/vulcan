@@ -2934,6 +2934,15 @@ fn compile_note_filters(filters: &[String]) -> Result<CompiledNoteFilters, Prope
     })
 }
 
+/// Whether `filter` compiles to a source (a tag or folder selection made in
+/// SQL), so evaluating it reads nothing of a row.
+pub(crate) fn note_filter_is_source(filter: &str) -> bool {
+    parse_filter_expression(filter)
+        .ok()
+        .and_then(|parsed| filter_source(&parsed))
+        .is_some()
+}
+
 /// The source a filter is, if any: tags, and folder prefixes such as Bases'
 /// `file.inFolder("x")` (`file.path starts_with "x/"`), whose expression
 /// meaning is the same byte-exact selection.

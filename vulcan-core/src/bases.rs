@@ -569,7 +569,11 @@ fn base_reads_row_file_fields(
             .and_then(crate::expression::parse::Parser::parse)
             .is_ok_and(|expr| reads_row_file_fields(&expr, bindings))
     };
+    // Tag and folder filters are selected in SQL, never evaluated per row.
     let filter_reads = |filter: &String| {
+        if crate::properties::note_filter_is_source(filter) {
+            return false;
+        }
         note_filter_expression_source(filter).map_or(true, |source| {
             crate::expression::parse::Parser::new(&source)
                 .and_then(crate::expression::parse::Parser::parse)
@@ -2998,6 +3002,9 @@ mod tests {
         };
         for (filter, formula, stored) in [
             ("file.hasTag(\"t\")", "file.tags", false),
+            // Tag and folder filters are SQL sources: rows stay stored-only.
+            ("file.hasTag(\"t\")", "up.status", true),
+            ("file.inFolder(\"A\")", "up.status", true),
             ("status == \"open\"", "file.inlinks", false),
             ("file.inFolder(\"A\")", "length(file.tasks)", false),
             ("file.folder == \"B\"", "up", true),
