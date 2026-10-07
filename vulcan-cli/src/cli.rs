@@ -2191,6 +2191,35 @@ pub enum MdbaseCommand {
         )]
         types: Vec<String>,
     },
+    #[command(
+        about = "Patch one record's persisted frontmatter, checked against the revision you read"
+    )]
+    Patch {
+        #[arg(help = "Collection-relative record path")]
+        path: String,
+        #[arg(
+            long,
+            required = true,
+            help = "Revision from `mdbase read`; fails with concurrent_modification if the record changed"
+        )]
+        if_revision: String,
+        #[arg(
+            long = "set",
+            value_name = "KEY=VALUE",
+            help = "Set a field; VALUE is parsed as YAML (`priority=3`, `tags=[a, b]`). Repeatable"
+        )]
+        set: Vec<String>,
+        #[arg(
+            long = "unset",
+            value_name = "KEY",
+            help = "Remove a field. Repeatable"
+        )]
+        unset: Vec<String>,
+        #[arg(long, help = "Validate and plan without writing")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
     #[command(about = "List saved-view records and their named views")]
     Views,
     #[command(about = "Execute a named view from a saved-view record")]

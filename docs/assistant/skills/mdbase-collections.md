@@ -1,7 +1,7 @@
 ---
 name: mdbase-collections
 description: Inspect, query, and safely edit an mdbase typed-Markdown collection (a folder with mdbase.yaml), including saved views and effective schemas.
-version: 1
+version: 2
 tools:
   - help
 metadata:
@@ -33,8 +33,12 @@ the collection keep their normal Vulcan behavior; use the other skills for them.
 5. Prefer existing saved views: `vulcan mdbase views --output json`, then
    `vulcan mdbase view <source> <view-id> --output json` (`--context <record>` when the view reads
    `this`). Obsidian `.base` sources selected by `x-obsidian.bases.include` appear there too.
-6. Edit records with the normal note and property commands; they route collection records through
-   the validated, journaled mdbase pipeline. Edit saved views with
+6. To change fields of one record, read its revision with `mdbase read <path> --metadata`, then run
+   `vulcan mdbase patch <path> --if-revision <revision> --set key=value --unset key --output json`
+   (values are YAML: `priority=3`, `tags=[a, b]`). Only the named persisted fields change; the body,
+   comments, and other keys stay as they are, and the report gives the new revision. For body edits
+   use the normal note commands, which route collection records through the same validated,
+   journaled pipeline. Edit saved views with
    `vulcan mdbase view-source read|update` and `--if-revision`.
 
 ## Guardrails

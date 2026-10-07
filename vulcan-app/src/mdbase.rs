@@ -16,8 +16,13 @@ pub use write_repair::{
 };
 mod bases_views;
 mod change_feed;
+mod frontmatter_patch;
 pub use change_feed::{
     MdbaseChangeFeed, MdbaseChangeNotification, MdbaseChangesReport, MDBASE_CHANGE_FEED_CAPACITY,
+};
+pub use frontmatter_patch::{
+    patch_mdbase_frontmatter, MdbaseFrontmatterPatchOptions, MdbaseFrontmatterPatchReport,
+    MdbaseFrontmatterPatchRequest,
 };
 mod views;
 mod write_validation;

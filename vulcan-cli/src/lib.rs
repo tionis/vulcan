@@ -672,6 +672,8 @@ impl From<vulcan_app::AppError> for CliError {
             Some("unsupported_presentation") => "unsupported_presentation",
             Some("path_conflict") => "path_conflict",
             Some("unsupported_context") => "unsupported_context",
+            Some("record_not_found") => "record_not_found",
+            Some("invalid_request") => "invalid_request",
             _ => "operation_failed",
         };
         Self {

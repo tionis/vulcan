@@ -7,7 +7,8 @@ use vulcan_app::mdbase::{
     build_mdbase_schema_report, build_mdbase_status_report, build_mdbase_types_report,
     build_mdbase_validate_report, build_mdbase_view_list_report, build_mdbase_view_report,
     create_mdbase_view_source, delete_mdbase_view_source, parse_mdbase_query,
-    read_mdbase_view_source, update_mdbase_view_source, MdbaseContractsReport,
+    patch_mdbase_frontmatter, read_mdbase_view_source, update_mdbase_view_source,
+    MdbaseContractsReport, MdbaseFrontmatterPatchOptions, MdbaseFrontmatterPatchRequest,
     MdbaseMetadataReadReport, MdbaseQuerySession, MdbaseReadReport, MdbaseStatusReport,
     MdbaseTypesReport, MdbaseValidateReport, MdbaseViewSourceOptions,
 };
@@ -72,37 +73,31 @@ pub(crate) fn handle_mdbase_command(
             cli.output,
             &build_mdbase_schema_report(paths, types, filter.as_ref())?,
         ),
+        MdbaseCommand::Patch {
+            path,
+            if_revision,
+            set,
+            unset,
+            dry_run,
+            no_commit,
+        } => handle_patch(
+            cli,
+            paths,
+            path,
+            if_revision,
+            set,
+            unset,
+            *dry_run,
+            *no_commit,
+        ),
         MdbaseCommand::Views => print_views(
             cli.output,
             &build_mdbase_view_list_report(paths, filter.as_ref())?,
         ),
-        MdbaseCommand::View {
-            source,
-            view,
-            context,
-            no_context,
-            limit,
-            offset,
-            timezone,
-        } => {
-            let invocation = MdbaseViewInvocation {
-                source: source.clone(),
-                view: view.clone(),
-                context: match (context, no_context) {
-                    (Some(path), _) => MdbaseViewContextArg::Path(path.clone()),
-                    (None, true) => MdbaseViewContextArg::Null,
-                    (None, false) => MdbaseViewContextArg::Absent,
-                },
-                limit: *limit,
-                offset: *offset,
-                timezone: timezone.clone(),
-                render: false,
-            };
-            print_query(
-                cli.output,
-                &build_mdbase_view_report(paths, &invocation, filter.as_ref())?,
-            )
-        }
+        MdbaseCommand::View { .. } => print_query(
+            cli.output,
+            &build_mdbase_view_report(paths, &view_invocation(command), filter.as_ref())?,
+        ),
         MdbaseCommand::ViewSource { command } => {
             handle_view_source(cli, paths, command, filter.as_ref())
         }
@@ -174,6 +169,89 @@ fn print_schema(
     if !report.required_features.is_empty() {
         println!("requires: {}", report.required_features.join(", "));
     }
+    Ok(())
+}
+
+/// The headless invocation a `mdbase view` command describes.
+fn view_invocation(command: &MdbaseCommand) -> MdbaseViewInvocation {
+    let MdbaseCommand::View {
+        source,
+        view,
+        context,
+        no_context,
+        limit,
+        offset,
+        timezone,
+    } = command
+    else {
+        unreachable!("only called for `mdbase view`");
+    };
+    MdbaseViewInvocation {
+        source: source.clone(),
+        view: view.clone(),
+        context: match (context, no_context) {
+            (Some(path), _) => MdbaseViewContextArg::Path(path.clone()),
+            (None, true) => MdbaseViewContextArg::Null,
+            (None, false) => MdbaseViewContextArg::Absent,
+        },
+        limit: *limit,
+        offset: *offset,
+        timezone: timezone.clone(),
+        render: false,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_patch(
+    cli: &Cli,
+    paths: &VaultPaths,
+    path: &str,
+    if_revision: &str,
+    set: &[String],
+    unset: &[String],
+    dry_run: bool,
+    no_commit: bool,
+) -> Result<(), CliError> {
+    let set = set
+        .iter()
+        .map(|assignment| {
+            let (key, value) = assignment.split_once('=').ok_or_else(|| {
+                CliError::operation(format!("--set `{assignment}` must be KEY=VALUE"))
+            })?;
+            // The same YAML-to-JSON parsing as canonical queries.
+            let value = parse_mdbase_query(value)
+                .map_err(|error| CliError::operation(format!("--set {key}: {error}")))?;
+            Ok((key.to_string(), value))
+        })
+        .collect::<Result<_, CliError>>()?;
+    let report = patch_mdbase_frontmatter(
+        paths,
+        &MdbaseFrontmatterPatchRequest {
+            path: path.to_string(),
+            if_revision: if_revision.to_string(),
+            set,
+            unset: unset.to_vec(),
+            permission_profile: cli.permissions.clone(),
+        },
+        &MdbaseFrontmatterPatchOptions {
+            dry_run,
+            no_commit,
+            quiet: cli.quiet,
+        },
+    )?;
+    if cli.output == OutputFormat::Json {
+        return print_json(&MdbaseOperationResult::new(true, &report, Vec::new()));
+    }
+    println!(
+        "{}\t{}\t{}",
+        report.path,
+        if report.changed {
+            "changed"
+        } else {
+            "unchanged"
+        },
+        report.revision
+    );
     Ok(())
 }
 

@@ -37,6 +37,12 @@ class Collection:
             command + ["mdbase", *args], capture_output=True, text=True, check=False
         )
         if result.returncode != 0:
+            # JSON mode reports errors as {"code": ..., "error": ...} on stdout.
+            try:
+                error = json.loads(result.stdout)
+                raise CollectionError(f"{error['code']}: {error['error']}")
+            except (ValueError, KeyError, TypeError):
+                pass
             raise CollectionError(result.stderr.strip() or f"exit status {result.returncode}")
         return json.loads(result.stdout)
 
@@ -51,6 +57,21 @@ class Collection:
     def read(self, path, metadata=True):
         """One record; metadata only (no body, links, or tags) by default."""
         return self._run("read", path, *(["--metadata"] if metadata else []))
+
+    def patch(self, path, revision, set=None, unset=(), dry_run=False):
+        """Patch persisted frontmatter, checked against `revision` from read().
+
+        Values are JSON; a changed record raises CollectionError starting
+        with `concurrent_modification`. Returns the new revision.
+        """
+        args = ["patch", path, "--if-revision", revision]
+        for key, value in (set or {}).items():
+            args += ["--set", f"{key}={json.dumps(value)}"]
+        for key in unset:
+            args += ["--unset", key]
+        if dry_run:
+            args.append("--dry-run")
+        return self._run(*args)["result"]["revision"]
 
     def query(self, query):
         """A canonical mdbase query given as a dict; JSON is valid query YAML."""

@@ -233,6 +233,85 @@
             "subcommands": []
           },
           {
+            "about": "Patch one record's persisted frontmatter, checked against the revision you read",
+            "name": "patch",
+            "options": [
+              {
+                "help": "Collection-relative record path",
+                "id": "path",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "PATH"
+                ]
+              },
+              {
+                "help": "Revision from `mdbase read`; fails with concurrent_modification if the record changed",
+                "id": "if_revision",
+                "long": "if-revision",
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "IF_REVISION"
+                ]
+              },
+              {
+                "help": "Set a field; VALUE is parsed as YAML (`priority=3`, `tags=[a, b]`). Repeatable",
+                "id": "set",
+                "long": "set",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "KEY=VALUE"
+                ]
+              },
+              {
+                "help": "Remove a field. Repeatable",
+                "id": "unset",
+                "long": "unset",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "KEY"
+                ]
+              },
+              {
+                "help": "Validate and plan without writing",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
             "about": "List saved-view records and their named views",
             "name": "views",
             "options": [],

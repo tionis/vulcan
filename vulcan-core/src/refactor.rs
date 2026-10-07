@@ -500,6 +500,29 @@ pub fn plan_property_mutations_on_paths(
     Ok(plans)
 }
 
+/// Apply `changes` (a value to set, or `None` to remove) to the persisted
+/// frontmatter of exact `source`, editing only those keys. The body, other
+/// keys, their order, and their formatting are left as they are. A frontmatter
+/// block is created when setting a key on a note without one.
+pub fn patch_frontmatter_source(
+    source: &str,
+    path: &str,
+    changes: &[(String, Option<YamlValue>)],
+) -> Result<String, RefactorError> {
+    let mut current = source.to_string();
+    for (key, value) in changes {
+        let Some((edit, changes)) =
+            plan_set_note_property_replacement(&current, path, key, value.as_ref())?
+        else {
+            continue;
+        };
+        if let Some(plan) = build_file_plan(path, &current, &[edit], changes) {
+            current = plan.updated_contents;
+        }
+    }
+    Ok(current)
+}
+
 /// Fetch the vault-relative paths of all notes matching the given `--where` filters.
 fn query_matching_paths(
     paths: &VaultPaths,

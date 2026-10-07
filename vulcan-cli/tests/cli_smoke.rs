@@ -17946,6 +17946,13 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
             .stdout(predicate::str::contains(flag));
     }
     assert!(mdbase.contains("vulcan repair mdbase-write status"));
+    assert!(mdbase.contains("`vulcan mdbase patch <path> --if-revision <revision>"));
+    Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args(["mdbase", "patch", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--if-revision"));
     Command::cargo_bin("vulcan")
         .expect("binary")
         .args(["help", "mdbase"])
@@ -37008,6 +37015,46 @@ fn mdbase_shell_and_python_examples_use_the_shared_service() {
     assert_eq!(rows[0]["valid"], true);
     assert_eq!(rows[2]["path"], "untitled.md");
     assert_eq!(rows[2]["valid"], false);
+
+    // The write pilot through the Python wrapper: read, patch at that
+    // revision, read the result back, and fail cleanly on a stale revision.
+    let script = format!(
+        r#"
+import json, sys
+sys.path.insert(0, {examples:?})
+from collection import Collection, CollectionError
+c = Collection({vault:?})
+before = c.read("a.md")["result"]["revision"]
+after = c.patch("a.md", before, set={{"priority": 2, "tags": ["x"]}})
+record = c.read("a.md")["result"]
+assert record["revision"] == after, (record["revision"], after)
+assert record["frontmatter"]["priority"] == 2 and record["frontmatter"]["tags"] == ["x"]
+assert "status" not in record["frontmatter"], record["frontmatter"]
+try:
+    c.patch("a.md", before, unset=["priority"])
+    raise SystemExit("stale revision accepted")
+except CollectionError as error:
+    assert str(error).startswith("concurrent_modification"), str(error)
+print("ok")
+"#,
+        examples = examples.to_str().unwrap(),
+        vault = vault_root.to_str().unwrap(),
+    );
+    let patched = std::process::Command::new("python3")
+        .args(["-c", &script])
+        .env("VULCAN", &binary)
+        .output()
+        .expect("python patch runs");
+    assert!(
+        patched.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&patched.stdout),
+        String::from_utf8_lossy(&patched.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&patched.stdout).trim(), "ok");
+    assert!(fs::read_to_string(vault_root.join("a.md"))
+        .unwrap()
+        .ends_with("---\nBody\n"));
 }
 
 #[test]

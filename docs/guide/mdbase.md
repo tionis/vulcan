@@ -115,6 +115,18 @@ supported for bases yet (`unsupported_context`).
 
 ## Writing
 
+To change fields of one record, patch its persisted frontmatter against the revision you read:
+
+```sh
+rev=$(vulcan --output json mdbase read tasks/a.md --metadata | jq -r .result.revision)
+vulcan mdbase patch tasks/a.md --if-revision "$rev" --set status=done --set priority=2 --unset blocked
+```
+
+Only the named fields change; the body, comments, and other keys keep their bytes. A changed record
+fails with `concurrent_modification`, a hidden or ungoverned path with `record_not_found`, and the
+JSON report carries the persisted revision, including any lifecycle-generated values. Effective
+defaults are never written back unless you set them explicitly.
+
 Collection records are written through one validated pipeline: `note set`, `note patch`,
 `note append`, `note create`, property `update`/`unset`, moves and renames, scripts, and
 `view-source` all plan the complete change, check permissions and uniqueness across everything they
