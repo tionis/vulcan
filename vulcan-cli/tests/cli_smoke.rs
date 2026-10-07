@@ -12654,7 +12654,7 @@ fn bases_evaluation_applies_read_and_policy_scope() {
     run(&["bases", "create", "Public/All.base", "--no-commit"]).failure();
     assert!(parse_stdout_json(&run(&["browse"]).failure())
         .to_string()
-        .contains("does not yet enforce restricted permission profiles"));
+        .contains("cannot apply the policy hook"));
     assert!(!root.join("Untitled.md").exists());
     let views = parse_stdout_json(&run(&["tasks", "view", "list"]).success());
     assert!(views.to_string().contains("Tasks"), "{views}");

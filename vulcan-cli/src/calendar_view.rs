@@ -41,17 +41,32 @@ pub(crate) struct CalendarViewState {
     selected_date: CalendarDate,
     today: CalendarDate,
     cells: Vec<CalendarDayCell>,
+    /// Shows only daily notes this filter allows.
+    read_filter: Option<vulcan_core::PermissionFilter>,
 }
 
 impl CalendarViewState {
-    pub(crate) fn new(paths: &VaultPaths) -> Result<Self, String> {
+    /// [`Self::new`] showing only daily notes `read_filter` allows.
+    pub(crate) fn new_scoped(
+        paths: &VaultPaths,
+        read_filter: Option<vulcan_core::PermissionFilter>,
+    ) -> Result<Self, String> {
         let today = crate::commands::periodic::current_local_date_string();
-        Self::new_at(paths, &today, &today)
+        Self::new_at_scoped(paths, &today, &today, read_filter)
     }
 
     /// Build a calendar with `today` highlighted and `selected` (`YYYY-MM-DD`
     /// or `YYYY-MM`) as the initial selection.
     pub(crate) fn new_at(paths: &VaultPaths, today: &str, selected: &str) -> Result<Self, String> {
+        Self::new_at_scoped(paths, today, selected, None)
+    }
+
+    fn new_at_scoped(
+        paths: &VaultPaths,
+        today: &str,
+        selected: &str,
+        read_filter: Option<vulcan_core::PermissionFilter>,
+    ) -> Result<Self, String> {
         let today = parse_calendar_date(today)
             .ok_or_else(|| format!("invalid calendar date for today: {today}"))?;
         let selected_date = parse_calendar_date(selected)
@@ -67,6 +82,7 @@ impl CalendarViewState {
             selected_date,
             today,
             cells: Vec::new(),
+            read_filter,
         };
         state.refresh(paths)?;
         Ok(state)
@@ -88,6 +104,11 @@ impl CalendarViewState {
 
         let notes_by_date = notes
             .into_iter()
+            .filter(|item| {
+                self.read_filter
+                    .as_ref()
+                    .is_none_or(|filter| filter.is_allowed(&item.path))
+            })
             .map(|item| (item.date.clone(), item))
             .collect::<BTreeMap<_, _>>();
 

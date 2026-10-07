@@ -527,8 +527,14 @@ mod tests {
                 crate::bases_tui::run_bases_tui(&paths, "All.base", &report, None).unwrap();
             }
             Ok("browse") => {
-                crate::browse_tui::run_browse_tui(&paths, vulcan_core::AutoScanMode::Off, true)
-                    .unwrap();
+                let authority = crate::commands::browse::BrowseAuthority::default_for(&paths);
+                crate::browse_tui::run_browse_tui(
+                    &paths,
+                    vulcan_core::AutoScanMode::Off,
+                    true,
+                    authority,
+                )
+                .unwrap();
             }
             _ => {
                 pick_note(&paths, None, None).unwrap();

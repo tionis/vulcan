@@ -1,5 +1,6 @@
 use crate::bases_tui;
 use crate::calendar_view::CalendarViewState;
+use crate::commands::browse::BrowseAuthority;
 use crate::commit::AutoCommitPolicy;
 use crate::editor::{open_in_editor, with_terminal_suspended};
 use crate::note_picker::{
@@ -25,11 +26,10 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, SystemTime};
 use vulcan_app::browse::{
-    doctor_vault, evaluate_base_file, evaluate_dataview_js_query, evaluate_dql,
+    doctor_vault, evaluate_base_file_with_guard, evaluate_dataview_js_query, evaluate_dql,
     evaluate_note_inline_expressions, git_log, is_git_repo, list_kanban_boards,
     list_note_identities, list_tagged_note_identities, list_tags, load_dataview_blocks,
-    load_kanban_board, move_note, query_backlinks, query_links, query_notes, refresh_browse_cache,
-    search_vault,
+    load_kanban_board, move_note_with_profile, query_notes, refresh_browse_cache,
 };
 use vulcan_app::scan::refresh_cache_incrementally;
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
@@ -37,6 +37,7 @@ use vulcan_core::properties::load_note_index;
 #[cfg(test)]
 use vulcan_core::scan_vault;
 use vulcan_core::search::{SearchMode, SearchSort};
+use vulcan_core::PermissionFilter;
 #[cfg(test)]
 use vulcan_core::ScanMode;
 use vulcan_core::{
@@ -51,14 +52,22 @@ const DATAVIEW_PREVIEW_LINE_LIMIT: usize = 24;
 const DATAVIEW_INLINE_PREVIEW_LIMIT: usize = 4;
 const DATAVIEW_BLOCK_PREVIEW_LIMIT: usize = 6;
 
-pub fn run_browse_tui(
+pub(crate) fn run_browse_tui(
     paths: &VaultPaths,
     refresh_mode: AutoScanMode,
     no_commit: bool,
+    authority: BrowseAuthority,
 ) -> Result<(), io::Error> {
+    // Without index authority the session reads the cache as it is.
+    let refresh_mode = if authority.can_index() {
+        refresh_mode
+    } else {
+        AutoScanMode::Off
+    };
     let background_refresh = prepare_browse_refresh(paths, refresh_mode)?;
 
-    let mut state = BrowseState::new(paths.clone(), load_notes(paths).map_err(io::Error::other)?)
+    let notes = load_notes(paths, &authority).map_err(io::Error::other)?;
+    let mut state = BrowseState::new_with_authority(paths.clone(), notes, authority)
         .map_err(io::Error::other)?;
     state.background_refresh = background_refresh;
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
@@ -83,8 +92,23 @@ pub fn run_browse_tui(
     result
 }
 
-fn load_notes(paths: &VaultPaths) -> Result<Vec<NoteIdentity>, String> {
-    list_note_identities(paths).map_err(|error| error.to_string())
+/// Refresh the index after an edit, when the profile may index.
+fn refresh_after_change(paths: &VaultPaths, can_index: bool) -> Result<(), String> {
+    if !can_index {
+        return Ok(());
+    }
+    refresh_cache_incrementally(paths)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+fn load_notes(
+    paths: &VaultPaths,
+    authority: &BrowseAuthority,
+) -> Result<Vec<NoteIdentity>, String> {
+    let mut notes = list_note_identities(paths).map_err(|error| error.to_string())?;
+    notes.retain(|note| authority.can_read(&note.path));
+    Ok(notes)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -118,25 +142,24 @@ fn run_event_loop(
                 BrowseAction::Continue => {}
                 BrowseAction::Quit => break,
                 BrowseAction::Edit(path) => {
+                    if let Err(error) = state.authority.check_edit(&path) {
+                        state.set_status(error);
+                        continue;
+                    }
                     let absolute = state.paths.vault_root().join(&path);
                     let paths = state.paths.clone();
+                    let can_index = state.authority.can_index();
                     let edit_result = with_terminal_suspended(terminal, || {
                         open_in_editor(&absolute)?;
-                        refresh_cache_incrementally(&paths)
-                            .map(|_| ())
-                            .map_err(|error| error.to_string())
+                        refresh_after_change(&paths, can_index)
                     });
                     match edit_result {
                         Ok(()) => {
                             if let Err(error) = state.reload_after_edit() {
                                 state.set_status(error);
-                            } else if let Err(error) = auto_commit.commit(
-                                &state.paths,
-                                "browse",
-                                std::slice::from_ref(&path),
-                                None,
-                                false,
-                            ) {
+                            } else if let Err(error) =
+                                state.commit(auto_commit, std::slice::from_ref(&path))
+                            {
                                 state.set_status(format!(
                                     "Updated {path}, but auto-commit failed: {error}"
                                 ));
@@ -152,14 +175,14 @@ fn run_event_loop(
                 }
                 BrowseAction::OpenBaseTui(path) => {
                     let paths = state.paths.clone();
+                    let can_index = state.authority.can_index();
+                    let guard = state.authority.guard().clone();
                     let open_result = with_terminal_suspended(terminal, || {
-                        let report =
-                            evaluate_base_file(&paths, &path).map_err(|error| error.to_string())?;
-                        bases_tui::run_bases_tui(&paths, &path, &report, None)
+                        let report = evaluate_base_file_with_guard(&paths, &path, &guard)
                             .map_err(|error| error.to_string())?;
-                        refresh_cache_incrementally(&paths)
-                            .map(|_| ())
-                            .map_err(|error| error.to_string())
+                        bases_tui::run_bases_tui(&paths, &path, &report, Some(guard))
+                            .map_err(|error| error.to_string())?;
+                        refresh_after_change(&paths, can_index)
                     });
                     match open_result {
                         Ok(()) => {
@@ -186,7 +209,12 @@ fn run_event_loop(
                             continue;
                         }
                     };
+                    if let Err(error) = state.authority.check_create(&relative_path) {
+                        state.set_status(error);
+                        continue;
+                    }
                     let paths = state.paths.clone();
+                    let can_index = state.authority.can_index();
                     let create_result = with_terminal_suspended(terminal, || {
                         let absolute = paths.vault_root().join(&relative_path);
                         if let Some(parent) = absolute.parent() {
@@ -196,22 +224,16 @@ fn run_event_loop(
                             fs::write(&absolute, "").map_err(|error| error.to_string())?;
                         }
                         open_in_editor(&absolute)?;
-                        refresh_cache_incrementally(&paths)
-                            .map(|_| ())
-                            .map_err(|error| error.to_string())
+                        refresh_after_change(&paths, can_index)
                     });
                     match create_result {
                         Ok(()) => {
                             state.clear_new_note_prompt();
                             if let Err(error) = state.reload_after_new_note(&relative_path) {
                                 state.set_status(error);
-                            } else if let Err(error) = auto_commit.commit(
-                                &state.paths,
-                                "browse",
-                                std::slice::from_ref(&relative_path),
-                                None,
-                                false,
-                            ) {
+                            } else if let Err(error) =
+                                state.commit(auto_commit, std::slice::from_ref(&relative_path))
+                            {
                                 state.set_status(format!(
                                     "Created {relative_path}, but auto-commit failed: {error}"
                                 ));
@@ -225,22 +247,31 @@ fn run_event_loop(
                 BrowseAction::Move {
                     source_path,
                     destination,
-                } => match move_note(&state.paths, &source_path, &destination, false) {
+                } => match state
+                    .authority
+                    .check_move(&source_path, &destination)
+                    .and_then(|()| {
+                        move_note_with_profile(
+                            &state.paths,
+                            &source_path,
+                            &destination,
+                            false,
+                            state.authority.profile(),
+                        )
+                        .map_err(|error| error.to_string())
+                    }) {
                     Ok(summary) => {
                         state.clear_move_prompt();
                         if let Err(error) = state.reload_after_move(&summary.destination_path) {
                             state.set_status(error);
-                        } else if let Err(error) = auto_commit.commit(
-                            &state.paths,
-                            "browse",
+                        } else if let Err(error) = state.commit(
+                            auto_commit,
                             &std::iter::once(summary.source_path.clone())
                                 .chain(std::iter::once(summary.destination_path.clone()))
                                 .chain(summary.rewritten_files.iter().map(|file| file.path.clone()))
                                 .collect::<BTreeSet<_>>()
                                 .into_iter()
                                 .collect::<Vec<_>>(),
-                            None,
-                            false,
                         ) {
                             state.set_status(format!(
                                 "Moved {} -> {}, but auto-commit failed: {error}",
@@ -253,7 +284,7 @@ fn run_event_loop(
                             ));
                         }
                     }
-                    Err(error) => state.set_status(error.to_string()),
+                    Err(error) => state.set_status(error),
                 },
             }
         }
@@ -754,13 +785,28 @@ struct BrowseState {
     preview_mode: PreviewMode,
     dataview_preview: CachedDataviewPreview,
     status: String,
+    authority: BrowseAuthority,
 }
 
 impl BrowseState {
-    #[allow(clippy::needless_pass_by_value)]
+    #[cfg(test)]
     fn new(paths: VaultPaths, notes: Vec<NoteIdentity>) -> Result<Self, String> {
+        let authority = BrowseAuthority::default_for(&paths);
+        Self::new_with_authority(paths, notes, authority)
+    }
+
+    #[allow(clippy::needless_pass_by_value)]
+    fn new_with_authority(
+        paths: VaultPaths,
+        notes: Vec<NoteIdentity>,
+        authority: BrowseAuthority,
+    ) -> Result<Self, String> {
         let tags = if paths.cache_db().exists() {
-            list_tags(&paths).map_err(|error| error.to_string())?
+            match authority.read_filter() {
+                Some(filter) => vulcan_core::list_tags_with_filter(&paths, Some(filter))
+                    .map_err(|error| error.to_string()),
+                None => list_tags(&paths).map_err(|error| error.to_string()),
+            }?
         } else {
             Vec::new()
         };
@@ -769,10 +815,13 @@ impl BrowseState {
             paths: paths.clone(),
             all_notes: notes.clone(),
             picker: NotePickerState::new(paths.clone(), notes.clone(), ""),
-            full_text: FullTextState::default(),
+            full_text: FullTextState {
+                read_filter: authority.read_filter().cloned(),
+                ..FullTextState::default()
+            },
             tag_filter: TagFilterState::new(paths.clone(), tags),
             property_filter: PropertyFilterState::new(paths.clone()),
-            calendar: CalendarViewState::new(&paths)?,
+            calendar: CalendarViewState::new_scoped(&paths, authority.read_filter().cloned())?,
             kanban_view: None,
             backlinks_view: None,
             links_view: None,
@@ -787,7 +836,26 @@ impl BrowseState {
             preview_mode: PreviewMode::File,
             dataview_preview: CachedDataviewPreview::default(),
             status: "Ready.".to_string(),
+            authority,
         })
+    }
+
+    /// Auto-commit `changed` under the session's profile; without Git
+    /// authority nothing is committed.
+    fn commit(&self, auto_commit: &AutoCommitPolicy, changed: &[String]) -> Result<(), String> {
+        if self.authority.check_git().is_err() {
+            return Ok(());
+        }
+        auto_commit
+            .commit(
+                &self.paths,
+                "browse",
+                changed,
+                self.authority.profile(),
+                false,
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1223,7 +1291,7 @@ impl BrowseState {
     }
 
     fn reload_after_edit(&mut self) -> Result<(), String> {
-        let notes = load_notes(&self.paths)?;
+        let notes = load_notes(&self.paths, &self.authority)?;
         self.all_notes.clone_from(&notes);
         self.picker.replace_notes_preserve_selection(notes);
         self.full_text.refresh_results(&self.paths)?;
@@ -1239,13 +1307,13 @@ impl BrowseState {
             view.reload(self.paths.vault_root())?;
         }
         if let Some(view) = self.doctor_view.as_mut() {
-            view.reload(&self.paths)?;
+            view.reload(&self.paths, &self.authority)?;
         }
         if let Some(view) = self.backlinks_view.as_mut() {
-            view.reload(&self.paths)?;
+            view.reload(&self.paths, self.authority.read_filter())?;
         }
         if let Some(view) = self.links_view.as_mut() {
-            view.reload(&self.paths)?;
+            view.reload(&self.paths, self.authority.read_filter())?;
         }
         self.refresh_last_scan_label();
         self.invalidate_dataview_preview();
@@ -1292,7 +1360,7 @@ impl BrowseState {
     }
 
     fn reload_after_new_note(&mut self, path: &str) -> Result<(), String> {
-        let notes = load_notes(&self.paths)?;
+        let notes = load_notes(&self.paths, &self.authority)?;
         self.all_notes.clone_from(&notes);
         self.picker.replace_notes_preserve_selection(notes);
         self.picker.select_path(path);
@@ -1368,7 +1436,7 @@ impl BrowseState {
         self.dataview_preview.path.clone_from(&selected_path);
         self.dataview_preview.lines = selected_path.map_or_else(
             || vec!["No matching note selected.".to_string()],
-            |path| build_dataview_preview(&self.paths, &path),
+            |path| build_dataview_preview(&self.paths, &path, &self.authority),
         );
         self.dataview_preview.stale = false;
     }
@@ -1799,7 +1867,11 @@ impl BrowseState {
             self.set_status("No matching note selected.");
             return Ok(());
         };
-        self.backlinks_view = Some(BacklinksViewState::load(&self.paths, &path)?);
+        self.backlinks_view = Some(BacklinksViewState::load(
+            &self.paths,
+            &path,
+            self.authority.read_filter(),
+        )?);
         self.kanban_view = None;
         self.links_view = None;
         self.git_view = None;
@@ -1812,7 +1884,11 @@ impl BrowseState {
             self.set_status("No matching note selected.");
             return Ok(());
         };
-        self.links_view = Some(OutgoingLinksViewState::load(&self.paths, &path)?);
+        self.links_view = Some(OutgoingLinksViewState::load(
+            &self.paths,
+            &path,
+            self.authority.read_filter(),
+        )?);
         self.kanban_view = None;
         self.backlinks_view = None;
         self.git_view = None;
@@ -1825,7 +1901,7 @@ impl BrowseState {
             self.set_status("No matching note selected.");
             return Ok(());
         };
-        self.doctor_view = Some(DoctorViewState::load(&self.paths, &path)?);
+        self.doctor_view = Some(DoctorViewState::load(&self.paths, &path, &self.authority)?);
         self.kanban_view = None;
         self.backlinks_view = None;
         self.links_view = None;
@@ -1834,6 +1910,7 @@ impl BrowseState {
     }
 
     fn open_git_view(&mut self) -> Result<(), String> {
+        self.authority.check_git()?;
         if !is_git_repo(self.paths.vault_root()) {
             return Err("Vault is not a git repo.".to_string());
         }
@@ -2242,9 +2319,13 @@ struct DoctorIssueRow {
 }
 
 impl DoctorViewState {
-    fn load(paths: &VaultPaths, note_path: &str) -> Result<Self, String> {
+    fn load(
+        paths: &VaultPaths,
+        note_path: &str,
+        authority: &BrowseAuthority,
+    ) -> Result<Self, String> {
         let report = doctor_vault(paths).map_err(|error| error.to_string())?;
-        let issues = doctor_issues_for_note(note_path, &report);
+        let issues = doctor_issues_for_note(note_path, &report, authority);
         let selected_index = (!issues.is_empty()).then_some(0);
         Ok(Self {
             note_path: note_path.to_string(),
@@ -2253,12 +2334,12 @@ impl DoctorViewState {
         })
     }
 
-    fn reload(&mut self, paths: &VaultPaths) -> Result<(), String> {
+    fn reload(&mut self, paths: &VaultPaths, authority: &BrowseAuthority) -> Result<(), String> {
         let selected_key = self
             .selected_issue()
             .map(|issue| (issue.kind.clone(), issue.message.clone()));
         let report = doctor_vault(paths).map_err(|error| error.to_string())?;
-        self.issues = doctor_issues_for_note(&self.note_path, &report);
+        self.issues = doctor_issues_for_note(&self.note_path, &report, authority);
         self.selected_index = selected_key.and_then(|key| {
             self.issues
                 .iter()
@@ -2341,9 +2422,13 @@ impl DoctorViewState {
     }
 }
 
+/// The doctor rows of one readable note, showing only readable candidate
+/// paths. Restricted sessions omit the orphan row, since whether a note has
+/// links can depend on notes they cannot see.
 fn doctor_issues_for_note(
     note_path: &str,
     report: &vulcan_core::DoctorReport,
+    authority: &BrowseAuthority,
 ) -> Vec<DoctorIssueRow> {
     let mut issues = Vec::new();
 
@@ -2359,7 +2444,11 @@ fn doctor_issues_for_note(
             .ambiguous_links
             .iter()
             .filter(|issue| issue.document_path.as_deref() == Some(note_path))
-            .map(|issue| doctor_link_issue_row("Ambiguous link", issue)),
+            .map(|issue| {
+                let mut issue = issue.clone();
+                issue.matches.retain(|path| authority.can_read(path));
+                doctor_link_issue_row("Ambiguous link", &issue)
+            }),
     );
     issues.extend(
         report
@@ -2393,7 +2482,8 @@ fn doctor_issues_for_note(
             detail_lines: vec!["Run scan or doctor fix to refresh the cache.".to_string()],
         });
     }
-    if report.orphan_notes.iter().any(|path| path == note_path) {
+    if authority.read_filter().is_none() && report.orphan_notes.iter().any(|path| path == note_path)
+    {
         issues.push(DoctorIssueRow {
             kind: "Orphan note".to_string(),
             message: format!("{note_path} has no inbound or outbound note links"),
@@ -2446,8 +2536,13 @@ struct BacklinksViewState {
 }
 
 impl BacklinksViewState {
-    fn load(paths: &VaultPaths, note_path: &str) -> Result<Self, String> {
-        let report = query_backlinks(paths, note_path).map_err(|error| error.to_string())?;
+    fn load(
+        paths: &VaultPaths,
+        note_path: &str,
+        filter: Option<&PermissionFilter>,
+    ) -> Result<Self, String> {
+        let report = vulcan_core::query_backlinks_with_filter(paths, note_path, filter)
+            .map_err(|error| error.to_string())?;
         let selected_index = (!report.backlinks.is_empty()).then_some(0);
         Ok(Self {
             note_path: report.note_path,
@@ -2456,9 +2551,14 @@ impl BacklinksViewState {
         })
     }
 
-    fn reload(&mut self, paths: &VaultPaths) -> Result<(), String> {
+    fn reload(
+        &mut self,
+        paths: &VaultPaths,
+        filter: Option<&PermissionFilter>,
+    ) -> Result<(), String> {
         let selected_path = self.selected_path().map(str::to_string);
-        let report = query_backlinks(paths, &self.note_path).map_err(|error| error.to_string())?;
+        let report = vulcan_core::query_backlinks_with_filter(paths, &self.note_path, filter)
+            .map_err(|error| error.to_string())?;
         self.note_path = report.note_path;
         self.backlinks = report.backlinks;
         self.selected_index = selected_path.and_then(|path| {
@@ -2570,8 +2670,13 @@ struct OutgoingLinksViewState {
 }
 
 impl OutgoingLinksViewState {
-    fn load(paths: &VaultPaths, note_path: &str) -> Result<Self, String> {
-        let report = query_links(paths, note_path).map_err(|error| error.to_string())?;
+    fn load(
+        paths: &VaultPaths,
+        note_path: &str,
+        filter: Option<&PermissionFilter>,
+    ) -> Result<Self, String> {
+        let report = vulcan_core::query_links_with_filter(paths, note_path, filter)
+            .map_err(|error| error.to_string())?;
         let selected_index = (!report.links.is_empty()).then_some(0);
         Ok(Self {
             note_path: report.note_path,
@@ -2580,7 +2685,11 @@ impl OutgoingLinksViewState {
         })
     }
 
-    fn reload(&mut self, paths: &VaultPaths) -> Result<(), String> {
+    fn reload(
+        &mut self,
+        paths: &VaultPaths,
+        filter: Option<&PermissionFilter>,
+    ) -> Result<(), String> {
         let selected_key = self.selected_link().map(|link| {
             (
                 link.resolved_target_path.clone(),
@@ -2588,7 +2697,8 @@ impl OutgoingLinksViewState {
                 link.raw_text.clone(),
             )
         });
-        let report = query_links(paths, &self.note_path).map_err(|error| error.to_string())?;
+        let report = vulcan_core::query_links_with_filter(paths, &self.note_path, filter)
+            .map_err(|error| error.to_string())?;
         self.note_path = report.note_path;
         self.links = report.links;
         self.selected_index = selected_key.and_then(|key| {
@@ -2774,6 +2884,8 @@ fn relative_time_label(timestamp: SystemTime) -> String {
 #[derive(Debug, Clone, Default)]
 struct FullTextState {
     query: String,
+    /// Restricts hits, before ranking limits, to readable notes.
+    read_filter: Option<PermissionFilter>,
     hits: Vec<SearchHit>,
     selected_index: Option<usize>,
     sort: SearchSort,
@@ -2917,7 +3029,7 @@ impl FullTextState {
             return Ok((Vec::new(), Vec::new()));
         }
 
-        search_vault(
+        vulcan_core::search::search_vault_with_filter(
             paths,
             &SearchQuery {
                 text: self.query.clone(),
@@ -2935,6 +3047,7 @@ impl FullTextState {
                 fuzzy: false,
                 explain: self.show_explain,
             },
+            self.read_filter.as_ref(),
         )
         .map(|report| {
             (
@@ -3252,19 +3365,36 @@ impl PropertyFilterState {
     }
 }
 
-fn build_dataview_preview(paths: &VaultPaths, path: &str) -> Vec<String> {
-    let note_index = match load_note_index(paths) {
-        Ok(note_index) => note_index,
-        Err(error) => return vec![format!("Failed to load Dataview note index: {error}")],
+/// The selected note's Dataview results. Restricted sessions evaluate inline
+/// expressions and blocks inside the profile's readable universe.
+fn build_dataview_preview(
+    paths: &VaultPaths,
+    path: &str,
+    authority: &BrowseAuthority,
+) -> Vec<String> {
+    let inline_results = if authority.read_filter().is_some() {
+        match vulcan_app::browse::build_dataview_inline_report(paths, path, Some(authority.guard()))
+        {
+            Ok(report) => report.results,
+            Err(error) => {
+                return vec![format!(
+                    "Failed to evaluate Dataview inline fields: {error}"
+                )]
+            }
+        }
+    } else {
+        let note_index = match load_note_index(paths) {
+            Ok(note_index) => note_index,
+            Err(error) => return vec![format!("Failed to load Dataview note index: {error}")],
+        };
+        let Some(note) = note_index
+            .values()
+            .find(|note| note.document_path.as_str() == path)
+        else {
+            return vec![format!("Selected note is not indexed: {path}")];
+        };
+        evaluate_note_inline_expressions(note, &note_index)
     };
-    let Some(note) = note_index
-        .values()
-        .find(|note| note.document_path.as_str() == path)
-    else {
-        return vec![format!("Selected note is not indexed: {path}")];
-    };
-
-    let inline_results = evaluate_note_inline_expressions(note, &note_index);
     let blocks = match load_dataview_blocks(paths, path, None) {
         Ok(blocks) => blocks,
         Err(error)
@@ -3283,7 +3413,7 @@ fn build_dataview_preview(paths: &VaultPaths, path: &str) -> Vec<String> {
 
     let mut lines = Vec::new();
     append_dataview_inline_preview(&mut lines, &inline_results);
-    append_dataview_block_preview(paths, &mut lines, &blocks);
+    append_dataview_block_preview(paths, &mut lines, &blocks, authority);
     truncate_preview_strings(
         lines,
         DATAVIEW_PREVIEW_LINE_LIMIT,
@@ -3329,6 +3459,7 @@ fn append_dataview_block_preview(
     paths: &VaultPaths,
     lines: &mut Vec<String>,
     blocks: &[vulcan_core::DataviewBlockRecord],
+    authority: &BrowseAuthority,
 ) {
     if blocks.is_empty() {
         return;
@@ -3343,7 +3474,7 @@ fn append_dataview_block_preview(
             "Block {} ({}, line {})",
             block.block_index, block.language, block.line_number
         ));
-        let block_lines = dataview_block_preview_lines(paths, block);
+        let block_lines = dataview_block_preview_lines(paths, block, authority);
         let visible_lines = block_lines
             .iter()
             .take(DATAVIEW_BLOCK_PREVIEW_LIMIT)
@@ -3362,10 +3493,35 @@ fn append_dataview_block_preview(
 fn dataview_block_preview_lines(
     paths: &VaultPaths,
     block: &vulcan_core::DataviewBlockRecord,
+    authority: &BrowseAuthority,
 ) -> Vec<String> {
+    let restricted = authority.read_filter().is_some();
     match block.language.as_str() {
+        "dataview" if restricted => {
+            match vulcan_app::browse::build_dataview_query_report_with_guard(
+                paths,
+                &block.source,
+                Some(&block.file),
+                authority.guard(),
+            ) {
+                Ok(result) => dql_preview_lines(&result),
+                Err(error) => vec![format!("error: {error}")],
+            }
+        }
         "dataview" => match evaluate_dql(paths, &block.source, Some(&block.file)) {
             Ok(result) => dql_preview_lines(&result),
+            Err(error) => vec![format!("error: {error}")],
+        },
+        "dataviewjs" if restricted => match vulcan_core::evaluate_dataview_js_with_options(
+            paths,
+            &block.source,
+            Some(&block.file),
+            vulcan_core::DataviewJsEvalOptions {
+                permission_profile: authority.profile().map(ToOwned::to_owned),
+                ..vulcan_core::DataviewJsEvalOptions::default()
+            },
+        ) {
+            Ok(result) => dataview_js_preview_lines(&result),
             Err(error) => vec![format!("error: {error}")],
         },
         "dataviewjs" => match evaluate_dataview_js_query(paths, &block.source, Some(&block.file)) {
@@ -3754,6 +3910,7 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
     use tempfile::TempDir;
+    use vulcan_app::browse::move_note;
 
     fn note(path: &str, aliases: &[&str]) -> NoteIdentity {
         NoteIdentity {
@@ -3984,6 +4141,90 @@ mod tests {
             fs::read_to_string(temp_dir.path().join("Home.md")).expect("home should be readable");
         assert!(!home.contains("[[Projects/Alpha]]"));
         assert!(home.contains("[[Alpha]]"));
+    }
+
+    /// A restricted profile browses only what it can read: lists, search,
+    /// backlinks, doctor candidates, and Dataview previews leave hidden
+    /// notes out, and changes need the matching grants.
+    #[test]
+    fn restricted_profiles_browse_only_readable_notes() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let root = temp_dir.path();
+        let paths = VaultPaths::new(root);
+        write_note(
+            root,
+            "Public/Home.md",
+            "dashboard [[Public/Target]] and [[Dup]]\n\n```dataview\nLIST FROM \"\"\n```\n",
+        );
+        write_note(root, "Public/Target.md", "# Target");
+        write_note(root, "Public/Dup.md", "# Dup");
+        write_note(root, "Private/Dup.md", "# Dup");
+        write_note(
+            root,
+            "Private/Secret.md",
+            "dashboard secret [[Public/Target]]",
+        );
+        scan_fixture(&paths);
+        fs::write(
+            paths.config_file(),
+            "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\"] }\nwrite = { allow = [\"folder:Public/**\"] }\n",
+        )
+        .unwrap();
+        let selection = vulcan_core::resolve_permission_profile(&paths, Some("scoped")).unwrap();
+        let authority = BrowseAuthority::new(
+            vulcan_core::ProfilePermissionGuard::new(&paths, selection),
+            Some("scoped".to_string()),
+        )
+        .unwrap();
+        let notes = load_notes(&paths, &authority).unwrap();
+        assert!(notes.iter().all(|note| note.path.starts_with("Public/")));
+        assert_eq!(notes.len(), 3);
+        let preview = build_dataview_preview(&paths, "Public/Home.md", &authority);
+        assert!(!preview.join("\n").contains("Private"), "{preview:?}");
+        assert!(authority.check_git().is_err());
+        assert!(authority.check_create("Private/New.md").is_err());
+        let mut state =
+            BrowseState::new_with_authority(paths, notes, authority).expect("state should build");
+
+        state.handle_key(ctrl('f'));
+        for character in "dashboard".chars() {
+            state.handle_key(key(KeyCode::Char(character)));
+        }
+        assert_eq!(state.filtered_count(), 1);
+        assert_eq!(state.selected_path(), Some("Public/Home.md"));
+        state.switch_mode(BrowseMode::Fuzzy).unwrap();
+
+        state.picker.select_path("Public/Target.md");
+        state.handle_key(ctrl('b'));
+        assert_eq!(state.filtered_count(), 1);
+        assert_eq!(state.selected_path(), Some("Public/Home.md"));
+        state.handle_key(key(KeyCode::Esc));
+
+        // Doctor rows show readable candidates only, and no orphan verdict
+        // that could depend on hidden links.
+        let mut report = doctor_vault(&state.paths).unwrap();
+        report.ambiguous_links.push(vulcan_core::DoctorLinkIssue {
+            document_path: Some("Public/Home.md".to_string()),
+            message: "ambiguous".to_string(),
+            target: Some("Dup".to_string()),
+            matches: vec!["Private/Dup.md".to_string(), "Public/Dup.md".to_string()],
+        });
+        report.orphan_notes.push("Public/Home.md".to_string());
+        let rows = |authority: &BrowseAuthority| {
+            format!(
+                "{:?}",
+                doctor_issues_for_note("Public/Home.md", &report, authority)
+            )
+        };
+        let scoped = rows(&state.authority);
+        assert!(scoped.contains("Public/Dup.md"), "{scoped}");
+        assert!(!scoped.contains("Private"), "{scoped}");
+        assert!(!scoped.contains("Orphan"), "{scoped}");
+        let full = rows(&BrowseAuthority::default_for(&state.paths));
+        assert!(
+            full.contains("Private/Dup.md") && full.contains("Orphan"),
+            "{full}"
+        );
     }
 
     #[test]
