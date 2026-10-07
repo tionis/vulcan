@@ -1,8 +1,9 @@
 # mdbase CEL engine selection
 
-Vulcan uses [`cel-interpreter` 0.10.0](https://crates.io/crates/cel-interpreter/0.10.0)
-with [`cel-parser` 0.10.1](https://crates.io/crates/cel-parser/0.10.1) behind a
-Vulcan-owned adapter. Both releases use Rust 2021 and avoid the `LazyLock`
+Vulcan now uses [`cel` 0.15.0](https://crates.io/crates/cel/0.15.0) behind the
+Vulcan-owned adapter (see the 2026-10 update below). The rest of this section records the
+original selection of [`cel-interpreter` 0.10.0](https://crates.io/crates/cel-interpreter/0.10.0)
+with [`cel-parser` 0.10.1](https://crates.io/crates/cel-parser/0.10.1). Both releases use Rust 2021 and avoid the `LazyLock`
 dependency introduced by the renamed `cel` 0.11 line, so they remain compatible
 with the repository's conservative Rust 1.77 compatibility requirement. An
 isolated build of the selected engine, parser, and `antlr4rust` 0.3.0-rc2
@@ -25,5 +26,17 @@ by Vulcan and must consume the adapter's explicit traversal budget.
 
 The repository's MSRV is now Rust 1.88, so the reason above no longer applies: the `cel` 0.14/0.15
 line declares Rust 1.86 and replaces `paste` with the maintained `pastey`. See
-[the upstream review](mdbase-upstream-2026-10.md); migrating the adapter removes the
-`RUSTSEC-2024-0436` exception.
+[the upstream review](mdbase-upstream-2026-10.md).
+
+The adapter now uses `cel` 0.15.0 (with `antlr4rust` 0.6 and `pastey`; `uuid` is held at 1.26.1,
+the newest release that supports Rust 1.88), and `deny.toml` no longer excepts
+`RUSTSEC-2024-0436`. Behavioral notes:
+
+- Every program compiles in one shared environment built once per process. Constructing the
+  standard environment per evaluation, as `Context::default()` does, is avoided.
+- The standard library's `duration(string)` parses Go-style strings (`1h30m`), and new
+  declarations may not shadow standard overloads. A parse-time `duration` macro rewrites calls to
+  Vulcan's ISO 8601 implementation, registered in every context, so `duration('P1D')` keeps the
+  mdbase meaning everywhere and Go-style strings are rejected.
+- Every pinned upstream suite (`cel`, `cel_match`, `cel_query`, `links`, saved views) and the
+  native feature gates pass unchanged.

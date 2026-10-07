@@ -6,8 +6,8 @@
 use crate::predicate::{
     Atom, Comparison, Decision, Dialect, Field, Literal, Predicate, RecordValues,
 };
-use cel_parser::ast::{operators, Expr, IdedExpr};
-use cel_parser::reference::Val;
+use cel::common::ast::{operators, Expr, IdedExpr, LiteralValue};
+
 use rusqlite::types::Value;
 use serde::Serialize;
 
@@ -112,11 +112,11 @@ fn simple_field(name: &str) -> Option<Field> {
 
 fn literal(expression: &IdedExpr) -> Option<Literal> {
     match &expression.expr {
-        Expr::Literal(Val::String(value)) if !value.contains('\0') => {
-            Some(Literal::Text(value.clone()))
+        Expr::Literal(LiteralValue::String(value)) if !value.inner().contains('\0') => {
+            Some(Literal::Text(value.inner().to_string()))
         }
-        Expr::Literal(Val::Boolean(value)) => Some(Literal::Bool(*value)),
-        Expr::Literal(Val::Int(value)) => Some(Literal::Integer(*value)),
+        Expr::Literal(LiteralValue::Boolean(value)) => Some(Literal::Bool(*value.inner())),
+        Expr::Literal(LiteralValue::Int(value)) => Some(Literal::Integer(*value.inner())),
         // Numeric coercion, null/presence, unsigned values and dynamic expressions
         // require separate equivalence evidence; unsupported syntax stays residual.
         _ => None,

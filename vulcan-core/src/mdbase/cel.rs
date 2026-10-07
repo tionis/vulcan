@@ -2,16 +2,18 @@ use super::{
     parse_mdbase_link_value, MdbaseDiagnostic, MdbaseDiagnosticLevel, MdbaseLink, MdbaseLinkFormat,
     MdbaseLinkResolution, MdbaseRecordDocument, MdbaseRecordSet,
 };
-use cel_interpreter::extractors::This;
-use cel_interpreter::{Context, ExecutionError, Program, Value};
-use cel_parser::ast::{EntryExpr, Expr, IdedEntryExpr, IdedExpr};
+use cel::common::ast::CallExpr;
+use cel::common::ast::{EntryExpr, Expr, IdedEntryExpr, IdedExpr};
+use cel::extractors::This;
+use cel::parser::Macro;
+use cel::{Context, Env, ExecutionError, Program, Value};
 use chrono::{DateTime, FixedOffset, Utc};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 mod value_limits;
 use value_limits::{inspect_bindings, inspect_value, measure_bindings};
@@ -207,7 +209,7 @@ impl MdbaseCelEngine {
             ));
         }
 
-        let expression = catch_unwind(AssertUnwindSafe(|| cel_parser::Parser::new().parse(source)))
+        let expression = catch_unwind(AssertUnwindSafe(|| mdbase_cel_env().parser().parse(source)))
             .map_err(|_| {
                 MdbaseCelError::new(
                     "expression_compile_error",
@@ -218,7 +220,7 @@ impl MdbaseCelEngine {
         let stats = inspect_ast(&expression, &self.limits)?;
         let mut projection_reads = ProjectionReads::default();
         collect_projection_dependencies(&expression, &mut projection_reads);
-        let program = catch_unwind(AssertUnwindSafe(|| Program::compile(source)))
+        let program = catch_unwind(AssertUnwindSafe(|| mdbase_cel_env().compile(source)))
             .map_err(|_| {
                 MdbaseCelError::new(
                     "expression_compile_error",
@@ -247,7 +249,7 @@ impl MdbaseCelEngine {
         bindings: &BTreeMap<String, serde_json::Value>,
     ) -> Result<serde_json::Value, MdbaseCelError> {
         inspect_bindings(bindings, &self.limits)?;
-        let mut context = Context::default();
+        let mut context = mdbase_context();
         add_json_bindings(&mut context, bindings)?;
         let value = program.program.execute(&context).map_err(|error| {
             MdbaseCelError::new("expression_evaluation_error", error.to_string())
@@ -275,10 +277,10 @@ impl MdbaseCelEngine {
         &self,
         program: &MdbaseCelProgram,
         evaluation: &MdbaseCelContext,
-    ) -> Result<Context<'static>, MdbaseCelError> {
+    ) -> Result<Context<'static, 'static>, MdbaseCelError> {
         evaluation.validate_program(program)?;
         inspect_bindings(&evaluation.bindings, &self.limits)?;
-        let mut context = Context::default();
+        let mut context = mdbase_context();
         add_json_bindings(&mut context, &evaluation.bindings)?;
         Ok(context)
     }
@@ -287,7 +289,7 @@ impl MdbaseCelEngine {
         &self,
         program: &MdbaseCelProgram,
         evaluation: &MdbaseCelContext,
-        mut context: Context<'_>,
+        mut context: Context<'_, '_>,
     ) -> Result<MdbaseCelEvaluation, MdbaseCelError> {
         add_mdbase_functions(
             &mut context,
@@ -390,15 +392,15 @@ fn collect_projection_dependencies(expression: &IdedExpr, dependencies: &mut Pro
             collect_projection_dependencies(&select.operand, dependencies);
         }
         Expr::Call(call) => {
-            if call.func_name == cel_parser::ast::operators::INDEX
+            if call.func_name == cel::common::ast::operators::INDEX
                 && matches!(
                     call.args.first().map(|operand| &operand.expr),
                     Some(Expr::Ident(name)) if name == "projection"
                 )
             {
                 match call.args.get(1).map(|key| &key.expr) {
-                    Some(Expr::Literal(cel_parser::reference::Val::String(name))) => {
-                        dependencies.names.insert(name.clone());
+                    Some(Expr::Literal(cel::common::ast::LiteralValue::String(name))) => {
+                        dependencies.names.insert(name.inner().to_string());
                     }
                     _ => dependencies.dynamic = true,
                 }
@@ -441,7 +443,7 @@ fn collect_projection_dependencies(expression: &IdedExpr, dependencies: &mut Pro
 }
 
 fn add_json_bindings(
-    context: &mut Context<'_>,
+    context: &mut Context<'_, '_>,
     bindings: &BTreeMap<String, serde_json::Value>,
 ) -> Result<(), MdbaseCelError> {
     for (name, value) in bindings {
@@ -1006,7 +1008,7 @@ pub fn mdbase_query_input_evidence(
     let mut bindings = record_bindings(record, &known_fields, false);
     bindings.insert("projection".to_string(), serde_json::json!({}));
     bindings.insert("this".to_string(), serde_json::Value::Null);
-    let converted = add_json_bindings(&mut Context::default(), &bindings).is_ok();
+    let converted = add_json_bindings(&mut mdbase_context(), &bindings).is_ok();
     let (bytes, nodes, width) = measure_bindings(&bindings).unwrap_or((usize::MAX, 0, 0));
     MdbaseQueryInputEvidence {
         converted,
@@ -1106,8 +1108,46 @@ fn normalize_tag(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_string())
 }
 
+/// The private function `duration(string)` calls after macro expansion.
+const MDBASE_DURATION_FUNCTION: &str = "mdbaseDuration";
+
+/// The environment shared by every mdbase program and evaluation: the CEL
+/// standard library plus a `duration` macro. The standard `duration` parses
+/// Go-style strings (`1h30m`); the mdbase profile requires ISO 8601 (`P1D`,
+/// `PT30M`), so calls are rewritten to [`MDBASE_DURATION_FUNCTION`] at parse
+/// time. Built once: a fresh standard environment per evaluation is costly.
+fn mdbase_cel_env() -> Arc<Env> {
+    static ENV: OnceLock<Arc<Env>> = OnceLock::new();
+    Arc::clone(ENV.get_or_init(|| {
+        let mut env = Env::stdlib();
+        env.add_macro(Macro::global(
+            "duration",
+            1,
+            |helper, _target, arguments| {
+                Ok(Some(helper.next_expr(Expr::Call(CallExpr {
+                    func_name: MDBASE_DURATION_FUNCTION.to_string(),
+                    target: None,
+                    args: std::mem::take(arguments),
+                }))))
+            },
+        ))
+        .expect("the standard library declares no duration macro");
+        Arc::new(env)
+    }))
+}
+
+/// A context on the shared environment. `duration` is part of the language,
+/// so every context resolves it, not only those with mdbase host functions.
+fn mdbase_context() -> Context<'static, 'static> {
+    let mut context = Context::with_env(mdbase_cel_env());
+    context
+        .add_function(MDBASE_DURATION_FUNCTION, iso8601_duration)
+        .expect("the duration implementation does not shadow a standard overload");
+    context
+}
+
 fn add_mdbase_functions(
-    context: &mut Context<'_>,
+    context: &mut Context<'_, '_>,
     clock: &MdbaseCelClock,
     source_path: Option<&str>,
     link_index: Option<&Arc<MdbaseCelLinkIndex>>,
@@ -1115,13 +1155,17 @@ fn add_mdbase_functions(
 ) {
     let now: DateTime<FixedOffset> = clock.now_utc.fixed_offset();
     let today = Arc::new(clock.today());
-    context.add_function("now", move || now);
-    context.add_function("today", move || Arc::clone(&today));
-    context.add_function("duration", iso8601_duration);
-    context.add_function("inFolder", file_in_folder);
-    context.add_function("hasTag", file_has_tag);
-    context.add_function("hasLink", file_has_link);
-    context.add_function("asLink", file_as_link);
+    // Names that clash with standard overloads are rejected; none of these
+    // do, so a failure is a programming error caught by every evaluation test.
+    let register = |result: Result<(), cel::DeclarationError>| {
+        result.expect("mdbase functions do not shadow standard overloads");
+    };
+    register(context.add_function("now", move || now));
+    register(context.add_function("today", move || Arc::clone(&today)));
+    register(context.add_function("inFolder", file_in_folder));
+    register(context.add_function("hasTag", file_has_tag));
+    register(context.add_function("hasLink", file_has_link));
+    register(context.add_function("asLink", file_as_link));
 
     let source_path = source_path.unwrap_or_default().to_string();
     // The index is an immutable, caller-authorized snapshot. Capturing its Arc
@@ -1129,13 +1173,15 @@ fn add_mdbase_functions(
     let index = link_index.cloned().unwrap_or_default();
     let link_index = Arc::clone(&index);
     let link_source = source_path.clone();
-    context.add_function("link", move |value: Arc<String>| {
+    register(context.add_function("link", move |value: Arc<String>| {
         cel_link_from_string(&value, &link_source, &link_index)
-    });
+    }));
     let budget = Arc::new(Mutex::new(link_budget));
-    context.add_function("asFile", move |This(link): This<Value>| {
-        link_as_file(&link, &source_path, &index, &budget)
-    });
+    register(
+        context.add_function("asFile", move |This(link): This<Value>| {
+            link_as_file(&link, &source_path, &index, &budget)
+        }),
+    );
 }
 
 fn file_in_folder(This(file): This<Value>, folder: Arc<String>) -> Result<bool, ExecutionError> {
@@ -1155,7 +1201,7 @@ fn file_has_tag(This(file): This<Value>, tag: Arc<String>) -> Result<bool, Execu
     };
     let tag = take_arc_string(tag);
     let wanted = tag.trim().trim_start_matches('#');
-    let Some(Value::List(tags)) = file.get(&"tags".to_string().into()) else {
+    let Some(Value::List(tags)) = file.get(&cel::objects::Key::from("tags")) else {
         return Ok(false);
     };
     Ok(tags.iter().any(|value| {
@@ -1175,7 +1221,7 @@ fn file_has_link(This(file): This<Value>, wanted: Value) -> Result<bool, Executi
         ));
     };
     let wanted = link_comparison_values(&wanted);
-    let Some(Value::List(links)) = file.get(&"links".into()) else {
+    let Some(Value::List(links)) = file.get(&cel::objects::Key::from("links")) else {
         return Ok(false);
     };
     Ok(links.iter().any(|link| {
@@ -1218,8 +1264,7 @@ fn cel_link_from_string(
 }
 
 fn cel_link_value(link: MdbaseLink) -> Result<Value, ExecutionError> {
-    cel_interpreter::to_value(link)
-        .map_err(|error| ExecutionError::function_error("link", error.to_string()))
+    cel::to_value(link).map_err(|error| ExecutionError::function_error("link", error.to_string()))
 }
 
 fn link_as_file(
@@ -1245,7 +1290,7 @@ fn link_as_file(
         .iter()
         .find(|target| target.path == path)
         .map_or(Ok(Value::Null), |target| {
-            cel_interpreter::to_value(CelJson(&target.file))
+            cel::to_value(CelJson(&target.file))
                 .map_err(|error| ExecutionError::function_error("asFile", error.to_string()))
         })
 }
@@ -1338,7 +1383,7 @@ fn link_member_string(value: &Value, member: &str) -> Option<String> {
     let Value::Map(value) = value else {
         return None;
     };
-    match value.get(&member.into()) {
+    match value.get(&cel::objects::Key::from(member)) {
         Some(Value::String(value)) => Some(value.to_string()),
         _ => None,
     }
@@ -1355,7 +1400,7 @@ fn file_member_string(
             "target is not an mdbase file object",
         ));
     };
-    match file.get(&member.to_string().into()) {
+    match file.get(&cel::objects::Key::from(member)) {
         Some(Value::String(value)) => Ok(Arc::clone(value)),
         _ => Err(ExecutionError::function_error(
             function,
@@ -1658,6 +1703,31 @@ mod tests {
     }
 
     #[test]
+    fn duration_is_iso_8601_everywhere_including_nested_calls() {
+        let engine = MdbaseCelEngine::default();
+        let evaluate = |source: &str| {
+            engine
+                .compile(source)
+                .and_then(|program| engine.evaluate(&program, &BTreeMap::new()))
+        };
+        for (source, expected) in [
+            ("duration('P1D') == duration('PT24H')", true),
+            ("[duration('PT1H')].all(d, d == duration('PT60M'))", true),
+            ("duration('P1DT2H') > duration('P1D')", true),
+        ] {
+            assert_eq!(
+                evaluate(source).unwrap(),
+                serde_json::json!(expected),
+                "{source}"
+            );
+        }
+        // The standard library's Go-style strings are not portable mdbase durations.
+        for source in ["duration('1h30m')", "duration('P1Y')", "duration(1)"] {
+            assert!(evaluate(source).is_err(), "{source}");
+        }
+    }
+
+    #[test]
     fn persisted_integers_support_int_arithmetic_and_keep_numeric_comparisons() {
         let engine = MdbaseCelEngine::default();
         let bindings = BTreeMap::from([
@@ -1936,7 +2006,7 @@ mod tests {
             for iteration in 0..1020 {
                 let start = std::time::Instant::now();
                 {
-                    let mut context = Context::default();
+                    let mut context = mdbase_context();
                     // Reproduce the previous registration's full snapshot copy.
                     let captured = if legacy {
                         Arc::new((*index).clone())
@@ -1974,7 +2044,7 @@ mod tests {
         };
         let index = Arc::new(MdbaseCelLinkIndex::new(&records, "id"));
         for _ in 0..128 {
-            let mut context = Context::default();
+            let mut context = mdbase_context();
             add_mdbase_functions(
                 &mut context,
                 &fixed_clock(),
@@ -1984,7 +2054,8 @@ mod tests {
             );
             // Both closures must own this exact allocation, not deep copies.
             assert_eq!(Arc::strong_count(&index), 3);
-            let value = cel_interpreter::Program::compile("link('[[open]]').asFile().path")
+            let value = mdbase_cel_env()
+                .compile("link('[[open]]').asFile().path")
                 .expect("compile")
                 .execute(&context)
                 .expect("resolve");
