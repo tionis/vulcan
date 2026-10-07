@@ -282,30 +282,6 @@ fn select_candidate_rows(
     )?)
 }
 
-/// File-object fields a stored note record carries; the rest (tags, links,
-/// inlinks, tasks, lists) need hydration.
-const STORED_FILE_FIELDS: &[&str] = &[
-    "path",
-    "name",
-    "basename",
-    "ext",
-    "folder",
-    "link",
-    "size",
-    "mtime",
-    "ctime",
-    "mday",
-    "cday",
-    "day",
-    "frontmatter",
-    "properties",
-    "starred",
-    "aliases",
-];
-
-/// File methods that read stored fields only.
-const STORED_FILE_METHODS: &[&str] = &["asLink", "hasProperty", "inFolder"];
-
 /// Whether evaluating `query` may read a page row's hydrated file-object
 /// fields; when not, rows load their stored fields only. Task queries
 /// always do. `this` and notes reached through links hydrate on demand
@@ -329,69 +305,15 @@ fn reads_row_file_objects(query: &DqlQuery) -> bool {
         .chain(&query.list_expression)
         .chain(&query.calendar_expression)
         .chain(commands)
-        .any(reads_file_object)
-}
-
-/// A file object that may be a row's: `file`, or `<base>.file` for any
-/// base except `this`.
-fn is_row_file(expr: &Expr) -> bool {
-    match expr {
-        Expr::Identifier(name) => normalize_field_name(name) == "file",
-        Expr::FieldAccess(base, field) => normalize_field_name(field) == "file" && !is_this(base),
-        _ => false,
-    }
-}
-
-fn is_whole_row(expr: &Expr) -> bool {
-    matches!(expr, Expr::Identifier(name) if matches!(normalize_field_name(name).as_str(), "row" | "rows"))
-}
-
-fn reads_file_object(expr: &Expr) -> bool {
-    // The base of a row's file object: identifiers name rows, `this`, or
-    // link-valued fields, none of which is a file object itself.
-    let base_reads = |file: &Expr| match file {
-        Expr::FieldAccess(base, _) if !matches!(**base, Expr::Identifier(_)) => {
-            reads_file_object(base)
-        }
-        _ => false,
-    };
-    match expr {
-        Expr::FieldAccess(file, field) if is_row_file(file) => {
-            !STORED_FILE_FIELDS.contains(&canonical_file_field_name(field).as_str())
-                || base_reads(file)
-        }
-        Expr::MethodCall(file, method, args) if is_row_file(file) => {
-            !STORED_FILE_METHODS.contains(&method.as_str())
-                || args.iter().any(reads_file_object)
-                || base_reads(file)
-        }
-        expr if is_row_file(expr) || is_whole_row(expr) => true,
-        // `row.status` reads a field, not the whole row.
-        Expr::FieldAccess(base, _) if is_whole_row(base) => false,
-        Expr::FieldAccess(base, _) => reads_file_object(base),
-        Expr::IndexAccess(base, index) => {
-            is_row_file(base)
-                || is_whole_row(base)
-                || reads_file_object(base)
-                || reads_file_object(index)
-        }
-        Expr::Array(items) => items.iter().any(reads_file_object),
-        Expr::Object(fields) => fields.iter().any(|(_, value)| reads_file_object(value)),
-        Expr::BinaryOp(left, _, right) => reads_file_object(left) || reads_file_object(right),
-        Expr::UnaryOp(_, operand) => reads_file_object(operand),
-        Expr::FunctionCall(_, args) => args.iter().any(reads_file_object),
-        Expr::MethodCall(base, _, args) => {
-            reads_file_object(base) || args.iter().any(reads_file_object)
-        }
-        Expr::Lambda(_, body) => reads_file_object(body),
-        Expr::Null
-        | Expr::Bool(_)
-        | Expr::Number(_)
-        | Expr::Str(_)
-        | Expr::Regex { .. }
-        | Expr::Identifier(_)
-        | Expr::FormulaRef(_) => false,
-    }
+        .any(|expr| {
+            crate::expression::analysis::reads_row_file_fields(
+                expr,
+                crate::expression::analysis::RowBindings {
+                    whole_rows: &["row", "rows"],
+                    this_is_row: false,
+                },
+            )
+        })
 }
 
 /// The predicate of a `WHERE` that sees the page rows exactly as `FROM`

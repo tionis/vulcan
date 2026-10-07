@@ -1,23 +1,22 @@
 use crate::expression::eval::EvalContext;
 use crate::expression::parse_expression;
 use crate::expression::value::DataviewTimeZone;
+use crate::note_lookup::{IndexedNoteLookup, NoteLookup};
 use crate::paths::{
     normalize_relative_input_path, secure_read_to_string, secure_write, RelativePathError,
     RelativePathOptions,
 };
 use crate::permissions::{PermissionError, PermissionFilter, PermissionGuard};
 use crate::properties::{
-    build_note_lookup_index, hydrate_note_index_entries, load_note_index_with_filter,
-    load_note_index_with_filter_deferring_hydration, load_note_index_with_guard,
-    load_note_index_with_guard_deferring_hydration, note_filter_expression_source,
-    query_notes_with_scope, NoteIndexReadScope,
+    build_note_lookup_index, load_indexed_note_lookup, note_filter_expression_source,
+    query_notes_report_over, query_notes_with_filter, NoteIndexReadScope,
 };
 use crate::tasknotes::extract_tasknote;
 use crate::{load_vault_config, NoteQuery, NoteRecord, PropertyError, VaultPaths};
 use serde::Serialize;
 use serde_json::Value;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::path::Path;
@@ -148,6 +147,10 @@ pub struct BasesSourceRequest {
     pub config: Option<Value>,
     #[serde(skip)]
     pub read_filter: Option<PermissionFilter>,
+    /// Rows need stored fields only: nothing in the base reads a row's
+    /// tags, links, inlinks, tasks, or lists.
+    #[serde(skip)]
+    pub stored_only: bool,
 }
 
 pub trait BasesSource: Send + Sync {
@@ -157,62 +160,51 @@ pub trait BasesSource: Send + Sync {
         request: &BasesSourceRequest,
     ) -> Result<Vec<NoteRecord>, BasesError>;
 
-    /// Produce rows for a guarded evaluation. `authorized_index` is the
-    /// complete policy-authorized note universe for this evaluation. The
-    /// default delegates to [`BasesSource::rows`]; the evaluator still
-    /// authorizes every returned row, so overriding is an optimization and
-    /// lets sources keep expression filters inside the authorized universe.
-    fn rows_in_scope(
-        &self,
-        paths: &VaultPaths,
-        request: &BasesSourceRequest,
-        authorized_index: &HashMap<String, NoteRecord>,
-    ) -> Result<Vec<NoteRecord>, BasesError> {
-        let _ = authorized_index;
-        self.rows(paths, request)
-    }
-
-    /// [`BasesSource::rows`], or [`BasesSource::rows_in_scope`] with an
-    /// authorized universe, plus the note plan that produced the rows for
-    /// `--explain` output (QRY.5). The default reports no plan.
+    /// Rows for an evaluation over `universe`, its readable notes, plus the
+    /// note plan that produced them for `--explain` output (QRY.5). Rows
+    /// need only stored fields when `request.stored_only` is set. The
+    /// evaluator still authorizes every row against the universe, so
+    /// overriding is an optimization that keeps filters inside it. The
+    /// default delegates to [`BasesSource::rows`] and reports no plan.
     fn rows_planned(
         &self,
         paths: &VaultPaths,
         request: &BasesSourceRequest,
-        authorized_index: Option<&HashMap<String, NoteRecord>>,
+        universe: Option<&IndexedNoteLookup<'_>>,
     ) -> Result<(Vec<NoteRecord>, Option<crate::plan::QueryPlanExplain>), BasesError> {
-        match authorized_index {
-            Some(index) => self.rows_in_scope(paths, request, index),
-            None => self.rows(paths, request),
-        }
-        .map(|rows| (rows, None))
+        let _ = universe;
+        self.rows(paths, request).map(|rows| (rows, None))
     }
-}
 
-fn query_source_notes(
-    paths: &VaultPaths,
-    request: &BasesSourceRequest,
-    authorized_index: Option<&HashMap<String, NoteRecord>>,
-) -> Result<Vec<NoteRecord>, BasesError> {
-    query_source_notes_planned(paths, request, authorized_index).map(|(rows, _)| rows)
+    /// Whether [`BasesSource::rows_planned`] reads its rows from the
+    /// universe it is given, so their incoming links are already limited to
+    /// it. Other rows take incoming links from the universe.
+    fn rows_from_universe(&self) -> bool {
+        false
+    }
 }
 
 fn query_source_notes_planned(
     paths: &VaultPaths,
     request: &BasesSourceRequest,
-    authorized_index: Option<&HashMap<String, NoteRecord>>,
+    universe: Option<&IndexedNoteLookup<'_>>,
 ) -> Result<(Vec<NoteRecord>, Option<crate::plan::QueryPlanExplain>), BasesError> {
     let query = NoteQuery {
         filters: request.filters.clone(),
         sort_by: None,
         sort_descending: false,
     };
-    query_notes_with_scope(
-        paths,
-        &query,
-        request.read_filter.as_ref(),
-        authorized_index,
-    )
+    match universe {
+        Some(universe) => query_notes_report_over(
+            paths,
+            universe,
+            &load_vault_config(paths).config,
+            &query,
+            request.read_filter.as_ref(),
+            request.stored_only,
+        ),
+        None => query_notes_with_filter(paths, &query, request.read_filter.as_ref()),
+    }
     .map(|report| (report.notes, report.plan))
     .map_err(BasesError::Property)
 }
@@ -226,25 +218,20 @@ impl BasesSource for FileSource {
         paths: &VaultPaths,
         request: &BasesSourceRequest,
     ) -> Result<Vec<NoteRecord>, BasesError> {
-        query_source_notes(paths, request, None)
-    }
-
-    fn rows_in_scope(
-        &self,
-        paths: &VaultPaths,
-        request: &BasesSourceRequest,
-        authorized_index: &HashMap<String, NoteRecord>,
-    ) -> Result<Vec<NoteRecord>, BasesError> {
-        query_source_notes(paths, request, Some(authorized_index))
+        query_source_notes_planned(paths, request, None).map(|(rows, _)| rows)
     }
 
     fn rows_planned(
         &self,
         paths: &VaultPaths,
         request: &BasesSourceRequest,
-        authorized_index: Option<&HashMap<String, NoteRecord>>,
+        universe: Option<&IndexedNoteLookup<'_>>,
     ) -> Result<(Vec<NoteRecord>, Option<crate::plan::QueryPlanExplain>), BasesError> {
-        query_source_notes_planned(paths, request, authorized_index)
+        query_source_notes_planned(paths, request, universe)
+    }
+
+    fn rows_from_universe(&self) -> bool {
+        true
     }
 }
 
@@ -257,44 +244,31 @@ impl BasesSource for TaskNotesSource {
         paths: &VaultPaths,
         request: &BasesSourceRequest,
     ) -> Result<Vec<NoteRecord>, BasesError> {
-        tasknote_source_rows(paths, request, None)
-    }
-
-    fn rows_in_scope(
-        &self,
-        paths: &VaultPaths,
-        request: &BasesSourceRequest,
-        authorized_index: &HashMap<String, NoteRecord>,
-    ) -> Result<Vec<NoteRecord>, BasesError> {
-        tasknote_source_rows(paths, request, Some(authorized_index))
+        tasknote_source_rows_planned(paths, request, None).map(|(rows, _)| rows)
     }
 
     fn rows_planned(
         &self,
         paths: &VaultPaths,
         request: &BasesSourceRequest,
-        authorized_index: Option<&HashMap<String, NoteRecord>>,
+        universe: Option<&IndexedNoteLookup<'_>>,
     ) -> Result<(Vec<NoteRecord>, Option<crate::plan::QueryPlanExplain>), BasesError> {
-        tasknote_source_rows_planned(paths, request, authorized_index)
+        tasknote_source_rows_planned(paths, request, universe)
     }
-}
 
-fn tasknote_source_rows(
-    paths: &VaultPaths,
-    request: &BasesSourceRequest,
-    authorized_index: Option<&HashMap<String, NoteRecord>>,
-) -> Result<Vec<NoteRecord>, BasesError> {
-    tasknote_source_rows_planned(paths, request, authorized_index).map(|(rows, _)| rows)
+    fn rows_from_universe(&self) -> bool {
+        true
+    }
 }
 
 fn tasknote_source_rows_planned(
     paths: &VaultPaths,
     request: &BasesSourceRequest,
-    authorized_index: Option<&HashMap<String, NoteRecord>>,
+    universe: Option<&IndexedNoteLookup<'_>>,
 ) -> Result<(Vec<NoteRecord>, Option<crate::plan::QueryPlanExplain>), BasesError> {
     let config = load_vault_config(paths).config;
     let include_archived = tasknotes_source_include_archived(request.config.as_ref());
-    let (mut rows, plan) = query_source_notes_planned(paths, request, authorized_index)?;
+    let (mut rows, plan) = query_source_notes_planned(paths, request, universe)?;
     rows.retain(|note| {
         extract_tasknote(
             &note.document_path,
@@ -312,6 +286,9 @@ pub struct BasesEvaluator {
     sources: HashMap<String, Arc<dyn BasesSource>>,
     /// Report each view's note plan (QRY.5).
     explain: bool,
+    /// Hydrate rows even when nothing reads their file objects: the oracle
+    /// for stored-only differential tests.
+    force_hydrated_rows: bool,
 }
 
 impl BasesEvaluator {
@@ -443,13 +420,11 @@ impl BasesEvaluator {
                 BaseReadScope::Filter(_) => None,
                 BaseReadScope::Guard(guard) => Some(guard),
             },
-            note_index: None,
-            defer_hydration: !base_reaches_other_file_objects(
-                &source,
-                &base_filters,
-                &parsed_views,
-            ),
+            universe: None,
+            stored_only: !self.force_hydrated_rows
+                && !base_reads_row_file_fields(&source, &base_filters, &parsed_views),
         };
+        context.load_universe(paths)?;
 
         for view in parsed_views {
             if let Some(evaluated_view) = evaluate_base_view(
@@ -464,6 +439,7 @@ impl BasesEvaluator {
                 views.push(evaluated_view);
             }
         }
+        drop(context);
 
         Ok(BasesEvalReport {
             file: normalized.to_string(),
@@ -504,117 +480,99 @@ struct BaseEvaluationContext<'a> {
     diagnostics: &'a mut Vec<BasesDiagnostic>,
     read_filter: Option<&'a PermissionFilter>,
     guard: Option<&'a dyn PermissionGuard>,
-    /// Authorized lookup universe, loaded once per evaluation.
-    note_index: Option<HashMap<String, NoteRecord>>,
-    /// Load `note_index` with stored fields and aliases only (QRY.3): no
-    /// expression in the base reaches another note's file object, and rows
-    /// are hydrated by their source. Entries for rows are hydrated before
-    /// guarded authorization copies their incoming links.
-    defer_hydration: bool,
+    /// The readable universe as identity facts (QRY.4): notes load when a
+    /// source selects them or an expression reads or dereferences them.
+    /// `None` only for unguarded evaluations without a cache.
+    universe: Option<IndexedNoteLookup<'a>>,
+    /// Rows need stored fields only (see [`base_reads_row_file_fields`]).
+    stored_only: bool,
 }
 
-impl BaseEvaluationContext<'_> {
-    fn note_index(
-        &mut self,
-        paths: &VaultPaths,
-    ) -> Result<&HashMap<String, NoteRecord>, BasesError> {
-        if self.note_index.is_none() {
-            let index = match (self.guard, self.defer_hydration) {
-                // A guarded universe must not silently degrade to empty.
-                (Some(guard), false) => load_note_index_with_guard(paths, guard)?,
-                (Some(guard), true) => {
-                    load_note_index_with_guard_deferring_hydration(paths, guard)?
-                }
-                // Unguarded custom sources may run without a cache.
-                (None, false) => {
-                    load_note_index_with_filter(paths, self.read_filter).unwrap_or_default()
-                }
-                (None, true) => {
-                    load_note_index_with_filter_deferring_hydration(paths, self.read_filter)
-                        .unwrap_or_default()
-                }
-            };
-            self.note_index = Some(index);
-        }
-        Ok(self.note_index.get_or_insert_with(HashMap::new))
-    }
-
-    /// Hydrate the index entries of `rows` when the index was deferred.
-    fn hydrate_rows(&mut self, paths: &VaultPaths, rows: &[NoteRecord]) -> Result<(), BasesError> {
-        if !self.defer_hydration {
-            return Ok(());
-        }
-        let scope = match self.guard {
-            Some(guard) => NoteIndexReadScope::Guard(guard),
-            None => NoteIndexReadScope::Filter(self.read_filter),
+impl<'a> BaseEvaluationContext<'a> {
+    fn load_universe(&mut self, paths: &'a VaultPaths) -> Result<(), BasesError> {
+        self.universe = match self.guard {
+            // A guarded universe must not silently degrade to empty.
+            Some(guard) => Some(load_indexed_note_lookup(
+                paths,
+                NoteIndexReadScope::Guard(guard),
+            )?),
+            // Unguarded custom sources may run without a cache.
+            None => {
+                load_indexed_note_lookup(paths, NoteIndexReadScope::Filter(self.read_filter)).ok()
+            }
         };
-        let row_paths = rows
-            .iter()
-            .map(|row| row.document_path.clone())
-            .collect::<HashSet<_>>();
-        self.note_index(paths)?;
-        let index = self.note_index.as_mut().expect("loaded above");
-        hydrate_note_index_entries(paths, scope, index, &row_paths)?;
         Ok(())
     }
 }
 
-/// Whether some expression of the base can reach another note's file
-/// object, or its source is not a built-in note source. Filters and
-/// formulas are what evaluate; columns, sorts, and groups name properties
-/// and formulas. Unparseable expressions count as reaching.
-fn base_reaches_other_file_objects(
+/// Whether some expression of the base may read a row's hydrated
+/// file-object fields (tags, links, inlinks, tasks, lists), so rows must be
+/// hydrated: filters, formulas, and the column and group expressions (sorts
+/// read evaluated cells). In Bases `this` falls back to the row. Notes
+/// reached through links hydrate on demand, and custom sources produce their
+/// own rows. Unparseable filters count as reading.
+fn base_reads_row_file_fields(
     source: &ParsedBaseSource,
     base_filters: &[String],
     views: &[ParsedBaseView],
 ) -> bool {
+    use crate::expression::analysis::{reads_row_file_fields, RowBindings};
     if !matches!(
         normalize_source_type(&source.source_type).as_str(),
         "file" | "tasknotes"
     ) {
-        return true;
+        return false;
     }
-    let reaches = |source: &str| {
+    let bindings = RowBindings {
+        whole_rows: &[],
+        this_is_row: true,
+    };
+    // Expressions that fail to parse evaluate to nothing.
+    let reads = |source: &str| {
         crate::expression::parse::Parser::new(source)
             .and_then(crate::expression::parse::Parser::parse)
-            .map_or(true, |expr| {
-                crate::expression::analysis::reaches_other_file_objects(&expr, false)
-            })
+            .is_ok_and(|expr| reads_row_file_fields(&expr, bindings))
     };
-    let filter_reaches = |filter: &String| {
-        note_filter_expression_source(filter).map_or(true, |source| reaches(&source))
+    let filter_reads = |filter: &String| {
+        note_filter_expression_source(filter).map_or(true, |source| {
+            crate::expression::parse::Parser::new(&source)
+                .and_then(crate::expression::parse::Parser::parse)
+                .map_or(true, |expr| reads_row_file_fields(&expr, bindings))
+        })
     };
-    base_filters.iter().any(filter_reaches)
+    base_filters.iter().any(filter_reads)
         || views.iter().any(|view| {
-            view.filters.iter().any(filter_reaches)
-                // An empty formula evaluates nothing.
+            view.filters.iter().any(filter_reads)
+                || view.formulas.values().any(|formula| reads(formula))
+                || view.columns.iter().any(|column| reads(column))
                 || view
-                    .formulas
-                    .values()
-                    .any(|formula| !formula.trim().is_empty() && reaches(formula))
+                    .group_by
+                    .as_ref()
+                    .is_some_and(|group_by| reads(&group_by.property))
         })
 }
 
-/// Keep only rows inside the guarded universe. Indexed rows take incoming
-/// links from the authorized index. Existing vault files outside that
-/// universe are dropped without a second policy decision, since a path grant
-/// alone cannot express tag denials. Rows a custom source synthesized for
-/// absent paths need a direct path grant. Denials drop rows; other policy
-/// failures abort the evaluation.
+/// Keep only rows inside the guarded universe. Rows a source read from the
+/// universe keep their incoming links; others take them from it. Existing
+/// vault files outside that universe are dropped without a second policy
+/// decision, since a path grant alone cannot express tag denials. Rows a
+/// custom source synthesized for absent paths need a direct path grant.
+/// Denials drop rows; other policy failures abort the evaluation.
 fn authorize_guarded_rows(
     paths: &VaultPaths,
     rows: Vec<NoteRecord>,
     guard: &dyn PermissionGuard,
-    authorized_index: &HashMap<String, NoteRecord>,
+    universe: &IndexedNoteLookup<'_>,
+    rows_from_universe: bool,
 ) -> Result<Vec<NoteRecord>, BasesError> {
-    let by_path = authorized_index
-        .values()
-        .map(|note| (note.document_path.as_str(), note))
-        .collect::<HashMap<_, _>>();
     let mut authorized = Vec::with_capacity(rows.len());
     for mut row in rows {
-        if let Some(indexed) = by_path.get(row.document_path.as_str()) {
-            row.inlinks.clone_from(&indexed.inlinks);
+        if universe.contains(&row.document_path) {
+            if !rows_from_universe {
+                if let Some(indexed) = universe.hydrated_at(&row.document_path) {
+                    row.inlinks.clone_from(&indexed.inlinks);
+                }
+            }
             authorized.push(row);
             continue;
         }
@@ -628,6 +586,50 @@ fn authorize_guarded_rows(
         }
     }
     Ok(authorized)
+}
+
+/// The readable universe with a view's source rows at their own paths.
+struct RowOverlay<'a, 'b> {
+    universe: &'a IndexedNoteLookup<'b>,
+    rows: HashMap<&'a str, &'a NoteRecord>,
+}
+
+impl RowOverlay<'_, '_> {
+    fn overlaid<'c>(&'c self, note: &'c NoteRecord) -> &'c NoteRecord {
+        self.rows
+            .get(note.document_path.as_str())
+            .copied()
+            .unwrap_or(note)
+    }
+}
+
+impl NoteLookup for RowOverlay<'_, '_> {
+    fn note(&self, key: &str) -> Option<&NoteRecord> {
+        self.universe.note(key).map(|note| self.overlaid(note))
+    }
+
+    fn notes(&self) -> Box<dyn Iterator<Item = &NoteRecord> + '_> {
+        Box::new(self.universe.notes().map(|note| self.overlaid(note)))
+    }
+
+    fn hydrated<'c>(&'c self, note: &'c NoteRecord) -> std::borrow::Cow<'c, NoteRecord> {
+        self.universe.hydrated(note)
+    }
+
+    fn paths(&self) -> Box<dyn Iterator<Item = &str> + '_> {
+        self.universe.paths()
+    }
+
+    fn note_at(&self, path: &str) -> Option<&NoteRecord> {
+        self.rows
+            .get(path)
+            .copied()
+            .or_else(|| self.universe.note_at(path))
+    }
+
+    fn resolve(&self, source_path: &str, target: &str) -> Option<&NoteRecord> {
+        self.note_at(self.universe.resolve_path(source_path, target)?)
+    }
 }
 
 // ── View-spec public structs ────────────────────────────────────────────────
@@ -1177,30 +1179,25 @@ fn evaluate_base_view(
         filters: view_filters.clone(),
         config: source.config.clone(),
         read_filter: read_filter.cloned(),
+        stored_only: context.stored_only,
     };
+    let universe = context.universe.as_ref();
     let mut plan = None;
-    let source_rows = match context.guard {
-        Some(guard) => {
-            let authorized_index = context.note_index(paths)?;
-            match source_impl.rows_planned(paths, &request, Some(authorized_index)) {
-                Ok((rows, rows_plan)) => {
-                    plan = rows_plan;
-                    context.hydrate_rows(paths, &rows).and_then(|()| {
-                        let authorized_index = context.note_index(paths)?;
-                        authorize_guarded_rows(paths, rows, guard, authorized_index)
-                    })
-                }
-                Err(error) => Err(error),
+    let source_rows = source_impl
+        .rows_planned(paths, &request, universe)
+        .and_then(|(rows, rows_plan)| {
+            plan = rows_plan;
+            match (context.guard, universe) {
+                (Some(guard), Some(universe)) => authorize_guarded_rows(
+                    paths,
+                    rows,
+                    guard,
+                    universe,
+                    source_impl.rows_from_universe(),
+                ),
+                _ => Ok(rows),
             }
-        }
-        None => source_impl
-            .rows_planned(paths, &request, None)
-            .map(|(rows, rows_plan)| {
-                plan = rows_plan;
-                rows
-            }),
-    };
-    let diagnostics = &mut *context.diagnostics;
+        });
     let notes = match source_rows {
         Ok(rows) => rows,
         Err(BasesError::Property(PropertyError::InvalidFilter(filter))) => {
@@ -1223,28 +1220,55 @@ fn evaluate_base_view(
         Err(error) => return Err(error),
     };
 
-    // Build the readable note universe for link resolution (asFile /
-    // linksTo), then overlay the source rows at their own paths.
-    let note_index = build_note_lookup_index(
-        context
-            .note_index(paths)?
-            .values()
-            .cloned()
-            .chain(notes.iter().cloned()),
-    );
+    // Links resolve over the readable universe (asFile / linksTo) with the
+    // source rows overlaid at their own paths. Rows a custom source
+    // synthesized outside the universe change lookup keys, so they take an
+    // eager, fully hydrated map.
+    let eager;
+    let overlay;
+    let note_index: &dyn NoteLookup = match universe {
+        Some(universe)
+            if notes
+                .iter()
+                .all(|note| universe.contains(&note.document_path)) =>
+        {
+            overlay = RowOverlay {
+                universe,
+                rows: notes
+                    .iter()
+                    .map(|note| (note.document_path.as_str(), note))
+                    .collect(),
+            };
+            &overlay
+        }
+        _ => {
+            let universe_notes = universe.map_or_else(Vec::new, |universe| {
+                universe
+                    .notes()
+                    .map(|note| universe.hydrated(note).into_owned())
+                    .collect()
+            });
+            eager =
+                build_note_lookup_index(universe_notes.into_iter().chain(notes.iter().cloned()));
+            &eager
+        }
+    };
+    if let Some(error) = universe.and_then(IndexedNoteLookup::take_error) {
+        return Err(BasesError::Property(error));
+    }
     let diagnostics = &mut *context.diagnostics;
 
     let columns = build_view_columns(property_display_names, &view);
     let time_zone =
         DataviewTimeZone::parse(load_vault_config(paths).config.dataview.timezone.as_deref());
     let mut rows = Vec::new();
-    for note in notes {
+    for note in &notes {
         let formulas = evaluate_formulas(
-            &note,
+            note,
             &view.formulas,
             diagnostics,
             view.name.as_deref(),
-            &note_index,
+            note_index,
             time_zone,
         );
         let cells = columns
@@ -1252,12 +1276,12 @@ fn evaluate_base_view(
             .map(|column| {
                 (
                     column.key.clone(),
-                    evaluate_base_cell(&note, &formulas, &column.key, &note_index, time_zone),
+                    evaluate_base_cell(note, &formulas, &column.key, note_index, time_zone),
                 )
             })
             .collect::<BTreeMap<_, _>>();
         let group_value = view.group_by.as_ref().map(|group_by| {
-            evaluate_base_cell(&note, &formulas, &group_by.property, &note_index, time_zone)
+            evaluate_base_cell(note, &formulas, &group_by.property, note_index, time_zone)
         });
         rows.push(BasesRow {
             document_path: note.document_path.clone(),
@@ -1269,6 +1293,10 @@ fn evaluate_base_view(
             cells,
             group_value,
         });
+    }
+    // A note an expression read or dereferenced failed to load.
+    if let Some(error) = universe.and_then(IndexedNoteLookup::take_error) {
+        return Err(BasesError::Property(error));
     }
     sort_base_rows(&mut rows, &view);
     let ParsedBaseView {
@@ -2221,7 +2249,7 @@ fn evaluate_formulas(
     formulas: &BTreeMap<String, String>,
     diagnostics: &mut Vec<BasesDiagnostic>,
     view_name: Option<&str>,
-    note_index: &HashMap<String, NoteRecord>,
+    note_index: &dyn NoteLookup,
     time_zone: DataviewTimeZone,
 ) -> BTreeMap<String, Value> {
     let mut evaluated = BTreeMap::new();
@@ -2443,7 +2471,7 @@ fn evaluate_base_cell(
     note: &NoteRecord,
     formulas: &BTreeMap<String, Value>,
     key: &str,
-    note_index: &HashMap<String, NoteRecord>,
+    note_index: &dyn NoteLookup,
     time_zone: DataviewTimeZone,
 ) -> Value {
     if let Some(value) = formulas.get(key) {
@@ -2702,7 +2730,7 @@ mod tests {
 
     #[test]
     #[allow(clippy::too_many_lines)]
-    fn deferred_hydration_equals_full_hydration() {
+    fn stored_only_rows_equal_hydrated_rows() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let root = temp_dir.path();
         fs::create_dir_all(root.join(".vulcan")).unwrap();
@@ -2730,60 +2758,73 @@ mod tests {
             deny: Vec::new(),
         };
         let guard = crate::permissions::ProfilePermissionGuard::new(&paths, profile);
-        // Always true, and it reaches another note's file object, so the
-        // base is evaluated with a fully hydrated index.
-        let forces_full = "file.name != \"\" || \"[[One]]\".asFile() == null";
-        let rows = |filter: &str, formula: &str, full: bool, guarded: bool| {
-            let extra = if full {
-                format!("\n    - '{forces_full}'")
-            } else {
-                String::new()
-            };
+        // Columns that read no hydrated field, so the formula and filter
+        // decide whether rows are hydrated; `hydrated` forces the oracle.
+        let rows = |filter: &str, formula: &str, hydrated: bool, guarded: bool| {
             let yaml = format!(
-                "filters:\n  and:\n    - '{filter}'{extra}\nformulas:\n  f: '{formula}'\nviews:\n  - type: table\n    name: all\n    order:\n      - file.name\n      - file.tags\n      - file.inlinks\n      - file.outlinks\n      - formula.f\n"
+                "filters:\n  and:\n    - '{filter}'\nformulas:\n  f: '{formula}'\nviews:\n  - type: table\n    name: all\n    order:\n      - file.name\n      - status\n      - formula.f\n"
             );
-            let evaluator = BasesEvaluator::new();
+            let mut evaluator = BasesEvaluator::new().with_explain(true);
+            evaluator.force_hydrated_rows = hydrated;
             let report = if guarded {
                 evaluator.evaluate_yaml_with_guard(&paths, "v.base", &yaml, &guard)
             } else {
                 evaluator.evaluate_yaml(&paths, "v.base", &yaml)
             }
             .unwrap_or_else(|error| panic!("{filter} / {formula}: {error}"));
-            serde_json::to_value((
-                &report.views[0].columns,
-                &report.views[0].rows,
-                &report.diagnostics,
-            ))
-            .unwrap()
+            let stored = report.views[0].plan.as_ref().map_or(0, |plan| plan.stored);
+            (
+                serde_json::to_value((
+                    &report.views[0].columns,
+                    &report.views[0].rows,
+                    &report.diagnostics,
+                ))
+                .unwrap(),
+                stored,
+            )
         };
-        for (filter, formula) in [
-            ("file.hasTag(\"t\")", "file.tags"),
-            ("status == \"open\"", "file.inlinks"),
-            ("file.inFolder(\"A\")", "length(file.tasks)"),
-            ("file.folder == \"B\"", "up"),
-            ("status != \"x\"", "up.status"),
-            ("status == \"open\"", "[[Deux]].status"),
-            ("status == \"open\"", "up.linksTo(\"[[Two]]\")"),
-            ("file.hasLink(\"[[One]]\")", "file.links"),
-            ("file.inFolder(\"A\")", ""),
+        for (filter, formula, stored) in [
+            ("file.hasTag(\"t\")", "file.tags", false),
+            ("status == \"open\"", "file.inlinks", false),
+            ("file.inFolder(\"A\")", "length(file.tasks)", false),
+            ("file.folder == \"B\"", "up", true),
+            ("status != \"x\"", "up.status", true),
+            ("status == \"open\"", "[[Deux]].status", true),
+            ("status == \"open\"", "up.linksTo(\"[[Two]]\")", true),
+            ("status == \"open\"", "up.asFile().tags", true),
+            ("file.hasLink(\"[[One]]\")", "file.links", false),
+            ("file.inFolder(\"A\")", "", true),
+            // `this` falls back to the row in Bases.
+            ("status == \"open\"", "this.file.tags", false),
+            ("status == \"open\"", "file", false),
         ] {
             let parsed = parse_base_file(&format!(
                 "filters:\n  and:\n    - '{filter}'\nformulas:\n  f: '{formula}'\nviews:\n  - type: table\n    name: all\n"
             ))
             .unwrap();
             assert_eq!(
-                base_reaches_other_file_objects(&parsed.source, &parsed.filters, &parsed.views),
-                formula.contains("linksTo"),
+                base_reads_row_file_fields(&parsed.source, &parsed.filters, &parsed.views),
+                !stored,
                 "{filter} / {formula}"
             );
             for guarded in [false, true] {
-                assert_eq!(
-                    rows(filter, formula, false, guarded),
-                    rows(filter, formula, true, guarded),
-                    "{filter} / {formula} guarded={guarded}"
-                );
+                let (actual, stored_rows) = rows(filter, formula, false, guarded);
+                let (expected, oracle_stored) = rows(filter, formula, true, guarded);
+                assert_eq!(actual, expected, "{filter} / {formula} guarded={guarded}");
+                assert_eq!(oracle_stored, 0);
+                assert_eq!(stored_rows > 0, stored, "{filter} / {formula}");
             }
         }
+        // Columns reading hydrated fields hydrate the rows.
+        let parsed = parse_base_file(
+            "views:\n  - type: table\n    name: all\n    order:\n      - file.name\n      - file.backlinks\n",
+        )
+        .unwrap();
+        assert!(base_reads_row_file_fields(
+            &parsed.source,
+            &parsed.filters,
+            &parsed.views
+        ));
     }
 
     #[test]
@@ -3176,15 +3217,16 @@ mod tests {
     fn guarded_bases_inlinks_exclude_policy_and_statically_hidden_sources() {
         let (_temp_dir, paths) = guarded_bases_vault();
         let guard = PolicyGuard::new(&paths, false);
-        let index = crate::properties::load_note_index_with_guard(&paths, &guard).unwrap();
-        let rows = query_source_notes(
+        let universe = load_indexed_note_lookup(&paths, NoteIndexReadScope::Guard(&guard)).unwrap();
+        let (rows, _) = query_source_notes_planned(
             &paths,
             &BasesSourceRequest {
                 filters: Vec::new(),
                 config: None,
                 read_filter: Some(guard.read_filter()),
+                stored_only: false,
             },
-            Some(&index),
+            Some(&universe),
         )
         .unwrap();
         let target = rows

@@ -392,6 +392,32 @@ impl<'a> IndexedNoteLookup<'a> {
             .collect())
     }
 
+    /// Whether `path` is in the readable universe; loads nothing.
+    pub fn contains(&self, path: &str) -> bool {
+        self.by_path.contains_key(path)
+    }
+
+    /// The path a link `target` written in `source_path` names, from
+    /// identity facts alone; see [`resolve_identity`].
+    pub fn resolve_path(&self, source_path: &str, target: &str) -> Option<&str> {
+        resolve_identity(
+            || {
+                self.identities.iter().map(|identity| NoteIdentity {
+                    path: &identity.path,
+                    file_name: &identity.file_name,
+                    aliases: &identity.aliases,
+                })
+            },
+            |key| {
+                self.by_key
+                    .get(key)
+                    .map(|index| self.identities[*index].path.as_str())
+            },
+            source_path,
+            target,
+        )
+    }
+
     /// Whether the note at `path` has been hydrated.
     pub fn is_hydrated(&self, path: &str) -> bool {
         self.by_path
@@ -434,23 +460,7 @@ impl NoteLookup for IndexedNoteLookup<'_> {
     }
 
     fn resolve(&self, source_path: &str, target: &str) -> Option<&NoteRecord> {
-        let path = resolve_identity(
-            || {
-                self.identities.iter().map(|identity| NoteIdentity {
-                    path: &identity.path,
-                    file_name: &identity.file_name,
-                    aliases: &identity.aliases,
-                })
-            },
-            |key| {
-                self.by_key
-                    .get(key)
-                    .map(|index| self.identities[*index].path.as_str())
-            },
-            source_path,
-            target,
-        )?;
-        self.note_at(path)
+        self.note_at(self.resolve_path(source_path, target)?)
     }
 }
 

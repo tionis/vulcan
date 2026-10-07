@@ -579,7 +579,12 @@ fn evaluate_planned_rows(
             matched_paths.push(path.clone());
             continue;
         }
-        let Some(note) = lookup.hydrated_at(path) else {
+        let note = if output == NoteQueryOutput::StoredNotes {
+            lookup.note_at(path)
+        } else {
+            lookup.hydrated_at(path)
+        };
+        let Some(note) = note else {
             continue;
         };
         if planned.undecided.contains(path) {
@@ -615,6 +620,10 @@ enum NoteQueryOutcome {
 enum NoteQueryOutput {
     /// Fully hydrated records in query order.
     Notes,
+    /// Records with stored fields only, in query order: the caller reads
+    /// no tags, links, tasks, or lists of the rows, and neither do the
+    /// filters.
+    StoredNotes,
     /// Only `document_path` is meaningful; rows are unsorted.
     Paths,
 }
@@ -631,7 +640,6 @@ fn query_notes_core(
     output: NoteQueryOutput,
 ) -> Result<NoteQueryOutcome, PropertyError> {
     let config = crate::load_vault_config(paths).config;
-    let compiled = compile_note_filters(&query.filters)?;
     let within = authorized_index.map(|index| {
         index
             .values()
@@ -643,6 +651,40 @@ fn query_notes_core(
         NoteIndexReadScope::Filter(filter),
         within.as_ref(),
     )?;
+    query_notes_over(paths, &lookup, &config, query, filter, output)
+}
+
+/// [`query_notes_with_filter`] over `lookup`, an already loaded universe
+/// (for example a Bases evaluation's), with rows hydrated or carrying
+/// stored fields only.
+pub(crate) fn query_notes_report_over(
+    paths: &VaultPaths,
+    lookup: &crate::note_lookup::IndexedNoteLookup<'_>,
+    config: &VaultConfig,
+    query: &NoteQuery,
+    filter: Option<&PermissionFilter>,
+    stored_only: bool,
+) -> Result<NotesReport, PropertyError> {
+    let output = if stored_only {
+        NoteQueryOutput::StoredNotes
+    } else {
+        NoteQueryOutput::Notes
+    };
+    match query_notes_over(paths, lookup, config, query, filter, output)? {
+        NoteQueryOutcome::Notes(report) => Ok(report),
+        NoteQueryOutcome::Paths(_) => unreachable!("notes output yields notes"),
+    }
+}
+
+fn query_notes_over(
+    paths: &VaultPaths,
+    lookup: &crate::note_lookup::IndexedNoteLookup<'_>,
+    config: &VaultConfig,
+    query: &NoteQuery,
+    filter: Option<&PermissionFilter>,
+    output: NoteQueryOutput,
+) -> Result<NoteQueryOutcome, PropertyError> {
+    let compiled = compile_note_filters(&query.filters)?;
     let plan = crate::plan::NotePlan {
         frontend: "notes",
         source: match compiled.sources.len() {
@@ -662,14 +704,15 @@ fn query_notes_core(
         ),
         hydration: match output {
             NoteQueryOutput::Notes => crate::plan::Hydration::Rows,
+            NoteQueryOutput::StoredNotes => crate::plan::Hydration::Stored,
             NoteQueryOutput::Paths => crate::plan::Hydration::Undecided,
         },
         also_hydrate: Vec::new(),
     };
-    let planned = crate::plan::execute_note_plan(paths, &lookup, &plan, filter)?;
+    let planned = crate::plan::execute_note_plan(paths, lookup, &plan, filter)?;
 
     let (mut notes, mut matched_paths) =
-        evaluate_planned_rows(&lookup, &planned, &compiled, &config, output)?;
+        evaluate_planned_rows(lookup, &planned, &compiled, config, output)?;
     if let Some(error) = lookup.take_error() {
         return Err(error);
     }
@@ -695,7 +738,7 @@ fn query_notes_core(
     }
     for note in &mut notes {
         if !note.raw_inline_expressions.is_empty() {
-            note.inline_expressions = evaluate_note_inline_expressions(note, &lookup);
+            note.inline_expressions = evaluate_note_inline_expressions(note, lookup);
         }
     }
     if let Some(error) = lookup.take_error() {

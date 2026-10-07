@@ -131,11 +131,13 @@ failure fails the query rather than exposing a note without its file object.
 `IndexedNoteLookup` goes further (QRY.4): it holds only the readable identity facts from the
 narrow `note_query` table and loads stored fields and file objects per note on demand, so a
 query loads its candidates, `this`, and what its expressions reach, never the rest of the vault.
-Guarded DQL uses it.
+Guarded DQL and Bases use it.
 
 Frontends pick the cheapest correct universe: DQL hydrates its `FROM` selection (bounded by a
-leading `WHERE`) and `this`, and dereferences lazily; Bases defers when no filter or formula can
-reach another note's file object; the Tasks DSL hydrates task-bearing notes; DataviewJS hydrates
+leading `WHERE`) and `this`, and dereferences lazily; Bases evaluates over the identity lookup,
+with its source rows overlaid at their own paths for formula link resolution (a custom source's
+rows outside the readable universe fall back to an eager hydrated map); the Tasks DSL hydrates
+task-bearing notes; DataviewJS hydrates
 the pages a call returns and defers `dv.pages()` file fields to first read.
 
 ### 4.3 Shared predicate atoms
@@ -201,9 +203,10 @@ search filters), the Tasks DSL (hydration of task-bearing notes), and DataviewJS
 candidates in one SQL query over `note_query` (source, the predicate's possible-match rendering,
 and the read scope), decisions on the candidates' stored properties without loading any note,
 and hydration of what the frontend's residual and output need (every row, only undecided rows,
-or named paths). DQL page queries whose expressions read no row's hydrated file-object fields
-(tags, links, inlinks, tasks, lists, or the whole file object or row) load their rows with
-stored fields only. Frontends keep their residual programs: DQL commands, Bases views, Tasks
+or named paths). DQL page queries and Bases views whose expressions read no row's hydrated
+file-object fields (tags, links, inlinks, tasks, lists, or the whole file object or row; in Bases
+`this` may be the row) load their rows with stored fields only
+(`expression::analysis::reads_row_file_fields`). Frontends keep their residual programs: DQL commands, Bases views, Tasks
 filters and layout. Each run reports a `QueryPlanExplain` (candidate path, candidates, decided
 matches and exclusions, residual rows, rows loaded with stored fields only, hydrated notes, stage
 timings), surfaced by `--explain`
