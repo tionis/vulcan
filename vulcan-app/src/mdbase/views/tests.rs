@@ -1,5 +1,9 @@
 use super::*;
 use crate::mdbase::tests::{fixture, read_control_grant};
+use crate::mdbase::{
+    create_mdbase_view_source, delete_mdbase_view_source, read_mdbase_view_source,
+    update_mdbase_view_source, MdbaseViewSourceOptions,
+};
 use std::fs;
 use vulcan_core::mdbase::MdbaseViewContextArg;
 use vulcan_core::permissions::{PathPermission, ResourceSpecifier};
@@ -180,4 +184,163 @@ fn cached_snapshots_serve_views_and_see_later_edits() {
         .find(|view| view.id == "public.views")
         .unwrap();
     assert_eq!(public.views[0].name, "Renamed");
+}
+
+fn source_options() -> MdbaseViewSourceOptions {
+    MdbaseViewSourceOptions {
+        no_commit: true,
+        quiet: true,
+        ..MdbaseViewSourceOptions::default()
+    }
+}
+
+fn source_fixture() -> (tempfile::TempDir, VaultPaths) {
+    let (directory, paths) = views_fixture();
+    vulcan_core::initialize_vulcan_dir(&paths).unwrap();
+    (directory, paths)
+}
+
+#[test]
+fn view_sources_read_exact_documents_and_reject_ordinary_records() {
+    let (directory, paths) = source_fixture();
+    let source = read_mdbase_view_source(&paths, "tasks/views/public.md", None).unwrap();
+    let bytes = fs::read_to_string(directory.path().join("tasks/views/public.md")).unwrap();
+    assert_eq!(source.document, bytes);
+    assert_eq!(source.format, "mdbase.view");
+    assert_eq!(
+        source.revision,
+        vulcan_core::mdbase::mdbase_content_revision(&bytes)
+    );
+    for path in ["tasks/public.md", "tasks/missing.md"] {
+        assert_eq!(
+            read_mdbase_view_source(&paths, path, None)
+                .unwrap_err()
+                .code(),
+            Some("view_not_found")
+        );
+    }
+    assert_eq!(
+        read_mdbase_view_source(&paths, "tasks/private/views.md", Some(&restricted()))
+            .unwrap_err()
+            .code(),
+        Some("view_not_found")
+    );
+}
+
+#[test]
+fn creating_view_sources_validates_the_whole_document_and_never_replaces() {
+    let (directory, paths) = source_fixture();
+    let options = source_options();
+    let created =
+        create_mdbase_view_source(&paths, None, &view_source("team:board"), &options).unwrap();
+    assert_eq!(created.path, "views/team-board.md");
+    assert_eq!(
+        fs::read_to_string(directory.path().join("views/team-board.md")).unwrap(),
+        view_source("team:board")
+    );
+    assert!(build_mdbase_view_list_report(&paths, None)
+        .unwrap()
+        .views
+        .iter()
+        .any(|view| view.source.path == "views/team-board.md"));
+    let conflict =
+        create_mdbase_view_source(&paths, None, &view_source("team:board"), &options).unwrap_err();
+    assert_eq!(conflict.code(), Some("path_conflict"));
+    let duplicate = view_source("dup").replace("id: context", "id: titles");
+    let not_a_view = "---\ntype: task\ntitle: Nope\n---\n";
+    for document in [duplicate.as_str(), not_a_view] {
+        assert_eq!(
+            create_mdbase_view_source(&paths, Some("views/bad.md"), document, &options)
+                .unwrap_err()
+                .code(),
+            Some("invalid_view")
+        );
+        assert!(!directory.path().join("views/bad.md").exists());
+    }
+    let dry = MdbaseViewSourceOptions {
+        dry_run: true,
+        ..source_options()
+    };
+    create_mdbase_view_source(&paths, Some("views/dry.md"), &view_source("dry"), &dry).unwrap();
+    assert!(!directory.path().join("views/dry.md").exists());
+}
+
+#[test]
+fn updating_and_deleting_view_sources_honor_if_revision() {
+    let (directory, paths) = source_fixture();
+    let options = source_options();
+    let path = "tasks/views/public.md";
+    let current = read_mdbase_view_source(&paths, path, None).unwrap();
+    let renamed = current.document.replace("name: Titles", "name: Renamed");
+    let stale = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+    assert_eq!(
+        update_mdbase_view_source(&paths, path, &renamed, Some(stale), &options)
+            .unwrap_err()
+            .code(),
+        Some("concurrent_modification")
+    );
+    assert_eq!(
+        update_mdbase_view_source(
+            &paths,
+            path,
+            &renamed.replace("id: context", "id: titles"),
+            None,
+            &options
+        )
+        .unwrap_err()
+        .code(),
+        Some("invalid_view")
+    );
+    let updated =
+        update_mdbase_view_source(&paths, path, &renamed, Some(&current.revision), &options)
+            .unwrap();
+    assert_eq!(
+        updated.revision,
+        vulcan_core::mdbase::mdbase_content_revision(&renamed)
+    );
+    assert_eq!(
+        fs::read_to_string(directory.path().join(path)).unwrap(),
+        renamed
+    );
+    assert_eq!(
+        delete_mdbase_view_source(&paths, path, Some(&current.revision), &options)
+            .unwrap_err()
+            .code(),
+        Some("concurrent_modification")
+    );
+    let deleted =
+        delete_mdbase_view_source(&paths, path, Some(&updated.revision), &options).unwrap();
+    assert!(deleted.deleted);
+    assert!(!directory.path().join(path).exists());
+    assert!(build_mdbase_view_list_report(&paths, None)
+        .unwrap()
+        .views
+        .iter()
+        .all(|view| view.source.path != path));
+}
+
+#[test]
+fn creating_without_write_authority_never_reveals_existing_paths() {
+    let (directory, paths) = source_fixture();
+    let config = directory.path().join(".vulcan/config.toml");
+    let existing = fs::read_to_string(&config).unwrap_or_default();
+    fs::write(
+        &config,
+        format!(
+            "{existing}\n[permissions.profiles.views]\nread = \"all\"\nwrite = {{ allow = [\"folder:views/**\"] }}\nrefactor = \"none\"\ngit = \"deny\"\nnetwork = \"deny\"\nindex = \"deny\"\nconfig = \"read\"\nexecute = \"allow\"\nshell = \"deny\"\n"
+        ),
+    )
+    .unwrap();
+    let options = MdbaseViewSourceOptions {
+        permission_profile: Some("views".to_string()),
+        ..source_options()
+    };
+    // Existing and absent paths outside the grant fail the same way.
+    for path in ["tasks/views/public.md", "tasks/views/absent.md"] {
+        let error = create_mdbase_view_source(&paths, Some(path), &view_source("probe"), &options)
+            .unwrap_err();
+        assert_ne!(error.code(), Some("path_conflict"), "{path}: {error}");
+        assert!(error.to_string().contains("permission"), "{path}: {error}");
+    }
+    create_mdbase_view_source(&paths, Some("views/ok.md"), &view_source("ok"), &options).unwrap();
 }

@@ -1,11 +1,15 @@
+use crate::cli::MdbaseViewSourceCommand;
 use crate::output::print_json;
 use crate::{selected_read_permission_filter, Cli, CliError, MdbaseCommand, OutputFormat};
+use std::path::PathBuf;
 use vulcan_app::mdbase::{
     build_mdbase_contracts_report, build_mdbase_query_report, build_mdbase_read_report,
     build_mdbase_schema_report, build_mdbase_status_report, build_mdbase_types_report,
     build_mdbase_validate_report, build_mdbase_view_list_report, build_mdbase_view_report,
-    parse_mdbase_query, MdbaseContractsReport, MdbaseMetadataReadReport, MdbaseQuerySession,
-    MdbaseReadReport, MdbaseStatusReport, MdbaseTypesReport, MdbaseValidateReport,
+    create_mdbase_view_source, delete_mdbase_view_source, parse_mdbase_query,
+    read_mdbase_view_source, update_mdbase_view_source, MdbaseContractsReport,
+    MdbaseMetadataReadReport, MdbaseQuerySession, MdbaseReadReport, MdbaseStatusReport,
+    MdbaseTypesReport, MdbaseValidateReport, MdbaseViewSourceOptions,
 };
 use vulcan_app::mdbase_conformance::{
     build_mdbase_conformance_claim, run_mdbase_core_read_conformance, MdbaseConformanceClaim,
@@ -99,6 +103,9 @@ pub(crate) fn handle_mdbase_command(
                 &build_mdbase_view_report(paths, &invocation, filter.as_ref())?,
             )
         }
+        MdbaseCommand::ViewSource { command } => {
+            handle_view_source(cli, paths, command, filter.as_ref())
+        }
         MdbaseCommand::Conformance { claim } => {
             let report = run_mdbase_core_read_conformance()?;
             if *claim {
@@ -166,6 +173,83 @@ fn print_schema(
     }
     if !report.required_features.is_empty() {
         println!("requires: {}", report.required_features.join(", "));
+    }
+    Ok(())
+}
+
+fn handle_view_source(
+    cli: &Cli,
+    paths: &VaultPaths,
+    command: &MdbaseViewSourceCommand,
+    filter: Option<&vulcan_core::PermissionFilter>,
+) -> Result<(), CliError> {
+    let options = |dry_run: bool, no_commit: bool| MdbaseViewSourceOptions {
+        permission_profile: cli.permissions.clone(),
+        dry_run,
+        no_commit,
+        quiet: cli.quiet,
+    };
+    let read = |file: &PathBuf| std::fs::read_to_string(file).map_err(CliError::operation);
+    let document = match command {
+        MdbaseViewSourceCommand::Read { path } => read_mdbase_view_source(paths, path, filter)?,
+        MdbaseViewSourceCommand::Create {
+            path,
+            file,
+            dry_run,
+            no_commit,
+        } => create_mdbase_view_source(
+            paths,
+            path.as_deref(),
+            &read(file)?,
+            &options(*dry_run, *no_commit),
+        )?,
+        MdbaseViewSourceCommand::Update {
+            path,
+            file,
+            if_revision,
+            dry_run,
+            no_commit,
+        } => update_mdbase_view_source(
+            paths,
+            path,
+            &read(file)?,
+            if_revision.as_deref(),
+            &options(*dry_run, *no_commit),
+        )?,
+        MdbaseViewSourceCommand::Delete {
+            path,
+            if_revision,
+            dry_run,
+            no_commit,
+        } => {
+            let deletion = delete_mdbase_view_source(
+                paths,
+                path,
+                if_revision.as_deref(),
+                &options(*dry_run, *no_commit),
+            )?;
+            if cli.output == OutputFormat::Json {
+                return print_json(&MdbaseOperationResult::new(true, &deletion, Vec::new()));
+            }
+            println!(
+                "{} {}",
+                if deletion.dry_run {
+                    "Would delete"
+                } else {
+                    "Deleted"
+                },
+                deletion.path
+            );
+            return Ok(());
+        }
+    };
+    if cli.output == OutputFormat::Json {
+        return print_json(&MdbaseOperationResult::new(true, &document, Vec::new()));
+    }
+    if matches!(command, MdbaseViewSourceCommand::Read { .. }) {
+        print!("{}", document.document);
+    } else {
+        println!("{}\t{}", document.path, document.revision);
     }
     Ok(())
 }

@@ -239,6 +239,37 @@ pub fn execute_mdbase_view(
     Ok(result)
 }
 
+/// Validate a complete proposed view-record source before it is written:
+/// it must be matched by the `view` type at `path` and satisfy the view
+/// schema and the named-view rules. Record schema validation stays with the
+/// managed write pipeline. Returns the proposed record's stable view ID.
+pub fn validate_mdbase_view_source(
+    collection: &super::MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    path: &str,
+    source: &str,
+) -> Result<String, MdbaseQueryError> {
+    let record = super::records::build_mdbase_record(
+        collection,
+        types,
+        path,
+        source.to_string(),
+        None,
+        false,
+        &super::records::operation_clock(collection),
+    );
+    if !is_mdbase_view_record(&record) {
+        return Err(view_error(
+            "invalid_view",
+            format!("`{path}` would not be matched by the `view` type"),
+            path,
+        ));
+    }
+    parse_view_record(&record)
+        .map(|view| view.id)
+        .map_err(|diagnostics| MdbaseQueryError { diagnostics })
+}
+
 #[derive(Debug, Deserialize)]
 struct ViewRecord {
     id: String,

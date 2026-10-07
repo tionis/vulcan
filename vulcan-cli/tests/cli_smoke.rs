@@ -17944,6 +17944,9 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         .stdout(predicate::str::contains("--metadata"));
     assert!(vault_query.contains("`vulcan mdbase view <source> <view-id> --output json`"));
     assert!(vault_query.contains("`context_required`"));
+    assert!(vault_query.contains(
+        "`vulcan mdbase view-source update <path> --file <doc> --if-revision <revision>`"
+    ));
     for (command, flag) in [("views", "--output"), ("view", "--no-context")] {
         Command::cargo_bin("vulcan")
             .expect("binary")
@@ -37591,7 +37594,7 @@ fn mdbase_conformance_claim_is_canonical_and_verified() {
     );
     assert_eq!(
         claim["result"]["optional_features"],
-        serde_json::json!(["view_records"])
+        serde_json::json!(["view_records", "writable_view_sources"])
     );
 }
 
@@ -37631,6 +37634,7 @@ fn mdbase_views_list_and_execute_named_views() {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, contents).unwrap();
     }
+    vulcan_core::initialize_vulcan_dir(&VaultPaths::new(&root)).unwrap();
     let run = |arguments: &[&str]| {
         let mut command = Command::cargo_bin("vulcan").unwrap();
         command.args([
@@ -37745,4 +37749,74 @@ fn mdbase_views_list_and_execute_named_views() {
             });
         assert_eq!(error["code"], code, "{arguments:?}: {error}");
     }
+
+    // Complete-document source operations.
+    let draft = temp_dir.path().join("draft.md");
+    let document = "---\ntype: view\nid: extra\nversion: 1\nname: Extra\nviews:\n  - id: all\n    name: All\n---\n";
+    fs::write(&draft, document).unwrap();
+    let draft_path = draft.to_str().unwrap();
+    let error_code = |output: std::process::Output| {
+        let error: Value = serde_json::from_slice(&output.stdout)
+            .or_else(|_| serde_json::from_slice(&output.stderr))
+            .unwrap();
+        error["code"].as_str().unwrap().to_string()
+    };
+    let output = run(&["view-source", "create", "--file", draft_path, "--no-commit"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let created: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(created["result"]["path"], "views/extra.md");
+    let revision = created["result"]["revision"].as_str().unwrap().to_string();
+    assert_eq!(
+        error_code(run(&[
+            "view-source",
+            "create",
+            "--file",
+            draft_path,
+            "--no-commit"
+        ])),
+        "path_conflict"
+    );
+    let read: Value =
+        serde_json::from_slice(&run(&["view-source", "read", "views/extra.md"]).stdout).unwrap();
+    assert_eq!(read["result"]["document"], document);
+    assert_eq!(read["result"]["revision"], revision.as_str());
+
+    fs::write(&draft, document.replace("name: Extra", "name: Renamed")).unwrap();
+    let stale = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+    let update = |if_revision: &str| {
+        run(&[
+            "view-source",
+            "update",
+            "views/extra.md",
+            "--file",
+            draft_path,
+            "--if-revision",
+            if_revision,
+            "--no-commit",
+        ])
+    };
+    assert_eq!(error_code(update(stale)), "concurrent_modification");
+    let output = update(&revision);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = run(&["view-source", "delete", "views/extra.md", "--dry-run"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(root.join("views/extra.md").exists());
+    let deleted: Value = serde_json::from_slice(
+        &run(&["view-source", "delete", "views/extra.md", "--no-commit"]).stdout,
+    )
+    .unwrap();
+    assert_eq!(deleted["result"]["deleted"], true);
+    assert!(!root.join("views/extra.md").exists());
 }

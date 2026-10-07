@@ -259,6 +259,7 @@ pub fn run_mdbase_core_read_conformance() -> Result<MdbaseConformanceEvidenceRep
             }
         })
         .collect::<Vec<_>>();
+    let features = crate::mdbase::run_mdbase_feature_gates(&results);
     let valid = profiles
         .iter()
         .filter(|profile| profile.evaluated)
@@ -270,8 +271,8 @@ pub fn run_mdbase_core_read_conformance() -> Result<MdbaseConformanceEvidenceRep
         upstream_commit: MDBASE_SPEC_UPSTREAM_COMMIT.to_string(),
         artifact_digest: format!("blake3:{MDBASE_BUNDLED_ASSET_DIGEST}"),
         profiles,
-        optional_features: passed_optional_features(&results),
-        features: crate::mdbase::run_mdbase_feature_gates(&results),
+        optional_features: claimed_optional_features(&results, &features),
+        features,
         cases: results,
     })
 }
@@ -692,6 +693,9 @@ fn target_cover(cover: &str) -> bool {
 const VIEWS_FIXTURE_SET: &str = "views";
 /// Upstream optional feature claimed when every saved-view case passes.
 pub const MDBASE_VIEW_RECORDS_FEATURE: &str = "view_records";
+/// Upstream optional feature evidenced by Vulcan's native source-operation
+/// gate; the pinned upstream artifact ships no suite for it.
+pub const MDBASE_WRITABLE_VIEW_SOURCES_FEATURE: &str = "writable_view_sources";
 
 /// An optional feature is claimed only with evidence: at least one case
 /// covers it and every such case passed.
@@ -701,6 +705,24 @@ fn passed_optional_features(results: &[MdbaseConformanceCaseResult]) -> Vec<Stri
         .filter(|feature| optional_feature_passed(results, feature))
         .map(ToString::to_string)
         .collect()
+}
+
+/// Upstream optional features: pinned-suite evidence, plus
+/// `writable_view_sources`, evidenced by its native gate.
+fn claimed_optional_features(
+    results: &[MdbaseConformanceCaseResult],
+    features: &[crate::mdbase::MdbaseFeatureResult],
+) -> Vec<String> {
+    let mut optional = passed_optional_features(results);
+    if features.iter().any(|feature| {
+        feature.cases.iter().any(|case| {
+            case.id == crate::mdbase::WRITABLE_VIEW_SOURCES_GATE
+                && case.status == MdbaseConformanceCaseStatus::Pass
+        })
+    }) {
+        optional.push(MDBASE_WRITABLE_VIEW_SOURCES_FEATURE.to_string());
+    }
+    optional
 }
 
 pub(crate) fn optional_feature_passed(
@@ -1606,7 +1628,13 @@ mod tests {
         assert!(claim.evidence[0]
             .artifact
             .contains(MDBASE_SPEC_UPSTREAM_COMMIT));
-        assert_eq!(claim.optional_features, [MDBASE_VIEW_RECORDS_FEATURE]);
+        assert_eq!(
+            claim.optional_features,
+            [
+                MDBASE_VIEW_RECORDS_FEATURE,
+                MDBASE_WRITABLE_VIEW_SOURCES_FEATURE
+            ]
+        );
         assert!(claim
             .features
             .contains(&crate::mdbase::SAVED_VIEWS_FEATURE.to_string()));

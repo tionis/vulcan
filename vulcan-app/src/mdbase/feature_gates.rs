@@ -7,9 +7,10 @@
 
 use super::{
     apply_mdbase_write, build_mdbase_read_report, build_mdbase_view_list_report,
-    build_mdbase_view_report, plan_mdbase_write, MdbaseWriteApplyReport, MdbaseWriteChangeRequest,
-    MdbaseWriteExecutionOptions, MdbaseWriteOperation, MdbaseWritePlanReport,
-    MdbaseWritePlanRequest,
+    build_mdbase_view_report, create_mdbase_view_source, delete_mdbase_view_source,
+    plan_mdbase_write, read_mdbase_view_source, update_mdbase_view_source, MdbaseViewSourceOptions,
+    MdbaseWriteApplyReport, MdbaseWriteChangeRequest, MdbaseWriteExecutionOptions,
+    MdbaseWriteOperation, MdbaseWritePlanReport, MdbaseWritePlanRequest,
 };
 use crate::mdbase_conformance::{MdbaseConformanceCaseResult, MdbaseConformanceCaseStatus};
 use crate::AppError;
@@ -24,6 +25,9 @@ use vulcan_core::{PermissionFilter, VaultPaths};
 pub const RECORD_WRITE_FEATURE: &str = "vulcan.record_write.v1";
 pub const LIFECYCLE_FEATURE: &str = "vulcan.lifecycle.v1";
 pub const SAVED_VIEWS_FEATURE: &str = "vulcan.saved_views.v1";
+/// The native gate that is the evidence for the upstream optional feature
+/// `writable_view_sources`, which has no pinned upstream suite.
+pub const WRITABLE_VIEW_SOURCES_GATE: &str = "vulcan.saved_views.sources";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MdbaseFeatureResult {
@@ -91,7 +95,7 @@ pub fn run_mdbase_feature_gates(
             events_gate,
         ),
     ];
-    let saved_views: [(&str, &str, Gate); 3] = [
+    let saved_views: [(&str, &str, Gate); 4] = [
         (
             "vulcan.saved_views.scoping",
             "listing and execution see only the caller's sources, contexts, and candidates",
@@ -101,6 +105,11 @@ pub fn run_mdbase_feature_gates(
             "vulcan.saved_views.freshness",
             "source and record edits reach the next listing and execution",
             saved_view_freshness_gate,
+        ),
+        (
+            WRITABLE_VIEW_SOURCES_GATE,
+            "complete-document sources are created without replacement, updated and deleted under if_revision, and visible to the next listing",
+            saved_view_sources_gate,
         ),
         (
             "vulcan.saved_views.headless",
@@ -116,6 +125,15 @@ pub fn run_mdbase_feature_gates(
     .into_iter()
     .map(|(feature, gates)| run_feature(feature, gates))
     .collect::<Vec<_>>();
+    attach_upstream_view_evidence(&mut results, upstream);
+    results
+}
+
+/// Saved views also require the pinned upstream saved-view suite.
+fn attach_upstream_view_evidence(
+    results: &mut [MdbaseFeatureResult],
+    upstream: &[MdbaseConformanceCaseResult],
+) {
     let upstream_views = crate::mdbase_conformance::optional_feature_passed(
         upstream,
         crate::mdbase_conformance::MDBASE_VIEW_RECORDS_FEATURE,
@@ -140,7 +158,6 @@ pub fn run_mdbase_feature_gates(
         });
         views.passed &= upstream_views;
     }
-    results
 }
 
 fn run_feature(feature: &str, gates: &[(&str, &str, Gate)]) -> MdbaseFeatureResult {
@@ -677,6 +694,99 @@ fn saved_view_freshness_gate() -> Result<(), String> {
             .and_then(|source| source.views.first())
             .is_some_and(|view| view.name == "Everything"),
         "a view source edit was not visible to the next listing",
+    )
+}
+
+fn saved_view_sources_gate() -> Result<(), String> {
+    let collection = Collection::with_views()?;
+    let paths = &collection.paths;
+    let options = MdbaseViewSourceOptions {
+        no_commit: true,
+        quiet: true,
+        ..MdbaseViewSourceOptions::default()
+    };
+    let error_code = |result: Result<(), AppError>| {
+        result
+            .err()
+            .and_then(|error| error.code().map(str::to_string))
+    };
+    let extension = VIEW_RECORD.replace("views:\n", "x-example:\n  kept: true\nviews:\n");
+    let created = create_mdbase_view_source(paths, Some("views/more.md"), &extension, &options)
+        .map_err(|error| error.to_string())?;
+    ensure(
+        collection.read("views/more.md").as_deref() == Some(extension.as_str()),
+        "a created source was not persisted byte for byte",
+    )?;
+    ensure(
+        error_code(
+            create_mdbase_view_source(paths, Some("views/more.md"), VIEW_RECORD, &options)
+                .map(|_| ()),
+        )
+        .as_deref()
+            == Some("path_conflict"),
+        "creation replaced an existing source",
+    )?;
+    ensure(
+        error_code(
+            create_mdbase_view_source(
+                paths,
+                Some("views/bad.md"),
+                &VIEW_RECORD.replace("id: context", "id: all"),
+                &options,
+            )
+            .map(|_| ()),
+        )
+        .as_deref()
+            == Some("invalid_view")
+            && collection.read("views/bad.md").is_none(),
+        "an invalid document was written",
+    )?;
+    let renamed = extension.replace("name: All", "name: Renamed");
+    ensure(
+        error_code(
+            update_mdbase_view_source(
+                paths,
+                "views/more.md",
+                &renamed,
+                Some("sha256:stale"),
+                &options,
+            )
+            .map(|_| ()),
+        )
+        .as_deref()
+            == Some("concurrent_modification"),
+        "an update ignored if_revision",
+    )?;
+    update_mdbase_view_source(
+        paths,
+        "views/more.md",
+        &renamed,
+        Some(&created.revision),
+        &options,
+    )
+    .map_err(|error| error.to_string())?;
+    let listed = build_mdbase_view_list_report(paths, None)
+        .map_err(|error| error.to_string())?
+        .views
+        .into_iter()
+        .any(|source| source.source.path == "views/more.md" && source.views[0].name == "Renamed");
+    ensure(listed, "an update was not visible to the next listing")?;
+    let current =
+        read_mdbase_view_source(paths, "views/more.md", None).map_err(|error| error.to_string())?;
+    ensure(
+        error_code(
+            delete_mdbase_view_source(paths, "views/more.md", Some(&created.revision), &options)
+                .map(|_| ()),
+        )
+        .as_deref()
+            == Some("concurrent_modification"),
+        "a delete ignored if_revision",
+    )?;
+    delete_mdbase_view_source(paths, "views/more.md", Some(&current.revision), &options)
+        .map_err(|error| error.to_string())?;
+    ensure(
+        collection.read("views/more.md").is_none(),
+        "a deleted source remained",
     )
 }
 

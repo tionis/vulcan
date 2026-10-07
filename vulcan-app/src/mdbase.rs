@@ -8,7 +8,7 @@ mod write_lifecycle;
 mod write_repair;
 pub use feature_gates::{
     run_mdbase_feature_gates, MdbaseFeatureResult, LIFECYCLE_FEATURE, RECORD_WRITE_FEATURE,
-    SAVED_VIEWS_FEATURE,
+    SAVED_VIEWS_FEATURE, WRITABLE_VIEW_SOURCES_GATE,
 };
 pub use write_repair::{
     accept_current_mdbase_write, build_mdbase_write_repair_status, recover_mdbase_write,
@@ -17,7 +17,11 @@ pub use write_repair::{
 mod views;
 mod write_validation;
 pub use query_profile::{build_mdbase_query_report_profiled, MdbaseQueryMetrics};
-pub use views::{build_mdbase_view_list_report, build_mdbase_view_report};
+pub use views::{
+    build_mdbase_view_list_report, build_mdbase_view_report, create_mdbase_view_source,
+    delete_mdbase_view_source, read_mdbase_view_source, update_mdbase_view_source,
+    MdbaseViewSourceDeletion, MdbaseViewSourceDocument, MdbaseViewSourceOptions,
+};
 
 use crate::{plugins, AppError};
 use chrono::{DateTime, TimeDelta, Utc};

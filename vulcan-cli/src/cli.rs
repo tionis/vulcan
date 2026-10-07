@@ -2225,6 +2225,14 @@ pub enum MdbaseCommand {
         )]
         timezone: Option<String>,
     },
+    #[command(
+        name = "view-source",
+        about = "Read, create, update, or delete a complete saved-view source document"
+    )]
+    ViewSource {
+        #[command(subcommand)]
+        command: MdbaseViewSourceCommand,
+    },
     #[command(about = "Run pinned v0.3 conformance fixtures and emit evidence")]
     Conformance {
         #[arg(
@@ -2232,6 +2240,68 @@ pub enum MdbaseCommand {
             help = "Emit a canonical verified claim; withheld unless every required fixture passes"
         )]
         claim: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum MdbaseViewSourceCommand {
+    #[command(about = "Print a view record's exact source and revision")]
+    Read {
+        #[arg(help = "Collection-relative view record path")]
+        path: String,
+    },
+    #[command(about = "Create a view record from a complete document; never replaces a file")]
+    Create {
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "Target path; defaults to views/<id>.md"
+        )]
+        path: Option<String>,
+        #[arg(
+            long,
+            value_name = "FILE",
+            help = "Read the complete document from this file"
+        )]
+        file: PathBuf,
+        #[arg(long, help = "Validate and authorize without writing")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Replace a view record with a complete, valid document")]
+    Update {
+        #[arg(help = "Collection-relative view record path")]
+        path: String,
+        #[arg(
+            long,
+            value_name = "FILE",
+            help = "Read the complete document from this file"
+        )]
+        file: PathBuf,
+        #[arg(
+            long,
+            help = "Fail with concurrent_modification unless the source has this revision"
+        )]
+        if_revision: Option<String>,
+        #[arg(long, help = "Validate and authorize without writing")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Delete a view record")]
+    Delete {
+        #[arg(help = "Collection-relative view record path")]
+        path: String,
+        #[arg(
+            long,
+            help = "Fail with concurrent_modification unless the source has this revision"
+        )]
+        if_revision: Option<String>,
+        #[arg(long, help = "Validate and authorize without deleting")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
     },
 }
 

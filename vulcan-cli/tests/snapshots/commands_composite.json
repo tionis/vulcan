@@ -326,6 +326,213 @@
             "subcommands": []
           },
           {
+            "about": "Read, create, update, or delete a complete saved-view source document",
+            "name": "view-source",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "Print a view record's exact source and revision",
+                "name": "read",
+                "options": [
+                  {
+                    "help": "Collection-relative view record path",
+                    "id": "path",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "PATH"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Create a view record from a complete document; never replaces a file",
+                "name": "create",
+                "options": [
+                  {
+                    "help": "Target path; defaults to views/<id>.md",
+                    "id": "path",
+                    "long": "path",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "PATH"
+                    ]
+                  },
+                  {
+                    "help": "Read the complete document from this file",
+                    "id": "file",
+                    "long": "file",
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "FILE"
+                    ]
+                  },
+                  {
+                    "help": "Validate and authorize without writing",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  },
+                  {
+                    "help": "Suppress auto-commit for this invocation",
+                    "id": "no_commit",
+                    "long": "no-commit",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NO_COMMIT"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Replace a view record with a complete, valid document",
+                "name": "update",
+                "options": [
+                  {
+                    "help": "Collection-relative view record path",
+                    "id": "path",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "PATH"
+                    ]
+                  },
+                  {
+                    "help": "Read the complete document from this file",
+                    "id": "file",
+                    "long": "file",
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "FILE"
+                    ]
+                  },
+                  {
+                    "help": "Fail with concurrent_modification unless the source has this revision",
+                    "id": "if_revision",
+                    "long": "if-revision",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "IF_REVISION"
+                    ]
+                  },
+                  {
+                    "help": "Validate and authorize without writing",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  },
+                  {
+                    "help": "Suppress auto-commit for this invocation",
+                    "id": "no_commit",
+                    "long": "no-commit",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NO_COMMIT"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Delete a view record",
+                "name": "delete",
+                "options": [
+                  {
+                    "help": "Collection-relative view record path",
+                    "id": "path",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "PATH"
+                    ]
+                  },
+                  {
+                    "help": "Fail with concurrent_modification unless the source has this revision",
+                    "id": "if_revision",
+                    "long": "if-revision",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "IF_REVISION"
+                    ]
+                  },
+                  {
+                    "help": "Validate and authorize without deleting",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  },
+                  {
+                    "help": "Suppress auto-commit for this invocation",
+                    "id": "no_commit",
+                    "long": "no-commit",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NO_COMMIT"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              }
+            ]
+          },
+          {
             "about": "Run pinned v0.3 conformance fixtures and emit evidence",
             "name": "conformance",
             "options": [

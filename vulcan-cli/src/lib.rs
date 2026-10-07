@@ -670,6 +670,7 @@ impl From<vulcan_app::AppError> for CliError {
             Some("context_not_found") => "context_not_found",
             Some("context_type_mismatch") => "context_type_mismatch",
             Some("unsupported_presentation") => "unsupported_presentation",
+            Some("path_conflict") => "path_conflict",
             _ => "operation_failed",
         };
         Self {
