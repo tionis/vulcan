@@ -457,6 +457,9 @@ fn shared_query_stage_benchmark() {
             })
     };
     let warm_resident = std::sync::Mutex::new(None);
+    // Reader 0's resident memory every 1,000 requests, to tell growth that
+    // levels off from growth that does not.
+    let resident_trace = std::sync::Mutex::new(Vec::new());
     let reading = std::sync::atomic::AtomicUsize::new(readers);
     let mut writes = Vec::new();
     let mut repeated = std::thread::scope(|threads| {
@@ -464,6 +467,7 @@ fn shared_query_stage_benchmark() {
             .map(|reader| {
                 let (run, cases, reading) = (&run, &cases, &reading);
                 let (warm_resident, resident_kib) = (&warm_resident, &resident_kib);
+                let resident_trace = &resident_trace;
                 threads.spawn(move || {
                     let mut seconds = Vec::new();
                     for (iteration, (kind, parameter)) in
@@ -472,6 +476,9 @@ fn shared_query_stage_benchmark() {
                         let elapsed = run(reader, iteration, kind, parameter);
                         if reader == 0 && iteration == 0 {
                             *warm_resident.lock().unwrap() = resident_kib();
+                        }
+                        if reader == 0 && iteration % 1_000 == 0 {
+                            resident_trace.lock().unwrap().push(resident_kib());
                         }
                         // The first request of each reader prepares the session.
                         if iteration > 0 {
@@ -515,7 +522,8 @@ fn shared_query_stage_benchmark() {
             "readers": readers, "samples": repeated.len(),
             "p50": rank(&repeated, 50), "p95": rank(&repeated, 95), "p99": rank(&repeated, 99),
             "write_latency": write_summary,
-            "resident_kib": {"warm": *warm_resident.lock().unwrap(), "end": resident_kib()}})
+            "resident_kib": {"warm": *warm_resident.lock().unwrap(), "end": resident_kib(),
+                "every_1000_requests": *resident_trace.lock().unwrap()}})
         );
     }
 }
@@ -563,8 +571,8 @@ fn benchmark_writes(
     mut keep_going: impl FnMut(usize) -> bool,
 ) -> Vec<f64> {
     use crate::mdbase::{
-        apply_mdbase_write, plan_mdbase_write, MdbaseWriteChangeRequest,
-        MdbaseWriteExecutionOptions, MdbaseWriteOperation, MdbaseWritePlanRequest,
+        plan_mdbase_write, MdbaseWriteChangeRequest, MdbaseWriteExecutionOptions,
+        MdbaseWriteOperation, MdbaseWritePlanRequest,
     };
     let path = "public/contact/91/record-000091.md";
     let original = std::fs::read_to_string(paths.vault_root().join(path)).unwrap();
@@ -592,7 +600,8 @@ fn benchmark_writes(
         )
         .unwrap();
         let planned = start.elapsed();
-        apply_mdbase_write(
+        let mut stages = crate::mdbase::MdbaseWriteMetrics::default();
+        crate::mdbase::apply_mdbase_write_profiled(
             paths,
             &plan,
             &MdbaseWriteExecutionOptions {
@@ -604,12 +613,13 @@ fn benchmark_writes(
                 quiet: true,
             },
             now,
+            &mut stages,
         )
         .unwrap();
         println!(
             "{}",
             json!({"measurement": "benchmark_write", "plan_seconds": planned.as_secs_f64(),
-                "apply_seconds": (start.elapsed() - planned).as_secs_f64()})
+                "apply_seconds": (start.elapsed() - planned).as_secs_f64(), "apply_stages": stages})
         );
         start.elapsed()
     };

@@ -1084,6 +1084,57 @@ pub fn apply_mdbase_write(
     options: &MdbaseWriteExecutionOptions,
     now: DateTime<Utc>,
 ) -> Result<MdbaseWriteApplyReport, AppError> {
+    apply_mdbase_write_profiled(
+        paths,
+        plan,
+        options,
+        now,
+        &mut MdbaseWriteMetrics::default(),
+    )
+}
+
+/// Stage timings of one applied write; no paths or values. Stages are
+/// disjoint and, with untimed glue, add up to `total_seconds`.
+#[derive(Debug, Default, Clone, PartialEq, Serialize)]
+pub struct MdbaseWriteMetrics {
+    pub total_seconds: f64,
+    /// Control loading, write authorization, and configuration checks.
+    pub authorization_seconds: f64,
+    /// The durable transaction: preflight, journal, replacement, and fsync,
+    /// excluding derived-state publication.
+    pub transaction_seconds: f64,
+    /// Publishing the mdbase record cache after commit.
+    pub record_cache_seconds: f64,
+    /// Indexing the written notes, including the history checkpoint.
+    pub note_scan_seconds: f64,
+    /// Path events and auto-commit after the transaction.
+    pub follow_up_seconds: f64,
+}
+
+/// [`apply_mdbase_write`] with stage timings, reset first.
+pub fn apply_mdbase_write_profiled(
+    paths: &VaultPaths,
+    plan: &MdbaseWritePlanReport,
+    options: &MdbaseWriteExecutionOptions,
+    now: DateTime<Utc>,
+    metrics: &mut MdbaseWriteMetrics,
+) -> Result<MdbaseWriteApplyReport, AppError> {
+    *metrics = MdbaseWriteMetrics::default();
+    let start = std::time::Instant::now();
+    let result = apply_mdbase_write_timed(paths, plan, options, now, metrics);
+    metrics.total_seconds = start.elapsed().as_secs_f64();
+    result
+}
+
+#[allow(clippy::too_many_lines)]
+fn apply_mdbase_write_timed(
+    paths: &VaultPaths,
+    plan: &MdbaseWritePlanReport,
+    options: &MdbaseWriteExecutionOptions,
+    now: DateTime<Utc>,
+    metrics: &mut MdbaseWriteMetrics,
+) -> Result<MdbaseWriteApplyReport, AppError> {
+    let stage = std::time::Instant::now();
     if !plan.dry_run {
         return Err(AppError::operation("invalid mdbase write plan"));
     }
@@ -1131,6 +1182,9 @@ pub fn apply_mdbase_write(
     let plugin_payload = write_plugin_payload(&plan.preview);
     let quiet = options.quiet;
     let mut scan = None;
+    metrics.authorization_seconds = stage.elapsed().as_secs_f64();
+    let (mut record_cache_seconds, mut note_scan_seconds) = (0.0, 0.0);
+    let stage = std::time::Instant::now();
     // The consistent-read guard must be released before the transaction takes
     // the exclusive vault lock. Control/type data remains immutable-plan input
     // and is reverified by the transaction itself.
@@ -1165,11 +1219,23 @@ pub fn apply_mdbase_write(
             .map_err(|error| error.to_string())
         },
         |event| {
-            scan = Some(reconcile_committed_write(paths, &loaded, &filter, event)?);
+            scan = Some(reconcile_committed_write(
+                paths,
+                &loaded,
+                &filter,
+                event,
+                &mut record_cache_seconds,
+                &mut note_scan_seconds,
+            )?);
             Ok(())
         },
     )
     .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
+    metrics.record_cache_seconds = record_cache_seconds;
+    metrics.note_scan_seconds = note_scan_seconds;
+    metrics.transaction_seconds =
+        stage.elapsed().as_secs_f64() - record_cache_seconds - note_scan_seconds;
+    let stage = std::time::Instant::now();
 
     let mut report = MdbaseWriteApplyReport {
         dry_run: false,
@@ -1185,6 +1251,7 @@ pub fn apply_mdbase_write(
     if should_commit && report.outcome.follow_up_error.is_none() {
         apply_auto_commit(paths, plan, &config.git, options, &mut report);
     }
+    metrics.follow_up_seconds = stage.elapsed().as_secs_f64();
     Ok(report)
 }
 
@@ -1198,18 +1265,25 @@ fn reconcile_committed_write(
     loaded: &LoadedCollection,
     filter: &PermissionFilter,
     event: &vulcan_core::mdbase::MdbaseWriteOutboxEvent,
+    record_cache_seconds: &mut f64,
+    note_scan_seconds: &mut f64,
 ) -> Result<vulcan_core::ScanSummary, String> {
+    let start = std::time::Instant::now();
     refresh_query_cache(
         paths,
         loaded,
         Some(filter),
         &mut MdbaseQueryMetrics::default(),
     );
-    match written_vault_paths(paths, &loaded.collection, event) {
+    *record_cache_seconds += start.elapsed().as_secs_f64();
+    let start = std::time::Instant::now();
+    let scan = match written_vault_paths(paths, &loaded.collection, event) {
         Some(changed) => vulcan_core::scan::scan_vault_paths_unlocked(paths, &changed),
         None => vulcan_core::scan::scan_vault_unlocked(paths, ScanMode::Incremental),
     }
-    .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string());
+    *note_scan_seconds += start.elapsed().as_secs_f64();
+    scan
 }
 
 /// Vault-relative paths a committed write touched, or `None` when the
@@ -2245,7 +2319,8 @@ mod tests {
             now,
         )
         .unwrap();
-        let report = apply_mdbase_write(
+        let mut stages = MdbaseWriteMetrics::default();
+        let report = apply_mdbase_write_profiled(
             &paths,
             &plan,
             &MdbaseWriteExecutionOptions {
@@ -2254,8 +2329,28 @@ mod tests {
                 quiet: true,
             },
             now,
+            &mut stages,
         )
         .unwrap();
+        // Every stage ran, and the disjoint stages fit in the total.
+        for stage in [
+            stages.authorization_seconds,
+            stages.transaction_seconds,
+            stages.record_cache_seconds,
+            stages.note_scan_seconds,
+            stages.follow_up_seconds,
+        ] {
+            assert!(stage > 0.0, "{stages:?}");
+        }
+        assert!(
+            stages.authorization_seconds
+                + stages.transaction_seconds
+                + stages.record_cache_seconds
+                + stages.note_scan_seconds
+                + stages.follow_up_seconds
+                <= stages.total_seconds,
+            "{stages:?}"
+        );
         // An indexed note is rescanned alone; unindexed paths fall back to
         // ordinary discovery.
         assert_eq!(report.scan.as_ref().map(|scan| scan.discovered), Some(1));
