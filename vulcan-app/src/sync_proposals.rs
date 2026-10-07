@@ -2884,6 +2884,32 @@ pub fn create_and_auto_accept_resolution_proposal_with_state_store(
     cancellation: &SyncCancellationToken,
     state_store: &SyncStateStore,
 ) -> Result<AutoAcceptResolutionProposalReport, AppError> {
+    create_and_auto_accept_resolution_proposal_gated(
+        paths,
+        conflict_id,
+        proposal_options,
+        approval_options,
+        provider,
+        cancellation,
+        state_store,
+        &crate::execution::Ungated,
+    )
+}
+
+/// [`create_and_auto_accept_resolution_proposal_with_state_store`] with the
+/// approval, which applies the resolution, inside `gate`. The agent call
+/// that creates the proposal runs before it.
+#[allow(clippy::too_many_arguments)]
+pub fn create_and_auto_accept_resolution_proposal_gated(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    proposal_options: &ResolutionProposalOptions,
+    approval_options: &ApproveResolutionProposalOptions,
+    provider: &dyn ResolutionAgentProvider,
+    cancellation: &SyncCancellationToken,
+    state_store: &SyncStateStore,
+    gate: &dyn crate::execution::MutationGate,
+) -> Result<AutoAcceptResolutionProposalReport, AppError> {
     if approval_options.dry_run || !approval_options.automatic {
         return Err(AppError::operation(
             "agent auto-accept requires a mutating automatic approval request",
@@ -2904,15 +2930,19 @@ pub fn create_and_auto_accept_resolution_proposal_with_state_store(
         cancellation,
         state_store,
     )?;
-    let approval = approve_resolution_proposal_with_state_store(
-        paths,
-        conflict_id,
-        &proposal.proposal_id,
-        approval_options,
-        cancellation,
-        state_store,
-    )
-    .map_err(|error| {
+    let approval = gate
+        .enter()
+        .and_then(|_entered| {
+            approve_resolution_proposal_with_state_store(
+                paths,
+                conflict_id,
+                &proposal.proposal_id,
+                approval_options,
+                cancellation,
+                state_store,
+            )
+        })
+        .map_err(|error| {
         AppError::operation(format!(
             "auto-accept failed after retaining proposal {}; it remains ready for explicit review: {error}",
             proposal.proposal_id
@@ -6360,6 +6390,84 @@ mod tests {
         let audit = fs::read_to_string(audit_path).expect("audit record");
         assert!(audit.contains("\"action\": \"auto_accepted\""));
         assert!(!audit.contains(&report.proposal.explanation));
+    }
+
+    #[test]
+    fn auto_accept_applies_inside_the_gate_after_the_agent_call() {
+        struct Recording<'a> {
+            note: &'a std::path::Path,
+            refuse: bool,
+            seen: std::cell::RefCell<Vec<String>>,
+        }
+        impl crate::execution::MutationGate for Recording<'_> {
+            fn enter(&self) -> Result<Box<dyn std::any::Any>, AppError> {
+                self.seen
+                    .borrow_mut()
+                    .push(fs::read_to_string(self.note).expect("note"));
+                if self.refuse {
+                    return Err(AppError::operation("busy"));
+                }
+                Ok(Box::new(()))
+            }
+        }
+        // One fixture per case: a refused gate keeps its proposal ready,
+        // which blocks creating another for the same conflict.
+        let run = |refuse: bool| {
+            let fixture = conflict_fixture();
+            let paths = VaultPaths::new(&fixture.reader);
+            fs::create_dir_all(paths.vulcan_dir()).expect("Vulcan directory");
+            fs::write(
+                paths.local_config_file(),
+                "[sync]\nagent_auto_accept = true\n",
+            )
+            .expect("local auto-accept policy");
+            let note = fixture.reader.join("Home.md");
+            let before = fs::read_to_string(&note).expect("note");
+            let gate = Recording {
+                note: &note,
+                refuse,
+                seen: std::cell::RefCell::default(),
+            };
+            let result = create_and_auto_accept_resolution_proposal_gated(
+                &paths,
+                &fixture.record.id,
+                &ResolutionProposalOptions {
+                    permission_profile: "unrestricted".to_string(),
+                    focused_context: Vec::new(),
+                    allow_broad_context: false,
+                    group_ids: Vec::new(),
+                },
+                &ApproveResolutionProposalOptions {
+                    remote: GitRemote::parse("origin").expect("remote"),
+                    live_ref: GitRefName::parse("refs/heads/__vulcan-sync/live").expect("live ref"),
+                    dry_run: false,
+                    automatic: true,
+                },
+                &FakeProvider { cancel: false },
+                &SyncCancellationToken::default(),
+                &fixture.store,
+                &gate,
+            );
+            let after = fs::read_to_string(&note).expect("note");
+            (result, before, gate.seen.into_inner(), after)
+        };
+        // A refusing gate leaves the agent's proposal for review and the
+        // vault untouched.
+        let (result, before, seen, after) = run(true);
+        let error = result.expect_err("refused gate");
+        assert!(error
+            .to_string()
+            .contains("remains ready for explicit review"));
+        assert_eq!(seen, vec![before.clone()]);
+        assert_eq!(after, before);
+        // The gate is entered once, after the agent and before the apply.
+        let (result, before, seen, after) = run(false);
+        assert_eq!(
+            result.expect("auto-accepted").approval.outcome,
+            ApproveResolutionProposalOutcome::Applied
+        );
+        assert_eq!(seen, vec![before]);
+        assert_eq!(after, "agent resolution\n");
     }
 
     fn assert_approval_lifecycle(

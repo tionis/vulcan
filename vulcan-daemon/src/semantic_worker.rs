@@ -4,6 +4,7 @@ use crate::companion::CompanionSemanticAgent;
 use crate::registry::{DaemonSemanticWorkerConfig, WikiRegistry};
 use crate::shutdown::ShutdownSignal;
 use crate::supervisor::SyncSupervisor;
+use crate::worker_gate::HostedWorkerGate;
 use notify::Watcher;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -12,9 +13,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use vulcan_app::execution::{MutationGate, Ungated};
 use vulcan_app::sync::{GitRefName, GitRemote, SyncCancellationToken};
 use vulcan_app::sync_semantic_auto::{
-    run_semantic_auto_with_reconciliation, SemanticAutoOptions, SemanticAutoReport,
+    run_semantic_auto_gated, SemanticAutoOptions, SemanticAutoReport,
 };
 use vulcan_app::sync_state::SyncStateStore;
 use vulcan_core::{
@@ -67,6 +69,7 @@ pub fn load_semantic_worker_status(
     Ok(Some(report))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_semantic_worker(
     config: DaemonSemanticWorkerConfig,
     registry: WikiRegistry,
@@ -74,6 +77,7 @@ pub fn spawn_semantic_worker(
     state_store: Arc<SyncStateStore>,
     daemon_state_root: PathBuf,
     agent: Arc<CompanionSemanticAgent>,
+    gate: Arc<HostedWorkerGate>,
     stop: Arc<ShutdownSignal>,
 ) -> JoinHandle<Result<(), String>> {
     thread::spawn(move || {
@@ -84,11 +88,15 @@ pub fn spawn_semantic_worker(
             &state_store,
             &daemon_state_root,
             &agent,
+            &gate,
             &stop,
         )
     })
 }
 
+/// Applying and publishing a semantic plan waits for the host's mutation
+/// permit for that vault and repository; planning and the agent call do not.
+#[allow(clippy::too_many_arguments)]
 pub fn run_semantic_worker(
     config: &DaemonSemanticWorkerConfig,
     registry: &WikiRegistry,
@@ -96,6 +104,7 @@ pub fn run_semantic_worker(
     state_store: &SyncStateStore,
     daemon_state_root: &Path,
     agent: &CompanionSemanticAgent,
+    gate: &HostedWorkerGate,
     stop: &ShutdownSignal,
 ) -> Result<(), String> {
     // Native hints avoid Git processes between changes. Missing/failed watches
@@ -135,6 +144,7 @@ pub fn run_semantic_worker(
                 supervisor,
                 state_store,
                 agent,
+                Some(gate),
                 now,
                 reconcile,
             );
@@ -262,12 +272,14 @@ fn semantic_change_watcher(
     Ok(watcher)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn execute_semantic_worker_pass(
     config: &DaemonSemanticWorkerConfig,
     registry: &WikiRegistry,
     supervisor: &SyncSupervisor,
     state_store: &SyncStateStore,
     agent: &CompanionSemanticAgent,
+    gate: Option<&HostedWorkerGate>,
     now_unix_ms: u64,
 ) -> SemanticWorkerStatus {
     execute_semantic_worker_pass_inner(
@@ -276,6 +288,7 @@ pub fn execute_semantic_worker_pass(
         supervisor,
         state_store,
         agent,
+        gate,
         now_unix_ms,
         true,
     )
@@ -288,6 +301,7 @@ fn execute_semantic_worker_pass_inner(
     supervisor: &SyncSupervisor,
     state_store: &SyncStateStore,
     agent: &CompanionSemanticAgent,
+    gate: Option<&HostedWorkerGate>,
     now_unix_ms: u64,
     reconcile_remote: bool,
 ) -> SemanticWorkerStatus {
@@ -346,7 +360,15 @@ fn execute_semantic_worker_pass_inner(
             }) {
                 return status_skipped(wiki_id.as_str(), "a file-tree sync job is active");
             }
-            run_for_registration(config, registration, state_store, agent, now_unix_ms, reconcile_remote)
+            run_for_registration(
+                config,
+                registration,
+                state_store,
+                agent,
+                gate,
+                now_unix_ms,
+                reconcile_remote,
+            )
         })
         .collect();
     SemanticWorkerStatus {
@@ -356,14 +378,21 @@ fn execute_semantic_worker_pass_inner(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_for_registration(
     config: &DaemonSemanticWorkerConfig,
     registration: &crate::registry::WikiRegistration,
     state_store: &SyncStateStore,
     agent: &CompanionSemanticAgent,
+    gate: Option<&HostedWorkerGate>,
     now_unix_ms: u64,
     reconcile_remote: bool,
 ) -> SemanticWorkerStatusEntry {
+    let vault_gate = gate.map(|gate| gate.for_registration(registration));
+    let gate: &dyn MutationGate = match vault_gate.as_ref() {
+        Some(gate) => gate,
+        None => &Ungated,
+    };
     let paths = VaultPaths::new(&registration.path);
     let profile = registration
         .permissions_profile
@@ -394,7 +423,7 @@ fn run_for_registration(
                 maximum_wait_seconds: config.maximum_wait_seconds,
                 dry_run: false,
             };
-            run_semantic_auto_with_reconciliation(
+            run_semantic_auto_gated(
                 &paths,
                 &options,
                 Some(agent.provider()),
@@ -402,6 +431,7 @@ fn run_for_registration(
                 state_store,
                 now_unix_ms,
                 reconcile_remote,
+                gate,
             )
             .map_err(|error| error.to_string())
         });
@@ -595,6 +625,7 @@ mod tests {
             &supervisor,
             &store,
             &CompanionSemanticAgent::new(PanicProvider),
+            None,
             1_000,
         );
         assert_eq!(
@@ -622,6 +653,7 @@ mod tests {
             &supervisor,
             &store,
             &CompanionSemanticAgent::new(PanicProvider),
+            None,
             1_001,
         );
         assert!(status.entries[0]

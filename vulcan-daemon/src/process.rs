@@ -38,6 +38,7 @@ use crate::sync::{
     execute_next_sync_job_with_state_store_and_engine, format_branch_diagnostic,
     format_sync_execution,
 };
+use crate::worker_gate::HostedWorkerGate;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -376,6 +377,7 @@ where
         state.resolution_agent.as_ref(),
         state.semantic_agent.as_ref(),
         &runtime,
+        &scheduler,
     )?;
     registrations.extend(
         additional_services(context, &config, &scheduler)
@@ -443,6 +445,7 @@ fn configured_daemon_bind(value: &str) -> Result<SocketAddr, DaemonProcessError>
 }
 
 #[allow(clippy::too_many_lines)] // Declaratively assembles the complete built-in service graph.
+#[allow(clippy::too_many_arguments)]
 fn daemon_worker_registrations(
     context: &DaemonProcessContext,
     config: &crate::registry::DaemonConfig,
@@ -451,6 +454,7 @@ fn daemon_worker_registrations(
     resolution_agent: Option<&Arc<CompanionResolutionAgent>>,
     semantic_agent: Option<&Arc<CompanionSemanticAgent>>,
     runtime: &tokio::runtime::Handle,
+    scheduler: &Arc<MutationScheduler>,
 ) -> Result<Vec<ServiceRegistration>, DaemonProcessError> {
     validate_worker_agents(config, resolution_agent, semantic_agent)?;
     let alert_enabled = config.notifications.desktop
@@ -604,6 +608,8 @@ fn daemon_worker_registrations(
     let conflict_supervisor = Arc::clone(supervisor);
     let conflict_state_store = Arc::clone(state_store);
     let conflict_state_root = context.state_root.clone();
+    let conflict_gate =
+        HostedWorkerGate::new(Arc::clone(scheduler), runtime.clone(), "worker.conflict");
     let resolution_agent = resolution_agent.cloned();
     registrations.push(ServiceRegistration::new(
         conflict_definition,
@@ -622,6 +628,7 @@ fn daemon_worker_registrations(
                 &conflict_state_store,
                 &conflict_state_root,
                 agent,
+                &conflict_gate,
                 service.stop(),
             )
         },
@@ -639,6 +646,8 @@ fn daemon_worker_registrations(
     let semantic_supervisor = Arc::clone(supervisor);
     let semantic_state_store = Arc::clone(state_store);
     let semantic_state_root = context.state_root.clone();
+    let semantic_gate =
+        HostedWorkerGate::new(Arc::clone(scheduler), runtime.clone(), "worker.semantic");
     let semantic_agent = semantic_agent.cloned();
     registrations.push(ServiceRegistration::new(
         semantic_definition,
@@ -657,6 +666,7 @@ fn daemon_worker_registrations(
                 &semantic_state_store,
                 &semantic_state_root,
                 agent,
+                &semantic_gate,
                 service.stop(),
             )
         },

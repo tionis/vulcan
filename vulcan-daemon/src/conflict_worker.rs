@@ -4,6 +4,7 @@ use crate::companion::CompanionResolutionAgent;
 use crate::registry::{DaemonConflictWorkerConfig, WikiId, WikiRegistry};
 use crate::shutdown::ShutdownSignal;
 use crate::supervisor::SyncSupervisor;
+use crate::worker_gate::HostedWorkerGate;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -11,13 +12,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use vulcan_app::execution::{MutationGate, Ungated};
 use vulcan_app::sync::{GitRefName, GitRemote, SyncCancellationToken};
 use vulcan_app::sync_conflicts::{
     get_sync_conflict_page_with_state_store, list_sync_conflicts_with_state_store,
     SyncConflictGroupKind, SyncConflictGroupState,
 };
 use vulcan_app::sync_proposals::{
-    create_and_auto_accept_resolution_proposal_with_state_store, ApproveResolutionProposalOptions,
+    create_and_auto_accept_resolution_proposal_gated, ApproveResolutionProposalOptions,
     ResolutionProposalOptions,
 };
 use vulcan_app::sync_state::SyncStateStore;
@@ -83,6 +85,7 @@ pub fn load_conflict_worker_status(
     Ok(Some(report))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_conflict_worker(
     config: DaemonConflictWorkerConfig,
     registry: WikiRegistry,
@@ -90,6 +93,7 @@ pub fn spawn_conflict_worker(
     state_store: Arc<SyncStateStore>,
     daemon_state_root: PathBuf,
     agent: Arc<CompanionResolutionAgent>,
+    gate: Arc<HostedWorkerGate>,
     stop: Arc<ShutdownSignal>,
 ) -> JoinHandle<Result<(), String>> {
     thread::spawn(move || {
@@ -100,11 +104,17 @@ pub fn spawn_conflict_worker(
             &state_store,
             &daemon_state_root,
             &agent,
+            &gate,
             &stop,
         )
     })
 }
 
+/// Conflicts only arise from synchronization, so a pass runs whenever the
+/// supervisor's jobs change, and at least every `poll_seconds` to reconcile
+/// what was missed. Applying an accepted proposal waits for the host's
+/// mutation permit for that vault.
+#[allow(clippy::too_many_arguments)]
 pub fn run_conflict_worker(
     config: &DaemonConflictWorkerConfig,
     registry: &WikiRegistry,
@@ -112,9 +122,12 @@ pub fn run_conflict_worker(
     state_store: &SyncStateStore,
     daemon_state_root: &Path,
     agent: &CompanionResolutionAgent,
+    gate: &HostedWorkerGate,
     stop: &ShutdownSignal,
 ) -> Result<(), String> {
     let mut previous = load_conflict_worker_status(daemon_state_root)?;
+    let mut jobs = supervisor.subscribe_changes();
+    let reconciliation = Duration::from_secs(config.poll_seconds);
     loop {
         let report = execute_conflict_worker_pass(
             config,
@@ -122,23 +135,39 @@ pub fn run_conflict_worker(
             supervisor,
             state_store,
             agent,
+            Some(gate),
             previous.as_ref(),
             unix_time_ms()?,
         );
         save_status(&conflict_worker_status_path(daemon_state_root), &report)?;
         previous = Some(report);
-        if stop.wait_timeout(Duration::from_secs(config.poll_seconds)) {
-            return Ok(());
+        let next_reconciliation = std::time::Instant::now() + reconciliation;
+        // Job changes are observed within one second without running Git.
+        loop {
+            let remaining =
+                next_reconciliation.saturating_duration_since(std::time::Instant::now());
+            if stop.wait_timeout(remaining.min(Duration::from_secs(1))) {
+                return Ok(());
+            }
+            if jobs.has_changed().unwrap_or(false) {
+                jobs.borrow_and_update();
+                break;
+            }
+            if remaining.is_zero() {
+                break;
+            }
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn execute_conflict_worker_pass(
     config: &DaemonConflictWorkerConfig,
     registry: &WikiRegistry,
     supervisor: &SyncSupervisor,
     state_store: &SyncStateStore,
     agent: &CompanionResolutionAgent,
+    gate: Option<&HostedWorkerGate>,
     previous: Option<&ConflictWorkerStatus>,
     now_unix_ms: u64,
 ) -> ConflictWorkerStatus {
@@ -202,7 +231,7 @@ pub fn execute_conflict_worker_pass(
             }) {
                 return status_backoff(entry);
             }
-            run_for_registration(config, registration, state_store, agent, now_unix_ms)
+            run_for_registration(config, registration, state_store, agent, gate, now_unix_ms)
         })
         .collect();
     ConflictWorkerStatus {
@@ -212,14 +241,21 @@ pub fn execute_conflict_worker_pass(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_for_registration(
     config: &DaemonConflictWorkerConfig,
     registration: &crate::registry::WikiRegistration,
     state_store: &SyncStateStore,
     agent: &CompanionResolutionAgent,
+    gate: Option<&HostedWorkerGate>,
     now_unix_ms: u64,
 ) -> ConflictWorkerStatusEntry {
     let paths = VaultPaths::new(&registration.path);
+    let vault_gate = gate.map(|gate| gate.for_registration(registration));
+    let gate: &dyn MutationGate = match vault_gate.as_ref() {
+        Some(gate) => gate,
+        None => &Ungated,
+    };
     let conflicts = match list_sync_conflicts_with_state_store(&paths, state_store) {
         Ok(conflicts) => conflicts,
         Err(error) => return status_error(&registration.id, 0, 0, error.to_string(), now_unix_ms),
@@ -259,7 +295,7 @@ fn run_for_registration(
                 let _claim = agent
                     .claim_conflict(format!("{}:{}", registration.path.display(), conflict.id))
                     .map_err(|error| error.to_string())?;
-                create_and_auto_accept_resolution_proposal_with_state_store(
+                create_and_auto_accept_resolution_proposal_gated(
                     &paths,
                     &conflict.id,
                     &ResolutionProposalOptions {
@@ -279,6 +315,7 @@ fn run_for_registration(
                     agent.provider(),
                     &SyncCancellationToken::default(),
                     state_store,
+                    gate,
                 )
                 .map_err(|error| error.to_string())
             });
@@ -646,6 +683,7 @@ mod tests {
             &store,
             &agent,
             None,
+            None,
             1_000,
         );
         let entry = status.entries.first().expect("status entry");
@@ -729,6 +767,7 @@ mod tests {
             &supervisor,
             &store,
             &CompanionResolutionAgent::new(ResolvingProvider),
+            None,
             Some(&previous),
             5_000,
         );
@@ -745,6 +784,7 @@ mod tests {
             &supervisor,
             &store,
             &CompanionResolutionAgent::new(ResolvingProvider),
+            None,
             Some(&status),
             6_000,
         );
@@ -773,6 +813,7 @@ mod tests {
             &supervisor,
             &store,
             &CompanionResolutionAgent::new(ResolvingProvider),
+            None,
             Some(&next_status),
             7_000,
         );
@@ -781,5 +822,108 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("requires a knowledge profile"));
+    }
+}
+
+#[cfg(test)]
+mod scheduling_tests {
+    use super::{load_conflict_worker_status, run_conflict_worker};
+    use crate::companion::CompanionResolutionAgent;
+    use crate::mutation_scheduler::{MutationScheduler, MutationSchedulerConfig};
+    use crate::registry::{DaemonConflictWorkerConfig, WikiId, WikiRegistry};
+    use crate::shutdown::ShutdownSignal;
+    use crate::supervisor::SyncSupervisor;
+    use crate::worker_gate::HostedWorkerGate;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use vulcan_app::sync_state::SyncStateStore;
+
+    /// A sync-job change runs a pass without waiting for the reconciliation
+    /// interval; between changes the worker stays idle.
+    #[test]
+    fn job_changes_wake_the_worker_before_its_reconciliation_interval() {
+        struct Unused;
+        impl vulcan_app::sync_proposals::ResolutionAgentProvider for Unused {
+            fn identity(&self) -> vulcan_app::sync_proposals::ResolutionAgentIdentity {
+                vulcan_app::sync_proposals::ResolutionAgentIdentity {
+                    provider: "test".to_string(),
+                    model: "unused".to_string(),
+                    prompt_contract_version: 1,
+                }
+            }
+            fn propose(
+                &self,
+                _request: &vulcan_app::sync_proposals::ResolutionAgentRequest,
+                _tools: &mut dyn vulcan_app::sync_proposals::ResolutionAgentTools,
+                _cancellation: &vulcan_app::sync::SyncCancellationToken,
+            ) -> Result<vulcan_app::sync_proposals::ResolutionAgentOutput, vulcan_app::AppError>
+            {
+                panic!("no conflicts are eligible")
+            }
+        }
+        let temporary = tempfile::tempdir().unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let gate = HostedWorkerGate::new(
+            Arc::new(MutationScheduler::new(MutationSchedulerConfig::default()).unwrap()),
+            runtime.handle().clone(),
+            "worker.conflict",
+        );
+        let registry = WikiRegistry::at(temporary.path().join("config/daemon.toml"));
+        let supervisor =
+            SyncSupervisor::at(temporary.path().join("state/jobs.json")).expect("supervisor");
+        let store = SyncStateStore::at(temporary.path().join("sync"));
+        let config = DaemonConflictWorkerConfig {
+            wikis: vec![WikiId::parse("notes").unwrap()],
+            remote: "origin".to_string(),
+            live_ref: "refs/heads/__vulcan-sync/live".to_string(),
+            max_groups_per_run: 128,
+            poll_seconds: 3_600,
+        };
+        let state_root = temporary.path().join("daemon-state");
+        let agent = CompanionResolutionAgent::new(Unused);
+        let stop = ShutdownSignal::new(false);
+        let checked = || {
+            load_conflict_worker_status(&state_root)
+                .ok()
+                .flatten()
+                .map(|status| status.checked_unix_ms)
+        };
+        let wait_for = |previous: Option<u64>| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some(checked) = checked().filter(|checked| Some(*checked) != previous) {
+                    return Some(checked);
+                }
+                if Instant::now() > deadline {
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        std::thread::scope(|threads| {
+            let worker = threads.spawn(|| {
+                run_conflict_worker(
+                    &config,
+                    &registry,
+                    &supervisor,
+                    &store,
+                    &state_root,
+                    &agent,
+                    &gate,
+                    &stop,
+                )
+            });
+            let first = wait_for(None).expect("initial pass");
+            std::thread::sleep(Duration::from_millis(1_500));
+            assert_eq!(checked(), Some(first), "idle between changes");
+            supervisor.notify_change();
+            assert!(wait_for(Some(first)).is_some(), "job change ran a pass");
+            stop.cancel();
+            worker.join().unwrap().unwrap();
+        });
     }
 }

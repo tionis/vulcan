@@ -38,8 +38,8 @@ the first 10.7 slice that changes ownership; it does not claim that slice is imp
 | Sync executor | `process.rs`, `supervisor.rs`, `sync.rs` | One worker thread claims durable jobs and cooperatively cancels finite app transactions | Durable bounded job ledger and sync repository state under user state; registration profile revalidated before execution | Required supervised global worker using per-vault mutation coordination | 10.7.2, 10.7.4 |
 | Remote notification runtime | `notifications.rs` via `process.rs` | Tokio task; discovers one listener per eligible wiki; reconnects until host cancellation | Advertisement from Git discovery ref; optional named secret environment values; no vault token copy | Optional supervised global worker with vault-scoped children | 10.7.2, 10.7.3 |
 | Alert delivery | `alert_delivery.rs` via `process.rs` | Bounded worker; drains or cancels during daemon shutdown | Device notification config; durable delivery ledger and named environment credentials under user state/environment | Optional supervised global worker | 10.7.2 |
-| Conflict proposal worker | `conflict_worker.rs` via `process.rs` | Optional thread; polls retained conflicts; joins on stop | Device agent endpoint/model and named environment credential; proposal/claim state under user sync state; vault permission profile | Optional supervised global worker; explicit service authority | 10.7.2, 10.7.4, 10.7.6 |
-| Semantic-plan worker | `semantic_worker.rs` via `process.rs` | Optional thread; polls eligible work; joins on stop | Device agent endpoint/model and named environment credential; durable plans under user sync state; vault permission profile | Optional supervised global worker; explicit service authority | 10.7.2, 10.7.4, 10.7.6 |
+| Conflict proposal worker | `conflict_worker.rs` via `process.rs` | Optional supervised thread; runs a pass on each sync-job change and at least every `poll_seconds`; applies accepted proposals inside the host's per-vault/repository mutation permit; joins on stop | Device agent endpoint/model and named environment credential; proposal/claim state under user sync state; vault permission profile | Optional supervised global worker; explicit service authority | 10.7.2, 10.7.4, 10.7.6 |
+| Semantic-plan worker | `semantic_worker.rs` via `process.rs` | Optional supervised thread; woken by sync-job changes and its own Git-ref/config watch (shared observation covers vault files, not Git metadata); applies and publishes plans inside the host's per-vault/repository mutation permit; joins on stop | Device agent endpoint/model and named environment credential; durable plans under user sync state; vault permission profile | Optional supervised global worker; explicit service authority | 10.7.2, 10.7.4, 10.7.6 |
 | Single-vault HTTP API | `vulcan serve`; `vulcan-daemon/src/vault_http.rs` with the CLI lifecycle shim in `vulcan-cli/src/serve.rs` | Reusable axum router on an invocation-owned Tokio listener, optional index-watch thread, graceful foreground shutdown | Invocation-local bind/vault/profile; vault cache and config; no device service registration | Reusable daemon router mounted by a temporary or resident host | 10.7.4, 10.7.5 |
 | MCP stdio | `vulcan mcp`; `vulcan-cli/src/mcp.rs` | Client-owned stdin/stdout loop; ends on EOF/process exit | Invocation-local permission profile and packs; session state in memory; vault config/cache | Permanent transport-specific exception in CLI using the shared dispatcher; never resident-owned | 10.7.6 |
 | Direct MCP HTTP | `vulcan mcp --transport http`; `vulcan-cli/src/mcp.rs` | Blocking listener and connection threads; invocation-owned watcher; ends on signal/process exit | Invocation flags, optional static token or OAuth settings; OAuth/session state in memory; selected durable local-issuer material under user state | Reusable MCP router mounted by a temporary host | 10.7.4, 10.7.6 |
@@ -199,6 +199,15 @@ idempotent, durably recoverable, or potentially indeterminate after dispatch.
 
 The concrete lock inventory, known migration gaps, canonical identities, ordering, and contention
 semantics are maintained in [mutation coordination and lock audit](mutation-coordination.md).
+
+Background workers use the same scheduler as hosted requests. `vulcan-app::execution::MutationGate`
+marks the point where a workflow starts to write: conflict auto-acceptance enters it after the
+agent has produced the proposal and holds it through approval, and semantic automation enters it
+after planning and holds it through application and publication. The daemon's gate
+(`vulcan-daemon::worker_gate`) builds a background-service execution context whose ceiling is the
+registration's permission profile, waits up to five minutes for the vault's mutation permit (and
+the repository's, keyed by Git's common directory), and re-checks Git authority after the wait.
+Direct callers pass the ungated form; the workflows' own cross-process locks are unchanged.
 
 ## Client routing contract
 

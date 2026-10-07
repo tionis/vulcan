@@ -104,6 +104,32 @@ pub fn run_semantic_auto_with_reconciliation(
     now_unix_ms: u64,
     reconcile_remote: bool,
 ) -> Result<SemanticAutoReport, AppError> {
+    run_semantic_auto_gated(
+        paths,
+        options,
+        provider,
+        cancellation,
+        store,
+        now_unix_ms,
+        reconcile_remote,
+        &crate::execution::Ungated,
+    )
+}
+
+/// [`run_semantic_auto_with_reconciliation`] with the plan's application and
+/// publication, which write the repository, inside `gate`. Planning, and any
+/// agent call it makes, runs before it.
+#[allow(clippy::too_many_arguments)]
+pub fn run_semantic_auto_gated(
+    paths: &VaultPaths,
+    options: &SemanticAutoOptions,
+    provider: Option<&dyn SemanticAgentProvider>,
+    cancellation: &SyncCancellationToken,
+    store: &SyncStateStore,
+    now_unix_ms: u64,
+    reconcile_remote: bool,
+    gate: &dyn crate::execution::MutationGate,
+) -> Result<SemanticAutoReport, AppError> {
     run_with_engine(
         paths,
         options,
@@ -113,6 +139,7 @@ pub fn run_semantic_auto_with_reconciliation(
         now_unix_ms,
         reconcile_remote,
         &crate::sync_transport::git_engine(paths),
+        gate,
     )
 }
 
@@ -126,6 +153,7 @@ fn run_with_engine(
     now_unix_ms: u64,
     reconcile_remote: bool,
     engine: &dyn GitEngine,
+    gate: &dyn crate::execution::MutationGate,
 ) -> Result<SemanticAutoReport, AppError> {
     validate_options(options, provider)?;
     let vault = crate::sync_state::sync_work_tree(paths.vault_root())?;
@@ -201,6 +229,7 @@ fn run_with_engine(
                 &source,
                 &target,
                 stable_ms,
+                gate,
             )
         }
     }
@@ -217,6 +246,7 @@ fn execute_due(
     source: &GitOid,
     target: &GitOid,
     stable_ms: u64,
+    gate: &dyn crate::execution::MutationGate,
 ) -> Result<SemanticAutoReport, AppError> {
     let plan_options = SemanticPlanOptions {
         from: source.to_string(),
@@ -254,11 +284,13 @@ fn execute_due(
     if options.dry_run {
         return Ok(report);
     }
+    let entered = gate.enter()?;
     let application = apply_semantic_plan_with_state_store(&plan.plan_id, false, store)?;
     let publication = options
         .publish
         .then(|| publish_semantic_plan_with_state_store(&plan.plan_id, false, store))
         .transpose()?;
+    drop(entered);
     remove_state(state_path)?;
     report.application = Some(application);
     report.publication = publication;
@@ -462,18 +494,24 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    #[allow(clippy::too_many_lines)] // One local-remote fixture measures idle work and both safety gates.
-    fn unchanged_debounce_avoids_remote_requests_and_state_replacements() {
+    /// A vault repository whose semantic branch trails accepted live refs
+    /// that agree locally and on its `origin` remote by one commit. Returns
+    /// the directory, vault, semantic source commit, and a Git runner.
+    fn semantic_repository() -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        String,
+        impl Fn(&[&str]) -> String,
+    ) {
         use super::*;
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
         use std::process::Command;
         let directory = tempfile::tempdir().unwrap();
         let vault = directory.path().join("vault");
         fs::create_dir(&vault).unwrap();
-        let git = |args: &[&str]| {
+        let repository = vault.clone();
+        let git = move |args: &[&str]| {
             let output = Command::new("git")
-                .current_dir(&vault)
+                .current_dir(&repository)
                 .args(args)
                 .output()
                 .unwrap();
@@ -508,6 +546,17 @@ mod tests {
             "origin",
             &format!("{target}:refs/heads/__vulcan-sync/live"),
         ]);
+        (directory, vault, source, git)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[allow(clippy::too_many_lines)] // One local-remote fixture measures idle work and both safety gates.
+    fn unchanged_debounce_avoids_remote_requests_and_state_replacements() {
+        use super::*;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let (directory, vault, source, git) = semantic_repository();
+        let refs = GitSyncRefs::for_options(&GitSyncOptions::default()).unwrap();
         // Per-engine wrapper, no process-global PATH/env mutation in parallel tests.
         let wrapper = directory.path().join("git-count");
         let log = directory.path().join("commands");
@@ -544,6 +593,7 @@ mod tests {
                 now,
                 reconcile,
                 &engine,
+                &crate::execution::Ungated,
             )
         };
         assert_eq!(
@@ -607,6 +657,87 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    /// The plan is made before the gate is entered, and applying it happens
+    /// inside; a refusing gate leaves the semantic branch untouched.
+    #[cfg(unix)]
+    #[test]
+    fn semantic_application_runs_inside_the_gate_after_planning() {
+        use super::*;
+        struct Recording<F: Fn(&[&str]) -> String> {
+            git: F,
+            refuse: bool,
+            seen: std::cell::RefCell<Vec<String>>,
+        }
+        impl<F: Fn(&[&str]) -> String> crate::execution::MutationGate for Recording<F> {
+            fn enter(&self) -> Result<Box<dyn std::any::Any>, AppError> {
+                self.seen
+                    .borrow_mut()
+                    .push((self.git)(&["rev-parse", "refs/heads/semantic"]));
+                if self.refuse {
+                    return Err(AppError::operation("busy"));
+                }
+                Ok(Box::new(()))
+            }
+        }
+        let run = |refuse: bool| {
+            let (directory, vault, source, git) = semantic_repository();
+            let options = SemanticAutoOptions {
+                semantic_ref: GitRefName::parse("refs/heads/semantic").unwrap(),
+                remote: GitRemote::parse("origin").unwrap(),
+                live_ref: GitRefName::parse("refs/heads/__vulcan-sync/live").unwrap(),
+                grouping: SemanticGrouping::TopLevel,
+                agent: false,
+                publish: false,
+                quiet_seconds: 60,
+                maximum_wait_seconds: 3_600,
+                dry_run: false,
+            };
+            let paths = VaultPaths::new(&vault);
+            let store = SyncStateStore::at(directory.path().join("state"));
+            let gate = Recording {
+                git,
+                refuse,
+                seen: std::cell::RefCell::default(),
+            };
+            let engine = GitCliEngine::default();
+            let deferred = run_with_engine(
+                &paths,
+                &options,
+                None,
+                &SyncCancellationToken::default(),
+                &store,
+                0,
+                true,
+                &engine,
+                &gate,
+            )
+            .unwrap();
+            assert_eq!(deferred.outcome, SemanticAutoOutcome::Deferred);
+            assert!(gate.seen.borrow().is_empty());
+            let due = run_with_engine(
+                &paths,
+                &options,
+                None,
+                &SyncCancellationToken::default(),
+                &store,
+                61_000,
+                true,
+                &engine,
+                &gate,
+            );
+            let semantic = (gate.git)(&["rev-parse", "refs/heads/semantic"]);
+            (due, source, gate.seen.into_inner(), semantic)
+        };
+        let (due, source, seen, semantic) = run(true);
+        assert!(due.unwrap_err().to_string().contains("busy"));
+        assert_eq!(seen, vec![source.clone()]);
+        assert_eq!(semantic, source);
+        let (due, source, seen, semantic) = run(false);
+        assert_eq!(due.unwrap().outcome, SemanticAutoOutcome::Completed);
+        assert_eq!(seen, vec![source.clone()]);
+        assert_ne!(semantic, source);
     }
 
     #[test]

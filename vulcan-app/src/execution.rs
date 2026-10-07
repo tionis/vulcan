@@ -14,6 +14,25 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ulid::Ulid;
 use vulcan_core::PermissionGrant;
 
+/// Taken by a workflow immediately before it mutates its vault or
+/// repository, and held until that mutation ends. A host serializes the
+/// mutation with its other writers here and re-checks authority after any
+/// wait; work before it, such as agent calls and planning, runs ungated.
+pub trait MutationGate {
+    /// Wait for and hold the right to mutate; dropping the guard releases it.
+    fn enter(&self) -> Result<Box<dyn std::any::Any>, crate::AppError>;
+}
+
+/// The gate of direct operation, whose cross-process locks are taken by the
+/// workflow itself.
+pub struct Ungated;
+
+impl MutationGate for Ungated {
+    fn enter(&self) -> Result<Box<dyn std::any::Any>, crate::AppError> {
+        Ok(Box::new(()))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionVaultIdentity {
     pub canonical_root: PathBuf,
