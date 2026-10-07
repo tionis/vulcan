@@ -465,3 +465,32 @@ fn rendered_output_is_unsupported_while_headless_execution_succeeds() {
     );
     assert_eq!(result.meta.context.unwrap().path, "projects/alpha.md");
 }
+
+#[test]
+fn derived_view_ids_are_stable_identifiers_with_source_order_suffixes() {
+    assert_eq!(
+        derive_mdbase_view_ids(&[
+            Some("Open Tasks"),
+            Some("open tasks!"),
+            None,
+            Some("  "),
+            Some("2024 Plan"),
+            Some("Open-Tasks-2"),
+            Some("Ünïcode"),
+        ]),
+        [
+            "open-tasks",
+            "open-tasks-2",
+            "view",
+            "view-2",
+            "view-2024-plan",
+            "open-tasks-2-2",
+            "n-code",
+        ]
+    );
+    // Every derived ID satisfies the view schema's identifier pattern.
+    let pattern = regex::Regex::new("^[A-Za-z][A-Za-z0-9._:-]*$").unwrap();
+    for id in derive_mdbase_view_ids(&[Some("-"), Some("9"), Some("a b")]) {
+        assert!(pattern.is_match(&id), "{id}");
+    }
+}

@@ -992,6 +992,19 @@ impl Default for MdbaseSettings {
 pub struct MdbaseConfig {
     pub spec_version: String,
     pub settings: MdbaseSettings,
+    /// `x-obsidian.bases`: Obsidian `.base` files exposed as saved-view
+    /// sources (Chapter 15).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub obsidian_bases: Option<MdbaseObsidianBasesConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MdbaseObsidianBasesConfig {
+    /// Collection-relative glob patterns selecting `.base` sources.
+    pub include: Vec<String>,
+    /// Preferred folder for new Obsidian sources.
+    pub create_folder: Option<String>,
+    pub default_for_new_views: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1343,7 +1356,15 @@ pub fn load_mdbase_collection(
         })?;
     validate_spec_version(&config_path, &spec_version)?;
     let settings = normalize_settings(&config_path, raw.settings)?;
-    let mut diagnostics = unknown_key_diagnostics(&config_path, "", raw.unknown);
+    let mut unknown = raw.unknown;
+    let obsidian_bases = unknown
+        .get("x-obsidian")
+        .and_then(|value| value.get("bases"))
+        .map(|bases| obsidian_bases_config(&config_path, bases))
+        .transpose()?;
+    // `x-*` members are extensions the schema allows, not unknown keys.
+    unknown.retain(|key, _| !key.starts_with("x-"));
+    let mut diagnostics = unknown_key_diagnostics(&config_path, "", unknown);
     diagnostics.extend(unknown_key_diagnostics(
         &config_path,
         "settings.",
@@ -1353,6 +1374,7 @@ pub fn load_mdbase_collection(
     let config = MdbaseConfig {
         spec_version,
         settings: settings.0,
+        obsidian_bases,
     };
     Ok(Some(MdbaseCollection {
         root: collection_root.to_path_buf(),
@@ -1479,6 +1501,66 @@ pub fn discover_mdbase_files(
     discovery.contract_files.sort();
     discovery.nested_collections.sort();
     Ok(discovery)
+}
+
+/// Collection-relative `.base` files selected by `x-obsidian.bases.include`,
+/// sorted. The walk keeps record discovery's boundaries: no symlinks, no
+/// control, derived, or excluded directories, and no nested collections.
+pub fn discover_mdbase_obsidian_base_sources(
+    collection: &MdbaseCollection,
+) -> Result<Vec<String>, MdbaseDiscoveryError> {
+    let Some(bases) = &collection.config.obsidian_bases else {
+        return Ok(Vec::new());
+    };
+    if bases.include.is_empty() {
+        return Ok(Vec::new());
+    }
+    let include = compile_excludes(&bases.include)
+        .expect("include globs are validated while loading mdbase.yaml");
+    let excludes = compile_excludes(&collection.config.settings.exclude)
+        .expect("exclusion globs are validated while loading mdbase.yaml");
+    let mut found = Vec::new();
+    let mut pending = vec![(collection.root.clone(), String::new())];
+    while let Some((directory, relative_directory)) = pending.pop() {
+        for entry in sorted_directory_entries(&directory)? {
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|source| MdbaseDiscoveryError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+            if file_type.is_symlink() {
+                continue;
+            }
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| MdbaseDiscoveryError::NonUtf8Path { path: path.clone() })?;
+            let relative = if relative_directory.is_empty() {
+                name
+            } else {
+                format!("{relative_directory}/{name}")
+            };
+            if file_type.is_dir() {
+                if !(is_control_directory(collection, &relative)
+                    || is_derived_directory(&relative)
+                    || is_excluded(&excludes, &relative, true)
+                    || path.join(MDBASE_CONFIG_FILE_NAME).is_file())
+                {
+                    pending.push((path, relative));
+                }
+            } else if file_type.is_file()
+                && has_extension(&path, "base")
+                && include.is_match(&relative)
+                && !is_excluded(&excludes, &relative, false)
+            {
+                found.push(relative);
+            }
+        }
+    }
+    found.sort();
+    Ok(found)
 }
 
 /// Determine whether a collection-relative path is governed as an mdbase
@@ -3147,6 +3229,69 @@ fn validate_field_names(
     Ok(())
 }
 
+fn obsidian_bases_config(
+    path: &Path,
+    bases: &Value,
+) -> Result<MdbaseObsidianBasesConfig, MdbaseConfigError> {
+    let field = "x-obsidian.bases";
+    let safe = |member: &str, value: &str| {
+        let unsafe_path = value.is_empty()
+            || value.starts_with('/')
+            || value.contains('\\')
+            || value.split('/').any(|segment| segment == "..");
+        if unsafe_path {
+            invalid_config(
+                path,
+                &format!("{field}.{member}"),
+                format!("`{value}` must be a safe collection-relative path"),
+            )
+        } else {
+            Ok(value.to_string())
+        }
+    };
+    let include = match bases.get("include") {
+        None => Vec::new(),
+        Some(Value::Sequence(patterns)) => patterns
+            .iter()
+            .map(|pattern| match pattern.as_str() {
+                Some(pattern) => safe("include", pattern),
+                None => invalid_config(
+                    path,
+                    &format!("{field}.include"),
+                    "patterns must be strings",
+                ),
+            })
+            .collect::<Result<_, _>>()?,
+        Some(_) => return invalid_config(path, &format!("{field}.include"), "must be a list"),
+    };
+    if let Err(error) = compile_excludes(&include) {
+        return invalid_config(path, &format!("{field}.include"), error.to_string());
+    }
+    let create_folder = match bases.get("create_folder") {
+        None => None,
+        Some(Value::String(folder)) => Some(safe("create_folder", folder)?),
+        Some(_) => {
+            return invalid_config(path, &format!("{field}.create_folder"), "must be a string")
+        }
+    };
+    let default_for_new_views = match bases.get("default_for_new_views") {
+        None => false,
+        Some(Value::Bool(value)) => *value,
+        Some(_) => {
+            return invalid_config(
+                path,
+                &format!("{field}.default_for_new_views"),
+                "must be a boolean",
+            )
+        }
+    };
+    Ok(MdbaseObsidianBasesConfig {
+        include,
+        create_folder,
+        default_for_new_views,
+    })
+}
+
 fn unknown_key_diagnostics(
     path: &Path,
     prefix: &str,
@@ -3616,6 +3761,75 @@ schema:
                 .collect::<Vec<_>>(),
             ["Contact", "Task"]
         );
+    }
+
+    #[test]
+    fn obsidian_base_sources_follow_include_globs_inside_discovery_boundaries() {
+        let directory = tempdir().expect("temporary collection should exist");
+        let root = directory.path();
+        write_config(
+            root,
+            "spec_version: \"0.3.0\"\nsettings:\n  exclude: [Archive/**]\nx-obsidian:\n  bases:\n    include: ['Views/**/*.base', 'top.base']\n    create_folder: Views\n    default_for_new_views: true\nx-other: {kept: true}\n",
+        );
+        for path in [
+            "Views/tasks.base",
+            "Views/deep/board.base",
+            "Views/notes.md",
+            "top.base",
+            "other.base",
+            "Archive/Views/old.base",
+            ".vulcan/Views/cache.base",
+            "Views/nested/mdbase.yaml",
+            "Views/nested/hidden.base",
+        ] {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "spec_version: \"0.3.0\"\n").unwrap();
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root.join("top.base"), root.join("Views/link.base")).unwrap();
+        let collection = load_mdbase_collection(root).unwrap().unwrap();
+        assert!(
+            collection.diagnostics.is_empty(),
+            "x-* extensions are not unknown keys: {:?}",
+            collection.diagnostics
+        );
+        let bases = collection.config.obsidian_bases.as_ref().unwrap();
+        assert_eq!(bases.create_folder.as_deref(), Some("Views"));
+        assert!(bases.default_for_new_views);
+        assert_eq!(
+            discover_mdbase_obsidian_base_sources(&collection).unwrap(),
+            ["Views/deep/board.base", "Views/tasks.base", "top.base"]
+        );
+
+        for (config, field) in [
+            (
+                "x-obsidian:\n  bases:\n    include: ['../escape/*.base']\n",
+                "x-obsidian.bases.include",
+            ),
+            (
+                "x-obsidian:\n  bases:\n    include: ['[']\n",
+                "x-obsidian.bases.include",
+            ),
+            (
+                "x-obsidian:\n  bases:\n    create_folder: /abs\n",
+                "x-obsidian.bases.create_folder",
+            ),
+        ] {
+            write_config(root, &format!("spec_version: \"0.3.0\"\n{config}"));
+            match load_mdbase_collection(root) {
+                Err(MdbaseConfigError::InvalidConfig { field: actual, .. }) => {
+                    assert_eq!(actual, field, "{config}");
+                }
+                other => panic!("{config}: expected invalid config, got {other:?}"),
+            }
+        }
+        write_config(root, "spec_version: \"0.3.0\"\n");
+        let plain = load_mdbase_collection(root).unwrap().unwrap();
+        assert!(plain.config.obsidian_bases.is_none());
+        assert!(discover_mdbase_obsidian_base_sources(&plain)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

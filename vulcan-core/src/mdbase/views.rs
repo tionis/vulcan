@@ -19,6 +19,8 @@ use std::collections::BTreeSet;
 
 /// Source format identifier for canonical view records.
 pub const MDBASE_VIEW_SOURCE_FORMAT: &str = "mdbase.view";
+/// Source format identifier for Obsidian `.base` files (Chapter 15).
+pub const MDBASE_OBSIDIAN_BASE_SOURCE_FORMAT: &str = "obsidian.base";
 /// The type name that marks a record as a saved view.
 pub const MDBASE_VIEW_TYPE: &str = "view";
 
@@ -114,6 +116,42 @@ pub struct MdbaseResolvedView {
     pub id: String,
     /// The canonical query object for this invocation, context bound.
     pub query: serde_json::Value,
+}
+
+/// Stable named-view IDs for a source format without IDs, such as `.base`:
+/// each derives from the view's name (lowercase ASCII letters and digits,
+/// other runs collapsed to `-`; `view` when nothing remains), and a repeated
+/// ID takes a source-order suffix (`-2`, `-3`, ...).
+#[must_use]
+pub fn derive_mdbase_view_ids(names: &[Option<&str>]) -> Vec<String> {
+    let mut used = BTreeSet::new();
+    names
+        .iter()
+        .map(|name| {
+            let mut base = String::new();
+            for character in name.unwrap_or_default().chars() {
+                if character.is_ascii_alphanumeric() {
+                    base.push(character.to_ascii_lowercase());
+                } else if !base.is_empty() && !base.ends_with('-') {
+                    base.push('-');
+                }
+            }
+            let base = match base.trim_end_matches('-') {
+                "" => "view".to_string(),
+                trimmed if trimmed.starts_with(|c: char| c.is_ascii_digit()) => {
+                    format!("view-{trimmed}")
+                }
+                trimmed => trimmed.to_string(),
+            };
+            let mut id = base.clone();
+            let mut suffix = 2;
+            while !used.insert(id.clone()) {
+                id = format!("{base}-{suffix}");
+                suffix += 1;
+            }
+            id
+        })
+        .collect()
 }
 
 /// Whether a record is a saved view: it is matched by the `view` type.

@@ -1,7 +1,7 @@
 ---
 name: vault-query
 description: Choose between search, native queries, canonical mdbase collection queries and saved views, filters, and structured note listing.
-version: 12
+version: 13
 tools:
   - search
   - query
@@ -25,6 +25,7 @@ Use this skill when the task depends on metadata, frontmatter, tags, paths, or p
 - Use `query` when the answer depends on typed metadata, computed fields, or explicit sorting.
 - For a collection governed by `mdbase.yaml`, use `vulcan mdbase query --file query.yaml --output json` for canonical mdbase queries. Native `query` and DQL are not interchangeable with that query format. Inspect `vulcan mdbase query --help` for input options.
 - When an mdbase collection already has saved views (records of type `view`), discover them with `vulcan mdbase views --output json` and run one with `vulcan mdbase view <source> <view-id> --output json`, where `<source>` is the view record's path or stable `id`. Prefer this over re-deriving the query: the record's shared `query` and the named view combine exactly as the collection defines them. Pass `--context <record-path>` for views that read `this`; `--no-context` binds `this` to null. `--limit`, `--offset`, and `--timezone` override only this run. Failures carry stable codes: `view_not_found`, `invalid_view`, `context_required`, `context_not_found`, and `context_type_mismatch`. `presentation` metadata is advisory; results are always headless.
+- When `mdbase.yaml` sets `x-obsidian.bases.include`, the selected Obsidian `.base` files are listed by `mdbase views` too, with `source.format: obsidian.base`, the file path as the source ID, and view IDs derived from view names (`Open Work` becomes `open-work`; repeated names get `-2`, `-3`). `mdbase view <file.base> <view-id>` evaluates them with Bases semantics (not CEL) and returns the same headless envelope for every view type; an explicit `--context` is rejected with `unsupported_context`.
 - To change a saved view, read it with `vulcan mdbase view-source read <path> --output json`, edit the complete document, and write it back with `vulcan mdbase view-source update <path> --file <doc> --if-revision <revision>`; `create` never replaces a file (`path_conflict`) and `delete` takes the same `--if-revision`. Invalid documents fail with `invalid_view` before anything is written. On `concurrent_modification`, re-read and reapply the edit rather than forcing it.
 - To inspect one known mdbase record's types, frontmatter, and diagnostics, prefer `vulcan mdbase read <path> --metadata --output json`; it skips body, links, and tags and is answered from the current cache. Use plain `mdbase read` (or `--source`) only when the body, links, or exact source are needed.
 - Use `path_prefix`, `filename_pattern`, explicit `sort`/`desc`, and `limit` for structural navigation. MCP query results default to 50 compact rows and report pagination metadata.

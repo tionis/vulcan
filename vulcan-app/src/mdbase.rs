@@ -14,6 +14,7 @@ pub use write_repair::{
     accept_current_mdbase_write, build_mdbase_write_repair_status, recover_mdbase_write,
     MdbaseWriteAcceptCurrentReport, MdbaseWriteRecoveryReport, MdbaseWriteRepairStatus,
 };
+mod bases_views;
 mod views;
 mod write_validation;
 pub use query_profile::{build_mdbase_query_report_profiled, MdbaseQueryMetrics};

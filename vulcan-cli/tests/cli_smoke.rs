@@ -17944,6 +17944,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         .stdout(predicate::str::contains("--metadata"));
     assert!(vault_query.contains("`vulcan mdbase view <source> <view-id> --output json`"));
     assert!(vault_query.contains("`context_required`"));
+    assert!(vault_query.contains("`x-obsidian.bases.include`"));
     assert!(vault_query.contains(
         "`vulcan mdbase view-source update <path> --file <doc> --if-revision <revision>`"
     ));

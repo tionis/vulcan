@@ -32,6 +32,13 @@ pub fn build_mdbase_view_list_report(
 ) -> Result<MdbaseViewList, AppError> {
     let (loaded, records) = visible_records(paths, filter)?;
     let mut list = list_mdbase_views(records.records());
+    let (bases, base_diagnostics) = super::bases_views::describe_base_sources(&loaded, filter)?;
+    // Discovery order is ascending source path across every format.
+    list.views.extend(bases);
+    list.views
+        .sort_by(|left, right| left.source.path.cmp(&right.source.path));
+    list.meta.total_count = list.views.len();
+    list.diagnostics.extend(base_diagnostics);
     list.diagnostics
         .splice(0..0, registry_diagnostics(&loaded, filter));
     Ok(list)
@@ -44,6 +51,14 @@ pub fn build_mdbase_view_report(
     invocation: &MdbaseViewInvocation,
     filter: Option<&PermissionFilter>,
 ) -> Result<MdbaseQueryResult, AppError> {
+    if is_base_path(&invocation.source) {
+        let loaded = load_collection_authorized(paths, filter)?;
+        let mut report = super::bases_views::execute_base_view(paths, &loaded, invocation, filter)?;
+        report
+            .diagnostics
+            .splice(0..0, registry_diagnostics(&loaded, filter));
+        return Ok(report);
+    }
     let (loaded, records) = visible_records(paths, filter)?;
     let mut report = execute_mdbase_view(
         records.records(),
@@ -94,6 +109,10 @@ pub fn read_mdbase_view_source(
     path: &str,
     filter: Option<&PermissionFilter>,
 ) -> Result<MdbaseViewSourceDocument, AppError> {
+    if is_base_path(path) {
+        let loaded = load_collection_authorized(paths, filter)?;
+        return super::bases_views::read_base_source(&loaded, path, filter);
+    }
     let (loaded, records) = visible_records(paths, filter)?;
     let record = records
         .records()
@@ -120,6 +139,16 @@ pub fn create_mdbase_view_source(
     document: &str,
     options: &MdbaseViewSourceOptions,
 ) -> Result<MdbaseViewSourceDocument, AppError> {
+    if let Some(path) = path.filter(|path| is_base_path(path)) {
+        return super::bases_views::write_base_source(
+            paths,
+            path,
+            Some(document),
+            super::bases_views::BaseWrite::Create,
+            options,
+        )
+        .map(|document| document.expect("a create returns its document"));
+    }
     let filter = read_filter(paths, options)?;
     // Validate under the collection read guard, then release it: the managed
     // write takes the exclusive lock.
@@ -176,6 +205,16 @@ pub fn update_mdbase_view_source(
     if_revision: Option<&str>,
     options: &MdbaseViewSourceOptions,
 ) -> Result<MdbaseViewSourceDocument, AppError> {
+    if is_base_path(path) {
+        return super::bases_views::write_base_source(
+            paths,
+            path,
+            Some(document),
+            super::bases_views::BaseWrite::Replace { if_revision },
+            options,
+        )
+        .map(|document| document.expect("an update returns its document"));
+    }
     let filter = read_filter(paths, options)?;
     let current = read_mdbase_view_source(paths, path, Some(&filter))?;
     {
@@ -203,6 +242,16 @@ pub fn delete_mdbase_view_source(
     if_revision: Option<&str>,
     options: &MdbaseViewSourceOptions,
 ) -> Result<MdbaseViewSourceDeletion, AppError> {
+    if is_base_path(path) {
+        super::bases_views::write_base_source(
+            paths,
+            path,
+            None,
+            super::bases_views::BaseWrite::Replace { if_revision },
+            options,
+        )?;
+        return Ok(super::bases_views::base_deletion(path, options));
+    }
     let filter = read_filter(paths, options)?;
     let current = read_mdbase_view_source(paths, path, Some(&filter))?;
     let plan = plan_source_write(
@@ -219,6 +268,14 @@ pub fn delete_mdbase_view_source(
         deleted: !options.dry_run,
         dry_run: options.dry_run,
     })
+}
+
+/// Obsidian `.base` sources take the Bases adapter; everything else is a
+/// canonical view record.
+fn is_base_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("base"))
 }
 
 fn read_filter(
