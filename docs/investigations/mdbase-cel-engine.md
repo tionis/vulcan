@@ -20,3 +20,10 @@ parsed AST node count, estimated comprehension work, aggregate input/output
 bytes and value nodes, and individual list/map iteration width. CEL has no I/O
 facilities in this integration. Host bindings and link resolution are added only
 by Vulcan and must consume the adapter's explicit traversal budget.
+
+## 2026-10 update
+
+The repository's MSRV is now Rust 1.88, so the reason above no longer applies: the `cel` 0.14/0.15
+line declares Rust 1.86 and replaces `paste` with the maintained `pastey`. See
+[the upstream review](mdbase-upstream-2026-10.md); migrating the adapter removes the
+`RUSTSEC-2024-0436` exception.
