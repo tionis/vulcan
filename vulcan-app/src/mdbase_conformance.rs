@@ -1635,6 +1635,12 @@ mod tests {
                 MDBASE_WRITABLE_VIEW_SOURCES_FEATURE
             ]
         );
+        // Withheld: no oracle corpus captured from Obsidian exists, and the
+        // Bases adapter has no invocation context (MDB.8 evaluation).
+        assert!(!claim
+            .optional_features
+            .iter()
+            .any(|feature| feature == "obsidian_bases_views"));
         assert!(claim
             .features
             .contains(&crate::mdbase::SAVED_VIEWS_FEATURE.to_string()));

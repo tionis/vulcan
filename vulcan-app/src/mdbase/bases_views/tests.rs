@@ -241,3 +241,122 @@ fn base_sources_round_trip_complete_documents_under_if_revision() {
     .unwrap();
     assert!(!directory.path().join("Views/work.base").exists());
 }
+
+/// The adapter must preserve Vulcan's native Bases results on the existing
+/// fixture corpus: source order, formulas, filters, grouping, and properties.
+#[test]
+fn adapter_matches_native_bases_evaluation_on_the_fixture_corpus() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let fixtures =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/vaults");
+    let mut corpus = Vec::new();
+    for vault in ["bases", "hardening"] {
+        let source = fixtures.join(vault);
+        let mut pending = vec![source.clone()];
+        while let Some(directory) = pending.pop() {
+            for entry in fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    let relative = path.strip_prefix(&source).unwrap();
+                    let target = root.join(vault).join(relative);
+                    fs::create_dir_all(target.parent().unwrap()).unwrap();
+                    fs::copy(&path, &target).unwrap();
+                    if path
+                        .extension()
+                        .is_some_and(|extension| extension == "base")
+                    {
+                        corpus.push(format!("{vault}/{}", relative.to_string_lossy()));
+                    }
+                }
+            }
+        }
+    }
+    assert!(!corpus.is_empty());
+    fs::write(
+        root.join("mdbase.yaml"),
+        "spec_version: \"0.3.0\"\nx-obsidian:\n  bases:\n    include: ['**/*.base']\n",
+    )
+    .unwrap();
+    let paths = VaultPaths::new(root);
+    vulcan_core::initialize_vulcan_dir(&paths).unwrap();
+    scan_vault(&paths, ScanMode::Full).unwrap();
+
+    let list = build_mdbase_view_list_report(&paths, None).unwrap();
+    for path in &corpus {
+        let native = vulcan_core::bases::evaluate_base_file(&paths, path).unwrap();
+        let source = list
+            .views
+            .iter()
+            .find(|source| &source.source.path == path)
+            .unwrap_or_else(|| panic!("{path} not listed: {:?}", list.diagnostics));
+        for evaluated in &native.views {
+            // Native evaluation skips unrendered types; match by name.
+            let named = source
+                .views
+                .iter()
+                .find(|view| Some(view.name.as_str()) == evaluated.name.as_deref())
+                .unwrap();
+            let adapted = build_mdbase_view_report(
+                &paths,
+                &MdbaseViewInvocation {
+                    source: path.clone(),
+                    view: named.id.clone(),
+                    ..MdbaseViewInvocation::default()
+                },
+                None,
+            )
+            .unwrap();
+            assert_eq!(
+                adapted
+                    .results
+                    .iter()
+                    .map(|row| row.file["path"].as_str().unwrap().to_string())
+                    .collect::<Vec<_>>(),
+                evaluated
+                    .rows
+                    .iter()
+                    .map(|row| row.document_path.clone())
+                    .collect::<Vec<_>>(),
+                "{path}#{}",
+                named.id
+            );
+            for (adapted, row) in adapted.results.iter().zip(&evaluated.rows) {
+                let values = adapted.values.as_ref().unwrap().as_object().unwrap();
+                for column in &evaluated.columns {
+                    assert_eq!(
+                        values.get(&column.key),
+                        Some(
+                            row.cells
+                                .get(&column.key)
+                                .unwrap_or(&serde_json::Value::Null)
+                        ),
+                        "{path}#{} {}",
+                        named.id,
+                        column.key
+                    );
+                }
+            }
+            assert_eq!(
+                named
+                    .properties
+                    .iter()
+                    .map(|property| property.key.as_str())
+                    .collect::<Vec<_>>(),
+                evaluated
+                    .columns
+                    .iter()
+                    .map(|column| column.key.as_str())
+                    .collect::<Vec<_>>(),
+            );
+            assert_eq!(
+                adapted.meta.groups.is_some(),
+                evaluated.group_by.is_some(),
+                "{path}#{}",
+                named.id
+            );
+        }
+    }
+}
