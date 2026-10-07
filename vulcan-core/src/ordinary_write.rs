@@ -74,7 +74,7 @@ pub struct OrdinaryWriteError {
 }
 
 impl OrdinaryWriteError {
-    fn new(code: &str, message: impl Into<String>, path: Option<String>) -> Self {
+    pub(crate) fn new(code: &str, message: impl Into<String>, path: Option<String>) -> Self {
         Self {
             code: code.to_string(),
             message: message.into(),
@@ -193,7 +193,7 @@ pub fn apply_ordinary_write_batch_with_renames_and_preflight(
     apply_with_renames_hook_and_preflight(paths, changes, renames, preflight, |_| Ok(()))
 }
 
-fn apply_with_hook<F>(
+pub(crate) fn apply_with_hook<F>(
     paths: &VaultPaths,
     changes: &[OrdinaryWriteChange],
     after_publish: F,

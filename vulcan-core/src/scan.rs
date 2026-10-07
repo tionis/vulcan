@@ -492,6 +492,10 @@ where
                     resolve_all_links(transaction, config.link_resolution)?;
                     rebuild_fts_index(transaction)?;
                     restore_fts_triggers(transaction)?;
+                    // Durable link decisions join the same commit, so a reader
+                    // never sees the rebuilt cache without them.
+                    crate::link_feedback::restore(paths, transaction)?;
+                    crate::cache::advance_note_store_clock(transaction)?;
 
                     Ok(ScanSummary {
                         mode,
@@ -518,8 +522,6 @@ where
                     deleted: summary.deleted,
                 },
             );
-            // Restore durable decisions first so the checkpoint matches the live cache.
-            crate::link_feedback::restore(paths, database.connection())?;
             crate::history::record_scan_checkpoint(database.connection())?;
             summary
         }
@@ -601,6 +603,15 @@ where
                         rebuild_fts_index(transaction)?;
                         restore_fts_triggers(transaction)?;
                     }
+                    // Everything a reader sees changes in this one commit: rows,
+                    // link resolution, durable link decisions, and the clock.
+                    if result.summary.added > 0
+                        || result.summary.updated > 0
+                        || result.summary.deleted > 0
+                    {
+                        crate::link_feedback::restore(paths, transaction)?;
+                        crate::cache::advance_note_store_clock(transaction)?;
+                    }
                     emit_scan_progress(
                         on_progress,
                         ScanProgress {
@@ -621,7 +632,6 @@ where
                 || result.summary.updated > 0
                 || result.summary.deleted > 0;
             if has_changes {
-                crate::link_feedback::restore(paths, database.connection())?;
                 crate::history::record_scan_checkpoint_incremental(
                     database.connection(),
                     &result.changed_document_ids,

@@ -196,6 +196,16 @@ fn sync_runtime_metadata_tx(transaction: &Transaction<'_>) -> Result<(), CacheEr
     Ok(())
 }
 
+/// Advance the note store clock (schema v28) in the caller's transaction.
+/// `note_query` triggers advance it for row changes; writers that change
+/// what a hydrated note shows without touching its row (link resolution,
+/// inferred links) call this in the same transaction, so a reader's clock
+/// identifies every note-visible state.
+pub(crate) fn advance_note_store_clock(connection: &Connection) -> rusqlite::Result<()> {
+    connection.execute("UPDATE note_store_clock SET version = version + 1", [])?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

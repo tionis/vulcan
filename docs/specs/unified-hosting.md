@@ -427,15 +427,15 @@ its JSON query/response schemas, and reports feature-dependent availability. Thu
 vectors or the JavaScript runtime still reports `/related` or `/dataview/query-js` explicitly as an
 installed but unavailable compatibility route instead of silently advertising working behavior.
 
-Note queries have four routes: `GET /notes` (note filters), `GET /query` (a canonical `QueryAst`
-from `dsl` or `json`, paged by its `offset` and `limit`), `GET /dataview/query`, and
-`GET /bases/eval`. The last three accept `explain`. The daemon attaches a lazily created
-retained note-store session to these routes (`ServeSessions`,
-[query architecture §4.6](query-architecture.md#46-retained-host-sessions)): requests read
-pinned snapshots that show only completed writes, without taking the vault lock, and fall back to
-the direct, read-locked path when no snapshot can be pinned. Answers are identical either way. A
-periodic task unpins idle snapshots of an earlier write epoch. `GET /mdbase/query` keeps its own
-retained mdbase session.
+Note queries have four routes: `GET /notes` (note filters, paged by `offset` and `limit`),
+`GET /query` (a canonical `QueryAst` from `dsl` or `json`, paged by its `offset` and `limit`),
+`GET /dataview/query`, and `GET /bases/eval`. The last three accept `explain`; pages are taken
+before notes are hydrated when the filters read no hydrated fields. The daemon attaches a lazily
+created retained note-store session to these routes (`ServeSessions`,
+[query architecture §4.6](query-architecture.md#46-retained-host-sessions)): each request reads one
+read transaction that shows only complete writes, without taking or waiting for the vault lock, and
+falls back to the direct, read-locked path only when an interrupted write needs recovery. Answers
+are identical either way. `GET /mdbase/query` keeps its own retained mdbase session.
 
 The listener registration accepts either invocation-instance or registered-vault ownership while
 using the identical router. Acceptance tests run both ownership modes without a daemon process and

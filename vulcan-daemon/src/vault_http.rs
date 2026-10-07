@@ -36,9 +36,6 @@ pub const DEFAULT_VAULT_HTTP_DEADLINE: Duration = Duration::from_secs(30);
 /// Longest a watched mdbase proof is trusted without a fresh walk, bounding
 /// the effect of a missed filesystem notification.
 pub const MDBASE_WATCHED_PROOF_MAX_AGE: Duration = Duration::from_secs(30);
-/// How often idle note-store snapshots of an earlier write epoch are
-/// released, so an idle daemon does not hold old WAL frames.
-pub const NOTE_SNAPSHOT_RELEASE_INTERVAL: Duration = Duration::from_secs(5);
 /// Routes served from the retained note-store session (QRY.6).
 const NOTE_SESSION_ROUTES: &[&str] = &["/notes", "/query", "/dataview/query", "/bases/eval"];
 
@@ -163,27 +160,9 @@ pub async fn serve_vault_with_shutdown<F>(
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    let notes = Arc::clone(&state.notes);
-    let release = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(NOTE_SNAPSHOT_RELEASE_INTERVAL);
-        loop {
-            interval.tick().await;
-            if notes.get().is_some() {
-                let notes = Arc::clone(&notes);
-                let _ = tokio::task::spawn_blocking(move || {
-                    if let Some(session) = notes.get() {
-                        session.release_stale();
-                    }
-                })
-                .await;
-            }
-        }
-    });
-    let served = axum::serve(listener, vault_router(state))
+    axum::serve(listener, vault_router(state))
         .with_graceful_shutdown(shutdown)
-        .await;
-    release.abort();
-    served
+        .await
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -704,11 +683,17 @@ mod tests {
             }
         }
         let session = state.notes.get().expect("note routes create the session");
-        let reused = session
-            .counters()
-            .snapshots_reused
+        let counters = session.counters();
+        let snapshots = counters
+            .snapshots
             .load(std::sync::atomic::Ordering::Relaxed);
-        assert!(reused > 0);
+        let opened = counters
+            .connections_opened
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            snapshots > opened,
+            "pooled connections serve later requests"
+        );
         assert!(state.mdbase.get().is_none());
     }
 

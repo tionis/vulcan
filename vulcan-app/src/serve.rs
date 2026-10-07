@@ -8,9 +8,9 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use vulcan_core::note_session::NoteStoreSession;
 use vulcan_core::{
-    query_graph_analytics_with_filter, query_notes_with_filter, resolve_permission_profile,
-    search_vault_with_filter, NoteQuery, PermissionFilter, PermissionGuard, ProfilePermissionGuard,
-    SearchQuery, SearchSort, VaultPaths, WatchReport,
+    query_graph_analytics_with_filter, resolve_permission_profile, search_vault_with_filter,
+    NoteQuery, PermissionFilter, PermissionGuard, ProfilePermissionGuard, SearchQuery, SearchSort,
+    VaultPaths, WatchReport,
 };
 #[cfg(feature = "vectors")]
 use vulcan_core::{query_related_notes_with_filter, RelatedNotesQuery};
@@ -418,26 +418,28 @@ pub fn route_request_with_sessions(
                 sort_by: first_param(&request.query, "sort").map(ToOwned::to_owned),
                 sort_descending: parse_optional_bool(&request.query, "desc").unwrap_or(false),
             };
+            let page = Some(vulcan_core::NotePage {
+                offset: parse_optional_usize(&request.query, "offset").unwrap_or(0),
+                limit: parse_optional_usize(&request.query, "limit"),
+            });
             let report = match sessions.notes.and_then(NoteStoreSession::snapshot) {
-                Some(store) => vulcan_core::properties::query_notes_in(
+                Some(store) => vulcan_core::properties::query_notes_page_in(
                     &store,
                     paths,
                     &query,
                     read_filter.as_ref(),
+                    page,
                 ),
-                None => query_notes_with_filter(paths, &query, read_filter.as_ref()),
+                None => vulcan_core::properties::query_notes_page_in(
+                    &vulcan_core::note_store::DirectNoteStore::new(paths),
+                    paths,
+                    &query,
+                    read_filter.as_ref(),
+                    page,
+                ),
             };
             match report {
-                Ok(mut report) => {
-                    let offset = parse_optional_usize(&request.query, "offset").unwrap_or(0);
-                    let limit = parse_optional_usize(&request.query, "limit");
-                    let start = offset.min(report.notes.len());
-                    let end = limit.map_or(report.notes.len(), |limit| {
-                        start.saturating_add(limit).min(report.notes.len())
-                    });
-                    report.notes = report.notes[start..end].to_vec();
-                    ServeResponse::ok(json!({ "ok": true, "result": report }))
-                }
+                Ok(report) => ServeResponse::ok(json!({ "ok": true, "result": report })),
                 Err(error) => ServeResponse::error(500, error.to_string()),
             }
         }
@@ -574,21 +576,27 @@ fn query_route(
         Ok(ast) => ast,
         Err(error) => return ServeResponse::error(400, error.to_string()),
     };
-    let (offset, limit) = (ast.offset, ast.limit);
+    let page = Some(vulcan_core::NotePage {
+        offset: ast.offset,
+        limit: ast.limit,
+    });
     let report = match session.and_then(NoteStoreSession::snapshot) {
-        Some(store) => vulcan_core::execute_query_report_in(&store, paths, ast, read_filter),
-        None => vulcan_core::execute_query_report_explained(paths, ast, read_filter),
+        Some(store) => {
+            vulcan_core::execute_query_report_page_in(&store, paths, ast, read_filter, page)
+        }
+        None => vulcan_core::execute_query_report_page_in(
+            &vulcan_core::note_store::DirectNoteStore::new(paths),
+            paths,
+            ast,
+            read_filter,
+            page,
+        ),
     };
     match report {
         Ok(mut report) => {
             if !parse_optional_bool(&request.query, "explain").unwrap_or(false) {
                 report.plan = None;
             }
-            let start = offset.min(report.notes.len());
-            let end = limit.map_or(report.notes.len(), |limit| {
-                start.saturating_add(limit).min(report.notes.len())
-            });
-            report.notes = report.notes[start..end].to_vec();
             ServeResponse::ok(json!({ "ok": true, "result": report }))
         }
         Err(error) => ServeResponse::error(500, error.to_string()),
@@ -745,7 +753,7 @@ mod tests {
         let counters = session.counters();
         assert!(
             counters
-                .snapshots_reused
+                .snapshots
                 .load(std::sync::atomic::Ordering::Relaxed)
                 > 0
         );

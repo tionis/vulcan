@@ -652,7 +652,16 @@ fn update_link_suggestion_status(
             params![id, status_text, decided_at],
         )?;
         if status == LinkSuggestionStatus::Accepted {
-            crate::link_feedback::insert_inferred_link(&connection, &source_id, &target_id, score)?;
+            // The edge and the clock advance commit together (QRY.6).
+            let transaction = connection.unchecked_transaction()?;
+            crate::link_feedback::insert_inferred_link(
+                &transaction,
+                &source_id,
+                &target_id,
+                score,
+            )?;
+            crate::cache::advance_note_store_clock(&transaction)?;
+            transaction.commit()?;
         }
     }
     load_link_suggestions(&connection, &notes, None, None, 0.0, None)?

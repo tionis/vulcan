@@ -92,6 +92,7 @@ pub(crate) struct PlannedRows {
 }
 
 /// Run a plan's shared stages: candidates, decisions, hydration.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn execute_note_plan(
     paths: &VaultPaths,
     lookup: &IndexedNoteLookup<'_>,
@@ -107,40 +108,76 @@ pub(crate) fn execute_note_plan(
     };
 
     let started = Instant::now();
-    let universe = lookup.paths().collect::<HashSet<_>>();
     // SQL narrows by source and by what the predicate cannot exclude, and
     // reads the facts the predicate decides on, so deciding loads no note.
+    // A lookup over retained records decides on those instead (QRY.6).
     let narrowing = plan.predicate.is_useful().then_some(&plan.predicate);
-    let mut candidates = match (&plan.source, narrowing) {
-        (None, None) => lookup
-            .paths()
-            .filter(|path| !plan.markdown_only || is_markdown(path))
-            .map(|path| CandidateFacts {
-                path: path.to_string(),
-                ..CandidateFacts::default()
-            })
-            .collect(),
-        (source, narrowing) => sql_candidates(
-            lookup.database(),
-            paths,
-            source.as_ref(),
-            narrowing,
+    let from_records = narrowing.is_some() && lookup.retains_records();
+    // Without a source, retained records decide faster in memory than SQL
+    // scans every row; the identities are already the read scope.
+    let in_memory = plan.source.is_none() && (narrowing.is_none() || from_records);
+    let (candidate_count, decided) = if let (true, Some(records)) = (in_memory, lookup.all_stored())
+    {
+        // Every record is at hand in path order: decide them where they are.
+        let candidate_count = records
+            .iter()
+            .filter(|record| !plan.markdown_only || is_markdown(&record.document_path))
+            .count();
+        stage("candidates", started);
+        let started = Instant::now();
+        let decided = decide_records(
+            &plan.predicate,
+            records,
             plan.markdown_only,
-            filter,
-        )?
-        .into_iter()
-        .filter(|candidate| universe.contains(candidate.path.as_str()))
-        .collect::<Vec<_>>(),
+            !lookup.retains_records(),
+        );
+        stage("decide", started);
+        (candidate_count, decided)
+    } else {
+        let mut candidates = if in_memory {
+            lookup
+                .paths()
+                .filter(|path| !plan.markdown_only || is_markdown(path))
+                .map(|path| CandidateFacts {
+                    path: path.to_string(),
+                    ..CandidateFacts::default()
+                })
+                .collect()
+        } else {
+            sql_candidates(
+                lookup.database(),
+                paths,
+                &CandidateQuery {
+                    source: plan.source.as_ref(),
+                    predicate: narrowing,
+                    markdown_only: plan.markdown_only,
+                    with_properties: !from_records,
+                },
+                filter,
+            )?
+            .into_iter()
+            .filter(|candidate| lookup.contains(&candidate.path))
+            .collect::<Vec<_>>()
+        };
+        candidates.sort_by(|left, right| left.path.cmp(&right.path));
+        if from_records {
+            lookup.prefetch_stored(candidates.iter().map(|candidate| candidate.path.as_str()));
+            for candidate in &mut candidates {
+                candidate.record = lookup.note_arc_at(&candidate.path);
+            }
+            if let Some(error) = lookup.take_error() {
+                return Err(error);
+            }
+        }
+        let candidate_count = candidates.len();
+        stage("candidates", started);
+        let started = Instant::now();
+        let decided = decide_candidates(&plan.predicate, candidates, !lookup.retains_records());
+        stage("decide", started);
+        (candidate_count, decided)
     };
-    candidates.sort_by(|left, right| left.path.cmp(&right.path));
-    let candidate_count = candidates.len();
-    stage("candidates", started);
-
-    let started = Instant::now();
-    let decided = decide_candidates(&plan.predicate, candidates);
     let (candidates, undecided) = (decided.rows, decided.undecided);
     let (decided_matches, decided_out) = (decided.matches, decided.excluded);
-    stage("decide", started);
 
     let started = Instant::now();
     let stored = if matches!(plan.hydration, Hydration::Stored) {
@@ -171,6 +208,7 @@ pub(crate) fn execute_note_plan(
             candidate_path: match (&plan.source, plan.predicate.is_useful()) {
                 (Some(_), true) => "sql source and predicate atoms".to_string(),
                 (Some(_), false) => "sql source".to_string(),
+                (None, true) if in_memory => "predicate atoms over retained notes".to_string(),
                 (None, true) => "sql predicate atoms".to_string(),
                 (None, false) if plan.markdown_only => "every readable note".to_string(),
                 (None, false) => "every readable document".to_string(),
@@ -203,8 +241,73 @@ struct DecidedCandidates {
     excluded: usize,
 }
 
+/// Decide every record (in path order) on its stored fields; only rows the
+/// predicate keeps allocate their paths. One-shot queries decide in
+/// parallel; a host's retained lookups serve concurrent requests, which
+/// already occupy its cores, and per-request fan-out there only queues
+/// requests behind each other (QRY.6), so they decide on the request's
+/// thread.
+fn decide_records(
+    predicate: &Predicate,
+    records: &[std::sync::Arc<crate::properties::NoteRecord>],
+    markdown_only: bool,
+    parallel: bool,
+) -> DecidedCandidates {
+    use rayon::prelude::*;
+    let useful = predicate.is_useful();
+    let decide = |record: &std::sync::Arc<crate::properties::NoteRecord>| {
+        if markdown_only && !is_markdown(&record.document_path) {
+            return None;
+        }
+        Some(if useful {
+            predicate.decide(
+                Dialect::Dataview,
+                &RecordValues {
+                    properties: &record.properties,
+                    path: &record.document_path,
+                    name: &record.file_name,
+                    ext: &record.file_ext,
+                },
+            )
+        } else {
+            Decision::Undecided
+        })
+    };
+    let decisions = if parallel {
+        records.par_iter().map(decide).collect::<Vec<_>>()
+    } else {
+        records.iter().map(decide).collect::<Vec<_>>()
+    };
+    let mut decided = DecidedCandidates {
+        rows: Vec::new(),
+        undecided: HashSet::new(),
+        matches: 0,
+        excluded: 0,
+    };
+    for (record, decision) in records.iter().zip(decisions) {
+        match decision {
+            None => {}
+            Some(Decision::NoMatch) => decided.excluded += 1,
+            Some(Decision::Match) => {
+                decided.matches += usize::from(useful);
+                decided.rows.push(record.document_path.clone());
+            }
+            Some(Decision::Undecided) => {
+                decided.undecided.insert(record.document_path.clone());
+                decided.rows.push(record.document_path.clone());
+            }
+        }
+    }
+    decided
+}
+
 /// Decide candidates on their stored facts, in parallel; no note loads.
-fn decide_candidates(predicate: &Predicate, candidates: Vec<CandidateFacts>) -> DecidedCandidates {
+/// See [`decide_records`] for `parallel`.
+fn decide_candidates(
+    predicate: &Predicate,
+    candidates: Vec<CandidateFacts>,
+    parallel: bool,
+) -> DecidedCandidates {
     use rayon::prelude::*;
     if !predicate.is_useful() {
         let rows = candidates
@@ -218,25 +321,38 @@ fn decide_candidates(predicate: &Predicate, candidates: Vec<CandidateFacts>) -> 
             excluded: 0,
         };
     }
-    let decisions = candidates
-        .par_iter()
-        .map(|candidate| {
-            let properties = candidate
-                .properties
-                .as_deref()
-                .and_then(|json| serde_json::from_str(json).ok())
-                .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
-            predicate.decide(
+    let decide = |candidate: &CandidateFacts| {
+        if let Some(record) = &candidate.record {
+            return predicate.decide(
                 Dialect::Dataview,
                 &RecordValues {
-                    properties: &properties,
-                    path: &candidate.path,
-                    name: &candidate.name,
-                    ext: &candidate.ext,
+                    properties: &record.properties,
+                    path: &record.document_path,
+                    name: &record.file_name,
+                    ext: &record.file_ext,
                 },
-            )
-        })
-        .collect::<Vec<_>>();
+            );
+        }
+        let properties = candidate
+            .properties
+            .as_deref()
+            .and_then(|json| serde_json::from_str(json).ok())
+            .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+        predicate.decide(
+            Dialect::Dataview,
+            &RecordValues {
+                properties: &properties,
+                path: &candidate.path,
+                name: &candidate.name,
+                ext: &candidate.ext,
+            },
+        )
+    };
+    let decisions = if parallel {
+        candidates.par_iter().map(decide).collect::<Vec<_>>()
+    } else {
+        candidates.iter().map(decide).collect::<Vec<_>>()
+    };
     let mut decided = DecidedCandidates {
         rows: Vec::new(),
         undecided: HashSet::new(),
@@ -267,6 +383,18 @@ struct CandidateFacts {
     ext: String,
     /// Canonical JSON properties; `None` reads as no properties.
     properties: Option<String>,
+    /// The candidate's stored record, decided on instead of `properties`
+    /// when the lookup retains records.
+    record: Option<std::sync::Arc<crate::properties::NoteRecord>>,
+}
+
+/// What [`sql_candidates`] selects.
+struct CandidateQuery<'a> {
+    source: Option<&'a SourceExpr>,
+    predicate: Option<&'a Predicate>,
+    markdown_only: bool,
+    /// Read the properties the predicate decides on.
+    with_properties: bool,
 }
 
 /// The documents `source` selects within the read scope, in one query.
@@ -276,12 +404,20 @@ pub(crate) fn source_candidates(
     markdown_only: bool,
     filter: Option<&PermissionFilter>,
 ) -> Result<HashSet<String>, PropertyError> {
-    Ok(
-        sql_candidates(None, paths, Some(source), None, markdown_only, filter)?
-            .into_iter()
-            .map(|candidate| candidate.path)
-            .collect(),
-    )
+    Ok(sql_candidates(
+        None,
+        paths,
+        &CandidateQuery {
+            source: Some(source),
+            predicate: None,
+            markdown_only,
+            with_properties: false,
+        },
+        filter,
+    )?
+    .into_iter()
+    .map(|candidate| candidate.path)
+    .collect())
 }
 
 /// The documents a source selects (all without one) whose stored fields the
@@ -290,11 +426,15 @@ pub(crate) fn source_candidates(
 fn sql_candidates(
     database: Option<&CacheDatabase>,
     paths: &VaultPaths,
-    source: Option<&SourceExpr>,
-    predicate: Option<&Predicate>,
-    markdown_only: bool,
+    query: &CandidateQuery<'_>,
     filter: Option<&PermissionFilter>,
 ) -> Result<Vec<CandidateFacts>, PropertyError> {
+    let CandidateQuery {
+        source,
+        predicate,
+        markdown_only,
+        with_properties,
+    } = *query;
     let opened;
     let database = if let Some(database) = database {
         database
@@ -302,7 +442,9 @@ fn sql_candidates(
         opened = CacheDatabase::open(paths)?;
         &opened
     };
-    let permission_sql = filter.map(|filter| filter.document_scope_sql("_permission_documents"));
+    let permission_sql = filter.map(|filter| {
+        filter.document_scope_sql_for("_permission_documents", "note_query.document_id")
+    });
     let mut params = permission_sql
         .as_ref()
         .map(|sql| {
@@ -316,17 +458,21 @@ fn sql_candidates(
     let mut sql = permission_sql
         .as_ref()
         .map_or_else(String::new, |sql| sql.cte.clone());
-    sql.push_str(
-        "SELECT documents.path, documents.filename, documents.extension, \
+    // The narrow table alone: wide `documents` rows are never read.
+    sql.push_str(if with_properties {
+        "SELECT note_query.path, note_query.filename, note_query.extension, \
                 json(note_query.properties) \
-         FROM documents JOIN note_query ON note_query.document_id = documents.id WHERE 1 = 1",
-    );
+         FROM note_query WHERE 1 = 1"
+    } else {
+        "SELECT note_query.path, note_query.filename, note_query.extension, NULL \
+         FROM note_query WHERE 1 = 1"
+    });
     if markdown_only {
-        sql.push_str(" AND documents.extension = 'md'");
+        sql.push_str(" AND note_query.extension = 'md'");
     }
     if let Some(source) = source {
         sql.push_str(" AND ");
-        sql.push_str(&source.render_sql(&SourceColumns::DOCUMENTS, &mut params));
+        sql.push_str(&source.render_sql(&SourceColumns::NOTE_QUERY, &mut params));
     }
     if let Some(predicate) = predicate {
         sql.push_str(" AND ");
@@ -334,9 +480,9 @@ fn sql_candidates(
             Dialect::Dataview,
             &crate::predicate::SqlColumns {
                 properties: "COALESCE(note_query.properties, jsonb('{}'))",
-                path: "documents.path",
-                name: "documents.filename",
-                ext: "documents.extension",
+                path: "note_query.path",
+                name: "note_query.filename",
+                ext: "note_query.extension",
             },
             &mut params,
         ));
@@ -344,13 +490,14 @@ fn sql_candidates(
     if let Some(permission_sql) = permission_sql.as_ref() {
         sql.push_str(&permission_sql.clause);
     }
-    let mut statement = database.connection().prepare(&sql)?;
+    let mut statement = database.connection().prepare_cached(&sql)?;
     let rows = statement.query_map(rusqlite::params_from_iter(params.iter()), |row| {
         Ok(CandidateFacts {
             path: row.get(0)?,
             name: row.get(1)?,
             ext: row.get(2)?,
             properties: row.get(3)?,
+            record: None,
         })
     })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)

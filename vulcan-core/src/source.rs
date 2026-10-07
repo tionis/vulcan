@@ -29,16 +29,16 @@ pub(crate) enum SourceExpr {
     Not(Box<SourceExpr>),
 }
 
-/// Columns of the `documents` row a source is rendered against.
+/// Columns of the row a source is rendered against.
 pub(crate) struct SourceColumns<'a> {
     pub id: &'a str,
     pub path: &'a str,
 }
 
 impl SourceColumns<'static> {
-    pub(crate) const DOCUMENTS: Self = Self {
-        id: "documents.id",
-        path: "documents.path",
+    pub(crate) const NOTE_QUERY: Self = Self {
+        id: "note_query.document_id",
+        path: "note_query.path",
     };
 }
 

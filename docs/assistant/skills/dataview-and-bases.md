@@ -1,7 +1,7 @@
 ---
 name: dataview-and-bases
 description: Work with Dataview, DataviewJS, Bases, and .base files. Use when the user asks about Dataview DQL, inline fields, DataviewJS blocks, Bases views, formulas, saved task views, or .base editing/evaluation.
-version: 10
+version: 11
 tools:
   - dataview
   - bases
@@ -32,6 +32,7 @@ and translating view logic into Vulcan queries.
 
 - Prefer canonical `query` for agent workflows unless the user specifically needs Dataview/Bases compatibility.
 - DQL `WHERE` clauses and `.base` filters compare like the expression evaluator: a missing property is `null`, so `status != "done"` also selects notes without a `status`, and a property that a frontmatter key and an inline field of the same name both set is a list. Write `status != null && status != "done"` when only notes that have the property should match.
+- Base views may set `limit` (rows kept after sorting), as in Obsidian Bases.
 - `query --language dql --explain` and `bases eval --explain` add the note plan (candidates, decided and excluded rows, rows left to the DQL or Bases evaluator, rows loaded with stored fields only, hydrated notes, stage timings) to the output.
 - DQL `FROM "Folder"` matches the folder's exact, case-sensitive spelling and everything below it; `FROM #tag` includes nested tags (`#tag/sub`) but not tags that merely share a prefix (`#tags`).
 - DataviewJS runs inside Vulcan's JS sandbox; write/network helpers depend on sandbox and permissions.

@@ -225,33 +225,39 @@ direct store opens the cache for each lookup; a host's `NoteStoreSession`
 accept either.
 
 **Freshness.** A note store is the cache, not the files: the daemon's watcher keeps the cache
-current, and the direct path reads it under the shared vault lock. Every Vulcan cache write runs
-in an exclusive write section that advances the cooperating write epoch when it ends. A session
-snapshot is a pooled read-only connection holding an open read transaction begun while no writer
-held the lock (a non-blocking shared-lock attempt that also checks for an interrupted ordinary
-write batch), so a snapshot pinned at epoch `E` shows exactly the cache after every write section
-completed by `E`. It stays valid while the epoch is still `E`, including while a writer is inside
-its section: serving the state before an incomplete write is linearizable, and no reader ever
-waits for or observes a half-applied write section. When no idle snapshot is pinned at the
-current epoch and a writer holds the lock, the request takes the direct path, which waits. Idle
-snapshots of an earlier epoch are unpinned on the next request and periodically by the host, so
-they do not hold old WAL frames.
+current, and the direct path reads it under the shared vault lock. A session snapshot is one read
+transaction on a pooled read-only connection, begun per request without taking or waiting for the
+vault lock. This is consistent because every write section commits what a note query can observe
+in a single transaction that also advances the store clock: a scan's rows, link resolution, and
+durable link decisions together, and an accepted suggestion's inferred link with its own clock
+advance. Any read transaction therefore sees the cache between complete writes, a write is visible
+to every request that begins after it commits, and readers never queue behind writers. (An earlier
+design pinned transactions at the cooperating write epoch; under two writes per second the writer
+held the lock almost continuously, so readers could rarely pin and fell back to waiting.) Only an
+interrupted ordinary write batch, found while no writer holds the lock, makes the session decline,
+so the direct path can report the recovery it needs.
 
-**Row versions (schema v28).** `note_store_clock` holds a random `store_id` per cache file and a
-version that every `note_query` insert, update, or delete advances; triggers stamp each changed
-row's `row_version` with it. Identity facts carry their row version.
+**Row versions (schema v28, v29).** `note_store_clock` holds a random `store_id` per cache file and
+a version that every `note_query` insert, update, or delete advances; triggers stamp each changed
+row's `row_version` with it, and writers of note-visible state that touch no row (link resolution,
+inferred links) advance it explicitly in the same transaction. Identity facts carry their row
+version and load from a covering index (v29).
 
 **Retention.** Within a snapshot the session reuses:
 
-- identity facts per read scope while the store clock is unchanged;
-- stored-field records per path while the row version equals the identity's (and the bookmark
-  set and `store_id` match); records whose `file.ctime` came from a filesystem fallback are not
-  retained;
-- hydrated file objects per scope only within one write epoch, clock, configuration, and
-  bookmark set, because incoming links, tasks, and lists depend on rows other than the note's
-  own.
+- identity facts per read scope while the store clock is unchanged, loaded single-flight;
+- stored-field records per path while the row version equals the identity's (and the bookmark set
+  and `store_id` match), assembled once per scope and clock into a vector in identity order that
+  lookups index directly and the planner decides over in memory; records whose `file.ctime` came
+  from a filesystem fallback are not retained;
+- hydrated file objects per scope while the clock, configuration, and bookmark set are unchanged,
+  because incoming links, tasks, and lists depend on rows other than the note's own.
 
-Scopes with a policy hook, or restricted to an explicit universe, read the pinned snapshot
+Session lookups decide candidates on the request's thread: a host serving concurrent requests
+already uses its cores, and per-request fan-out only queued requests behind each other (eight
+readers at 10K: p95 60 ms with fan-out, 32 ms without).
+
+Scopes with a policy hook, or restricted to an explicit universe, read the snapshot's transaction
 without retention. Retained maps are bounded.
 
 ### 4.7 Filter language

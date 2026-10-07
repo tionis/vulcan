@@ -121,7 +121,11 @@ fn connection() -> rusqlite::Connection {
 
 fn sql_ids(connection: &rusqlite::Connection, source: &SourceExpr) -> BTreeSet<String> {
     let mut params = Vec::new();
-    let clause = source.render_sql(&SourceColumns::DOCUMENTS, &mut params);
+    let columns = SourceColumns {
+        id: "documents.id",
+        path: "documents.path",
+    };
+    let clause = source.render_sql(&columns, &mut params);
     let mut statement = connection
         .prepare(&format!(
             "SELECT documents.id FROM documents WHERE {clause}"

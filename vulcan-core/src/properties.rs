@@ -533,7 +533,7 @@ pub(crate) fn query_notes_with_scope(
         authorized_index,
         NoteQueryOutput::Notes,
     )? {
-        NoteQueryOutcome::Notes(report) => Ok(report),
+        NoteQueryOutcome::Notes(shared) => Ok(shared.into_report(query)),
         NoteQueryOutcome::Paths(_) => unreachable!("notes output yields notes"),
     }
 }
@@ -552,10 +552,10 @@ pub(crate) fn note_paths_matching_filters(
     };
     match query_notes_core(paths, &query, filter, None, NoteQueryOutput::Paths)? {
         NoteQueryOutcome::Paths(paths) => Ok(paths),
-        NoteQueryOutcome::Notes(report) => Ok(report
+        NoteQueryOutcome::Notes(shared) => Ok(shared
             .notes
             .into_iter()
-            .map(|note| note.document_path)
+            .map(|note| note.document_path.clone())
             .collect()),
     }
 }
@@ -569,7 +569,7 @@ fn evaluate_planned_rows(
     compiled: &CompiledNoteFilters,
     config: &VaultConfig,
     output: NoteQueryOutput,
-) -> Result<(Vec<NoteRecord>, Vec<String>), PropertyError> {
+) -> Result<(Vec<Arc<NoteRecord>>, Vec<String>), PropertyError> {
     let formulas = BTreeMap::new();
     let time_zone = DataviewTimeZone::parse(config.dataview.timezone.as_deref());
     let mut notes = Vec::with_capacity(planned.rows.len());
@@ -581,15 +581,15 @@ fn evaluate_planned_rows(
             continue;
         }
         let note = if output == NoteQueryOutput::StoredNotes {
-            lookup.note_at(path)
+            lookup.note_arc_at(path)
         } else {
-            lookup.hydrated_at(path)
+            lookup.hydrated_arc_at(path)
         };
         let Some(note) = note else {
             continue;
         };
         if planned.undecided.contains(path) {
-            let ctx = EvalContext::new(note, &formulas)
+            let ctx = EvalContext::new(&note, &formulas)
                 .with_note_lookup(lookup)
                 .with_time_zone(time_zone);
             let mut keep = true;
@@ -605,14 +605,37 @@ fn evaluate_planned_rows(
                 continue;
             }
         }
-        notes.push(note.clone());
+        notes.push(note);
     }
     Ok((notes, matched_paths))
 }
 
+/// Matching notes shared with the lookup that loaded them, and their plan.
+pub(crate) struct SharedNotes {
+    pub notes: Vec<Arc<NoteRecord>>,
+    pub plan: crate::plan::QueryPlanExplain,
+}
+
+impl SharedNotes {
+    fn into_report(self, query: &NoteQuery) -> NotesReport {
+        NotesReport {
+            filters: query.filters.clone(),
+            sort_by: query.sort_by.clone(),
+            sort_descending: query.sort_descending,
+            notes: self
+                .notes
+                .into_iter()
+                .map(|note| Arc::try_unwrap(note).unwrap_or_else(|shared| (*shared).clone()))
+                .collect(),
+            plan: Some(self.plan),
+        }
+    }
+}
+
 /// What [`query_notes_core`] produced.
 enum NoteQueryOutcome {
-    Notes(NotesReport),
+    /// Matching notes in query order, shared with the lookup.
+    Notes(SharedNotes),
     Paths(HashSet<String>),
 }
 
@@ -647,6 +670,7 @@ fn query_notes_core(
         filter,
         authorized_index,
         output,
+        None,
     )
 }
 
@@ -657,6 +681,7 @@ fn query_notes_core_in(
     filter: Option<&PermissionFilter>,
     authorized_index: Option<&HashMap<String, NoteRecord>>,
     output: NoteQueryOutput,
+    page: Option<NotePage>,
 ) -> Result<NoteQueryOutcome, PropertyError> {
     let config = crate::load_vault_config(paths).config;
     let within = authorized_index.map(|index| {
@@ -666,7 +691,7 @@ fn query_notes_core_in(
             .collect::<HashSet<_>>()
     });
     let lookup = store.lookup(NoteIndexReadScope::Filter(filter), within.as_ref())?;
-    query_notes_over(paths, &lookup, &config, query, filter, output)
+    query_notes_over(paths, &lookup, &config, query, filter, output, page)
 }
 
 /// [`query_notes_with_filter`] reading notes from `store` (QRY.6).
@@ -676,8 +701,28 @@ pub fn query_notes_in(
     query: &NoteQuery,
     filter: Option<&PermissionFilter>,
 ) -> Result<NotesReport, PropertyError> {
-    match query_notes_core_in(store, paths, query, filter, None, NoteQueryOutput::Notes)? {
-        NoteQueryOutcome::Notes(report) => Ok(report),
+    query_notes_page_in(store, paths, query, filter, None)
+}
+
+/// [`query_notes_in`] returning only `page` of the ordered notes. When the
+/// filters read no hydrated fields only the page is hydrated.
+pub fn query_notes_page_in(
+    store: &dyn crate::note_store::NoteStore,
+    paths: &VaultPaths,
+    query: &NoteQuery,
+    filter: Option<&PermissionFilter>,
+    page: Option<NotePage>,
+) -> Result<NotesReport, PropertyError> {
+    match query_notes_core_in(
+        store,
+        paths,
+        query,
+        filter,
+        None,
+        NoteQueryOutput::Notes,
+        page,
+    )? {
+        NoteQueryOutcome::Notes(shared) => Ok(shared.into_report(query)),
         NoteQueryOutcome::Paths(_) => unreachable!("notes output yields notes"),
     }
 }
@@ -685,23 +730,30 @@ pub fn query_notes_in(
 /// [`query_notes_with_filter`] over `lookup`, an already loaded universe
 /// (for example a Bases evaluation's), with rows hydrated or carrying
 /// stored fields only.
-pub(crate) fn query_notes_report_over(
+pub(crate) fn query_notes_shared_over(
     paths: &VaultPaths,
     lookup: &crate::note_lookup::IndexedNoteLookup<'_>,
     config: &VaultConfig,
     query: &NoteQuery,
     filter: Option<&PermissionFilter>,
     stored_only: bool,
-) -> Result<NotesReport, PropertyError> {
+) -> Result<SharedNotes, PropertyError> {
     let output = if stored_only {
         NoteQueryOutput::StoredNotes
     } else {
         NoteQueryOutput::Notes
     };
-    match query_notes_over(paths, lookup, config, query, filter, output)? {
-        NoteQueryOutcome::Notes(report) => Ok(report),
+    match query_notes_over(paths, lookup, config, query, filter, output, None)? {
+        NoteQueryOutcome::Notes(shared) => Ok(shared),
         NoteQueryOutcome::Paths(_) => unreachable!("notes output yields notes"),
     }
+}
+
+/// A window of a note query's ordered results.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NotePage {
+    pub offset: usize,
+    pub limit: Option<usize>,
 }
 
 fn query_notes_over(
@@ -711,8 +763,27 @@ fn query_notes_over(
     query: &NoteQuery,
     filter: Option<&PermissionFilter>,
     output: NoteQueryOutput,
+    page: Option<NotePage>,
 ) -> Result<NoteQueryOutcome, PropertyError> {
     let compiled = compile_note_filters(&query.filters)?;
+    // A page of hydrated notes needs only the page hydrated when filters
+    // and the sort read stored fields (sort keys always do).
+    let page_first = page.is_some()
+        && output == NoteQueryOutput::Notes
+        && !compiled.expressions.iter().any(|expression| {
+            crate::expression::analysis::reads_row_file_fields(
+                &expression.expr,
+                crate::expression::analysis::RowBindings {
+                    whole_rows: &[],
+                    this_is_row: true,
+                },
+            )
+        });
+    let rows_output = if page_first {
+        NoteQueryOutput::StoredNotes
+    } else {
+        output
+    };
     let plan = crate::plan::NotePlan {
         frontend: "notes",
         source: match compiled.sources.len() {
@@ -730,7 +801,7 @@ fn query_notes_over(
                 .map(|expression| expression.predicate.clone())
                 .collect(),
         ),
-        hydration: match output {
+        hydration: match rows_output {
             NoteQueryOutput::Notes => crate::plan::Hydration::Rows,
             NoteQueryOutput::StoredNotes => crate::plan::Hydration::Stored,
             NoteQueryOutput::Paths => crate::plan::Hydration::Undecided,
@@ -740,22 +811,23 @@ fn query_notes_over(
     let planned = crate::plan::execute_note_plan(paths, lookup, &plan, filter)?;
 
     let (mut notes, mut matched_paths) =
-        evaluate_planned_rows(lookup, &planned, &compiled, config, output)?;
+        evaluate_planned_rows(lookup, &planned, &compiled, config, rows_output)?;
     if let Some(error) = lookup.take_error() {
         return Err(error);
     }
 
     if output == NoteQueryOutput::Paths {
-        matched_paths.extend(notes.into_iter().map(|note| note.document_path));
+        matched_paths.extend(notes.iter().map(|note| note.document_path.clone()));
         return Ok(NoteQueryOutcome::Paths(matched_paths.into_iter().collect()));
     }
 
     if let Some(sort_by) = query.sort_by.as_deref() {
-        notes.sort_by(|left, right| {
-            let ordering = compare_sort_keys(
-                &sort_key_for_note(left, sort_by),
-                &sort_key_for_note(right, sort_by),
-            );
+        let mut keyed = notes
+            .into_iter()
+            .map(|note| (sort_key_for_note(&note, sort_by), note))
+            .collect::<Vec<_>>();
+        keyed.sort_by(|(left_key, left), (right_key, right)| {
+            let ordering = compare_sort_keys(left_key, right_key);
             let ordering = if query.sort_descending {
                 ordering.reverse()
             } else {
@@ -763,22 +835,36 @@ fn query_notes_over(
             };
             ordering.then_with(|| left.document_path.cmp(&right.document_path))
         });
+        notes = keyed.into_iter().map(|(_, note)| note).collect();
+    }
+    if let Some(page) = page {
+        let start = page.offset.min(notes.len());
+        let end = page.limit.map_or(notes.len(), |limit| {
+            start.saturating_add(limit).min(notes.len())
+        });
+        notes.truncate(end);
+        notes.drain(..start);
+    }
+    if page_first {
+        lookup.prefetch_hydrated(notes.iter().map(|note| note.document_path.as_str()));
+        notes = notes
+            .iter()
+            .filter_map(|note| lookup.hydrated_arc_at(&note.document_path))
+            .collect();
     }
     for note in &mut notes {
         if !note.raw_inline_expressions.is_empty() {
-            note.inline_expressions = evaluate_note_inline_expressions(note, lookup);
+            let evaluated = evaluate_note_inline_expressions(note, lookup);
+            Arc::make_mut(note).inline_expressions = evaluated;
         }
     }
     if let Some(error) = lookup.take_error() {
         return Err(error);
     }
 
-    Ok(NoteQueryOutcome::Notes(NotesReport {
-        filters: query.filters.clone(),
-        sort_by: query.sort_by.clone(),
-        sort_descending: query.sort_descending,
+    Ok(NoteQueryOutcome::Notes(SharedNotes {
         notes,
-        plan: Some(planned.explain),
+        plan: planned.explain,
     }))
 }
 
@@ -984,23 +1070,21 @@ fn load_note_identities(
     guard: Option<&dyn PermissionGuard>,
     within: Option<&HashSet<String>>,
 ) -> Result<Vec<crate::note_lookup::IndexedIdentity>, PropertyError> {
+    // Identity facts come from the narrow table alone, through its covering
+    // identity index (schema v29); the read scope restricts its document ids.
     let permission_sql = filter
-        .map(|filter| filter.document_scope_sql("_note_identity_permission"))
+        .map(|filter| {
+            filter.document_scope_sql_for("_note_identity_permission", "note_query.document_id")
+        })
         .unwrap_or_default();
     let mut sql = permission_sql.cte;
-    if filter.is_some() {
-        sql.push_str(
-            "SELECT note_query.path, note_query.filename, note_query.aliases, \
-             note_query.row_version \
-             FROM documents JOIN note_query ON note_query.document_id = documents.id \
-             WHERE 1 = 1",
-        );
-        sql.push_str(&permission_sql.clause);
-    } else {
-        sql.push_str("SELECT path, filename, aliases, row_version FROM note_query");
-    }
+    sql.push_str(
+        "SELECT note_query.path, note_query.filename, note_query.aliases, \
+         note_query.row_version FROM note_query WHERE 1 = 1",
+    );
+    sql.push_str(&permission_sql.clause);
     sql.push_str(" ORDER BY 1");
-    let mut statement = database.connection().prepare(&sql)?;
+    let mut statement = database.connection().prepare_cached(&sql)?;
     let rows = statement.query_map(params_from_iter(permission_sql.params.iter()), |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -3832,6 +3916,62 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["Projects/Alpha.md".to_string()]
         );
+    }
+
+    #[test]
+    fn note_pages_equal_slices_of_the_full_ordered_result() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).unwrap();
+        for index in 0..12 {
+            fs::write(
+                vault_root.join(format!("N{index:02}.md")),
+                format!(
+                    "---\nstatus: {}\nrank: {}\ntags: [t{}]\n---\n[[N{:02}]]\n- [ ] task\nx:: `= this.rank`\n",
+                    if index % 3 == 0 { "done" } else { "open" },
+                    (index * 5) % 7,
+                    index % 2,
+                    (index + 1) % 12,
+                ),
+            )
+            .unwrap();
+        }
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let store = crate::note_store::DirectNoteStore::new(&paths);
+        for (filters, sort_by, descending) in [
+            (vec!["status = open"], Some("rank"), false),
+            (vec!["status = open"], None, false),
+            (vec!["rank > 1"], Some("rank"), true),
+            // Filters that read hydrated fields hydrate every row first.
+            (vec!["file.tags has_tag t1"], Some("file.name"), true),
+            (vec!["length(file.outlinks) > 0"], Some("rank"), false),
+        ] {
+            let query = NoteQuery {
+                filters: filters.iter().map(ToString::to_string).collect(),
+                sort_by: sort_by.map(ToString::to_string),
+                sort_descending: descending,
+            };
+            let full = query_notes_in(&store, &paths, &query, None).unwrap().notes;
+            for (offset, limit) in [(0, Some(3)), (2, Some(4)), (5, None), (20, Some(2))] {
+                let page = query_notes_page_in(
+                    &store,
+                    &paths,
+                    &query,
+                    None,
+                    Some(NotePage { offset, limit }),
+                )
+                .unwrap()
+                .notes;
+                let expected = full
+                    .iter()
+                    .skip(offset)
+                    .take(limit.unwrap_or(usize::MAX))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                assert_eq!(page, expected, "{filters:?} {offset} {limit:?}");
+            }
+        }
     }
 
     #[test]

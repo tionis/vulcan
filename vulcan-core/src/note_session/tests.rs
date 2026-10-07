@@ -131,10 +131,11 @@ fn snapshots_answer_like_the_direct_store_and_reuse_unchanged_notes() {
     assert_eq!(counter(&counters.stored_loaded), loaded);
     assert_eq!(counter(&counters.hydrated_loaded), hydrated);
     assert!(counter(&counters.identity_reuses) > 0);
-    assert!(counter(&counters.snapshots_reused) > 0);
+    // Pooled connections serve later requests.
+    assert!(counter(&counters.snapshots) > counter(&counters.connections_opened));
 
-    // An edit loads only the changed row; file objects reload in the new
-    // epoch because incoming links depend on other rows.
+    // An edit loads only the changed row; file objects reload at the new
+    // clock because incoming links depend on other rows.
     let reused = counter(&counters.stored_reused);
     fs::write(
         paths.vault_root().join("B/Two.md"),
@@ -171,11 +172,14 @@ fn two_status(store: &dyn NoteStore, paths: &VaultPaths) -> serde_json::Value {
 }
 
 #[test]
-fn pinned_snapshots_serve_the_state_before_an_incomplete_write() {
+fn snapshots_never_wait_for_writers_and_see_whole_commits() {
     let (_temp_dir, paths) = vault();
     let session = NoteStoreSession::new(paths.clone());
-    drop(session.snapshot().expect("no writer is active"));
+    let before = session.snapshot().expect("no writer is active");
+    assert_eq!(two_status(&before, &paths), "open");
 
+    // A writer holds the lock and commits its scan: readers neither wait
+    // nor see anything but whole commits.
     let lock = crate::write_lock::acquire_write_lock(&paths).unwrap();
     fs::write(
         paths.vault_root().join("B/Two.md"),
@@ -183,23 +187,32 @@ fn pinned_snapshots_serve_the_state_before_an_incomplete_write() {
     )
     .unwrap();
     crate::scan::scan_vault_unlocked(&paths, ScanMode::Incremental).unwrap();
-    // The idle snapshot predates the write, which has not completed.
-    let before = session
-        .snapshot()
-        .expect("a snapshot is pinned at this epoch");
+    let after = session.snapshot().expect("readers do not wait for writers");
+    assert_eq!(two_status(&after, &paths), "closed");
+    assert!(after.clock_version() > before.clock_version());
+    // A snapshot keeps reading the state it began with.
     assert_eq!(two_status(&before, &paths), "open");
-    // No other snapshot can be pinned while the writer holds the lock.
+    drop(lock);
+    drop((before, after));
+
+    // An interrupted ordinary write needs recovery: the direct path reports
+    // it, so no snapshot is handed out while no writer holds the lock.
+    let change = crate::ordinary_write::OrdinaryWriteChange {
+        path: "C.md".to_string(),
+        before: None,
+        after: Some("new\n".to_string()),
+    };
+    let _ = crate::ordinary_write::apply_with_hook(&paths, &[change], |_| {
+        Err(crate::ordinary_write::OrdinaryWriteError::new(
+            "test_interruption",
+            "stop after publishing the journal",
+            None,
+        ))
+    });
     assert!(session.snapshot().is_none());
     assert_eq!(counter(&session.counters().snapshots_unavailable), 1);
-    drop(lock);
-    drop(before);
-
-    // The completed write advanced the epoch: a new snapshot sees it.
-    let after = session.snapshot().expect("no writer is active");
-    assert_eq!(two_status(&after, &paths), "closed");
-    assert!(after.epoch() > 0);
-    drop(after);
-    session.release_stale();
+    crate::ordinary_write::recover_ordinary_write_batch(&paths).unwrap();
+    assert!(session.snapshot().is_some());
 }
 
 #[test]
@@ -253,4 +266,40 @@ fn concurrent_readers_see_only_completed_writes() {
         }
     });
     assert_session_equals_direct(&session, &paths, "after racing writes");
+}
+
+#[test]
+fn the_clock_advances_with_every_note_visible_commit() {
+    let (_temp_dir, paths) = vault();
+    fs::write(paths.vault_root().join("Charlie.md"), "# Charlie\n").unwrap();
+    fs::write(
+        paths.vault_root().join("D.md"),
+        "# D\n\nCharlie is mentioned here.\n",
+    )
+    .unwrap();
+    scan_vault(&paths, ScanMode::Incremental).unwrap();
+    let session = NoteStoreSession::new(paths.clone());
+    let version = || session.snapshot().expect("snapshot").clock_version();
+    let start = version();
+    scan_vault(&paths, ScanMode::Incremental).unwrap();
+    assert_eq!(
+        version(),
+        start,
+        "a scan that changes nothing keeps the clock"
+    );
+    assert_session_equals_direct(&session, &paths, "warm");
+
+    // An accepted suggestion adds an incoming link without changing any
+    // note's row; the clock still names the new state.
+    let report = crate::suggestions::suggest_links(&paths, None, None, 0.0, None).unwrap();
+    let suggestion = report
+        .suggestions
+        .iter()
+        .find(|suggestion| {
+            suggestion.source_path == "D.md" && suggestion.target_path == "Charlie.md"
+        })
+        .expect("D mentions Charlie");
+    crate::suggestions::accept_link_suggestion(&paths, &suggestion.id).unwrap();
+    assert!(version() > start);
+    assert_session_equals_direct(&session, &paths, "after an accepted suggestion");
 }

@@ -245,6 +245,10 @@ pub struct IndexedNoteLookup<'a> {
     hydrated_misses: Cell<usize>,
     error: RefCell<Option<PropertyError>>,
     database: Option<std::rc::Rc<crate::CacheDatabase>>,
+    retains_records: bool,
+    /// Every universe note's stored record in identity order, when a host
+    /// supplied them up front.
+    all_stored: Option<Arc<[Arc<NoteRecord>]>>,
 }
 
 impl<'a> IndexedNoteLookup<'a> {
@@ -290,7 +294,50 @@ impl<'a> IndexedNoteLookup<'a> {
             hydrated_misses: Cell::new(0),
             error: RefCell::new(None),
             database: None,
+            retains_records: false,
+            all_stored: None,
         }
+    }
+
+    /// A lookup whose stored records are already loaded: `records` holds
+    /// every identity's record in identity order. Hydration still loads on
+    /// demand; the stored loader serves nothing the records cover.
+    #[must_use]
+    pub fn from_index_with_records(
+        index: Arc<IdentityIndex>,
+        records: Arc<[Arc<NoteRecord>]>,
+        load_stored: StoredNoteLoader<'a>,
+        hydrate: NoteHydrator<'a>,
+    ) -> Self {
+        debug_assert_eq!(index.len(), records.len());
+        let mut lookup = Self::from_index(index, load_stored, hydrate);
+        for (cell, record) in lookup.stored.iter().zip(records.iter()) {
+            let _ = cell.set(Arc::clone(record));
+        }
+        lookup.all_stored = Some(records);
+        lookup.retains_records = true;
+        lookup
+    }
+
+    /// Every universe note's stored record in identity (path) order, when
+    /// supplied up front.
+    #[must_use]
+    pub fn all_stored(&self) -> Option<&[Arc<NoteRecord>]> {
+        self.all_stored.as_deref()
+    }
+
+    /// Mark the loaders as serving retained records, so loading the stored
+    /// fields of every candidate is cheaper than reading their facts in SQL.
+    #[must_use]
+    pub fn with_retained_records(mut self) -> Self {
+        self.retains_records = true;
+        self
+    }
+
+    /// Whether the loaders serve retained records.
+    #[must_use]
+    pub fn retains_records(&self) -> bool {
+        self.retains_records
     }
 
     /// The identity facts of the universe.
@@ -428,6 +475,19 @@ impl<'a> IndexedNoteLookup<'a> {
             });
         }
         self.hydrated[index].get().map(AsRef::as_ref)
+    }
+
+    /// The shared stored-field record at `path`, loading it on a miss.
+    pub fn note_arc_at(&self, path: &str) -> Option<Arc<NoteRecord>> {
+        let index = *self.index.by_path.get(path)?;
+        self.stored_at(index)?;
+        self.stored[index].get().cloned()
+    }
+
+    /// The shared hydrated record at `path`, hydrating it on a miss.
+    pub fn hydrated_arc_at(&self, path: &str) -> Option<Arc<NoteRecord>> {
+        self.hydrated_at(path)?;
+        self.hydrated[*self.index.by_path.get(path)?].get().cloned()
     }
 
     /// Every readable note keyed like `build_note_lookup_index`: hydrated

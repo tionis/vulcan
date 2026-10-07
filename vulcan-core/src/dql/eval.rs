@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::path::Path;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -571,9 +572,9 @@ pub(crate) fn evaluate_parsed_dql_with_note_index_and_config(
                 .iter()
                 .filter_map(|path| {
                     if *hydrated {
-                        lookup.hydrated_at(path)
+                        lookup.hydrated_arc_at(path)
                     } else {
-                        lookup.note_at(path)
+                        lookup.note_arc_at(path)
                     }
                 })
                 .collect::<Vec<_>>();
@@ -587,7 +588,7 @@ pub(crate) fn evaluate_parsed_dql_with_note_index_and_config(
             let rows = if let Some(source) = from_sources.first() {
                 rows_for_source(paths, query, source, current_file, map, &all_notes, filter)?
             } else {
-                default_rows(query, &all_notes)
+                default_rows(query, &shared_copies(&all_notes))
             };
             (
                 rows,
@@ -754,8 +755,11 @@ enum RowKind {
 
 #[derive(Debug, Clone)]
 struct ExecutionRow {
-    note: NoteRecord,
-    fields: Map<String, Value>,
+    /// Shared with the note lookup and every other row of the note.
+    note: Arc<NoteRecord>,
+    /// The row's fields; `None` while they are exactly the note's
+    /// properties, so page rows copy nothing until a command changes them.
+    fields: Option<Map<String, Value>>,
     ordinal: i64,
     kind: RowKind,
     task_id: Option<String>,
@@ -763,14 +767,10 @@ struct ExecutionRow {
 }
 
 impl ExecutionRow {
-    fn page(note: &NoteRecord) -> Self {
+    fn page(note: &Arc<NoteRecord>) -> Self {
         Self {
-            note: note.clone(),
-            fields: note
-                .properties
-                .as_object()
-                .cloned()
-                .unwrap_or_else(Map::new),
+            note: Arc::clone(note),
+            fields: None,
             ordinal: 0,
             kind: RowKind::Page,
             task_id: None,
@@ -779,15 +779,15 @@ impl ExecutionRow {
     }
 
     fn task(
-        note: &NoteRecord,
+        note: &Arc<NoteRecord>,
         task_id: String,
         parent_task_id: Option<String>,
         fields: Map<String, Value>,
     ) -> Self {
         let ordinal = fields.get("line").and_then(Value::as_i64).unwrap_or(0);
         Self {
-            note: note.clone(),
-            fields,
+            note: Arc::clone(note),
+            fields: Some(fields),
             ordinal,
             kind: RowKind::Task,
             task_id: Some(task_id),
@@ -797,13 +797,27 @@ impl ExecutionRow {
 
     fn group(fields: Map<String, Value>, ordinal: i64) -> Self {
         Self {
-            note: synthetic_group_note(&fields),
-            fields,
+            note: Arc::new(synthetic_group_note(&fields)),
+            fields: Some(fields),
             ordinal,
             kind: RowKind::Group,
             task_id: None,
             parent_task_id: None,
         }
+    }
+
+    fn fields(&self) -> &Map<String, Value> {
+        static EMPTY: std::sync::LazyLock<Map<String, Value>> = std::sync::LazyLock::new(Map::new);
+        self.fields
+            .as_ref()
+            .or_else(|| self.note.properties.as_object())
+            .unwrap_or(&EMPTY)
+    }
+
+    fn fields_mut(&mut self) -> &mut Map<String, Value> {
+        let note = &self.note;
+        self.fields
+            .get_or_insert_with(|| note.properties.as_object().cloned().unwrap_or_default())
     }
 
     fn evaluate(
@@ -822,10 +836,18 @@ impl ExecutionRow {
         time_zone: DataviewTimeZone,
         source_note: Option<&NoteRecord>,
     ) -> Result<Value, String> {
-        let mut note = self.note.clone();
-        note.properties = Value::Object(self.fields.clone());
+        // Expressions read the row's fields as the note's properties.
+        let owned;
+        let note = if self.fields.is_none() && self.note.properties.is_object() {
+            &*self.note
+        } else {
+            let mut note = (*self.note).clone();
+            note.properties = Value::Object(self.fields().clone());
+            owned = note;
+            &owned
+        };
         let formulas = BTreeMap::new();
-        let mut ctx = EvalContext::new(&note, &formulas)
+        let mut ctx = EvalContext::new(note, &formulas)
             .with_note_lookup(note_lookup)
             .with_time_zone(time_zone);
         if let Some(sn) = source_note {
@@ -843,7 +865,7 @@ impl ExecutionRow {
     }
 
     fn data_object(&self) -> Value {
-        let mut object = self.fields.clone();
+        let mut object = self.fields().clone();
         if self.kind != RowKind::Group {
             object.insert("file".to_string(), FileMetadataResolver::object(&self.note));
         }
@@ -852,7 +874,7 @@ impl ExecutionRow {
 
     fn primary_value(&self) -> Value {
         match self.kind {
-            RowKind::Group => self.fields.get("key").cloned().unwrap_or(Value::Null),
+            RowKind::Group => self.fields().get("key").cloned().unwrap_or(Value::Null),
             RowKind::Page | RowKind::Task => FileMetadataResolver::field(&self.note, "link"),
         }
     }
@@ -864,13 +886,10 @@ fn sorted_notes(note_lookup: &HashMap<String, NoteRecord>) -> Vec<&NoteRecord> {
     notes
 }
 
-fn default_rows(query: &DqlQuery, notes: &[&NoteRecord]) -> Vec<ExecutionRow> {
+fn default_rows(query: &DqlQuery, notes: &[Arc<NoteRecord>]) -> Vec<ExecutionRow> {
     match query.query_type {
-        super::DqlQueryType::Task => notes
-            .iter()
-            .flat_map(|note| task_rows_for_note(note))
-            .collect(),
-        _ => notes.iter().map(|note| ExecutionRow::page(note)).collect(),
+        super::DqlQueryType::Task => notes.iter().flat_map(task_rows_for_note).collect(),
+        _ => notes.iter().map(ExecutionRow::page).collect(),
     }
 }
 
@@ -890,10 +909,15 @@ fn rows_for_source(
         .copied()
         .filter(|note| source_paths.contains(note.document_path.as_str()))
         .collect::<Vec<_>>();
-    Ok(default_rows(query, &notes))
+    Ok(default_rows(query, &shared_copies(&notes)))
 }
 
-fn task_rows_for_note(note: &NoteRecord) -> Vec<ExecutionRow> {
+/// Rows of an eager note map own copies of their notes.
+fn shared_copies(notes: &[&NoteRecord]) -> Vec<Arc<NoteRecord>> {
+    notes.iter().map(|note| Arc::new((*note).clone())).collect()
+}
+
+fn task_rows_for_note(note: &Arc<NoteRecord>) -> Vec<ExecutionRow> {
     match FileMetadataResolver::field(note, "tasks") {
         Value::Array(tasks) => tasks
             .into_iter()
@@ -1221,11 +1245,11 @@ fn apply_group_by(
         let row_data = row.data_object();
         if let Some(last_group) = grouped_rows.last_mut() {
             let same_key = last_group
-                .fields
+                .fields()
                 .get("key")
                 .is_some_and(|last_key| group_keys_equal(last_key, &key));
             if same_key {
-                if let Some(Value::Array(items)) = last_group.fields.get_mut("rows") {
+                if let Some(Value::Array(items)) = last_group.fields_mut().get_mut("rows") {
                     items.push(row_data);
                     continue;
                 }
@@ -1285,7 +1309,7 @@ fn apply_flatten(
 
         for datapoint in datapoints {
             let mut flattened = row.clone();
-            flattened.fields.insert(field_name.clone(), datapoint);
+            flattened.fields_mut().insert(field_name.clone(), datapoint);
             flattened_rows.push(flattened);
         }
     }
@@ -1546,7 +1570,7 @@ fn render_task_result(
     let rendered_rows = rows
         .into_iter()
         .map(|row| {
-            let mut object = row.fields.clone();
+            let mut object = row.fields().clone();
             object.insert(primary_column_name.to_string(), row.primary_value());
             Value::Object(object)
         })

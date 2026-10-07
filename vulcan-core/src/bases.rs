@@ -9,7 +9,7 @@ use crate::paths::{
 };
 use crate::permissions::{PermissionError, PermissionFilter, PermissionGuard};
 use crate::properties::{
-    build_note_lookup_index, note_filter_expression_source, query_notes_report_over,
+    build_note_lookup_index, note_filter_expression_source, query_notes_shared_over,
     query_notes_with_filter, NoteIndexReadScope,
 };
 use crate::tasknotes::extract_tasknote;
@@ -172,9 +172,10 @@ pub trait BasesSource: Send + Sync {
         paths: &VaultPaths,
         request: &BasesSourceRequest,
         universe: Option<&IndexedNoteLookup<'_>>,
-    ) -> Result<(Vec<NoteRecord>, Option<crate::plan::QueryPlanExplain>), BasesError> {
+    ) -> Result<(Vec<Arc<NoteRecord>>, Option<crate::plan::QueryPlanExplain>), BasesError> {
         let _ = universe;
-        self.rows(paths, request).map(|rows| (rows, None))
+        self.rows(paths, request)
+            .map(|rows| (rows.into_iter().map(Arc::new).collect(), None))
     }
 
     /// Whether [`BasesSource::rows_planned`] reads its rows from the
@@ -185,28 +186,41 @@ pub trait BasesSource: Send + Sync {
     }
 }
 
+fn owned(rows: Vec<Arc<NoteRecord>>) -> Vec<NoteRecord> {
+    rows.into_iter()
+        .map(|row| Arc::try_unwrap(row).unwrap_or_else(|shared| (*shared).clone()))
+        .collect()
+}
+
 fn query_source_notes_planned(
     paths: &VaultPaths,
     request: &BasesSourceRequest,
     universe: Option<&IndexedNoteLookup<'_>>,
-) -> Result<(Vec<NoteRecord>, Option<crate::plan::QueryPlanExplain>), BasesError> {
+) -> Result<(Vec<Arc<NoteRecord>>, Option<crate::plan::QueryPlanExplain>), BasesError> {
     let query = NoteQuery {
         filters: request.filters.clone(),
         sort_by: None,
         sort_descending: false,
     };
     match universe {
-        Some(universe) => query_notes_report_over(
+        Some(universe) => query_notes_shared_over(
             paths,
             universe,
             &load_vault_config(paths).config,
             &query,
             request.read_filter.as_ref(),
             request.stored_only,
-        ),
-        None => query_notes_with_filter(paths, &query, request.read_filter.as_ref()),
+        )
+        .map(|shared| (shared.notes, Some(shared.plan))),
+        None => {
+            query_notes_with_filter(paths, &query, request.read_filter.as_ref()).map(|report| {
+                (
+                    report.notes.into_iter().map(Arc::new).collect(),
+                    report.plan,
+                )
+            })
+        }
     }
-    .map(|report| (report.notes, report.plan))
     .map_err(BasesError::Property)
 }
 
@@ -219,7 +233,7 @@ impl BasesSource for FileSource {
         paths: &VaultPaths,
         request: &BasesSourceRequest,
     ) -> Result<Vec<NoteRecord>, BasesError> {
-        query_source_notes_planned(paths, request, None).map(|(rows, _)| rows)
+        query_source_notes_planned(paths, request, None).map(|(rows, _)| owned(rows))
     }
 
     fn rows_planned(
@@ -227,7 +241,7 @@ impl BasesSource for FileSource {
         paths: &VaultPaths,
         request: &BasesSourceRequest,
         universe: Option<&IndexedNoteLookup<'_>>,
-    ) -> Result<(Vec<NoteRecord>, Option<crate::plan::QueryPlanExplain>), BasesError> {
+    ) -> Result<(Vec<Arc<NoteRecord>>, Option<crate::plan::QueryPlanExplain>), BasesError> {
         query_source_notes_planned(paths, request, universe)
     }
 
@@ -245,7 +259,7 @@ impl BasesSource for TaskNotesSource {
         paths: &VaultPaths,
         request: &BasesSourceRequest,
     ) -> Result<Vec<NoteRecord>, BasesError> {
-        tasknote_source_rows_planned(paths, request, None).map(|(rows, _)| rows)
+        tasknote_source_rows_planned(paths, request, None).map(|(rows, _)| owned(rows))
     }
 
     fn rows_planned(
@@ -253,7 +267,7 @@ impl BasesSource for TaskNotesSource {
         paths: &VaultPaths,
         request: &BasesSourceRequest,
         universe: Option<&IndexedNoteLookup<'_>>,
-    ) -> Result<(Vec<NoteRecord>, Option<crate::plan::QueryPlanExplain>), BasesError> {
+    ) -> Result<(Vec<Arc<NoteRecord>>, Option<crate::plan::QueryPlanExplain>), BasesError> {
         tasknote_source_rows_planned(paths, request, universe)
     }
 
@@ -266,7 +280,7 @@ fn tasknote_source_rows_planned(
     paths: &VaultPaths,
     request: &BasesSourceRequest,
     universe: Option<&IndexedNoteLookup<'_>>,
-) -> Result<(Vec<NoteRecord>, Option<crate::plan::QueryPlanExplain>), BasesError> {
+) -> Result<(Vec<Arc<NoteRecord>>, Option<crate::plan::QueryPlanExplain>), BasesError> {
     let config = load_vault_config(paths).config;
     let include_archived = tasknotes_source_include_archived(request.config.as_ref());
     let (mut rows, plan) = query_source_notes_planned(paths, request, universe)?;
@@ -583,17 +597,17 @@ fn base_reads_row_file_fields(
 /// Denials drop rows; other policy failures abort the evaluation.
 fn authorize_guarded_rows(
     paths: &VaultPaths,
-    rows: Vec<NoteRecord>,
+    rows: Vec<Arc<NoteRecord>>,
     guard: &dyn PermissionGuard,
     universe: &IndexedNoteLookup<'_>,
     rows_from_universe: bool,
-) -> Result<Vec<NoteRecord>, BasesError> {
+) -> Result<Vec<Arc<NoteRecord>>, BasesError> {
     let mut authorized = Vec::with_capacity(rows.len());
     for mut row in rows {
         if universe.contains(&row.document_path) {
             if !rows_from_universe {
                 if let Some(indexed) = universe.hydrated_at(&row.document_path) {
-                    row.inlinks.clone_from(&indexed.inlinks);
+                    Arc::make_mut(&mut row).inlinks.clone_from(&indexed.inlinks);
                 }
             }
             authorized.push(row);
@@ -862,6 +876,13 @@ fn serialize_view(view: &ParsedBaseView) -> serde_yaml::Value {
         );
     }
 
+    if let Some(limit) = view.limit {
+        m.insert(
+            serde_yaml::Value::String("limit".to_string()),
+            serde_yaml::Value::Number(u64::try_from(limit).unwrap_or(u64::MAX).into()),
+        );
+    }
+
     if !view.formulas.is_empty() {
         let mut formulas_map = serde_yaml::Mapping::new();
         for (name, expr) in &view.formulas {
@@ -898,6 +919,7 @@ fn spec_to_parsed_view(spec: BaseViewSpec) -> ParsedBaseView {
             property: g.property,
             descending: g.descending,
         }),
+        limit: None,
         formulas: BTreeMap::new(),
     }
 }
@@ -1273,7 +1295,7 @@ fn evaluate_base_view(
                 universe,
                 rows: notes
                     .iter()
-                    .map(|note| (note.document_path.as_str(), note))
+                    .map(|note| (note.document_path.as_str(), &**note))
                     .collect(),
             };
             &overlay
@@ -1285,8 +1307,11 @@ fn evaluate_base_view(
                     .map(|note| universe.hydrated(note).into_owned())
                     .collect()
             });
-            eager =
-                build_note_lookup_index(universe_notes.into_iter().chain(notes.iter().cloned()));
+            eager = build_note_lookup_index(
+                universe_notes
+                    .into_iter()
+                    .chain(notes.iter().map(|note| (**note).clone())),
+            );
             &eager
         }
     };
@@ -1298,29 +1323,44 @@ fn evaluate_base_view(
     let columns = build_view_columns(property_display_names, &view);
     let time_zone =
         DataviewTimeZone::parse(load_vault_config(paths).config.dataview.timezone.as_deref());
-    let mut rows = Vec::new();
-    for note in &notes {
-        let formulas = evaluate_formulas(
-            note,
-            &view.formulas,
-            diagnostics,
-            view.name.as_deref(),
-            note_index,
-            time_zone,
-        );
+    let parsed_formulas = parse_formulas(&view.formulas);
+    let parsed_columns = columns
+        .iter()
+        .map(|column| parse_expression(&column.key).ok())
+        .collect::<Vec<_>>();
+    let parsed_group = view
+        .group_by
+        .as_ref()
+        .and_then(|group_by| parse_expression(&group_by.property).ok());
+    let build_row = |note: &NoteRecord, formulas: BTreeMap<String, Value>| {
         let cells = columns
             .iter()
-            .map(|column| {
+            .zip(&parsed_columns)
+            .map(|(column, parsed)| {
                 (
                     column.key.clone(),
-                    evaluate_base_cell(note, &formulas, &column.key, note_index, time_zone),
+                    evaluate_base_cell(
+                        note,
+                        &formulas,
+                        &column.key,
+                        parsed.as_ref(),
+                        note_index,
+                        time_zone,
+                    ),
                 )
             })
             .collect::<BTreeMap<_, _>>();
         let group_value = view.group_by.as_ref().map(|group_by| {
-            evaluate_base_cell(note, &formulas, &group_by.property, note_index, time_zone)
+            evaluate_base_cell(
+                note,
+                &formulas,
+                &group_by.property,
+                parsed_group.as_ref(),
+                note_index,
+                time_zone,
+            )
         });
-        rows.push(BasesRow {
+        BasesRow {
             document_path: note.document_path.clone(),
             file_name: note.file_name.clone(),
             file_ext: note.file_ext.clone(),
@@ -1329,13 +1369,79 @@ fn evaluate_base_view(
             formulas,
             cells,
             group_value,
+        }
+    };
+    // Formulas evaluate for every row, since they report diagnostics. With a
+    // limit and no grouping only the sort value is needed for every row, and
+    // the rest of a row's cells only for the rows the limit keeps.
+    let sort_key = view
+        .sort_by
+        .as_deref()
+        .or_else(|| view.columns.first().map(String::as_str));
+    let mut rows = Vec::new();
+    if let (Some(limit), None) = (view.limit, view.group_by.as_ref()) {
+        let mut keyed = Vec::with_capacity(notes.len());
+        for note in &notes {
+            let formulas = evaluate_formulas(
+                note,
+                &parsed_formulas,
+                diagnostics,
+                view.name.as_deref(),
+                note_index,
+                time_zone,
+            );
+            let value = sort_key.map_or(Value::Null, |key| {
+                let column = columns.iter().position(|column| column.key == key);
+                match column {
+                    Some(index) => evaluate_base_cell(
+                        note,
+                        &formulas,
+                        key,
+                        parsed_columns[index].as_ref(),
+                        note_index,
+                        time_zone,
+                    ),
+                    None => formulas
+                        .get(key)
+                        .cloned()
+                        .unwrap_or_else(|| note_row_value(note, key)),
+                }
+            });
+            keyed.push((value, note, formulas));
+        }
+        keyed.sort_by(|(left_value, left, _), (right_value, right, _)| {
+            compare_sorted_rows(
+                &view,
+                (None, left_value, &left.document_path),
+                (None, right_value, &right.document_path),
+            )
         });
+        keyed.truncate(limit);
+        rows = keyed
+            .into_iter()
+            .map(|(_, note, formulas)| build_row(note, formulas))
+            .collect();
+    } else {
+        for note in &notes {
+            let formulas = evaluate_formulas(
+                note,
+                &parsed_formulas,
+                diagnostics,
+                view.name.as_deref(),
+                note_index,
+                time_zone,
+            );
+            rows.push(build_row(note, formulas));
+        }
     }
     // A note an expression read or dereferenced failed to load.
     if let Some(error) = universe.and_then(IndexedNoteLookup::take_error) {
         return Err(BasesError::Property(error));
     }
     sort_base_rows(&mut rows, &view);
+    if let Some(limit) = view.limit {
+        rows.truncate(limit);
+    }
     let ParsedBaseView {
         name,
         view_type,
@@ -1345,6 +1451,7 @@ fn evaluate_base_view(
         columns: _,
         group_by,
         formulas: _,
+        limit: _,
     } = view;
 
     Ok(Some(BasesEvaluatedView {
@@ -1399,6 +1506,8 @@ struct ParsedBaseView {
     columns: Vec<String>,
     group_by: Option<ParsedBaseGroupBy>,
     formulas: BTreeMap<String, String>,
+    /// The most rows the view shows, after sorting (Obsidian `limit`).
+    limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1512,6 +1621,19 @@ fn parse_view(
     let columns = parse_view_columns(index, mapping, diagnostics);
     let group_by = parse_view_group_by(index, mapping, diagnostics);
     let formulas = parse_view_formulas(index, mapping, diagnostics);
+    let limit = match mapping.get(serde_yaml::Value::String("limit".to_string())) {
+        None => None,
+        Some(value) => {
+            let limit = value.as_u64().and_then(|limit| usize::try_from(limit).ok());
+            if limit.is_none() {
+                diagnostics.push(BasesDiagnostic {
+                    path: Some(format!("views[{index}].limit")),
+                    message: "view limit must be a non-negative integer".to_string(),
+                });
+            }
+            limit
+        }
+    };
 
     for key in mapping.keys().filter_map(serde_yaml::Value::as_str) {
         if !matches!(
@@ -1520,6 +1642,7 @@ fn parse_view(
                 | "type"
                 | "filters"
                 | "sort"
+                | "limit"
                 | "formulas"
                 | "order"
                 | "groupBy"
@@ -1547,6 +1670,7 @@ fn parse_view(
         columns,
         group_by,
         formulas,
+        limit,
     })
 }
 
@@ -2281,9 +2405,24 @@ fn parse_view_formulas(
         .collect()
 }
 
+/// A view's formulas, parsed once per evaluation.
+type ParsedFormulas = Vec<(String, Result<crate::expression::ast::Expr, String>)>;
+
+fn parse_formulas(formulas: &BTreeMap<String, String>) -> ParsedFormulas {
+    formulas
+        .iter()
+        .map(|(name, expression)| {
+            (
+                name.clone(),
+                parse_expression(expression).map_err(|error| error.to_string()),
+            )
+        })
+        .collect()
+}
+
 fn evaluate_formulas(
     note: &NoteRecord,
-    formulas: &BTreeMap<String, String>,
+    formulas: &ParsedFormulas,
     diagnostics: &mut Vec<BasesDiagnostic>,
     view_name: Option<&str>,
     note_index: &dyn NoteLookup,
@@ -2291,13 +2430,13 @@ fn evaluate_formulas(
 ) -> BTreeMap<String, Value> {
     let mut evaluated = BTreeMap::new();
 
-    for (name, expression) in formulas {
-        match parse_expression(expression) {
+    for (name, parsed) in formulas {
+        match parsed {
             Ok(ast) => {
                 let ctx = EvalContext::new(note, &evaluated)
                     .with_note_lookup(note_index)
                     .with_time_zone(time_zone);
-                match crate::expression::eval::evaluate(&ast, &ctx) {
+                match crate::expression::eval::evaluate(ast, &ctx) {
                     Ok(value) => {
                         evaluated.insert(name.clone(), value);
                     }
@@ -2504,10 +2643,14 @@ fn column_display_name(key: &str, property_display_names: &BTreeMap<String, Stri
     }
 }
 
+/// A cell: its formula's value, or the column key evaluated as an
+/// expression (`parsed`, parsed once per view; `None` when it does not
+/// parse).
 fn evaluate_base_cell(
     note: &NoteRecord,
     formulas: &BTreeMap<String, Value>,
     key: &str,
+    parsed: Option<&crate::expression::ast::Expr>,
     note_index: &dyn NoteLookup,
     time_zone: DataviewTimeZone,
 ) -> Value {
@@ -2515,53 +2658,87 @@ fn evaluate_base_cell(
         return value.clone();
     }
 
-    match parse_expression(key) {
-        Ok(ast) => {
+    match parsed {
+        Some(ast) => {
             let ctx = EvalContext::new(note, formulas)
                 .with_note_lookup(note_index)
                 .with_time_zone(time_zone);
-            crate::expression::eval::evaluate(&ast, &ctx).unwrap_or(Value::Null)
+            crate::expression::eval::evaluate(ast, &ctx).unwrap_or(Value::Null)
         }
-        Err(_) => Value::Null,
+        None => Value::Null,
     }
 }
 
-fn sort_base_rows(rows: &mut [BasesRow], view: &ParsedBaseView) {
-    let default_sort = view.columns.first().map(String::as_str);
-    rows.sort_by(|left, right| {
-        let group_ordering = view.group_by.as_ref().map_or(Ordering::Equal, |group_by| {
-            let ordering = compare_json_values(
-                left.group_value.as_ref().unwrap_or(&Value::Null),
-                right.group_value.as_ref().unwrap_or(&Value::Null),
-            );
-            if group_by.descending {
-                ordering.reverse()
-            } else {
-                ordering
-            }
-        });
-        if group_ordering != Ordering::Equal {
-            return group_ordering.then_with(|| left.document_path.cmp(&right.document_path));
-        }
-
-        let sort_ordering =
-            view.sort_by
-                .as_deref()
-                .or(default_sort)
-                .map_or(Ordering::Equal, |sort_by| {
-                    compare_json_values(
-                        &lookup_row_value(left, sort_by),
-                        &lookup_row_value(right, sort_by),
-                    )
-                });
-        let sort_ordering = if view.sort_descending {
-            sort_ordering.reverse()
-        } else {
-            sort_ordering
-        };
-
-        sort_ordering.then_with(|| left.document_path.cmp(&right.document_path))
+fn sort_base_rows(rows: &mut Vec<BasesRow>, view: &ParsedBaseView) {
+    let sort_key = view
+        .sort_by
+        .as_deref()
+        .or_else(|| view.columns.first().map(String::as_str));
+    // Each row's sort value is computed once.
+    let mut keyed = rows
+        .drain(..)
+        .map(|row| {
+            let value = sort_key.map_or(Value::Null, |key| lookup_row_value(&row, key));
+            (value, row)
+        })
+        .collect::<Vec<_>>();
+    keyed.sort_by(|(left_value, left), (right_value, right)| {
+        compare_sorted_rows(
+            view,
+            (left.group_value.as_ref(), left_value, &left.document_path),
+            (
+                right.group_value.as_ref(),
+                right_value,
+                &right.document_path,
+            ),
+        )
     });
+    rows.extend(keyed.into_iter().map(|(_, row)| row));
+}
+
+/// A view's row order: group value, then sort value, then path. Each side
+/// is (group value, sort value, path).
+fn compare_sorted_rows(
+    view: &ParsedBaseView,
+    left: (Option<&Value>, &Value, &str),
+    right: (Option<&Value>, &Value, &str),
+) -> Ordering {
+    let group_ordering = view.group_by.as_ref().map_or(Ordering::Equal, |group_by| {
+        let ordering = compare_json_values(
+            left.0.unwrap_or(&Value::Null),
+            right.0.unwrap_or(&Value::Null),
+        );
+        if group_by.descending {
+            ordering.reverse()
+        } else {
+            ordering
+        }
+    });
+    if group_ordering != Ordering::Equal {
+        return group_ordering.then_with(|| left.2.cmp(right.2));
+    }
+    let sort_ordering = compare_json_values(left.1, right.1);
+    let sort_ordering = if view.sort_descending {
+        sort_ordering.reverse()
+    } else {
+        sort_ordering
+    };
+    sort_ordering.then_with(|| left.2.cmp(right.2))
+}
+
+/// [`lookup_row_value`] for a key that is neither a cell nor a formula.
+fn note_row_value(note: &NoteRecord, key: &str) -> Value {
+    match key {
+        "file.path" => Value::String(note.document_path.clone()),
+        "file.name" => Value::String(note.file_name.clone()),
+        "file.ext" => Value::String(note.file_ext.clone()),
+        "file.mtime" => Value::Number(note.file_mtime.into()),
+        property => note
+            .properties
+            .get(property)
+            .cloned()
+            .unwrap_or(Value::Null),
+    }
 }
 
 fn lookup_row_value(row: &BasesRow, key: &str) -> Value {
@@ -2862,6 +3039,70 @@ mod tests {
             &parsed.filters,
             &parsed.views
         ));
+    }
+
+    #[test]
+    fn view_limits_keep_the_first_sorted_rows_and_round_trip() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".vulcan")).unwrap();
+        for (name, rank) in [("A", 3), ("B", 1), ("C", 2), ("D", 4)] {
+            fs::write(
+                root.join(format!("{name}.md")),
+                format!("---\nrank: {rank}\n---\n"),
+            )
+            .unwrap();
+        }
+        let paths = VaultPaths::new(root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let yaml = "filters:\n  and:\n    - 'rank > 0'\nviews:\n  - type: table\n    name: top\n    sort: rank\n    limit: 2\n  - type: table\n    name: bad\n    limit: -1\n";
+        let report = BasesEvaluator::new()
+            .evaluate_yaml(&paths, "v.base", yaml)
+            .unwrap();
+        let top = report.views[0]
+            .rows
+            .iter()
+            .map(|row| row.document_path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(top, ["B.md", "C.md"]);
+        assert_eq!(report.views[1].rows.len(), 4);
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.path.as_deref() == Some("views[1].limit")));
+        // Limited views equal the full view truncated, whatever the sort.
+        for sort in [
+            "sort: rank",
+            "sort:\n      - property: rank\n        direction: DESC",
+            "sort: formula.double",
+            "sort: file.name",
+            "sort: missing",
+            "order:\n      - file.name\n      - rank",
+        ] {
+            let view = |limit: &str| {
+                format!(
+                    "formulas:\n  double: 'rank * 2'\nviews:\n  - type: table\n    name: v\n    {sort}\n{limit}"
+                )
+            };
+            let full = BasesEvaluator::new()
+                .evaluate_yaml(&paths, "v.base", &view(""))
+                .unwrap();
+            let limited = BasesEvaluator::new()
+                .evaluate_yaml(&paths, "v.base", &view("    limit: 3\n"))
+                .unwrap();
+            assert_eq!(
+                limited.views[0].rows,
+                full.views[0].rows[..3].to_vec(),
+                "{sort}"
+            );
+        }
+        let parsed = parse_base_file(yaml).unwrap();
+        let serialized = serialize_base_file(&parsed).unwrap();
+        assert!(serialized.contains("limit: 2"), "{serialized}");
+        assert_eq!(
+            parse_base_file(&serialized).unwrap().views[0].limit,
+            Some(2)
+        );
     }
 
     #[test]

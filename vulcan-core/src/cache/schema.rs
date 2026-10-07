@@ -1,5 +1,15 @@
 use rusqlite::Transaction;
 
+/// A covering index for note identity facts (QRY.6): loading a universe's
+/// paths, file names, aliases, and row versions reads the index alone, not
+/// the `note_query` rows that carry properties.
+pub fn apply_schema_v29(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "CREATE INDEX idx_note_query_identity
+             ON note_query(path, filename, aliases, row_version);",
+    )
+}
+
 /// Row versions for the note store (QRY.6). Every insert or update of a
 /// `note_query` row (documents, properties, tags, and aliases all write
 /// through it) advances the store clock and stamps the row with the new

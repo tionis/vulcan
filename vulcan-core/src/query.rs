@@ -822,10 +822,23 @@ pub fn execute_query_report_in(
     ast: QueryAst,
     filter: Option<&PermissionFilter>,
 ) -> Result<QueryReport, QueryError> {
+    execute_query_report_page_in(store, paths, ast, filter, None)
+}
+
+/// [`execute_query_report_in`] returning only `page` of the notes; see
+/// [`crate::properties::query_notes_page_in`].
+pub fn execute_query_report_page_in(
+    store: &dyn crate::note_store::NoteStore,
+    paths: &VaultPaths,
+    ast: QueryAst,
+    filter: Option<&PermissionFilter>,
+    page: Option<crate::properties::NotePage>,
+) -> Result<QueryReport, QueryError> {
     if !paths.cache_db().exists() {
         return Err(QueryError::CacheMissing);
     }
-    let report = crate::properties::query_notes_in(store, paths, &ast.to_note_query(), filter)?;
+    let report =
+        crate::properties::query_notes_page_in(store, paths, &ast.to_note_query(), filter, page)?;
     Ok(QueryReport {
         query: ast,
         notes: report.notes,

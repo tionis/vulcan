@@ -280,17 +280,17 @@ pub use properties::{
     evaluate_note_inline_expressions, extract_indexed_properties, list_properties,
     list_query_fields, load_note_index_with_filter, query_notes, query_notes_with_filter,
     EvaluatedInlineExpression, IndexedProperties, IndexedPropertyListItem, IndexedPropertyValue,
-    NoteQuery, NoteRecord, NotesReport, PropertyCatalogEntry, PropertyError,
+    NotePage, NoteQuery, NoteRecord, NotesReport, PropertyCatalogEntry, PropertyError,
     PropertyTypeDiagnostic, QueryFieldCatalogEntry,
 };
 pub use query::{
     execute_query, execute_query_dsl, execute_query_json, execute_query_report,
-    execute_query_report_explained, execute_query_report_in, execute_query_report_with_filter,
-    execute_query_with_filter, QueryAst, QueryError, QueryExpressionLanguage, QueryExpressionSpec,
-    QueryFilter, QueryFrontmatterMode, QueryNamedExpression, QueryOperator, QueryOrderKey,
-    QueryPredicate, QueryProjection, QueryReport, QuerySelection, QuerySort, QuerySource,
-    QuerySummarySpec, QueryValue, StructuredQueryGroupMeta, StructuredQueryPageMeta,
-    StructuredQueryPlan,
+    execute_query_report_explained, execute_query_report_in, execute_query_report_page_in,
+    execute_query_report_with_filter, execute_query_with_filter, QueryAst, QueryError,
+    QueryExpressionLanguage, QueryExpressionSpec, QueryFilter, QueryFrontmatterMode,
+    QueryNamedExpression, QueryOperator, QueryOrderKey, QueryPredicate, QueryProjection,
+    QueryReport, QuerySelection, QuerySort, QuerySource, QuerySummarySpec, QueryValue,
+    StructuredQueryGroupMeta, StructuredQueryPageMeta, StructuredQueryPlan,
 };
 pub use refactor::{
     bulk_set_property, bulk_set_property_on_paths, merge_tags, plan_property_mutations_on_paths,
@@ -393,4 +393,4 @@ pub fn current_time_override_ms() -> Option<i64> {
 
 pub const PARSER_VERSION: u32 = 8;
 pub const EXTRACTION_VERSION: u32 = 1;
-pub const SCHEMA_VERSION: u32 = 28;
+pub const SCHEMA_VERSION: u32 = 29;

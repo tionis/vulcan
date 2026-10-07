@@ -738,6 +738,14 @@ impl PermissionFilter {
 
     #[must_use]
     pub fn document_scope_sql(&self, cte_name: &str) -> PermissionSql {
+        self.document_scope_sql_for(cte_name, "documents.id")
+    }
+
+    /// [`Self::document_scope_sql`] whose clause restricts `id_column`, a
+    /// document id column of the query's own table (such as
+    /// `note_query.document_id`).
+    #[must_use]
+    pub fn document_scope_sql_for(&self, cte_name: &str, id_column: &str) -> PermissionSql {
         if self.path_permission.is_unrestricted() {
             return PermissionSql::default();
         }
@@ -765,7 +773,7 @@ impl PermissionFilter {
 
         PermissionSql {
             cte,
-            clause: format!(" AND documents.id IN (SELECT id FROM {cte_name})"),
+            clause: format!(" AND {id_column} IN (SELECT id FROM {cte_name})"),
             params,
         }
     }

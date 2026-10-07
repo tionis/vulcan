@@ -162,6 +162,11 @@ impl MigrationRegistry {
                 "version note query rows for retained readers",
                 schema::apply_schema_v28,
             ),
+            Migration::new(
+                29,
+                "cover note identity facts with an index",
+                schema::apply_schema_v29,
+            ),
         ])
     }
 
@@ -656,6 +661,30 @@ mod tests {
             })
             .expect("row should remain readable");
         assert_eq!(row, (7, "unknown".to_string()));
+    }
+
+    #[test]
+    fn note_identities_load_from_a_covering_index() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        MigrationRegistry::schema_v1()
+            .migrate(&mut connection)
+            .unwrap();
+        let plan = connection
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT note_query.path, note_query.filename, \
+                 note_query.aliases, note_query.row_version FROM note_query WHERE 1 = 1 \
+                 ORDER BY 1",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n");
+        assert!(
+            plan.contains("COVERING INDEX idx_note_query_identity"),
+            "{plan}"
+        );
     }
 
     #[test]
