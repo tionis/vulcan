@@ -1,0 +1,434 @@
+{
+ "measurement": "note_query_session_mixed_reference",
+ "acceptance_gate_result": "passed",
+ "gate_reference": "QRY.6 / MDB.10: note queries under eight closed-loop readers and a writer targeting two writes per second keep p95 < 50 ms and p99 < 100 ms (evaluated overall and per frontend) on the 10K fixture; the 100K run is a scaling case",
+ "reference_host": {
+  "designation": "evaluation host designated by the project owner on 2026-10-07",
+  "cpu": "Intel(R) Core(TM) i7-10700 CPU @ 2.90GHz",
+  "logical_cpus": 16,
+  "memory_gib": 32,
+  "os": "Debian 13",
+  "kernel": "6.12.111+deb13-amd64",
+  "conditions": "otherwise idle desktop machine; benchmark runs sequentially, each fixture checked against its published payload digest before indexing"
+ },
+ "boundary": "in-process vault HTTP route handlers (vulcan_app::serve::route_request_with_sessions): per-request permission-profile resolution, authorization, execution, and JSON response construction; excludes HTTP transport",
+ "build": "cargo +1.88.0 test --release -p vulcan-app --test note_session_benchmark -- --ignored --nocapture --test-threads=1 at commit 8f6e92a6 (binary sha256 6f90c5b8e00a837563e5b2e7a32908f6ebac7015af7aaf5956c5876c8628b04d)",
+ "fixtures": {
+  "10k": {
+   "generator_version": 1,
+   "seed": 42,
+   "records": 10000,
+   "payload_sha256": "ba3b33b62cbbcea1e68628920268cd143416d1216345c5aeb029220c28e9a348"
+  },
+  "100k": {
+   "generator_version": 1,
+   "seed": 42,
+   "records": 100000,
+   "payload_sha256": "b934b38bb58223d523aba60a8b4e346c553deee93828d3d52c0570dca9166d5f"
+  }
+ },
+ "requests": "six parameter-varied questions (task/project/contact x active/done) per frontend, each sorted by title with limit 50: dql = DQL `FROM \"public/<type>\" WHERE status = \"<status>\"`; dql-tag = DQL `FROM #group-<n> WHERE status = \"<status>\"`; query = QueryAst `from notes where type = <type> and status = <status>`; bases = a Bases view filtering type and status; bases-tag = a Bases view filtering `file.hasTag(\"group-<n>\")` and status; notes = `/notes?where=type = <type>&limit=50`; mdbase = the canonical mdbase query for the type and status. Each reader cycles all requests from a different offset; its first request is excluded; every response is checked against the ordered paths the direct path returned before the run. mdbase is excluded: the writer edits a record body outside mdbase's managed write path.",
+ "writes": "one writer thread, paced to at most two writes per second: a body-only edit of public/contact/01/record-000001.md and an incremental note scan of that path inside one exclusive write section, alternately restoring the record; the edits change no answer",
+ "runs": [
+  {
+   "run": "s-10k-unrestricted",
+   "fixture": "10k",
+   "session": true,
+   "permission_profile": null,
+   "readers": 8,
+   "writes_per_second_target": 2,
+   "requests": 24000,
+   "all": {
+    "count": 24000,
+    "max_ms": 88.04,
+    "p50_ms": 8.8,
+    "p95_ms": 12.42,
+    "p99_ms": 15.34
+   },
+   "by_frontend": {
+    "bases": {
+     "count": 4000,
+     "max_ms": 24.18,
+     "p50_ms": 10.38,
+     "p95_ms": 13.97,
+     "p99_ms": 17.29
+    },
+    "bases-tag": {
+     "count": 4000,
+     "max_ms": 88.04,
+     "p50_ms": 8.28,
+     "p95_ms": 11.53,
+     "p99_ms": 14.17
+    },
+    "dql": {
+     "count": 4000,
+     "max_ms": 18.98,
+     "p50_ms": 8.13,
+     "p95_ms": 12.33,
+     "p99_ms": 14.91
+    },
+    "dql-tag": {
+     "count": 4000,
+     "max_ms": 18.11,
+     "p50_ms": 7.92,
+     "p95_ms": 11.52,
+     "p99_ms": 12.65
+    },
+    "notes": {
+     "count": 4000,
+     "max_ms": 30.91,
+     "p50_ms": 8.41,
+     "p95_ms": 11.01,
+     "p99_ms": 13.4
+    },
+    "query": {
+     "count": 4000,
+     "max_ms": 35.66,
+     "p50_ms": 9.9,
+     "p95_ms": 13.26,
+     "p99_ms": 15.98
+    }
+   },
+   "load_average_after": "4.48 2.57 2.00",
+   "wall_seconds": 28.6,
+   "writes": {
+    "count": 57,
+    "max_ms": 181.04,
+    "p50_ms": 117.77,
+    "p95_ms": 131.07,
+    "p99_ms": 181.04
+   },
+   "session_counters": {
+    "connections_opened": 8,
+    "hydrated_carried": 130794,
+    "hydrated_loaded": 7506,
+    "hydrated_reused": 1725928,
+    "identity_loads": 1,
+    "identity_refreshes": 57,
+    "identity_reuses": 23950,
+    "snapshots": 24008,
+    "snapshots_unavailable": 0,
+    "stored_loaded": 10073,
+    "stored_reused": 0
+   },
+   "service_level_gate": "passed"
+  },
+  {
+   "run": "s-10k-public",
+   "fixture": "10k",
+   "session": true,
+   "permission_profile": "benchmark_public",
+   "readers": 8,
+   "writes_per_second_target": 2,
+   "requests": 24000,
+   "all": {
+    "count": 24000,
+    "max_ms": 101.23,
+    "p50_ms": 8.35,
+    "p95_ms": 11.85,
+    "p99_ms": 14.51
+   },
+   "by_frontend": {
+    "bases": {
+     "count": 4000,
+     "max_ms": 19.18,
+     "p50_ms": 9.22,
+     "p95_ms": 11.52,
+     "p99_ms": 14.34
+    },
+    "bases-tag": {
+     "count": 4000,
+     "max_ms": 101.23,
+     "p50_ms": 7.62,
+     "p95_ms": 12.66,
+     "p99_ms": 15.04
+    },
+    "dql": {
+     "count": 4000,
+     "max_ms": 20.18,
+     "p50_ms": 8.49,
+     "p95_ms": 12.88,
+     "p99_ms": 14.96
+    },
+    "dql-tag": {
+     "count": 4000,
+     "max_ms": 20.15,
+     "p50_ms": 7.38,
+     "p95_ms": 12.18,
+     "p99_ms": 14.16
+    },
+    "notes": {
+     "count": 4000,
+     "max_ms": 18.69,
+     "p50_ms": 7.79,
+     "p95_ms": 9.73,
+     "p99_ms": 13.54
+    },
+    "query": {
+     "count": 4000,
+     "max_ms": 31.52,
+     "p50_ms": 8.74,
+     "p95_ms": 11.18,
+     "p99_ms": 14.29
+    }
+   },
+   "load_average_after": "5.52 3.05 2.18",
+   "wall_seconds": 27.0,
+   "writes": {
+    "count": 54,
+    "max_ms": 138.07,
+    "p50_ms": 124.38,
+    "p95_ms": 137.54,
+    "p99_ms": 138.07
+   },
+   "session_counters": {
+    "connections_opened": 8,
+    "hydrated_carried": 121428,
+    "hydrated_loaded": 3736,
+    "hydrated_reused": 1729698,
+    "identity_loads": 1,
+    "identity_refreshes": 54,
+    "identity_reuses": 23953,
+    "snapshots": 24008,
+    "snapshots_unavailable": 0,
+    "stored_loaded": 9057,
+    "stored_reused": 0
+   },
+   "service_level_gate": "passed"
+  },
+  {
+   "run": "s-10k-unrestricted-nowrite",
+   "fixture": "10k",
+   "session": true,
+   "permission_profile": null,
+   "readers": 8,
+   "writes_per_second_target": 0,
+   "requests": 24000,
+   "all": {
+    "count": 24000,
+    "max_ms": 65.66,
+    "p50_ms": 8.69,
+    "p95_ms": 12.3,
+    "p99_ms": 13.6
+   },
+   "by_frontend": {
+    "bases": {
+     "count": 4000,
+     "max_ms": 17.22,
+     "p50_ms": 9.88,
+     "p95_ms": 12.0,
+     "p99_ms": 14.57
+    },
+    "bases-tag": {
+     "count": 4000,
+     "max_ms": 65.66,
+     "p50_ms": 8.59,
+     "p95_ms": 12.59,
+     "p99_ms": 13.67
+    },
+    "dql": {
+     "count": 4000,
+     "max_ms": 15.47,
+     "p50_ms": 8.3,
+     "p95_ms": 9.09,
+     "p99_ms": 13.76
+    },
+    "dql-tag": {
+     "count": 4000,
+     "max_ms": 19.21,
+     "p50_ms": 8.22,
+     "p95_ms": 13.21,
+     "p99_ms": 13.6
+    },
+    "notes": {
+     "count": 4000,
+     "max_ms": 16.8,
+     "p50_ms": 8.34,
+     "p95_ms": 9.21,
+     "p99_ms": 10.7
+    },
+    "query": {
+     "count": 4000,
+     "max_ms": 24.54,
+     "p50_ms": 9.47,
+     "p95_ms": 11.32,
+     "p99_ms": 13.04
+    }
+   },
+   "load_average_after": "5.93 3.42 2.34",
+   "wall_seconds": 27.9,
+   "session_counters": {
+    "connections_opened": 8,
+    "hydrated_carried": 0,
+    "hydrated_loaded": 3046,
+    "hydrated_reused": 1730388,
+    "identity_loads": 1,
+    "identity_refreshes": 0,
+    "identity_reuses": 24007,
+    "snapshots": 24008,
+    "snapshots_unavailable": 0,
+    "stored_loaded": 10016,
+    "stored_reused": 0
+   },
+   "service_level_gate": "passed"
+  },
+  {
+   "run": "s-10k-public-nowrite",
+   "fixture": "10k",
+   "session": true,
+   "permission_profile": "benchmark_public",
+   "readers": 8,
+   "writes_per_second_target": 0,
+   "requests": 24000,
+   "all": {
+    "count": 24000,
+    "max_ms": 88.09,
+    "p50_ms": 8.1,
+    "p95_ms": 11.56,
+    "p99_ms": 13.75
+   },
+   "by_frontend": {
+    "bases": {
+     "count": 4000,
+     "max_ms": 15.04,
+     "p50_ms": 8.72,
+     "p95_ms": 10.32,
+     "p99_ms": 12.0
+    },
+    "bases-tag": {
+     "count": 4000,
+     "max_ms": 88.09,
+     "p50_ms": 8.01,
+     "p95_ms": 13.33,
+     "p99_ms": 14.39
+    },
+    "dql": {
+     "count": 4000,
+     "max_ms": 16.98,
+     "p50_ms": 8.22,
+     "p95_ms": 9.16,
+     "p99_ms": 13.87
+    },
+    "dql-tag": {
+     "count": 4000,
+     "max_ms": 16.23,
+     "p50_ms": 7.56,
+     "p95_ms": 12.94,
+     "p99_ms": 13.79
+    },
+    "notes": {
+     "count": 4000,
+     "max_ms": 14.69,
+     "p50_ms": 7.56,
+     "p95_ms": 8.39,
+     "p99_ms": 9.79
+    },
+    "query": {
+     "count": 4000,
+     "max_ms": 24.59,
+     "p50_ms": 8.07,
+     "p95_ms": 9.59,
+     "p99_ms": 11.41
+    }
+   },
+   "load_average_after": "6.01 3.72 2.48",
+   "wall_seconds": 25.8,
+   "session_counters": {
+    "connections_opened": 8,
+    "hydrated_carried": 0,
+    "hydrated_loaded": 3078,
+    "hydrated_reused": 1730356,
+    "identity_loads": 1,
+    "identity_refreshes": 0,
+    "identity_reuses": 24007,
+    "snapshots": 24008,
+    "snapshots_unavailable": 0,
+    "stored_loaded": 9003,
+    "stored_reused": 0
+   },
+   "service_level_gate": "passed"
+  },
+  {
+   "run": "s-100k-unrestricted",
+   "fixture": "100k",
+   "session": true,
+   "permission_profile": null,
+   "readers": 8,
+   "writes_per_second_target": 2,
+   "requests": 2400,
+   "all": {
+    "count": 2400,
+    "max_ms": 1651.49,
+    "p50_ms": 150.59,
+    "p95_ms": 1211.05,
+    "p99_ms": 1354.77
+   },
+   "by_frontend": {
+    "bases": {
+     "count": 400,
+     "max_ms": 218.25,
+     "p50_ms": 145.65,
+     "p95_ms": 184.39,
+     "p99_ms": 204.82
+    },
+    "bases-tag": {
+     "count": 400,
+     "max_ms": 1651.49,
+     "p50_ms": 1105.99,
+     "p95_ms": 1389.75,
+     "p99_ms": 1535.58
+    },
+    "dql": {
+     "count": 400,
+     "max_ms": 205.47,
+     "p50_ms": 114.83,
+     "p95_ms": 169.51,
+     "p99_ms": 185.8
+    },
+    "dql-tag": {
+     "count": 400,
+     "max_ms": 471.12,
+     "p50_ms": 242.69,
+     "p95_ms": 343.88,
+     "p99_ms": 374.99
+    },
+    "notes": {
+     "count": 400,
+     "max_ms": 252.8,
+     "p50_ms": 124.31,
+     "p95_ms": 178.8,
+     "p99_ms": 197.32
+    },
+    "query": {
+     "count": 400,
+     "max_ms": 263.56,
+     "p50_ms": 144.11,
+     "p95_ms": 199.59,
+     "p99_ms": 239.35
+    }
+   },
+   "load_average_after": "3.89 2.89 2.16",
+   "wall_seconds": 94.4,
+   "writes": {
+    "count": 79,
+    "max_ms": 1702.35,
+    "p50_ms": 1203.37,
+    "p95_ms": 1652.94,
+    "p99_ms": 1702.35
+   },
+   "session_counters": {
+    "connections_opened": 8,
+    "hydrated_carried": 922078,
+    "hydrated_loaded": 1203069,
+    "hydrated_reused": 176965,
+    "identity_loads": 1,
+    "identity_refreshes": 78,
+    "identity_reuses": 2329,
+    "snapshots": 2408,
+    "snapshots_unavailable": 0,
+    "stored_loaded": 100094,
+    "stored_reused": 0
+   }
+  }
+ ]
+}

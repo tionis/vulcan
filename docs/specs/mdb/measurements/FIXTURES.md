@@ -85,3 +85,14 @@ afterwards. It checks every response against the ordered paths the direct path r
 run and prints a JSON report labeled `not_evaluated`. Results:
 [note-query-frontends.json](note-query-frontends.json) and
 [note-query-session-mixed-10k.json](note-query-session-mixed-10k.json).
+
+### Designated evaluation host
+
+Reference measurements of note queries run on a project-designated evaluation host (designated by
+the project owner on 2026-10-07): Intel Core i7-10700 (8 cores, 16 threads), 32 GiB RAM, Debian 13
+with kernel 6.12, otherwise idle. The benchmark builds there from a git bundle of the measured
+commit, regenerates the public fixtures (checking their published payload digests), and runs each
+configuration sequentially. Results: [note-query-frontends-reference.json](note-query-frontends-reference.json)
+and [note-query-session-mixed-reference.json](note-query-session-mixed-reference.json). The earlier
+`note-query-frontends.json` and `note-query-session-mixed-10k.json` are development-host
+diagnostics.
