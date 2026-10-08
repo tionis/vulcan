@@ -699,8 +699,10 @@ fn refresh_query_cache(
     refreshed.is_ok()
 }
 
-/// Publish only a committed write's own records when it kept every record's
-/// identity; `false` sends the caller to the full refresh. Like that refresh,
+/// Publish a committed write without whole-collection work: only its own
+/// records when it kept every identity, otherwise only the records its old
+/// and new identities can affect. `false` sends the caller to the full
+/// refresh. Like that refresh,
 /// only an unrestricted writer publishes cache rows.
 fn publish_written_records(
     paths: &VaultPaths,
@@ -714,16 +716,28 @@ fn publish_written_records(
     let Ok(mut database) = vulcan_core::CacheDatabase::open(paths) else {
         return false;
     };
-    matches!(
-        vulcan_core::mdbase::publish_mdbase_written_records(
-            &mut database,
-            &loaded.collection,
-            &loaded.types,
-            &loaded.contracts,
-            written,
+    // Field edits keep every identity; creations, deletions, renames, and
+    // identity changes re-finish only the records the reverse keys name.
+    match vulcan_core::mdbase::publish_mdbase_written_records(
+        &mut database,
+        &loaded.collection,
+        &loaded.types,
+        &loaded.contracts,
+        written,
+    ) {
+        Ok(Some(_)) => true,
+        Ok(None) => matches!(
+            vulcan_core::mdbase::publish_mdbase_structural_write(
+                &mut database,
+                &loaded.collection,
+                &loaded.types,
+                &loaded.contracts,
+                written,
+            ),
+            Ok(Some(_))
         ),
-        Ok(Some(_))
-    )
+        Err(_) => false,
+    }
 }
 
 /// Same lockfile rule as cached loads: no cache use without that authority.
@@ -2592,44 +2606,62 @@ mod tests {
     }
 
     #[test]
-    fn membership_changing_writes_publish_through_the_full_refresh() {
-        let (_directory, paths) = fixture();
+    fn creations_publish_structurally_and_control_edits_refresh() {
+        let (directory, paths) = fixture();
         initialize_vulcan_dir(&paths).unwrap();
         let query = json!({"types": ["task"], "select": ["title"]});
         build_mdbase_query_report(&paths, &query, None).unwrap();
         let now = Utc.with_ymd_and_hms(2026, 9, 13, 12, 0, 0).unwrap();
-        let plan = plan_mdbase_write(
-            &paths,
-            &write_plan_request(
-                MdbaseWriteOperation::Create,
-                vec![MdbaseWriteChangeRequest {
-                    path: "tasks/new.md".to_string(),
-                    after: Some("---\ntype: task\ntitle: New\n---\n".to_string()),
-                    if_revision: None,
-                }],
-            ),
-            now,
-        )
-        .unwrap();
-        let mut stages = MdbaseWriteMetrics::default();
-        apply_mdbase_write_profiled(
-            &paths,
-            &plan,
-            &MdbaseWriteExecutionOptions {
-                idempotency_key: "create-refreshes".to_string(),
-                no_commit: true,
-                quiet: true,
-            },
-            now,
-            &mut stages,
-        )
-        .unwrap();
-        assert!(!stages.record_cache_scoped, "{stages:?}");
+        let create = |path: &str, key: &str| {
+            let plan = plan_mdbase_write(
+                &paths,
+                &write_plan_request(
+                    MdbaseWriteOperation::Create,
+                    vec![MdbaseWriteChangeRequest {
+                        path: path.to_string(),
+                        after: Some("---\ntype: task\ntitle: New\n---\n".to_string()),
+                        if_revision: None,
+                    }],
+                ),
+                now,
+            )
+            .unwrap();
+            let mut stages = MdbaseWriteMetrics::default();
+            apply_mdbase_write_profiled(
+                &paths,
+                &plan,
+                &MdbaseWriteExecutionOptions {
+                    idempotency_key: key.to_string(),
+                    no_commit: true,
+                    quiet: true,
+                },
+                now,
+                &mut stages,
+            )
+            .unwrap();
+            stages
+        };
+        // A creation re-finishes only the records it can affect.
+        let stages = create("tasks/new.md", "create-structural");
+        assert!(stages.record_cache_scoped, "{stages:?}");
         let mut metrics = MdbaseQueryMetrics::default();
         let report =
             build_mdbase_query_report_profiled(&paths, &query, None, &mut metrics).unwrap();
         assert_eq!(report.meta.total_count, 3);
         assert_eq!(metrics.indexed_hits, 1, "{metrics:?}");
+        // A control edit can change every record: the next write refreshes.
+        let type_path = directory.path().join("_types/task.md");
+        let control = fs::read_to_string(&type_path).unwrap();
+        fs::write(
+            &type_path,
+            control.replace("{status: open}", "{status: todo}"),
+        )
+        .unwrap();
+        let stages = create("tasks/newer.md", "create-after-control-edit");
+        assert!(!stages.record_cache_scoped, "{stages:?}");
+        let report =
+            build_mdbase_query_report_profiled(&paths, &query, None, &mut metrics).unwrap();
+        assert_eq!(report.meta.total_count, 4);
     }
 
     #[test]

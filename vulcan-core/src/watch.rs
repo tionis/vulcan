@@ -1087,6 +1087,54 @@ mod tests {
     }
 
     #[test]
+    fn created_and_deleted_files_scan_alone_and_follow_discovery_rules() {
+        let temporary = TempDir::new().unwrap();
+        let root = temporary.path();
+        let paths = VaultPaths::new(root);
+        std::fs::create_dir_all(paths.vulcan_dir()).unwrap();
+        for (path, contents) in [
+            ("A.md", "one"),
+            ("B.md", "two"),
+            ("dir/F.md", "three"),
+            (".gitignore", "ignored/\n"),
+        ] {
+            std::fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+            std::fs::write(root.join(path), contents).unwrap();
+        }
+        scan_vault(&paths, ScanMode::Incremental).unwrap();
+        let scan = |changed: &[&str]| {
+            crate::scan::scan_watched_paths(
+                &paths,
+                &changed.iter().map(ToString::to_string).collect(),
+            )
+            .unwrap()
+        };
+        // A new file is indexed on its own, without walking the vault.
+        std::fs::write(root.join("D.md"), "four").unwrap();
+        let report = scan(&["D.md"]);
+        assert_eq!((report.discovered, report.added), (1, 1));
+        // A new file under an ignored folder stays out, as a full walk keeps it.
+        std::fs::create_dir_all(root.join("ignored")).unwrap();
+        std::fs::write(root.join("ignored/E.md"), "five").unwrap();
+        let report = scan(&["ignored/E.md"]);
+        assert_eq!((report.discovered, report.added), (0, 0));
+        // A deleted indexed file is removed on its own.
+        std::fs::remove_file(root.join("B.md")).unwrap();
+        let report = scan(&["B.md"]);
+        assert_eq!((report.discovered, report.deleted), (0, 1));
+        let full = scan_vault(&paths, ScanMode::Incremental).unwrap();
+        assert_eq!(
+            (full.discovered, full.added, full.deleted, full.unchanged),
+            (3, 0, 0, 3),
+            "targeted scans left the index as a full scan would"
+        );
+        // A missing unindexed path may be a deleted directory: discovery runs.
+        std::fs::remove_dir_all(root.join("dir")).unwrap();
+        let report = scan(&["dir"]);
+        assert_eq!(report.deleted, 1);
+    }
+
+    #[test]
     fn overflow_without_paths_requires_full_reconciliation() {
         let temporary = TempDir::new().unwrap();
         let mut batch = WatchBatch::default();

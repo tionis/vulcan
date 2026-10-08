@@ -889,9 +889,110 @@ fn validate_uniqueness_rule(
     }
 }
 
+/// `duplicate_value` diagnostics for `owners`, computed from identities as
+/// [`validate_cross_file_uniqueness`] computes them from documents. Exact when
+/// `group` holds every record that shares a unique value with an owner (and
+/// the owners themselves): an owner's diagnostics involve no other record.
+pub(super) fn uniqueness_diagnostics_from_identities(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    group: &BTreeMap<String, MdbaseRecordIdentity>,
+    owners: &std::collections::BTreeSet<String>,
+) -> BTreeMap<String, Vec<MdbaseRecordDiagnostic>> {
+    let severity = validation_severity(collection.config.settings.validation);
+    let mut diagnostics = BTreeMap::<String, Vec<MdbaseRecordDiagnostic>>::new();
+    let has_type = |identity: &MdbaseRecordIdentity, name: &str| {
+        identity
+            .types
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(name))
+    };
+    for definition in types.iter() {
+        let Some(rules) = definition
+            .frontmatter
+            .pointer("/collection/unique")
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+        let declaring_type = definition.name.as_str();
+        for rule in rules {
+            let field = rule
+                .get("field")
+                .and_then(serde_json::Value::as_str)
+                .expect("validated uniqueness rule has a field");
+            let scope = rule
+                .get("scope")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("collection");
+            let path_glob = rule
+                .get("path_glob")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|pattern| mdbase_glob(pattern).ok())
+                .map(|pattern| pattern.compile_matcher());
+            let in_scope = |path: &str, identity: &MdbaseRecordIdentity| match scope {
+                "type" => has_type(identity, declaring_type),
+                "path_glob" => path_glob
+                    .as_ref()
+                    .is_some_and(|matcher| matcher.is_match(path)),
+                _ => true,
+            };
+            let values = |identity: &MdbaseRecordIdentity| {
+                identity.unique.get(field).cloned().unwrap_or_default()
+            };
+            let mut by_value = std::collections::HashMap::<String, Vec<&str>>::new();
+            for (path, identity) in group {
+                if in_scope(path, identity) {
+                    for value in values(identity) {
+                        let holders = by_value.entry(uniqueness_key(&value)).or_default();
+                        if holders.last() != Some(&path.as_str()) {
+                            holders.push(path);
+                        }
+                    }
+                }
+            }
+            for owner in owners {
+                let Some(identity) = group.get(owner) else {
+                    continue;
+                };
+                if !(in_scope(owner, identity) && has_type(identity, declaring_type)) {
+                    continue;
+                }
+                let mut related_paths = values(identity)
+                    .iter()
+                    .filter_map(|value| by_value.get(&uniqueness_key(value)))
+                    .flatten()
+                    .filter(|candidate| **candidate != owner)
+                    .map(|candidate| (*candidate).to_string())
+                    .collect::<Vec<_>>();
+                related_paths.sort();
+                related_paths.dedup();
+                if !related_paths.is_empty() {
+                    diagnostics
+                        .entry(owner.clone())
+                        .or_default()
+                        .push(MdbaseRecordDiagnostic {
+                            severity,
+                            code: "duplicate_value".to_string(),
+                            message: format!(
+                                "field `{field}` duplicates another record in `{scope}` uniqueness scope"
+                            ),
+                            path: owner.clone(),
+                            field: field.to_string(),
+                            type_name: Some(declaring_type.to_string()),
+                            schema_path: None,
+                            related_paths,
+                        });
+                }
+            }
+        }
+    }
+    diagnostics
+}
+
 /// A key equal for exactly the values `serde_json::Value` equality treats
 /// as equal. Object keys are already sorted; only negative zero needs care.
-fn uniqueness_key(value: &serde_json::Value) -> String {
+pub(super) fn uniqueness_key(value: &serde_json::Value) -> String {
     fn write(value: &serde_json::Value, out: &mut String) {
         match value {
             serde_json::Value::Number(number)

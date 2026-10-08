@@ -274,24 +274,13 @@ impl ResolverCandidates {
         let mut segments = std::collections::HashSet::new();
         let mut aliases = std::collections::HashSet::new();
         for link in links {
-            if matches!(link.link_kind, LinkKind::External) {
-                continue;
-            }
-            let Some(target) = link.target_path_candidate.as_deref() else {
-                continue;
-            };
-            let source_dir = source_directory(&link.source_path);
-            for key in [
-                normalize_path(target),
-                normalize_joined_path(&source_dir, target),
-            ] {
-                let segment = last_segment(&key).to_ascii_lowercase();
-                segments.insert(strip_markdown_extension(&segment));
-                segments.insert(segment);
-            }
-            segments
-                .insert(file_name_without_extension(&normalize_path(target)).to_ascii_lowercase());
-            aliases.insert(target.to_ascii_lowercase());
+            let keys = link_resolution_keys(
+                &link.source_path,
+                link.target_path_candidate.as_deref(),
+                link.link_kind,
+            );
+            segments.extend(keys.segments);
+            aliases.extend(keys.aliases);
         }
         Self { segments, aliases }
     }
@@ -310,6 +299,58 @@ impl ResolverCandidates {
                 .iter()
                 .any(|alias| self.aliases.contains(&alias.to_ascii_lowercase()))
     }
+}
+
+/// Lowercase keys through which a link or a document takes part in
+/// resolution: a link can resolve to a document only if they share a
+/// segment key or an alias key (see [`ResolverCandidates`]).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ResolutionKeys {
+    pub segments: std::collections::BTreeSet<String>,
+    pub aliases: std::collections::BTreeSet<String>,
+}
+
+/// The keys a link's resolution consults.
+#[must_use]
+pub fn link_resolution_keys(
+    source_path: &str,
+    target_path_candidate: Option<&str>,
+    link_kind: LinkKind,
+) -> ResolutionKeys {
+    let mut keys = ResolutionKeys::default();
+    if matches!(link_kind, LinkKind::External) {
+        return keys;
+    }
+    let Some(target) = target_path_candidate else {
+        return keys;
+    };
+    let source_dir = source_directory(source_path);
+    for key in [
+        normalize_path(target),
+        normalize_joined_path(&source_dir, target),
+    ] {
+        let segment = last_segment(&key).to_ascii_lowercase();
+        keys.segments.insert(strip_markdown_extension(&segment));
+        keys.segments.insert(segment);
+    }
+    keys.segments
+        .insert(file_name_without_extension(&normalize_path(target)).to_ascii_lowercase());
+    keys.aliases.insert(target.to_ascii_lowercase());
+    keys
+}
+
+/// The keys through which a document can be a link target: exactly those
+/// [`ResolverCandidates::admits`] compares.
+#[must_use]
+pub fn document_resolution_keys(path: &str, filename: &str, aliases: &[String]) -> ResolutionKeys {
+    let segment = last_segment(&normalize_path(path)).to_ascii_lowercase();
+    let mut keys = ResolutionKeys::default();
+    keys.segments.insert(strip_markdown_extension(&segment));
+    keys.segments.insert(segment);
+    keys.segments.insert(filename.to_ascii_lowercase());
+    keys.aliases
+        .extend(aliases.iter().map(|alias| alias.to_ascii_lowercase()));
+    keys
 }
 
 fn last_segment(path: &str) -> &str {

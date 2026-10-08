@@ -10,6 +10,80 @@ pub fn apply_schema_v29(transaction: &Transaction<'_>) -> Result<(), rusqlite::E
     )
 }
 
+/// The resolution keys of each document's links (see
+/// [`crate::resolver::link_resolution_keys`]): when notes are added, removed,
+/// renamed, or change aliases, only documents whose links share a key with
+/// the old or new targets can resolve differently. Backfilled here from the
+/// stored links, so the index is complete from the first incremental scan.
+pub fn apply_schema_v34(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "CREATE TABLE link_resolution_keys (
+            document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL,
+            key TEXT NOT NULL,
+            PRIMARY KEY (kind, key, document_id)
+         ) WITHOUT ROWID;
+         CREATE INDEX idx_link_resolution_keys_document
+            ON link_resolution_keys(document_id);",
+    )?;
+    let mut links = transaction.prepare(
+        "SELECT links.source_document_id, documents.path, links.target_path_candidate,
+                links.link_kind
+         FROM links JOIN documents ON documents.id = links.source_document_id",
+    )?;
+    let mut insert = transaction.prepare(
+        "INSERT OR IGNORE INTO link_resolution_keys (document_id, kind, key) VALUES (?1, ?2, ?3)",
+    )?;
+    let mut rows = links.query([])?;
+    while let Some(row) = rows.next()? {
+        let document_id: String = row.get(0)?;
+        let path: String = row.get(1)?;
+        let target: Option<String> = row.get(2)?;
+        let kind: String = row.get(3)?;
+        let keys = crate::resolver::link_resolution_keys(
+            &path,
+            target.as_deref(),
+            crate::scan::parse_link_kind(&kind),
+        );
+        for key in &keys.segments {
+            insert.execute(rusqlite::params![document_id, "segment", key])?;
+        }
+        for key in &keys.aliases {
+            insert.execute(rusqlite::params![document_id, "alias", key])?;
+        }
+    }
+    Ok(())
+}
+
+/// Reverse indexes bound a structural write's overlays: for each record, the
+/// link keys its resolution consults (`path`, `basename`, `id`) and the
+/// uniqueness values it holds (`unique:<field>`, keyed like the uniqueness
+/// check). A row's keys are valid only while `reverse_keys` is 1; writers
+/// that publish a query row without keys leave it NULL, and a structural
+/// write requires every row to be marked. Existing rows are unmarked until a
+/// refresh backfills them.
+pub fn apply_schema_v33(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "CREATE TABLE mdbase_record_reverse_keys (
+            collection_root TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            key TEXT NOT NULL,
+            path TEXT NOT NULL,
+            PRIMARY KEY (collection_root, kind, key, path)
+         ) WITHOUT ROWID;
+         CREATE INDEX idx_mdbase_record_reverse_keys_path
+            ON mdbase_record_reverse_keys(collection_root, path);
+         ALTER TABLE mdbase_record_query ADD COLUMN reverse_keys INTEGER;
+         CREATE INDEX idx_mdbase_record_query_unmarked
+            ON mdbase_record_query(collection_root) WHERE reverse_keys IS NOT 1;
+         CREATE TRIGGER mdbase_record_reverse_keys_delete AFTER DELETE ON mdbase_record_query
+         BEGIN
+            DELETE FROM mdbase_record_reverse_keys
+            WHERE collection_root = old.collection_root AND path = old.path;
+         END;",
+    )
+}
+
 /// A write publishes only its own records: their links resolve against the
 /// records that could be targets, fetched by basename and authored ID instead
 /// of loading every identity. The expressions must match the lookup queries.
@@ -1232,6 +1306,16 @@ pub fn clear_cache_tables(transaction: &Transaction<'_>) -> Result<(), rusqlite:
     }
     transaction.execute_batch("DROP TABLE IF EXISTS vectors;")?;
 
+    // Introduced in v34; older registries rebuild before it exists.
+    let link_keys: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table'
+                AND name = 'link_resolution_keys')",
+        [],
+        |row| row.get(0),
+    )?;
+    if link_keys {
+        transaction.execute("DELETE FROM link_resolution_keys", [])?;
+    }
     for table_name in TABLES_TO_CLEAR {
         let statement = format!("DELETE FROM {table_name}");
         transaction.execute(&statement, [])?;

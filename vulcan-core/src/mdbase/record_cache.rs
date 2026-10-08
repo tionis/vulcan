@@ -20,6 +20,8 @@ use std::time::Instant;
 mod control_dependencies;
 mod indexed_query;
 pub use indexed_query::*;
+mod structural;
+pub use structural::publish_mdbase_structural_write;
 type ControlSources = Vec<(PathBuf, String)>;
 
 /// Private cache payload; never changes the canonical record envelope.
@@ -1289,24 +1291,33 @@ fn update_mdbase_record_cache_with_boundary(
             // Narrow query row for indexed reads. The fingerprint describes
             // the exact bytes behind this revision. An unread, unchanged row
             // keeps its published query row once it carries identity facts.
-            if !(unchanged
+            let kept = unchanged
                 && unread.contains(path)
                 && previous_query
                     .get(path)
-                    .is_some_and(|previous| previous.identity.is_some()))
-            {
-                let identity = serde_json::to_string(&super::records::record_identity(
-                    collection,
-                    &unique_fields,
-                    &local_records[path].record,
-                ))?;
+                    .is_some_and(|previous| previous.identity.is_some());
+            let local = &local_records[path];
+            let identity =
+                super::records::record_identity(collection, &unique_fields, &local.record);
+            if !kept {
                 store_query_row(
                     transaction,
                     record,
                     fingerprints.get(path).copied().flatten(),
                     &evidence[path],
-                    &identity,
+                    &serde_json::to_string(&identity)?,
                 )?;
+            }
+            // Reverse keys follow every rewritten row and backfill rows
+            // published before them.
+            if !kept
+                || !previous_query
+                    .get(path)
+                    .is_some_and(|previous| previous.reverse_keys)
+            {
+                let keys =
+                    super::links::record_link_lookup_keys(types, &local.record, &local.body_facts);
+                store_reverse_keys(transaction, &collection_root, path, &keys, &identity)?;
             }
         }
         Ok::<_, MdbaseRecordCacheError>(())
@@ -1737,6 +1748,8 @@ fn verify_and_publish_identity_stable(
             if published.get(path) != Some(record) {
                 store_cached_record(transaction, record)?;
             }
+            let keys =
+                super::links::record_link_lookup_keys(types, &local.record, &local.body_facts);
             let local = serde_json::to_string(local)?;
             transaction.execute(
                 "UPDATE mdbase_record_cache SET local_record_json = ?3
@@ -1745,6 +1758,13 @@ fn verify_and_publish_identity_stable(
                 params![collection_root, path, local],
             )?;
             store_query_row(transaction, record, Some(*fingerprint), evidence, identity)?;
+            store_reverse_keys(
+                transaction,
+                collection_root,
+                path,
+                &keys,
+                &serde_json::from_str(identity)?,
+            )?;
         }
         Ok::<_, MdbaseRecordCacheError>(())
     })?;
@@ -2196,6 +2216,8 @@ struct PreviousQueryRow {
     /// Serialized [`super::records::MdbaseRecordIdentity`]; absent on rows
     /// published before schema v24.
     identity: Option<String>,
+    /// The row's reverse keys are current (schema v33).
+    reverse_keys: bool,
 }
 
 fn load_previous_query_rows(
@@ -2205,7 +2227,7 @@ fn load_previous_query_rows(
 ) -> Result<BTreeMap<String, PreviousQueryRow>, MdbaseRecordCacheError> {
     let mut statement = connection.prepare(
         "SELECT path, revision, stat_fingerprint, input_converted, input_bytes, input_nodes,
-                input_width, input_links, identity_json
+                input_width, input_links, identity_json, reverse_keys IS 1
          FROM mdbase_record_query
          WHERE collection_root = ?1 AND dependency_digest = ?2 AND record_model_version = ?3
            AND stat_fingerprint IS NOT NULL",
@@ -2225,6 +2247,7 @@ fn load_previous_query_rows(
                     links: count(row.get(7)?),
                 },
                 identity: row.get(8)?,
+                reverse_keys: row.get(9)?,
             },
         ))
     })?;
@@ -2494,9 +2517,10 @@ fn store_query_row(
         "INSERT INTO mdbase_record_query (
             collection_root, path, revision, dependency_digest, record_model_version,
             stat_fingerprint, input_converted, input_bytes, input_nodes, input_width,
-            input_links, effective_frontmatter_jsonb, file_json, identity_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, jsonb(?12), ?13, ?14)
+            input_links, effective_frontmatter_jsonb, file_json, identity_json, reverse_keys
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, jsonb(?12), ?13, ?14, NULL)
          ON CONFLICT(collection_root, path) DO UPDATE SET
+            reverse_keys = NULL,
             revision = excluded.revision,
             dependency_digest = excluded.dependency_digest,
             record_model_version = excluded.record_model_version,
@@ -2538,6 +2562,53 @@ fn store_query_row(
         file,
         identity,
     ])?;
+    Ok(())
+}
+
+/// Replace `path`'s reverse keys (the link keys its resolution consults and
+/// the uniqueness values it holds) and mark its query row as covered.
+fn store_reverse_keys(
+    transaction: &Transaction<'_>,
+    collection_root: &str,
+    path: &str,
+    keys: &super::links::LinkLookupKeys,
+    identity: &super::records::MdbaseRecordIdentity,
+) -> Result<(), MdbaseRecordCacheError> {
+    transaction
+        .prepare_cached(
+            "DELETE FROM mdbase_record_reverse_keys WHERE collection_root = ?1 AND path = ?2",
+        )?
+        .execute(params![collection_root, path])?;
+    let mut insert = transaction.prepare_cached(
+        "INSERT OR IGNORE INTO mdbase_record_reverse_keys (collection_root, kind, key, path)
+         VALUES (?1, ?2, ?3, ?4)",
+    )?;
+    for (kind, values) in [
+        ("path", &keys.paths),
+        ("basename", &keys.basenames),
+        ("id", &keys.ids),
+    ] {
+        for key in values {
+            insert.execute(params![collection_root, kind, key, path])?;
+        }
+    }
+    for (field, values) in &identity.unique {
+        let kind = format!("unique:{field}");
+        for value in values {
+            insert.execute(params![
+                collection_root,
+                kind,
+                super::records::uniqueness_key(value),
+                path
+            ])?;
+        }
+    }
+    transaction
+        .prepare_cached(
+            "UPDATE mdbase_record_query SET reverse_keys = 1
+             WHERE collection_root = ?1 AND path = ?2",
+        )?
+        .execute(params![collection_root, path])?;
     Ok(())
 }
 
@@ -4005,6 +4076,75 @@ mod tests {
     }
 
     #[test]
+    fn structural_publication_needs_complete_reverse_keys_and_unchanged_neighbors() {
+        let directory = tempdir().expect("collection directory");
+        let root = directory.path();
+        write(&root.join("mdbase.yaml"), "spec_version: 0.3.0\n");
+        write(
+            &root.join("_types/task.md"),
+            "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value: {type: object}\ncollection:\n  unique: [{field: code}]\n---\n",
+        );
+        write(&root.join("a.md"), "---\ntype: task\ncode: x\n---\n[[b]]\n");
+        write(&root.join("c.md"), "---\ntype: task\ncode: y\n---\n");
+        let paths = VaultPaths::new(root);
+        crate::initialize_vulcan_dir(&paths).unwrap();
+        let mut database = CacheDatabase::open(&paths).unwrap();
+        let (collection, types, contracts) = load_registries(root);
+        refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        let marked = |database: &CacheDatabase| -> i64 {
+            database
+                .connection()
+                .query_row(
+                    "SELECT count(*) FROM mdbase_record_query WHERE reverse_keys IS 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(marked(&database), 2);
+        let publish = |database: &mut CacheDatabase, written: &[&str]| {
+            publish_mdbase_structural_write(
+                database,
+                &collection,
+                &types,
+                &contracts,
+                &written.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            )
+        };
+
+        // Rows published before reverse keys (as after migration) block it
+        // until a refresh backfills them.
+        write(&root.join("b.md"), "---\ntype: task\ncode: x\n---\n");
+        database
+            .connection()
+            .execute(
+                "UPDATE mdbase_record_query SET reverse_keys = NULL WHERE path = 'c.md'",
+                [],
+            )
+            .unwrap();
+        assert!(publish(&mut database, &["b.md"]).unwrap().is_none());
+        refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        assert_eq!(marked(&database), 3);
+
+        // An affected neighbor edited outside the write is not published over.
+        write(&root.join("d.md"), "---\ntype: task\ncode: x\n---\n");
+        fs::remove_file(root.join("a.md")).unwrap();
+        write(
+            &root.join("a.md"),
+            "---\ntype: task\ncode: x\n---\nchanged\n",
+        );
+        let error = publish(&mut database, &["d.md"]).unwrap_err();
+        assert!(
+            matches!(error, MdbaseRecordCacheError::StaleRecords),
+            "{error:?}"
+        );
+        // The ordinary refresh then reconciles everything.
+        refresh_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
+        let published = publish(&mut database, &["d.md"]).unwrap().unwrap();
+        assert!(published.overlays_scoped);
+    }
+
+    #[test]
     fn incremental_refresh_matches_a_full_rebuild_after_edits() {
         incremental_publication_matches_a_full_rebuild(false);
     }
@@ -4055,6 +4195,7 @@ mod tests {
             Write(&'static str, &'static str),
             Rewrite(&'static str),
             Remove(&'static str),
+            Rename(&'static str, &'static str),
         }
         let directory = tempdir().expect("collection directory");
         let root = directory.path();
@@ -4160,43 +4301,88 @@ mod tests {
                 false,
             ),
             ("deleted record", Edit::Remove("e/d.md"), false),
+            (
+                "new record sharing an authored id and a unique value",
+                Edit::Write("f.md", "---\ntype: task\nid: two\ncode: y\n---\n[[one]] [[c]]\n"),
+                false,
+            ),
+            ("renamed record that others link to", Edit::Rename("c.md", "g/c.md"), false),
+            (
+                "duplicate id removed again",
+                Edit::Write("f.md", "---\ntype: task\nid: three\ncode: z\n---\n[[two]]\n"),
+                false,
+            ),
         ];
         for (name, edit, scoped) in edits {
             let written = match edit {
                 Edit::Write(path, contents) => {
                     rewrite(path, contents);
-                    path
+                    vec![path.to_string()]
                 }
                 Edit::Rewrite(path) => {
                     let source = fs::read_to_string(root.join(path)).unwrap();
                     rewrite(path, &source);
-                    path
+                    vec![path.to_string()]
                 }
                 Edit::Remove(path) => {
                     fs::remove_file(root.join(path)).unwrap();
-                    path
+                    vec![path.to_string()]
+                }
+                Edit::Rename(from, to) => {
+                    fs::create_dir_all(root.join(to).parent().unwrap()).unwrap();
+                    fs::rename(root.join(from), root.join(to)).unwrap();
+                    vec![from.to_string(), to.to_string()]
                 }
             };
-            let published = publish_written
-                .then(|| {
-                    publish_mdbase_written_records(
+            let published = publish_written.then(|| {
+                // Identity-stable writes take the narrow path; every other
+                // edit here (none changes controls) publishes structurally.
+                let narrow = publish_mdbase_written_records(
+                    &mut database,
+                    &collection,
+                    &types,
+                    &contracts,
+                    &written,
+                )
+                .unwrap();
+                assert_eq!(narrow.is_some(), scoped, "{name}: {narrow:?}");
+                narrow.or_else(|| {
+                    publish_mdbase_structural_write(
                         &mut database,
                         &collection,
                         &types,
                         &contracts,
-                        &[written.to_string()],
+                        &written,
                     )
                     .unwrap()
                 })
-                .flatten();
-            if publish_written {
-                assert_eq!(published.is_some(), scoped, "{name}: {published:?}");
-            }
-            let refreshed = published.unwrap_or_else(|| refresh(&mut database));
-            assert_eq!(refreshed.overlays_scoped, scoped, "{name}: {refreshed:?}");
-            let incremental = snapshot(&database, scoped);
+            });
+            let refreshed = match published {
+                Some(published) => published.unwrap_or_else(|| panic!("{name}: not published")),
+                None => refresh(&mut database),
+            };
+            assert_eq!(
+                refreshed.overlays_scoped,
+                scoped || publish_written,
+                "{name}: {refreshed:?}"
+            );
+            // Like the full refresh, a structural publication keeps the
+            // published evidence of records it re-finishes without reading.
+            let exact = scoped;
+            let incremental = snapshot(&database, exact);
             rebuild_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();
-            assert_eq!(incremental, snapshot(&database, scoped), "{name}");
+            let rebuilt = snapshot(&database, exact);
+            let differing = incremental
+                .iter()
+                .zip(&rebuilt)
+                .filter(|(left, right)| left != right)
+                .collect::<Vec<_>>();
+            assert!(
+                differing.is_empty() && incremental.len() == rebuilt.len(),
+                "{name}: {} vs {} rows, differing: {differing:#?}",
+                incremental.len(),
+                rebuilt.len()
+            );
             // Rebuilt rows carry identity facts, so a quiet refresh is scoped.
             let rebuilt = snapshot(&database, true);
             let quiet = refresh(&mut database);

@@ -548,6 +548,12 @@ fn benchmark_write_samples(
         serde_json::from_slice(&std::fs::read(root.join("queries/task-open.json")).unwrap())
             .unwrap();
     build_mdbase_query_report(paths, &query, None).unwrap();
+    // `VULCAN_MDB_PROFILE_WRITE_STRUCTURAL`: alternately create and delete a
+    // record, the writes that change membership.
+    if std::env::var_os("VULCAN_MDB_PROFILE_WRITE_STRUCTURAL").is_some() {
+        benchmark_structural_writes(paths, samples);
+        return;
+    }
     // The read that follows each write, through a watched session as a host
     // serves it: it must already show the new revision.
     let session = crate::mdbase::MdbaseQuerySession::new(paths.clone()).with_change_monitor(
@@ -589,6 +595,76 @@ fn benchmark_write_samples(
             "first_seconds": first, "p50": rank(50), "p95": rank(95), "p99": rank(99),
             "following_read": {"p50": reads[reads.len() / 2], "p95": reads[(95 * reads.len()).div_ceil(100) - 1],
                 "max": reads[reads.len() - 1]}})
+    );
+}
+
+fn benchmark_structural_writes(paths: &VaultPaths, samples: usize) {
+    use crate::mdbase::{
+        plan_mdbase_write, MdbaseWriteChangeRequest, MdbaseWriteExecutionOptions,
+        MdbaseWriteOperation, MdbaseWritePlanRequest,
+    };
+    let source = std::fs::read_to_string(paths.vault_root().join(BENCHMARK_WRITE_PATH)).unwrap();
+    let path = "public/contact/91/structural-benchmark.md";
+    let mut latencies = Vec::new();
+    for index in 0..=samples * 2 {
+        let create = index % 2 == 0;
+        let now = chrono::Utc::now();
+        let start = Instant::now();
+        let plan = plan_mdbase_write(
+            paths,
+            &MdbaseWritePlanRequest {
+                caller_id: "benchmark".to_string(),
+                instance_id: "benchmark".to_string(),
+                operation: if create {
+                    MdbaseWriteOperation::Create
+                } else {
+                    MdbaseWriteOperation::Delete
+                },
+                changes: vec![MdbaseWriteChangeRequest {
+                    path: path.to_string(),
+                    after: create.then(|| source.clone()),
+                    if_revision: None,
+                }],
+                matched_types: Vec::new(),
+                generated_values: std::collections::BTreeMap::new(),
+                permission_profile: None,
+                ttl_seconds: Some(300),
+            },
+            now,
+        )
+        .unwrap();
+        let mut stages = crate::mdbase::MdbaseWriteMetrics::default();
+        crate::mdbase::apply_mdbase_write_profiled(
+            paths,
+            &plan,
+            &MdbaseWriteExecutionOptions {
+                idempotency_key: format!(
+                    "structural-{}-{index}",
+                    now.timestamp_nanos_opt().unwrap()
+                ),
+                no_commit: true,
+                quiet: true,
+            },
+            now,
+            &mut stages,
+        )
+        .unwrap();
+        let elapsed = start.elapsed().as_secs_f64();
+        println!(
+            "{}",
+            json!({"measurement": "benchmark_write", "operation": if create { "create" } else { "delete" },
+                "seconds": elapsed, "apply_stages": stages})
+        );
+        if index > 1 {
+            latencies.push(elapsed);
+        }
+    }
+    latencies.sort_by(f64::total_cmp);
+    println!(
+        "{}",
+        json!({"measurement": "benchmark_structural_write_summary", "acceptance_gate_result": "not_evaluated",
+            "samples": latencies.len(), "p50": latencies[latencies.len() / 2],
+            "p95": latencies[(95 * latencies.len()).div_ceil(100) - 1]})
     );
 }
 

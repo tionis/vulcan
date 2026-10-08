@@ -182,6 +182,16 @@ impl MigrationRegistry {
                 "index mdbase record identities by basename and ID",
                 schema::apply_schema_v32,
             ),
+            Migration::new(
+                33,
+                "index which mdbase records look up each link key or hold each unique value",
+                schema::apply_schema_v33,
+            ),
+            Migration::new(
+                34,
+                "index the resolution keys of every note's links",
+                schema::apply_schema_v34,
+            ),
         ])
     }
 
@@ -362,7 +372,7 @@ mod tests {
         // Migration adds no narrow rows; refresh publishes them.
         assert_eq!(narrow(&connection), 0);
         let insert = "INSERT INTO mdbase_record_query VALUES ('root','a.md','rev','controls',8,
-            x'00',1,10,2,1,0,jsonb('{}'),'{}',NULL)";
+            x'00',1,10,2,1,0,jsonb('{}'),'{}',NULL,NULL)";
         connection.execute(insert, []).unwrap();
         // Payload-only updates keep the row; projection changes and deletion drop it.
         connection

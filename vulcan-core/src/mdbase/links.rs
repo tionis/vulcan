@@ -248,6 +248,39 @@ pub(super) fn resolve_record_links(
     body_facts: Option<&BodyLinkFacts>,
     index: &LinkTargetIndex,
 ) {
+    let fallback;
+    let facts = if let Some(facts) = body_facts {
+        facts
+    } else {
+        fallback = BodyLinkFacts::parse(&record.body);
+        &fallback
+    };
+    let links = record_links(types, record, facts, index);
+    add_link_diagnostics(collection, record, &links);
+    record.links = links;
+    record.tags = collect_record_tags(record, facts.tags.iter().cloned());
+}
+
+/// Every index key resolving `record`'s links consults. A record whose keys
+/// meet none of a change's old and new paths, basenames, and IDs resolves
+/// exactly as before that change.
+pub(super) fn record_link_lookup_keys(
+    types: &MdbaseTypeRegistry,
+    record: &MdbaseRecordDocument,
+    body_facts: &BodyLinkFacts,
+) -> LinkLookupKeys {
+    let recording = LinkTargetIndex::recording();
+    record_links(types, record, body_facts, &recording);
+    recording.recorded_keys()
+}
+
+/// `record`'s frontmatter and body links resolved against `index`, sorted.
+fn record_links(
+    types: &MdbaseTypeRegistry,
+    record: &MdbaseRecordDocument,
+    facts: &BodyLinkFacts,
+    index: &LinkTargetIndex,
+) -> Vec<MdbaseLink> {
     let behavior = compose_mdbase_type_behavior(types, &record.types);
     let mut links = Vec::new();
     if let Some(frontmatter) = record.effective_frontmatter.as_object() {
@@ -263,13 +296,6 @@ pub(super) fn resolve_record_links(
             }
         }
     }
-    let fallback;
-    let facts = if let Some(facts) = body_facts {
-        facts
-    } else {
-        fallback = BodyLinkFacts::parse(&record.body);
-        &fallback
-    };
     links.extend(
         facts
             .links
@@ -283,9 +309,7 @@ pub(super) fn resolve_record_links(
             .then_with(|| left.field.cmp(&right.field))
             .then_with(|| left.raw.cmp(&right.raw))
     });
-    add_link_diagnostics(collection, record, &links);
-    record.links = links;
-    record.tags = collect_record_tags(record, facts.tags.iter().cloned());
+    links
 }
 
 fn link_rule<'a>(field: &'a str, value: &'a serde_json::Value) -> LinkRule<'a> {

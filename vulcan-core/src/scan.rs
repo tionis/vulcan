@@ -4,8 +4,8 @@ use crate::ordinary_write::{recover_ordinary_write_batch_unlocked, OrdinaryWrite
 use crate::parser::{parse_document, LinkKind, OriginContext, ParseDiagnosticKind, ParsedDocument};
 use crate::periodic::match_periodic_note_path;
 use crate::properties::{
-    extract_indexed_properties, indexed_inline_property_value, rebuild_property_catalog,
-    refresh_property_catalog_for_keys, IndexedProperties,
+    apply_property_catalog_deltas, extract_indexed_properties, indexed_inline_property_value,
+    rebuild_property_catalog, IndexedProperties,
 };
 use crate::resolver::{LinkResolutionProblem, ResolverDocument, ResolverIndex, ResolverLink};
 use crate::tasknotes::extract_tasknote;
@@ -17,7 +17,7 @@ use rayon::prelude::*;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs;
@@ -206,14 +206,19 @@ struct CachedDocument {
 struct IncrementalScanResult {
     summary: ScanSummary,
     requires_link_resolution: bool,
-    /// When true, the target pool changed (adds/deletes) so all links must be re-resolved.
-    /// When false but `requires_link_resolution` is true, only links from changed documents
-    /// need re-resolution.
+    /// When true, the target pool changed (adds, deletes, renames, alias
+    /// changes): links sharing a resolution key with `target_keys` may
+    /// resolve differently. When false but `requires_link_resolution` is
+    /// true, only links from changed documents need re-resolution.
     target_pool_changed: bool,
+    /// Old and new resolution keys of every document whose target identity
+    /// changed.
+    target_keys: crate::resolver::ResolutionKeys,
     /// Document IDs that were added, updated, or deleted.
     changed_document_ids: Vec<String>,
     requires_property_catalog_refresh: bool,
-    affected_property_keys: BTreeSet<String>,
+    /// Usage-count changes per `(key, observed type, namespace)`.
+    property_catalog_deltas: BTreeMap<(String, String, String), i64>,
     requires_fts_rebuild: bool,
     /// `(old_path, new_path)` pairs whose document identity was preserved.
     renamed: Vec<(String, String)>,
@@ -569,19 +574,16 @@ where
                                 deleted: result.summary.deleted,
                             },
                         );
-                        if result.target_pool_changed || catalog_config_changed {
-                            // Structural or configured-type changes also remove obsolete
-                            // zero-use declarations, including keys absent from every note.
+                        if catalog_config_changed {
+                            // Configured-type changes also remove obsolete zero-use
+                            // declarations, including keys absent from every note.
                             rebuild_property_catalog(transaction, &config.property_types)?;
                         } else {
-                            // Only updates — refresh catalog entries for changed documents.
-                            refresh_property_catalog_for_keys(
+                            // Apply each changed note's usage difference: the counts a
+                            // rebuild would produce, without recounting unchanged notes.
+                            apply_property_catalog_deltas(
                                 transaction,
-                                &result
-                                    .affected_property_keys
-                                    .iter()
-                                    .cloned()
-                                    .collect::<Vec<_>>(),
+                                &result.property_catalog_deltas,
                                 &config.property_types,
                             )?;
                         }
@@ -600,15 +602,18 @@ where
                                 deleted: result.summary.deleted,
                             },
                         );
+                        // A target-pool change can only alter links that share a
+                        // resolution key with an old or new target identity.
+                        let mut documents = result.changed_document_ids.clone();
                         if result.target_pool_changed {
-                            resolve_all_links(transaction, config.link_resolution)?;
-                        } else {
-                            resolve_changed_links(
+                            documents.extend(documents_with_link_keys(
                                 transaction,
-                                config.link_resolution,
-                                &result.changed_document_ids,
-                            )?;
+                                &result.target_keys,
+                            )?);
+                            documents.sort();
+                            documents.dedup();
                         }
+                        resolve_changed_links(transaction, config.link_resolution, &documents)?;
                     }
                     if result.requires_fts_rebuild {
                         rebuild_fts_index(transaction)?;
@@ -756,7 +761,7 @@ fn watched_inventory(
         {
             return Ok(None);
         }
-        let Some(mut document) = statement
+        let document = statement
             .query_row([relative], |row| {
                 Ok(CachedDocument {
                     id: row.get(0)?,
@@ -768,19 +773,34 @@ fn watched_inventory(
                     parser_version: row.get(4)?,
                 })
             })
-            .optional()?
-        else {
-            return Ok(None);
-        };
+            .optional()?;
         let absolute_path = root.join(path);
         let metadata = match fs::symlink_metadata(&absolute_path) {
             Ok(metadata) if metadata.is_file() => metadata,
             Ok(_) => return Ok(None),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // A deleted indexed file: listed without a discovered file,
+                // the scan removes it. A missing unindexed path may be a
+                // deleted directory, whose files only discovery can remove.
+                let Some(document) = document else {
+                    return Ok(None);
+                };
+                cached.insert(relative.clone(), document);
+                continue;
+            }
             Err(error) => return Err(error.into()),
         };
         if fs::canonicalize(&absolute_path)? != absolute_path {
             return Ok(None);
+        }
+        // A new file is indexed exactly when full discovery would find it;
+        // an ignored one stays out of the index as it would after a walk.
+        if document.is_none() {
+            match discovery_includes(&root, &absolute_path) {
+                Some(true) => {}
+                Some(false) => continue,
+                None => return Ok(None),
+            }
         }
         let extension = path
             .extension()
@@ -806,8 +826,10 @@ fn watched_inventory(
         });
         // A native write signal is evidence even when size and timestamp were
         // preserved. Hash this file rather than trusting its cached metadata.
-        document.file_mtime = -1;
-        cached.insert(relative.clone(), document);
+        if let Some(mut document) = document {
+            document.file_mtime = -1;
+            cached.insert(relative.clone(), document);
+        }
     }
     Ok(Some((files, cached)))
 }
@@ -949,6 +971,18 @@ fn catalog_membership(
     rows.collect()
 }
 
+fn add_catalog_deltas(
+    deltas: &mut BTreeMap<(String, String, String), i64>,
+    membership: &[(String, String, String, i64)],
+    sign: i64,
+) {
+    for (key, value_type, namespace, count) in membership {
+        *deltas
+            .entry((key.clone(), value_type.clone(), namespace.clone()))
+            .or_default() += sign * count;
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn apply_incremental_scan(
     transaction: &Transaction<'_>,
@@ -971,9 +1005,10 @@ fn apply_incremental_scan(
         },
         requires_link_resolution: false,
         target_pool_changed: false,
+        target_keys: crate::resolver::ResolutionKeys::default(),
         changed_document_ids: Vec::new(),
         requires_property_catalog_refresh: false,
-        affected_property_keys: BTreeSet::new(),
+        property_catalog_deltas: BTreeMap::new(),
         requires_fts_rebuild: false,
         renamed: Vec::new(),
     };
@@ -1109,6 +1144,7 @@ fn apply_incremental_scan(
             if let (Some(old_path), IncrementalPrepResult::Reindex { id, .. }) =
                 (renamed_from, &prep)
             {
+                extend_target_keys(&mut result.target_keys, transaction, id)?;
                 rename_document_path(transaction, id, old_path, item.file)?;
                 result
                     .renamed
@@ -1128,6 +1164,7 @@ fn apply_incremental_scan(
                     is_new,
                 } => {
                     let current_version = document_index_version(item.file.kind, config);
+                    let mut aliases_changed_here = false;
                     insert_or_update_document(
                         transaction,
                         &id,
@@ -1151,8 +1188,11 @@ fn apply_incremental_scan(
                         PreparedDerivedContent::Note(note) => {
                             // Aliases are resolution targets for links in *other* notes, so an
                             // alias change on an existing note invalidates the whole target pool.
-                            if !is_new && aliases_changed(transaction, &id, &note.parsed.aliases)? {
+                            aliases_changed_here =
+                                !is_new && aliases_changed(transaction, &id, &note.parsed.aliases)?;
+                            if aliases_changed_here {
                                 result.target_pool_changed = true;
+                                extend_target_keys(&mut result.target_keys, transaction, &id)?;
                             }
                             let previous_properties = catalog_membership(transaction, &id)?;
                             replace_derived_rows(
@@ -1168,11 +1208,15 @@ fn apply_incremental_scan(
                             let current_properties = catalog_membership(transaction, &id)?;
                             if previous_properties != current_properties {
                                 result.requires_property_catalog_refresh = true;
-                                result.affected_property_keys.extend(
-                                    previous_properties
-                                        .iter()
-                                        .chain(&current_properties)
-                                        .map(|entry| entry.0.clone()),
+                                add_catalog_deltas(
+                                    &mut result.property_catalog_deltas,
+                                    &previous_properties,
+                                    -1,
+                                );
+                                add_catalog_deltas(
+                                    &mut result.property_catalog_deltas,
+                                    &current_properties,
+                                    1,
                                 );
                             }
                         }
@@ -1186,6 +1230,11 @@ fn apply_incremental_scan(
                             )?;
                         }
                         PreparedDerivedContent::None => {}
+                    }
+                    // New identities: added, renamed, or with changed aliases
+                    // (the old ones were recorded before the change).
+                    if is_new || renamed_from.is_some() || aliases_changed_here {
+                        extend_target_keys(&mut result.target_keys, transaction, &id)?;
                     }
                     result.changed_document_ids.push(id);
                     if is_new {
@@ -1224,6 +1273,12 @@ fn apply_incremental_scan(
         }
         if let Some(cached) = existing.get(path) {
             result.changed_document_ids.push(cached.id.clone());
+            extend_target_keys(&mut result.target_keys, transaction, &cached.id)?;
+            add_catalog_deltas(
+                &mut result.property_catalog_deltas,
+                &catalog_membership(transaction, &cached.id)?,
+                -1,
+            );
             delete_document(transaction, &cached.id)?;
             result.requires_link_resolution = true;
             result.target_pool_changed = true;
@@ -1421,8 +1476,11 @@ impl AncestorGitIgnores {
     }
 }
 
-#[allow(clippy::too_many_lines)]
-fn discover_files(vault_root: &Path) -> Result<Vec<DiscoveredFile>, ScanError> {
+/// The vault walk discovery uses: hidden files, `.gitignore` and `.ignore`
+/// files, and ignore files above the vault. With `only`, the walk descends
+/// solely into that path's ancestors, so it yields `only` exactly when a full
+/// walk would, after reading just those directories.
+fn vault_walker(vault_root: &Path, only: Option<PathBuf>) -> WalkBuilder {
     let mut builder = WalkBuilder::new(vault_root);
     builder.hidden(true);
     builder.git_ignore(true);
@@ -1431,13 +1489,38 @@ fn discover_files(vault_root: &Path) -> Result<Vec<DiscoveredFile>, ScanError> {
     builder.parents(false);
     builder.require_git(false);
     let ancestor_ignores = AncestorGitIgnores::for_vault(vault_root);
-    if !ancestor_ignores.is_empty() {
+    if !ancestor_ignores.is_empty() || only.is_some() {
         let walk_root = vault_root.to_path_buf();
         builder.filter_entry(move |entry| {
+            if only
+                .as_ref()
+                .is_some_and(|target| !target.starts_with(entry.path()))
+            {
+                return false;
+            }
             let is_dir = entry.file_type().is_some_and(|kind| kind.is_dir());
-            !ancestor_ignores.is_ignored(&walk_root, entry.path(), is_dir)
+            ancestor_ignores.is_empty()
+                || !ancestor_ignores.is_ignored(&walk_root, entry.path(), is_dir)
         });
     }
+    builder
+}
+
+/// Whether full discovery would include the file at `absolute`; `None` when
+/// the walk fails, so the caller falls back to full discovery.
+fn discovery_includes(vault_root: &Path, absolute: &Path) -> Option<bool> {
+    for entry in vault_walker(vault_root, Some(absolute.to_path_buf())).build() {
+        let entry = entry.ok()?;
+        if entry.path() == absolute {
+            return Some(entry.file_type().is_some_and(|kind| kind.is_file()));
+        }
+    }
+    Some(false)
+}
+
+#[allow(clippy::too_many_lines)]
+fn discover_files(vault_root: &Path) -> Result<Vec<DiscoveredFile>, ScanError> {
+    let builder = vault_walker(vault_root, None);
 
     let files = std::sync::Mutex::new(Vec::new());
     let first_error = std::sync::Mutex::new(None::<ScanError>);
@@ -1863,7 +1946,7 @@ fn replace_derived_rows(
     let parsed = note.parsed.as_ref();
     insert_headings(transaction, document_id, &parsed.headings)?;
     insert_block_refs(transaction, document_id, &parsed.block_refs)?;
-    insert_links(transaction, document_id, &parsed.links)?;
+    insert_links(transaction, document_id, document_path, &parsed.links)?;
     insert_aliases(transaction, document_id, &parsed.aliases)?;
     insert_tags(transaction, document_id, &parsed.tags)?;
     let aliases_text = parsed.aliases.join(" ");
@@ -2116,8 +2199,30 @@ fn insert_block_refs(
 fn insert_links(
     transaction: &Transaction<'_>,
     document_id: &str,
+    document_path: &str,
     links: &[crate::RawLink],
 ) -> Result<(), ScanError> {
+    // The resolution keys of this document's links: which documents a
+    // target-pool change can affect (schema v34).
+    transaction
+        .prepare_cached("DELETE FROM link_resolution_keys WHERE document_id = ?1")?
+        .execute([document_id])?;
+    let mut insert_key = transaction.prepare_cached(
+        "INSERT OR IGNORE INTO link_resolution_keys (document_id, kind, key) VALUES (?1, ?2, ?3)",
+    )?;
+    for link in links {
+        let keys = crate::resolver::link_resolution_keys(
+            document_path,
+            link.target_path_candidate.as_deref(),
+            link.link_kind,
+        );
+        for key in &keys.segments {
+            insert_key.execute(params![document_id, "segment", key])?;
+        }
+        for key in &keys.aliases {
+            insert_key.execute(params![document_id, "alias", key])?;
+        }
+    }
     let mut statement = transaction.prepare_cached(
         "
         INSERT INTO links (
@@ -2154,6 +2259,57 @@ fn insert_links(
         ])?;
     }
     Ok(())
+}
+
+/// Add a stored document's target identity (path, file name, aliases) to
+/// `keys`.
+fn extend_target_keys(
+    keys: &mut crate::resolver::ResolutionKeys,
+    transaction: &Transaction<'_>,
+    document_id: &str,
+) -> Result<(), ScanError> {
+    let Some((path, filename)) = transaction
+        .prepare_cached("SELECT path, filename FROM documents WHERE id = ?1")?
+        .query_row([document_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .optional()?
+    else {
+        return Ok(());
+    };
+    let aliases = transaction
+        .prepare_cached("SELECT alias_text FROM aliases WHERE document_id = ?1")?
+        .query_map([document_id], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let document = crate::resolver::document_resolution_keys(&path, &filename, &aliases);
+    keys.segments.extend(document.segments);
+    keys.aliases.extend(document.aliases);
+    Ok(())
+}
+
+/// Documents with a link whose resolution consults one of `keys`.
+fn documents_with_link_keys(
+    transaction: &Transaction<'_>,
+    keys: &crate::resolver::ResolutionKeys,
+) -> Result<Vec<String>, ScanError> {
+    let mut statement = transaction.prepare_cached(
+        "SELECT DISTINCT document_id FROM link_resolution_keys
+         WHERE kind = ?1 AND key IN (SELECT value FROM json_each(?2))",
+    )?;
+    let mut documents = Vec::new();
+    for (kind, values) in [("segment", &keys.segments), ("alias", &keys.aliases)] {
+        if values.is_empty() {
+            continue;
+        }
+        let values = serde_json::to_string(values)
+            .map_err(|error| ScanError::Io(std::io::Error::other(error)))?;
+        documents.extend(
+            statement
+                .query_map(params![kind, values], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+    }
+    Ok(documents)
 }
 
 fn aliases_changed(
@@ -3355,8 +3511,9 @@ fn resolve_changed_links(
         .collect::<Vec<_>>();
     let index = ResolverIndex::build(&documents);
 
-    let mut update_statement =
-        transaction.prepare_cached("UPDATE links SET resolved_target_id = ?2 WHERE id = ?1")?;
+    let mut update_statement = transaction.prepare_cached(
+        "UPDATE links SET resolved_target_id = ?2 WHERE id = ?1 AND resolved_target_id IS NOT ?2",
+    )?;
     let mut diag_statement = transaction.prepare_cached(
         "
         INSERT INTO diagnostics (id, document_id, kind, message, detail, created_at)
@@ -3366,9 +3523,9 @@ fn resolve_changed_links(
     let timestamp = current_timestamp()?;
     for link in &links {
         let resolution = index.resolve(&link.resolver_link, mode);
-        if resolution.resolved_target_id.is_some() {
-            update_statement.execute(params![link.id, resolution.resolved_target_id])?;
-        }
+        // Links of unchanged documents may lose their target to a rename or
+        // removed alias, so an unresolved link is written as NULL too.
+        update_statement.execute(params![link.id, resolution.resolved_target_id])?;
         if let Some(problem) = resolution.problem {
             diag_statement.execute(params![
                 Ulid::new().to_string(),
@@ -3472,7 +3629,7 @@ fn resolution_problem_detail(
     }
 }
 
-fn parse_link_kind(link_kind: &str) -> LinkKind {
+pub(crate) fn parse_link_kind(link_kind: &str) -> LinkKind {
     match link_kind {
         "wikilink" => LinkKind::Wikilink,
         "embed" => LinkKind::Embed,
@@ -5721,6 +5878,152 @@ docs/
             diagnostic_kinds(database.connection()),
             vec!["unresolved_link".to_string()]
         );
+    }
+
+    /// Target-pool changes re-resolve only documents whose links share a
+    /// resolution key with an old or new target; after every structural edit
+    /// the incremental index must equal a full rebuild.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn target_pool_changes_resolve_exactly_like_a_full_scan() {
+        type Edit<'a> = (&'a str, Box<dyn Fn() + 'a>);
+        fn snapshot(connection: &rusqlite::Connection) -> Vec<String> {
+            let mut rows = Vec::new();
+            for sql in [
+                "SELECT source.path || '|' || links.raw_text || '|' || links.byte_offset || '|'
+                        || COALESCE(target.path, '-')
+                 FROM links JOIN documents AS source ON source.id = links.source_document_id
+                 LEFT JOIN documents AS target ON target.id = links.resolved_target_id
+                 ORDER BY 1",
+                "SELECT documents.path || '|' || diagnostics.kind || '|' || diagnostics.message
+                        || '|' || diagnostics.detail
+                 FROM diagnostics JOIN documents ON documents.id = diagnostics.document_id
+                 ORDER BY 1",
+                "SELECT key || '|' || observed_type || '|' || usage_count || '|' || namespace
+                 FROM property_catalog ORDER BY 1",
+            ] {
+                let mut statement = connection.prepare(sql).unwrap();
+                rows.extend(
+                    statement
+                        .query_map([], |row| row.get::<_, String>(0))
+                        .unwrap()
+                        .map(Result::unwrap),
+                );
+            }
+            // Diagnostics name candidate documents by ID, which a rebuild
+            // reassigns; compare their paths instead.
+            let mut ids = connection
+                .prepare("SELECT id, path FROM documents")
+                .unwrap();
+            let ids = ids
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .unwrap()
+                .map(Result::unwrap)
+                .collect::<Vec<_>>();
+            let mut rows = rows
+                .into_iter()
+                .map(|row| {
+                    ids.iter()
+                        .fold(row, |row, (id, path)| row.replace(id.as_str(), path))
+                })
+                .collect::<Vec<_>>();
+            rows.sort();
+            rows
+        }
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path().join("vault");
+        fs::create_dir_all(root.join(".vulcan")).unwrap();
+        let write = |path: &str, contents: &str| {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, contents).unwrap();
+        };
+        write(
+            "Hub.md",
+            "---\nstatus: open\n---\n[[Alpha]] [[Beta]] [[Later]] [[Nick]] [[notes/Gamma]] [rel](notes/Gamma.md) [[Dup]] [[Missing]]\n",
+        );
+        write(
+            "Alpha.md",
+            "---\naliases: [Nick]\npriority: 1\n---\n[[Hub]]\n",
+        );
+        write("Beta.md", "[[Alpha]] [[../Hub]]\n");
+        write(
+            "notes/Gamma.md",
+            "---\ntags: [x]\n---\n[[Beta]] [up](../Hub.md)\n",
+        );
+        write("notes/Dup.md", "dup one\n");
+        write("Unrelated.md", "---\nowner: me\n---\n[[Elsewhere]]\n");
+        let paths = VaultPaths::new(&root);
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        let edits: Vec<Edit<'_>> = vec![
+            (
+                "a new note resolves a missing link",
+                Box::new(|| write("Later.md", "new\n")),
+            ),
+            (
+                "a same-name note makes a link ambiguous",
+                Box::new(|| write("other/Dup.md", "dup two\n")),
+            ),
+            (
+                "a target note is deleted",
+                Box::new(|| fs::remove_file(root.join("Beta.md")).unwrap()),
+            ),
+            (
+                "a target note is renamed",
+                Box::new(|| {
+                    fs::rename(root.join("Alpha.md"), root.join("notes/Alpha.md")).unwrap();
+                }),
+            ),
+            (
+                "an alias moves to another note",
+                Box::new(|| {
+                    write("notes/Alpha.md", "---\npriority: 1\n---\n[[Hub]]\n");
+                    write("Later.md", "---\naliases: [Nick]\n---\nnew\n");
+                }),
+            ),
+            (
+                "the last note with a property is deleted",
+                Box::new(|| fs::remove_file(root.join("Unrelated.md")).unwrap()),
+            ),
+            (
+                "a deleted note comes back",
+                Box::new(|| write("Beta.md", "[[Alpha]] [[Nick]]\n")),
+            ),
+            (
+                "a property changes type and another is removed",
+                Box::new(|| {
+                    write("notes/Alpha.md", "---\npriority: high\n---\n[[Hub]]\n");
+                    write(
+                        "Hub.md",
+                        "[[Alpha]] [[Later]] [[Nick]] [[Dup]]\nstatus:: inline\n",
+                    );
+                }),
+            ),
+        ];
+        for (name, edit) in edits {
+            edit();
+            scan_vault(&paths, ScanMode::Incremental).unwrap();
+            let database = CacheDatabase::open(&paths).unwrap();
+            let incremental = snapshot(database.connection());
+            drop(database);
+            scan_vault(&paths, ScanMode::Full).unwrap();
+            let database = CacheDatabase::open(&paths).unwrap();
+            let full = snapshot(database.connection());
+            let only_incremental = incremental
+                .iter()
+                .filter(|row| !full.contains(row))
+                .collect::<Vec<_>>();
+            let only_full = full
+                .iter()
+                .filter(|row| !incremental.contains(row))
+                .collect::<Vec<_>>();
+            assert!(
+                only_incremental.is_empty() && only_full.is_empty(),
+                "{name}: incremental only {only_incremental:#?}, full only {only_full:#?}"
+            );
+        }
     }
 
     #[test]

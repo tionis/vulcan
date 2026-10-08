@@ -2221,60 +2221,31 @@ pub(crate) fn rebuild_property_catalog(
     Ok(())
 }
 
-/// Refresh keys whose catalog membership changed. Callers must include keys
-/// removed by the update, which cannot be recovered from the new property rows.
-pub(crate) fn refresh_property_catalog_for_keys(
+/// Apply usage-count changes per `(key, observed type, namespace)`: rows
+/// reaching zero are removed and configured types re-declared, leaving the
+/// catalog exactly as [`rebuild_property_catalog`] would build it.
+pub(crate) fn apply_property_catalog_deltas(
     transaction: &rusqlite::Transaction<'_>,
-    affected_keys: &[String],
+    deltas: &BTreeMap<(String, String, String), i64>,
     configured_types: &BTreeMap<String, String>,
 ) -> Result<(), rusqlite::Error> {
-    if affected_keys.is_empty() {
-        return Ok(());
-    }
-
-    let key_placeholders: Vec<String> =
-        (1..=affected_keys.len()).map(|i| format!("?{i}")).collect();
-    let key_list = key_placeholders.join(", ");
-
-    let params: Vec<String> = affected_keys.to_vec();
-    let delete_sql = format!("DELETE FROM property_catalog WHERE key IN ({key_list})");
-    transaction.execute(&delete_sql, rusqlite::params_from_iter(params.iter()))?;
-
-    let insert_sql = format!(
+    let mut upsert = transaction.prepare_cached(
         "INSERT INTO property_catalog (key, observed_type, usage_count, namespace)
-         SELECT
-             key,
-             value_type,
-             COUNT(*),
-             CASE
-                 WHEN origin = 'frontmatter' THEN ?{{frontmatter_param}}
-                 ELSE ?{{inline_param}}
-             END
-         FROM property_values
-         WHERE key IN ({key_list})
-         GROUP BY
-             key,
-             value_type,
-             CASE
-                 WHEN origin = 'frontmatter' THEN ?{{frontmatter_param}}
-                 ELSE ?{{inline_param}}
-             END"
-    );
-    let mut insert_params: Vec<String> = affected_keys.to_vec();
-    let frontmatter_param = insert_params.len() + 1;
-    insert_params.push(PROPERTY_NAMESPACE_FRONTMATTER.to_string());
-    let inline_param = insert_params.len() + 1;
-    insert_params.push(PROPERTY_NAMESPACE_INLINE.to_string());
-    let insert_sql = insert_sql
-        .replace("{frontmatter_param}", &frontmatter_param.to_string())
-        .replace("{inline_param}", &inline_param.to_string());
-    transaction.execute(
-        &insert_sql,
-        rusqlite::params_from_iter(insert_params.iter()),
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(key, observed_type, namespace)
+         DO UPDATE SET usage_count = usage_count + excluded.usage_count",
     )?;
-
-    insert_configured_property_types(transaction, configured_types)?;
-
+    let mut changed = false;
+    for ((key, value_type, namespace), delta) in deltas {
+        if *delta != 0 {
+            upsert.execute((key, value_type, delta, namespace))?;
+            changed = true;
+        }
+    }
+    if changed {
+        transaction.execute("DELETE FROM property_catalog WHERE usage_count <= 0", [])?;
+        insert_configured_property_types(transaction, configured_types)?;
+    }
     Ok(())
 }
 
