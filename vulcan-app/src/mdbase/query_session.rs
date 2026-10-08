@@ -2,10 +2,11 @@
 //!
 //! The session keeps what is expensive to rebuild and safe to reuse between
 //! requests: authorized control registries (keyed by read scope), compiled
-//! query plans, and a read-only cache connection with its statement cache. It
-//! never retains answers. Every request verifies the retained registries
-//! against the current controls and, by default, proves the cache current
-//! with a full stat walk.
+//! query plans, a read-only cache connection with its statement cache, and
+//! decoded rows with each query's ordered matches (paths only, bound to the
+//! rows' version and the exact visible set). It never retains response rows.
+//! Every request verifies the retained registries against the current
+//! controls and, by default, proves the cache current with a full stat walk.
 //!
 //! Retained execution does not take the vault read lock, so readers never
 //! queue behind a write section. A stat-proven result cannot observe a
@@ -1112,8 +1113,11 @@ mod tests {
         );
         warm(&metrics);
         assert_eq!(metrics.indexed.reloaded_rows, 0);
-        assert_eq!(metrics.indexed.type_candidates, visible);
-        assert_eq!(metrics.indexed.sql_decided, visible);
+        // The first request decided every candidate; this one reuses its
+        // ordered matches and reads only the page.
+        assert!(metrics.indexed.matches_reused);
+        assert_eq!(metrics.indexed.type_candidates, 0);
+        assert_eq!(metrics.indexed.sql_decided, 0);
         assert_eq!(metrics.indexed.residual_evaluations, 0);
         assert_eq!(metrics.indexed.hydrated, 5);
         session
@@ -1132,10 +1136,91 @@ mod tests {
         let report = session.query_profiled(&query, None, &mut metrics).unwrap();
         warm(&metrics);
         assert_eq!(metrics.indexed.reloaded_rows, 1);
+        // Only the edited record is decided again.
+        assert_eq!(metrics.indexed.matches_carried, 1);
+        assert_eq!(metrics.indexed.type_candidates, 0);
         assert_eq!(
             report,
             build_mdbase_query_report(&paths, &query, None).unwrap()
         );
+    }
+
+    /// Retained ordered matches answer exactly like the ordinary service
+    /// while records are edited, created, deleted, renamed, and moved out of
+    /// a scope; they are reused while nothing changes and carried forward by
+    /// deciding only what changed.
+    #[test]
+    fn retained_matches_follow_every_kind_of_change() {
+        let (directory, paths) = initialized();
+        let write = |name: &str, title: &str, status: &str, rank: u32| {
+            fs::write(
+                directory.path().join(name),
+                format!(
+                    "---\ntype: task\ntitle: {title}\nstatus: {status}\nrank: {rank}\n---\nBody\n"
+                ),
+            )
+            .unwrap();
+        };
+        for index in 0..30_u32 {
+            let folder = if index % 5 == 0 {
+                "tasks/private"
+            } else {
+                "tasks"
+            };
+            write(
+                &format!("{folder}/t{index:02}.md"),
+                &format!("T{:02}", (index * 7) % 30),
+                ["open", "done"][(index % 2) as usize],
+                index % 4,
+            );
+        }
+        let queries = [
+            json!({"types": ["task"], "where": "status == 'open'", "order_by": [{"field": "title"}], "limit": 5}),
+            json!({"types": ["task"], "where": "status == 'open'", "order_by": [{"field": "title"}], "limit": 5, "offset": 3}),
+            json!({"types": ["task"], "order_by": [{"field": "rank", "direction": "desc"}, {"field": "title"}], "limit": 7}),
+            json!({"types": ["task"], "where": "rank >= 2", "select": ["title"]}),
+            json!({"types": ["task"], "order_by": [{"field": "missing"}], "limit": 4}),
+        ];
+        let filter = restricted();
+        let session = MdbaseQuerySession::new(paths.clone());
+        let (mut reused, mut carried) = (0, 0);
+        let mut check = |round: &str| {
+            for query in &queries {
+                for scope in [None, Some(&filter)] {
+                    let expected = build_mdbase_query_report(&paths, query, scope).unwrap();
+                    let mut metrics = MdbaseQueryMetrics::default();
+                    let actual = session.query_profiled(query, scope, &mut metrics).unwrap();
+                    assert_eq!(actual, expected, "{round}: {query} {}", scope.is_some());
+                    assert_eq!(metrics.indexed_hits, 1, "{round}: {query}");
+                    reused += usize::from(metrics.indexed.matches_reused);
+                    carried += usize::from(metrics.indexed.matches_carried > 0);
+                }
+            }
+        };
+        check("cold");
+        check("warm");
+        write("tasks/t01.md", "A first", "open", 3);
+        check("reordered");
+        write("tasks/t02.md", "T99", "open", 0);
+        check("now matching");
+        write("tasks/new.md", "B new", "open", 2);
+        check("created");
+        fs::remove_file(directory.path().join("tasks/t03.md")).unwrap();
+        check("deleted");
+        fs::rename(
+            directory.path().join("tasks/t04.md"),
+            directory.path().join("tasks/t04-renamed.md"),
+        )
+        .unwrap();
+        check("renamed");
+        fs::rename(
+            directory.path().join("tasks/t06.md"),
+            directory.path().join("tasks/private/t06.md"),
+        )
+        .unwrap();
+        check("moved out of the restricted scope");
+        assert!(reused > 0, "matches were never reused");
+        assert!(carried > 0, "matches were never carried");
     }
 
     #[test]

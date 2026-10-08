@@ -37,6 +37,7 @@ use std::time::Instant;
 
 /// Work counters and stage timings for one indexed execution; no paths or values.
 #[derive(Debug, Default, Clone, PartialEq, Serialize)]
+#[allow(clippy::struct_excessive_bools)] // Independent diagnostic flags.
 pub struct MdbaseIndexedQueryMetrics {
     pub freshness_seconds: f64,
     pub execution_seconds: f64,
@@ -55,6 +56,10 @@ pub struct MdbaseIndexedQueryMetrics {
     pub freshness_miss: bool,
     /// Served the state from before a write that held the vault lock.
     pub before_write: bool,
+    /// The query's ordered matches were retained for these rows.
+    pub matches_reused: bool,
+    /// Paths decided again to carry the query's ordered matches forward.
+    pub matches_carried: usize,
 }
 
 struct CandidateRow {
@@ -627,15 +632,24 @@ fn load_page(
 /// reused only while the cache row read in the current transaction has the
 /// same revision and stat fingerprint, and that fingerprint equals the one the
 /// request's own walk observed; anything else is decoded again. It retains no
-/// results, grants, or freshness.
-#[derive(Default)]
+/// grants or freshness; the ordered matches it keeps per query are derived
+/// from the rows and valid only for the version and visible set they record.
 pub struct MdbaseRetainedRows {
     dependency_digest: String,
     rows: BTreeMap<String, RetainedRow>,
+    /// Distinguishes row sets, so a proof never pairs with another set's
+    /// equal version.
+    instance: u64,
     /// Advanced by every mutation. A proof describes the rows it was made
     /// against; once other requests reconcile them, its visible set may
     /// pair with newer rows that no single state ever had.
     version: u64,
+    /// The paths each recent version changed, oldest first; cleared when
+    /// the controls change every row.
+    changes: std::collections::VecDeque<(u64, Vec<String>)>,
+    /// Ordered matches per query (its plan without the page), for a few
+    /// visible sets each.
+    results: std::sync::Mutex<std::collections::HashMap<String, Vec<RetainedMatches>>>,
     /// Advanced only when some row's link target changes or rows appear or
     /// disappear, so writes that keep every record's identity (the common
     /// field edit) do not invalidate visible link indexes.
@@ -649,6 +663,40 @@ pub struct MdbaseRetainedRows {
 
 /// Restricted read scopes whose visible link index is kept.
 const RETAINED_LINK_INDEXES: usize = 8;
+/// Versions whose changed paths are kept for carrying matches forward.
+const RETAINED_CHANGE_VERSIONS: usize = 64;
+/// Queries with retained matches, and visible sets per query.
+const RETAINED_RESULT_QUERIES: usize = 64;
+const RETAINED_RESULT_SCOPES: usize = 4;
+/// Changed paths beyond which matches are recomputed rather than carried.
+const MAX_CARRIED_CHANGES: usize = 4096;
+
+/// One query's matches in result order over the rows at `version` and the
+/// `visible` set, whose longest path bounds the evaluation limits.
+struct RetainedMatches {
+    version: u64,
+    visible: Arc<BTreeSet<String>>,
+    max_path_bytes: usize,
+    paths: Arc<Vec<String>>,
+}
+
+static NEXT_ROWS_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+impl Default for MdbaseRetainedRows {
+    fn default() -> Self {
+        Self {
+            dependency_digest: String::new(),
+            rows: BTreeMap::new(),
+            instance: NEXT_ROWS_INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            version: 0,
+            changes: std::collections::VecDeque::new(),
+            results: std::sync::Mutex::default(),
+            targets_version: 0,
+            link_indexes: std::sync::Mutex::default(),
+            link_indexes_built: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+}
 
 struct VisibleLinkIndex {
     targets_version: u64,
@@ -685,10 +733,39 @@ pub struct MdbaseRetainedProof {
     dependency_digest: Arc<str>,
     visible: Arc<BTreeSet<String>>,
     max_path_bytes: usize,
+    rows_instance: u64,
     rows_version: u64,
 }
 
 impl MdbaseRetainedRows {
+    /// Advance the version for a mutation that changed `paths`.
+    fn changed(&mut self, paths: Vec<String>) {
+        self.version += 1;
+        self.changes.push_back((self.version, paths));
+        while self.changes.len() > RETAINED_CHANGE_VERSIONS {
+            self.changes.pop_front();
+        }
+    }
+
+    /// Paths changed after `version`, or `None` when the log no longer
+    /// reaches back that far.
+    fn changed_since(&self, version: u64) -> Option<BTreeSet<&str>> {
+        if version == self.version {
+            return Some(BTreeSet::new());
+        }
+        let oldest = self.changes.front()?.0;
+        if version + 1 < oldest {
+            return None;
+        }
+        let mut paths = BTreeSet::new();
+        for (changed_at, changed) in &self.changes {
+            if *changed_at > version {
+                paths.extend(changed.iter().map(String::as_str));
+            }
+        }
+        Some(paths)
+    }
+
     /// The link-target index of `proof`'s visible records, built once per
     /// targets version and visible set. `None` when a visible row lacks
     /// identity facts.
@@ -806,7 +883,7 @@ impl MdbaseRetainedWalk {
                     .get(path)
                     .is_some_and(|row| row.fingerprint == fingerprint.as_slice())
             }))
-        .then(|| self.proof(retained.version))
+        .then(|| self.proof(retained))
     }
 
     /// Decode every visible record whose retained row is missing or stale
@@ -824,6 +901,13 @@ impl MdbaseRetainedWalk {
             retained.rows.clear();
             retained.dependency_digest = self.dependency_digest.to_string();
             retained.version += 1;
+            // Every row changed: nothing carries across.
+            retained.changes.clear();
+            retained
+                .results
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
             retained.targets_version += 1;
         }
         let stale = self
@@ -856,23 +940,29 @@ impl MdbaseRetainedWalk {
                     .get(path)
                     .is_none_or(|previous| previous.target != row.target)
             });
+            let changed = loaded.keys().cloned().collect();
             retained.rows.extend(loaded);
-            retained.version += 1;
+            retained.changed(changed);
             if targets_changed {
                 retained.targets_version += 1;
             }
         }
         // Prune only on success: a miss during a write keeps the pre-write
         // rows that [`Self::proof_before_write`] serves.
-        let before = retained.rows.len();
-        retained
+        let removed = retained
             .rows
-            .retain(|path, _| self.present.contains(path.as_str()));
-        if retained.rows.len() != before {
-            retained.version += 1;
+            .keys()
+            .filter(|path| !self.present.contains(path.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !removed.is_empty() {
+            for path in &removed {
+                retained.rows.remove(path);
+            }
+            retained.changed(removed);
             retained.targets_version += 1;
         }
-        Ok(Some(self.proof(retained.version)))
+        Ok(Some(self.proof(retained)))
     }
 
     /// The pre-write proof while `write` holds the vault lock: walked records
@@ -935,16 +1025,19 @@ impl MdbaseRetainedWalk {
             dependency_digest: Arc::clone(&self.dependency_digest),
             visible: Arc::new(visible),
             max_path_bytes,
+            rows_instance: retained.instance,
             rows_version: retained.version,
         })
     }
 
-    fn proof(&self, rows_version: u64) -> MdbaseRetainedProof {
+    /// Every visible path has a row in `retained` at its current version.
+    fn proof(&self, retained: &MdbaseRetainedRows) -> MdbaseRetainedProof {
         MdbaseRetainedProof {
             dependency_digest: Arc::clone(&self.dependency_digest),
             visible: Arc::new(self.visible.keys().cloned().collect()),
             max_path_bytes: self.max_path_bytes,
-            rows_version,
+            rows_instance: retained.instance,
+            rows_version: retained.version,
         }
     }
 }
@@ -992,13 +1085,12 @@ pub fn execute_retained_mdbase_query(
         metrics.trusted_proof = true;
     }
     // Another reader may have reconciled the rows since the proof was made;
-    // its visible set then no longer describes them.
-    if proof.rows_version != retained.version
+    // its visible set then no longer describes them. Every proof is made
+    // with each visible row retained, and every mutation advances the
+    // version, so the same instance and version keep every visible row.
+    if proof.rows_instance != retained.instance
+        || proof.rows_version != retained.version
         || *retained.dependency_digest != *proof.dependency_digest
-        || proof
-            .visible
-            .iter()
-            .any(|path| !retained.rows.contains_key(path))
     {
         return Ok(None);
     }
@@ -1009,92 +1101,108 @@ pub fn execute_retained_mdbase_query(
     let start = Instant::now();
 
     let plan = query.plan();
-    let wanted = plan
-        .types
-        .iter()
-        .map(|name| name.to_ascii_lowercase())
-        .collect::<BTreeSet<_>>();
-    let clock = query.clock(collection.config.settings.timezone.as_deref(), now)?;
-    let limits = MdbaseCelLimits::default();
+    let matching = RetainedMatching {
+        retained,
+        indexed: &indexed,
+        plan,
+        wanted: plan
+            .types
+            .iter()
+            .map(|name| name.to_ascii_lowercase())
+            .collect(),
+        limits: MdbaseCelLimits::default(),
+        max_path_bytes,
+    };
+    let key = retained_matches_key(plan);
+    let reused = key
+        .as_deref()
+        .and_then(|key| matching.cached_or_carried(key, proof, metrics));
     let mut diagnostics = Vec::new();
-    let mut matched = Vec::new();
-    let mut residual = Vec::new();
-    for path in visible {
-        let row = &retained.rows[path];
-        if !wanted.is_empty() && !row.types.iter().any(|name| wanted.contains(name)) {
-            continue;
-        }
-        metrics.type_candidates += 1;
-        let Some(predicate) = indexed.predicate else {
-            matched.push(path.as_str());
-            continue;
-        };
-        if !row.evidence.passes(&limits, max_path_bytes) {
-            return Ok(None);
-        }
-        match predicate.decide(path, &row.effective) {
-            Some(true) => {
-                metrics.sql_decided += 1;
-                matched.push(path.as_str());
-            }
-            Some(false) => metrics.sql_decided += 1,
-            None => residual.push(path.as_str()),
-        }
-    }
-    if !residual.is_empty() {
-        let Ok(records) = load_local_records(
-            &transaction,
-            collection,
-            &retained.dependency_digest,
-            residual.iter().copied(),
-        ) else {
-            return Ok(None);
-        };
-        for path in residual {
-            // The cache may have moved on since the row was retained.
-            let Some(record) = records
-                .get(path)
-                .filter(|record| record.record.revision == retained.rows[path].revision)
-            else {
+    let ordered: Arc<Vec<String>> = if let Some(ordered) = reused {
+        ordered
+    } else {
+        let clock = query.clock(collection.config.settings.timezone.as_deref(), now)?;
+        let mut matched = Vec::new();
+        let mut residual = Vec::new();
+        for path in visible {
+            let Some(row) = retained.rows.get(path) else {
                 return Ok(None);
             };
-            metrics.residual_evaluations += 1;
-            if query.evaluate_residual_filter(&record.record, types, &clock, &mut diagnostics)? {
-                matched.push(path);
+            match matching.decide(row, path) {
+                Decided::Other => {}
+                Decided::Unusable => return Ok(None),
+                Decided::Undecided => {
+                    metrics.type_candidates += 1;
+                    residual.push(path.as_str());
+                }
+                Decided::Match(by_predicate) => {
+                    metrics.type_candidates += 1;
+                    metrics.sql_decided += usize::from(by_predicate);
+                    matched.push(path.as_str());
+                }
+                Decided::NoMatch => {
+                    metrics.type_candidates += 1;
+                    metrics.sql_decided += 1;
+                }
             }
         }
-    }
-    metrics.matched = matched.len();
-    let mut keyed = matched
-        .into_iter()
-        .map(|path| {
-            let row = &retained.rows[path];
-            let keys = plan
-                .order_by
-                .iter()
-                .map(|key| indexed.value(&key.field, &row.effective, &row.file, true))
-                .collect::<Vec<_>>();
-            (path, keys)
-        })
-        .collect::<Vec<_>>();
-    keyed.sort_by(|(left_path, left), (right_path, right)| {
-        for ((key, left), right) in plan.order_by.iter().zip(left).zip(right) {
-            let order = compare_query_values(left, right, key.direction);
-            if order != std::cmp::Ordering::Equal {
-                return order;
+        // Only matches decided from the rows alone are retained: residual
+        // evaluation may report diagnostics.
+        let retainable = residual.is_empty();
+        if !residual.is_empty() {
+            let Ok(records) = load_local_records(
+                &transaction,
+                collection,
+                &retained.dependency_digest,
+                residual.iter().copied(),
+            ) else {
+                return Ok(None);
+            };
+            for path in residual {
+                // The cache may have moved on since the row was retained.
+                let Some(record) = records
+                    .get(path)
+                    .filter(|record| record.record.revision == retained.rows[path].revision)
+                else {
+                    return Ok(None);
+                };
+                metrics.residual_evaluations += 1;
+                if query.evaluate_residual_filter(
+                    &record.record,
+                    types,
+                    &clock,
+                    &mut diagnostics,
+                )? {
+                    matched.push(path);
+                }
             }
         }
-        left_path.cmp(right_path)
-    });
+        let mut keyed = matched
+            .into_iter()
+            .map(|path| (path, matching.order_keys(&retained.rows[path])))
+            .collect::<Vec<_>>();
+        keyed.sort_by(|(left_path, left), (right_path, right)| {
+            matching.compare(left_path, left, right_path, right)
+        });
+        let ordered = Arc::new(
+            keyed
+                .into_iter()
+                .map(|(path, _)| path.to_string())
+                .collect::<Vec<_>>(),
+        );
+        if let Some(key) = key.filter(|_| retainable && diagnostics.is_empty()) {
+            matching.retain(key, proof, Arc::clone(&ordered));
+        }
+        ordered
+    };
+    metrics.matched = ordered.len();
+    let keyed = ordered.iter().map(String::as_str).collect::<Vec<_>>();
     let total_count = keyed.len();
     let start_index = plan.offset.min(total_count);
     let end = plan.limit.map_or(total_count, |limit| {
         start_index.saturating_add(limit).min(total_count)
     });
-    let page = keyed[start_index..end]
-        .iter()
-        .map(|(path, _)| *path)
-        .collect::<Vec<_>>();
+    let page = keyed[start_index..end].to_vec();
     let persisted = if needs_persisted(plan) {
         let Ok(hydrated) = load_page(
             &transaction,
@@ -1156,6 +1264,242 @@ pub fn execute_retained_mdbase_query(
     Ok(Some(result))
 }
 
+/// How one query decides and orders retained rows.
+struct RetainedMatching<'a> {
+    retained: &'a MdbaseRetainedRows,
+    indexed: &'a crate::mdbase::query::IndexedPlan<'a>,
+    plan: &'a crate::query::StructuredQueryPlan,
+    wanted: BTreeSet<String>,
+    limits: MdbaseCelLimits,
+    max_path_bytes: usize,
+}
+
+/// A retained row's standing for a query.
+enum Decided {
+    /// Not one of the query's types.
+    Other,
+    /// Its input exceeds the evaluation limits; ordinary execution reports it.
+    Unusable,
+    /// Only the residual CEL filter can decide it.
+    Undecided,
+    /// Matches; `true` when the predicate decided it, `false` without one.
+    Match(bool),
+    NoMatch,
+}
+
+/// The retained-matches key of `plan`: everything that decides and orders
+/// its rows, without the page or what each row returns. `None` for plans
+/// whose results are not a filtered, ordered row list.
+fn retained_matches_key(plan: &crate::query::StructuredQueryPlan) -> Option<String> {
+    if !plan.group_by.is_empty() || !plan.summaries.is_empty() {
+        return None;
+    }
+    let mut decisive = plan.clone();
+    decisive.limit = None;
+    decisive.offset = 0;
+    decisive.selection = None;
+    decisive.include_body = false;
+    decisive.frontmatter_mode = crate::query::QueryFrontmatterMode::default();
+    serde_json::to_string(&decisive).ok()
+}
+
+impl RetainedMatching<'_> {
+    fn decide(&self, row: &RetainedRow, path: &str) -> Decided {
+        if !self.wanted.is_empty() && !row.types.iter().any(|name| self.wanted.contains(name)) {
+            return Decided::Other;
+        }
+        let Some(predicate) = self.indexed.predicate else {
+            return Decided::Match(false);
+        };
+        if !row.evidence.passes(&self.limits, self.max_path_bytes) {
+            return Decided::Unusable;
+        }
+        match predicate.decide(path, &row.effective) {
+            Some(true) => Decided::Match(true),
+            Some(false) => Decided::NoMatch,
+            None => Decided::Undecided,
+        }
+    }
+
+    fn order_keys(&self, row: &RetainedRow) -> Vec<serde_json::Value> {
+        self.plan
+            .order_by
+            .iter()
+            .map(|key| {
+                self.indexed
+                    .value(&key.field, &row.effective, &row.file, true)
+            })
+            .collect()
+    }
+
+    /// Result order: the ordering keys, then the path.
+    fn compare(
+        &self,
+        left_path: &str,
+        left: &[serde_json::Value],
+        right_path: &str,
+        right: &[serde_json::Value],
+    ) -> std::cmp::Ordering {
+        for ((key, left), right) in self.plan.order_by.iter().zip(left).zip(right) {
+            let order = compare_query_values(left, right, key.direction);
+            if order != std::cmp::Ordering::Equal {
+                return order;
+            }
+        }
+        left_path.cmp(right_path)
+    }
+
+    /// Retained matches for `proof`: kept for its version and visible set,
+    /// or carried from earlier ones by deciding only the changed paths and
+    /// the paths whose visibility differs.
+    fn cached_or_carried(
+        &self,
+        key: &str,
+        proof: &MdbaseRetainedProof,
+        metrics: &mut MdbaseIndexedQueryMetrics,
+    ) -> Option<Arc<Vec<String>>> {
+        let mut results = self
+            .retained
+            .results
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entries = results.get_mut(key)?;
+        entries.retain(|entry| entry.max_path_bytes == self.max_path_bytes);
+        if let Some(entry) = entries.iter().find(|entry| {
+            entry.version == self.retained.version
+                && (Arc::ptr_eq(&entry.visible, &proof.visible) || entry.visible == proof.visible)
+        }) {
+            metrics.matches_reused = true;
+            return Some(Arc::clone(&entry.paths));
+        }
+        for entry in entries.iter().rev() {
+            let Some(mut changed) = self.retained.changed_since(entry.version).map(|paths| {
+                paths
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect::<BTreeSet<_>>()
+            }) else {
+                continue;
+            };
+            if !visibility_changes(&entry.visible, &proof.visible, &mut changed) {
+                continue;
+            }
+            let Some(paths) = self.carry(&entry.paths, &changed, proof) else {
+                continue;
+            };
+            let paths = Arc::new(paths);
+            entries.push(RetainedMatches {
+                version: self.retained.version,
+                visible: Arc::clone(&proof.visible),
+                max_path_bytes: self.max_path_bytes,
+                paths: Arc::clone(&paths),
+            });
+            if entries.len() > RETAINED_RESULT_SCOPES {
+                entries.remove(0);
+            }
+            metrics.matches_carried = changed.len();
+            return Some(paths);
+        }
+        None
+    }
+
+    /// `previous` without the changed paths, with those that now match
+    /// placed in order; `None` when one is undecided or unusable.
+    fn carry(
+        &self,
+        previous: &[String],
+        changed: &BTreeSet<String>,
+        proof: &MdbaseRetainedProof,
+    ) -> Option<Vec<String>> {
+        let mut paths = previous
+            .iter()
+            .filter(|path| !changed.contains(*path))
+            .cloned()
+            .collect::<Vec<_>>();
+        for path in changed {
+            if !proof.visible.contains(path) {
+                continue;
+            }
+            let row = self.retained.rows.get(path)?;
+            match self.decide(row, path) {
+                Decided::Other | Decided::NoMatch => continue,
+                Decided::Unusable | Decided::Undecided => return None,
+                Decided::Match(_) => {}
+            }
+            let keys = self.order_keys(row);
+            let mut missing = false;
+            let at = paths.partition_point(|other| {
+                let Some(other_row) = self.retained.rows.get(other) else {
+                    missing = true;
+                    return false;
+                };
+                self.compare(other, &self.order_keys(other_row), path, &keys)
+                    == std::cmp::Ordering::Less
+            });
+            if missing {
+                return None;
+            }
+            paths.insert(at, path.clone());
+        }
+        Some(paths)
+    }
+
+    fn retain(&self, key: String, proof: &MdbaseRetainedProof, paths: Arc<Vec<String>>) {
+        let mut results = self
+            .retained
+            .results
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !results.contains_key(&key) && results.len() >= RETAINED_RESULT_QUERIES {
+            results.clear();
+        }
+        let entries = results.entry(key).or_default();
+        entries.push(RetainedMatches {
+            version: self.retained.version,
+            visible: Arc::clone(&proof.visible),
+            max_path_bytes: self.max_path_bytes,
+            paths,
+        });
+        if entries.len() > RETAINED_RESULT_SCOPES {
+            entries.remove(0);
+        }
+    }
+}
+
+/// Add the paths in exactly one of `before` and `after` to `changed`;
+/// `false` once `changed` exceeds what carrying is worth.
+fn visibility_changes(
+    before: &BTreeSet<String>,
+    after: &BTreeSet<String>,
+    changed: &mut BTreeSet<String>,
+) -> bool {
+    if before != after {
+        let mut left = before.iter().peekable();
+        let mut right = after.iter().peekable();
+        loop {
+            let differing = match (left.peek().copied(), right.peek().copied()) {
+                (None, None) => break,
+                (Some(_), None) => left.next().expect("peeked"),
+                (None, Some(_)) => right.next().expect("peeked"),
+                (Some(l), Some(r)) => match l.cmp(r) {
+                    std::cmp::Ordering::Equal => {
+                        left.next();
+                        right.next();
+                        continue;
+                    }
+                    std::cmp::Ordering::Less => left.next().expect("peeked"),
+                    std::cmp::Ordering::Greater => right.next().expect("peeked"),
+                },
+            };
+            changed.insert(differing.clone());
+            if changed.len() > MAX_CARRIED_CHANGES {
+                return false;
+            }
+        }
+    }
+    changed.len() <= MAX_CARRIED_CHANGES
+}
+
 /// One record's cached projection for the visible set `proof` establishes,
 /// read from a single cache row at the retained revision. The projection is
 /// the unrestricted derivation, so hosts serve it only to readers whose
@@ -1185,7 +1529,8 @@ pub fn read_retained_mdbase_record(
             return Ok(None);
         }
     }
-    if proof.rows_version != retained.version
+    if proof.rows_instance != retained.instance
+        || proof.rows_version != retained.version
         || *retained.dependency_digest != *proof.dependency_digest
     {
         return Ok(None);
