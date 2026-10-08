@@ -32128,6 +32128,50 @@ fn mcp_http_initialize_requires_a_request_id_without_consuming_a_session() {
 }
 
 #[test]
+fn mcp_http_transport_watcher_indexes_new_notes_while_serving() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let session = McpHttpSession::start(&vault_root, "/mcp", None, &[]);
+    fs::write(vault_root.join("Watched.md"), "# Watched\n").expect("note should be written");
+    let connection = Connection::open(vault_root.join(".vulcan/cache.db")).expect("cache open");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let indexed: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM documents WHERE path = 'Watched.md'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("documents should be queryable");
+        if indexed == 1 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the hosted index watcher should index the new note"
+        );
+        thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let initialize = session.post(
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "test", "version": "0.0.1" }
+            }
+        }),
+        None,
+    );
+    assert_eq!(initialize.status_line, "HTTP/1.1 200 OK");
+}
+
+#[test]
 fn mcp_http_transport_negotiates_sessions_and_calls_tools() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

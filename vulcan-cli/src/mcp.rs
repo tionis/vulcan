@@ -21,9 +21,10 @@ use std::io::{self, BufRead};
 use std::net::{SocketAddr, TcpStream};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 #[cfg(feature = "oauth")]
-use std::sync::{mpsc, Mutex};
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
+#[cfg(any(test, feature = "oauth"))]
 use std::thread;
 use std::time::Duration;
 #[cfg(feature = "oauth")]
@@ -58,10 +59,10 @@ use vulcan_core::{
     discover_indieauth_endpoints, LocalOAuthIssuer, LocalOAuthIssuerConfig, OAuthResourceServer,
     OAuthResourceServerConfig,
 };
-use vulcan_core::{resolve_permission_profile, watch_vault, VaultPaths, WatchOptions};
-#[cfg(feature = "oauth")]
+use vulcan_core::{resolve_permission_profile, watch_vault_until, VaultPaths, WatchOptions};
 use vulcan_daemon::host::{
-    RestartPolicy, ServiceDefinition, ServiceId, ServiceRegistration, ServiceScope,
+    HostSupervisor, RestartPolicy, ServiceDefinition, ServiceId, ServiceLifecycleState,
+    ServiceRegistration, ServiceScope,
 };
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_daemon::hosted_executor::HostedExecutionError;
@@ -881,13 +882,14 @@ fn run_mcp_http_server_inner(
         .map_err(CliError::operation)?;
     let addr = listener.local_addr();
     eprintln!("MCP HTTP server listening on http://{addr}{endpoint}");
+    let mut watched = Vec::new();
     if lifecycle.stop.is_none() {
-        spawn_mcp_index_watcher(paths.clone(), WatchOptions::default());
+        watched.push(paths.clone());
         #[cfg(feature = "oauth")]
         if let Some(named) = named_runtime.as_ref() {
             for vault in named.vaults.values() {
                 if vault.paths.vault_root() != paths.vault_root() {
-                    spawn_mcp_index_watcher(vault.paths.clone(), WatchOptions::default());
+                    watched.push(vault.paths.clone());
                 }
             }
         }
@@ -948,18 +950,118 @@ fn run_mcp_http_server_inner(
         },
     };
 
+    let Some(stop) = lifecycle.stop else {
+        let instance_id = context.inner.instance_id;
+        return run_mcp_http_temporary_host(
+            listener,
+            context,
+            instance_id,
+            watched,
+            lifecycle.ready,
+        );
+    };
     if let Some(ready) = lifecycle.ready {
         ready(addr)?;
     }
+    serve_mcp_http(&listener, Some(stop), context).map_err(CliError::operation)
+}
+
+fn serve_mcp_http(
+    listener: &vulcan_daemon::mcp_transport::McpHttpListener,
+    stop: Option<&ShutdownSignal>,
+    context: McpHttpServerContext,
+) -> io::Result<()> {
     let handler_context = context.clone();
-    let result = listener.serve(lifecycle.stop, move |request, stream| {
+    let result = listener.serve(stop, move |request, stream| {
         if let Err(error) = handle_mcp_http_connection(&handler_context, request, stream) {
             let response = mcp_http_json_error_response(500, error.to_string(), Value::Null);
             let _ = write_mcp_http_response(stream, &response);
         }
     });
     close_mcp_http_sessions(&context);
-    result.map_err(CliError::operation)
+    result
+}
+
+/// A foreground `vulcan mcp --transport http` invocation: the listener
+/// (`endpoint.mcp/<instance-id>`, required) and one index watcher per served
+/// vault (`observation.vault/temporary-mcp-<n>`, optional and independent of
+/// listener readiness, as before) run in an ephemeral host. A failed watcher
+/// is reported and leaves the listener serving; a failed listener stops the
+/// invocation with its error.
+fn run_mcp_http_temporary_host(
+    listener: vulcan_daemon::mcp_transport::McpHttpListener,
+    context: McpHttpServerContext,
+    instance_id: Ulid,
+    watched: Vec<VaultPaths>,
+    ready: Option<&dyn Fn(SocketAddr) -> Result<(), CliError>>,
+) -> Result<(), CliError> {
+    let addr = listener.local_addr();
+    let scope = ServiceScope::Instance {
+        instance_id: format!("temporary-mcp-{instance_id}").to_ascii_lowercase(),
+    };
+    let mut registrations = watched
+        .into_iter()
+        .enumerate()
+        .map(|(index, paths)| {
+            ServiceId::parse(format!("observation.vault/temporary-mcp-{index}"))
+                .map(|id| mcp_index_watch_service(id, scope.clone(), paths))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(CliError::operation)?;
+    let listener = Arc::new(Mutex::new(Some(listener)));
+    registrations.push(ServiceRegistration::new(
+        ServiceDefinition {
+            id: ServiceId::parse(format!("endpoint.mcp/{instance_id}").to_ascii_lowercase())
+                .map_err(CliError::operation)?,
+            service_kind: "listener".to_string(),
+            scope,
+            enabled: true,
+            required: true,
+            dependencies: Vec::new(),
+            restart: RestartPolicy::Never,
+        },
+        move |service| {
+            let listener = listener
+                .lock()
+                .map_err(|_| "MCP HTTP listener state is unavailable".to_string())?
+                .take()
+                .ok_or_else(|| "MCP HTTP listener was already consumed".to_string())?;
+            service.ready()?;
+            serve_mcp_http(&listener, Some(service.stop()), context.clone())
+                .map_err(|error| format!("MCP HTTP listener failed: {error}"))
+        },
+    ));
+    let stop = Arc::new(ShutdownSignal::default());
+    let host = HostSupervisor::start_with_signal(
+        registrations,
+        Duration::from_secs(10),
+        Arc::clone(&stop),
+    )
+    .map_err(CliError::operation)?;
+    if let Some(ready) = ready {
+        if let Err(error) = ready(addr) {
+            let _ = host.shutdown();
+            return Err(error);
+        }
+    }
+    while !stop.wait_timeout(Duration::from_secs(1)) {}
+    let failed = host
+        .status_handle()
+        .statuses()
+        .map_err(CliError::operation)?
+        .into_iter()
+        .find(|status| status.state == ServiceLifecycleState::Failed && status.required);
+    host.shutdown().map_err(CliError::operation)?;
+    match failed {
+        Some(failed) => Err(CliError::operation(format!(
+            "temporary service `{}` failed: {}",
+            failed.id,
+            failed
+                .last_failure
+                .map_or_else(|| "unknown failure".to_string(), |failure| failure.detail)
+        ))),
+        None => Ok(()),
+    }
 }
 
 fn close_mcp_http_sessions(context: &McpHttpServerContext) {
@@ -986,31 +1088,58 @@ fn live_mcp_http_session(
     context.sessions.live(session_id)
 }
 
-fn spawn_mcp_index_watcher(paths: VaultPaths, options: WatchOptions) {
-    thread::spawn(move || {
-        if let Err(error) = watch_vault(&paths, &options, |report| -> Result<(), String> {
-            if report.startup {
-                eprintln!(
-                    "MCP index watcher initialized: {} added, {} updated, {} unchanged, {} deleted",
-                    report.summary.added,
-                    report.summary.updated,
-                    report.summary.unchanged,
-                    report.summary.deleted
-                );
-            } else if report.summary.added + report.summary.updated + report.summary.deleted > 0 {
-                eprintln!(
-                    "MCP index watcher refreshed {} paths: {} added, {} updated, {} deleted",
-                    report.paths.len(),
-                    report.summary.added,
-                    report.summary.updated,
-                    report.summary.deleted
-                );
-            }
-            Ok(())
-        }) {
-            eprintln!("MCP index watcher stopped: {error}");
-        }
-    });
+fn mcp_index_watch_service(
+    id: ServiceId,
+    scope: ServiceScope,
+    paths: VaultPaths,
+) -> ServiceRegistration {
+    ServiceRegistration::new(
+        ServiceDefinition {
+            id,
+            service_kind: "observation".to_string(),
+            scope,
+            enabled: true,
+            required: false,
+            dependencies: Vec::new(),
+            restart: RestartPolicy::Never,
+        },
+        move |service| {
+            // Ready before the initial scan, which can outlast host startup on
+            // a large vault; the listener serves meanwhile, as before.
+            service.ready()?;
+            let result = watch_vault_until(
+                &paths,
+                &WatchOptions::default(),
+                || service.stop().is_cancelled(),
+                |report| -> Result<(), String> {
+                    if report.startup {
+                        eprintln!(
+                            "MCP index watcher initialized: {} added, {} updated, {} unchanged, {} deleted",
+                            report.summary.added,
+                            report.summary.updated,
+                            report.summary.unchanged,
+                            report.summary.deleted
+                        );
+                    } else if report.summary.added + report.summary.updated + report.summary.deleted
+                        > 0
+                    {
+                        eprintln!(
+                            "MCP index watcher refreshed {} paths: {} added, {} updated, {} deleted",
+                            report.paths.len(),
+                            report.summary.added,
+                            report.summary.updated,
+                            report.summary.deleted
+                        );
+                    }
+                    Ok(())
+                },
+            );
+            result.map_err(|error| {
+                eprintln!("MCP index watcher stopped: {error}");
+                format!("MCP index watcher stopped: {error}")
+            })
+        },
+    )
 }
 
 fn mcp_http_driver(

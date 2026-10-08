@@ -462,9 +462,9 @@ to the session instance. `vulcan site serve` and `vulcan export profile serve` r
 ephemeral `HostSupervisor` and contribute only the finite `vulcan-app` builder, path resolution,
 and live-reload payload. A failed initial build, bind, or watch start starts nothing; a failed
 rebuild or later watch failure keeps the last good output served and reports the error through
-live reload. Changes only inside the preview's own output or `.vulcan/` do not rebuild. Routes,
-live-reload endpoints (`/<namespace>/live-reload.json|events`, also under the deploy path), and
-reports are unchanged.
+live reload. Changes only inside the preview's own output or to `.vulcan/` state other than
+`config.toml` and `config.local.toml` do not rebuild. Routes, live-reload endpoints
+(`/<namespace>/live-reload.json|events`, also under the deploy path), and reports are unchanged.
 
 ### Temporary preview session ownership
 
@@ -503,6 +503,32 @@ Migration extends these existing suites instead of replacing them with host-only
 
 Every migration slice also retains the workspace boundary guard, full CLI snapshots where output
 changes, and feature-disabled checks for affected adapters.
+
+## Configuration after consolidation
+
+Consolidation added no persistent configuration keys and changed no configuration format, so no
+user configuration needs rewriting:
+
+- Foreground surfaces (`vulcan serve`, `vulcan mcp --transport http`, `vulcan site serve`,
+  `vulcan export profile serve`) still read only their invocation flags plus the vault
+  configuration they read before (`.vulcan/config.toml` site/export profiles, permission
+  profiles, MCP OAuth settings). Each now runs in an ephemeral host built from those values; no
+  host state is written.
+- Resident services still come from the device daemon configuration and registry
+  (`~/.config/vulcan/`). Pre-versioned registrations are upgraded when read and persisted only by
+  the next successful registry write; a failed write leaves the legacy file untouched. Registry
+  and named-remote changes keep their `--dry-run` previews.
+- Precedence is unchanged per surface. Where an invocation and the resident daemon could both own
+  a service (named MCP remotes), the existing per-instance ownership lock selects one owner and the
+  other start fails with an actionable error instead of running a second copy.
+
+The replaced loops are gone: the standalone preview listeners and watchers and the detached
+foreground MCP index-watcher threads now run as host services. The foreground MCP watcher stays
+optional and becomes ready before its initial scan, so a slow scan neither delays nor fails the
+listener, and a watcher failure is reported while the listener keeps serving. Remaining
+transport-specific code without a host is the client-owned MCP stdio loop, `vulcan watch` and
+`site build --watch` (finite foreground commands with no listener), and short-lived loopback
+callbacks such as forge OAuth login.
 
 ## Migration sequence and removal rule
 
