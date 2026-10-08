@@ -268,7 +268,10 @@ fn adapter_matches_native_bases_evaluation_on_the_fixture_corpus() {
                         .extension()
                         .is_some_and(|extension| extension == "base")
                     {
-                        corpus.push(format!("{vault}/{}", relative.to_string_lossy()));
+                        corpus.push(format!(
+                            "{vault}/{}",
+                            relative.to_string_lossy().replace('\\', "/")
+                        ));
                     }
                 }
             }

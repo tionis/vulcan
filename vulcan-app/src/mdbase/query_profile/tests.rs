@@ -40,6 +40,7 @@ fn query_sql_snapshot_matches_sources_preserves_links_and_rejects_inconsistent_c
 }
 
 #[test]
+#[cfg_attr(not(unix), ignore = "indexed reads need Unix stat fingerprints")]
 fn query_sql_rejected_records_keep_input_errors_and_restricted_visibility() {
     let (directory, paths) = fixture();
     // The expression selection keeps this on the ordinary cached path.
@@ -94,6 +95,7 @@ fn query_sql_rejected_records_keep_input_errors_and_restricted_visibility() {
 }
 
 #[test]
+#[cfg_attr(not(unix), ignore = "indexed reads need Unix stat fingerprints")]
 fn query_metrics_preserve_reports_and_distinguish_source_refresh_and_cached_loads() {
     let (_directory, paths) = fixture();
     // The expression selection keeps this on the ordinary cached path.

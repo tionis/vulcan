@@ -2626,6 +2626,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "indexed reads need Unix stat fingerprints")]
     fn creations_publish_structurally_and_control_edits_refresh() {
         let (directory, paths) = fixture();
         initialize_vulcan_dir(&paths).unwrap();
@@ -2685,6 +2686,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "indexed reads need Unix stat fingerprints")]
     fn applied_writes_keep_indexed_reads_current_for_every_reader() {
         let (directory, paths) = fixture();
         initialize_vulcan_dir(&paths).unwrap();

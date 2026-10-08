@@ -2012,6 +2012,9 @@ LIMIT 1"#,
             fs::create_dir_all(target.parent().unwrap()).unwrap();
             fs::write(target, contents).unwrap();
         }
+        // On a case-insensitive filesystem (macOS, Windows) both notes land
+        // in the first-created `Projects` folder.
+        let case_sensitive = !root.join("PROJECTS").exists();
         let paths = VaultPaths::new(root);
         scan_vault(&paths, ScanMode::Full).expect("vault should scan");
         let count = |source: &str| {
@@ -2020,13 +2023,14 @@ LIMIT 1"#,
                 .result_count
         };
         // Folders are byte-exact: no case folding, and `_` is not a wildcard.
-        assert_eq!(count("LIST FROM \"projects\""), 1);
-        assert_eq!(count("LIST FROM \"Projects\""), 1);
+        let (lower, upper) = if case_sensitive { (1, 1) } else { (0, 2) };
+        assert_eq!(count("LIST FROM \"projects\""), lower);
+        assert_eq!(count("LIST FROM \"Projects\""), upper);
         assert_eq!(count("LIST FROM \"A_b\""), 1);
         // Tags include nested tags but not tags sharing a prefix.
         assert_eq!(count("LIST FROM #project"), 2);
         // Combinations and link sources resolve in one query.
-        assert_eq!(count("LIST FROM #project AND -\"projects\""), 1);
+        assert_eq!(count("LIST FROM #project AND -\"projects\""), 2 - lower);
         assert_eq!(count("LIST FROM [[A]]"), 2);
         assert_eq!(count("LIST FROM outgoing([[A]])"), 1);
         assert_eq!(count("LIST FROM [[A]] AND -#projects"), 1);

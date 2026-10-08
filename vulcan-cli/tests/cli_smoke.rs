@@ -38102,7 +38102,7 @@ function on_refactor(event) { trip(event); }
                     .strip_prefix(&root)
                     .unwrap()
                     .to_string_lossy()
-                    .to_string();
+                    .replace('\\', "/");
                 if path.is_dir() {
                     pending.push(path);
                 } else if !relative.starts_with(".vulcan/")

@@ -269,6 +269,9 @@ mod tests {
         std::fs::create_dir_all(root.join(".vulcan")).unwrap();
         std::fs::create_dir_all(root.join("notes")).unwrap();
         let monitor = MdbaseChangeMonitor::watch(&root).unwrap();
+        // FSEvents may still deliver the directory creations above; drain
+        // them before taking the baseline.
+        assert!(monitor.barrier(Duration::from_secs(5)));
         let start = monitor.generation().unwrap();
         std::fs::write(root.join(".vulcan/cache.db"), "derived").unwrap();
         std::thread::sleep(Duration::from_millis(200));

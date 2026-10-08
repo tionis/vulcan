@@ -744,6 +744,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "indexed reads need Unix stat fingerprints")]
     fn session_results_equal_the_ordinary_service_and_reuse_rows() {
         let (_directory, paths) = initialized();
         let session = MdbaseQuerySession::new(paths.clone());
@@ -775,6 +776,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "indexed reads need Unix stat fingerprints")]
     fn watched_sessions_trust_proofs_only_until_a_change_is_observed() {
         let (directory, paths) = initialized();
         let monitor =
@@ -850,6 +852,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "indexed reads need Unix stat fingerprints")]
     fn metadata_reads_equal_the_ordinary_read_and_use_one_cached_row() {
         let (directory, paths) = initialized();
         // An invalid record, so diagnostics and validity are compared too.
@@ -915,6 +918,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "indexed reads need Unix stat fingerprints")]
     fn identity_stable_writes_keep_restricted_link_indexes_and_stay_exact() {
         let (directory, paths) = fixture();
         fs::write(
@@ -971,6 +975,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(unix), ignore = "indexed reads need Unix stat fingerprints")]
     fn restricted_metadata_reads_overlay_only_visible_records() {
         let (directory, paths) = fixture();
         let write = |path: &str, source: &str| {
@@ -1183,6 +1188,7 @@ mod tests {
     /// source, and decodes no retained row again; one edited record costs one
     /// decoded row, and only the returned page is hydrated.
     #[test]
+    #[cfg_attr(not(unix), ignore = "indexed reads need Unix stat fingerprints")]
     fn warm_requests_do_bounded_work_independent_of_collection_size() {
         let (directory, paths) = initialized();
         for index in 0..40 {
@@ -1252,6 +1258,7 @@ mod tests {
     /// a scope; they are reused while nothing changes and carried forward by
     /// deciding only what changed.
     #[test]
+    #[cfg_attr(not(unix), ignore = "indexed reads need Unix stat fingerprints")]
     fn retained_matches_follow_every_kind_of_change() {
         let (directory, paths) = initialized();
         let write = |name: &str, title: &str, status: &str, rank: u32| {
@@ -1331,6 +1338,7 @@ mod tests {
     /// and nested collections fall back to a full walk. Answers always equal
     /// the ordinary service.
     #[test]
+    #[cfg_attr(not(unix), ignore = "indexed reads need Unix stat fingerprints")]
     fn watched_sessions_recheck_only_changed_paths() {
         let (directory, paths) = initialized();
         let root = directory.path().canonicalize().unwrap();
@@ -1492,7 +1500,11 @@ mod tests {
         assert_eq!(session.query(&query, None).unwrap().meta.total_count, 0);
 
         // Retained readers do not queue behind a write section; they observe
-        // the state from before it.
+        // the state from before it. Off Unix there are no stat proofs, so
+        // readers take the ordinary path, which waits for the write lock.
+        if !cfg!(unix) {
+            return;
+        }
         let before = session.query(&query, None).unwrap();
         let writer = vulcan_core::write_lock::acquire_write_lock(&paths).unwrap();
         let (sender, receiver) = std::sync::mpsc::channel();
