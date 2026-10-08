@@ -60,6 +60,9 @@ pub struct MdbaseIndexedQueryMetrics {
     pub matches_reused: bool,
     /// Paths decided again to carry the query's ordered matches forward.
     pub matches_carried: usize,
+    /// Freshness came from re-checking only this many changed paths rather
+    /// than walking every record.
+    pub changed_paths: Option<usize>,
 }
 
 struct CandidateRow {
@@ -1039,6 +1042,236 @@ impl MdbaseRetainedWalk {
             rows_instance: retained.instance,
             rows_version: retained.version,
         }
+    }
+}
+
+/// A walk of only the paths that changed since a proof: their current stat
+/// fingerprints and membership, on top of the proof's visible set. A host
+/// that knows every path changed since the proof (from a healthy change
+/// monitor) uses it instead of [`walk_mdbase_retained_scope`]; every other
+/// record is as the proof's walk found it.
+pub struct MdbaseRetainedChanges {
+    dependency_digest: Arc<str>,
+    base: Arc<BTreeSet<String>>,
+    /// The rows the base proof described; they must still hold every
+    /// unchanged visible row.
+    base_instance: u64,
+    base_version: u64,
+    /// Changed records now visible, with their fingerprints.
+    visible: BTreeMap<String, [u8; 40]>,
+    /// Changed paths that are no longer records.
+    absent: BTreeSet<String>,
+    /// Changed paths that are records outside the read scope.
+    hidden: BTreeSet<String>,
+    max_path_bytes: usize,
+}
+
+/// Classify the collection-relative `changed` paths for a walk on top of
+/// `previous`. `None` when only a full walk can tell: the controls differ,
+/// a path is a directory or was one, names a nested collection or a control,
+/// or cannot be fingerprinted.
+pub fn walk_mdbase_retained_changes(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    contracts: &MdbaseContractRegistry,
+    filter: Option<&PermissionFilter>,
+    previous: &MdbaseRetainedProof,
+    changed: &BTreeSet<String>,
+) -> Result<Option<MdbaseRetainedChanges>, MdbaseRecordCacheError> {
+    let controls = verify_mdbase_control_snapshots(collection, types, contracts, filter)?;
+    if *controls.combined != *previous.dependency_digest {
+        return Ok(None);
+    }
+    let control_folders = [
+        collection.config.settings.types_folder.as_str(),
+        collection.config.settings.contracts_folder.as_str(),
+    ];
+    let mut walk = MdbaseRetainedChanges {
+        dependency_digest: controls.combined.into(),
+        base: Arc::clone(&previous.visible),
+        base_instance: previous.rows_instance,
+        base_version: previous.rows_version,
+        visible: BTreeMap::new(),
+        absent: BTreeSet::new(),
+        hidden: BTreeSet::new(),
+        max_path_bytes: previous.max_path_bytes,
+    };
+    for path in changed {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        if path.is_empty()
+            || matches!(
+                name,
+                crate::mdbase::MDBASE_CONFIG_FILE_NAME | crate::mdbase::MDBASE_LOCK_FILE_NAME
+            )
+            || control_folders
+                .iter()
+                .any(|folder| path == folder || path.starts_with(&format!("{folder}/")))
+        {
+            return Ok(None);
+        }
+        match std::fs::symlink_metadata(collection.root.join(path)) {
+            Ok(metadata) if metadata.is_dir() => return Ok(None),
+            Ok(metadata)
+                if metadata.is_file()
+                    && crate::mdbase::is_mdbase_record_path(collection, path)
+                        .map_err(MdbaseRecordError::Discovery)? =>
+            {
+                let Some(fingerprint) = stat_fingerprint(&metadata) else {
+                    return Ok(None);
+                };
+                walk.max_path_bytes = walk.max_path_bytes.max(path.len());
+                if filter.is_some_and(|filter| !filter.is_allowed(path)) {
+                    walk.hidden.insert(path.clone());
+                } else {
+                    walk.visible.insert(path.clone(), fingerprint);
+                }
+            }
+            // Symlinks and non-record files are not records.
+            Ok(_) => {
+                walk.absent.insert(path.clone());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // A removed directory takes its records with it.
+                let prefix = format!("{path}/");
+                if walk
+                    .base
+                    .range::<str, _>((
+                        std::ops::Bound::Included(prefix.as_str()),
+                        std::ops::Bound::Unbounded,
+                    ))
+                    .next()
+                    .is_some_and(|next| next.starts_with(&prefix))
+                {
+                    return Ok(None);
+                }
+                walk.absent.insert(path.clone());
+            }
+            Err(_) => return Ok(None),
+        }
+    }
+    Ok(Some(walk))
+}
+
+impl MdbaseRetainedChanges {
+    /// The visible set after these changes, sharing the base when no
+    /// membership changed.
+    fn visible_set(&self) -> Arc<BTreeSet<String>> {
+        let leaves = self
+            .absent
+            .iter()
+            .chain(&self.hidden)
+            .any(|path| self.base.contains(path));
+        let joins = self.visible.keys().any(|path| !self.base.contains(path));
+        if !leaves && !joins {
+            return Arc::clone(&self.base);
+        }
+        let mut visible = (*self.base).clone();
+        for path in self.absent.iter().chain(&self.hidden) {
+            visible.remove(path);
+        }
+        visible.extend(self.visible.keys().cloned());
+        Arc::new(visible)
+    }
+
+    /// Whether `retained` still holds every unchanged visible row: the same
+    /// rows, changed only by logged mutations since the base proof (a
+    /// control change clears the rows and the log).
+    fn base_retained(&self, retained: &MdbaseRetainedRows) -> bool {
+        retained.instance == self.base_instance
+            && *retained.dependency_digest == *self.dependency_digest
+            && retained.changed_since(self.base_version).is_some()
+    }
+
+    fn proof(&self, retained: &MdbaseRetainedRows) -> MdbaseRetainedProof {
+        MdbaseRetainedProof {
+            dependency_digest: Arc::clone(&self.dependency_digest),
+            visible: self.visible_set(),
+            max_path_bytes: self.max_path_bytes,
+            rows_instance: retained.instance,
+            rows_version: retained.version,
+        }
+    }
+
+    /// As [`MdbaseRetainedWalk::proof_if_retained`] for the changed paths.
+    #[must_use]
+    pub fn proof_if_retained(&self, retained: &MdbaseRetainedRows) -> Option<MdbaseRetainedProof> {
+        (self.base_retained(retained)
+            && self.visible.iter().all(|(path, fingerprint)| {
+                retained
+                    .rows
+                    .get(path)
+                    .is_some_and(|row| row.fingerprint == fingerprint.as_slice())
+            })
+            && !self
+                .absent
+                .iter()
+                .any(|path| retained.rows.contains_key(path)))
+        .then(|| self.proof(retained))
+    }
+
+    /// As [`MdbaseRetainedWalk::reconcile`] for the changed paths: decode the
+    /// changed visible records again and drop rows of removed ones.
+    pub fn reconcile(
+        &self,
+        connection: &Connection,
+        collection: &MdbaseCollection,
+        retained: &mut MdbaseRetainedRows,
+        metrics: &mut MdbaseIndexedQueryMetrics,
+    ) -> Result<Option<MdbaseRetainedProof>, MdbaseRecordCacheError> {
+        if !self.base_retained(retained) {
+            return Ok(None);
+        }
+        let stale = self
+            .visible
+            .iter()
+            .filter(|(path, fingerprint)| {
+                retained
+                    .rows
+                    .get(*path)
+                    .is_none_or(|row| row.fingerprint != fingerprint.as_slice())
+            })
+            .collect::<BTreeMap<_, _>>();
+        if !stale.is_empty() {
+            let root = cache_collection_root(collection)?;
+            let paths = stale.keys().map(|path| (*path).clone()).collect::<Vec<_>>();
+            let loaded = load_retained_rows(connection, &root, &self.dependency_digest, &paths)?;
+            if loaded.len() != stale.len()
+                || loaded.iter().any(|(path, row)| {
+                    stale.get(path).map(|fingerprint| fingerprint.as_slice())
+                        != Some(row.fingerprint.as_slice())
+                })
+            {
+                metrics.freshness_miss = true;
+                return Ok(None);
+            }
+            metrics.reloaded_rows = loaded.len();
+            let targets_changed = loaded.iter().any(|(path, row)| {
+                retained
+                    .rows
+                    .get(path)
+                    .is_none_or(|previous| previous.target != row.target)
+            });
+            let changed = loaded.keys().cloned().collect();
+            retained.rows.extend(loaded);
+            retained.changed(changed);
+            if targets_changed {
+                retained.targets_version += 1;
+            }
+        }
+        let removed = self
+            .absent
+            .iter()
+            .filter(|path| retained.rows.contains_key(*path))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !removed.is_empty() {
+            for path in &removed {
+                retained.rows.remove(path);
+            }
+            retained.changed(removed);
+            retained.targets_version += 1;
+        }
+        Ok(Some(self.proof(retained)))
     }
 }
 

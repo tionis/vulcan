@@ -50,6 +50,9 @@ const RETAINED_PLANS: usize = 64;
 const RETAINED_SCOPES: usize = 8;
 /// Idle read-only cache connections kept for concurrent requests.
 const IDLE_CONNECTIONS: usize = 8;
+/// How long a request waits for the monitor to observe a completed write
+/// before walking every record instead.
+const BARRIER_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// Retained query state shared by concurrent requests (`&self`; the session
 /// is `Sync`). Readers whose freshness is already proven, or whose walk finds
@@ -76,7 +79,13 @@ struct ScopeProof {
     proof: MdbaseRetainedProof,
     generation: u64,
     epoch: u64,
-    proven_at: Instant,
+    /// When the last full walk behind this proof began; incremental proofs
+    /// inherit it, so `max_age` still bounds how long notifications alone
+    /// are trusted.
+    walked_at: Instant,
+    /// Describes the records as they are, rather than the state before an
+    /// in-flight write; only exact proofs are a base for incremental ones.
+    exact: bool,
 }
 
 /// Insertion-ordered bounded map.
@@ -409,8 +418,15 @@ impl MdbaseQuerySession {
             if let Some(result) = trusted(epoch, generation, metrics) {
                 return Some(result);
             }
+            if let Some(result) =
+                self.proven_incrementally(connection, scope, loaded, filter, metrics, &answer)
+            {
+                return Some(result);
+            }
+            (epoch, generation) = self.counters();
         }
         let start = Instant::now();
+        let walked_at = start;
         let walk = walk_mdbase_retained_scope(
             &loaded.collection,
             &loaded.types,
@@ -459,7 +475,91 @@ impl MdbaseQuerySession {
             (answer(&rows, &proof, false, metrics), proof)
         };
         let result = result?;
-        self.remember(scope, proof, generation, epoch);
+        let exact = !metrics.indexed.before_write;
+        self.remember(scope, proof, (generation, epoch), walked_at, exact);
+        Some(result)
+    }
+
+    /// [`Self::proven`] by re-checking only the paths the monitor reported
+    /// since the scope's last proof, instead of walking every record. A
+    /// write epoch advanced since then first passes a monitor barrier, so
+    /// the completed write's notifications are in the log. `None` when only
+    /// a full walk can establish freshness.
+    fn proven_incrementally<T>(
+        &self,
+        connection: &rusqlite::Connection,
+        scope: &str,
+        loaded: &LoadedCollection,
+        filter: Option<&PermissionFilter>,
+        metrics: &mut MdbaseQueryMetrics,
+        answer: &impl Fn(
+            &MdbaseRetainedRows,
+            &MdbaseRetainedProof,
+            bool,
+            &mut MdbaseQueryMetrics,
+        ) -> Option<T>,
+    ) -> Option<T> {
+        let watched = self.watched.as_ref()?;
+        let previous = lock(&self.proofs)
+            .get(scope)
+            .filter(|previous| previous.exact)
+            .map(|previous| {
+                (
+                    previous.proof.clone(),
+                    previous.generation,
+                    previous.epoch,
+                    previous.walked_at,
+                )
+            })?;
+        let (proof, from, previous_epoch, walked_at) = previous;
+        if walked_at.elapsed() >= watched.max_age {
+            return None;
+        }
+        let start = Instant::now();
+        let epoch = vulcan_core::write_lock::read_write_epoch(&self.paths).ok()?;
+        if epoch != previous_epoch && !watched.monitor.barrier(BARRIER_TIMEOUT) {
+            return None;
+        }
+        let to = watched.monitor.generation()?;
+        let changed = watched.monitor.changed_between(from, to)?;
+        let walk = vulcan_core::mdbase::walk_mdbase_retained_changes(
+            &loaded.collection,
+            &loaded.types,
+            &loaded.contracts,
+            filter,
+            &proof,
+            &changed,
+        )
+        .ok()??;
+        let result = {
+            let rows = self
+                .rows
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            walk.proof_if_retained(&rows).map(|proof| {
+                metrics.indexed.freshness_seconds = start.elapsed().as_secs_f64();
+                (answer(&rows, &proof, false, metrics), proof)
+            })
+        };
+        let (result, proof) = if let Some(proven) = result {
+            proven
+        } else {
+            let mut rows = self
+                .rows
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut reconciled = vulcan_core::mdbase::MdbaseIndexedQueryMetrics::default();
+            let proof = walk
+                .reconcile(connection, &loaded.collection, &mut rows, &mut reconciled)
+                .ok()
+                .flatten()?;
+            metrics.indexed = reconciled;
+            metrics.indexed.freshness_seconds = start.elapsed().as_secs_f64();
+            (answer(&rows, &proof, false, metrics), proof)
+        };
+        metrics.indexed.changed_paths = Some(changed.len());
+        let result = result?;
+        self.remember(scope, proof, (Some(to), Some(epoch)), walked_at, true);
         Some(result)
     }
 
@@ -477,8 +577,9 @@ impl MdbaseQuerySession {
         &self,
         scope: &str,
         proof: MdbaseRetainedProof,
-        generation: Option<u64>,
-        epoch: Option<u64>,
+        (generation, epoch): (Option<u64>, Option<u64>),
+        walked_at: Instant,
+        exact: bool,
     ) {
         let mut proofs = lock(&self.proofs);
         if let (Some(generation), Some(epoch)) = (generation, epoch) {
@@ -488,7 +589,8 @@ impl MdbaseQuerySession {
                     proof,
                     generation,
                     epoch,
-                    proven_at: Instant::now(),
+                    walked_at,
+                    exact,
                 },
             );
         } else {
@@ -523,7 +625,7 @@ impl MdbaseQuerySession {
         let proof = proofs.get(scope)?;
         (proof.generation == generation
             && proof.epoch == epoch
-            && proof.proven_at.elapsed() < watched.max_age)
+            && proof.walked_at.elapsed() < watched.max_age)
             .then(|| proof.proof.clone())
     }
 
@@ -1221,6 +1323,112 @@ mod tests {
         check("moved out of the restricted scope");
         assert!(reused > 0, "matches were never reused");
         assert!(carried > 0, "matches were never carried");
+    }
+
+    /// A watched session re-checks only the paths the monitor reported:
+    /// edits, creations, and deletions by external editors once notified,
+    /// and a cooperating write at once, through a barrier. Directory changes
+    /// and nested collections fall back to a full walk. Answers always equal
+    /// the ordinary service.
+    #[test]
+    fn watched_sessions_recheck_only_changed_paths() {
+        let (directory, paths) = initialized();
+        let root = directory.path().canonicalize().unwrap();
+        let session = MdbaseQuerySession::new(paths.clone()).with_change_monitor(
+            MdbaseChangeMonitor::watch(&root).unwrap(),
+            Duration::from_secs(60),
+        );
+        let query =
+            json!({"types": ["task"], "order_by": [{"field": "title"}], "select": ["title"]});
+        let filter = restricted();
+        let mut metrics = MdbaseQueryMetrics::default();
+        let answer = |scope: Option<&PermissionFilter>, metrics: &mut MdbaseQueryMetrics| {
+            let actual = session.query_profiled(&query, scope, metrics).unwrap();
+            assert_eq!(
+                actual,
+                build_mdbase_query_report(&paths, &query, scope).unwrap()
+            );
+        };
+        // Wait until the session has observed an external change: it then
+        // answers without the trusted proof.
+        let observe = |scope: Option<&PermissionFilter>| -> MdbaseQueryMetrics {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let mut metrics = MdbaseQueryMetrics::default();
+                // Publish the change as an authorized refresh would.
+                build_mdbase_query_report(&paths, &query, scope).unwrap();
+                let actual = session.query_profiled(&query, scope, &mut metrics).unwrap();
+                if !metrics.indexed.trusted_proof {
+                    assert_eq!(
+                        actual,
+                        build_mdbase_query_report(&paths, &query, scope).unwrap()
+                    );
+                    return metrics;
+                }
+                assert!(Instant::now() < deadline, "the change was never observed");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        for scope in [None, Some(&filter)] {
+            answer(scope, &mut metrics);
+            answer(scope, &mut metrics);
+            assert!(metrics.indexed.trusted_proof);
+        }
+
+        fs::write(
+            root.join("tasks/public.md"),
+            "---\ntype: task\ntitle: Edited\n---\nBody\n",
+        )
+        .unwrap();
+        assert_eq!(observe(None).indexed.changed_paths, Some(1));
+        fs::write(
+            root.join("tasks/created.md"),
+            "---\ntype: task\ntitle: Created\n---\nBody\n",
+        )
+        .unwrap();
+        assert_eq!(observe(None).indexed.changed_paths, Some(1));
+        // The restricted scope's proof carries the edit and the creation.
+        assert!(observe(Some(&filter)).indexed.changed_paths.is_some());
+        fs::remove_file(root.join("tasks/created.md")).unwrap();
+        assert!(observe(None).indexed.changed_paths.is_some());
+        fs::write(
+            root.join("tasks/private/hidden.md"),
+            "---\ntype: task\ntitle: Hidden\n---\nBody\n",
+        )
+        .unwrap();
+        assert!(observe(Some(&filter)).indexed.changed_paths.is_some());
+
+        // A cooperating write is re-checked at once: the barrier makes its
+        // notification part of the log.
+        observe(None);
+        answer(None, &mut metrics);
+        {
+            let _lock = vulcan_core::write_lock::acquire_write_lock(&paths).unwrap();
+            fs::write(
+                root.join("tasks/public.md"),
+                "---\ntype: task\ntitle: Public\n---\nBody\n",
+            )
+            .unwrap();
+        }
+        build_mdbase_query_report(&paths, &query, None).unwrap();
+        answer(None, &mut metrics);
+        assert!(!metrics.indexed.trusted_proof);
+        assert!(metrics.indexed.changed_paths.is_some(), "{metrics:?}");
+
+        // New directories and nested collections need a full walk.
+        fs::create_dir_all(root.join("tasks/new")).unwrap();
+        fs::write(
+            root.join("tasks/new/inner.md"),
+            "---\ntype: task\ntitle: Inner\n---\nBody\n",
+        )
+        .unwrap();
+        assert_eq!(observe(None).indexed.changed_paths, None);
+        fs::write(
+            root.join("tasks/new/mdbase.yaml"),
+            "spec_version: \"0.3.0\"\n",
+        )
+        .unwrap();
+        assert_eq!(observe(None).indexed.changed_paths, None);
     }
 
     #[test]
