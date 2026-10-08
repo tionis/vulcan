@@ -312,7 +312,7 @@ impl PreviewSession {
 
 /// Build once, then serve and (optionally) rebuild on vault changes. A
 /// failed initial build, bind, or watch start starts nothing. Rebuilds ignore
-/// changes that lie only inside the preview's own output or `.vulcan/`.
+/// changes that lie only inside the preview's own output or `.vulcan/` state.
 pub fn start_preview<B: PreviewBuilder>(
     paths: &VaultPaths,
     builder: B,
@@ -453,7 +453,7 @@ fn rebuild_service<B: PreviewBuilder>(
 
 /// Whether any changed vault path can affect the output: changes only to the
 /// preview's own output (when it lies inside the vault) or to `.vulcan/`
-/// cannot. An empty change set (a safety rescan) is always relevant.
+/// state other than the vault configuration cannot. An empty change set (a safety rescan) is always relevant.
 fn relevant<B: PreviewBuilder>(
     paths: &VaultPaths,
     preview: &Preview<B>,
@@ -476,7 +476,12 @@ fn relevant<B: PreviewBuilder>(
     };
     changed.is_empty()
         || changed.iter().any(|path| {
-            !inside(path, ".vulcan") && output.as_deref().is_none_or(|output| !inside(path, output))
+            let vulcan_state = inside(path, ".vulcan")
+                && !matches!(
+                    path.as_str(),
+                    ".vulcan/config.toml" | ".vulcan/config.local.toml"
+                );
+            !vulcan_state && output.as_deref().is_none_or(|output| !inside(path, output))
         })
 }
 
@@ -653,6 +658,8 @@ mod tests {
             )
         };
         assert!(!changed(&["out/index.html", ".vulcan/cache.db"]));
+        assert!(changed(&[".vulcan/config.toml"]), "configuration rebuilds");
+        assert!(changed(&[".vulcan/config.local.toml"]));
         assert!(changed(&["outline.md"]), "a sibling sharing the prefix");
         assert!(changed(&["out/index.html", "notes/a.md"]));
         assert!(changed(&[]), "a safety rescan is always relevant");
