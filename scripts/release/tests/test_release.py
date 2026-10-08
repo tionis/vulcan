@@ -1029,7 +1029,8 @@ class ReleasePackagingTests(unittest.TestCase):
             self.assertNotIn('libclang="$ANDROID_NDK_LATEST_HOME', android_setup)
             self.assertIn("LIBCLANG_PATH=$libclang", android_setup)
             self.assertIn(
-                "BINDGEN_EXTRA_CLANG_ARGS=--sysroot=$sysroot", android_setup
+                "BINDGEN_EXTRA_CLANG_ARGS=--sysroot=$sysroot --target=aarch64-linux-android24",
+                android_setup,
             )
             self.assertIn(
                 "RUSTFLAGS=-Cllvm-args=--vectorize-slp=false", android_setup

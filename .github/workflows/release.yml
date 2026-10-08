@@ -159,7 +159,7 @@ jobs:
           echo "CC_aarch64_linux_android=$toolchain/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
           echo "AR_aarch64_linux_android=$toolchain/llvm-ar" >> "$GITHUB_ENV"
           echo "LIBCLANG_PATH=$libclang" >> "$GITHUB_ENV"
-          echo "BINDGEN_EXTRA_CLANG_ARGS=--sysroot=$sysroot" >> "$GITHUB_ENV"
+          echo "BINDGEN_EXTRA_CLANG_ARGS=--sysroot=$sysroot --target=aarch64-linux-android24" >> "$GITHUB_ENV"
           echo "RUSTFLAGS=-Cllvm-args=--vectorize-slp=false" >> "$GITHUB_ENV"
 
       - name: Cache cargo registry
