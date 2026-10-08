@@ -2034,6 +2034,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(unix),
+        ignore = "scoped and indexed paths need Unix stat fingerprints"
+    )]
     fn indexed_results_equal_ordinary_execution() {
         let (_directory, paths) = fixture();
         let hidden = private_hidden();
@@ -2087,6 +2091,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(unix),
+        ignore = "scoped and indexed paths need Unix stat fingerprints"
+    )]
     fn indexed_execution_declines_when_freshness_cannot_be_proven() {
         let (directory, paths) = fixture();
         let query = serde_json::json!({"types": ["task"], "where": "status == 'open'"});
@@ -2130,6 +2138,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(unix),
+        ignore = "scoped and indexed paths need Unix stat fingerprints"
+    )]
     fn indexed_execution_declines_over_limit_inputs_and_inferred_types() {
         let (directory, paths) = fixture();
         let items = "  - 1\n".repeat(3000);

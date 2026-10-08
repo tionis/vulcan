@@ -3626,6 +3626,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(unix),
+        ignore = "scoped and indexed paths need Unix stat fingerprints"
+    )]
     #[allow(clippy::too_many_lines)] // One cache lifecycle checks overlay invalidation and repair parity.
     fn local_cache_reuses_unchanged_records_but_refreshes_cross_record_diagnostics() {
         let directory = tempdir().unwrap();
@@ -4076,6 +4080,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(unix),
+        ignore = "scoped and indexed paths need Unix stat fingerprints"
+    )]
     fn structural_publication_needs_complete_reverse_keys_and_unchanged_neighbors() {
         let directory = tempdir().expect("collection directory");
         let root = directory.path();
@@ -4145,6 +4153,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(unix),
+        ignore = "scoped and indexed paths need Unix stat fingerprints"
+    )]
     fn incremental_refresh_matches_a_full_rebuild_after_edits() {
         incremental_publication_matches_a_full_rebuild(false);
     }
@@ -4152,6 +4164,10 @@ mod tests {
     /// A write's own publication must equal a full rebuild for every
     /// identity-stable edit and decline every other one.
     #[test]
+    #[cfg_attr(
+        not(unix),
+        ignore = "scoped and indexed paths need Unix stat fingerprints"
+    )]
     fn written_record_publication_matches_a_full_rebuild_after_edits() {
         incremental_publication_matches_a_full_rebuild(true);
     }

@@ -2127,6 +2127,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(unix),
+        ignore = "scoped and indexed paths need Unix stat fingerprints"
+    )]
     #[allow(clippy::too_many_lines)]
     fn lock_free_readers_serve_the_state_from_before_an_unpublished_write() {
         use crate::mdbase::{

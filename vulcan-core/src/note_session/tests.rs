@@ -185,6 +185,10 @@ fn snapshots_answer_like_the_direct_store_and_reuse_unchanged_notes() {
     assert_session_equals_direct(&session, &paths, "after bookmarks");
 
     // A recreated cache has a new store id; nothing retained matches it.
+    // Windows cannot remove the cache while the session holds it open.
+    if cfg!(windows) {
+        return;
+    }
     fs::remove_file(paths.cache_db()).unwrap();
     scan_vault(&paths, ScanMode::Full).unwrap();
     assert_session_equals_direct(&session, &paths, "after recreation");
