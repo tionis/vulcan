@@ -812,6 +812,62 @@ mod tests {
     }
 
     #[test]
+    fn identity_stable_writes_keep_restricted_link_indexes_and_stay_exact() {
+        let (directory, paths) = fixture();
+        fs::write(
+            directory.path().join("tasks/public.md"),
+            "---\ntype: task\ntitle: Public\n---\nSee [[secret]] and [[other]].\n",
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("tasks/other.md"),
+            "---\ntype: task\ntitle: Other\n---\n",
+        )
+        .unwrap();
+        vulcan_core::initialize_vulcan_dir(&paths).unwrap();
+        build_mdbase_query_report(&paths, &json!({"types": ["task"]}), None).unwrap();
+        let session = MdbaseQuerySession::new(paths.clone());
+        let filter = restricted();
+        let read = |path: &str| {
+            let expected = build_mdbase_metadata_read_report(&paths, path, Some(&filter)).unwrap();
+            let actual = session.read_metadata(path, Some(&filter)).unwrap();
+            assert_eq!(actual, expected, "{path}");
+            actual.record.revision
+        };
+        let built = || session.rows.read().unwrap().link_indexes_built();
+        let patch = |path: &str, revision: &str, field: &str, value: serde_json::Value| {
+            crate::mdbase::patch_mdbase_frontmatter(
+                &paths,
+                &crate::mdbase::MdbaseFrontmatterPatchRequest {
+                    path: path.to_string(),
+                    if_revision: revision.to_string(),
+                    set: std::collections::BTreeMap::from([(field.to_string(), value)]),
+                    unset: Vec::new(),
+                    permission_profile: None,
+                },
+                &crate::mdbase::MdbaseFrontmatterPatchOptions {
+                    no_commit: true,
+                    quiet: true,
+                    ..crate::mdbase::MdbaseFrontmatterPatchOptions::default()
+                },
+            )
+            .unwrap()
+            .revision
+        };
+        let revision = read("tasks/public.md");
+        assert_eq!(built(), 1);
+        // A field edit keeps every identity: the index is reused.
+        let revision = patch("tasks/public.md", &revision, "title", json!("Edited"));
+        assert_eq!(read("tasks/public.md"), revision);
+        assert_eq!(built(), 1);
+        // An authored ID changes how links find the record: rebuilt.
+        let other = read("tasks/other.md");
+        patch("tasks/other.md", &other, "id", json!("renamed"));
+        read("tasks/public.md");
+        assert_eq!(built(), 2);
+    }
+
+    #[test]
     fn restricted_metadata_reads_overlay_only_visible_records() {
         let (directory, paths) = fixture();
         let write = |path: &str, source: &str| {

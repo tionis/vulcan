@@ -636,16 +636,22 @@ pub struct MdbaseRetainedRows {
     /// against; once other requests reconcile them, its visible set may
     /// pair with newer rows that no single state ever had.
     version: u64,
+    /// Advanced only when some row's link target changes or rows appear or
+    /// disappear, so writes that keep every record's identity (the common
+    /// field edit) do not invalidate visible link indexes.
+    targets_version: u64,
     /// Link-target indexes of restricted visible sets, for single-record
-    /// overlays; each is valid only for its rows version and visible set.
+    /// overlays; each is valid only for its targets version and visible set.
     link_indexes: std::sync::Mutex<Vec<VisibleLinkIndex>>,
+    /// Visible link indexes built so far, for observing reuse.
+    link_indexes_built: std::sync::atomic::AtomicU64,
 }
 
 /// Restricted read scopes whose visible link index is kept.
 const RETAINED_LINK_INDEXES: usize = 8;
 
 struct VisibleLinkIndex {
-    rows_version: u64,
+    targets_version: u64,
     visible: Arc<BTreeSet<String>>,
     index: Arc<crate::mdbase::links::LinkTargetIndex>,
 }
@@ -663,6 +669,7 @@ struct RetainedRow {
     target: Option<LinkTarget>,
 }
 
+#[derive(PartialEq, Eq)]
 struct LinkTarget {
     types: Vec<String>,
     basename: String,
@@ -683,7 +690,7 @@ pub struct MdbaseRetainedProof {
 
 impl MdbaseRetainedRows {
     /// The link-target index of `proof`'s visible records, built once per
-    /// rows version and visible set. `None` when a visible row lacks
+    /// targets version and visible set. `None` when a visible row lacks
     /// identity facts.
     fn visible_link_index(
         &self,
@@ -696,7 +703,7 @@ impl MdbaseRetainedRows {
             .link_indexes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        indexes.retain(|entry| entry.rows_version == self.version);
+        indexes.retain(|entry| entry.targets_version == self.targets_version);
         if let Some(entry) = indexes.iter().find(|entry| same(entry)) {
             return Some(Arc::clone(&entry.index));
         }
@@ -706,11 +713,13 @@ impl MdbaseRetainedRows {
             index.insert(path, &target.types, &target.basename, target.id.as_deref());
         }
         let index = Arc::new(index);
+        self.link_indexes_built
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if indexes.len() >= RETAINED_LINK_INDEXES {
             indexes.remove(0);
         }
         indexes.push(VisibleLinkIndex {
-            rows_version: self.version,
+            targets_version: self.targets_version,
             visible: Arc::clone(&proof.visible),
             index: Arc::clone(&index),
         });
@@ -720,6 +729,14 @@ impl MdbaseRetainedRows {
     #[must_use]
     pub fn len(&self) -> usize {
         self.rows.len()
+    }
+
+    /// How many restricted visible link indexes were built; an index is
+    /// reused until some record's link target or the membership changes.
+    #[must_use]
+    pub fn link_indexes_built(&self) -> u64 {
+        self.link_indexes_built
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     #[must_use]
@@ -807,6 +824,7 @@ impl MdbaseRetainedWalk {
             retained.rows.clear();
             retained.dependency_digest = self.dependency_digest.to_string();
             retained.version += 1;
+            retained.targets_version += 1;
         }
         let stale = self
             .visible
@@ -832,8 +850,17 @@ impl MdbaseRetainedWalk {
                 return Ok(None);
             }
             metrics.reloaded_rows = loaded.len();
+            let targets_changed = loaded.iter().any(|(path, row)| {
+                retained
+                    .rows
+                    .get(path)
+                    .is_none_or(|previous| previous.target != row.target)
+            });
             retained.rows.extend(loaded);
             retained.version += 1;
+            if targets_changed {
+                retained.targets_version += 1;
+            }
         }
         // Prune only on success: a miss during a write keeps the pre-write
         // rows that [`Self::proof_before_write`] serves.
@@ -843,6 +870,7 @@ impl MdbaseRetainedWalk {
             .retain(|path, _| self.present.contains(path.as_str()));
         if retained.rows.len() != before {
             retained.version += 1;
+            retained.targets_version += 1;
         }
         Ok(Some(self.proof(retained.version)))
     }

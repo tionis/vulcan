@@ -699,6 +699,33 @@ fn refresh_query_cache(
     refreshed.is_ok()
 }
 
+/// Publish only a committed write's own records when it kept every record's
+/// identity; `false` sends the caller to the full refresh. Like that refresh,
+/// only an unrestricted writer publishes cache rows.
+fn publish_written_records(
+    paths: &VaultPaths,
+    loaded: &LoadedCollection,
+    filter: &PermissionFilter,
+    written: &[String],
+) -> bool {
+    if !filter.path_permission().is_unrestricted() || !paths.cache_db().exists() {
+        return false;
+    }
+    let Ok(mut database) = vulcan_core::CacheDatabase::open(paths) else {
+        return false;
+    };
+    matches!(
+        vulcan_core::mdbase::publish_mdbase_written_records(
+            &mut database,
+            &loaded.collection,
+            &loaded.types,
+            &loaded.contracts,
+            written,
+        ),
+        Ok(Some(_))
+    )
+}
+
 /// Same lockfile rule as cached loads: no cache use without that authority.
 fn indexed_query_allowed(filter: Option<&PermissionFilter>) -> bool {
     filter.is_none_or(|filter| filter.is_allowed(vulcan_core::mdbase::MDBASE_LOCK_FILE_NAME))
@@ -1147,6 +1174,9 @@ pub struct MdbaseWriteMetrics {
     pub transaction_seconds: f64,
     /// Publishing the mdbase record cache after commit.
     pub record_cache_seconds: f64,
+    /// The write published only its own records instead of refreshing the
+    /// whole collection (it kept every record's identity).
+    pub record_cache_scoped: bool,
     /// Indexing the written notes, including the history checkpoint.
     pub note_scan_seconds: f64,
     /// Path events and auto-commit after the transaction.
@@ -1225,7 +1255,7 @@ fn apply_mdbase_write_timed(
     let quiet = options.quiet;
     let mut scan = None;
     metrics.authorization_seconds = stage.elapsed().as_secs_f64();
-    let (mut record_cache_seconds, mut note_scan_seconds) = (0.0, 0.0);
+    let mut reconcile = ReconcileStats::default();
     let stage = std::time::Instant::now();
     // The consistent-read guard must be released before the transaction takes
     // the exclusive vault lock. Control/type data remains immutable-plan input
@@ -1267,17 +1297,18 @@ fn apply_mdbase_write_timed(
                 &filter,
                 event,
                 rename_endpoints(&plan.preview),
-                &mut record_cache_seconds,
-                &mut note_scan_seconds,
+                &mut reconcile,
             )?);
             Ok(())
         },
     )
     .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
-    metrics.record_cache_seconds = record_cache_seconds;
-    metrics.note_scan_seconds = note_scan_seconds;
-    metrics.transaction_seconds =
-        stage.elapsed().as_secs_f64() - record_cache_seconds - note_scan_seconds;
+    metrics.record_cache_seconds = reconcile.record_cache_seconds;
+    metrics.record_cache_scoped = reconcile.record_cache_scoped;
+    metrics.note_scan_seconds = reconcile.note_scan_seconds;
+    metrics.transaction_seconds = stage.elapsed().as_secs_f64()
+        - reconcile.record_cache_seconds
+        - reconcile.note_scan_seconds;
     let stage = std::time::Instant::now();
 
     let mut report = MdbaseWriteApplyReport {
@@ -1298,6 +1329,13 @@ fn apply_mdbase_write_timed(
     Ok(report)
 }
 
+#[derive(Default)]
+pub(super) struct ReconcileStats {
+    record_cache_seconds: f64,
+    note_scan_seconds: f64,
+    record_cache_scoped: bool,
+}
+
 /// Bring derived state up to date with a committed write: first the mdbase
 /// record cache, which ends the window in which lock-free indexed readers
 /// serve the pre-write state, then the note index for the written paths. The
@@ -1309,17 +1347,24 @@ fn reconcile_committed_write(
     filter: &PermissionFilter,
     event: &vulcan_core::mdbase::MdbaseWriteOutboxEvent,
     rename: Option<(&str, &str)>,
-    record_cache_seconds: &mut f64,
-    note_scan_seconds: &mut f64,
+    stats: &mut ReconcileStats,
 ) -> Result<vulcan_core::ScanSummary, String> {
     let start = std::time::Instant::now();
-    refresh_query_cache(
-        paths,
-        loaded,
-        Some(filter),
-        &mut MdbaseQueryMetrics::default(),
-    );
-    *record_cache_seconds += start.elapsed().as_secs_f64();
+    let written = event
+        .paths
+        .iter()
+        .map(|change| change.path.clone())
+        .collect::<Vec<_>>();
+    stats.record_cache_scoped = publish_written_records(paths, loaded, filter, &written);
+    if !stats.record_cache_scoped {
+        refresh_query_cache(
+            paths,
+            loaded,
+            Some(filter),
+            &mut MdbaseQueryMetrics::default(),
+        );
+    }
+    stats.record_cache_seconds += start.elapsed().as_secs_f64();
     let start = std::time::Instant::now();
     // A renamed note keeps its document identity and incoming links.
     let renames = rename
@@ -1338,7 +1383,7 @@ fn reconcile_committed_write(
         None => vulcan_core::scan::scan_vault_unlocked(paths, ScanMode::Incremental),
     }
     .map_err(|error| error.to_string());
-    *note_scan_seconds += start.elapsed().as_secs_f64();
+    stats.note_scan_seconds += start.elapsed().as_secs_f64();
     scan
 }
 
@@ -2547,6 +2592,47 @@ mod tests {
     }
 
     #[test]
+    fn membership_changing_writes_publish_through_the_full_refresh() {
+        let (_directory, paths) = fixture();
+        initialize_vulcan_dir(&paths).unwrap();
+        let query = json!({"types": ["task"], "select": ["title"]});
+        build_mdbase_query_report(&paths, &query, None).unwrap();
+        let now = Utc.with_ymd_and_hms(2026, 9, 13, 12, 0, 0).unwrap();
+        let plan = plan_mdbase_write(
+            &paths,
+            &write_plan_request(
+                MdbaseWriteOperation::Create,
+                vec![MdbaseWriteChangeRequest {
+                    path: "tasks/new.md".to_string(),
+                    after: Some("---\ntype: task\ntitle: New\n---\n".to_string()),
+                    if_revision: None,
+                }],
+            ),
+            now,
+        )
+        .unwrap();
+        let mut stages = MdbaseWriteMetrics::default();
+        apply_mdbase_write_profiled(
+            &paths,
+            &plan,
+            &MdbaseWriteExecutionOptions {
+                idempotency_key: "create-refreshes".to_string(),
+                no_commit: true,
+                quiet: true,
+            },
+            now,
+            &mut stages,
+        )
+        .unwrap();
+        assert!(!stages.record_cache_scoped, "{stages:?}");
+        let mut metrics = MdbaseQueryMetrics::default();
+        let report =
+            build_mdbase_query_report_profiled(&paths, &query, None, &mut metrics).unwrap();
+        assert_eq!(report.meta.total_count, 3);
+        assert_eq!(metrics.indexed_hits, 1, "{metrics:?}");
+    }
+
+    #[test]
     fn applied_writes_keep_indexed_reads_current_for_every_reader() {
         let (directory, paths) = fixture();
         initialize_vulcan_dir(&paths).unwrap();
@@ -2605,6 +2691,9 @@ mod tests {
                 <= stages.total_seconds,
             "{stages:?}"
         );
+        // The title edit kept every identity, so only the written record was
+        // published, without walking or loading the collection.
+        assert!(stages.record_cache_scoped, "{stages:?}");
         // An indexed note is rescanned alone; unindexed paths fall back to
         // ordinary discovery.
         assert_eq!(report.scan.as_ref().map(|scan| scan.discovered), Some(1));

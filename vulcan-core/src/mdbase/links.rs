@@ -108,9 +108,65 @@ pub(super) struct LinkTargetIndex {
     types_by_path: BTreeMap<String, Vec<String>>,
     paths_by_basename: BTreeMap<String, Vec<String>>,
     paths_by_id: BTreeMap<String, Vec<String>>,
+    /// Records every key resolution asks for, when collecting the keys a
+    /// partial index must cover (see [`LinkLookupKeys`]).
+    recorder: Option<std::sync::Mutex<LinkLookupKeys>>,
+}
+
+/// The index keys some resolutions consult. An index holding every record
+/// that has one of these paths, basenames, or IDs resolves those links
+/// exactly as the full index does, because resolution reads nothing else.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(super) struct LinkLookupKeys {
+    pub(super) paths: std::collections::BTreeSet<String>,
+    pub(super) basenames: std::collections::BTreeSet<String>,
+    pub(super) ids: std::collections::BTreeSet<String>,
 }
 
 impl LinkTargetIndex {
+    /// An empty index that records the keys looked up in it.
+    pub(super) fn recording() -> Self {
+        Self {
+            recorder: Some(std::sync::Mutex::new(LinkLookupKeys::default())),
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn recorded_keys(self) -> LinkLookupKeys {
+        self.recorder
+            .and_then(|recorder| recorder.into_inner().ok())
+            .unwrap_or_default()
+    }
+
+    fn record(&self, update: impl FnOnce(&mut LinkLookupKeys)) {
+        if let Some(recorder) = &self.recorder {
+            if let Ok(mut keys) = recorder.lock() {
+                update(&mut keys);
+            }
+        }
+    }
+
+    fn types_of(&self, path: &str) -> Option<&Vec<String>> {
+        self.record(|keys| {
+            keys.paths.insert(path.to_string());
+        });
+        self.types_by_path.get(path)
+    }
+
+    fn paths_with_basename(&self, basename: &str) -> Option<&Vec<String>> {
+        self.record(|keys| {
+            keys.basenames.insert(basename.to_string());
+        });
+        self.paths_by_basename.get(basename)
+    }
+
+    fn paths_with_id(&self, id: &str) -> Option<&Vec<String>> {
+        self.record(|keys| {
+            keys.ids.insert(id.to_string());
+        });
+        self.paths_by_id.get(id)
+    }
+
     fn new(records: &[MdbaseRecordDocument], id_field: &str) -> Self {
         let mut index = Self::default();
         for record in records {
@@ -341,7 +397,7 @@ fn resolve_link(
         (rule.and_then(|rule| rule.target_type), &resolved_path)
     {
         let matches = target_type == "any"
-            || index.types_by_path.get(path).is_some_and(|types| {
+            || index.types_of(path).is_some_and(|types| {
                 types
                     .iter()
                     .any(|name| name.eq_ignore_ascii_case(target_type))
@@ -380,7 +436,7 @@ fn resolve_target(
         && !parsed.target.contains('/')
         && !parsed.target.starts_with('.');
     if simple_wikilink {
-        if let Some(paths) = index.paths_by_id.get(&parsed.target) {
+        if let Some(paths) = index.paths_with_id(&parsed.target) {
             return match paths.as_slice() {
                 [path] => (Some(path.clone()), MdbaseLinkResolution::Resolved),
                 [] => unreachable!("ID index never stores empty entries"),
@@ -409,7 +465,7 @@ fn resolve_exact(
     };
     candidates
         .into_iter()
-        .find(|candidate| index.types_by_path.contains_key(candidate))
+        .find(|candidate| index.types_of(candidate).is_some())
         .map_or((None, MdbaseLinkResolution::NotFound), |path| {
             (Some(path), MdbaseLinkResolution::Resolved)
         })
@@ -425,8 +481,7 @@ fn resolve_filename(
         .rsplit_once('/')
         .map_or("", |(folder, _)| folder);
     index
-        .paths_by_basename
-        .get(wanted)
+        .paths_with_basename(wanted)
         .into_iter()
         .flatten()
         .min_by(|left, right| {

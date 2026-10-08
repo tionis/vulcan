@@ -177,6 +177,11 @@ impl MigrationRegistry {
                 "track checkpoint candidates and index record cache completeness",
                 schema::apply_schema_v31,
             ),
+            Migration::new(
+                32,
+                "index mdbase record identities by basename and ID",
+                schema::apply_schema_v32,
+            ),
         ])
     }
 

@@ -10,6 +10,18 @@ pub fn apply_schema_v29(transaction: &Transaction<'_>) -> Result<(), rusqlite::E
     )
 }
 
+/// A write publishes only its own records: their links resolve against the
+/// records that could be targets, fetched by basename and authored ID instead
+/// of loading every identity. The expressions must match the lookup queries.
+pub fn apply_schema_v32(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "CREATE INDEX idx_mdbase_record_query_basename ON mdbase_record_query(
+            collection_root, json_extract(identity_json, '$.basename'));
+         CREATE INDEX idx_mdbase_record_query_id ON mdbase_record_query(
+            collection_root, json_extract(identity_json, '$.id'));",
+    )
+}
+
 /// Widen the identity index (QRY.6) so read scopes on path and extension
 /// apply per row, and document ids for incremental refreshes, come from the
 /// index alone.

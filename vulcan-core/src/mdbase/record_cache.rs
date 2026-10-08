@@ -1525,43 +1525,15 @@ fn refresh_identity_stable(
         }));
     }
     let published = load_cached_records(database.connection(), collection_root, &changed)?;
-    let unique_fields = super::records::uniqueness_fields(types);
-    let clock = super::records::operation_clock(collection);
-    let mut derived = BTreeMap::new();
-    for path in &changed {
-        let (source, metadata) = read_record_source_stably(collection, path)?;
-        let Some(fingerprint) = stat_fingerprint(&metadata) else {
-            return Ok(None);
-        };
-        let record = super::records::build_mdbase_record(
-            collection,
-            types,
-            path,
-            source,
-            Some(&metadata),
-            false,
-            &clock,
-        );
-        let identity = serde_json::to_string(&super::records::record_identity(
-            collection,
-            &unique_fields,
-            &record,
-        ))?;
-        if previous[path].identity.as_deref() != Some(identity.as_str())
-            || !published.contains_key(path)
-        {
-            return Ok(None);
-        }
-        let body_facts = super::links::BodyLinkFacts::parse(&record.body);
-        derived.insert(
-            path.clone(),
-            (
-                LocalRecordSnapshot { record, body_facts },
-                fingerprint,
-                identity,
-            ),
-        );
-    }
+    let previous_identities = changed
+        .iter()
+        .map(|path| (path.clone(), previous[path].identity.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let Some(derived) =
+        derive_identity_stable_records(collection, types, &previous_identities, &published)?
+    else {
+        return Ok(None);
+    };
     let mut index = super::links::LinkTargetIndex::default();
     for (path, row) in &previous {
         let Some(Ok(identity)) = row
@@ -1578,29 +1550,16 @@ fn refresh_identity_stable(
             identity.id.as_deref(),
         );
     }
-    let mut next = BTreeMap::new();
-    for (path, (local, _, _)) in &derived {
-        let uniqueness = published[path]
-            .diagnostics
-            .iter()
-            .filter(|diagnostic| diagnostic.code == "duplicate_value")
-            .cloned();
-        let record = super::records::finish_identity_stable_record(
-            collection,
-            types,
-            contracts,
-            local.record.clone(),
-            uniqueness,
-            &local.body_facts,
-            &index,
-        );
-        let evidence = super::mdbase_query_input_evidence(&record, types);
-        next.insert(
-            path.clone(),
-            (cached_record(collection_root, digest, record), evidence),
-        );
-    }
-
+    let next = finish_identity_stable_records(
+        collection,
+        types,
+        contracts,
+        collection_root,
+        digest,
+        &derived,
+        &published,
+        &index,
+    );
     if let Some(boundary) = before_publication.take() {
         boundary();
     }
@@ -1620,9 +1579,139 @@ fn refresh_identity_stable(
     {
         return Err(MdbaseRecordCacheError::StaleRecords);
     }
+    let updated = verify_and_publish_identity_stable(
+        database,
+        collection,
+        types,
+        contracts,
+        controls,
+        collection_root,
+        &derived,
+        &published,
+        &next,
+    )?;
+    Ok(Some(MdbaseRecordCacheRefresh {
+        dependency_digest: digest.to_string(),
+        dependency_changed: false,
+        added: 0,
+        updated,
+        unchanged: total - updated,
+        deleted: 0,
+        local_records_derived: changed.len(),
+        local_records_reused: total - changed.len(),
+        overlays_scoped: true,
+    }))
+}
+
+type DerivedIdentityStable = BTreeMap<String, (LocalRecordSnapshot, MdbaseStatFingerprint, String)>;
+type FinishedIdentityStable =
+    BTreeMap<String, (MdbaseCachedRecord, super::MdbaseQueryInputEvidence)>;
+
+/// Re-derive `changed` records from source, requiring each to keep its
+/// published identity (types, basename, authored ID, unique values) and to
+/// have a published wide row. `None` means some record changed identity or
+/// cannot be fingerprinted, so other records' overlays may change.
+fn derive_identity_stable_records(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    previous_identities: &BTreeMap<String, Option<String>>,
+    published: &BTreeMap<String, MdbaseCachedRecord>,
+) -> Result<Option<DerivedIdentityStable>, MdbaseRecordCacheError> {
+    let unique_fields = super::records::uniqueness_fields(types);
+    let clock = super::records::operation_clock(collection);
+    let mut derived = BTreeMap::new();
+    for (path, previous_identity) in previous_identities {
+        let (source, metadata) = read_record_source_stably(collection, path)?;
+        let Some(fingerprint) = stat_fingerprint(&metadata) else {
+            return Ok(None);
+        };
+        let record = super::records::build_mdbase_record(
+            collection,
+            types,
+            path,
+            source,
+            Some(&metadata),
+            false,
+            &clock,
+        );
+        let identity = serde_json::to_string(&super::records::record_identity(
+            collection,
+            &unique_fields,
+            &record,
+        ))?;
+        if previous_identity.as_deref() != Some(identity.as_str()) || !published.contains_key(path)
+        {
+            return Ok(None);
+        }
+        let body_facts = super::links::BodyLinkFacts::parse(&record.body);
+        derived.insert(
+            path.clone(),
+            (
+                LocalRecordSnapshot { record, body_facts },
+                fingerprint,
+                identity,
+            ),
+        );
+    }
+    Ok(Some(derived))
+}
+
+/// Overlay identity-stable records: their published uniqueness diagnostics
+/// still hold, and links resolve against `index`.
+#[allow(clippy::too_many_arguments)]
+fn finish_identity_stable_records(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    contracts: &MdbaseContractRegistry,
+    collection_root: &str,
+    digest: &str,
+    derived: &DerivedIdentityStable,
+    published: &BTreeMap<String, MdbaseCachedRecord>,
+    index: &super::links::LinkTargetIndex,
+) -> FinishedIdentityStable {
+    let mut next = BTreeMap::new();
+    for (path, (local, _, _)) in derived {
+        let uniqueness = published[path]
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "duplicate_value")
+            .cloned();
+        let record = super::records::finish_identity_stable_record(
+            collection,
+            types,
+            contracts,
+            local.record.clone(),
+            uniqueness,
+            &local.body_facts,
+            index,
+        );
+        let evidence = super::mdbase_query_input_evidence(&record, types);
+        next.insert(
+            path.clone(),
+            (cached_record(collection_root, digest, record), evidence),
+        );
+    }
+
+    next
+}
+
+/// Verify the bytes of every derived record and the controls once more, then
+/// publish the derived rows. Returns how many wide rows changed.
+#[allow(clippy::too_many_arguments)]
+fn verify_and_publish_identity_stable(
+    database: &mut CacheDatabase,
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    contracts: &MdbaseContractRegistry,
+    controls: &MdbaseControlRevisions,
+    collection_root: &str,
+    derived: &DerivedIdentityStable,
+    published: &BTreeMap<String, MdbaseCachedRecord>,
+    next: &FinishedIdentityStable,
+) -> Result<usize, MdbaseRecordCacheError> {
     // As in the full refresh, records just read are verified by bytes: an
     // in-place same-size rewrite within one timestamp tick keeps its stat.
-    for (path, (record, _)) in &next {
+    for (path, (record, _)) in next {
         let (source, metadata) = read_record_source_stably(collection, path)
             .map_err(|_| MdbaseRecordCacheError::StaleRecords)?;
         let file = super::records::file_metadata(path, source.len() as u64, Some(&metadata));
@@ -1643,7 +1732,7 @@ fn refresh_identity_stable(
         .filter(|(path, (record, _))| published.get(*path) != Some(record))
         .count();
     database.with_transaction(|transaction| {
-        for (path, (record, evidence)) in &next {
+        for (path, (record, evidence)) in next {
             let (local, fingerprint, identity) = &derived[path];
             if published.get(path) != Some(record) {
                 store_cached_record(transaction, record)?;
@@ -1659,17 +1748,230 @@ fn refresh_identity_stable(
         }
         Ok::<_, MdbaseRecordCacheError>(())
     })?;
+    Ok(updated)
+}
+
+/// Publish the records a committed write changed, without walking or loading
+/// the rest of the collection: only `written` records are re-derived, and
+/// their links resolve against the records that could be their targets,
+/// fetched by path, basename, and authored ID. `None` when the write is not
+/// identity-stable (a record was added or removed, or changed its types,
+/// basename, authored ID, or unique values), when local membership is
+/// dynamic, or when a needed row is missing or stale; the caller then runs
+/// the full refresh. Other records stay as published: rows are
+/// self-validating, so a reader that finds one stale reconciles it.
+pub fn publish_mdbase_written_records(
+    database: &mut CacheDatabase,
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    contracts: &MdbaseContractRegistry,
+    written: &[String],
+) -> Result<Option<MdbaseRecordCacheRefresh>, MdbaseRecordCacheError> {
+    if written.is_empty()
+        || written.len() > SCOPED_REFRESH_MAX_CHANGES
+        || has_dynamic_local_membership(types)
+    {
+        return Ok(None);
+    }
+    let controls = verify_mdbase_control_snapshots(collection, types, contracts, None)?;
+    let digest = controls.combined.clone();
+    let collection_root = cache_collection_root(collection)?;
+    let previous = load_query_identities(
+        database.connection(),
+        &collection_root,
+        &digest,
+        &IdentityLookup::Paths(written),
+    )?;
+    // A deletion or creation changes membership: full refresh.
+    if written
+        .iter()
+        .any(|path| !previous.contains_key(path) || !collection.root.join(path).is_file())
+    {
+        return Ok(None);
+    }
+    let published = load_cached_records(database.connection(), &collection_root, written)?;
+    let current = |record: &MdbaseCachedRecord| {
+        record.dependency_digest == digest
+            && record.record_model_version == MDBASE_RECORD_MODEL_VERSION
+            && record.metadata.is_some()
+    };
+    if written
+        .iter()
+        .any(|path| !published.get(path).is_some_and(current))
+    {
+        return Ok(None);
+    }
+    let previous_identities = written
+        .iter()
+        .map(|path| (path.clone(), Some(previous[path].clone())))
+        .collect::<BTreeMap<_, _>>();
+    let Some(derived) =
+        derive_identity_stable_records(collection, types, &previous_identities, &published)?
+    else {
+        return Ok(None);
+    };
+    // Resolve once against an empty recording index to learn every key the
+    // resolver consults, then fetch all records with those keys.
+    let recording = super::links::LinkTargetIndex::recording();
+    let _ = finish_identity_stable_records(
+        collection,
+        types,
+        contracts,
+        &collection_root,
+        &digest,
+        &derived,
+        &published,
+        &recording,
+    );
+    let Some(index) =
+        partial_link_index(database.connection(), &collection_root, &digest, recording)?
+    else {
+        return Ok(None);
+    };
+    let next = finish_identity_stable_records(
+        collection,
+        types,
+        contracts,
+        &collection_root,
+        &digest,
+        &derived,
+        &published,
+        &index,
+    );
+    let updated = verify_and_publish_identity_stable(
+        database,
+        collection,
+        types,
+        contracts,
+        &controls,
+        &collection_root,
+        &derived,
+        &published,
+        &next,
+    )?;
     Ok(Some(MdbaseRecordCacheRefresh {
-        dependency_digest: digest.to_string(),
+        dependency_digest: digest,
         dependency_changed: false,
         added: 0,
         updated,
-        unchanged: total - updated,
+        unchanged: 0,
         deleted: 0,
-        local_records_derived: changed.len(),
-        local_records_reused: total - changed.len(),
+        local_records_derived: written.len(),
+        local_records_reused: 0,
         overlays_scoped: true,
     }))
+}
+
+/// The link-target index of exactly the current records holding a key
+/// recorded in `recording`; `None` when one of them is stale.
+fn partial_link_index(
+    connection: &Connection,
+    collection_root: &str,
+    digest: &str,
+    recording: super::links::LinkTargetIndex,
+) -> Result<Option<super::links::LinkTargetIndex>, MdbaseRecordCacheError> {
+    let keys = recording.recorded_keys();
+    let mut targets = BTreeMap::new();
+    for lookup in [
+        IdentityLookup::Paths(&keys.paths.iter().cloned().collect::<Vec<_>>()),
+        IdentityLookup::Basenames(&keys.basenames.iter().cloned().collect::<Vec<_>>()),
+        IdentityLookup::Ids(&keys.ids.iter().cloned().collect::<Vec<_>>()),
+    ] {
+        let Some(found) = load_current_identities(connection, collection_root, digest, &lookup)?
+        else {
+            return Ok(None);
+        };
+        targets.extend(found);
+    }
+    let mut index = super::links::LinkTargetIndex::default();
+    for (path, identity) in &targets {
+        let Ok(identity) = serde_json::from_str::<super::records::MdbaseRecordIdentity>(identity)
+        else {
+            return Ok(None);
+        };
+        index.insert(
+            path,
+            &identity.types,
+            &identity.basename,
+            identity.id.as_deref(),
+        );
+    }
+    Ok(Some(index))
+}
+
+enum IdentityLookup<'a> {
+    Paths(&'a [String]),
+    Basenames(&'a [String]),
+    Ids(&'a [String]),
+}
+
+impl IdentityLookup<'_> {
+    fn sql(&self) -> (&'static str, &[String]) {
+        match self {
+            Self::Paths(keys) => ("path IN (SELECT value FROM json_each(?2))", keys),
+            Self::Basenames(keys) => (
+                "json_extract(identity_json, '$.basename') IN (SELECT value FROM json_each(?2))",
+                keys,
+            ),
+            Self::Ids(keys) => (
+                "json_extract(identity_json, '$.id') IN (SELECT value FROM json_each(?2))",
+                keys,
+            ),
+        }
+    }
+}
+
+/// Published identities matching `lookup`, whatever their freshness.
+fn load_query_identities(
+    connection: &Connection,
+    collection_root: &str,
+    digest: &str,
+    lookup: &IdentityLookup<'_>,
+) -> Result<BTreeMap<String, String>, MdbaseRecordCacheError> {
+    Ok(load_current_identities(connection, collection_root, digest, lookup)?.unwrap_or_default())
+}
+
+/// Identities matching `lookup` from current rows, or `None` when a matching
+/// row is stale or lacks an identity (the full refresh must repair it).
+fn load_current_identities(
+    connection: &Connection,
+    collection_root: &str,
+    digest: &str,
+    lookup: &IdentityLookup<'_>,
+) -> Result<Option<BTreeMap<String, String>>, MdbaseRecordCacheError> {
+    let (predicate, keys) = lookup.sql();
+    if keys.is_empty() {
+        return Ok(Some(BTreeMap::new()));
+    }
+    let mut statement = connection.prepare_cached(&format!(
+        "SELECT path, dependency_digest = ?3 AND record_model_version = ?4
+                AND stat_fingerprint IS NOT NULL, identity_json
+         FROM mdbase_record_query WHERE collection_root = ?1 AND {predicate}"
+    ))?;
+    let rows = statement.query_map(
+        params![
+            collection_root,
+            serde_json::to_string(keys)?,
+            digest,
+            MDBASE_RECORD_MODEL_VERSION
+        ],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, bool>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        },
+    )?;
+    let mut found = BTreeMap::new();
+    for row in rows {
+        let (path, current, identity) = row?;
+        let (true, Some(identity)) = (current, identity) else {
+            return Ok(None);
+        };
+        found.insert(path, identity);
+    }
+    Ok(Some(found))
 }
 
 /// Published wide rows for `paths`.
@@ -3703,8 +4005,19 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)]
     fn incremental_refresh_matches_a_full_rebuild_after_edits() {
+        incremental_publication_matches_a_full_rebuild(false);
+    }
+
+    /// A write's own publication must equal a full rebuild for every
+    /// identity-stable edit and decline every other one.
+    #[test]
+    fn written_record_publication_matches_a_full_rebuild_after_edits() {
+        incremental_publication_matches_a_full_rebuild(true);
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn incremental_publication_matches_a_full_rebuild(publish_written: bool) {
         // Full refreshes keep unread records' published input evidence, an
         // upper bound that per-link slack keeps valid when only their link
         // resolution changed; `exact` also compares those sizes.
@@ -3809,6 +4122,14 @@ mod tests {
                 ),
                 true,
             ),
+            (
+                "links by authored id, relative path, and nearest basename",
+                Edit::Write(
+                    "a.md",
+                    "---\ntype: task\nid: one\ncode: x\nparent: '[[two]]'\n---\n[[two]] [rel](e/d.md) [[d]] [[e/d]] [up](../outside.md)\n",
+                ),
+                true,
+            ),
             ("same bytes, new inode", Edit::Rewrite("d.md"), true),
             (
                 "duplicate resolved by changing a unique value",
@@ -3841,15 +4162,37 @@ mod tests {
             ("deleted record", Edit::Remove("e/d.md"), false),
         ];
         for (name, edit, scoped) in edits {
-            match edit {
-                Edit::Write(path, contents) => rewrite(path, contents),
+            let written = match edit {
+                Edit::Write(path, contents) => {
+                    rewrite(path, contents);
+                    path
+                }
                 Edit::Rewrite(path) => {
                     let source = fs::read_to_string(root.join(path)).unwrap();
                     rewrite(path, &source);
+                    path
                 }
-                Edit::Remove(path) => fs::remove_file(root.join(path)).unwrap(),
+                Edit::Remove(path) => {
+                    fs::remove_file(root.join(path)).unwrap();
+                    path
+                }
+            };
+            let published = publish_written
+                .then(|| {
+                    publish_mdbase_written_records(
+                        &mut database,
+                        &collection,
+                        &types,
+                        &contracts,
+                        &[written.to_string()],
+                    )
+                    .unwrap()
+                })
+                .flatten();
+            if publish_written {
+                assert_eq!(published.is_some(), scoped, "{name}: {published:?}");
             }
-            let refreshed = refresh(&mut database);
+            let refreshed = published.unwrap_or_else(|| refresh(&mut database));
             assert_eq!(refreshed.overlays_scoped, scoped, "{name}: {refreshed:?}");
             let incremental = snapshot(&database, scoped);
             rebuild_mdbase_record_cache(&mut database, &collection, &types, &contracts).unwrap();

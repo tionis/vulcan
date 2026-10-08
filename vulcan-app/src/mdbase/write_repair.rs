@@ -84,15 +84,13 @@ pub fn recover_mdbase_write(
     let outcome = recover_mdbase_write_transaction(paths, &loaded.collection, |event| {
         // The journal's operation is known only by name here; a rename keeps
         // no identity hint, so the moved note is indexed afresh.
-        let (mut record_cache_seconds, mut note_scan_seconds) = (0.0, 0.0);
         scan = Some(reconcile_committed_write(
             paths,
             &loaded,
             &filter,
             event,
             None,
-            &mut record_cache_seconds,
-            &mut note_scan_seconds,
+            &mut super::ReconcileStats::default(),
         )?);
         Ok(())
     })
