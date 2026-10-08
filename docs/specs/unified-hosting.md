@@ -455,6 +455,17 @@ listener and releases its port. Coverage also exercises permission filtering, in
 Host, and Origin rejection, malformed connections, declared oversized bodies, bind conflicts,
 watch-backed refresh, and clean shutdown.
 
+Site and bundle previews share `vulcan_daemon::preview`. A session builds once, then runs as
+`preview.<kind>/<session-id>` (the loopback listener on the shared blocking HTTP transport) and,
+when watching, `observation.preview/<session-id>` (rebuilds on relevant vault changes), both scoped
+to the session instance. `vulcan site serve` and `vulcan export profile serve` run these in an
+ephemeral `HostSupervisor` and contribute only the finite `vulcan-app` builder, path resolution,
+and live-reload payload. A failed initial build, bind, or watch start starts nothing; a failed
+rebuild or later watch failure keeps the last good output served and reports the error through
+live reload. Changes only inside the preview's own output or `.vulcan/` do not rebuild. Routes,
+live-reload endpoints (`/<namespace>/live-reload.json|events`, also under the deploy path), and
+reports are unchanged.
+
 ### Compatibility test inventory
 
 Migration extends these existing suites instead of replacing them with host-only tests:

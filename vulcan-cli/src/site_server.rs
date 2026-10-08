@@ -1,22 +1,22 @@
+//! `vulcan site serve`: a foreground host for the shared static-site
+//! preview (`vulcan_daemon::preview`), with this module supplying the build,
+//! path resolution, and live-reload payload.
+
 use crate::CliError;
 use serde_json::json;
 use std::fs;
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
 use vulcan_app::site::{
     build_site_with_filter as app_build_site_with_filter,
     build_site_with_filter_and_progress as app_build_site_with_filter_and_progress,
     SiteBuildProgress, SiteBuildReport, SiteBuildRequest,
 };
-use vulcan_core::paths::secure_read;
 use vulcan_core::permissions::PermissionFilter;
-use vulcan_core::{watch_vault_until, VaultPaths, WatchOptions};
+use vulcan_core::VaultPaths;
+use vulcan_daemon::preview::{
+    percent_decode, start_preview, PreviewBuilder, PreviewOptions, PreviewSession,
+};
 
 #[derive(Debug, Clone)]
 pub struct SiteServeOptions {
@@ -30,58 +30,26 @@ pub struct SiteServeOptions {
     pub read_filter: Option<PermissionFilter>,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
-#[derive(Debug)]
 pub struct SiteServeHandle {
-    addr: SocketAddr,
-    shutdown: Arc<AtomicBool>,
-    join_handle: Option<thread::JoinHandle<Result<(), CliError>>>,
+    session: PreviewSession,
 }
 
 impl SiteServeHandle {
     #[must_use]
     pub fn addr(&self) -> SocketAddr {
-        self.addr
+        self.session.addr()
     }
 
-    pub fn join(mut self) -> Result<(), CliError> {
-        if let Some(join_handle) = self.join_handle.take() {
-            join_handle
-                .join()
-                .map_err(|_| CliError::operation("site serve thread panicked"))??;
-        }
-        Ok(())
+    pub fn join(self) -> Result<(), CliError> {
+        self.session.join().map_err(CliError::operation)
     }
 }
 
 #[cfg(test)]
 impl SiteServeHandle {
     pub fn shutdown(self) -> Result<(), CliError> {
-        self.shutdown.store(true, Ordering::SeqCst);
-        self.join()
+        self.session.shutdown().map_err(CliError::operation)
     }
-}
-
-#[derive(Debug, Clone)]
-struct SiteServeState {
-    output_dir: PathBuf,
-    report: SiteBuildReport,
-    version: u64,
-    last_error: Option<String>,
-}
-
-#[derive(Debug)]
-struct Request {
-    method: String,
-    path: String,
-}
-
-#[derive(Debug)]
-struct Response {
-    status: u16,
-    content_type: &'static str,
-    body: Vec<u8>,
-    cache_control: Option<&'static str>,
 }
 
 pub(crate) fn site_build_policy_error(
@@ -164,355 +132,124 @@ where
         .map_err(CliError::operation)
 }
 
-#[allow(clippy::too_many_lines)]
+struct SitePreview {
+    paths: VaultPaths,
+    request: SiteBuildRequest,
+    strict: bool,
+    fail_on_warning: bool,
+    read_filter: Option<PermissionFilter>,
+}
+
+impl PreviewBuilder for SitePreview {
+    type Report = SiteBuildReport;
+
+    fn label(&self) -> &'static str {
+        "site serve"
+    }
+
+    fn kind(&self) -> &'static str {
+        "site"
+    }
+
+    fn namespace(&self) -> &'static str {
+        "__vulcan_site"
+    }
+
+    fn build(&self) -> Result<SiteBuildReport, String> {
+        build_site_with_policy(
+            &self.paths,
+            &self.request,
+            self.strict,
+            self.fail_on_warning,
+            self.read_filter.as_ref(),
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    fn output_dir(&self, report: &SiteBuildReport) -> PathBuf {
+        PathBuf::from(&report.output_dir)
+    }
+
+    fn deploy_path(&self, report: &SiteBuildReport) -> String {
+        report.deploy_path.clone()
+    }
+
+    fn resolve(&self, output_dir: &Path, request_path: &str, deploy_path: &str) -> Option<PathBuf> {
+        resolve_site_path(output_dir, request_path, deploy_path)
+    }
+
+    fn content_type(&self, path: &Path) -> &'static str {
+        content_type_for_path(path)
+    }
+
+    fn changed(&self, previous: &SiteBuildReport, next: &SiteBuildReport) -> bool {
+        !next.changed_files.is_empty()
+            || !next.deleted_files.is_empty()
+            || previous.diagnostics != next.diagnostics
+    }
+
+    fn live_reload_payload(
+        &self,
+        report: &SiteBuildReport,
+        version: u64,
+        last_error: Option<&str>,
+    ) -> serde_json::Value {
+        let diagnostics = report
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| matches!(diagnostic.level.as_str(), "warn" | "error"))
+            .collect::<Vec<_>>();
+        json!({
+            "ok": true,
+            "version": version,
+            "profile": report.profile,
+            "note_count": report.note_count,
+            "page_count": report.page_count,
+            "asset_count": report.asset_count,
+            "changed_files": report.changed_files,
+            "deleted_files": report.deleted_files,
+            "diagnostics": diagnostics,
+            "last_error": last_error,
+        })
+    }
+
+    fn rebuilt(&self, report: &SiteBuildReport) {
+        log_watch_rebuild_success(report);
+    }
+
+    fn rebuild_failed(&self, error: &str) {
+        eprintln!("site serve rebuild failed: {error}");
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)] // Owned options, as callers hand them over.
 pub fn spawn_site_server(
     paths: VaultPaths,
     options: SiteServeOptions,
 ) -> Result<SiteServeHandle, CliError> {
-    let initial_request = SiteBuildRequest {
-        profile: options.profile.clone(),
-        output_dir: options.output_dir.clone(),
-        clean: false,
-        dry_run: false,
-    };
-    let initial_report = build_site_with_policy(
-        &paths,
-        &initial_request,
-        options.strict,
-        options.fail_on_warning,
-        options.read_filter.as_ref(),
-    )?;
-    let initial_output_dir = PathBuf::from(&initial_report.output_dir);
-
-    let listener = TcpListener::bind(("127.0.0.1", options.port)).map_err(CliError::operation)?;
-    listener
-        .set_nonblocking(true)
-        .map_err(CliError::operation)?;
-    let addr = listener.local_addr().map_err(CliError::operation)?;
-
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let state = Arc::new(Mutex::new(SiteServeState {
-        output_dir: initial_output_dir,
-        report: initial_report,
-        version: 1,
-        last_error: None,
-    }));
-    let (watch_ready_sender, watch_ready_receiver) = if options.watch {
-        let (sender, receiver) = mpsc::sync_channel(1);
-        (Some(sender), Some(receiver))
-    } else {
-        (None, None)
-    };
-    let join_shutdown = Arc::clone(&shutdown);
-    let join_state = Arc::clone(&state);
-
-    let join_handle = thread::spawn(move || {
-        let watch_handle = if options.watch {
-            let watch_paths = paths.clone();
-            let watch_shutdown = Arc::clone(&join_shutdown);
-            let watch_state = Arc::clone(&join_state);
-            let watch_request = SiteBuildRequest {
-                profile: options.profile.clone(),
-                output_dir: options.output_dir.clone(),
-                clean: false,
-                dry_run: false,
-            };
-            let watch_options = WatchOptions {
-                debounce_ms: options.debounce_ms,
-            };
-            let watch_strict = options.strict;
-            let watch_fail_on_warning = options.fail_on_warning;
-            let watch_read_filter = options.read_filter.clone();
-            let mut watch_ready_sender = watch_ready_sender;
-            Some(thread::spawn(move || {
-                let result = watch_vault_until(
-                    &watch_paths,
-                    &watch_options,
-                    || watch_shutdown.load(Ordering::SeqCst),
-                    |watch_report| {
-                        if watch_report.startup {
-                            if let Some(sender) = watch_ready_sender.take() {
-                                let _ = sender.send(Ok(()));
-                            }
-                            return Ok::<_, std::convert::Infallible>(());
-                        }
-                        match build_site_with_policy(
-                            &watch_paths,
-                            &watch_request,
-                            watch_strict,
-                            watch_fail_on_warning,
-                            watch_read_filter.as_ref(),
-                        ) {
-                            Ok(report) => {
-                                log_watch_rebuild_success(&report);
-                                if let Ok(mut state) = watch_state.lock() {
-                                    let should_bump = !report.changed_files.is_empty()
-                                        || !report.deleted_files.is_empty()
-                                        || state.report.diagnostics != report.diagnostics
-                                        || state.last_error.is_some();
-                                    state.output_dir = PathBuf::from(&report.output_dir);
-                                    state.report = report;
-                                    if should_bump {
-                                        state.version = state.version.saturating_add(1);
-                                    }
-                                    state.last_error = None;
-                                }
-                            }
-                            Err(error) => {
-                                let error_message = error.to_string();
-                                eprintln!("site serve rebuild failed: {error_message}");
-                                if let Ok(mut state) = watch_state.lock() {
-                                    if state.last_error.as_deref() != Some(error_message.as_str()) {
-                                        state.version = state.version.saturating_add(1);
-                                    }
-                                    state.last_error = Some(error_message);
-                                }
-                            }
-                        }
-                        Ok::<_, std::convert::Infallible>(())
-                    },
-                );
-                if let Err(error) = result {
-                    let error_message = error.to_string();
-                    if let Some(sender) = watch_ready_sender.take() {
-                        let _ = sender.send(Err(error_message.clone()));
-                    }
-                    if let Ok(mut state) = watch_state.lock() {
-                        if state.last_error.as_deref() != Some(error_message.as_str()) {
-                            state.version = state.version.saturating_add(1);
-                        }
-                        state.last_error = Some(error_message);
-                    }
-                }
-            }))
-        } else {
-            None
-        };
-
-        let result = run_server_loop(&listener, &join_shutdown, &join_state);
-        join_shutdown.store(true, Ordering::SeqCst);
-        if let Some(watch_handle) = watch_handle {
-            watch_handle
-                .join()
-                .map_err(|_| CliError::operation("site watch thread panicked"))?;
-        }
-        result
-    });
-
-    if let Some(receiver) = watch_ready_receiver {
-        match receiver.recv_timeout(Duration::from_secs(5)) {
-            Ok(Ok(())) => {}
-            Ok(Err(message)) => {
-                shutdown.store(true, Ordering::SeqCst);
-                let _ = join_handle.join();
-                return Err(CliError::operation(message));
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                shutdown.store(true, Ordering::SeqCst);
-                let _ = join_handle.join();
-                return Err(CliError::operation(
-                    "site serve watch did not initialize within 5 seconds",
-                ));
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                shutdown.store(true, Ordering::SeqCst);
-                let _ = join_handle.join();
-                return Err(CliError::operation(
-                    "site serve watch initialization channel closed unexpectedly",
-                ));
-            }
-        }
-    }
-
-    Ok(SiteServeHandle {
-        addr,
-        shutdown,
-        join_handle: Some(join_handle),
-    })
-}
-
-fn run_server_loop(
-    listener: &TcpListener,
-    shutdown: &Arc<AtomicBool>,
-    state: &Arc<Mutex<SiteServeState>>,
-) -> Result<(), CliError> {
-    while !shutdown.load(Ordering::SeqCst) {
-        match listener.accept() {
-            Ok((mut stream, _)) => {
-                let _ = stream.set_nonblocking(false);
-                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-                let response = match read_request(&mut stream) {
-                    Ok(request) => {
-                        if request.method == "GET"
-                            && is_live_reload_sse_request(state, &request.path)
-                        {
-                            let mut sse_stream = stream;
-                            let sse_shutdown = Arc::clone(shutdown);
-                            let sse_state = Arc::clone(state);
-                            thread::spawn(move || {
-                                let _ = serve_live_reload_sse(
-                                    &mut sse_stream,
-                                    &sse_shutdown,
-                                    &sse_state,
-                                );
-                            });
-                            continue;
-                        }
-                        route_request(state, &request)
-                    }
-                    Err(error) => response_text(400, "text/plain; charset=utf-8", error),
-                };
-                write_response(&mut stream, &response).map_err(CliError::operation)?;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(20));
-            }
-            Err(error) => return Err(CliError::operation(error)),
-        }
-    }
-
-    Ok(())
-}
-
-fn route_request(state: &Arc<Mutex<SiteServeState>>, request: &Request) -> Response {
-    if request.method != "GET" && request.method != "HEAD" {
-        return response_text(405, "text/plain; charset=utf-8", "method not allowed");
-    }
-
-    let deploy_path = state
-        .lock()
-        .ok()
-        .map(|state| state.report.deploy_path.clone())
-        .unwrap_or_default();
-    if is_live_reload_json_path(&request.path, &deploy_path) {
-        let payload = state.lock().ok().map_or_else(
-            || {
-                json!({
-                    "ok": false,
-                    "error": "site serve state unavailable",
-                })
-            },
-            |state| live_reload_payload(&state),
-        );
-        return response_json(200, &payload);
-    }
-
-    let Some((output_dir, body_path)) = state.lock().ok().and_then(|state| {
-        resolve_site_path(&state.output_dir, &request.path, &state.report.deploy_path)
-            .map(|body_path| (state.output_dir.clone(), body_path))
-    }) else {
-        return response_text(404, "text/plain; charset=utf-8", "not found");
-    };
-
-    let candidate = output_dir.join(&body_path);
-    match secure_read(&output_dir, &body_path) {
-        Ok(body) => Response {
-            status: 200,
-            content_type: content_type_for_path(&candidate),
-            body,
-            cache_control: Some("no-store"),
+    let builder = SitePreview {
+        paths: paths.clone(),
+        request: SiteBuildRequest {
+            profile: options.profile.clone(),
+            output_dir: options.output_dir.clone(),
+            clean: false,
+            dry_run: false,
         },
-        Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::NotFound
-                    | std::io::ErrorKind::InvalidInput
-                    | std::io::ErrorKind::PermissionDenied
-            ) =>
-        {
-            response_text(404, "text/plain; charset=utf-8", "not found")
-        }
-        Err(error) => response_text(
-            500,
-            "text/plain; charset=utf-8",
-            format!("failed to read {}: {error}", candidate.display()),
-        ),
-    }
-}
-
-fn is_live_reload_json_path(request_path: &str, deploy_path: &str) -> bool {
-    request_path == "/__vulcan_site/live-reload.json"
-        || request_path == live_reload_json_path(deploy_path)
-}
-
-fn is_live_reload_sse_request(state: &Arc<Mutex<SiteServeState>>, request_path: &str) -> bool {
-    let deploy_path = state
-        .lock()
-        .ok()
-        .map(|state| state.report.deploy_path.clone())
-        .unwrap_or_default();
-    request_path == "/__vulcan_site/live-reload.events"
-        || request_path == live_reload_sse_path(&deploy_path)
-}
-
-fn live_reload_json_path(deploy_path: &str) -> String {
-    if deploy_path.is_empty() {
-        "/__vulcan_site/live-reload.json".to_string()
-    } else {
-        format!("{deploy_path}/__vulcan_site/live-reload.json")
-    }
-}
-
-fn live_reload_sse_path(deploy_path: &str) -> String {
-    if deploy_path.is_empty() {
-        "/__vulcan_site/live-reload.events".to_string()
-    } else {
-        format!("{deploy_path}/__vulcan_site/live-reload.events")
-    }
-}
-
-fn live_reload_payload(state: &SiteServeState) -> serde_json::Value {
-    let diagnostics = state
-        .report
-        .diagnostics
-        .iter()
-        .filter(|diagnostic| matches!(diagnostic.level.as_str(), "warn" | "error"))
-        .collect::<Vec<_>>();
-    json!({
-        "ok": true,
-        "version": state.version,
-        "profile": state.report.profile,
-        "note_count": state.report.note_count,
-        "page_count": state.report.page_count,
-        "asset_count": state.report.asset_count,
-        "changed_files": state.report.changed_files,
-        "deleted_files": state.report.deleted_files,
-        "diagnostics": diagnostics,
-        "last_error": state.last_error,
-    })
-}
-
-fn serve_live_reload_sse(
-    stream: &mut TcpStream,
-    shutdown: &Arc<AtomicBool>,
-    state: &Arc<Mutex<SiteServeState>>,
-) -> Result<(), std::io::Error> {
-    stream.write_all(
-        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
-    )?;
-    stream.flush()?;
-
-    let mut last_sent = String::new();
-    while !shutdown.load(Ordering::SeqCst) {
-        let payload = state.lock().ok().map_or_else(
-            || json!({ "ok": false, "error": "site serve state unavailable" }),
-            |state| live_reload_payload(&state),
-        );
-        let payload_json = serde_json::to_string(&payload).expect("SSE payload should serialize");
-        if payload_json == last_sent {
-            stream.write_all(b": keep-alive\r\n\r\n")?;
-            stream.flush()?;
-        } else {
-            stream.write_all(b"event: update\r\n")?;
-            stream.write_all(b"data: ")?;
-            stream.write_all(payload_json.as_bytes())?;
-            stream.write_all(b"\r\n\r\n")?;
-            stream.flush()?;
-            last_sent = payload_json;
-        }
-        thread::sleep(Duration::from_millis(350));
-    }
-    Ok(())
+        strict: options.strict,
+        fail_on_warning: options.fail_on_warning,
+        read_filter: options.read_filter.clone(),
+    };
+    let session = start_preview(
+        &paths,
+        builder,
+        PreviewOptions {
+            port: options.port,
+            watch: options.watch,
+            debounce_ms: options.debounce_ms,
+        },
+    )
+    .map_err(CliError::operation)?;
+    Ok(SiteServeHandle { session })
 }
 
 fn log_watch_rebuild_success(report: &SiteBuildReport) {
@@ -613,142 +350,6 @@ fn strip_deploy_path<'a>(request_path: &'a str, deploy_path: &str) -> Option<&'a
     request_path.strip_prefix(deploy_path)
 }
 
-fn read_request(stream: &mut TcpStream) -> Result<Request, String> {
-    let mut buffer = Vec::new();
-    let mut header_end = None;
-
-    loop {
-        let mut chunk = [0_u8; 1024];
-        let bytes_read = stream.read(&mut chunk).map_err(|error| error.to_string())?;
-        if bytes_read == 0 {
-            break;
-        }
-        buffer.extend_from_slice(&chunk[..bytes_read]);
-        if let Some(position) = find_subslice(&buffer, b"\r\n\r\n") {
-            header_end = Some(position + 4);
-            break;
-        }
-        if buffer.len() > 32 * 1024 {
-            return Err("request headers exceed 32 KiB".to_string());
-        }
-    }
-
-    let header_end = header_end.ok_or_else(|| "incomplete HTTP request".to_string())?;
-    let header_text = String::from_utf8(buffer[..header_end].to_vec())
-        .map_err(|_| "request headers are not valid UTF-8".to_string())?;
-    let mut lines = header_text.lines();
-    let request_line = lines
-        .next()
-        .ok_or_else(|| "missing HTTP request line".to_string())?;
-    let mut parts = request_line.split_whitespace();
-    let method = parts
-        .next()
-        .ok_or_else(|| "missing HTTP method".to_string())?
-        .to_string();
-    let target = parts
-        .next()
-        .ok_or_else(|| "missing HTTP request target".to_string())?;
-    let (path, _) = parse_target(target);
-
-    Ok(Request { method, path })
-}
-
-fn parse_target(target: &str) -> (String, Vec<(String, String)>) {
-    let (path, query) = target
-        .split_once('?')
-        .map_or((target, ""), |(path, query)| (path, query));
-    let params = query
-        .split('&')
-        .filter(|pair| !pair.is_empty())
-        .map(|pair| {
-            let (key, value) = pair
-                .split_once('=')
-                .map_or((pair, ""), |(key, value)| (key, value));
-            (percent_decode(key), percent_decode(value))
-        })
-        .collect::<Vec<_>>();
-    (percent_decode(path), params)
-}
-
-fn percent_decode(value: &str) -> String {
-    let mut decoded = Vec::with_capacity(value.len());
-    let bytes = value.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'+' => {
-                decoded.push(b' ');
-                index += 1;
-            }
-            b'%' if index + 2 < bytes.len() => {
-                let hex = &value[index + 1..index + 3];
-                if let Ok(byte) = u8::from_str_radix(hex, 16) {
-                    decoded.push(byte);
-                    index += 3;
-                } else {
-                    decoded.push(bytes[index]);
-                    index += 1;
-                }
-            }
-            byte => {
-                decoded.push(byte);
-                index += 1;
-            }
-        }
-    }
-    String::from_utf8(decoded).unwrap_or_else(|_| value.to_string())
-}
-
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
-}
-
-fn response_json(status: u16, body: &serde_json::Value) -> Response {
-    Response {
-        status,
-        content_type: "application/json",
-        body: serde_json::to_vec(&body).expect("response JSON should serialize"),
-        cache_control: Some("no-store"),
-    }
-}
-
-fn response_text(status: u16, content_type: &'static str, body: impl Into<String>) -> Response {
-    Response {
-        status,
-        content_type,
-        body: body.into().into_bytes(),
-        cache_control: Some("no-store"),
-    }
-}
-
-fn write_response(stream: &mut TcpStream, response: &Response) -> Result<(), std::io::Error> {
-    let status_text = match response.status {
-        200 => "OK",
-        400 => "Bad Request",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        _ => "Internal Server Error",
-    };
-    let mut headers = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n",
-        response.status,
-        status_text,
-        response.content_type,
-        response.body.len()
-    );
-    if let Some(cache_control) = response.cache_control {
-        headers.push_str("Cache-Control: ");
-        headers.push_str(cache_control);
-        headers.push_str("\r\n");
-    }
-    headers.push_str("\r\n");
-    stream.write_all(headers.as_bytes())?;
-    stream.write_all(&response.body)?;
-    stream.flush()
-}
-
 fn content_type_for_path(path: &Path) -> &'static str {
     match path
         .extension()
@@ -776,8 +377,22 @@ fn content_type_for_path(path: &Path) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        haystack
+            .windows(needle.len())
+            .position(|window| window == needle)
+    }
+
     use serde_json::Value;
     use std::fs;
+    #[allow(unused_imports)]
+    use std::io::{Read, Write};
+    #[allow(unused_imports)]
+    use std::net::TcpStream;
+    #[allow(unused_imports)]
+    use std::thread;
+    #[allow(unused_imports)]
+    use std::time::Duration;
     use tempfile::TempDir;
 
     // Native filesystem events are hints. Leave time for the watcher's 30-second

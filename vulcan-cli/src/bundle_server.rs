@@ -1,19 +1,21 @@
+//! `vulcan export profile serve`: a foreground host for the shared preview
+//! (`vulcan_daemon::preview`) of a frontend bundle, with this module
+//! supplying the build, path resolution, and live-reload payload.
+
 use crate::CliError;
 use serde_json::json;
 use std::fs;
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+#[cfg(test)]
+use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
 use vulcan_app::site::{
     build_frontend_bundle as app_build_frontend_bundle, FrontendBundleBuildReport,
     FrontendBundleRequest,
 };
-use vulcan_core::paths::secure_read;
-use vulcan_core::{watch_vault_until, VaultPaths, WatchOptions};
+use vulcan_core::VaultPaths;
+use vulcan_daemon::preview::{
+    percent_decode, start_preview, PreviewBuilder, PreviewOptions, PreviewSession,
+};
 
 #[derive(Debug, Clone)]
 pub struct FrontendBundleServeOptions {
@@ -25,325 +27,139 @@ pub struct FrontendBundleServeOptions {
     pub pretty: bool,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
-#[derive(Debug)]
 pub struct FrontendBundleServeHandle {
-    addr: SocketAddr,
-    shutdown: Arc<AtomicBool>,
-    join_handle: Option<thread::JoinHandle<Result<(), CliError>>>,
+    session: PreviewSession,
 }
 
 #[cfg(test)]
 impl FrontendBundleServeHandle {
     #[must_use]
     pub fn addr(&self) -> SocketAddr {
-        self.addr
+        self.session.addr()
     }
 
-    pub fn shutdown(mut self) -> Result<(), CliError> {
-        self.shutdown.store(true, Ordering::SeqCst);
-        if let Some(join_handle) = self.join_handle.take() {
-            join_handle
-                .join()
-                .map_err(|_| CliError::operation("bundle serve thread panicked"))??;
-        }
-        Ok(())
+    pub fn shutdown(self) -> Result<(), CliError> {
+        self.session.shutdown().map_err(CliError::operation)
     }
-}
-
-#[derive(Debug, Clone)]
-struct FrontendBundleServeState {
-    output_dir: PathBuf,
-    report: FrontendBundleBuildReport,
-    version: u64,
-    last_error: Option<String>,
-    export_profile_name: String,
-    site_profile_name: String,
-}
-
-#[derive(Debug)]
-struct Request {
-    method: String,
-    path: String,
-}
-
-#[derive(Debug)]
-struct Response {
-    status: u16,
-    content_type: &'static str,
-    body: Vec<u8>,
-    cache_control: Option<&'static str>,
 }
 
 pub fn serve_frontend_bundle_profile(
     paths: &VaultPaths,
     options: &FrontendBundleServeOptions,
 ) -> Result<(), CliError> {
-    let mut handle = spawn_frontend_bundle_server(paths.clone(), options.clone())?;
-    if let Some(join_handle) = handle.join_handle.take() {
-        join_handle
-            .join()
-            .map_err(|_| CliError::operation("bundle serve thread panicked"))??;
-    }
-    Ok(())
+    spawn_frontend_bundle_server(paths.clone(), options.clone())?
+        .session
+        .join()
+        .map_err(CliError::operation)
 }
 
-#[allow(clippy::too_many_lines)]
+struct BundlePreview {
+    paths: VaultPaths,
+    request: FrontendBundleRequest,
+    export_profile_name: String,
+    site_profile_name: String,
+}
+
+impl PreviewBuilder for BundlePreview {
+    type Report = FrontendBundleBuildReport;
+
+    fn label(&self) -> &'static str {
+        "bundle serve"
+    }
+
+    fn kind(&self) -> &'static str {
+        "bundle"
+    }
+
+    fn namespace(&self) -> &'static str {
+        "__vulcan_bundle"
+    }
+
+    fn build(&self) -> Result<FrontendBundleBuildReport, String> {
+        app_build_frontend_bundle(&self.paths, &self.request).map_err(|error| error.to_string())
+    }
+
+    fn output_dir(&self, report: &FrontendBundleBuildReport) -> PathBuf {
+        PathBuf::from(&report.output_dir)
+    }
+
+    fn resolve(
+        &self,
+        output_dir: &Path,
+        request_path: &str,
+        _deploy_path: &str,
+    ) -> Option<PathBuf> {
+        resolve_bundle_path(output_dir, request_path)
+    }
+
+    fn content_type(&self, path: &Path) -> &'static str {
+        content_type_for_path(path)
+    }
+
+    fn changed(
+        &self,
+        previous: &FrontendBundleBuildReport,
+        next: &FrontendBundleBuildReport,
+    ) -> bool {
+        !next.changed_files.is_empty()
+            || !next.deleted_files.is_empty()
+            || previous.diagnostics != next.diagnostics
+    }
+
+    fn live_reload_payload(
+        &self,
+        report: &FrontendBundleBuildReport,
+        version: u64,
+        last_error: Option<&str>,
+    ) -> serde_json::Value {
+        json!({
+            "ok": true,
+            "version": version,
+            "export_profile": self.export_profile_name,
+            "site_profile": self.site_profile_name,
+            "output_dir": report.output_dir,
+            "note_count": report.note_count,
+            "asset_count": report.asset_count,
+            "changed_files": report.changed_files,
+            "deleted_files": report.deleted_files,
+            "changed_routes": report.invalidation.changed_routes,
+            "deleted_routes": report.invalidation.deleted_routes,
+            "changed_assets": report.invalidation.changed_assets,
+            "deleted_assets": report.invalidation.deleted_assets,
+            "diagnostics": report.diagnostics,
+            "last_error": last_error,
+        })
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)] // Owned options, as callers hand them over.
 pub fn spawn_frontend_bundle_server(
     paths: VaultPaths,
     options: FrontendBundleServeOptions,
 ) -> Result<FrontendBundleServeHandle, CliError> {
-    let initial_report = app_build_frontend_bundle(
-        &paths,
-        &FrontendBundleRequest {
+    let builder = BundlePreview {
+        paths: paths.clone(),
+        request: FrontendBundleRequest {
             profile: Some(options.site_profile_name.clone()),
             output_dir: options.output_dir.clone(),
             clean: false,
             dry_run: false,
             pretty: options.pretty,
+        },
+        export_profile_name: options.export_profile_name.clone(),
+        site_profile_name: options.site_profile_name.clone(),
+    };
+    let session = start_preview(
+        &paths,
+        builder,
+        PreviewOptions {
+            port: options.port,
+            watch: true,
+            debounce_ms: options.debounce_ms,
         },
     )
     .map_err(CliError::operation)?;
-
-    let listener = TcpListener::bind(("127.0.0.1", options.port)).map_err(CliError::operation)?;
-    listener
-        .set_nonblocking(true)
-        .map_err(CliError::operation)?;
-    let addr = listener.local_addr().map_err(CliError::operation)?;
-
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let state = Arc::new(Mutex::new(FrontendBundleServeState {
-        output_dir: PathBuf::from(&initial_report.output_dir),
-        report: initial_report,
-        version: 1,
-        last_error: None,
-        export_profile_name: options.export_profile_name.clone(),
-        site_profile_name: options.site_profile_name.clone(),
-    }));
-    let join_shutdown = Arc::clone(&shutdown);
-    let join_state = Arc::clone(&state);
-
-    let join_handle = thread::spawn(move || {
-        let watch_paths = paths.clone();
-        let watch_shutdown = Arc::clone(&join_shutdown);
-        let watch_state = Arc::clone(&join_state);
-        let watch_options = WatchOptions {
-            debounce_ms: options.debounce_ms,
-        };
-        let watch_request = FrontendBundleRequest {
-            profile: Some(options.site_profile_name.clone()),
-            output_dir: options.output_dir.clone(),
-            clean: false,
-            dry_run: false,
-            pretty: options.pretty,
-        };
-        let watch_handle = thread::spawn(move || {
-            let result = watch_vault_until(
-                &watch_paths,
-                &watch_options,
-                || watch_shutdown.load(Ordering::SeqCst),
-                |watch_report| {
-                    if watch_report.startup {
-                        return Ok::<_, std::convert::Infallible>(());
-                    }
-                    match app_build_frontend_bundle(&watch_paths, &watch_request) {
-                        Ok(report) => {
-                            if let Ok(mut state) = watch_state.lock() {
-                                let should_bump = !report.changed_files.is_empty()
-                                    || !report.deleted_files.is_empty()
-                                    || state.report.diagnostics != report.diagnostics
-                                    || state.last_error.is_some();
-                                state.output_dir = PathBuf::from(&report.output_dir);
-                                state.report = report;
-                                if should_bump {
-                                    state.version = state.version.saturating_add(1);
-                                }
-                                state.last_error = None;
-                            }
-                        }
-                        Err(error) => {
-                            let error_message = error.to_string();
-                            if let Ok(mut state) = watch_state.lock() {
-                                if state.last_error.as_deref() != Some(error_message.as_str()) {
-                                    state.version = state.version.saturating_add(1);
-                                }
-                                state.last_error = Some(error_message);
-                            }
-                        }
-                    }
-                    Ok::<_, std::convert::Infallible>(())
-                },
-            );
-            if let Err(error) = result {
-                let error_message = error.to_string();
-                if let Ok(mut state) = watch_state.lock() {
-                    if state.last_error.as_deref() != Some(error_message.as_str()) {
-                        state.version = state.version.saturating_add(1);
-                    }
-                    state.last_error = Some(error_message);
-                }
-            }
-        });
-
-        let result = run_server_loop(&listener, &join_shutdown, &join_state);
-        join_shutdown.store(true, Ordering::SeqCst);
-        watch_handle
-            .join()
-            .map_err(|_| CliError::operation("bundle watch thread panicked"))?;
-        result
-    });
-
-    Ok(FrontendBundleServeHandle {
-        addr,
-        shutdown,
-        join_handle: Some(join_handle),
-    })
-}
-
-fn run_server_loop(
-    listener: &TcpListener,
-    shutdown: &Arc<AtomicBool>,
-    state: &Arc<Mutex<FrontendBundleServeState>>,
-) -> Result<(), CliError> {
-    while !shutdown.load(Ordering::SeqCst) {
-        match listener.accept() {
-            Ok((mut stream, _)) => {
-                let _ = stream.set_nonblocking(false);
-                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-                let response = match read_request(&mut stream) {
-                    Ok(request) => {
-                        if request.method == "GET" && is_live_reload_sse_path(&request.path) {
-                            let mut sse_stream = stream;
-                            let sse_shutdown = Arc::clone(shutdown);
-                            let sse_state = Arc::clone(state);
-                            thread::spawn(move || {
-                                let _ = serve_live_reload_sse(
-                                    &mut sse_stream,
-                                    &sse_shutdown,
-                                    &sse_state,
-                                );
-                            });
-                            continue;
-                        }
-                        route_request(state, &request)
-                    }
-                    Err(error) => response_text(400, "text/plain; charset=utf-8", error),
-                };
-                write_response(&mut stream, &response).map_err(CliError::operation)?;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(20));
-            }
-            Err(error) => return Err(CliError::operation(error)),
-        }
-    }
-
-    Ok(())
-}
-
-fn route_request(state: &Arc<Mutex<FrontendBundleServeState>>, request: &Request) -> Response {
-    if request.method != "GET" && request.method != "HEAD" {
-        return response_text(405, "text/plain; charset=utf-8", "method not allowed");
-    }
-    if is_live_reload_json_path(&request.path) {
-        let payload = state.lock().ok().map_or_else(
-            || json!({ "ok": false, "error": "bundle serve state unavailable" }),
-            |state| live_reload_payload(&state),
-        );
-        return response_json(200, &payload);
-    }
-
-    let Some((output_dir, body_path)) = state.lock().ok().and_then(|state| {
-        resolve_bundle_path(&state.output_dir, &request.path)
-            .map(|path| (state.output_dir.clone(), path))
-    }) else {
-        return response_text(404, "text/plain; charset=utf-8", "not found");
-    };
-
-    let candidate = output_dir.join(&body_path);
-    match secure_read(&output_dir, &body_path) {
-        Ok(body) => Response {
-            status: 200,
-            content_type: content_type_for_path(&candidate),
-            body,
-            cache_control: Some("no-store"),
-        },
-        Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::NotFound
-                    | std::io::ErrorKind::InvalidInput
-                    | std::io::ErrorKind::PermissionDenied
-            ) =>
-        {
-            response_text(404, "text/plain; charset=utf-8", "not found")
-        }
-        Err(error) => response_text(
-            500,
-            "text/plain; charset=utf-8",
-            format!("failed to read {}: {error}", candidate.display()),
-        ),
-    }
-}
-
-fn is_live_reload_json_path(path: &str) -> bool {
-    path == "/__vulcan_bundle/live-reload.json"
-}
-
-fn is_live_reload_sse_path(path: &str) -> bool {
-    path == "/__vulcan_bundle/live-reload.events"
-}
-
-fn live_reload_payload(state: &FrontendBundleServeState) -> serde_json::Value {
-    json!({
-        "ok": true,
-        "version": state.version,
-        "export_profile": state.export_profile_name,
-        "site_profile": state.site_profile_name,
-        "output_dir": state.report.output_dir,
-        "note_count": state.report.note_count,
-        "asset_count": state.report.asset_count,
-        "changed_files": state.report.changed_files,
-        "deleted_files": state.report.deleted_files,
-        "changed_routes": state.report.invalidation.changed_routes,
-        "deleted_routes": state.report.invalidation.deleted_routes,
-        "changed_assets": state.report.invalidation.changed_assets,
-        "deleted_assets": state.report.invalidation.deleted_assets,
-        "diagnostics": state.report.diagnostics,
-        "last_error": state.last_error,
-    })
-}
-
-fn serve_live_reload_sse(
-    stream: &mut TcpStream,
-    shutdown: &Arc<AtomicBool>,
-    state: &Arc<Mutex<FrontendBundleServeState>>,
-) -> Result<(), std::io::Error> {
-    stream.write_all(
-        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
-    )?;
-    stream.flush()?;
-
-    let mut last_sent = String::new();
-    while !shutdown.load(Ordering::SeqCst) {
-        let payload = state.lock().ok().map_or_else(
-            || json!({ "ok": false, "error": "bundle serve state unavailable" }),
-            |state| live_reload_payload(&state),
-        );
-        let payload_json = serde_json::to_string(&payload).expect("SSE payload should serialize");
-        if payload_json == last_sent {
-            stream.write_all(b": keep-alive\r\n\r\n")?;
-        } else {
-            stream.write_all(b"event: update\r\n")?;
-            stream.write_all(b"data: ")?;
-            stream.write_all(payload_json.as_bytes())?;
-            stream.write_all(b"\r\n\r\n")?;
-            last_sent = payload_json;
-        }
-        stream.flush()?;
-        thread::sleep(Duration::from_millis(350));
-    }
-    Ok(())
+    Ok(FrontendBundleServeHandle { session })
 }
 
 fn resolve_bundle_path(output_dir: &Path, request_path: &str) -> Option<PathBuf> {
@@ -368,125 +184,6 @@ fn resolve_bundle_path(output_dir: &Path, request_path: &str) -> Option<PathBuf>
         .then_some(normalized)
 }
 
-fn read_request(stream: &mut TcpStream) -> Result<Request, String> {
-    let mut buffer = Vec::new();
-    let mut header_end = None;
-    loop {
-        let mut chunk = [0_u8; 1024];
-        let bytes_read = stream.read(&mut chunk).map_err(|error| error.to_string())?;
-        if bytes_read == 0 {
-            break;
-        }
-        buffer.extend_from_slice(&chunk[..bytes_read]);
-        if let Some(position) = find_subslice(&buffer, b"\r\n\r\n") {
-            header_end = Some(position + 4);
-            break;
-        }
-        if buffer.len() > 32 * 1024 {
-            return Err("request headers exceed 32 KiB".to_string());
-        }
-    }
-
-    let header_end = header_end.ok_or_else(|| "incomplete HTTP request".to_string())?;
-    let header_text = String::from_utf8(buffer[..header_end].to_vec())
-        .map_err(|_| "request headers are not valid UTF-8".to_string())?;
-    let mut lines = header_text.lines();
-    let request_line = lines
-        .next()
-        .ok_or_else(|| "missing HTTP request line".to_string())?;
-    let mut parts = request_line.split_whitespace();
-    let method = parts
-        .next()
-        .ok_or_else(|| "missing HTTP method".to_string())?
-        .to_string();
-    let target = parts
-        .next()
-        .ok_or_else(|| "missing HTTP request target".to_string())?;
-    Ok(Request {
-        method,
-        path: percent_decode(target.split('?').next().unwrap_or(target)),
-    })
-}
-
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
-}
-
-fn percent_decode(value: &str) -> String {
-    let mut decoded = Vec::with_capacity(value.len());
-    let bytes = value.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'+' => {
-                decoded.push(b' ');
-                index += 1;
-            }
-            b'%' if index + 2 < bytes.len() => {
-                let hex = &value[index + 1..index + 3];
-                if let Ok(byte) = u8::from_str_radix(hex, 16) {
-                    decoded.push(byte);
-                    index += 3;
-                } else {
-                    decoded.push(bytes[index]);
-                    index += 1;
-                }
-            }
-            byte => {
-                decoded.push(byte);
-                index += 1;
-            }
-        }
-    }
-    String::from_utf8(decoded).unwrap_or_else(|_| value.to_string())
-}
-
-fn response_json(status: u16, body: &serde_json::Value) -> Response {
-    Response {
-        status,
-        content_type: "application/json",
-        body: serde_json::to_vec(body).expect("response JSON should serialize"),
-        cache_control: Some("no-store"),
-    }
-}
-
-fn response_text(status: u16, content_type: &'static str, body: impl Into<String>) -> Response {
-    Response {
-        status,
-        content_type,
-        body: body.into().into_bytes(),
-        cache_control: Some("no-store"),
-    }
-}
-
-fn write_response(stream: &mut TcpStream, response: &Response) -> Result<(), std::io::Error> {
-    let status_text = match response.status {
-        200 => "OK",
-        400 => "Bad Request",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        _ => "Internal Server Error",
-    };
-    let mut headers = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n",
-        response.status,
-        status_text,
-        response.content_type,
-        response.body.len()
-    );
-    if let Some(cache_control) = response.cache_control {
-        headers.push_str("Cache-Control: ");
-        headers.push_str(cache_control);
-        headers.push_str("\r\n");
-    }
-    headers.push_str("\r\n");
-    stream.write_all(headers.as_bytes())?;
-    stream.write_all(&response.body)?;
-    stream.flush()
-}
-
 fn content_type_for_path(path: &Path) -> &'static str {
     match path
         .extension()
@@ -506,6 +203,14 @@ mod tests {
     use super::*;
     use serde_json::Value;
     use std::fs;
+    #[allow(unused_imports)]
+    use std::io::{Read, Write};
+    #[allow(unused_imports)]
+    use std::net::TcpStream;
+    #[allow(unused_imports)]
+    use std::thread;
+    #[allow(unused_imports)]
+    use std::time::Duration;
     use tempfile::TempDir;
     use vulcan_core::{scan_vault, ScanMode};
 

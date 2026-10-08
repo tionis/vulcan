@@ -1,11 +1,13 @@
-//! Transport-only TCP lifecycle for hosted MCP HTTP listeners.
+//! Transport-only TCP lifecycle for hosted MCP HTTP listeners and other
+//! blocking HTTP surfaces, such as previews.
 //!
 //! Authorization and protocol dispatch remain in the supplied connection
 //! handler. This boundary lets foreground and resident hosts use the same
 //! bind, accept, shutdown, and per-connection timeout behavior.
 
 use crate::mcp_http_codec::{
-    read_mcp_http_request, write_mcp_http_response, McpHttpRequest, McpHttpResponse,
+    read_mcp_http_request, write_mcp_http_response, McpHttpReadError, McpHttpRequest,
+    McpHttpResponse,
 };
 use crate::shutdown::ShutdownSignal;
 use serde_json::Value;
@@ -55,7 +57,31 @@ impl McpHttpListener {
     where
         F: Fn(&McpHttpRequest, &mut TcpStream) + Send + Sync + 'static,
     {
+        self.serve_with_errors(stop, handler, |error| {
+            let body = jsonrpc_error(Value::Null, -32600, error.message.clone(), None);
+            McpHttpResponse {
+                status: error.status,
+                content_type: Some("application/json"),
+                body: serde_json::to_vec(&body).expect("JSON-RPC error should serialize"),
+                extra_headers: Vec::new(),
+            }
+        })
+    }
+
+    /// [`Self::serve`] for any HTTP surface: `malformed` renders the response
+    /// to a request that could not be read.
+    pub fn serve_with_errors<F, E>(
+        &self,
+        stop: Option<&ShutdownSignal>,
+        handler: F,
+        malformed: E,
+    ) -> io::Result<()>
+    where
+        F: Fn(&McpHttpRequest, &mut TcpStream) + Send + Sync + 'static,
+        E: Fn(&McpHttpReadError) -> McpHttpResponse + Send + Sync + 'static,
+    {
         let handler = Arc::new(handler);
+        let malformed = Arc::new(malformed);
         loop {
             if stop.is_some_and(ShutdownSignal::is_cancelled) {
                 return Ok(());
@@ -82,6 +108,7 @@ impl McpHttpListener {
                         continue;
                     }
                     let handler = Arc::clone(&handler);
+                    let malformed = Arc::clone(&malformed);
                     let slot = ConnectionSlot(active);
                     thread::Builder::new()
                         .name("vulcan-mcp-http-connection".to_string())
@@ -101,18 +128,8 @@ impl McpHttpListener {
                             match read_mcp_http_request(&mut reader) {
                                 Ok(request) => handler(&request, &mut stream),
                                 Err(error) => {
-                                    let body =
-                                        jsonrpc_error(Value::Null, -32600, error.message, None);
-                                    let _ = write_mcp_http_response(
-                                        &mut stream,
-                                        &McpHttpResponse {
-                                            status: error.status,
-                                            content_type: Some("application/json"),
-                                            body: serde_json::to_vec(&body)
-                                                .expect("JSON-RPC error should serialize"),
-                                            extra_headers: Vec::new(),
-                                        },
-                                    );
+                                    let _ =
+                                        write_mcp_http_response(&mut stream, &malformed(&error));
                                 }
                             }
                         })?;
