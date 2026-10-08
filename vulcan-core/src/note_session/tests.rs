@@ -587,30 +587,33 @@ fn bases_answers(
     walks
 }
 
+/// The ranked answers through a session snapshot equal the direct store's;
+/// the index stages the snapshot ran.
+fn check_ranked(session: &NoteStoreSession, paths: &VaultPaths, round: &str) -> BTreeSet<String> {
+    let snapshot = session.snapshot().expect("no writer is active");
+    let (retained, walks, stages) = ranked_answers(&snapshot, paths, true);
+    drop(snapshot);
+    let (direct, direct_walks, _) = ranked_answers(&DirectNoteStore::new(paths), paths, false);
+    assert_eq!(
+        direct_walks, 0,
+        "the direct store holds no records up front"
+    );
+    // Every total filter with a page walks: 6 filters x 4 orders x 2
+    // directions x 6 pages, the views of the two total bases except the
+    // one sorted by a `file.name` column (a sort key outside the columns is
+    // a plain row value), and six DQL queries.
+    assert_eq!(walks, 6 * 4 * 2 * 6 + 2 * 5 + 6, "{round}");
+    for (retained, direct) in retained.iter().zip(&direct) {
+        assert_eq!(retained, direct, "{round}");
+    }
+    stages
+}
+
 #[test]
 fn ordered_walks_answer_like_full_sorts() {
     let (_temp_dir, paths) = ranked_vault();
     let session = NoteStoreSession::new(paths.clone());
-    let check = |round: &str| {
-        let snapshot = session.snapshot().expect("no writer is active");
-        let (retained, walks, stages) = ranked_answers(&snapshot, &paths, true);
-        drop(snapshot);
-        let (direct, direct_walks, _) =
-            ranked_answers(&DirectNoteStore::new(&paths), &paths, false);
-        assert_eq!(
-            direct_walks, 0,
-            "the direct store holds no records up front"
-        );
-        // Every total filter with a page walks: 6 filters x 4 orders x 2
-        // directions x 6 pages, the views of the two total bases except the
-        // one sorted by a `file.name` column (a sort key outside the columns
-        // is a plain row value), and six DQL queries.
-        assert_eq!(walks, 6 * 4 * 2 * 6 + 2 * 5 + 6, "{round}");
-        for (retained, direct) in retained.iter().zip(&direct) {
-            assert_eq!(retained, direct, "{round}");
-        }
-        stages
-    };
+    let check = |round: &str| check_ranked(&session, &paths, round);
     let built = check("first");
     assert!(built.contains("order index built") && built.contains("match index built"));
     assert!(
@@ -682,14 +685,44 @@ fn ordered_walks_answer_like_full_sorts() {
         !carried.iter().any(|stage| stage.ends_with("built")),
         "{carried:?}"
     );
+}
 
-    // A new note changes identities: indexes build again.
+#[test]
+fn ordered_walk_indexes_follow_identity_changes() {
+    let (_temp_dir, paths) = ranked_vault();
+    let session = NoteStoreSession::new(paths.clone());
+    let check = |round: &str| check_ranked(&session, &paths, round);
+    check("first");
+    // Creations, deletions, and renames change identities: the indexes
+    // follow records to their new positions instead of building again.
     fs::write(
         paths.vault_root().join("w/new.md"),
         "---\ntype: task\nstatus: open\ntitle: \"a\"\npriority: 2\nname: n01\ntags: [g1]\n---\n",
     )
     .unwrap();
     scan_vault(&paths, ScanMode::Incremental).unwrap();
-    let rebuilt = check("after creation");
-    assert!(rebuilt.contains("order index built"), "{rebuilt:?}");
+    let carried = check("after creation");
+    assert!(carried.contains("order index updated"), "{carried:?}");
+    assert!(
+        !carried.iter().any(|stage| stage.ends_with("built")),
+        "{carried:?}"
+    );
+    fs::remove_file(paths.vault_root().join("x/n00.md")).unwrap();
+    scan_vault(&paths, ScanMode::Incremental).unwrap();
+    let carried = check("after deletion");
+    assert!(
+        !carried.iter().any(|stage| stage.ends_with("built")),
+        "{carried:?}"
+    );
+    fs::rename(
+        paths.vault_root().join("y/z/n10.md"),
+        paths.vault_root().join("a-renamed.md"),
+    )
+    .unwrap();
+    scan_vault(&paths, ScanMode::Incremental).unwrap();
+    let carried = check("after rename");
+    assert!(
+        !carried.iter().any(|stage| stage.ends_with("built")),
+        "{carried:?}"
+    );
 }

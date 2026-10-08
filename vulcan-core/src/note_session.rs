@@ -28,7 +28,7 @@
 //! retained; they still read the snapshot's transaction.
 
 use crate::config::VaultConfig;
-use crate::note_lookup::{IdentityIndex, IndexedNoteLookup, RecordIndexes};
+use crate::note_lookup::{IdentityIndex, IndexedNoteLookup, PositionRemap, RecordIndexes};
 use crate::note_store::NoteStore;
 use crate::properties::{
     count_scoped_identities, hydrate_shared_notes, load_readable_identities, load_stored_notes,
@@ -351,8 +351,8 @@ impl NoteStoreSnapshot<'_> {
             NoteIndexReadScope::Filter(filter) => filter.cloned(),
             NoteIndexReadScope::Guard(guard) => Some(guard.read_filter()),
         };
-        let refreshed = match previous {
-            Some(previous) => self.refresh_scope(&previous, filter.as_ref())?,
+        let refreshed = match previous.as_ref() {
+            Some(previous) => self.refresh_scope(previous, filter.as_ref())?,
             None => None,
         };
         let retained = if let Some(refreshed) = refreshed {
@@ -366,13 +366,18 @@ impl NoteStoreSnapshot<'_> {
                 .iter()
                 .map(|identity| identity.row_version)
                 .collect();
+            // Records and their indexes still carry over from the previous
+            // scope of this store, matched by path and row version.
+            if let Some(previous) = previous.as_ref() {
+                lock(&previous.predecessor).take();
+            }
             Arc::new(RetainedScope {
                 clock: self.clock.clone(),
                 index: Arc::new(IdentityIndex::new(readable.identities)),
                 versions,
                 sources: readable.readable_sources.map(Arc::new),
                 records: Mutex::new(None),
-                predecessor: Mutex::new(None),
+                predecessor: Mutex::new(previous),
                 hydrated_carry: None,
             })
         };
@@ -552,6 +557,12 @@ impl NoteStoreSnapshot<'_> {
         let mut carried = Vec::with_capacity(scope.index.len());
         let mut missing = Vec::new();
         let same_positions = Arc::ptr_eq(&scope.index, &predecessor.index);
+        // Where each predecessor position moved, when identities changed.
+        let mut old_to_new = if same_positions {
+            Vec::new()
+        } else {
+            vec![None; predecessor.index.len()]
+        };
         if same_positions {
             // Same identities in the same order: compare versions in place.
             for (position, identity) in scope.index.identities().iter().enumerate() {
@@ -571,10 +582,14 @@ impl NoteStoreSnapshot<'_> {
                 {
                     cursor += 1;
                 }
-                let same = previous_identities
+                let kept = previous_identities
                     .get(cursor)
-                    .is_some_and(|previous| previous.path == identity.path)
-                    && unchanged(scope.versions[position], predecessor.versions[cursor]);
+                    .is_some_and(|previous| previous.path == identity.path);
+                if kept {
+                    old_to_new[cursor] = Some(position);
+                }
+                let same =
+                    kept && unchanged(scope.versions[position], predecessor.versions[cursor]);
                 if same {
                     carried.push(Some(Arc::clone(&previous[cursor])));
                 } else {
@@ -603,7 +618,14 @@ impl NoteStoreSnapshot<'_> {
         let indexes = if same_positions {
             RecordIndexes::carried_from(&previous_indexes, changed)
         } else {
-            RecordIndexes::default()
+            RecordIndexes::carried_through(
+                &previous_indexes,
+                Some(&PositionRemap {
+                    old_to_new,
+                    new_len: scope.index.len(),
+                }),
+                changed,
+            )
         };
         Ok(ordered.map(|ordered| (Arc::<[Arc<NoteRecord>]>::from(ordered), indexes)))
     }

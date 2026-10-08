@@ -388,18 +388,19 @@ fn set_bit(bits: &mut [u64], position: usize, value: bool) {
 }
 
 /// Whether a record's membership in a source depends only on that record
-/// (its path, tags, and outgoing links) while identities stay the same, so
-/// only changed records can join or leave it. `LinkedFrom` depends on
-/// another document's links.
-fn per_document(source: &SourceExpr) -> bool {
+/// (its path, tags, and outgoing links), so only changed records can join or
+/// leave it. `LinkedFrom` depends on another document's links; a link's
+/// target depends on other documents' identities, so after identities
+/// changed, `LinksTo` does too.
+fn per_document(source: &SourceExpr, identities_changed: bool) -> bool {
     match source {
-        SourceExpr::Folder(_)
-        | SourceExpr::Path(_)
-        | SourceExpr::Tag(_)
-        | SourceExpr::LinksTo(_) => true,
+        SourceExpr::Folder(_) | SourceExpr::Path(_) | SourceExpr::Tag(_) => true,
+        SourceExpr::LinksTo(_) => !identities_changed,
         SourceExpr::LinkedFrom(_) => false,
-        SourceExpr::And(children) | SourceExpr::Or(children) => children.iter().all(per_document),
-        SourceExpr::Not(inner) => per_document(inner),
+        SourceExpr::And(children) | SourceExpr::Or(children) => children
+            .iter()
+            .all(|child| per_document(child, identities_changed)),
+        SourceExpr::Not(inner) => per_document(inner, identities_changed),
     }
 }
 
@@ -514,6 +515,7 @@ impl PlanMatcher<'_, '_> {
             decided: Arc::from(decided),
             predicate: Arc::from(predicate),
             matched: Arc::from(matched),
+            identities_changed: false,
         })
     }
 }
@@ -558,7 +560,7 @@ impl RecordMatcher for PlanMatcher<'_, '_> {
                 &mut changed.iter().copied(),
             ),
             // Only changed records can join or leave; they decide again.
-            (Some(source), Some(members)) if per_document(source) => {
+            (Some(source), Some(members)) if per_document(source, previous.identities_changed) => {
                 let members = self.changed_members(source, members, records, changed)?;
                 self.finish(
                     records,
@@ -957,6 +959,21 @@ mod tests {
 
     fn predicate(source: &str) -> Predicate {
         Predicate::lower_dataview(&Parser::new(source).unwrap().parse().unwrap())
+    }
+
+    #[test]
+    fn link_sources_stay_per_document_only_while_identities_hold() {
+        let links = SourceExpr::And(vec![
+            SourceExpr::Tag("t".into()),
+            SourceExpr::LinksTo("id".into()),
+        ]);
+        assert!(per_document(&links, false));
+        assert!(!per_document(&links, true));
+        assert!(per_document(&SourceExpr::Folder("f".into()), true));
+        assert!(!per_document(
+            &SourceExpr::Not(Box::new(SourceExpr::LinkedFrom("id".into()))),
+            false
+        ));
     }
 
     #[test]

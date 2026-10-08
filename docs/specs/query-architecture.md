@@ -282,9 +282,13 @@ duration-like), otherwise it declines and the plan decides every candidate as be
 write leaves identities unchanged, the successor records carry the predecessor's indexes: each
 changed record is removed from every order and re-placed by binary search, and only changed
 records are decided again; a per-document source (folder, path, tag, or links to a target)
-re-checks only the changed records' membership in SQL, while `LinkedFrom` reselects. A change of
-identities rebuilds the indexes on first use. At most 32 indexes of each kind are kept per
-records set.
+re-checks only the changed records' membership in SQL, while `LinkedFrom` reselects. When
+identities change (creations, deletions, renames, alias changes), the records carry over by path
+and row version even when the scope is reloaded whole, and the indexes follow them: orders and
+bitsets are remapped to the new positions, new and changed records are decided and placed as
+above, and link sources reselect because targets may now resolve differently for unchanged
+records. Indexes a successor has not used yet carry forward with their changes merged. At most 32
+indexes of each kind are kept per records set.
 
 Restricted scopes stay as cheap as unrestricted ones: identity loads apply path grants to each
 `note_query` row through the covering index instead of a CTE of permitted ids, the planner's

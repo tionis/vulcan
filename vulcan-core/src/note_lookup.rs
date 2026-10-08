@@ -282,6 +282,9 @@ pub(crate) struct MatchIndex {
     pub predicate: Arc<[u64]>,
     /// Source members it matched: the plan's rows.
     pub matched: Arc<[u64]>,
+    /// Identities changed since the source was selected, so link sources
+    /// may resolve differently for unchanged records too.
+    pub identities_changed: bool,
 }
 
 /// How a frontend orders records. `update` re-places only the records at
@@ -355,19 +358,93 @@ const MAX_RECORD_INDEXES: usize = 32;
 /// then as cheap as updating.
 const MAX_CARRIED_CHANGES: usize = 4096;
 
+/// Where a predecessor's record positions moved when identities changed:
+/// each old position's new one, or `None` for a record that is gone.
+pub struct PositionRemap {
+    pub old_to_new: Vec<Option<usize>>,
+    pub new_len: usize,
+}
+
+/// An index that follows records to their new positions.
+trait Remapped: Sized {
+    fn remapped(&self, remap: &PositionRemap) -> Self;
+}
+
+impl Remapped for OrderIndex {
+    /// Gone records leave the order; new ones are changed positions the
+    /// next update places.
+    fn remapped(&self, remap: &PositionRemap) -> Self {
+        Self {
+            order: self
+                .order
+                .iter()
+                .filter_map(|&position| remap.old_to_new.get(position as usize).copied().flatten())
+                .filter_map(|position| u32::try_from(position).ok())
+                .collect(),
+            class: self.class,
+        }
+    }
+}
+
+/// `bits` over old positions, moved to the new positions.
+fn remap_bits(bits: &[u64], remap: &PositionRemap) -> Arc<[u64]> {
+    let mut moved = vec![0_u64; remap.new_len.div_ceil(64)];
+    for (old, new) in remap.old_to_new.iter().enumerate() {
+        if let Some(new) = *new {
+            if bits
+                .get(old / 64)
+                .is_some_and(|word| word & (1 << (old % 64)) != 0)
+            {
+                moved[new / 64] |= 1 << (new % 64);
+            }
+        }
+    }
+    Arc::from(moved)
+}
+
+impl Remapped for MatchIndex {
+    /// New records are undecided and outside the source until updated.
+    fn remapped(&self, remap: &PositionRemap) -> Self {
+        Self {
+            source: self.source.as_deref().map(|bits| remap_bits(bits, remap)),
+            decided: remap_bits(&self.decided, remap),
+            predicate: remap_bits(&self.predicate, remap),
+            matched: remap_bits(&self.matched, remap),
+            identities_changed: true,
+        }
+    }
+}
+
 impl RecordIndexes {
     /// Indexes of records at the same positions as `previous`'s, where only
     /// the records at `changed` differ.
     #[must_use]
-    pub fn carried_from(previous: &Self, mut changed: Vec<usize>) -> Self {
+    pub fn carried_from(previous: &Self, changed: Vec<usize>) -> Self {
+        Self::carried_through(previous, None, changed)
+    }
+
+    /// Indexes of records whose positions moved as `remap` says (identities
+    /// changed), where the records at the new positions `changed`, including
+    /// every new record, differ from the predecessor's.
+    #[must_use]
+    pub fn carried_through(
+        previous: &Self,
+        remap: Option<&PositionRemap>,
+        mut changed: Vec<usize>,
+    ) -> Self {
         changed.sort_unstable();
         changed.dedup();
         let changed = Arc::<[usize]>::from(changed);
         Self {
             orders: Mutex::default(),
             matches: Mutex::default(),
-            carried_orders: carry(&previous.orders, &previous.carried_orders, &changed),
-            carried_matches: carry(&previous.matches, &previous.carried_matches, &changed),
+            carried_orders: carry(&previous.orders, &previous.carried_orders, remap, &changed),
+            carried_matches: carry(
+                &previous.matches,
+                &previous.carried_matches,
+                remap,
+                &changed,
+            ),
         }
     }
 }
@@ -375,18 +452,20 @@ impl RecordIndexes {
 /// What a successor carries of one kind: the indexes `built` holds (changed
 /// since by `changed`), else the ones it carried itself, with their changes
 /// merged.
-fn carry<T: Clone>(
+fn carry<T: Clone + Remapped>(
     built: &Mutex<HashMap<String, IndexSlot<T>>>,
     carried: &HashMap<String, Carried<T>>,
+    remap: Option<&PositionRemap>,
     changed: &Arc<[usize]>,
 ) -> HashMap<String, Carried<T>> {
+    let moved = |index: &T| remap.map_or_else(|| index.clone(), |remap| index.remapped(remap));
     let mut next = built
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
         .filter_map(|(key, slot)| {
             let (index, _) = slot.get()?.as_ref()?;
-            Some((key.clone(), (index.clone(), Arc::clone(changed))))
+            Some((key.clone(), (moved(index), Arc::clone(changed))))
         })
         .collect::<HashMap<_, _>>();
     // Carried lists are shared, so merge each distinct one once.
@@ -398,10 +477,15 @@ fn carry<T: Clone>(
         let union = merged
             .entry(earlier.as_ptr())
             .or_insert_with(|| {
+                // Earlier changes at their new positions; gone records
+                // need no decision.
                 let mut union = earlier
                     .iter()
-                    .chain(changed.iter())
-                    .copied()
+                    .filter_map(|&position| match remap {
+                        Some(remap) => remap.old_to_new.get(position).copied().flatten(),
+                        None => Some(position),
+                    })
+                    .chain(changed.iter().copied())
                     .collect::<Vec<_>>();
                 union.sort_unstable();
                 union.dedup();
@@ -409,7 +493,7 @@ fn carry<T: Clone>(
             })
             .clone();
         if let Some(union) = union {
-            next.insert(key.clone(), (index.clone(), union));
+            next.insert(key.clone(), (moved(index), union));
         }
     }
     next
