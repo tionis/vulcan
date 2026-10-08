@@ -8290,7 +8290,7 @@ mod tests {
             )
             .expect("note");
         }
-        fs::write(temporary.path().join("notes/[draft]*.md"), "glob-like\n").expect("glob");
+        fs::write(temporary.path().join("notes/n00[0-9].md"), "glob-like\n").expect("glob");
         fs::write(temporary.path().join("notes/sub/inner.md"), "inner\n").expect("inner");
         let commit = commit_all(temporary.path(), "tree");
         let engine = GitCliEngine::default();
@@ -8299,7 +8299,7 @@ mod tests {
             .expect("repository");
 
         let selected = [
-            "notes/[draft]*.md",
+            "notes/n00[0-9].md",
             "notes/n007.md",
             "notes/sub",
             "missing.md",
@@ -8317,7 +8317,7 @@ mod tests {
                 .iter()
                 .map(|entry| entry.path.as_str())
                 .collect::<Vec<_>>(),
-            ["notes/[draft]*.md", "notes/n007.md"]
+            ["notes/n007.md", "notes/n00[0-9].md"]
         );
         let full = engine
             .tree_entries(&repository, &commit)
