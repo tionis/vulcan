@@ -1,0 +1,10 @@
+name: Vulcan CodeQL config
+
+# Test-only sources never ship. Their assertions print data from local fixture
+# servers and fake credentials, which the log-injection and cleartext-logging
+# queries report as findings. Inline `#[cfg(test)] mod tests` blocks inside
+# production files cannot be excluded by path and are still analyzed.
+paths-ignore:
+  - "**/tests.rs"
+  - "**/tests/**"
+  - "**/test/**"
