@@ -9014,6 +9014,88 @@ fn daemon_cli_detaches_reports_status_and_stops_gracefully() {
 }
 
 #[test]
+fn foreground_hosts_and_direct_commands_run_beside_and_without_a_resident_daemon() {
+    let temporary = TempDir::new().expect("temp dir should be created");
+    let config_home = temporary.path().join("config");
+    let state_home = temporary.path().join("state");
+    let vulcan_config = config_home.join("vulcan");
+    fs::create_dir_all(&vulcan_config).expect("config directory");
+    fs::write(
+        vulcan_config.join("daemon.toml"),
+        format!(
+            "device_id = \"{}\"\nbind = \"127.0.0.1:0\"\n",
+            ulid::Ulid::new()
+        ),
+    )
+    .expect("daemon config");
+    let vault_root = temporary.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    let daemon = |arguments: &[&str]| run_daemon_test_command(&config_home, &state_home, arguments);
+    let initialize = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": { "name": "test", "version": "0.0.1" }
+        }
+    });
+    let search = || {
+        Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", &state_home)
+            .args([
+                "--vault",
+                vault_root.to_str().expect("utf-8"),
+                "--output",
+                "json",
+                "search",
+                "Alpha",
+            ])
+            .assert()
+            .success()
+    };
+
+    let started = successful_process_json(&daemon(&["start", "--detach"]));
+    assert_eq!(started["status"]["running"], true);
+
+    // A foreground host and a direct command beside the resident daemon.
+    let first = McpHttpSession::start(&vault_root, "/mcp", None, &[]);
+    let second = McpHttpSession::start(&vault_root, "/mcp", None, &[]);
+    assert_eq!(first.post(&initialize, None).status_line, "HTTP/1.1 200 OK");
+    search();
+
+    // Ending one temporary host stops neither the other nor the daemon.
+    drop(first);
+    assert_eq!(
+        second.post(&initialize, None).status_line,
+        "HTTP/1.1 200 OK"
+    );
+    assert_eq!(
+        successful_process_json(&daemon(&["status"]))["running"],
+        true
+    );
+
+    // Without the daemon, direct commands and foreground hosts still work.
+    let stopped = successful_process_json(&daemon(&["stop"]));
+    assert_eq!(stopped["running"], false);
+    assert_eq!(
+        second.post(&initialize, None).status_line,
+        "HTTP/1.1 200 OK"
+    );
+    drop(second);
+    search();
+    let standalone = McpHttpSession::start(&vault_root, "/mcp", None, &[]);
+    assert_eq!(
+        standalone.post(&initialize, None).status_line,
+        "HTTP/1.1 200 OK"
+    );
+}
+
+#[test]
 fn named_mcp_credential_migration_is_explicit_locked_and_secret_free() {
     use fs2::FileExt;
     use vulcan_daemon::mcp_credentials::{McpRemoteCredentialReferences, McpRemoteCredentials};

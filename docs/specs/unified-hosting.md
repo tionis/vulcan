@@ -530,6 +530,20 @@ transport-specific code without a host is the client-owned MCP stdio loop, `vulc
 `site build --watch` (finite foreground commands with no listener), and short-lived loopback
 callbacks such as forge OAuth login.
 
+## End-to-end coverage
+
+| Requirement | Evidence |
+| --- | --- |
+| Resident versus foreground operation | `named_remote_foreground_and_resident_launches_enforce_the_same_grant`; `temporary_and_resident_mounts_have_byte_equivalent_responses`; `listener_identity_distinguishes_temporary_and_resident_ownership` |
+| Standalone CLI with no daemon | `foreground_hosts_and_direct_commands_run_beside_and_without_a_resident_daemon` (a real detached daemon, foreground MCP HTTP hosts, and direct commands before and after it stops); `temporary_and_resident_services_run_without_a_daemon_process` |
+| Multiple vaults | `named_mcp_remote_cli_manages_multiple_vaults_and_revokes_removed_vault_grants`; `resident_mcp_service_groups_instances_and_accepts_multi_vault_definitions`; `two_wikis_share_one_client_against_the_same_relay` |
+| Temporary-session cleanup | `two_named_hosted_http_listeners_bind_and_stop_independently`; preview `watched_sessions_run_as_host_services_and_rebuild_independently`, `disconnected_live_reload_clients_release_their_connections`, `stopping_a_session_ends_its_live_reload_streams`; `partial_watcher_startup_failure_rolls_back_the_listener`; `failed_resident_startup_cancels_and_joins_every_listener_thread` |
+| Concurrent workers | `worker_mutations_wait_for_hosted_writers_and_recheck_git_authority`; `slow_persistence_allows_reads_and_orders_concurrent_mutations`; `two_consumers_share_events_with_independent_filters` |
+| Restart recovery | `restart_requeues_running_jobs_as_recovery`; `restart_classifies_interruption_without_replaying_operations`; `queued_restart_is_known_pre_dispatch_and_duplicate_ids_are_rejected`; `optional_service_restarts_then_exposes_exhausted_failure` |
+| Shutdown with pending jobs | `shutdown_quiesces_ingress_before_final_sync_finishes`; `final_sync_selects_active_git_wikis_and_cancels_at_deadline`; `worker_waits_for_blocked_follow_up_and_wakes_on_completion_or_shutdown`; `daemon_cli_detaches_reports_status_and_stops_gracefully` |
+| Feature-disabled builds | `cargo clippy -p vulcan-cli --no-default-features --all-targets` and the no-default-features MCP unit and CLI smoke runs recorded in `named-mcp-acceptance.md` |
+| App permission and origin separation | Not applicable until Phase 19 ships an app surface; tracked by 19.8 and 19.17 |
+
 ## Migration sequence and removal rule
 
 1. Introduce the reusable host/supervisor and adapt current daemon workers without changing domain
