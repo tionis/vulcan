@@ -466,6 +466,27 @@ live reload. Changes only inside the preview's own output or `.vulcan/` do not r
 live-reload endpoints (`/<namespace>/live-reload.json|events`, also under the deploy path), and
 reports are unchanged.
 
+### Temporary preview session ownership
+
+- **Owner and lifetime.** A preview session belongs to the invocation that started it. It has a
+  fresh session ID, runs in that process's ephemeral host, and ends when the invocation is
+  interrupted or its handle is shut down. Its services carry an instance scope
+  (`preview-<session-id>`), so stopping one session cancels only its own host signal: other
+  sessions and any resident daemon keep running.
+- **Reuse versus standalone.** Previews are standalone. The resident daemon does not start, adopt,
+  or proxy preview sessions, and two invocations never share one. `preview_services` stays
+  host-neutral so a later resident API can register sessions, but only as non-persisted services
+  with the starting caller's authority.
+- **No resurrection.** Sessions are never written to the daemon registry, device configuration,
+  or service-status files, so a daemon restart cannot bring one back with stale authority. A
+  restarted preview command builds and binds a new session.
+- **Disconnect and expiry.** A live-reload stream ends when its client disconnects (the next
+  keep-alive write fails, at most one live-reload interval later) or when the session stops; each
+  ending frees its connection slot. Request reads use the shared transport deadline. Sessions have
+  no idle expiry: they live exactly as long as the foreground invocation.
+- **Vulcan Apps.** No app surface is implemented yet. Phase 19 app sessions must follow the same
+  rules, plus the origin, CSP, and grant requirements of 19.8.
+
 ### Compatibility test inventory
 
 Migration extends these existing suites instead of replacing them with host-only tests:

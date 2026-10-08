@@ -787,6 +787,72 @@ mod tests {
         second.shutdown().unwrap();
     }
 
+    fn open_events(addr: SocketAddr) -> BufReader<TcpStream> {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream
+            .write_all(b"GET /__fake/live-reload.events HTTP/1.1\r\nHost: x\r\n\r\n")
+            .unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert!(line.starts_with("HTTP/1.1 200"), "{line}");
+        reader
+    }
+
+    #[test]
+    fn disconnected_live_reload_clients_release_their_connections() {
+        let dir = tempfile::tempdir().unwrap();
+        let (builder, _, _) = fake(dir.path());
+        let session = start_preview(
+            &VaultPaths::new(dir.path()),
+            builder,
+            PreviewOptions {
+                port: 0,
+                watch: false,
+                debounce_ms: 50,
+            },
+        )
+        .unwrap();
+        // More streams than the listener admits at once, each dropped by its
+        // client: the next keep-alive write fails and frees the slot.
+        for _ in 0..3 {
+            let streams = (0..40)
+                .map(|_| open_events(session.addr()))
+                .collect::<Vec<_>>();
+            drop(streams);
+            thread::sleep(LIVE_RELOAD_INTERVAL * 3);
+        }
+        assert!(wait_for(|| get(session.addr(), "GET", "/docs/").0 == 200));
+        session.shutdown().unwrap();
+    }
+
+    #[test]
+    fn stopping_a_session_ends_its_live_reload_streams() {
+        let dir = tempfile::tempdir().unwrap();
+        let (builder, _, _) = fake(dir.path());
+        let session = start_preview(
+            &VaultPaths::new(dir.path()),
+            builder,
+            PreviewOptions {
+                port: 0,
+                watch: false,
+                debounce_ms: 50,
+            },
+        )
+        .unwrap();
+        let mut events = open_events(session.addr());
+        session.shutdown().unwrap();
+        let mut rest = String::new();
+        let started = std::time::Instant::now();
+        events
+            .read_to_string(&mut rest)
+            .expect("the stream closes instead of timing out");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
     #[test]
     fn a_failed_initial_build_starts_nothing() {
         let dir = tempfile::tempdir().unwrap();
