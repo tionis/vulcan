@@ -355,10 +355,11 @@ fn ranked_vault() -> (TempDir, VaultPaths) {
             root.join(format!("{folder}/n{:02}.md", 59 - index)),
             format!(
                 "---\ntype: {kind}\nstatus: {status}\n{title}priority: {}\nname: n{:02}\n\
-                 due: 2026-01-{:02}\ntags: [g{}]\n---\nbody\n",
+                 due: 2026-01-{:02}\nspent: {} days\ntags: [g{}]\n---\nbody\n",
                 index % 5,
                 index * 13 % 60,
                 index % 28 + 1,
+                index % 9 + 1,
                 index % 3,
             ),
         )
@@ -527,9 +528,15 @@ fn dql_answers(
         ("TABLE title WHERE type = \"task\" LIMIT 6", true),
         ("TABLE title FROM \"y\" SORT rank LIMIT 3", true),
         ("TABLE title LIMIT 0", true),
-        // Mixed kinds, dates, an undecided WHERE, two keys, more commands.
+        // Dates by instant, durations by length, and stored file fields.
+        ("TABLE due SORT due DESC LIMIT 3", true),
+        ("TABLE spent SORT spent LIMIT 6", true),
+        ("TABLE name SORT file.name DESC LIMIT 4", true),
+        ("TABLE name FROM \"x\" SORT file.mtime LIMIT 4", true),
+        // Mixed kinds, hydrated fields, an undecided WHERE, two keys, more
+        // commands.
         ("TABLE title SORT title LIMIT 3", false),
-        ("TABLE due SORT due DESC LIMIT 3", false),
+        ("TABLE name SORT file.tags LIMIT 3", false),
         ("TABLE title WHERE priority > 2 SORT name LIMIT 3", false),
         ("TABLE title SORT status, name LIMIT 3", false),
         (
@@ -601,8 +608,8 @@ fn check_ranked(session: &NoteStoreSession, paths: &VaultPaths, round: &str) -> 
     // Every total filter with a page walks: 6 filters x 4 orders x 2
     // directions x 6 pages, the views of the two total bases except the
     // one sorted by a `file.name` column (a sort key outside the columns is
-    // a plain row value), and six DQL queries.
-    assert_eq!(walks, 6 * 4 * 2 * 6 + 2 * 5 + 6, "{round}");
+    // a plain row value), and ten DQL queries.
+    assert_eq!(walks, 6 * 4 * 2 * 6 + 2 * 5 + 10, "{round}");
     for (retained, direct) in retained.iter().zip(&direct) {
         assert_eq!(retained, direct, "{round}");
     }

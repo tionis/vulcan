@@ -265,7 +265,8 @@ version and load from a covering index (v29, widened in v30 to apply path scopes
 sorted by `sort_by` or in path order); a Bases view with a limit, no grouping or formulas, rows
 with stored fields only, and a sort value that is a plain property (or a row value such as
 `file.name` outside the columns); and DQL `TABLE`/`LIST` queries of the shape
-`[FROM] [WHERE] [SORT key] LIMIT n` with one property sort key. When the snapshot holds the
+`[FROM] [WHERE] [SORT key] LIMIT n` with one sort key that is a property or a stored file field
+(`file.path`, `name`, `ext`, `folder`, `size`, `mtime`, `ctime`, `mday`, `cday`). When the snapshot holds the
 scope's records and the predicate is total (`Predicate::is_total`: it decides every record whose
 properties are an object, so no record reaches the residual and no diagnostic is skipped), the
 plan walks the records in that order and stops after `take` matches. Sorting and truncating
@@ -277,8 +278,9 @@ source members, decided positions, and matches; sources select in SQL, as the pl
 would). With them a walk reads no record it skips, even when the sort correlates with the
 predicate (titles grouped by type put every task last). Orders exist only where the frontend's
 comparison is a total order on the keys: the notes and Bases comparisons rank kinds, and DQL
-accepts nulls plus one plain kind (booleans, numbers, or strings that are neither date- nor
-duration-like), otherwise it declines and the plan decides every candidate as before. When a
+accepts nulls plus one comparison kind (booleans, numbers, plain strings, date-like strings by
+instant, or duration-like strings by length). Across kinds Dataview compares display text, which is
+not transitive, so with mixed kinds it declines and the plan decides every candidate as before. When a
 write leaves identities unchanged, the successor records carry the predecessor's indexes: each
 changed record is removed from every order and re-placed by binary search, and only changed
 records are decided again; a per-document source (folder, path, tag, or links to a target)

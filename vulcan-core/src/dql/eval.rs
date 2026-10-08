@@ -369,29 +369,44 @@ fn top_shape<'q>(
         [CompiledDqlCommand::Limit(limit)] => (false, None, *limit),
         _ => return None,
     };
-    let plain_key = shape.1.is_none_or(|keys| {
-        matches!(keys.as_slice(), [key] if matches!(
-            &key.expr,
-            Expr::Identifier(name) if normalize_field_name(name) != "this"
-        ))
-    });
+    let plain_key = shape
+        .1
+        .is_none_or(|keys| matches!(keys.as_slice(), [key] if stored_sort_key(&key.expr)));
     plain_key.then_some(shape)
 }
 
-/// A sort key's class for [`crate::plan::KeyedOrdering`]: nulls and one
-/// plain kind (booleans, numbers, or strings that are neither date- nor
-/// duration-like), among which the Dataview comparison is a total order;
-/// `None` for anything else.
-fn sort_key_class(value: &Value) -> Option<u8> {
-    if !crate::expression::eval::plain_comparable(value) {
-        return None;
+/// Whether a sort key reads only the row's stored fields: a property, or a
+/// file field held on the stored record.
+fn stored_sort_key(expr: &Expr) -> bool {
+    match expr {
+        Expr::Identifier(name) => normalize_field_name(name) != "this",
+        Expr::FieldAccess(object, field) => {
+            matches!(object.as_ref(), Expr::Identifier(name) if normalize_field_name(name) == "file")
+                && matches!(
+                    canonical_file_field_name(field).as_str(),
+                    "path"
+                        | "name"
+                        | "basename"
+                        | "ext"
+                        | "folder"
+                        | "size"
+                        | "mtime"
+                        | "ctime"
+                        | "mday"
+                        | "cday"
+                )
+        }
+        _ => false,
     }
-    Some(match value {
-        Value::Null => 0,
-        Value::Bool(_) => 1,
-        Value::Number(_) => 2,
-        _ => 3,
-    })
+}
+
+/// A sort key's class for [`crate::plan::KeyedOrdering`]: its comparison
+/// kind, so an order exists only over nulls and one kind, where the
+/// Dataview comparison is a total order. Mixed kinds compare through display
+/// text, which is not transitive, so no order (not even a full sort) can
+/// be reproduced from a subset.
+fn sort_key_class(value: &Value) -> Option<u8> {
+    crate::expression::eval::comparison_kind(value)
 }
 
 /// The cache-key spelling of a time zone.

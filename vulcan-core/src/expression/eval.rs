@@ -768,17 +768,20 @@ fn date_like_value_ms(value: &Value) -> Option<i64> {
     date_string_value_ms(value).or_else(|| integer_value_ms(value))
 }
 
-/// Whether [`compare_values`] orders `value` against values of its own JSON
-/// kind by that kind's natural order alone: null, booleans, numbers, and
-/// strings that are neither date- nor duration-like. Among such values of
-/// one kind, plus nulls, it is a total order.
-pub(crate) fn plain_comparable(value: &Value) -> bool {
+/// The kind [`compare_values`] orders `value` by: 0 for null (before every
+/// value), 1 booleans, 2 numbers, 3 plain strings, 4 date-like strings (by
+/// instant), 5 duration-like strings (by length); `None` for lists and
+/// objects. Among nulls and values of one kind it is a total order; across
+/// kinds it may fall back to display text and is not transitive.
+pub(crate) fn comparison_kind(value: &Value) -> Option<u8> {
     match value {
-        Value::Null | Value::Bool(_) | Value::Number(_) => true,
-        Value::String(_) => {
-            date_string_value_ms(value).is_none() && duration_string_value_ms(value).is_none()
-        }
-        Value::Array(_) | Value::Object(_) => false,
+        Value::Null => Some(0),
+        Value::Bool(_) => Some(1),
+        Value::Number(_) => Some(2),
+        Value::String(_) if date_string_value_ms(value).is_some() => Some(4),
+        Value::String(_) if duration_string_value_ms(value).is_some() => Some(5),
+        Value::String(_) => Some(3),
+        Value::Array(_) | Value::Object(_) => None,
     }
 }
 
@@ -898,6 +901,59 @@ mod tests {
     use std::collections::HashMap;
     use std::rc::Rc;
     use std::time::Duration;
+
+    #[test]
+    fn comparison_kinds_order_their_values_totally() {
+        use serde_json::json;
+        let values = [
+            json!(null),
+            json!(true),
+            json!(false),
+            json!(1),
+            json!(10),
+            json!(2.5),
+            json!(-3),
+            json!("9"),
+            json!("10a"),
+            json!("b"),
+            json!(""),
+            json!("2026-01-02"),
+            json!("2025-12-31T23:00:00"),
+            json!("2026-1-5"),
+            json!("3 days"),
+            json!("1 day, 2 hours"),
+            json!("45 minutes"),
+            json!([1]),
+        ];
+        let kind = |value: &Value| comparison_kind(value);
+        assert_eq!(kind(&json!("2026-01-02")), Some(4));
+        assert_eq!(kind(&json!("3 days")), Some(5));
+        assert_eq!(kind(&json!("b")), Some(3));
+        assert_eq!(kind(&json!([1])), None);
+        // Within nulls plus one kind, the comparison is defined and
+        // transitive.
+        for left in &values {
+            for middle in &values {
+                for right in &values {
+                    let kinds = [kind(left), kind(middle), kind(right)];
+                    let Some(shared) = kinds.iter().flatten().copied().find(|kind| *kind != 0)
+                    else {
+                        continue;
+                    };
+                    if kinds
+                        .iter()
+                        .any(|kind| !matches!(kind, Some(0)) && *kind != Some(shared))
+                    {
+                        continue;
+                    }
+                    let order = |a: &Value, b: &Value| compare_values(a, b).expect("same kind");
+                    if order(left, middle).is_le() && order(middle, right).is_le() {
+                        assert!(order(left, right).is_le(), "{left} {middle} {right}");
+                    }
+                }
+            }
+        }
+    }
 
     fn eval(input: &str) -> Value {
         eval_with_now(input, 1_776_482_700_000)
