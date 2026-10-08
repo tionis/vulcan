@@ -79,7 +79,8 @@ VULCAN_NOTE_BENCH_FIXTURE=/tmp/mdb-10k/collection VULCAN_NOTE_BENCH_SAMPLES=5000
 
 `VULCAN_NOTE_BENCH_READERS`, `VULCAN_NOTE_BENCH_WRITES_PER_SECOND`, `VULCAN_NOTE_BENCH_SESSION=0`
 (direct path), `VULCAN_NOTE_BENCH_SCOPE=benchmark_public`, and `VULCAN_NOTE_BENCH_FRONTENDS`
-(comma-separated `dql,query,bases,notes,mdbase`) vary the run. The first scan indexes an
+(comma-separated `dql,dql-tag,query,bases,bases-tag,notes,mdbase`) vary the run;
+`VULCAN_NOTE_BENCH_EXPLAIN=1` first prints each frontend's warm note plan with stage timings. The first scan indexes an
 unindexed fixture; the test adds `public/_bench/*.base` files for its Bases views and removes them
 afterwards. It checks every response against the ordered paths the direct path returned before the
 run and prints a JSON report labeled `not_evaluated`. Results:
@@ -93,6 +94,8 @@ the project owner on 2026-10-07): Intel Core i7-10700 (8 cores, 16 threads), 32 
 with kernel 6.12, otherwise idle. The benchmark builds there from a git bundle of the measured
 commit, regenerates the public fixtures (checking their published payload digests), and runs each
 configuration sequentially. Results: [note-query-frontends-reference.json](note-query-frontends-reference.json)
-and [note-query-session-mixed-reference.json](note-query-session-mixed-reference.json). The earlier
+and [note-query-session-mixed-reference.json](note-query-session-mixed-reference.json);
+[note-query-ordered-top-k.json](note-query-ordered-top-k.json) compares the ordered top-k walk with
+its parent there (fixtures not re-verified for that run). The earlier
 `note-query-frontends.json` and `note-query-session-mixed-10k.json` are development-host
 diagnostics.

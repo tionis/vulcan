@@ -1,0 +1,595 @@
+{
+  "measurement": "note_query_ordered_top_k_diagnostic",
+  "acceptance_gate_result": "not_evaluated",
+  "gate_reference": "No gate covers 100K; the MDB.10 warm-query targets (p95 < 50 ms, p99 < 100 ms at 10K) were already passed by note-query-session-mixed-reference.json. This compares the ordered top-k walk (3f259ed0) with its parent (64b89e64).",
+  "reference_host": "evaluation host enterprise: Intel Core i7-10700 (8 cores/16 threads), 31 GiB RAM, Debian 13, Linux 6.12.111; idle before the run (load 0.2)",
+  "boundary": "in-process vault HTTP route handlers (vulcan_app::serve::route_request_with_sessions) with the retained note-store session: per-request permission-profile resolution, authorization, execution, and JSON response construction; excludes HTTP transport",
+  "build": {
+    "command": "cargo +1.88.0 test --release -p vulcan-app --test note_session_benchmark -- --ignored --nocapture --test-threads=1, run as the built test binary from vulcan-app/",
+    "base": {
+      "commit": "64b89e64c7525d73c63ec77d07f6aee1bcff3797",
+      "binary_sha256": "e0a2530917230d0abe3b92dff45d31632114516a15f8d941e9bd22225ce311c4"
+    },
+    "new": {
+      "commit": "3f259ed07bc5810acd7def51005261b55066bf0b",
+      "binary_sha256": "218fb1f9ffb627b472c738807064284952f343e4fbe6963fd219b9f8feddb4ef"
+    }
+  },
+  "fixtures": "public generated corpora ~/vulcan-eval-fixtures/mdb-{10k,100k} (scripts/generate_mdb_fixture.py, version 1, seed 42), regenerated and digest-checked for the QRY.7 reference run; not re-verified for this run. The benchmark adds public/_bench/*.base for the run and restores the one record its writer edits.",
+  "requests": "Per frontend, six parameter-varied questions (task/project/contact x two statuses), each sorted by title with limit 50 except /notes (where type, limit 50, path order): dql (FROM folder WHERE status SORT title LIMIT 50), dql-tag (FROM #group-n ...), query (QueryAst ... order by title limit 50), bases and bases-tag (views filtering type or file.hasTag and status, sort title, limit 50), notes. mdbase is excluded: it has its own engine and this change does not touch it. Every response is checked against the ordered paths the direct path returned before the run. One reader: 6,000 requests (new) or 1,200 (base, 100K); eight readers with a writer at two body edits per second outside mdbase's managed path.",
+  "runs": [
+    {
+      "run": "base-single-10k",
+      "build": "base",
+      "fixture": "10k",
+      "readers": 1,
+      "writes_per_second_target": 0,
+      "requests": 6000,
+      "writes": 0,
+      "load_average_after": "4.85 5.68 2.86",
+      "all": {
+        "p50_ms": 6.4,
+        "p95_ms": 8.51,
+        "p99_ms": 9.12,
+        "max_ms": 15.88
+      },
+      "by_frontend": {
+        "bases": {
+          "count": 1000,
+          "p50_ms": 8.39,
+          "p95_ms": 8.92,
+          "p99_ms": 10.47,
+          "max_ms": 14.16
+        },
+        "bases-tag": {
+          "count": 1000,
+          "p50_ms": 4.51,
+          "p95_ms": 4.65,
+          "p99_ms": 4.95,
+          "max_ms": 9.1
+        },
+        "dql": {
+          "count": 1000,
+          "p50_ms": 6.52,
+          "p95_ms": 6.7,
+          "p99_ms": 7.11,
+          "max_ms": 11.58
+        },
+        "dql-tag": {
+          "count": 1000,
+          "p50_ms": 4.5,
+          "p95_ms": 4.65,
+          "p99_ms": 4.95,
+          "max_ms": 9.83
+        },
+        "notes": {
+          "count": 1000,
+          "p50_ms": 6.0,
+          "p95_ms": 6.51,
+          "p99_ms": 7.79,
+          "max_ms": 11.98
+        },
+        "query": {
+          "count": 1000,
+          "p50_ms": 7.82,
+          "p95_ms": 8.44,
+          "p99_ms": 10.73,
+          "max_ms": 15.88
+        }
+      }
+    },
+    {
+      "run": "new-single-10k",
+      "build": "new",
+      "fixture": "10k",
+      "readers": 1,
+      "writes_per_second_target": 0,
+      "requests": 6000,
+      "writes": 0,
+      "load_average_after": "8.26 6.32 2.94",
+      "all": {
+        "p50_ms": 1.02,
+        "p95_ms": 1.2,
+        "p99_ms": 1.25,
+        "max_ms": 14.74
+      },
+      "by_frontend": {
+        "bases": {
+          "count": 1000,
+          "p50_ms": 1.11,
+          "p95_ms": 1.14,
+          "p99_ms": 1.17,
+          "max_ms": 1.78
+        },
+        "bases-tag": {
+          "count": 1000,
+          "p50_ms": 1.08,
+          "p95_ms": 1.11,
+          "p99_ms": 1.24,
+          "max_ms": 14.46
+        },
+        "dql": {
+          "count": 1000,
+          "p50_ms": 0.9,
+          "p95_ms": 0.94,
+          "p99_ms": 1.02,
+          "max_ms": 4.35
+        },
+        "dql-tag": {
+          "count": 1000,
+          "p50_ms": 0.85,
+          "p95_ms": 0.86,
+          "p99_ms": 0.92,
+          "max_ms": 4.06
+        },
+        "notes": {
+          "count": 1000,
+          "p50_ms": 0.95,
+          "p95_ms": 1.11,
+          "p99_ms": 1.19,
+          "max_ms": 7.8
+        },
+        "query": {
+          "count": 1000,
+          "p50_ms": 1.03,
+          "p95_ms": 1.23,
+          "p99_ms": 1.32,
+          "max_ms": 14.74
+        }
+      }
+    },
+    {
+      "run": "base-mixed-10k",
+      "build": "base",
+      "fixture": "10k",
+      "readers": 8,
+      "writes_per_second_target": 2,
+      "requests": 3200,
+      "writes": 7,
+      "load_average_after": "5.33 5.76 2.92",
+      "all": {
+        "p50_ms": 7.9,
+        "p95_ms": 11.0,
+        "p99_ms": 13.21,
+        "max_ms": 22.34
+      },
+      "by_frontend": {
+        "bases": {
+          "count": 534,
+          "p50_ms": 9.78,
+          "p95_ms": 11.85,
+          "p99_ms": 14.97,
+          "max_ms": 16.52
+        },
+        "bases-tag": {
+          "count": 533,
+          "p50_ms": 6.87,
+          "p95_ms": 9.86,
+          "p99_ms": 11.11,
+          "max_ms": 11.59
+        },
+        "dql": {
+          "count": 534,
+          "p50_ms": 7.44,
+          "p95_ms": 8.47,
+          "p99_ms": 12.75,
+          "max_ms": 13.88
+        },
+        "dql-tag": {
+          "count": 532,
+          "p50_ms": 6.6,
+          "p95_ms": 10.09,
+          "p99_ms": 10.7,
+          "max_ms": 11.45
+        },
+        "notes": {
+          "count": 533,
+          "p50_ms": 7.89,
+          "p95_ms": 9.38,
+          "p99_ms": 11.66,
+          "max_ms": 13.24
+        },
+        "query": {
+          "count": 534,
+          "p50_ms": 9.62,
+          "p95_ms": 11.49,
+          "p99_ms": 14.42,
+          "max_ms": 22.34
+        }
+      }
+    },
+    {
+      "run": "new-mixed-10k",
+      "build": "new",
+      "fixture": "10k",
+      "readers": 8,
+      "writes_per_second_target": 2,
+      "requests": 32000,
+      "writes": 11,
+      "load_average_after": "5.10 5.72 2.89",
+      "all": {
+        "p50_ms": 1.11,
+        "p95_ms": 1.34,
+        "p99_ms": 1.69,
+        "max_ms": 32.02
+      },
+      "by_frontend": {
+        "bases": {
+          "count": 5334,
+          "p50_ms": 1.23,
+          "p95_ms": 1.39,
+          "p99_ms": 1.76,
+          "max_ms": 13.79
+        },
+        "bases-tag": {
+          "count": 5333,
+          "p50_ms": 1.16,
+          "p95_ms": 1.32,
+          "p99_ms": 1.72,
+          "max_ms": 9.53
+        },
+        "dql": {
+          "count": 5334,
+          "p50_ms": 1.04,
+          "p95_ms": 1.2,
+          "p99_ms": 1.48,
+          "max_ms": 12.22
+        },
+        "dql-tag": {
+          "count": 5332,
+          "p50_ms": 0.94,
+          "p95_ms": 1.06,
+          "p99_ms": 1.31,
+          "max_ms": 20.6
+        },
+        "notes": {
+          "count": 5333,
+          "p50_ms": 1.03,
+          "p95_ms": 1.31,
+          "p99_ms": 1.65,
+          "max_ms": 12.61
+        },
+        "query": {
+          "count": 5334,
+          "p50_ms": 1.1,
+          "p95_ms": 1.4,
+          "p99_ms": 1.89,
+          "max_ms": 32.02
+        }
+      }
+    },
+    {
+      "run": "base-single-100k",
+      "build": "base",
+      "fixture": "100k",
+      "readers": 1,
+      "writes_per_second_target": 0,
+      "requests": 1200,
+      "writes": 0,
+      "load_average_after": "1.56 3.77 2.63",
+      "all": {
+        "p50_ms": 73.6,
+        "p95_ms": 95.71,
+        "p99_ms": 97.85,
+        "max_ms": 132.77
+      },
+      "by_frontend": {
+        "bases": {
+          "count": 200,
+          "p50_ms": 95.46,
+          "p95_ms": 97.81,
+          "p99_ms": 100.75,
+          "max_ms": 101.85
+        },
+        "bases-tag": {
+          "count": 200,
+          "p50_ms": 48.22,
+          "p95_ms": 49.43,
+          "p99_ms": 55.03,
+          "max_ms": 61.78
+        },
+        "dql": {
+          "count": 200,
+          "p50_ms": 68.93,
+          "p95_ms": 70.29,
+          "p99_ms": 73.87,
+          "max_ms": 106.96
+        },
+        "dql-tag": {
+          "count": 200,
+          "p50_ms": 49.07,
+          "p95_ms": 50.0,
+          "p99_ms": 55.73,
+          "max_ms": 57.76
+        },
+        "notes": {
+          "count": 200,
+          "p50_ms": 74.3,
+          "p95_ms": 76.84,
+          "p99_ms": 87.02,
+          "max_ms": 99.13
+        },
+        "query": {
+          "count": 200,
+          "p50_ms": 89.21,
+          "p95_ms": 92.64,
+          "p99_ms": 94.43,
+          "max_ms": 132.77
+        }
+      }
+    },
+    {
+      "run": "new-single-100k",
+      "build": "new",
+      "fixture": "100k",
+      "readers": 1,
+      "writes_per_second_target": 0,
+      "requests": 6000,
+      "writes": 0,
+      "load_average_after": "2.43 4.76 2.79",
+      "all": {
+        "p50_ms": 3.03,
+        "p95_ms": 4.71,
+        "p99_ms": 4.97,
+        "max_ms": 130.95
+      },
+      "by_frontend": {
+        "bases": {
+          "count": 1000,
+          "p50_ms": 3.12,
+          "p95_ms": 3.3,
+          "p99_ms": 3.77,
+          "max_ms": 4.93
+        },
+        "bases-tag": {
+          "count": 1000,
+          "p50_ms": 3.0,
+          "p95_ms": 3.18,
+          "p99_ms": 4.07,
+          "max_ms": 130.95
+        },
+        "dql": {
+          "count": 1000,
+          "p50_ms": 4.19,
+          "p95_ms": 4.89,
+          "p99_ms": 5.5,
+          "max_ms": 42.74
+        },
+        "dql-tag": {
+          "count": 1000,
+          "p50_ms": 2.79,
+          "p95_ms": 2.97,
+          "p99_ms": 3.62,
+          "max_ms": 39.12
+        },
+        "notes": {
+          "count": 1000,
+          "p50_ms": 2.88,
+          "p95_ms": 3.1,
+          "p99_ms": 3.76,
+          "max_ms": 52.19
+        },
+        "query": {
+          "count": 1000,
+          "p50_ms": 3.1,
+          "p95_ms": 3.52,
+          "p99_ms": 3.81,
+          "max_ms": 122.74
+        }
+      }
+    },
+    {
+      "run": "base-mixed-100k",
+      "build": "base",
+      "fixture": "100k",
+      "readers": 8,
+      "writes_per_second_target": 2,
+      "requests": 800,
+      "writes": 25,
+      "load_average_after": "5.08 4.38 2.89",
+      "all": {
+        "p50_ms": 114.89,
+        "p95_ms": 152.42,
+        "p99_ms": 178.99,
+        "max_ms": 199.52
+      },
+      "by_frontend": {
+        "bases": {
+          "count": 134,
+          "p50_ms": 141.37,
+          "p95_ms": 167.1,
+          "p99_ms": 197.86,
+          "max_ms": 199.52
+        },
+        "bases-tag": {
+          "count": 133,
+          "p50_ms": 80.62,
+          "p95_ms": 158.07,
+          "p99_ms": 177.7,
+          "max_ms": 189.61
+        },
+        "dql": {
+          "count": 134,
+          "p50_ms": 91.5,
+          "p95_ms": 136.91,
+          "p99_ms": 160.34,
+          "max_ms": 171.66
+        },
+        "dql-tag": {
+          "count": 132,
+          "p50_ms": 88.32,
+          "p95_ms": 148.51,
+          "p99_ms": 178.68,
+          "max_ms": 180.94
+        },
+        "notes": {
+          "count": 133,
+          "p50_ms": 114.89,
+          "p95_ms": 128.51,
+          "p99_ms": 137.32,
+          "max_ms": 143.33
+        },
+        "query": {
+          "count": 134,
+          "p50_ms": 131.87,
+          "p95_ms": 158.06,
+          "p99_ms": 179.03,
+          "max_ms": 189.1
+        }
+      }
+    },
+    {
+      "run": "new-mixed-100k",
+      "build": "new",
+      "fixture": "100k",
+      "readers": 8,
+      "writes_per_second_target": 2,
+      "requests": 12000,
+      "writes": 22,
+      "load_average_after": "3.71 4.11 2.77",
+      "all": {
+        "p50_ms": 5.82,
+        "p95_ms": 8.69,
+        "p99_ms": 20.71,
+        "max_ms": 230.11
+      },
+      "by_frontend": {
+        "bases": {
+          "count": 2000,
+          "p50_ms": 5.83,
+          "p95_ms": 7.18,
+          "p99_ms": 20.17,
+          "max_ms": 119.48
+        },
+        "bases-tag": {
+          "count": 2000,
+          "p50_ms": 5.74,
+          "p95_ms": 7.07,
+          "p99_ms": 21.37,
+          "max_ms": 77.48
+        },
+        "dql": {
+          "count": 2000,
+          "p50_ms": 7.44,
+          "p95_ms": 9.81,
+          "p99_ms": 12.68,
+          "max_ms": 115.47
+        },
+        "dql-tag": {
+          "count": 2000,
+          "p50_ms": 5.33,
+          "p95_ms": 6.72,
+          "p99_ms": 21.09,
+          "max_ms": 230.11
+        },
+        "notes": {
+          "count": 2000,
+          "p50_ms": 5.49,
+          "p95_ms": 6.6,
+          "p99_ms": 20.06,
+          "max_ms": 89.61
+        },
+        "query": {
+          "count": 2000,
+          "p50_ms": 5.95,
+          "p95_ms": 8.08,
+          "p99_ms": 21.9,
+          "max_ms": 153.19
+        }
+      }
+    }
+  ],
+  "development_host_diagnostic": {
+    "host": "development workstation (8 cores) shared with other work; loads 5-9 during runs",
+    "runs": [
+      {
+        "run": "new-100k-single",
+        "all": {
+          "p50_ms": 5.25,
+          "p95_ms": 7.19,
+          "p99_ms": 68.22,
+          "max_ms": 219.63
+        },
+        "writes": 0,
+        "requests": 1200
+      },
+      {
+        "run": "new-100k-mixed",
+        "all": {
+          "p50_ms": 12.84,
+          "p95_ms": 30.94,
+          "p99_ms": 45.6,
+          "max_ms": 887.46
+        },
+        "writes": 59,
+        "requests": 12000
+      },
+      {
+        "run": "new-10k-single",
+        "all": {
+          "p50_ms": 1.75,
+          "p95_ms": 2.79,
+          "p99_ms": 8.28,
+          "max_ms": 26.1
+        },
+        "writes": 0,
+        "requests": 1200
+      },
+      {
+        "run": "new-10k-mixed",
+        "all": {
+          "p50_ms": 3.44,
+          "p95_ms": 6.33,
+          "p99_ms": 10.26,
+          "max_ms": 68.42
+        },
+        "writes": 38,
+        "requests": 32000
+      },
+      {
+        "run": "base-100k-single",
+        "all": {
+          "p50_ms": 127.49,
+          "p95_ms": 178.0,
+          "p99_ms": 196.2,
+          "max_ms": 381.99
+        },
+        "writes": 0,
+        "requests": 300
+      },
+      {
+        "run": "base-100k-mixed",
+        "all": {
+          "p50_ms": 287.15,
+          "p95_ms": 404.35,
+          "p99_ms": 460.74,
+          "max_ms": 532.21
+        },
+        "writes": 34,
+        "requests": 480
+      },
+      {
+        "run": "base-10k-mixed",
+        "all": {
+          "p50_ms": 23.28,
+          "p95_ms": 35.01,
+          "p99_ms": 46.99,
+          "max_ms": 69.24
+        },
+        "writes": 16,
+        "requests": 2400
+      }
+    ]
+  },
+  "findings": [
+    "The cost at 100K was not sorting but deciding: sessions decided the predicate on every retained record (about 1 us each, memory-bound) before sorting the matches, so sorted top-50 and plain path-order pages scaled linearly.",
+    "Walking the records in the frontend's order and stopping after offset + limit matches makes the work proportional to the page: at 100K one-reader p95 fell from 49-98 ms to 3.0-4.9 ms per frontend, and under eight readers with two writes per second p50/p95/p99 fell from 115/152/179 ms to 5.8/8.7/20.7 ms.",
+    "Sort keys correlate with predicates in practice (titles grouped by type put every task last), so the walk reads a cached match bitset rather than deciding each record it passes.",
+    "Indexes must survive writes: rebuilding them per snapshot regressed tails under writes on the development host, and carrying only the immediate predecessor's indexes still rebuilt most of them at 100K. Generational carry with single-flight computation removes both."
+  ],
+  "limitations": [
+    "A change of identities (create, delete, rename, alias change) rebuilds each index on first use: about 65-115 ms per order or match set at 100K on the development host, once per query shape.",
+    "Only plain sort keys walk: notes sort keys, Bases plain properties or row values, and DQL single identifier keys whose values are nulls plus one plain kind. Other queries decide every candidate as before.",
+    "Direct (daemon-less) CLI queries hold no records up front and are unchanged."
+  ]
+}
