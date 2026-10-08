@@ -38,8 +38,8 @@ toml.workspace = true
 ulid.workspace = true
 getrandom.workspace = true
 unicode-normalization.workspace = true
-vulcan-core = { path = "../vulcan-core", version = "0.2.1", default-features = false }
-vulcan-sync = { path = "../vulcan-sync", version = "0.2.1" }
+vulcan-core = { path = "../vulcan-core", version = "0.3.0", default-features = false }
+vulcan-sync = { path = "../vulcan-sync", version = "0.3.0" }
 zeroize.workspace = true
 rquickjs = { workspace = true, optional = true }
 zip.workspace = true
@@ -48,7 +48,7 @@ zip.workspace = true
 rustix = { version = "1", default-features = false, features = ["process", "std"] }
 
 [target.'cfg(windows)'.dependencies]
-vulcan-winacl = { path = "../vulcan-winacl", version = "0.2.1" }
+vulcan-winacl = { path = "../vulcan-winacl", version = "0.3.0" }
 
 [lints]
 workspace = true

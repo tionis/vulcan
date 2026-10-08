@@ -1,9 +1,103 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-10-08
+
+Vulcan 0.3.0 makes multi-device use dependable. Sync authenticates with per-device keys, can
+manage deploy keys on a forge, and turns conflicts into small, resumable groups that can be
+reviewed. One daemon now hosts every vault together with its MCP endpoints, previews, alerts, and
+scheduled self-updates. Typed mdbase collections arrive, and DQL, Bases, and note queries now share
+one query planner. Vulcan is still pre-alpha: keep independent backups and review mutations with
+`--dry-run`.
+
+### Highlights
+
+- **Device-key sync.** `vulcan device init` creates a per-installation key, and
+  `sync transport bind` makes a vault's Git sync use it over SSH, with no agent and no fallback.
+  Devices publish registrations (`sync devices list|register|revoke|set-name`). `sync forge`
+  reconciles Forgejo deploy keys with those registrations, logs in with OAuth, and works across
+  the fleet with `--all-wikis`. `vault clone` and `vault add` enroll the device key automatically,
+  and `device replace` with a fleet-wide revoke covers device rotation.
+- **Conflicts you can work through.** A conflict is split into deterministic groups. Each group can
+  be resolved by side choice, patch, editor, or a reviewed agent or formatter proposal, and progress
+  is kept across syncs. The daemon can resolve safe text conflicts by itself. Conflicts that later
+  syncs overtook are carried forward instead of getting stuck. Closed conflicts are archived after
+  30 days. Conflict records now live outside the vault tree.
+- **One daemon host.** Named MCP remotes provide IndieAuth login, per-connection consent,
+  attenuated grants, revocation, and protected-file secret custody. The daemon supervises their
+  listeners, the vault HTTP services, and site/bundle previews (`site serve`, `bundle serve`) as one
+  host, reports health per wiki, and syncs before it shuts down gracefully.
+- **Sync alerts.** Failed syncs raise desktop, Termux, and Obsidian-companion notifications with
+  configurable thresholds, and are recorded durably until reconciled.
+  `vulcan daemon companion install <vault>` installs the bundled Obsidian companion plugin.
+- **Unattended self-update.** `vulcan self-update schedule` installs a timer for portable installs,
+  with network and power policy (`vulcan self-update run` performs one pass).
+- **mdbase collections.** `vulcan mdbase` adds typed records, CEL queries, link semantics,
+  effective-schema reports, saved views (including Obsidian `.base` sources), and a validated,
+  journaled, revision-checked write pipeline (`mdbase patch`). `mdbase conformance` reports which
+  profiles are claimed. See the new mdbase guide and agent skill.
+- **Faster, safer queries and writes.** DQL, Bases, Tasks, search filters, and DataviewJS run
+  through one planner that loads only the notes a query needs (`bases eval --explain` reports a
+  view's plan). Every surface evaluates under the caller's permission profile. Ordinary note, task, template, and move
+  writes are journaled, coordinated across processes, and recovered after a crash.
+- **Nested vaults.** A vault can be one directory of a larger repository, such as an MkDocs `docs/`
+  directory or notes beside code. A root-level `.vulcan.toml` (`vulcan init --repository-pointer`)
+  lets Vulcan find it from anywhere in the checkout.
+- **Daily notes.** `vulcan daily open [date]` accepts relative dates. `vulcan daily calendar` is a
+  month picker that previews and edits any day's note.
+
+### Upgrade notes
+
+- **Stable signing-key rotation, step 1.** This release adds the hardware-held `stable-2026-10`
+  key (`sshsig-ed25519`, SSH fingerprint `SHA256:HYpEy7eKcHkSUuL1y4ADmFk89G0zkkI0jfVXucG/juQ`)
+  to the trusted stable keys, and its update descriptor is signed by both `stable-2026-09` and
+  `stable-2026-10`. `v0.2.1` verifies the update through `stable-2026-09` as usual. Please update
+  every installation to 0.3.0: a later release will stop signing with `stable-2026-09`, and older
+  binaries will then need a manual, checksum-verified install. Rolling `main` builds keep
+  `main-2026-09`.
+- An update check that finds a descriptor which is not signed yet now reports that it is awaiting
+  signing and asks you to retry, instead of claiming that no trusted key signed it. Rolling and
+  stable builds no longer publish an unsigned descriptor at their public URL.
+- The daemon now syncs with the installation's device key. The separate daemon-only key under
+  `~/.local/state/vulcan/sync/device-identity` is no longer read and can be deleted.
+- Several JSON state files move to SQLite on first use (job ledger, MCP authorizations and OAuth
+  clients, Outline publish/pull state). Originals are kept as `*.migrated`. A remote whose registry
+  still holds inline secrets needs `vulcan mcp remote migrate-credentials` first.
+- Task markers now follow the Tasks plugin. Tasks that Vulcan previously wrote with `🔺` for "high"
+  now index as highest priority.
+- The parser version is bumped, so existing caches reindex on the next scan.
 
 ### Added
 
+- `vulcan device` manages this installation's identity (`init`, `show`, `public-key`, `config`,
+  `replace`, `repair-permissions`), including Windows identities protected by verified private ACLs.
+  Sync uses key-derived device IDs as its actor, and `sync devices list` shows friendly names and
+  an offline recovery inventory.
+- `vulcan sync transport bind|status|unbind`, `sync devices register|revoke|unregister|set-name`,
+  `sync forge init|set|show|clear|sync|login|logout|authorize-self`, and `vault enroll`
+  (also `--all-wikis`) set up device-key transport and forge deploy keys.
+- Conflict groups with incremental, scoped resolutions (side, patch, editor, agent and formatter
+  proposals), bounded and paged conflict reports, conflict-storm metrics, retained partial
+  resolutions, configurable daemon conflict-resolver workers, and auto-resolution of safe text
+  conflicts.
+- Daemon sync alerts: per-wiki health, desktop notifications, durable remote alerts, native Termux
+  notifications, Obsidian companion notices, and configurable failure thresholds.
+- `vulcan daemon companion install` installs or updates the bundled Obsidian companion.
+- `vulcan self-update schedule` and `self-update run` add unattended portable updates with network
+  and power policy.
+- Managed directory profiles for sync, including a files-only profile.
+- `vulcan mdbase` commands: `status`, `types`, `schema`, `validate`, `read`, `query`, `views`,
+  `view`, `view-source`, `patch`, and `conformance`. They provide bounded CEL evaluation, link
+  helpers, saved views, crash-safe write journals with revision preconditions, migration of
+  TaskNotes v0.2 assets, and standalone shell and Python integrations.
+- The shared query planner serves DQL, Bases, Tasks, search filters, and note queries, with explain
+  reports, lazily loaded DataviewJS pages, and sorted top-k queries that stop early.
+- Vaults nested in larger Git repositories and MkDocs sites, plus `.vulcan.toml` repository
+  pointers resolved by discovery, `vault add`, and `vault clone`.
+- Hosted site and bundle previews with live reload and last-good-output rebuilds.
+- MCP: stable bounded retrieval tools, authenticated HTTP request cancellation, per-instance
+  connection limits, and durable status for hosted writes.
+- Artifact imports are adaptive by default.
+- `vault.create` accepts string content.
 - `vulcan daily open [date]` opens or creates the daily note for any day, with `--dry-run` to
   preview the resolved path. Date arguments across `daily` and `periodic` now accept `yesterday`,
   `tomorrow`, signed offsets (`-1`, `+3`, `-2w`, `-1m`), and `last <weekday>` / `next <weekday>`
@@ -11,26 +105,43 @@
 - `vulcan daily calendar` (and bare `vulcan daily` in a terminal) is a month-calendar picker:
   it marks days with notes and events, previews the selected note, and creates or edits any day's
   note in `$EDITOR` from the daily template without leaving the calendar.
+- Named MCP remotes with device-global definitions, concurrent instances, foreground/resident
+  multi-vault hosting, IndieAuth login and per-connection consent, attenuated grants, and revocation.
+  Legacy credentials migrate explicitly into protected-file SecretStore custody. Hosted writes
+  expose durable operation status for timeout recovery. See `vulcan help mcp-remotes` for setup
+  and recovery, and `vulcan help chatgpt-mcp` for the hosted-client workflow.
+- Added Container Core v1, the rules shared by MDAF and wiki packages. The rules moved from
+  MDAF v1 without changes, so existing artifacts stay valid.
+- Added Knowledge v1, a source-neutral snapshot of cited entities and claims.
+- Added Markdown Wiki Package v2, with required provenance, a note-to-source map, and a hosted
+  knowledge snapshot. `exchange wiki export` now writes v2. `inspect`, `validate`, and `import`
+  accept v1 and v2. Import records the package and member of mapped notes in `vulcan.source`
+  frontmatter; `--source-locators full` also copies every span and locator.
+- `integrations.routes.<name>.owner_device` restricts live route runs to one device so synced
+  vaults cannot publish duplicate remote documents from two devices.
 
 ### Changed
 
+- Rolling and stable releases never serve an unsigned update descriptor. A rolling build stages its
+  descriptor as `vulcan-update-channel.unsigned.json` until the signer replaces it, and a stable
+  release becomes `latest` only after it is signed.
+- The updater accepts `sshsig-ed25519` signatures, so a smartcard-held SSH key can sign stable
+  releases. It trusts the new `stable-2026-10` key alongside `stable-2026-09`.
+- `.md` is recognised as Markdown in any letter case.
 - "Today" for daily and periodic notes is now the local calendar day rather than the UTC date,
   so late-evening or early-morning work no longer lands in the neighbouring day's note.
 - Creating a periodic note for another day renders template built-ins such as `{{date}}` as that
   note's date instead of the current date. `tp.date.now()` is unchanged.
-
 - Sync conflicts closed for 30 days move into a compact per-repository archive
   (`refs/vulcan/conflict-archive`) during sync. Their records, decisions, and conflicted file
   versions stay readable with `vulcan sync conflicts <id>`, while their directories and per-conflict
   Git refs no longer accumulate. `vulcan sync conflicts` reports the archived count, and
   `vulcan sync conflicts-archive --older-than-days <n>` archives sooner on demand.
-
 - Every sync used to read every conflict record ever preserved for the repository to decide
   which unresolved ones to supersede or carry forward. A device-local index of open conflicts
   now limits that to the conflicts still open; resolved and superseded records are no longer
   reopened. Recording a new conflict no longer reads the resolution of every pruned conflict
   either.
-
 - `vulcan inbox`, `daily append`/`periodic append`, `tasks create`, and the script APIs
   `vault.inbox()` and `vault.daily.append()` no longer treat a note they cannot read (for example
   one that is not valid UTF-8) as empty. They used to replace such a note with only the new entry;
@@ -40,22 +151,18 @@
   instead of rewriting them in place, so a crash can no longer leave a truncated note or
   `config.toml`. The CLI note writes also refuse to overwrite a note that changed since it was
   read, and route notes in mdbase collections through collection validation like `note append`.
-
 - A device-key mismatch now names both devices and the identity directory in use. When the
   installation's own key is the bound one, the message says this process reads a different
   identity directory (check its `HOME`/`XDG_DATA_HOME`) and warns against re-binding, instead of
   advising "re-bind", which would have locked the installation key out.
-
 - Sync conflict resolution errors now say what to do next. A refusal because the live branch moved,
   a conflicted file changed again, or the worktree is out of date names `vulcan sync run` and when
   to use `--group`, instead of "require a fresh reconciliation" or "the remote live ref no longer
   matches the preserved conflict input".
-
 - Conflicts in Obsidian's `.obsidian/workspace*.json` (open panes and layout) no longer stop a
   sync for review: when both devices changed it, this device's copy is kept. The new
   `prefer_local` merge-policy resolution can also be used in a shared `sync.merge_policy` for other
   per-device state; `sync.merge_automation = "require_review"` still turns it into review.
-
 - A named MCP remote's dynamically registered OAuth clients moved from
   `mcp-remotes/<name>/oauth-clients.json`, rewritten whole on every registration and capped at
   1 MiB, into the store that holds its connection grants. Because registration needs no
@@ -93,15 +200,12 @@
   until it gives up. Building the plan's trees left the private sync index without file stat data,
   so an unchanged worktree looked modified; plan trees are also built with a fixed number of Git
   processes instead of two per changed path.
-
 - A structured sync merge whose result matched this device's files no longer retries until it
   gives up. Building the merged tree reused the private sync index and left it without file stat
   data, so the following working-tree check reported unchanged files as modified.
-
 - `vulcan sync resolve <id> --side …` without `--group` no longer fails with "the remote live ref
   no longer matches" after another device synced unrelated changes. The choice now applies to every
   unfinished conflict group on the current live tree, and a live commit not yet fetched is fetched.
-
 - The daemon now syncs with the installation's device key. It previously created and used a
   second, daemon-only key, so every vault bound to the device-key transport failed daemon syncs
   with "the device key changed since binding; re-bind" while `vulcan sync run` worked. The stray
@@ -113,7 +217,6 @@
   as one unit. Previously no resolution could complete such a conflict, so the wiki stayed marked
   conflicted. The original conflict's evidence remains inspectable, and a file another device
   keeps changing leaves only the original plus one current conflict, not one per sync.
-
 - The trusted-vault list is written atomically and durably. A crash mid-write previously could
   truncate it, after which every vault was silently treated as untrusted.
 - Applying a change pulled by `vulcan sync` no longer rewrites every file in the vault. Only the
@@ -147,25 +250,6 @@
   failure, and rolls back a move interrupted by a crash at the next move or scan.
 - New vaults track `.vulcan/templates/` in the default `.vulcan/.gitignore`. Existing ignore files
   are not rewritten; add `!templates/` and `!templates/**` by hand.
-
-### Added
-
-- Named MCP remotes with device-global definitions, concurrent instances, foreground/resident
-  multi-vault hosting, IndieAuth login and per-connection consent, attenuated grants, and revocation.
-  Legacy credentials migrate explicitly into protected-file SecretStore custody. Hosted writes
-  expose durable operation status for timeout recovery. See `vulcan help mcp-remotes` for setup
-  and recovery, and `vulcan help chatgpt-mcp` for the hosted-client workflow.
-- Added Container Core v1, the rules shared by MDAF and wiki packages. The rules moved from
-  MDAF v1 without changes, so existing artifacts stay valid.
-- Added Knowledge v1, a source-neutral snapshot of cited entities and claims.
-- Added Markdown Wiki Package v2, with required provenance, a note-to-source map, and a hosted
-  knowledge snapshot. `exchange wiki export` now writes v2. `inspect`, `validate`, and `import`
-  accept v1 and v2. Import records the package and member of mapped notes in `vulcan.source`
-  frontmatter; `--source-locators full` also copies every span and locator.
-- `integrations.routes.<name>.owner_device` restricts live route runs to one device so synced
-  vaults cannot publish duplicate remote documents from two devices.
-
-The parser version is bumped, so existing caches reindex on the next scan.
 
 ## 0.2.1 — 2026-09-06
 

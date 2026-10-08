@@ -16,7 +16,7 @@ zeroize.workspace = true
 rustix = { version = "1", default-features = false, features = ["process", "std"] }
 
 [target.'cfg(windows)'.dependencies]
-vulcan-winacl = { path = "../vulcan-winacl", version = "0.2.1" }
+vulcan-winacl = { path = "../vulcan-winacl", version = "0.3.0" }
 
 [dev-dependencies]
 serde_json.workspace = true

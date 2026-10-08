@@ -291,8 +291,8 @@ conflicts, and vault content.
 The POSIX installer supports Linux and macOS and defaults to `~/.local`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/tionis/vulcan/v0.2.1/scripts/install.sh | \
-  sh -s -- --version 0.2.1 --dry-run
+curl -fsSL https://raw.githubusercontent.com/tionis/vulcan/v0.3.0/scripts/install.sh | \
+  sh -s -- --version 0.3.0 --dry-run
 ```
 
 Review the plan, remove `--dry-run`, and ensure `~/.local/bin` is on `PATH`. Pass an explicit
