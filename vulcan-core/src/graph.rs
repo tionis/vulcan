@@ -463,16 +463,7 @@ impl GraphAdjacency {
     fn load(connection: &Connection) -> Result<Self, GraphQueryError> {
         let mut edges = Vec::new();
         let mut counts = HashMap::<String, (usize, usize)>::new();
-        let mut statement = connection.prepare(
-            "
-            SELECT source.id, target.id, links.confidence, links.confidence_score
-            FROM links
-            JOIN documents AS source ON source.id = links.source_document_id
-            JOIN documents AS target ON target.id = links.resolved_target_id
-            WHERE source.extension = 'md' AND target.extension = 'md'
-            ORDER BY source.path, target.path, links.byte_offset
-            ",
-        )?;
+        let mut statement = connection.prepare(NOTE_EDGES_SQL)?;
         let rows = statement.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -489,11 +480,7 @@ impl GraphAdjacency {
             confidence
                 .entry((source_id.clone(), target_id.clone()))
                 .and_modify(|existing: &mut (LinkConfidence, f64)| {
-                    if confidence_rank(edge_confidence) > confidence_rank(existing.0)
-                        || confidence_score > existing.1
-                    {
-                        *existing = (edge_confidence, confidence_score);
-                    }
+                    prefer_edge_confidence(existing, (edge_confidence, confidence_score));
                 })
                 .or_insert((edge_confidence, confidence_score));
             edges.push((source_id, target_id));
@@ -1112,6 +1099,63 @@ pub fn query_graph_communities_with_filter(
     let adjacency = filtered_graph_adjacency(&connection, &notes)?;
     let report = build_graph_communities_report(&connection, &notes, &adjacency, persist)?;
     Ok(report)
+}
+
+/// Resolved note-to-note links in path order, then by position: every link
+/// between one pair of notes is contiguous.
+const NOTE_EDGES_SQL: &str = "
+    SELECT source.id, target.id, links.confidence, links.confidence_score
+    FROM links
+    JOIN documents AS source ON source.id = links.source_document_id
+    JOIN documents AS target ON target.id = links.resolved_target_id
+    WHERE source.extension = 'md' AND target.extension = 'md'
+    ORDER BY source.path, target.path, links.byte_offset
+";
+
+/// A pair's links in order decide its confidence: a later link replaces
+/// the current one when its confidence ranks higher or its score is higher.
+fn prefer_edge_confidence(existing: &mut (LinkConfidence, f64), next: (LinkConfidence, f64)) {
+    if confidence_rank(next.0) > confidence_rank(existing.0) || next.1 > existing.1 {
+        *existing = next;
+    }
+}
+
+/// The confidence breakdown of [`query_graph_analytics`] alone: every link
+/// counted with its pair's confidence, in one ordered pass instead of
+/// building the whole graph (seconds at 100K notes).
+pub fn query_graph_confidence(
+    paths: &VaultPaths,
+) -> Result<GraphConfidenceBreakdown, GraphQueryError> {
+    let connection = open_existing_cache(paths)?;
+    let mut statement = connection.prepare(NOTE_EDGES_SQL)?;
+    let mut rows = statement.query([])?;
+    let mut breakdown = GraphConfidenceBreakdown::default();
+    let mut pair: Option<(String, String, (LinkConfidence, f64), usize)> = None;
+    let mut finish = |pair: Option<(String, String, (LinkConfidence, f64), usize)>| {
+        if let Some((_, _, (confidence, _), links)) = pair {
+            for _ in 0..links {
+                breakdown.add(confidence);
+            }
+        }
+    };
+    while let Some(row) = rows.next()? {
+        let (source, target): (String, String) = (row.get(0)?, row.get(1)?);
+        let next = (
+            LinkConfidence::from_db(&row.get::<_, String>(2)?),
+            row.get::<_, f64>(3)?,
+        );
+        match pair.as_mut() {
+            Some((current_source, current_target, existing, links))
+                if *current_source == source && *current_target == target =>
+            {
+                prefer_edge_confidence(existing, next);
+                *links += 1;
+            }
+            _ => finish(pair.replace((source, target, next, 1))),
+        }
+    }
+    finish(pair);
+    Ok(breakdown)
 }
 
 pub fn query_graph_analytics(paths: &VaultPaths) -> Result<GraphAnalyticsReport, GraphQueryError> {
@@ -2373,6 +2417,40 @@ mod tests {
             ),
             Err(GraphQueryError::NoteNotFound { .. })
         ));
+    }
+
+    #[test]
+    fn streamed_confidence_equals_the_analytics_breakdown() {
+        let temp = TempDir::new().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        fs::create_dir_all(paths.vulcan_dir()).expect("config dir");
+        fs::write(temp.path().join("A.md"), "[[B]] [[B]] [[B]] [[C]]\n").unwrap();
+        fs::write(temp.path().join("B.md"), "[[A]] [[C]] [[C]]\n").unwrap();
+        fs::write(temp.path().join("C.md"), "[[A]]\n").unwrap();
+        fs::write(temp.path().join("D.md"), "[[missing]] [[A]]\n").unwrap();
+        scan_vault(&paths, ScanMode::Full).expect("scan");
+        // Give the links of one pair conflicting confidences in order, so
+        // the pair rule decides; and mark another pair inferred.
+        let connection = Connection::open(paths.cache_db()).unwrap();
+        connection
+            .execute_batch(
+                "UPDATE links SET confidence = 'AMBIGUOUS', confidence_score = 0.4
+                 WHERE id = (SELECT links.id FROM links JOIN documents ON documents.id = links.source_document_id
+                             WHERE documents.path = 'A.md' ORDER BY links.byte_offset LIMIT 1);
+                 UPDATE links SET confidence = 'INFERRED', confidence_score = 0.9
+                 WHERE id = (SELECT links.id FROM links JOIN documents ON documents.id = links.source_document_id
+                             WHERE documents.path = 'A.md' ORDER BY links.byte_offset LIMIT 1 OFFSET 2);
+                 UPDATE links SET confidence = 'INFERRED', confidence_score = 0.5
+                 WHERE source_document_id = (SELECT id FROM documents WHERE path = 'B.md');",
+            )
+            .unwrap();
+        drop(connection);
+        let streamed = query_graph_confidence(&paths).unwrap();
+        assert_eq!(streamed, query_graph_analytics(&paths).unwrap().confidence);
+        assert!(
+            streamed.inferred > 0 && streamed.extracted > 0,
+            "{streamed:?}"
+        );
     }
 
     #[test]

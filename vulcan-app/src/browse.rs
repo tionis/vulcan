@@ -23,14 +23,14 @@ use vulcan_core::{
     load_assistant_skill, load_dataview_blocks as core_load_dataview_blocks,
     load_kanban_board as core_load_kanban_board, load_permission_profiles, load_vault_config,
     move_note as core_move_note, query_backlinks as core_query_backlinks,
-    query_graph_analytics as core_query_graph_analytics, query_links as core_query_links,
-    query_notes as core_query_notes, resolve_note_reference, search_vault as core_search_vault,
-    AutoScanMode, BacklinksReport, BasesEvalReport, CacheDatabase, DailyNoteEvents,
-    DataviewBlockRecord, DataviewJsEvalOptions, DataviewJsResult, DoctorReport, DqlEvalError,
-    DqlQueryResult, EvaluatedInlineExpression, GitLogEntry, GraphConfidenceBreakdown,
-    KanbanBoardRecord, KanbanBoardSummary, MoveSummary, NamedCount, NoteIdentity, NoteQuery,
-    NoteRecord, NotesReport, OutgoingLinksReport, PeriodicConfig, PermissionFilter,
-    PermissionGuard, ProfilePermissionGuard, ScanSummary, SearchQuery, SearchReport, VaultPaths,
+    query_links as core_query_links, query_notes as core_query_notes, resolve_note_reference,
+    search_vault as core_search_vault, AutoScanMode, BacklinksReport, BasesEvalReport,
+    CacheDatabase, DailyNoteEvents, DataviewBlockRecord, DataviewJsEvalOptions, DataviewJsResult,
+    DoctorReport, DqlEvalError, DqlQueryResult, EvaluatedInlineExpression, GitLogEntry,
+    GraphConfidenceBreakdown, KanbanBoardRecord, KanbanBoardSummary, MoveSummary, NamedCount,
+    NoteIdentity, NoteQuery, NoteRecord, NotesReport, OutgoingLinksReport, PeriodicConfig,
+    PermissionFilter, PermissionGuard, ProfilePermissionGuard, ScanSummary, SearchQuery,
+    SearchReport, VaultPaths,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -581,9 +581,7 @@ pub fn build_vault_status_report(paths: &VaultPaths) -> Result<VaultStatusReport
         git_staged,
         git_unstaged,
         git_untracked,
-        graph_confidence: core_query_graph_analytics(paths)
-            .ok()
-            .map(|report| report.confidence),
+        graph_confidence: vulcan_core::query_graph_confidence(paths).ok(),
     })
 }
 
