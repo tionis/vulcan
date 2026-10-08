@@ -98,6 +98,58 @@ impl SourceExpr {
         }
     }
 
+    /// Whether the document `id` at `path` is one of the source's documents,
+    /// exactly as [`Self::render_sql`] selects them, probing its own tag and
+    /// link rows instead of selecting every member.
+    pub(crate) fn contains_document(
+        &self,
+        connection: &rusqlite::Connection,
+        id: &str,
+        path: &str,
+    ) -> rusqlite::Result<bool> {
+        Ok(match self {
+            Self::Tag(tag) => connection.query_row(
+                "SELECT EXISTS (SELECT 1 FROM tags WHERE tags.document_id = ?1 \
+                 AND (tags.tag_text = ?2 OR (tags.tag_text >= ?3 AND tags.tag_text < ?4)))",
+                rusqlite::params![id, tag, format!("{tag}/"), format!("{tag}0")],
+                |row| row.get(0),
+            )?,
+            Self::Folder(folder) => {
+                folder.is_empty() || path.as_bytes().starts_with(format!("{folder}/").as_bytes())
+            }
+            Self::Path(source_path) => path == source_path,
+            Self::LinksTo(target_id) => connection.query_row(
+                "SELECT EXISTS (SELECT 1 FROM links WHERE links.source_document_id = ?1 \
+                 AND links.resolved_target_id = ?2)",
+                rusqlite::params![id, target_id],
+                |row| row.get(0),
+            )?,
+            Self::LinkedFrom(source_id) => connection.query_row(
+                "SELECT EXISTS (SELECT 1 FROM links WHERE links.resolved_target_id = ?1 \
+                 AND links.source_document_id = ?2)",
+                rusqlite::params![id, source_id],
+                |row| row.get(0),
+            )?,
+            Self::And(children) => {
+                for child in children {
+                    if !child.contains_document(connection, id, path)? {
+                        return Ok(false);
+                    }
+                }
+                true
+            }
+            Self::Or(children) => {
+                for child in children {
+                    if child.contains_document(connection, id, path)? {
+                        return Ok(true);
+                    }
+                }
+                false
+            }
+            Self::Not(inner) => !inner.contains_document(connection, id, path)?,
+        })
+    }
+
     fn join(
         children: &[Self],
         separator: &str,

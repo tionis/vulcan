@@ -184,6 +184,13 @@ pub trait BasesSource: Send + Sync {
     fn rows_from_universe(&self) -> bool {
         false
     }
+
+    /// Whether the rows are exactly the universe notes the request's
+    /// filters match, so a view that keeps only its first rows may have
+    /// the note query stop early.
+    fn rows_are_filtered_universe(&self) -> bool {
+        false
+    }
 }
 
 fn owned(rows: Vec<Arc<NoteRecord>>) -> Vec<NoteRecord> {
@@ -196,6 +203,7 @@ fn query_source_notes_planned(
     paths: &VaultPaths,
     request: &BasesSourceRequest,
     universe: Option<&IndexedNoteLookup<'_>>,
+    top: Option<crate::plan::PlanTop<'_>>,
 ) -> Result<(Vec<Arc<NoteRecord>>, Option<crate::plan::QueryPlanExplain>), BasesError> {
     let query = NoteQuery {
         filters: request.filters.clone(),
@@ -209,6 +217,7 @@ fn query_source_notes_planned(
             &load_vault_config(paths).config,
             &query,
             request.stored_only,
+            top,
         )
         .map(|shared| (shared.notes, Some(shared.plan))),
         None => {
@@ -232,7 +241,7 @@ impl BasesSource for FileSource {
         paths: &VaultPaths,
         request: &BasesSourceRequest,
     ) -> Result<Vec<NoteRecord>, BasesError> {
-        query_source_notes_planned(paths, request, None).map(|(rows, _)| owned(rows))
+        query_source_notes_planned(paths, request, None, None).map(|(rows, _)| owned(rows))
     }
 
     fn rows_planned(
@@ -241,10 +250,14 @@ impl BasesSource for FileSource {
         request: &BasesSourceRequest,
         universe: Option<&IndexedNoteLookup<'_>>,
     ) -> Result<(Vec<Arc<NoteRecord>>, Option<crate::plan::QueryPlanExplain>), BasesError> {
-        query_source_notes_planned(paths, request, universe)
+        query_source_notes_planned(paths, request, universe, None)
     }
 
     fn rows_from_universe(&self) -> bool {
+        true
+    }
+
+    fn rows_are_filtered_universe(&self) -> bool {
         true
     }
 }
@@ -282,7 +295,7 @@ fn tasknote_source_rows_planned(
 ) -> Result<(Vec<Arc<NoteRecord>>, Option<crate::plan::QueryPlanExplain>), BasesError> {
     let config = load_vault_config(paths).config;
     let include_archived = tasknotes_source_include_archived(request.config.as_ref());
-    let (mut rows, plan) = query_source_notes_planned(paths, request, universe)?;
+    let (mut rows, plan) = query_source_notes_planned(paths, request, universe, None)?;
     rows.retain(|note| {
         extract_tasknote(
             &note.document_path,
@@ -1244,22 +1257,96 @@ fn evaluate_base_view(
         stored_only: context.stored_only,
     };
     let universe = context.universe.as_ref();
-    let mut plan = None;
-    let source_rows = source_impl
-        .rows_planned(paths, &request, universe)
-        .and_then(|(rows, rows_plan)| {
-            plan = rows_plan;
-            match (context.guard, universe) {
-                (Some(guard), Some(universe)) => authorize_guarded_rows(
-                    paths,
-                    rows,
-                    guard,
-                    universe,
-                    source_impl.rows_from_universe(),
+    let time_zone =
+        DataviewTimeZone::parse(load_vault_config(paths).config.dataview.timezone.as_deref());
+    // A view that keeps its first `limit` rows, ungrouped and without
+    // formulas (which evaluate for every row), sorted by a value each stored
+    // row determines alone, lets the note query stop after those rows. The
+    // order reproduces the row sort below exactly.
+    let sort_key = view
+        .sort_by
+        .as_deref()
+        .or_else(|| view.columns.first().map(String::as_str));
+    let sort_column = sort_key.map(|key| {
+        build_view_columns(property_display_names, &view)
+            .iter()
+            .any(|column| column.key == key)
+            .then(|| parse_expression(key).ok())
+    });
+    let plain_sort = match &sort_column {
+        // A cell: a property read, or unparsable (always null).
+        Some(Some(parsed)) => matches!(
+            parsed,
+            None | Some(crate::expression::ast::Expr::Identifier(_))
+        ),
+        Some(None) | None => true,
+    };
+    let top_universe = universe.filter(|_| {
+        view.limit.is_some()
+            && view.group_by.is_none()
+            && view.formulas.is_empty()
+            && context.stored_only
+            && plain_sort
+            && source_impl.rows_are_filtered_universe()
+    });
+    let no_formulas = BTreeMap::new();
+    let ordering = crate::plan::KeyedOrdering::new(
+        |note: &Arc<NoteRecord>| {
+            let value = match (sort_key, &sort_column) {
+                (Some(key), Some(Some(parsed))) => evaluate_base_cell(
+                    note,
+                    &no_formulas,
+                    key,
+                    parsed.as_ref(),
+                    top_universe?,
+                    time_zone,
                 ),
-                _ => Ok(rows),
+                (Some(key), _) => note_row_value(note, key),
+                (None, _) => Value::Null,
+            };
+            Some((value, 0))
+        },
+        |left: &Value, right: &Value| {
+            let ordering = compare_json_values(left, right);
+            if view.sort_descending {
+                ordering.reverse()
+            } else {
+                ordering
             }
+        },
+    );
+    let top = top_universe
+        .and(view.limit)
+        .map(|take| crate::plan::PlanTop {
+            take,
+            order: sort_key.map(|key| crate::plan::PlanOrder {
+                key: format!(
+                    "bases:{key}:{}:{}",
+                    matches!(sort_column, Some(Some(_))),
+                    view.sort_descending
+                ),
+                ordering: &ordering,
+            }),
         });
+    let mut plan = None;
+    let planned_rows = if top.is_some() {
+        query_source_notes_planned(paths, &request, universe, top)
+    } else {
+        source_impl.rows_planned(paths, &request, universe)
+    };
+    let source_rows = planned_rows.and_then(|(rows, rows_plan)| {
+        plan = rows_plan;
+        match (context.guard, universe) {
+            (Some(guard), Some(universe)) => authorize_guarded_rows(
+                paths,
+                rows,
+                guard,
+                universe,
+                source_impl.rows_from_universe(),
+            ),
+            _ => Ok(rows),
+        }
+    });
     let notes = match source_rows {
         Ok(rows) => rows,
         Err(BasesError::Property(PropertyError::InvalidFilter(filter))) => {
@@ -1324,8 +1411,6 @@ fn evaluate_base_view(
     let diagnostics = &mut *context.diagnostics;
 
     let columns = build_view_columns(property_display_names, &view);
-    let time_zone =
-        DataviewTimeZone::parse(load_vault_config(paths).config.dataview.timezone.as_deref());
     let parsed_formulas = parse_formulas(&view.formulas);
     let parsed_columns = columns
         .iter()
@@ -3513,6 +3598,7 @@ mod tests {
                 stored_only: false,
             },
             Some(&universe),
+            None,
         )
         .unwrap();
         let target = rows

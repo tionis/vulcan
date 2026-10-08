@@ -14,6 +14,7 @@
 //! `VULCAN_NOTE_BENCH_READERS` (default 8), `VULCAN_NOTE_BENCH_WRITES_PER_SECOND`
 //! (default 0), `VULCAN_NOTE_BENCH_SESSION` (`0` for the direct path),
 //! `VULCAN_NOTE_BENCH_SCOPE` (a permission profile), and
+//! `VULCAN_NOTE_BENCH_EXPLAIN` (`1` prints each frontend's warm plan stages),
 //! `VULCAN_NOTE_BENCH_FRONTENDS` (a comma-separated subset of `dql`,
 //! `dql-tag`, `query`, `bases`, `bases-tag`, `notes`, and `mdbase`; DQL and
 //! Bases ask folder-and-property and tag-and-property questions). The writer edits a record body
@@ -303,6 +304,40 @@ fn note_query_service_benchmark() {
             answer
         })
         .collect::<Vec<_>>();
+
+    // `VULCAN_NOTE_BENCH_EXPLAIN=1` prints each frontend's warm plan stages
+    // (stderr, one JSON line per frontend) before the measured run.
+    if std::env::var("VULCAN_NOTE_BENCH_EXPLAIN").is_ok_and(|value| value == "1") {
+        let mut seen = BTreeSet::new();
+        for (frontend, request) in &requests {
+            if !seen.insert(*frontend) {
+                continue;
+            }
+            let mut explained = request.clone();
+            explained
+                .query
+                .insert("explain".to_string(), vec!["true".to_string()]);
+            let mut timings = Vec::new();
+            let mut body = serde_json::Value::Null;
+            for _ in 0..4 {
+                let start = Instant::now();
+                let response =
+                    route_request_with_sessions(&paths, &options, &state, &explained, sessions);
+                timings.push(start.elapsed().as_secs_f64() * 1000.0);
+                body = response.body;
+            }
+            let result = &body["result"];
+            let plan = result
+                .get("plan")
+                .or_else(|| result["views"][0].get("plan"))
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            eprintln!(
+                "{}",
+                serde_json::json!({ "frontend": frontend, "ms": timings, "plan": plan })
+            );
+        }
+    }
 
     let latencies = Mutex::new(BTreeMap::<&str, Vec<f64>>::new());
     let write_latencies = Mutex::new(Vec::new());

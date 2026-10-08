@@ -260,6 +260,32 @@ version and load from a covering index (v29, widened in v30 to apply path scopes
   the notes the changed notes now link to, and notes whose incoming links name a changed note:
   with no path, file name, or alias moved, no other link resolves differently.
 
+**Ordered top-k.** A frontend that keeps only its first `take` matches in an order it states
+(ties by path) passes a `PlanTop` to the plan: a `QueryAst` or `/notes` page (`offset + limit`,
+sorted by `sort_by` or in path order); a Bases view with a limit, no grouping or formulas, rows
+with stored fields only, and a sort value that is a plain property (or a row value such as
+`file.name` outside the columns); and DQL `TABLE`/`LIST` queries of the shape
+`[FROM] [WHERE] [SORT key] LIMIT n` with one property sort key. When the snapshot holds the
+scope's records and the predicate is total (`Predicate::is_total`: it decides every record whose
+properties are an object, so no record reaches the residual and no diagnostic is skipped), the
+plan walks the records in that order and stops after `take` matches. Sorting and truncating
+exactly those rows reproduces the frontend's answer, so frontends keep their own sort code.
+
+The walk reads two indexes cached with the records (`RecordIndexes`): an order per frontend sort
+key and direction, and a match set per source, predicate, and Markdown restriction (bitsets of
+source members, decided positions, and matches; sources select in SQL, as the plan otherwise
+would). With them a walk reads no record it skips, even when the sort correlates with the
+predicate (titles grouped by type put every task last). Orders exist only where the frontend's
+comparison is a total order on the keys: the notes and Bases comparisons rank kinds, and DQL
+accepts nulls plus one plain kind (booleans, numbers, or strings that are neither date- nor
+duration-like), otherwise it declines and the plan decides every candidate as before. When a
+write leaves identities unchanged, the successor records carry the predecessor's indexes: each
+changed record is removed from every order and re-placed by binary search, and only changed
+records are decided again; a per-document source (folder, path, tag, or links to a target)
+re-checks only the changed records' membership in SQL, while `LinkedFrom` reselects. A change of
+identities rebuilds the indexes on first use. At most 32 indexes of each kind are kept per
+records set.
+
 Restricted scopes stay as cheap as unrestricted ones: identity loads apply path grants to each
 `note_query` row through the covering index instead of a CTE of permitted ids, the planner's
 candidate SQL carries no permission clause (candidates are filtered by universe membership), and

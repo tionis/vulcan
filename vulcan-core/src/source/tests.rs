@@ -196,6 +196,16 @@ fn sql_selects_exactly_the_reference_documents() {
             .map(|doc| doc.id.to_string())
             .collect::<BTreeSet<_>>();
         assert_eq!(sql_ids(&connection, source), expected, "{source:?}");
+        let probed = DOCS
+            .iter()
+            .filter(|doc| {
+                source
+                    .contains_document(&connection, doc.id, doc.path)
+                    .unwrap()
+            })
+            .map(|doc| doc.id.to_string())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(probed, expected, "probed {source:?}");
     }
 }
 

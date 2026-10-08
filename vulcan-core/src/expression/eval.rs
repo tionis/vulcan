@@ -768,6 +768,20 @@ fn date_like_value_ms(value: &Value) -> Option<i64> {
     date_string_value_ms(value).or_else(|| integer_value_ms(value))
 }
 
+/// Whether [`compare_values`] orders `value` against values of its own JSON
+/// kind by that kind's natural order alone: null, booleans, numbers, and
+/// strings that are neither date- nor duration-like. Among such values of
+/// one kind, plus nulls, it is a total order.
+pub(crate) fn plain_comparable(value: &Value) -> bool {
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) => true,
+        Value::String(_) => {
+            date_string_value_ms(value).is_none() && duration_string_value_ms(value).is_none()
+        }
+        Value::Array(_) | Value::Object(_) => false,
+    }
+}
+
 fn date_string_value_ms(value: &Value) -> Option<i64> {
     let Value::String(text) = value else {
         return None;

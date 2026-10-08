@@ -258,6 +258,16 @@ impl Predicate {
         }
     }
 
+    /// Whether the Dataview dialect decides every record whose properties
+    /// are an object, so no record ever reaches the frontend evaluator.
+    pub(crate) fn is_total(&self) -> bool {
+        match self {
+            Self::Atom(atom) => atom.is_total(),
+            Self::All(children) | Self::Any(children) => children.iter().all(Self::is_total),
+            Self::Unknown => false,
+        }
+    }
+
     /// Decide one record in memory.
     pub(crate) fn decide(&self, dialect: Dialect, record: &RecordValues<'_>) -> Decision {
         match self {
@@ -415,6 +425,21 @@ fn dataview_property<'a>(properties: &'a Value, key: &str) -> Option<&'a Value> 
 const EXACT_INTEGER_BOUND: f64 = 9_007_199_254_740_992.0;
 
 impl Atom {
+    /// See [`Predicate::is_total`]; mirrors the Dataview branches of
+    /// [`Self::decide`] that can return [`Decision::Undecided`].
+    fn is_total(&self) -> bool {
+        let property = matches!(self.field, Field::Property(_));
+        match (&self.literal, self.comparison) {
+            (Literal::Text(_), Comparison::Contains) => property,
+            // A property may hold a list.
+            (Literal::Text(_), Comparison::StartsWith) => !property,
+            // Numbers meet date-like strings, and integers are CEL's.
+            (Literal::Number(_) | Literal::Integer(_), _)
+            | (_, Comparison::Contains | Comparison::StartsWith) => false,
+            (Literal::Null | Literal::Bool(_) | Literal::Text(_), _) => true,
+        }
+    }
+
     fn decide(&self, dialect: Dialect, record: &RecordValues<'_>) -> Decision {
         if dialect == Dialect::Cel {
             return self.decide_cel(record);

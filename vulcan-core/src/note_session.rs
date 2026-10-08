@@ -28,7 +28,7 @@
 //! retained; they still read the snapshot's transaction.
 
 use crate::config::VaultConfig;
-use crate::note_lookup::{IdentityIndex, IndexedNoteLookup};
+use crate::note_lookup::{IdentityIndex, IndexedNoteLookup, RecordIndexes};
 use crate::note_store::NoteStore;
 use crate::properties::{
     count_scoped_identities, hydrate_shared_notes, load_readable_identities, load_stored_notes,
@@ -71,7 +71,18 @@ struct RetainedStored {
 
 /// A scope's stored records in identity order, with the bookmark set they
 /// were loaded under.
-type ScopeRecords = (Arc<HashSet<String>>, Arc<[Arc<NoteRecord>]>);
+/// A scope's records in identity order and the indexes cached with them.
+type IndexedRecords = (Arc<[Arc<NoteRecord>]>, Arc<RecordIndexes>);
+
+/// Records carried from a predecessor, with indexes to cache with them.
+type CarriedRecords = (Arc<[Arc<NoteRecord>]>, RecordIndexes);
+
+/// Indexes are cached with the records they index.
+type ScopeRecords = (
+    Arc<HashSet<String>>,
+    Arc<[Arc<NoteRecord>]>,
+    Arc<RecordIndexes>,
+);
 
 /// One read scope's identities at one clock, and its stored records in
 /// identity order once a request needed all of them.
@@ -476,20 +487,25 @@ impl NoteStoreSnapshot<'_> {
     fn scope_records(
         &self,
         scope: &RetainedScope,
-    ) -> Result<Option<Arc<[Arc<NoteRecord>]>>, PropertyError> {
+    ) -> Result<Option<IndexedRecords>, PropertyError> {
         let mut records = lock(&scope.records);
-        if let Some((bookmarks, records)) = records.as_ref() {
+        if let Some((bookmarks, records, orders)) = records.as_ref() {
             if **bookmarks == *self.bookmarks {
-                return Ok(Some(Arc::clone(records)));
+                return Ok(Some((Arc::clone(records), Arc::clone(orders))));
             }
         }
         let predecessor = lock(&scope.predecessor).take();
-        if let Some(carried) = predecessor
+        if let Some((carried, indexes)) = predecessor
             .and_then(|predecessor| self.carry_records(scope, &predecessor).transpose())
             .transpose()?
         {
-            *records = Some((Arc::clone(&self.bookmarks), Arc::clone(&carried)));
-            return Ok(Some(carried));
+            let indexes = Arc::new(indexes);
+            *records = Some((
+                Arc::clone(&self.bookmarks),
+                Arc::clone(&carried),
+                Arc::clone(&indexes),
+            ));
+            return Ok(Some((carried, indexes)));
         }
         let mut by_path = self
             .load_stored_retained(&scope.index, &scope.versions, None)?
@@ -505,20 +521,27 @@ impl NoteStoreSnapshot<'_> {
             return Ok(None);
         };
         let ordered = Arc::<[Arc<NoteRecord>]>::from(ordered);
-        *records = Some((Arc::clone(&self.bookmarks), Arc::clone(&ordered)));
-        Ok(Some(ordered))
+        let indexes = Arc::new(RecordIndexes::default());
+        *records = Some((
+            Arc::clone(&self.bookmarks),
+            Arc::clone(&ordered),
+            Arc::clone(&indexes),
+        ));
+        Ok(Some((ordered, indexes)))
     }
 
     /// `scope`'s records from its predecessor's, walking both identity lists
     /// in path order: unchanged rows (same path and row version) keep their
-    /// records and only the rest load. `None` if the predecessor has none
-    /// under this bookmark set or a record is missing.
+    /// records and only the rest load. With the same identities the
+    /// predecessor's indexes carry over too. `None` if the predecessor has
+    /// none under this bookmark set or a record is missing.
     fn carry_records(
         &self,
         scope: &RetainedScope,
         predecessor: &RetainedScope,
-    ) -> Result<Option<Arc<[Arc<NoteRecord>]>>, PropertyError> {
-        let Some((bookmarks, previous)) = lock(&predecessor.records).clone() else {
+    ) -> Result<Option<CarriedRecords>, PropertyError> {
+        let Some((bookmarks, previous, previous_indexes)) = lock(&predecessor.records).clone()
+        else {
             return Ok(None);
         };
         if *bookmarks != *self.bookmarks {
@@ -528,7 +551,8 @@ impl NoteStoreSnapshot<'_> {
             |version: i64, previous_version: i64| version != 0 && version == previous_version;
         let mut carried = Vec::with_capacity(scope.index.len());
         let mut missing = Vec::new();
-        if Arc::ptr_eq(&scope.index, &predecessor.index) {
+        let same_positions = Arc::ptr_eq(&scope.index, &predecessor.index);
+        if same_positions {
             // Same identities in the same order: compare versions in place.
             for (position, identity) in scope.index.identities().iter().enumerate() {
                 if unchanged(scope.versions[position], predecessor.versions[position]) {
@@ -564,6 +588,11 @@ impl NoteStoreSnapshot<'_> {
             .into_iter()
             .map(|record| (record.document_path.clone(), record))
             .collect::<HashMap<_, _>>();
+        let changed = carried
+            .iter()
+            .enumerate()
+            .filter_map(|(position, record)| record.is_none().then_some(position))
+            .collect::<Vec<_>>();
         let ordered = scope
             .index
             .identities()
@@ -571,7 +600,12 @@ impl NoteStoreSnapshot<'_> {
             .zip(carried)
             .map(|(identity, record)| record.or_else(|| loaded.remove(&identity.path)))
             .collect::<Option<Vec<_>>>();
-        Ok(ordered.map(Arc::<[Arc<NoteRecord>]>::from))
+        let indexes = if same_positions {
+            RecordIndexes::carried_from(&previous_indexes, changed)
+        } else {
+            RecordIndexes::default()
+        };
+        Ok(ordered.map(|ordered| (Arc::<[Arc<NoteRecord>]>::from(ordered), indexes)))
     }
 
     fn retained_lookup(
@@ -598,12 +632,13 @@ impl NoteStoreSnapshot<'_> {
             )
         };
         let lookup = match self.scope_records(scope)? {
-            Some(records) => IndexedNoteLookup::from_index_with_records(
+            Some((records, indexes)) => IndexedNoteLookup::from_index_with_records(
                 index,
                 records,
                 Box::new(load_stored),
                 Box::new(hydrate),
-            ),
+            )
+            .with_record_indexes(indexes),
             None => IndexedNoteLookup::from_index(index, Box::new(load_stored), Box::new(hydrate))
                 .with_retained_records(),
         };

@@ -91,6 +91,15 @@ fn check(source: &str, note: &NoteRecord) -> Decision {
             ext: &note.file_ext,
         },
     );
+    // A total predicate leaves nothing to the evaluator.
+    if predicate.is_total() {
+        assert_ne!(
+            decision,
+            Decision::Undecided,
+            "total {source} on {}",
+            note.properties
+        );
+    }
     let truth = evaluator(source, note);
     match decision {
         Decision::Match => assert_eq!(truth, Some(true), "{source} on {}", note.properties),
@@ -457,4 +466,30 @@ fn dataview_contains_atoms_agree_with_the_evaluator_and_sql() {
         Decision::Undecided
     );
     assert_eq!(check("contains(tags, tags)", &note), Decision::Undecided);
+}
+
+#[test]
+fn total_predicates_are_the_ones_that_decide_every_object() {
+    let total = |source: &str| {
+        Predicate::lower_dataview(&Parser::new(source).unwrap().parse().unwrap()).is_total()
+    };
+    for source in [
+        "type = \"task\" && status = \"open\"",
+        "k != null || k = true",
+        "contains(tags, \"x\")",
+        "startswith(file.path, \"a/\")",
+        "file.folder = \"a\"",
+    ] {
+        assert!(total(source), "{source}");
+    }
+    for source in [
+        // Numbers meet date-like strings; lists have no prefix.
+        "priority > 2",
+        "startswith(k, \"a\")",
+        "contains(file.path, \"a\")",
+        "length(k) > 2",
+        "type = \"task\" && length(k) > 2",
+    ] {
+        assert!(!total(source), "{source}");
+    }
 }

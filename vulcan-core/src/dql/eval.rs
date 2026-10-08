@@ -273,13 +273,56 @@ fn select_candidate_rows(
     let source = source
         .map(|source| resolve_source(source, current_file, lookup))
         .transpose()?;
+    let shape = top_shape(query, &compiled);
     let predicate = match leading_page_where(query.query_type, &compiled) {
         Some(where_clause) => {
             let this = current_file.and_then(|path| lookup.note_at(path));
             where_predicate_with_this(where_clause, this).into_owned()
         }
+        // Without a WHERE every row matches.
+        None if shape.is_some_and(|(has_where, _, _)| !has_where) => Predicate::All(Vec::new()),
         None => Predicate::Unknown,
     };
+    let sort_keys = shape.and_then(|(_, keys, _)| keys);
+    let time_zone = sort_keys.map(|_| {
+        DataviewTimeZone::parse(load_vault_config(paths).config.dataview.timezone.as_deref())
+    });
+    // Keys of one plain kind besides nulls: the Dataview comparison is then
+    // a total order, so sorting a subset agrees with sorting everything.
+    let ordering = crate::plan::KeyedOrdering::new(
+        |record: &Arc<NoteRecord>| {
+            let row = ExecutionRow::page(record);
+            let value = row
+                .evaluate_with_source(&sort_keys?[0].expr, lookup, time_zone?, None)
+                .ok()?;
+            let class = sort_key_class(&value)?;
+            Some((value, class))
+        },
+        |left: &Value, right: &Value| {
+            sort_keys.map_or(Ordering::Equal, |keys| {
+                compare_sort_key_lists(
+                    std::slice::from_ref(left),
+                    std::slice::from_ref(right),
+                    keys,
+                )
+            })
+        },
+    );
+    let order_key = sort_keys.map(|keys| {
+        format!(
+            "dql:{:?}:{:?}:{:?}",
+            keys[0].expr,
+            keys[0].direction,
+            config_time_zone_key(time_zone)
+        )
+    });
+    let top = shape.map(|(_, _, limit)| crate::plan::PlanTop {
+        take: limit,
+        order: order_key.map(|key| crate::plan::PlanOrder {
+            key,
+            ordering: &ordering,
+        }),
+    });
     let plan = crate::plan::NotePlan {
         frontend: "dql",
         markdown_only: source.is_some(),
@@ -291,8 +334,69 @@ fn select_candidate_rows(
             crate::plan::Hydration::Stored
         },
         also_hydrate: current_file.map(ToString::to_string).into_iter().collect(),
+        top,
     };
     Ok(crate::plan::execute_note_plan(paths, lookup, &plan)?)
+}
+
+/// `[FROM] [WHERE] [SORT key] LIMIT n` keeps its first n rows in sort
+/// order; with the WHERE decided for every row and one sort key read from
+/// the row alone, the plan may return just those rows. The shape: whether
+/// there is a `WHERE`, the sort keys, and the limit.
+fn top_shape<'q>(
+    query: &DqlQuery,
+    compiled: &'q super::compile::CompiledDqlQuery,
+) -> Option<(bool, Option<&'q Vec<super::DqlSortKey>>, usize)> {
+    if !matches!(
+        query.query_type,
+        super::DqlQueryType::Table | super::DqlQueryType::List
+    ) {
+        return None;
+    }
+    let data_commands = compiled
+        .commands
+        .iter()
+        .filter(|command| !matches!(command, CompiledDqlCommand::From(_)))
+        .collect::<Vec<_>>();
+    let shape = match data_commands.as_slice() {
+        [CompiledDqlCommand::Where(_), CompiledDqlCommand::Sort(keys), CompiledDqlCommand::Limit(limit)] => {
+            (true, Some(keys), *limit)
+        }
+        [CompiledDqlCommand::Sort(keys), CompiledDqlCommand::Limit(limit)] => {
+            (false, Some(keys), *limit)
+        }
+        [CompiledDqlCommand::Where(_), CompiledDqlCommand::Limit(limit)] => (true, None, *limit),
+        [CompiledDqlCommand::Limit(limit)] => (false, None, *limit),
+        _ => return None,
+    };
+    let plain_key = shape.1.is_none_or(|keys| {
+        matches!(keys.as_slice(), [key] if matches!(
+            &key.expr,
+            Expr::Identifier(name) if normalize_field_name(name) != "this"
+        ))
+    });
+    plain_key.then_some(shape)
+}
+
+/// A sort key's class for [`crate::plan::KeyedOrdering`]: nulls and one
+/// plain kind (booleans, numbers, or strings that are neither date- nor
+/// duration-like), among which the Dataview comparison is a total order;
+/// `None` for anything else.
+fn sort_key_class(value: &Value) -> Option<u8> {
+    if !crate::expression::eval::plain_comparable(value) {
+        return None;
+    }
+    Some(match value {
+        Value::Null => 0,
+        Value::Bool(_) => 1,
+        Value::Number(_) => 2,
+        _ => 3,
+    })
+}
+
+/// The cache-key spelling of a time zone.
+fn config_time_zone_key(time_zone: Option<DataviewTimeZone>) -> String {
+    time_zone.map_or_else(String::new, |time_zone| format!("{time_zone:?}"))
 }
 
 /// Whether evaluating `query` may read a page row's hydrated file-object

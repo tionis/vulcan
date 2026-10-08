@@ -12,7 +12,7 @@ use std::borrow::Cow;
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
 use std::hash::BuildHasher;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Link-reachable notes for expression evaluation.
 pub trait NoteLookup {
@@ -260,6 +260,202 @@ impl IdentityIndex {
     }
 }
 
+/// An order of every retained record: positions (indexes into the
+/// records) in the frontend's order, ties by path. `class` is the one sort
+/// key class besides `0` that the keys have (see [`RecordOrdering`]).
+#[derive(Clone)]
+pub(crate) struct OrderIndex {
+    pub order: Arc<[u32]>,
+    pub class: u8,
+}
+
+/// What a source and predicate match among the retained records, as
+/// bitsets over positions. Positions outside the source stay undecided, so
+/// a changed source decides only the positions it adds.
+#[derive(Clone)]
+pub(crate) struct MatchIndex {
+    /// The source's members; `None` without a source.
+    pub source: Option<Arc<[u64]>>,
+    /// Positions the predicate decided.
+    pub decided: Arc<[u64]>,
+    /// Decided positions it matched.
+    pub predicate: Arc<[u64]>,
+    /// Source members it matched: the plan's rows.
+    pub matched: Arc<[u64]>,
+}
+
+/// How a frontend orders records. `update` re-places only the records at
+/// `changed` positions, the others being the same as when `previous` was
+/// built; `None` declines (the order is then rebuilt).
+pub(crate) trait RecordOrdering {
+    fn build(&self, records: &[Arc<NoteRecord>]) -> Option<OrderIndex>;
+    fn update(
+        &self,
+        previous: &OrderIndex,
+        records: &[Arc<NoteRecord>],
+        changed: &[usize],
+    ) -> Option<OrderIndex>;
+}
+
+/// What a plan matches; see [`RecordOrdering`] for `update`.
+pub(crate) trait RecordMatcher {
+    fn build(&self, records: &[Arc<NoteRecord>]) -> Option<MatchIndex>;
+    fn update(
+        &self,
+        previous: &MatchIndex,
+        records: &[Arc<NoteRecord>],
+        changed: &[usize],
+    ) -> Option<MatchIndex>;
+}
+
+/// How a lookup obtained an index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IndexOrigin {
+    /// Cached with these records.
+    Reused,
+    /// Carried from the previous records, re-deciding changed positions.
+    Updated,
+    Built,
+}
+
+impl IndexOrigin {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Reused => "reused",
+            Self::Updated => "updated",
+            Self::Built => "built",
+        }
+    }
+}
+
+/// One index slot: computed once per records set; concurrent requests for
+/// the key wait for the first. `None` inside means the index declined.
+type IndexSlot<T> = Arc<OnceLock<Option<(T, IndexOrigin)>>>;
+
+/// Indexes of one set of retained records, cached with them: orders and
+/// match sets per key. A host keeps one per records set, so an index never
+/// outlives the records it describes. A successor over the same positions
+/// carries every index its predecessors built, with the positions changed
+/// since, and updates one on first use instead of building it.
+#[derive(Default)]
+pub struct RecordIndexes {
+    orders: Mutex<HashMap<String, IndexSlot<OrderIndex>>>,
+    matches: Mutex<HashMap<String, IndexSlot<MatchIndex>>>,
+    carried_orders: HashMap<String, Carried<OrderIndex>>,
+    carried_matches: HashMap<String, Carried<MatchIndex>>,
+}
+
+/// An index of earlier records and the positions changed since, sorted.
+type Carried<T> = (T, Arc<[usize]>);
+
+/// Distinct indexes of each kind kept per records set; more clears them.
+const MAX_RECORD_INDEXES: usize = 32;
+
+/// Changed positions beyond which carrying an index stops: rebuilding it is
+/// then as cheap as updating.
+const MAX_CARRIED_CHANGES: usize = 4096;
+
+impl RecordIndexes {
+    /// Indexes of records at the same positions as `previous`'s, where only
+    /// the records at `changed` differ.
+    #[must_use]
+    pub fn carried_from(previous: &Self, mut changed: Vec<usize>) -> Self {
+        changed.sort_unstable();
+        changed.dedup();
+        let changed = Arc::<[usize]>::from(changed);
+        Self {
+            orders: Mutex::default(),
+            matches: Mutex::default(),
+            carried_orders: carry(&previous.orders, &previous.carried_orders, &changed),
+            carried_matches: carry(&previous.matches, &previous.carried_matches, &changed),
+        }
+    }
+}
+
+/// What a successor carries of one kind: the indexes `built` holds (changed
+/// since by `changed`), else the ones it carried itself, with their changes
+/// merged.
+fn carry<T: Clone>(
+    built: &Mutex<HashMap<String, IndexSlot<T>>>,
+    carried: &HashMap<String, Carried<T>>,
+    changed: &Arc<[usize]>,
+) -> HashMap<String, Carried<T>> {
+    let mut next = built
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .filter_map(|(key, slot)| {
+            let (index, _) = slot.get()?.as_ref()?;
+            Some((key.clone(), (index.clone(), Arc::clone(changed))))
+        })
+        .collect::<HashMap<_, _>>();
+    // Carried lists are shared, so merge each distinct one once.
+    let mut merged = HashMap::<*const usize, Option<Arc<[usize]>>>::new();
+    for (key, (index, earlier)) in carried {
+        if next.contains_key(key) {
+            continue;
+        }
+        let union = merged
+            .entry(earlier.as_ptr())
+            .or_insert_with(|| {
+                let mut union = earlier
+                    .iter()
+                    .chain(changed.iter())
+                    .copied()
+                    .collect::<Vec<_>>();
+                union.sort_unstable();
+                union.dedup();
+                (union.len() <= MAX_CARRIED_CHANGES).then(|| Arc::from(union))
+            })
+            .clone();
+        if let Some(union) = union {
+            next.insert(key.clone(), (index.clone(), union));
+        }
+    }
+    next
+}
+
+/// The index under `key`: cached, else updated from the carried one, else
+/// built. One request computes each key; concurrent ones wait for it.
+fn cached<T: Clone>(
+    map: &Mutex<HashMap<String, IndexSlot<T>>>,
+    carried: &HashMap<String, Carried<T>>,
+    key: &str,
+    update: impl FnOnce(&T, &[usize]) -> Option<T>,
+    build: impl FnOnce() -> Option<T>,
+) -> Option<(T, IndexOrigin)> {
+    let slot = {
+        let mut map = map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !map.contains_key(key) && map.len() >= MAX_RECORD_INDEXES {
+            map.clear();
+        }
+        Arc::clone(map.entry(key.to_string()).or_default())
+    };
+    let mut computed = false;
+    let value = slot.get_or_init(|| {
+        computed = true;
+        let updated = carried
+            .get(key)
+            .and_then(|(previous, changed)| update(previous, changed));
+        match updated {
+            Some(index) => Some((index, IndexOrigin::Updated)),
+            None => build().map(|index| (index, IndexOrigin::Built)),
+        }
+    });
+    value.as_ref().map(|(index, origin)| {
+        (
+            index.clone(),
+            if computed {
+                *origin
+            } else {
+                IndexOrigin::Reused
+            },
+        )
+    })
+}
+
 /// A note lookup over identity facts (QRY.4): links resolve without loading
 /// any note, stored fields load for the notes a query prefetches or reads,
 /// and file objects hydrate only for the notes it dereferences. The
@@ -279,6 +475,8 @@ pub struct IndexedNoteLookup<'a> {
     /// Every universe note's stored record in identity order, when a host
     /// supplied them up front.
     all_stored: Option<Arc<[Arc<NoteRecord>]>>,
+    /// Indexes cached with `all_stored`.
+    indexes: Option<Arc<RecordIndexes>>,
 }
 
 impl<'a> IndexedNoteLookup<'a> {
@@ -326,6 +524,7 @@ impl<'a> IndexedNoteLookup<'a> {
             database: None,
             retains_records: false,
             all_stored: None,
+            indexes: None,
         }
     }
 
@@ -354,6 +553,54 @@ impl<'a> IndexedNoteLookup<'a> {
     #[must_use]
     pub fn all_stored(&self) -> Option<&[Arc<NoteRecord>]> {
         self.all_stored.as_deref()
+    }
+
+    /// Cache indexes of the up-front records in `indexes`, which the host
+    /// keeps with those records.
+    #[must_use]
+    pub fn with_record_indexes(mut self, indexes: Arc<RecordIndexes>) -> Self {
+        if self.all_stored.is_some() {
+            self.indexes = Some(indexes);
+        }
+        self
+    }
+
+    /// The up-front records' order that `key` names, cached with them;
+    /// `None` without up-front records or an index cache, or when the
+    /// ordering declined.
+    pub(crate) fn record_order(
+        &self,
+        key: &str,
+        ordering: &dyn RecordOrdering,
+    ) -> Option<(OrderIndex, IndexOrigin)> {
+        let records = self.all_stored.as_deref()?;
+        let indexes = self.indexes.as_ref()?;
+        cached(
+            &indexes.orders,
+            &indexes.carried_orders,
+            key,
+            |previous, changed| ordering.update(previous, records, changed),
+            || ordering.build(records),
+        )
+    }
+
+    /// The up-front records' match set that `key` names, cached with them;
+    /// `None` without up-front records or an index cache, or when the
+    /// matcher could not decide every record.
+    pub(crate) fn record_matches(
+        &self,
+        key: &str,
+        matcher: &dyn RecordMatcher,
+    ) -> Option<(MatchIndex, IndexOrigin)> {
+        let records = self.all_stored.as_deref()?;
+        let indexes = self.indexes.as_ref()?;
+        cached(
+            &indexes.matches,
+            &indexes.carried_matches,
+            key,
+            |previous, changed| matcher.update(previous, records, changed),
+            || matcher.build(records),
+        )
     }
 
     /// Mark the loaders as serving retained records, so loading the stored

@@ -5,6 +5,8 @@ use crate::permissions::{
     ResourceSpecifier,
 };
 use crate::{scan_vault, NoteQuery, ScanMode};
+use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::fs;
 use std::sync::atomic::Ordering::Relaxed;
 use tempfile::TempDir;
@@ -328,4 +330,366 @@ fn the_clock_advances_with_every_note_visible_commit() {
     crate::suggestions::accept_link_suggestion(&paths, &suggestion.id).unwrap();
     assert!(version() > start);
     assert_session_equals_direct(&session, &paths, "after an accepted suggestion");
+}
+
+/// A vault whose sort keys tie, mix kinds, and go missing.
+fn ranked_vault() -> (TempDir, VaultPaths) {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let root = temp_dir.path();
+    fs::create_dir_all(root.join(".vulcan")).unwrap();
+    let titles = [
+        "\"b\"", "\"a\"", "\"b\"", "3", "true", "null", "\"A\"", "\"é\"", "2.5", "\"\"",
+    ];
+    for index in 0..60_usize {
+        let kind = ["task", "project", "contact"][index % 3];
+        let status = ["open", "done"][index / 3 % 2];
+        let title = titles[index * 7 % titles.len()];
+        let title = if index % 11 == 0 {
+            String::new()
+        } else {
+            format!("title: {title}\n")
+        };
+        let folder = ["x", "y/z", "w"][index % 4 % 3];
+        fs::create_dir_all(root.join(folder)).unwrap();
+        fs::write(
+            root.join(format!("{folder}/n{:02}.md", 59 - index)),
+            format!(
+                "---\ntype: {kind}\nstatus: {status}\n{title}priority: {}\nname: n{:02}\n\
+                 due: 2026-01-{:02}\ntags: [g{}]\n---\nbody\n",
+                index % 5,
+                index * 13 % 60,
+                index % 28 + 1,
+                index % 3,
+            ),
+        )
+        .unwrap();
+    }
+    fs::write(root.join("x/data.csv"), "a,b\n").unwrap();
+    let mut views = String::new();
+    for (index, (sort, limit)) in [
+        (
+            "    sort:\n      - property: title\n        direction: ASC\n",
+            5,
+        ),
+        (
+            "    sort:\n      - property: title\n        direction: DESC\n",
+            7,
+        ),
+        (
+            "    sort:\n      - property: priority\n        direction: ASC\n",
+            0,
+        ),
+        (
+            "    sort:\n      - property: rank\n        direction: DESC\n",
+            4,
+        ),
+        // By the first column, `file.name`: an expression, not a property.
+        ("", 6),
+        (
+            "    sort:\n      - property: file.name\n        direction: DESC\n",
+            3,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let order = if sort.is_empty() {
+            "      - file.name\n      - title\n"
+        } else {
+            "      - title\n      - status\n"
+        };
+        write!(
+            views,
+            "  - type: table\n    name: v{index}\n    order:\n{order}{sort}    limit: {limit}\n"
+        )
+        .unwrap();
+    }
+    for (name, filters) in [
+        (
+            "open",
+            "  and:\n    - 'type == \"task\"'\n    - 'status == \"open\"'\n",
+        ),
+        ("all", "  and: []\n"),
+        // Not total.
+        ("ranked", "  and:\n    - 'priority > 2'\n"),
+    ] {
+        fs::write(
+            root.join(format!("{name}.base")),
+            format!("filters:\n{filters}views:\n{views}"),
+        )
+        .unwrap();
+    }
+    let paths = VaultPaths::new(root);
+    scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+    (temp_dir, paths)
+}
+
+/// Answers, the number of ordered walks, and the index stages they ran.
+fn ranked_answers(
+    store: &dyn NoteStore,
+    paths: &VaultPaths,
+    retained: bool,
+) -> (Vec<serde_json::Value>, usize, BTreeSet<String>) {
+    let mut stages = BTreeSet::new();
+    let mut record_stages = |plan: Option<&crate::plan::QueryPlanExplain>| {
+        for stage in plan.iter().flat_map(|plan| &plan.stages) {
+            if stage.name.contains("index") {
+                stages.insert(stage.name.clone());
+            }
+        }
+    };
+    let filters: [&[&str]; 7] = [
+        &[],
+        &["type = task"],
+        &["type = task", "status = open"],
+        &["status != done"],
+        // Sources: a folder and a tag.
+        &["file.path starts_with y/"],
+        &["file.tags has_tag g1", "status = open"],
+        // Not total: numbers meet date-like strings.
+        &["priority > 2"],
+    ];
+    let mut answers = Vec::new();
+    let mut walks = 0;
+    for filters in filters {
+        for sort_by in [None, Some("title"), Some("priority"), Some("file.name")] {
+            for descending in [false, true] {
+                for (offset, limit) in [(0, 0), (0, 1), (0, 7), (3, 5), (10, 100), (59, 3)] {
+                    let query = NoteQuery {
+                        filters: filters.iter().map(ToString::to_string).collect(),
+                        sort_by: sort_by.map(ToString::to_string),
+                        sort_descending: descending,
+                    };
+                    let report = crate::properties::query_notes_page_in(
+                        store,
+                        paths,
+                        &query,
+                        None,
+                        Some(crate::properties::NotePage {
+                            offset,
+                            limit: Some(limit),
+                        }),
+                    )
+                    .unwrap();
+                    walks += usize::from(report.plan.as_ref().is_some_and(|plan| {
+                        plan.candidate_path == "ordered walk over retained notes"
+                    }));
+                    record_stages(report.plan.as_ref());
+                    let paths = report
+                        .notes
+                        .iter()
+                        .map(|note| note.document_path.clone())
+                        .collect::<Vec<_>>();
+                    answers.push(serde_json::json!({
+                        "query": [filters, sort_by, descending, offset, limit],
+                        "notes": paths,
+                    }));
+                }
+            }
+        }
+    }
+    let guard =
+        ProfilePermissionGuard::new(paths, resolve_permission_profile(paths, None).unwrap());
+    walks += dql_answers(
+        store,
+        paths,
+        &guard,
+        retained,
+        &mut answers,
+        &mut record_stages,
+    );
+    walks += bases_answers(store, paths, &guard, &mut answers, &mut record_stages);
+    (answers, walks, stages)
+}
+
+type RecordStages<'a> = dyn FnMut(Option<&crate::plan::QueryPlanExplain>) + 'a;
+
+/// DQL answers for [`ranked_answers`]; the number of ordered walks.
+fn dql_answers(
+    store: &dyn NoteStore,
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    retained: bool,
+    answers: &mut Vec<serde_json::Value>,
+    record_stages: &mut RecordStages<'_>,
+) -> usize {
+    let mut walks = 0;
+    for (dql, walk) in [
+        (
+            "TABLE title, status FROM \"x\" WHERE status = \"open\" SORT name ASC LIMIT 5",
+            true,
+        ),
+        (
+            "LIST FROM #g1 WHERE type = \"task\" SORT priority DESC LIMIT 3",
+            true,
+        ),
+        ("TABLE name SORT name DESC LIMIT 4", true),
+        ("TABLE title WHERE type = \"task\" LIMIT 6", true),
+        ("TABLE title FROM \"y\" SORT rank LIMIT 3", true),
+        ("TABLE title LIMIT 0", true),
+        // Mixed kinds, dates, an undecided WHERE, two keys, more commands.
+        ("TABLE title SORT title LIMIT 3", false),
+        ("TABLE due SORT due DESC LIMIT 3", false),
+        ("TABLE title WHERE priority > 2 SORT name LIMIT 3", false),
+        ("TABLE title SORT status, name LIMIT 3", false),
+        (
+            "TABLE title WHERE type = \"task\" SORT name LIMIT 5 SORT title",
+            false,
+        ),
+        ("TASK SORT name LIMIT 3", false),
+    ] {
+        let result = crate::dql::evaluate_dql_in(store, paths, dql, None, guard, true)
+            .unwrap_or_else(|error| panic!("{dql}: {error}"));
+        let walked = result
+            .plan
+            .as_ref()
+            .is_some_and(|plan| plan.candidate_path == "ordered walk over retained notes");
+        // Only the retained store can walk.
+        assert_eq!(walked, retained && walk, "{dql}");
+        walks += usize::from(walked);
+        record_stages(result.plan.as_ref());
+        let mut result = serde_json::to_value(&result).unwrap();
+        result.as_object_mut().unwrap().remove("plan");
+        answers.push(serde_json::json!({ "dql": dql, "walk": walk, "result": result }));
+    }
+    walks
+}
+
+/// Bases answers for [`ranked_answers`]; the number of ordered walks.
+fn bases_answers(
+    store: &dyn NoteStore,
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    answers: &mut Vec<serde_json::Value>,
+    record_stages: &mut RecordStages<'_>,
+) -> usize {
+    let mut walks = 0;
+    for base in ["open.base", "all.base", "ranked.base"] {
+        let report = crate::bases::evaluate_base_file_in(store, paths, base, guard, true)
+            .unwrap_or_else(|error| panic!("{base}: {error}"));
+        for view in &report.views {
+            walks += usize::from(
+                view.plan
+                    .as_ref()
+                    .is_some_and(|plan| plan.candidate_path == "ordered walk over retained notes"),
+            );
+            record_stages(view.plan.as_ref());
+            let mut view = serde_json::to_value(view).unwrap();
+            view.as_object_mut().unwrap().remove("plan");
+            answers.push(serde_json::json!({ "base": base, "view": view }));
+        }
+        assert!(
+            report.diagnostics.is_empty(),
+            "{base}: {:?}",
+            report.diagnostics
+        );
+    }
+    walks
+}
+
+#[test]
+fn ordered_walks_answer_like_full_sorts() {
+    let (_temp_dir, paths) = ranked_vault();
+    let session = NoteStoreSession::new(paths.clone());
+    let check = |round: &str| {
+        let snapshot = session.snapshot().expect("no writer is active");
+        let (retained, walks, stages) = ranked_answers(&snapshot, &paths, true);
+        drop(snapshot);
+        let (direct, direct_walks, _) =
+            ranked_answers(&DirectNoteStore::new(&paths), &paths, false);
+        assert_eq!(
+            direct_walks, 0,
+            "the direct store holds no records up front"
+        );
+        // Every total filter with a page walks: 6 filters x 4 orders x 2
+        // directions x 6 pages, the views of the two total bases except the
+        // one sorted by a `file.name` column (a sort key outside the columns
+        // is a plain row value), and six DQL queries.
+        assert_eq!(walks, 6 * 4 * 2 * 6 + 2 * 5 + 6, "{round}");
+        for (retained, direct) in retained.iter().zip(&direct) {
+            assert_eq!(retained, direct, "{round}");
+        }
+        stages
+    };
+    let built = check("first");
+    assert!(built.contains("order index built") && built.contains("match index built"));
+    assert!(
+        !built.iter().any(|stage| stage.ends_with("updated")),
+        "{built:?}"
+    );
+    let reused = check("cached indexes");
+    assert!(
+        reused.iter().all(|stage| stage.ends_with("reused")),
+        "{reused:?}"
+    );
+
+    // Edits that keep every identity carry the indexes: a record moves in
+    // the title order, changes tag, and stops matching a type.
+    for (path, contents) in [
+        (
+            "x/n00.md",
+            "---\ntype: task\nstatus: open\ntitle: \"0\"\npriority: 9\nname: n99\n---\nbody\n",
+        ),
+        (
+            "y/z/n10.md",
+            "---\ntype: contact\nstatus: open\ntitle: \"zz\"\npriority: 1\nname: n00\ntags: [g1]\n---\n",
+        ),
+        (
+            "x/n04.md",
+            "---\ntype: project\nstatus: done\ntitle: true\npriority: 0\nname: n50\ntags: [g2]\n---\n",
+        ),
+    ] {
+        fs::write(paths.vault_root().join(path), contents).unwrap();
+        scan_vault(&paths, ScanMode::Incremental).unwrap();
+        let carried = check(&format!("after editing {path}"));
+        assert!(
+            carried.contains("order index updated") && carried.contains("match index updated"),
+            "{path}: {carried:?}"
+        );
+        assert!(!carried.contains("order index built"), "{path}: {carried:?}");
+    }
+
+    // Indexes the snapshot between two edits never used still carry: they
+    // update across both edits instead of building.
+    for (round, title) in ["\"m1\"", "\"m2\""].into_iter().enumerate() {
+        fs::write(
+            paths.vault_root().join("w/n01.md"),
+            format!("---\ntype: task\nstatus: open\ntitle: {title}\npriority: 3\nname: n02\n---\n"),
+        )
+        .unwrap();
+        scan_vault(&paths, ScanMode::Incremental).unwrap();
+        if round == 0 {
+            let snapshot = session.snapshot().expect("no writer is active");
+            crate::properties::query_notes_page_in(
+                &snapshot,
+                &paths,
+                &NoteQuery {
+                    filters: vec!["type = task".to_string()],
+                    sort_by: Some("title".to_string()),
+                    sort_descending: false,
+                },
+                None,
+                Some(crate::properties::NotePage {
+                    offset: 0,
+                    limit: Some(3),
+                }),
+            )
+            .unwrap();
+        }
+    }
+    let carried = check("after an edit the previous snapshot hardly used");
+    assert!(
+        !carried.iter().any(|stage| stage.ends_with("built")),
+        "{carried:?}"
+    );
+
+    // A new note changes identities: indexes build again.
+    fs::write(
+        paths.vault_root().join("w/new.md"),
+        "---\ntype: task\nstatus: open\ntitle: \"a\"\npriority: 2\nname: n01\ntags: [g1]\n---\n",
+    )
+    .unwrap();
+    scan_vault(&paths, ScanMode::Incremental).unwrap();
+    let rebuilt = check("after creation");
+    assert!(rebuilt.contains("order index built"), "{rebuilt:?}");
 }

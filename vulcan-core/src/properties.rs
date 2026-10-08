@@ -691,7 +691,7 @@ fn query_notes_core_in(
             .collect::<HashSet<_>>()
     });
     let lookup = store.lookup(NoteIndexReadScope::Filter(filter), within.as_ref())?;
-    query_notes_over(paths, &lookup, &config, query, output, page)
+    query_notes_over(paths, &lookup, &config, query, output, page, None)
 }
 
 /// [`query_notes_with_filter`] reading notes from `store` (QRY.6).
@@ -729,23 +729,62 @@ pub fn query_notes_page_in(
 
 /// [`query_notes_with_filter`] over `lookup`, an already loaded universe
 /// (for example a Bases evaluation's), with rows hydrated or carrying
-/// stored fields only.
+/// stored fields only. `top`, when given, states the caller keeps only the
+/// first matches in its order (see [`crate::plan::PlanTop`]).
 pub(crate) fn query_notes_shared_over(
     paths: &VaultPaths,
     lookup: &crate::note_lookup::IndexedNoteLookup<'_>,
     config: &VaultConfig,
     query: &NoteQuery,
     stored_only: bool,
+    top: Option<crate::plan::PlanTop<'_>>,
 ) -> Result<SharedNotes, PropertyError> {
     let output = if stored_only {
         NoteQueryOutput::StoredNotes
     } else {
         NoteQueryOutput::Notes
     };
-    match query_notes_over(paths, lookup, config, query, output, None)? {
+    match query_notes_over(paths, lookup, config, query, output, None, top)? {
         NoteQueryOutcome::Notes(shared) => Ok(shared),
         NoteQueryOutcome::Paths(_) => unreachable!("notes output yields notes"),
     }
+}
+
+/// How a note query orders notes: by `sort_by`, ties by path.
+fn note_query_ordering(query: &NoteQuery) -> impl crate::note_lookup::RecordOrdering + '_ {
+    let sort_by = query.sort_by.as_deref().unwrap_or_default();
+    crate::plan::KeyedOrdering::new(
+        move |note: &Arc<NoteRecord>| Some((sort_key_for_note(note, sort_by), 0)),
+        |left: &SortKey, right: &SortKey| {
+            let ordering = compare_sort_keys(left, right);
+            if query.sort_descending {
+                ordering.reverse()
+            } else {
+                ordering
+            }
+        },
+    )
+}
+
+/// A page keeps the first `offset + limit` notes in sort order (ties by
+/// path), which the query's sort reproduces from exactly those rows.
+fn page_top<'a>(
+    query: &'a NoteQuery,
+    output: NoteQueryOutput,
+    page: Option<NotePage>,
+    ordering: &'a dyn crate::note_lookup::RecordOrdering,
+) -> Option<crate::plan::PlanTop<'a>> {
+    let take = page?.limit?.saturating_add(page?.offset);
+    (output != NoteQueryOutput::Paths).then(|| crate::plan::PlanTop {
+        take,
+        order: query
+            .sort_by
+            .as_ref()
+            .map(|sort_by| crate::plan::PlanOrder {
+                key: format!("notes:{sort_by}:{}", query.sort_descending),
+                ordering,
+            }),
+    })
 }
 
 /// A window of a note query's ordered results.
@@ -762,6 +801,7 @@ fn query_notes_over(
     query: &NoteQuery,
     output: NoteQueryOutput,
     page: Option<NotePage>,
+    top: Option<crate::plan::PlanTop<'_>>,
 ) -> Result<NoteQueryOutcome, PropertyError> {
     let compiled = compile_note_filters(&query.filters)?;
     // A page of hydrated notes needs only the page hydrated when filters
@@ -782,6 +822,8 @@ fn query_notes_over(
     } else {
         output
     };
+    let ordering = note_query_ordering(query);
+    let top = top.or_else(|| page_top(query, output, page, &ordering));
     let plan = crate::plan::NotePlan {
         frontend: "notes",
         source: match compiled.sources.len() {
@@ -805,6 +847,7 @@ fn query_notes_over(
             NoteQueryOutput::Paths => crate::plan::Hydration::Undecided,
         },
         also_hydrate: Vec::new(),
+        top,
     };
     let planned = crate::plan::execute_note_plan(paths, lookup, &plan)?;
 
@@ -991,6 +1034,7 @@ pub fn load_task_note_index_with_plan(
             predicate: crate::predicate::Predicate::Unknown,
             hydration: crate::plan::Hydration::Paths(&task_paths),
             also_hydrate: Vec::new(),
+            top: None,
         },
     )?;
     Ok((lookup.into_index()?, planned.explain))

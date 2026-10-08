@@ -9,16 +9,20 @@
 //! [`IndexedNoteLookup`] and reports what it did; the frontend then runs its
 //! residual (DQL commands, Bases views, Tasks filters) on the rows.
 
-use crate::note_lookup::{IndexedNoteLookup, NoteLookup};
+use crate::note_lookup::{
+    IndexedNoteLookup, MatchIndex, NoteLookup, OrderIndex, RecordMatcher, RecordOrdering,
+};
 use crate::paths::VaultPaths;
 use crate::permissions::PermissionFilter;
 use crate::predicate::{Decision, Dialect, Predicate, RecordValues};
+use crate::properties::NoteRecord;
 use crate::properties::PropertyError;
 use crate::source::{SourceColumns, SourceExpr};
 use crate::CacheDatabase;
 use rusqlite::types::Value as SqlValue;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Instant;
 
 /// What a frontend asks of the note store.
@@ -36,6 +40,135 @@ pub(crate) struct NotePlan<'a> {
     pub hydration: Hydration<'a>,
     /// Further notes to hydrate, such as the note containing a query.
     pub also_hydrate: Vec<String>,
+    /// The frontend keeps only the first matches in an order it states; the
+    /// plan may then return just those rows.
+    pub top: Option<PlanTop<'a>>,
+}
+
+/// A frontend that sorts its matches (ties by path) and keeps the first
+/// `take`. When a lookup holds every stored record up front and the
+/// predicate decides every record, the plan walks the records in that order
+/// and stops after `take` matches: the rows are then exactly the frontend's
+/// first `take`, so sorting and truncating them gives its unchanged answer.
+pub(crate) struct PlanTop<'a> {
+    pub take: usize,
+    /// `None` keeps path order.
+    pub order: Option<PlanOrder<'a>>,
+}
+
+/// An order of every stored record, cached with the records under `key`.
+pub(crate) struct PlanOrder<'a> {
+    /// Names the frontend's comparison, sort key, and direction.
+    pub key: String,
+    pub ordering: &'a dyn RecordOrdering,
+}
+
+/// A frontend's sort as a key per record and a total order on keys, ties by
+/// path. `key` returns the record's sort key and its class, or `None` to
+/// decline; keys of distinct nonzero classes are incomparable, so an order
+/// exists only while every key has class `0` or one shared class.
+pub(crate) struct KeyedOrdering<K, F, C> {
+    key: F,
+    compare: C,
+    keys: std::marker::PhantomData<fn() -> K>,
+}
+
+impl<K, F, C> KeyedOrdering<K, F, C>
+where
+    F: Fn(&Arc<NoteRecord>) -> Option<(K, u8)>,
+    C: Fn(&K, &K) -> std::cmp::Ordering,
+{
+    pub(crate) fn new(key: F, compare: C) -> Self {
+        Self {
+            key,
+            compare,
+            keys: std::marker::PhantomData,
+        }
+    }
+}
+
+/// The shared class of two keys' classes; see [`KeyedOrdering`].
+fn merge_class(left: u8, right: u8) -> Option<u8> {
+    match (left, right) {
+        (0, class) | (class, 0) => Some(class),
+        (left, right) => (left == right).then_some(left),
+    }
+}
+
+fn positions_u32(order: Vec<usize>) -> Option<Arc<[u32]>> {
+    order
+        .into_iter()
+        .map(|position| u32::try_from(position).ok())
+        .collect::<Option<Vec<_>>>()
+        .map(Arc::from)
+}
+
+impl<K, F, C> RecordOrdering for KeyedOrdering<K, F, C>
+where
+    F: Fn(&Arc<NoteRecord>) -> Option<(K, u8)>,
+    C: Fn(&K, &K) -> std::cmp::Ordering,
+{
+    fn build(&self, records: &[Arc<NoteRecord>]) -> Option<OrderIndex> {
+        let mut class = 0;
+        let mut keys = Vec::with_capacity(records.len());
+        for record in records {
+            let (key, key_class) = (self.key)(record)?;
+            class = merge_class(class, key_class)?;
+            keys.push(key);
+        }
+        let mut order = (0..records.len()).collect::<Vec<_>>();
+        order.sort_by(|&left, &right| {
+            (self.compare)(&keys[left], &keys[right]).then_with(|| {
+                records[left]
+                    .document_path
+                    .cmp(&records[right].document_path)
+            })
+        });
+        Some(OrderIndex {
+            order: positions_u32(order)?,
+            class,
+        })
+    }
+
+    fn update(
+        &self,
+        previous: &OrderIndex,
+        records: &[Arc<NoteRecord>],
+        changed: &[usize],
+    ) -> Option<OrderIndex> {
+        let changed_set = changed.iter().copied().collect::<HashSet<_>>();
+        let mut order = previous
+            .order
+            .iter()
+            .map(|&position| position as usize)
+            .filter(|position| !changed_set.contains(position))
+            .collect::<Vec<_>>();
+        let mut class = previous.class;
+        for &position in changed {
+            let record = records.get(position)?;
+            let (key, key_class) = (self.key)(record)?;
+            class = merge_class(class, key_class)?;
+            // Unchanged records keep the keys they were ordered by.
+            let mut declined = false;
+            let at = order.partition_point(|&other| {
+                let Some((other_key, _)) = records.get(other).and_then(&self.key) else {
+                    declined = true;
+                    return false;
+                };
+                (self.compare)(&other_key, &key)
+                    .then_with(|| records[other].document_path.cmp(&record.document_path))
+                    == std::cmp::Ordering::Less
+            });
+            if declined {
+                return None;
+            }
+            order.insert(at, position);
+        }
+        Some(OrderIndex {
+            order: positions_u32(order)?,
+            class,
+        })
+    }
 }
 
 /// Which notes a plan hydrates.
@@ -115,8 +248,12 @@ pub(crate) fn execute_note_plan(
     // Without a source, retained records decide faster in memory than SQL
     // scans every row; the identities are already the read scope.
     let in_memory = plan.source.is_none() && (narrowing.is_none() || from_records);
-    let (candidate_count, decided) = if let (true, Some(records)) = (in_memory, lookup.all_stored())
-    {
+    let walked = walk_top(paths, lookup, plan, &mut stage);
+    let ordered_walk = walked.is_some();
+    let (candidate_count, decided) = if let Some(walked) = walked {
+        stage("candidates", started);
+        walked
+    } else if let (true, Some(records)) = (in_memory, lookup.all_stored()) {
         // Every record is at hand in path order: decide them where they are.
         let candidate_count = records
             .iter()
@@ -207,6 +344,7 @@ pub(crate) fn execute_note_plan(
         explain: QueryPlanExplain {
             frontend: plan.frontend.to_string(),
             candidate_path: match (&plan.source, plan.predicate.is_useful()) {
+                _ if ordered_walk => "ordered walk over retained notes".to_string(),
                 (Some(_), true) => "sql source and predicate atoms".to_string(),
                 (Some(_), false) => "sql source".to_string(),
                 (None, true) if in_memory => "predicate atoms over retained notes".to_string(),
@@ -226,6 +364,292 @@ pub(crate) fn execute_note_plan(
         undecided,
         rows_hydrated: !matches!(plan.hydration, Hydration::Stored),
     })
+}
+
+/// What a plan's source and predicate match among retained records.
+struct PlanMatcher<'p, 'l> {
+    paths: &'p VaultPaths,
+    lookup: &'p IndexedNoteLookup<'l>,
+    plan: &'p NotePlan<'p>,
+}
+
+fn bit(bits: &[u64], position: usize) -> bool {
+    bits.get(position / 64)
+        .is_some_and(|word| word & (1 << (position % 64)) != 0)
+}
+
+fn set_bit(bits: &mut [u64], position: usize, value: bool) {
+    let mask = 1 << (position % 64);
+    if value {
+        bits[position / 64] |= mask;
+    } else {
+        bits[position / 64] &= !mask;
+    }
+}
+
+/// Whether a record's membership in a source depends only on that record
+/// (its path, tags, and outgoing links) while identities stay the same, so
+/// only changed records can join or leave it. `LinkedFrom` depends on
+/// another document's links.
+fn per_document(source: &SourceExpr) -> bool {
+    match source {
+        SourceExpr::Folder(_)
+        | SourceExpr::Path(_)
+        | SourceExpr::Tag(_)
+        | SourceExpr::LinksTo(_) => true,
+        SourceExpr::LinkedFrom(_) => false,
+        SourceExpr::And(children) | SourceExpr::Or(children) => children.iter().all(per_document),
+        SourceExpr::Not(inner) => per_document(inner),
+    }
+}
+
+impl PlanMatcher<'_, '_> {
+    /// The source's members as a bitset, selected in SQL as the plan
+    /// otherwise would.
+    fn source_bits(&self, source: &SourceExpr, len: usize) -> Option<Vec<u64>> {
+        let mut bits = vec![0_u64; len.div_ceil(64)];
+        self.mark_members(source, &mut bits)?;
+        Some(bits)
+    }
+
+    /// Set the bits of `source`'s members, selected in SQL.
+    fn mark_members(&self, source: &SourceExpr, bits: &mut [u64]) -> Option<()> {
+        let index = self.lookup.identity_index();
+        for candidate in sql_candidates(
+            self.lookup.database(),
+            self.paths,
+            &CandidateQuery {
+                source: Some(source),
+                predicate: None,
+                markdown_only: self.plan.markdown_only,
+                with_properties: false,
+            },
+            None,
+        )
+        .ok()?
+        {
+            if let Some(position) = index
+                .position(&candidate.path)
+                .filter(|&at| at < bits.len() * 64)
+            {
+                set_bit(bits, position, true);
+            }
+        }
+        Some(())
+    }
+
+    /// `previous` members with each changed record's membership probed
+    /// again.
+    fn changed_members(
+        &self,
+        source: &SourceExpr,
+        previous: &[u64],
+        records: &[Arc<NoteRecord>],
+        changed: &[usize],
+    ) -> Option<Vec<u64>> {
+        let connection = self.lookup.database()?.connection();
+        let mut bits = previous.to_vec();
+        for &position in changed {
+            let record = records.get(position)?;
+            // The candidate query's Markdown restriction: the indexed
+            // extension, which the record carries.
+            let member = (!self.plan.markdown_only || record.file_ext == "md")
+                && source
+                    .contains_document(connection, &record.document_id, &record.document_path)
+                    .ok()?;
+            set_bit(&mut bits, position, member);
+        }
+        Some(bits)
+    }
+
+    /// Decide the record at `position`: `Some(matched)`, or `None` when it
+    /// is undecided. Non-Markdown records never match a Markdown-only plan.
+    fn decide(&self, records: &[Arc<NoteRecord>], position: usize) -> Option<bool> {
+        let record = records.get(position)?;
+        if self.plan.markdown_only && !is_markdown(&record.document_path) {
+            return Some(false);
+        }
+        match self.plan.predicate.decide(
+            Dialect::Dataview,
+            &RecordValues {
+                properties: &record.properties,
+                path: &record.document_path,
+                name: &record.file_name,
+                ext: &record.file_ext,
+            },
+        ) {
+            Decision::Match => Some(true),
+            Decision::NoMatch => Some(false),
+            // Properties that are not an object.
+            Decision::Undecided => None,
+        }
+    }
+
+    /// Decide every undecided source member, then intersect.
+    fn finish(
+        &self,
+        records: &[Arc<NoteRecord>],
+        source: Option<Vec<u64>>,
+        mut decided: Vec<u64>,
+        mut predicate: Vec<u64>,
+        candidates: &mut dyn Iterator<Item = usize>,
+    ) -> Option<MatchIndex> {
+        for position in candidates {
+            if bit(&decided, position) || source.as_ref().is_some_and(|bits| !bit(bits, position)) {
+                continue;
+            }
+            set_bit(&mut decided, position, true);
+            set_bit(&mut predicate, position, self.decide(records, position)?);
+        }
+        let matched = match &source {
+            Some(source) => source
+                .iter()
+                .zip(&predicate)
+                .map(|(source, predicate)| source & predicate)
+                .collect(),
+            None => predicate.clone(),
+        };
+        Some(MatchIndex {
+            source: source.map(Arc::from),
+            decided: Arc::from(decided),
+            predicate: Arc::from(predicate),
+            matched: Arc::from(matched),
+        })
+    }
+}
+
+impl RecordMatcher for PlanMatcher<'_, '_> {
+    fn build(&self, records: &[Arc<NoteRecord>]) -> Option<MatchIndex> {
+        let words = records.len().div_ceil(64);
+        let source = match &self.plan.source {
+            Some(source) => Some(self.source_bits(source, records.len())?),
+            None => None,
+        };
+        self.finish(
+            records,
+            source,
+            vec![0; words],
+            vec![0; words],
+            &mut (0..records.len()),
+        )
+    }
+
+    fn update(
+        &self,
+        previous: &MatchIndex,
+        records: &[Arc<NoteRecord>],
+        changed: &[usize],
+    ) -> Option<MatchIndex> {
+        let mut decided = previous.decided.to_vec();
+        let mut predicate = previous.predicate.to_vec();
+        if decided.len() != records.len().div_ceil(64) {
+            return None;
+        }
+        for &position in changed {
+            set_bit(&mut decided, position, false);
+            set_bit(&mut predicate, position, false);
+        }
+        match (&self.plan.source, &previous.source) {
+            (None, _) => self.finish(
+                records,
+                None,
+                decided,
+                predicate,
+                &mut changed.iter().copied(),
+            ),
+            // Only changed records can join or leave; they decide again.
+            (Some(source), Some(members)) if per_document(source) => {
+                let members = self.changed_members(source, members, records, changed)?;
+                self.finish(
+                    records,
+                    Some(members),
+                    decided,
+                    predicate,
+                    &mut changed.iter().copied(),
+                )
+            }
+            // Any record may join: decide every member not yet decided.
+            (Some(source), _) => {
+                let source = self.source_bits(source, records.len())?;
+                self.finish(
+                    records,
+                    Some(source),
+                    decided,
+                    predicate,
+                    &mut (0..records.len()),
+                )
+            }
+        }
+    }
+}
+
+/// The first `take` matches of a [`PlanTop`] in its order, then in path
+/// order, with the records walked; `None` when the plan must decide every
+/// candidate instead. The match set and order are cached with the records,
+/// so walking an order correlated with the predicate reads no record it
+/// skips. Index stages name how each index was obtained.
+fn walk_top(
+    paths: &VaultPaths,
+    lookup: &IndexedNoteLookup<'_>,
+    plan: &NotePlan<'_>,
+    stage: &mut dyn FnMut(&str, Instant),
+) -> Option<(usize, DecidedCandidates)> {
+    let top = plan.top.as_ref()?;
+    let records = lookup.all_stored()?;
+    if !plan.predicate.is_total() {
+        return None;
+    }
+    let key = format!(
+        "{}:{:?}:{}",
+        plan.markdown_only,
+        plan.source,
+        serde_json::to_string(&plan.predicate).ok()?
+    );
+    let started = Instant::now();
+    let (matches, origin) = lookup.record_matches(
+        &key,
+        &PlanMatcher {
+            paths,
+            lookup,
+            plan,
+        },
+    )?;
+    stage(&format!("match index {}", origin.name()), started);
+    let started = Instant::now();
+    let order = match &top.order {
+        Some(order) => {
+            let (index, origin) = lookup.record_order(&order.key, order.ordering)?;
+            stage(&format!("order index {}", origin.name()), started);
+            Some(index.order)
+        }
+        None => None,
+    };
+    let positions: Box<dyn Iterator<Item = usize>> = match &order {
+        Some(order) => Box::new(order.iter().map(|&position| position as usize)),
+        None => Box::new(0..records.len()),
+    };
+    let mut decided = DecidedCandidates {
+        rows: Vec::new(),
+        undecided: HashSet::new(),
+        matches: 0,
+        excluded: 0,
+    };
+    let mut walked = 0;
+    for position in positions {
+        if decided.rows.len() >= top.take {
+            break;
+        }
+        walked += 1;
+        if bit(&matches.matched, position) {
+            decided.matches += 1;
+            decided
+                .rows
+                .push(records.get(position)?.document_path.clone());
+        }
+    }
+    decided.excluded = walked - decided.matches;
+    decided.rows.sort();
+    Some((walked, decided))
 }
 
 fn is_markdown(path: &str) -> bool {
@@ -557,6 +981,7 @@ mod tests {
             predicate: predicate("status != 3"),
             hydration: Hydration::Rows,
             also_hydrate: vec!["B.md".into()],
+            top: None,
         });
         assert_eq!(planned.rows, ["A/Done.md", "A/Odd.md", "A/Open.md"]);
         assert_eq!(planned.undecided, HashSet::from(["A/Odd.md".to_string()]));
@@ -578,6 +1003,7 @@ mod tests {
             predicate: predicate("status = \"open\""),
             hydration: Hydration::Rows,
             also_hydrate: Vec::new(),
+            top: None,
         });
         assert_eq!(planned.rows, ["A/Open.md", "B.md"]);
         assert_eq!(hydrated, ["A/Open.md", "B.md"]);
@@ -590,6 +1016,7 @@ mod tests {
             predicate: predicate("status != 3"),
             hydration: Hydration::Undecided,
             also_hydrate: Vec::new(),
+            top: None,
         });
         assert_eq!(planned.rows, ["A/Done.md", "A/Odd.md", "A/Open.md", "B.md"]);
         assert_eq!(hydrated, ["A/Odd.md"]);
@@ -603,6 +1030,7 @@ mod tests {
             predicate: Predicate::Unknown,
             hydration: Hydration::Paths(&task_paths),
             also_hydrate: Vec::new(),
+            top: None,
         });
         assert_eq!(planned.rows.len(), 5);
         assert_eq!(planned.explain.candidate_path, "every readable document");
@@ -614,6 +1042,7 @@ mod tests {
             predicate: Predicate::Unknown,
             hydration: Hydration::Rows,
             also_hydrate: Vec::new(),
+            top: None,
         });
         assert_eq!(planned.rows, ["B.md"]);
     }
