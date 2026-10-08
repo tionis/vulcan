@@ -443,3 +443,58 @@ fn note_set_returns_authoritative_post_lifecycle_source() {
     let record = load_mdbase_record(&collection, &types, "a.md", true).unwrap();
     assert_eq!(record.frontmatter["stamp"], "updated");
 }
+
+#[test]
+fn blocking_write_hooks_run_once_outside_the_lock_and_skip_replays() {
+    let _lock = crate::trust::test_env_lock()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let config_home = tempfile::tempdir().unwrap();
+    let previous_xdg = std::env::var_os("XDG_CONFIG_HOME");
+    std::env::set_var("XDG_CONFIG_HOME", config_home.path());
+    let (dir, paths) = fixture("  on_create:\n    set:\n      id: {ulid: true}\n", DEFAULTS);
+    fs::create_dir_all(dir.path().join(".vulcan/plugins")).unwrap();
+    fs::write(
+        dir.path().join(".vulcan/config.toml"),
+        "[plugins.audit]\nenabled = true\nevents = [\"on_note_write\"]\nsandbox = \"fs\"\n",
+    )
+    .unwrap();
+    // The hook writes a note of its own through the vault API, which takes
+    // the vault write lock.
+    fs::write(
+        dir.path().join(".vulcan/plugins/audit.js"),
+        "function on_note_write(event) {\n  if (event.path.startsWith(\"hooks/\")) return;\n  \
+         vault.create(\"hooks/\" + event.plan_id + \"-\" + Math.random() + \".md\", \
+         { content: event.path + \" \" + event.operation });\n}\n",
+    )
+    .unwrap();
+    crate::trust::add_trust(paths.vault_root()).unwrap();
+    vulcan_core::scan_vault(&paths, vulcan_core::ScanMode::Full).unwrap();
+    let hook_runs = || {
+        fs::read_dir(dir.path().join("hooks")).map_or(Vec::new(), |entries| {
+            entries
+                .map(|entry| fs::read_to_string(entry.unwrap().path()).unwrap())
+                .collect::<Vec<_>>()
+        })
+    };
+
+    let plan = plan_mdbase_write(
+        &paths,
+        &request(
+            MdbaseWriteOperation::Create,
+            &[("a.md", Some("---\ntype: task\ntitle: A\n---\n"))],
+        ),
+        now(),
+    )
+    .unwrap();
+    assert!(!apply(&paths, &plan, "once").outcome.replayed);
+    assert_eq!(hook_runs(), ["a.md create"]);
+    // A replay applies nothing, so the hook does not run again.
+    assert!(apply(&paths, &plan, "once").outcome.replayed);
+    assert_eq!(hook_runs().len(), 1);
+
+    match previous_xdg {
+        Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+        None => std::env::remove_var("XDG_CONFIG_HOME"),
+    }
+}

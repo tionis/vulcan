@@ -1,7 +1,7 @@
 ---
 name: plugin-authoring
 description: Create, inspect, and troubleshoot Vulcan JavaScript lifecycle plugins. Use when the user asks about plugins, event hooks, on_note_write, on_pre_commit, plugin permissions, plugin trust, or when to use a plugin instead of a skill command.
-version: 1
+version: 2
 tools:
   - plugin
   - trust
@@ -33,6 +33,9 @@ human or LLM explicitly invoked a request/response command.
 - Use a skill command, not a plugin, for directly callable automation.
 - Plugins require vault trust before execution.
 - Blocking hooks such as pre-commit/write hooks should fail with clear, actionable messages.
+- A write hook may write other notes through `vault.*`, but must not edit the note being written:
+  that write then fails as stale. Guard against re-triggering itself (check `event.path`), and
+  for multi-note mdbase writes read `event.changes`, since `event.path` is absent there.
 - Prefer `host.exec(argv)` over `host.shell(command)` when host execution is genuinely needed.
 - Keep permissions narrow; plugins should not run with broad shell/network access by default.
 

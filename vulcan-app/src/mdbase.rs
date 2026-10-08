@@ -45,12 +45,13 @@ use vulcan_core::mdbase::{
     apply_mdbase_write_transaction_with_control_filter, authorize_mdbase_write_validation_scope,
     discover_mdbase_files, is_mdbase_record_path, load_mdbase_collection,
     load_mdbase_records_with_contracts_filtered, mdbase_content_revision,
-    MdbaseAuthorizedValidationScope, MdbaseCollection, MdbaseConsistentReadGuard,
-    MdbaseContractDefinition, MdbaseContractImplementation, MdbaseContractRegistry,
-    MdbaseDiagnostic, MdbaseDiagnosticLevel, MdbaseQueryResult, MdbaseRecordDiagnostic,
-    MdbaseRecordDocument, MdbaseTypeDefinition, MdbaseTypeRegistry, MdbaseWriteApplyRequest,
-    MdbaseWriteAuthorizationRequest, MdbaseWriteOutcome, MdbaseWritePreview,
-    MdbaseWritePreviewChangeRequest, MdbaseWritePreviewRequest, MdbaseWritePreviewVerification,
+    mdbase_write_skips_preflight, MdbaseAuthorizedValidationScope, MdbaseCollection,
+    MdbaseConsistentReadGuard, MdbaseContractDefinition, MdbaseContractImplementation,
+    MdbaseContractRegistry, MdbaseDiagnostic, MdbaseDiagnosticLevel, MdbaseQueryResult,
+    MdbaseRecordDiagnostic, MdbaseRecordDocument, MdbaseTypeDefinition, MdbaseTypeRegistry,
+    MdbaseWriteApplyRequest, MdbaseWriteAuthorizationRequest, MdbaseWriteOutcome,
+    MdbaseWritePreview, MdbaseWritePreviewChangeRequest, MdbaseWritePreviewRequest,
+    MdbaseWritePreviewVerification,
 };
 use vulcan_core::{
     auto_commit, initialize_vulcan_dir, load_vault_config, resolve_permission_profile,
@@ -1289,21 +1290,31 @@ fn apply_mdbase_write_timed(
         },
         idempotency_key: &options.idempotency_key,
     };
+    // Blocking hooks run before the write lock, as for ordinary notes: a
+    // hook may itself write through the vault API, which takes the lock. A
+    // hook that changes a target makes the apply's preview verification
+    // fail with `stale_state` instead of being overwritten.
+    if !mdbase_write_skips_preflight(paths, &apply_request) {
+        plugins::dispatch_plugin_event(
+            paths,
+            Some(&profile),
+            PluginEvent::OnNoteWrite,
+            &plugin_payload,
+            quiet,
+        )
+        .map_err(|error| {
+            AppError::operation_with_code(
+                "preflight_failed",
+                format!("mdbase write preflight failed: {error}"),
+            )
+        })?;
+    }
     let outcome = apply_mdbase_write_transaction_with_control_filter(
         paths,
         &loaded.collection,
         &apply_request,
         Some(&filter),
-        || {
-            plugins::dispatch_plugin_event(
-                paths,
-                Some(&profile),
-                PluginEvent::OnNoteWrite,
-                &plugin_payload,
-                quiet,
-            )
-            .map_err(|error| error.to_string())
-        },
+        || Ok(()),
         |event| {
             scan = Some(reconcile_committed_write(
                 paths,
@@ -1683,13 +1694,22 @@ fn revision(label: &str, value: &impl Serialize) -> Result<String, AppError> {
     Ok(format!("{label}:sha256:{:x}", Sha256::digest(bytes)))
 }
 
+/// The `on_note_write` payload: every change, plus the ordinary note write's
+/// fields when the write changes one note, so one hook serves both.
 fn write_plugin_payload(preview: &MdbaseWritePreview) -> serde_json::Value {
-    json!({
+    let mut payload = json!({
         "kind": PluginEvent::OnNoteWrite,
         "operation": preview.operation,
         "plan_id": preview.plan_id,
         "changes": preview.changes,
-    })
+    });
+    if let [change] = preview.changes.as_slice() {
+        payload["path"] = json!(change.path);
+        payload["existed_before"] = json!(change.before.is_some());
+        payload["previous_content"] = json!(change.before);
+        payload["content"] = json!(change.after);
+    }
+    payload
 }
 
 fn dispatch_committed_path_events(paths: &VaultPaths, plan: &MdbaseWritePlanReport, quiet: bool) {

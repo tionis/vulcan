@@ -38426,3 +38426,112 @@ fn mdbase_example_collection_is_valid_and_documented_commands_run() {
         "{listed}"
     );
 }
+
+/// Run `vulcan` with a deadline: a hang is a failure, not a stuck suite.
+fn run_vulcan_with_deadline(config_home: &str, arguments: &[&str]) -> ProcessOutput {
+    let mut child = ProcessCommand::new(assert_cmd::cargo::cargo_bin("vulcan"))
+        .env("XDG_CONFIG_HOME", config_home)
+        .env("XDG_STATE_HOME", Path::new(config_home).join("state"))
+        .args(arguments)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("`vulcan {}` did not finish", arguments.join(" "));
+        }
+        thread::sleep(std::time::Duration::from_millis(50));
+    }
+    child.wait_with_output().unwrap()
+}
+
+/// A blocking `on_note_write` hook may write through the vault API, for
+/// ordinary notes and mdbase records alike; a hook that changes the note
+/// being written makes that write fail as stale instead of overwriting it.
+#[test]
+fn blocking_plugin_hooks_may_write_notes_without_deadlocking() {
+    for collection in [false, true] {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).unwrap();
+        if collection {
+            fs::write(vault_root.join("mdbase.yaml"), "spec_version: \"0.3.0\"\n").unwrap();
+        }
+        fs::write(vault_root.join("Note.md"), "---\ntitle: Note\n---\nbody\n").unwrap();
+        fs::write(
+            vault_root.join("Clobber.md"),
+            "---\ntitle: Clobber\n---\nbody\n",
+        )
+        .unwrap();
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            "[plugins.logger]\nenabled = true\nevents = [\"on_note_write\"]\nsandbox = \"fs\"\n",
+        )
+        .unwrap();
+        write_plugin_file(
+            &vault_root,
+            "logger",
+            r#"
+function on_note_write(event) {
+  if (event.path === "Note.md") {
+    vault.create("Log.md", { content: "wrote " + event.path + "\n" });
+  } else if (event.path === "Clobber.md" && !event.content.includes("from hook")) {
+    vault.append("Clobber.md", "from hook");
+  }
+}
+"#,
+        );
+        let config_home = temp_dir.path().join("xdg");
+        fs::create_dir_all(&config_home).unwrap();
+        let config_home = config_home.to_str().unwrap().to_string();
+        let root = vault_root.to_str().unwrap();
+        trust_and_scan_vault(&config_home, root);
+        let append = |path: &str| {
+            run_vulcan_with_deadline(
+                &config_home,
+                &[
+                    "--vault",
+                    root,
+                    "--output",
+                    "json",
+                    "note",
+                    "append",
+                    path,
+                    "more",
+                    "--no-commit",
+                ],
+            )
+        };
+
+        let output = append("Note.md");
+        assert!(
+            output.status.success(),
+            "collection {collection}: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            fs::read_to_string(vault_root.join("Log.md")).unwrap(),
+            "wrote Note.md\n",
+            "collection {collection}"
+        );
+        assert!(fs::read_to_string(vault_root.join("Note.md"))
+            .unwrap()
+            .contains("more"));
+
+        let output = append("Clobber.md");
+        assert!(
+            !output.status.success(),
+            "collection {collection}: the hook's edit was overwritten: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let clobber = fs::read_to_string(vault_root.join("Clobber.md")).unwrap();
+        assert!(
+            clobber.contains("from hook") && !clobber.contains("more"),
+            "collection {collection}: {clobber}"
+        );
+    }
+}

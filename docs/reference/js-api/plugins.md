@@ -61,7 +61,10 @@ Blocking hooks:
 - `on_note_write`
 - `on_pre_commit`
 
-These run before the action completes. Throw an error to abort the operation.
+These run before the action completes. Throw an error to abort the operation. They do not hold
+the vault write lock, so a hook may itself write through `vault.*`. If a hook changes a note the
+operation is about to write, the operation fails as stale instead of overwriting that change. A
+retried mdbase write that Vulcan replays from its idempotency record does not run the hook again.
 
 Post hooks:
 
@@ -83,7 +86,9 @@ Every handler receives:
 
 Current payload shapes:
 
-- `on_note_write`: `{ kind, path, operation, existed_before, previous_content, content }`
+- `on_note_write`: `{ kind, path, operation, existed_before, previous_content, content }`; writes
+  to mdbase collection records add `plan_id` and `changes` (every planned change), and carry the
+  single-note fields only when the write changes exactly one note
 - `on_note_create`: `{ kind, path, content }`
 - `on_note_delete`: `{ kind, path }`
 - `on_pre_commit`: `{ kind, action, files }`

@@ -243,6 +243,21 @@ where
     )
 }
 
+/// Whether applying `request` would not reach its preflight: a receipt for
+/// its idempotency key exists (the apply replays it) or cannot be read (the
+/// apply reports that). Callers that dispatch blocking hooks before taking
+/// the write lock use this to dispatch them once per applied write; it
+/// reads without the lock.
+#[must_use]
+pub fn mdbase_write_skips_preflight(
+    paths: &VaultPaths,
+    request: &MdbaseWriteApplyRequest<'_>,
+) -> bool {
+    operation_identity(request)
+        .and_then(|identity| load_receipt(paths, &identity))
+        .map_or(true, |receipt| receipt.is_some())
+}
+
 /// Recover the single vault-wide mdbase write journal, if present.
 ///
 /// Cooperating reads, scans, mutations, and sync entrypoints call this while
