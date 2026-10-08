@@ -38433,6 +38433,7 @@ fn run_vulcan_with_deadline(config_home: &str, arguments: &[&str]) -> ProcessOut
         .env("XDG_CONFIG_HOME", config_home)
         .env("XDG_STATE_HOME", Path::new(config_home).join("state"))
         .args(arguments)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -38533,5 +38534,126 @@ function on_note_write(event) {
             clobber.contains("from hook") && !clobber.contains("more"),
             "collection {collection}: {clobber}"
         );
+    }
+}
+
+/// Every lifecycle hook may write through the vault API: none runs while
+/// its command holds the vault lock or a read guard. A plugin subscribed to
+/// every event writes a note from each handler while commands that dispatch
+/// each event run with auto-commit on; each must finish, succeed, and leave
+/// the hook's note behind.
+#[test]
+fn every_lifecycle_hook_may_write_without_deadlocking() {
+    lifecycle_hooks_may_write(false);
+}
+
+fn lifecycle_hooks_may_write(collection: bool) {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).unwrap();
+    fs::create_dir_all(vault_root.join("Templates")).unwrap();
+    init_git_repo(&vault_root);
+    if collection {
+        // Notes become mdbase records, written through managed writes.
+        fs::write(vault_root.join("mdbase.yaml"), "spec_version: \"0.3.0\"\n").unwrap();
+    }
+    fs::write(
+        vault_root.join("Note.md"),
+        "---\nstatus: open\n---\n# Note\n\n## Log\n",
+    )
+    .unwrap();
+    fs::write(vault_root.join("Templates/t.md"), "Inserted\n").unwrap();
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[git]\nauto_commit = true\n\n[templates]\nobsidian_folder = \"Templates\"\n\n\
+         [plugins.writer]\nenabled = true\nevents = [\"on_note_write\", \"on_note_create\", \
+         \"on_note_delete\", \"on_pre_commit\", \"on_post_commit\", \"on_scan_complete\", \
+         \"on_refactor\"]\nsandbox = \"fs\"\n",
+    )
+    .unwrap();
+    commit_all(&vault_root, "initial");
+    write_plugin_file(
+        &vault_root,
+        "writer",
+        r#"
+let written = 0;
+function record(name, event) {
+  const paths = [event.path, ...(event.paths || []), ...(event.files || [])].filter(Boolean);
+  if (paths.length > 0 && paths.every((path) => String(path).startsWith("hooks/"))) return;
+  written += 1;
+  vault.create(`hooks/${name}-${Date.now()}-${written}-${Math.floor(Math.random() * 1e9)}.md`,
+    { content: name });
+}
+function on_note_write(event) { record("write", event); }
+function on_note_create(event) { record("create", event); }
+function on_note_delete(event) { record("delete", event); }
+function on_pre_commit(event) { record("precommit", event); }
+function on_post_commit(event) { record("postcommit", event); }
+function on_scan_complete(event) { record("scan", event); }
+function on_refactor(event) { record("refactor", event); }
+"#,
+    );
+    let config_home = temp_dir.path().join("xdg");
+    fs::create_dir_all(&config_home).unwrap();
+    let config_home = config_home.to_str().unwrap().to_string();
+    let root = vault_root.to_str().unwrap();
+    trust_and_scan_vault(&config_home, root);
+    let hooks = |name: &str| {
+        fs::read_dir(vault_root.join("hooks")).map_or(0, |entries| {
+            entries
+                .filter(|entry| {
+                    entry
+                        .as_ref()
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(&format!("{name}-"))
+                })
+                .count()
+        })
+    };
+    let commands: &[(&[&str], &[&str])] = &[
+        (&["index", "scan"], &["scan"]),
+        (&["note", "create", "Fresh.md"], &["write", "create"]),
+        (
+            &["note", "append", "Note.md", "more"],
+            &["write", "precommit", "postcommit"],
+        ),
+        (&["template", "insert", "t", "Note.md"], &["write"]),
+        (
+            &["refactor", "rename-property", "status", "state"],
+            &["refactor"],
+        ),
+        (
+            &["refactor", "move", "Fresh.md", "Moved/Fresh.md"],
+            &["refactor"],
+        ),
+        (&["note", "delete", "Moved/Fresh.md"], &["delete"]),
+        (
+            &["git", "commit", "-m", "manual"],
+            &["precommit", "postcommit"],
+        ),
+    ];
+    for (arguments, events) in commands {
+        if arguments[0] == "git" {
+            // A change of its own for the manual commit.
+            fs::write(vault_root.join("Extra.md"), "# Extra\n").unwrap();
+        }
+        let before = events.iter().map(|event| hooks(event)).collect::<Vec<_>>();
+        let mut full = vec!["--vault", root, "--output", "json"];
+        full.extend_from_slice(arguments);
+        let output = run_vulcan_with_deadline(&config_home, &full);
+        assert!(
+            output.status.success(),
+            "{arguments:?}: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        for (event, before) in events.iter().zip(before) {
+            assert!(
+                hooks(event) > before,
+                "{arguments:?}: no {event} hook wrote"
+            );
+        }
     }
 }

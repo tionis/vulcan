@@ -5051,6 +5051,7 @@ fn template_insert_command_prepends_and_merges_frontmatter() {
         false,
         false,
         None,
+        None,
     )
     .expect("template insert should succeed");
 
@@ -5104,6 +5105,7 @@ fn template_insert_command_appends_and_auto_commits() {
         false,
         false,
         false,
+        None,
         None,
     )
     .expect("template insert should succeed");

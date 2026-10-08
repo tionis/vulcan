@@ -1261,13 +1261,18 @@ pub fn apply_template_insert(
     paths: &VaultPaths,
     request: &TemplateInsertRequest,
 ) -> Result<TemplateInsertReport, AppError> {
-    apply_template_insert_with_filter(paths, request, None)
+    apply_template_insert_with_filter(paths, request, None, None, true)
 }
 
+/// Insert a rendered template into a note. Like every note write, the
+/// blocking `on_note_write` hooks run first and may veto it; the write and
+/// the hooks use `permission_profile`.
 pub fn apply_template_insert_with_filter(
     paths: &VaultPaths,
     request: &TemplateInsertRequest,
     read_filter: Option<&PermissionFilter>,
+    permission_profile: Option<&str>,
+    quiet: bool,
 ) -> Result<TemplateInsertReport, AppError> {
     let config = load_vault_config(paths).config;
     let loaded = load_named_template(paths, &config, &request.template)?;
@@ -1303,13 +1308,27 @@ pub fn apply_template_insert_with_filter(
         .map_err(AppError::operation)?;
     let updated =
         apply_template_insertion_mode(&prepared, request.mode).map_err(AppError::operation)?;
+    crate::plugins::dispatch_plugin_event(
+        paths,
+        permission_profile,
+        PluginEvent::OnNoteWrite,
+        &json!({
+            "kind": PluginEvent::OnNoteWrite,
+            "path": rendered.target_path,
+            "operation": "template-insert",
+            "existed_before": true,
+            "previous_content": expected_final,
+            "content": updated,
+        }),
+        quiet,
+    )?;
     write_template_result_with_staged_creates(
         paths,
         &rendered.target_path,
         Some(&expected_final),
         &updated,
         &staged,
-        None,
+        permission_profile,
         "template insert",
     )?;
 

@@ -191,6 +191,7 @@ pub(crate) fn run_template_insert_command(
     quiet: bool,
     interactive_note_selection: bool,
     read_filter: Option<&PermissionFilter>,
+    permission_profile: Option<&str>,
 ) -> Result<TemplateInsertReport, CliError> {
     let target_identifier = resolve_note_argument(
         paths,
@@ -208,13 +209,21 @@ pub(crate) fn run_template_insert_command(
             vars: parse_template_var_bindings(vars)?,
         },
         read_filter,
+        permission_profile,
+        quiet,
     )?;
 
     run_incremental_scan(paths, OutputFormat::Human, false, false)?;
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
     warn_auto_commit_if_needed(&auto_commit, quiet);
     auto_commit
-        .commit(paths, "template insert", &report.changed_paths, None, quiet)
+        .commit(
+            paths,
+            "template insert",
+            &report.changed_paths,
+            permission_profile,
+            quiet,
+        )
         .map_err(CliError::operation)?;
 
     Ok(TemplateInsertReport {

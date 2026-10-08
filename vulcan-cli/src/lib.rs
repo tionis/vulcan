@@ -6641,6 +6641,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     cli.quiet,
                     interactive_note_selection,
                     read_filter.as_ref(),
+                    cli.permissions.as_deref(),
                 )?),
                 Some(TemplateSubcommand::Preview {
                     template,
