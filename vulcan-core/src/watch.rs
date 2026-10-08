@@ -541,6 +541,15 @@ fn relative_watch_path(paths: &VaultPaths, path: &Path) -> Option<PathBuf> {
     paths
         .relative_to_vault(path)
         .or_else(|| windows_relative_watch_path(paths, path))
+        .or_else(|| canonical_relative_watch_path(paths, path))
+}
+
+/// Backends that watch the canonical root (macOS `FSEvents`) report canonical
+/// paths, so a vault opened through a symlink (`/var` is `/private/var` on
+/// macOS) would otherwise drop every event.
+fn canonical_relative_watch_path(paths: &VaultPaths, path: &Path) -> Option<PathBuf> {
+    let canonical = std::fs::canonicalize(paths.vault_root()).ok()?;
+    path.strip_prefix(canonical).ok().map(Path::to_path_buf)
 }
 
 #[cfg(windows)]
@@ -567,6 +576,24 @@ mod tests {
     use notify::event::{AccessKind, CreateKind, ModifyKind};
     use notify::Config;
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    #[test]
+    fn events_reported_under_the_canonical_root_are_kept() {
+        let temporary = TempDir::new().unwrap();
+        let real = temporary.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = temporary.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let paths = VaultPaths::new(&link);
+        let canonical = real.canonicalize().unwrap().join("notes/A.md");
+        let mut batch = WatchBatch::default();
+        assert!(batch.push(
+            &paths,
+            Event::new(EventKind::Create(CreateKind::File)).add_path(canonical)
+        ));
+        assert_eq!(batch.created_paths, ["notes/A.md".to_string()].into());
+    }
 
     #[test]
     fn config_events_reconcile_on_both_backends_without_admitting_transients() {
