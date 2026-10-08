@@ -4715,6 +4715,8 @@ fn ensure_no_existing_proposal(
     repository_key: &str,
     conflict_id: &str,
 ) -> Result<(), AppError> {
+    validate_hex_id("repository key", repository_key)?;
+    validate_hex_id("conflict ID", conflict_id)?;
     let directory = store
         .root()
         .join(repository_key)
@@ -4749,6 +4751,8 @@ fn proposal_has_terminal_audit(
     store: &SyncStateStore,
     proposal: &ResolutionProposal,
 ) -> Result<bool, AppError> {
+    validate_hex_id("repository key", &proposal.repository_key)?;
+    validate_hex_id("conflict ID", &proposal.conflict_id)?;
     let directory = store
         .root()
         .join(&proposal.repository_key)
@@ -6880,5 +6884,17 @@ mod tests {
             .expect("UTF-8 Git output")
             .trim()
             .to_string()
+    }
+
+    #[test]
+    fn existing_proposal_check_refuses_keys_that_would_leave_the_store() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let store = SyncStateStore::at(temporary.path().join("state"));
+        let id = "0".repeat(32);
+        for (key, conflict) in [("../escape", id.as_str()), (id.as_str(), "../escape")] {
+            let error = ensure_no_existing_proposal(&store, key, conflict)
+                .expect_err("traversing identifiers must be refused");
+            assert!(error.to_string().contains("invalid"), "{error}");
+        }
     }
 }

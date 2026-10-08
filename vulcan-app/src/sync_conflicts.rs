@@ -3024,27 +3024,30 @@ impl SyncConflictStore {
         Ok(records)
     }
 
+    /// The per-repository state directory. Every path below it is built
+    /// from a validated key, so no caller-supplied value can leave the store.
+    fn repository_directory(&self, repository_key: &str) -> Result<PathBuf, AppError> {
+        validate_hex_id("repository key", repository_key)?;
+        Ok(self.root.join(repository_key))
+    }
+
     fn mark_open(&self, repository_key: &str, conflict_id: &str) -> Result<(), AppError> {
         validate_hex_id("conflict ID", conflict_id)?;
-        let index = self.root.join(repository_key).join(OPEN_CONFLICTS_DIR);
+        let index = self
+            .repository_directory(repository_key)?
+            .join(OPEN_CONFLICTS_DIR);
         fs::create_dir_all(&index).map_err(AppError::operation)?;
         durable_file::create(&index.join(conflict_id), b"").map(drop)
     }
 
     fn mark_closed(&self, repository_key: &str, conflict_id: &str) -> Result<(), AppError> {
         validate_hex_id("conflict ID", conflict_id)?;
-        let closed = self.root.join(repository_key).join(CLOSED_CONFLICTS_DIR);
+        let repository = self.repository_directory(repository_key)?;
+        let closed = repository.join(CLOSED_CONFLICTS_DIR);
         fs::create_dir_all(&closed).map_err(AppError::operation)?;
         // Closed before leaving the open index, so a crash never loses both.
         durable_file::create(&closed.join(conflict_id), b"")?;
-        durable_file::remove(
-            &self
-                .root
-                .join(repository_key)
-                .join(OPEN_CONFLICTS_DIR)
-                .join(conflict_id),
-        )
-        .map(drop)
+        durable_file::remove(&repository.join(OPEN_CONFLICTS_DIR).join(conflict_id)).map(drop)
     }
 
     /// Repairs the open index from a full listing's states, for conflicts
@@ -3054,11 +3057,14 @@ impl SyncConflictStore {
         repository_key: &str,
         states: &[(SyncConflictResolutionState, String)],
     ) -> Result<(), AppError> {
-        let index = self.root.join(repository_key).join(OPEN_CONFLICTS_DIR);
+        let index = self
+            .repository_directory(repository_key)?
+            .join(OPEN_CONFLICTS_DIR);
         if !index.is_dir() {
             return Ok(());
         }
         for (state, id) in states {
+            validate_hex_id("conflict ID", id)?;
             if *state == SyncConflictResolutionState::Unresolved {
                 if !index.join(id).is_file() {
                     self.mark_open(repository_key, id)?;
@@ -3875,7 +3881,9 @@ impl SyncConflictStore {
         repository_key: &str,
         older_than: std::time::Duration,
     ) -> Result<Vec<String>, AppError> {
-        let closed = self.root.join(repository_key).join(CLOSED_CONFLICTS_DIR);
+        let closed = self
+            .repository_directory(repository_key)?
+            .join(CLOSED_CONFLICTS_DIR);
         let entries = match fs::read_dir(&closed) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -3930,7 +3938,7 @@ impl SyncConflictStore {
         if directory.exists() {
             fs::remove_dir_all(&directory).map_err(AppError::operation)?;
         }
-        let root = self.root.join(repository_key);
+        let root = self.repository_directory(repository_key)?;
         durable_file::remove(&root.join(OPEN_CONFLICTS_DIR).join(conflict_id))?;
         durable_file::remove(&root.join(CLOSED_CONFLICTS_DIR).join(conflict_id))?;
         Ok(())
@@ -3947,8 +3955,9 @@ impl SyncConflictStore {
     /// Conflicts in the archive, from the device-local mirror of its count.
     #[must_use]
     pub fn archived_count(&self, repository_key: &str) -> usize {
-        fs::read_to_string(self.root.join(repository_key).join(ARCHIVED_COUNT_FILE))
+        self.repository_directory(repository_key)
             .ok()
+            .and_then(|directory| fs::read_to_string(directory.join(ARCHIVED_COUNT_FILE)).ok())
             .and_then(|count| count.trim().parse().ok())
             .unwrap_or(0)
     }
@@ -6403,5 +6412,34 @@ mod tests {
             .get_resolution(&key, &id)
             .expect_err("future resolution version must fail");
         assert!(error.to_string().contains("version or identity mismatch"));
+    }
+
+    #[test]
+    fn index_helpers_refuse_keys_that_would_leave_the_store() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let state = SyncStateStore::at(temporary.path().join("state"));
+        let store = SyncConflictStore::from_state_store(&state);
+        let conflict_id = "0".repeat(32);
+        fs::create_dir_all(temporary.path().join("escape")).expect("outside directory");
+        fs::write(
+            temporary.path().join("escape").join(ARCHIVED_COUNT_FILE),
+            "7",
+        )
+        .expect("outside count");
+
+        for key in ["../escape", "", "ABCDEF0123456789ABCDEF0123456789"] {
+            assert!(store.mark_open(key, &conflict_id).is_err(), "{key}");
+            assert!(store.mark_closed(key, &conflict_id).is_err(), "{key}");
+            assert_eq!(store.archived_count(key), 0, "{key}");
+        }
+        let key = "f".repeat(32);
+        fs::create_dir_all(state.root().join(&key).join(OPEN_CONFLICTS_DIR)).expect("index");
+        let states = [(SyncConflictResolutionState::Unresolved, "../x".to_string())];
+        assert!(store.reconcile_open_index(&key, &states).is_err());
+        assert!(!temporary
+            .path()
+            .join("escape")
+            .join(OPEN_CONFLICTS_DIR)
+            .exists());
     }
 }
