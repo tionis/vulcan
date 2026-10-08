@@ -2562,11 +2562,13 @@ const vault = {
     );
   },
   create(path, opts = {}) {
+    // A string is the content, as in `vault.set(path, content)`.
+    const options = typeof opts === "string" ? { content: opts } : opts;
     return __vulcanNote(
       __vulcanMutation("create", {
         path,
-        content: opts?.content ?? "",
-        frontmatter: opts?.frontmatter ?? null,
+        content: options?.content ?? "",
+        frontmatter: options?.frontmatter ?? null,
       }).note
     );
   },
@@ -3132,13 +3134,13 @@ See also: vault.create(), vault.patch()`
 );
 __vulcanRegisterHelp(
   vault.create,
-  `vault.create(path: string, opts?: { content?: string, frontmatter?: object }): Note
+  `vault.create(path: string, opts?: string | { content?: string, frontmatter?: object }): Note
 
 Create a new note and return it as a Note object. Requires --sandbox fs or higher.
 
 Parameters:
   path - Target note path.
-  opts - Optional content and frontmatter fields for the new note.
+  opts - The new note's content as a string, or optional content and frontmatter fields.
 
 Example:
   vault.create("Projects/New", { frontmatter: { status: "draft" } })
@@ -7754,6 +7756,8 @@ cpu_limit_ms = 25
                       content: "Body",
                       frontmatter: { status: "draft" }
                     });
+                    vault.create("Shorthand", "# Shorthand\n");
+                    vault.plan().create("PlanShorthand", "In a plan\n").apply();
                     vault.append("Scratch", "Follow-up", { heading: "## Log" });
                     vault.update("Scratch", "owner", "alice");
                     vault.unset("Scratch", "status");
@@ -7777,6 +7781,15 @@ cpu_limit_ms = 25
             assert!(scratch.contains("## Log"));
             assert!(scratch.contains("Follow-up"));
             assert!(scratch.contains("From plan"));
+            // A string second argument is the content.
+            assert_eq!(
+                fs::read_to_string(vault_root.join("Shorthand.md")).unwrap(),
+                "# Shorthand\n"
+            );
+            assert_eq!(
+                fs::read_to_string(vault_root.join("PlanShorthand.md")).unwrap(),
+                "In a plan\n"
+            );
 
             let error = session
                 .evaluate(

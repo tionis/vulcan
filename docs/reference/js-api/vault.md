@@ -19,7 +19,7 @@ Available today:
 - `vault.daily.range(from, to)`
 - `vault.events({ from, to })`
 - `vault.set(path, content, opts?)`
-- `vault.create(path, opts?)`
+- `vault.create(path, opts?)`, where `opts` is the content as a string or `{ content?, frontmatter? }`
 - `vault.append(path, text, opts?)`
 - `vault.patch(path, find, replace, opts?)`
 - `vault.update(path, key, value)`
