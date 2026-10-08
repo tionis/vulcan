@@ -3463,22 +3463,17 @@ fn resolve_changed_links(
     }
 
     // Load only links from changed documents.
-    let placeholders = changed_document_ids
-        .iter()
-        .map(|_| "?")
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = format!(
-        "
+    // One JSON array parameter, whatever the number of changed documents.
+    let id_list = serde_json::to_string(changed_document_ids).unwrap_or_default();
+    let sql = "
         SELECT l.id, l.source_document_id, s.path, l.target_path_candidate, l.link_kind
         FROM links l
         JOIN documents s ON s.id = l.source_document_id
-        WHERE l.source_document_id IN ({placeholders})
+        WHERE l.source_document_id IN (SELECT value FROM json_each(?1))
         ORDER BY l.byte_offset
-        "
-    );
-    let mut statement = transaction.prepare(&sql)?;
-    let rows = statement.query_map(rusqlite::params_from_iter(changed_document_ids), |row| {
+        ";
+    let mut statement = transaction.prepare(sql)?;
+    let rows = statement.query_map([&id_list], |row| {
         Ok(ResolverLinkRow {
             id: row.get(0)?,
             resolver_link: ResolverLink {

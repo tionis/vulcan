@@ -1527,16 +1527,15 @@ fn load_hit_chunk_ranges(
         return Ok(HashMap::new());
     }
 
-    let placeholders = vec!["?"; chunk_ids.len()].join(", ");
-    let sql = format!(
-        "
+    // One JSON array parameter, however many hits.
+    let id_list = serde_json::to_string(&chunk_ids).unwrap_or_default();
+    let sql = "
         SELECT id, byte_offset_start, byte_offset_end
         FROM chunks
-        WHERE id IN ({placeholders})
-        "
-    );
-    let mut statement = connection.prepare(&sql)?;
-    let rows = statement.query_map(params_from_iter(chunk_ids.iter()), |row| {
+        WHERE id IN (SELECT value FROM json_each(?1))
+        ";
+    let mut statement = connection.prepare(sql)?;
+    let rows = statement.query_map([&id_list], |row| {
         let byte_start = usize::try_from(row.get::<_, i64>(1)?).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
                 1,
@@ -1662,10 +1661,11 @@ fn load_hit_file_mtimes(
         return Ok(HashMap::new());
     }
 
-    let placeholders = vec!["?"; document_paths.len()].join(", ");
-    let sql = format!("SELECT path, file_mtime FROM documents WHERE path IN ({placeholders})");
-    let mut statement = connection.prepare(&sql)?;
-    let rows = statement.query_map(params_from_iter(document_paths.iter()), |row| {
+    let path_list = serde_json::to_string(&document_paths).unwrap_or_default();
+    let sql =
+        "SELECT path, file_mtime FROM documents WHERE path IN (SELECT value FROM json_each(?1))";
+    let mut statement = connection.prepare(sql)?;
+    let rows = statement.query_map([&path_list], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
     })?;
 

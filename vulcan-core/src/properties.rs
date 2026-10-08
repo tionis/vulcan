@@ -1680,13 +1680,15 @@ fn hydrate_note_records(
         .iter()
         .map(|(id, _)| id.as_str())
         .collect();
-    let placeholders = doc_ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    // One JSON array parameter: an id per placeholder exceeds SQLite's
+    // variable limit for large result sets.
+    let id_list = serde_json::to_string(&doc_ids).unwrap_or_default();
 
     let mut tag_map: HashMap<String, Vec<String>> = HashMap::new();
     let tag_sql =
-        format!("SELECT document_id, tag_text FROM tags WHERE document_id IN ({placeholders})");
-    let mut tag_stmt = connection.prepare(&tag_sql)?;
-    let tag_rows = tag_stmt.query_map(params_from_iter(doc_ids.iter()), |row| {
+        "SELECT document_id, tag_text FROM tags WHERE document_id IN (SELECT value FROM json_each(?1))";
+    let mut tag_stmt = connection.prepare(tag_sql)?;
+    let tag_rows = tag_stmt.query_map([&id_list], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
     for tag_row in tag_rows {
@@ -1695,13 +1697,12 @@ fn hydrate_note_records(
     }
 
     let mut link_map: HashMap<String, Vec<String>> = HashMap::new();
-    let link_sql = format!(
-        "SELECT source_document_id, raw_text
+    let link_sql = "SELECT source_document_id, raw_text
          FROM links
-         WHERE link_kind = 'wikilink' AND source_document_id IN ({placeholders})"
-    );
-    let mut link_stmt = connection.prepare(&link_sql)?;
-    let link_rows = link_stmt.query_map(params_from_iter(doc_ids.iter()), |row| {
+         WHERE link_kind = 'wikilink'
+           AND source_document_id IN (SELECT value FROM json_each(?1))";
+    let mut link_stmt = connection.prepare(link_sql)?;
+    let link_rows = link_stmt.query_map([&id_list], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
     for link_row in link_rows {
@@ -1710,11 +1711,10 @@ fn hydrate_note_records(
     }
 
     let mut alias_map: HashMap<String, Vec<String>> = HashMap::new();
-    let alias_sql = format!(
-        "SELECT document_id, alias_text FROM aliases WHERE document_id IN ({placeholders})"
-    );
-    let mut alias_stmt = connection.prepare(&alias_sql)?;
-    let alias_rows = alias_stmt.query_map(params_from_iter(doc_ids.iter()), |row| {
+    let alias_sql = "SELECT document_id, alias_text FROM aliases
+         WHERE document_id IN (SELECT value FROM json_each(?1))";
+    let mut alias_stmt = connection.prepare(alias_sql)?;
+    let alias_rows = alias_stmt.query_map([&id_list], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
     for alias_row in alias_rows {
@@ -1737,13 +1737,13 @@ fn hydrate_note_records(
          FROM links
          JOIN note_query ON note_query.document_id = links.source_document_id
          WHERE links.link_kind = 'wikilink'
-           AND links.resolved_target_id IN ({placeholders}){}",
+           AND links.resolved_target_id IN (SELECT value FROM json_each(?)){}",
         permission_sql.cte, permission_sql.clause,
     );
     let inlink_params = permission_sql
         .params
         .into_iter()
-        .chain(doc_ids.iter().map(|id| (*id).to_string()))
+        .chain(std::iter::once(id_list.clone()))
         .collect::<Vec<_>>();
     let mut inlink_stmt = connection.prepare(&inlink_sql)?;
     let inlink_rows = inlink_stmt.query_map(params_from_iter(inlink_params.iter()), |row| {
@@ -1772,13 +1772,13 @@ fn hydrate_note_records(
 
     let mut task_ids_by_doc: HashMap<String, Vec<String>> = HashMap::new();
     let mut task_records: HashMap<String, NoteTaskRecord> = HashMap::new();
-    let task_sql = format!(
+    let task_sql = String::from(
         "SELECT id, document_id, list_item_id, status_char, text, byte_offset, parent_task_id, \
          section_heading, line_number \
-         FROM tasks WHERE document_id IN ({placeholders})"
+         FROM tasks WHERE document_id IN (SELECT value FROM json_each(?1))",
     );
     let mut task_stmt = connection.prepare(&task_sql)?;
-    let task_rows = task_stmt.query_map(params_from_iter(doc_ids.iter()), |row| {
+    let task_rows = task_stmt.query_map([&id_list], |row| {
         let status_char: String = row.get(3)?;
         let status_state = config.tasks.statuses.status_state(&status_char);
         Ok((
@@ -1812,27 +1812,26 @@ fn hydrate_note_records(
 
     if !task_records.is_empty() {
         let task_ids: Vec<&str> = task_records.keys().map(String::as_str).collect();
-        let task_placeholders = task_ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-        let task_property_sql = format!(
+        let task_id_list = serde_json::to_string(&task_ids).unwrap_or_default();
+        let task_property_sql = String::from(
             "SELECT task_id, key, value_text, value_number, value_bool, value_date, value_type
              FROM task_properties
-             WHERE task_id IN ({task_placeholders})"
+             WHERE task_id IN (SELECT value FROM json_each(?1))",
         );
         let mut task_property_stmt = connection.prepare(&task_property_sql)?;
-        let task_property_rows =
-            task_property_stmt.query_map(params_from_iter(task_ids.iter()), |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    typed_property_json_value(
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get::<_, Option<i64>>(4)?.map(|value| value != 0),
-                        row.get(5)?,
-                        row.get::<_, String>(6)?.as_str(),
-                    ),
-                ))
-            })?;
+        let task_property_rows = task_property_stmt.query_map([&task_id_list], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                typed_property_json_value(
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get::<_, Option<i64>>(4)?.map(|value| value != 0),
+                    row.get(5)?,
+                    row.get::<_, String>(6)?.as_str(),
+                ),
+            ))
+        })?;
 
         let mut property_map: HashMap<String, BTreeMap<String, Vec<Value>>> = HashMap::new();
         for property_row in task_property_rows {
@@ -1856,17 +1855,16 @@ fn hydrate_note_records(
     }
 
     let mut inline_expression_map: HashMap<String, Vec<String>> = HashMap::new();
-    let inline_expression_sql = format!(
+    let inline_expression_sql = String::from(
         "SELECT document_id, expression
          FROM inline_expressions
-         WHERE document_id IN ({placeholders})
-         ORDER BY line_number ASC, byte_offset_start ASC"
+         WHERE document_id IN (SELECT value FROM json_each(?1))
+         ORDER BY line_number ASC, byte_offset_start ASC",
     );
     let mut inline_expression_stmt = connection.prepare(&inline_expression_sql)?;
-    let inline_expression_rows = inline_expression_stmt
-        .query_map(params_from_iter(doc_ids.iter()), |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
+    let inline_expression_rows = inline_expression_stmt.query_map([&id_list], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
     for inline_expression_row in inline_expression_rows {
         let (doc_id, expression) = inline_expression_row?;
         inline_expression_map
@@ -1946,15 +1944,15 @@ fn load_list_item_map(
     connection: &rusqlite::Connection,
     doc_ids: &[&str],
 ) -> Result<HashMap<String, Vec<NoteListItemRecord>>, rusqlite::Error> {
-    let placeholders = doc_ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    let id_list = serde_json::to_string(doc_ids).unwrap_or_default();
     let mut list_item_map: HashMap<String, Vec<NoteListItemRecord>> = HashMap::new();
-    let list_item_sql = format!(
+    let list_item_sql = String::from(
         "SELECT id, document_id, text, tags_json, outlinks_json, line_number, line_count, \
          byte_offset, section_heading, parent_item_id, is_task, block_id, annotated, symbol \
-         FROM list_items WHERE document_id IN ({placeholders})"
+         FROM list_items WHERE document_id IN (SELECT value FROM json_each(?1))",
     );
     let mut list_item_stmt = connection.prepare(&list_item_sql)?;
-    let list_item_rows = list_item_stmt.query_map(params_from_iter(doc_ids.iter()), |row| {
+    let list_item_rows = list_item_stmt.query_map([&id_list], |row| {
         Ok((
             row.get::<_, String>(1)?,
             (
@@ -3236,6 +3234,37 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
+
+    #[test]
+    fn hydration_binds_any_number_of_notes() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".vulcan")).unwrap();
+        fs::write(root.join("Real.md"), "---\ntags: [kept]\n---\n[[Other]]\n").unwrap();
+        let paths = VaultPaths::new(root);
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        let database = CacheDatabase::open(&paths).unwrap();
+        let config = crate::load_vault_config(&paths).config;
+        let real = load_stored_notes(database.connection(), root, &HashSet::new(), None)
+            .unwrap()
+            .remove(0)
+            .record;
+        // More ids than SQLite allows variables in one statement.
+        let mut notes = (0..40_000)
+            .map(|index| {
+                let mut note = real.clone();
+                note.document_id = format!("missing-{index}");
+                note.document_path = format!("missing/{index}.md");
+                (note.document_id.clone(), note)
+            })
+            .collect::<Vec<_>>();
+        notes.push((real.document_id.clone(), real));
+        hydrate_note_records(database.connection(), &config, &mut notes, None, None, true)
+            .expect("hydration binds ids as one parameter");
+        let (_, hydrated) = notes.last().unwrap();
+        assert_eq!(hydrated.tags, ["kept"]);
+        assert_eq!(hydrated.links, ["[[Other]]"]);
+    }
 
     fn public_only_filter() -> PermissionFilter {
         PermissionFilter::new(PathPermission {

@@ -2122,7 +2122,6 @@ fn tag_counts_for_ids(
     if allowed_ids.is_empty() {
         return Ok(Vec::new());
     }
-    let placeholders = vec!["?"; allowed_ids.len()].join(", ");
     let limit_sql = limit.map_or_else(String::new, |limit| format!(" LIMIT {limit}"));
     let sql = format!(
         "
@@ -2130,15 +2129,14 @@ fn tag_counts_for_ids(
         FROM tags
         JOIN documents ON documents.id = tags.document_id
         WHERE documents.extension = 'md'
-          AND tags.document_id IN ({placeholders})
+          AND tags.document_id IN (SELECT value FROM json_each(?1))
         GROUP BY tags.tag_text
         ORDER BY usage_count DESC, tags.tag_text ASC{limit_sql}
         "
     );
-    let mut params = allowed_ids.iter().collect::<Vec<_>>();
-    params.sort();
+    let id_list = json_id_list(allowed_ids);
     let mut statement = connection.prepare(&sql)?;
-    let rows = statement.query_map(params_from_iter(params.iter()), |row| {
+    let rows = statement.query_map([&id_list], |row| {
         Ok(NamedCount {
             name: row.get(0)?,
             count: usize::try_from(row.get::<_, i64>(1)?).unwrap_or(usize::MAX),
@@ -2148,6 +2146,14 @@ fn tag_counts_for_ids(
         .map_err(GraphQueryError::from)
 }
 
+/// `ids` as one JSON array parameter, sorted for a stable statement input;
+/// one id per placeholder exceeds the database's variable limit in large vaults.
+fn json_id_list(ids: &HashSet<String>) -> String {
+    let mut ids = ids.iter().collect::<Vec<_>>();
+    ids.sort();
+    serde_json::to_string(&ids).unwrap_or_default()
+}
+
 fn top_property_counts_for_ids(
     connection: &Connection,
     allowed_ids: &HashSet<String>,
@@ -2155,21 +2161,17 @@ fn top_property_counts_for_ids(
     if allowed_ids.is_empty() {
         return Ok(Vec::new());
     }
-    let placeholders = vec!["?"; allowed_ids.len()].join(", ");
-    let sql = format!(
-        "
+    let sql = "
         SELECT key, COUNT(*) AS total_usage
         FROM property_values
-        WHERE document_id IN ({placeholders})
+        WHERE document_id IN (SELECT value FROM json_each(?1))
         GROUP BY key
         ORDER BY total_usage DESC, key ASC
         LIMIT 10
-        "
-    );
-    let mut params = allowed_ids.iter().collect::<Vec<_>>();
-    params.sort();
-    let mut statement = connection.prepare(&sql)?;
-    let rows = statement.query_map(params_from_iter(params.iter()), |row| {
+        ";
+    let id_list = json_id_list(allowed_ids);
+    let mut statement = connection.prepare(sql)?;
+    let rows = statement.query_map([&id_list], |row| {
         Ok(NamedCount {
             name: row.get(0)?,
             count: usize::try_from(row.get::<_, i64>(1)?).unwrap_or(usize::MAX),

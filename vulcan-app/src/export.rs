@@ -493,13 +493,9 @@ fn load_export_links_for_document_ids(
         return Ok(Vec::new());
     }
 
-    let placeholders = document_ids
-        .iter()
-        .map(|_| "?")
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = format!(
-        "SELECT
+    // One JSON array parameter, however many documents are exported.
+    let id_list = serde_json::to_string(document_ids).map_err(AppError::operation)?;
+    let sql = "SELECT
             source.path,
             links.raw_text,
             links.link_kind,
@@ -514,14 +510,13 @@ fn load_export_links_for_document_ids(
          FROM links
          JOIN documents AS source ON source.id = links.source_document_id
          LEFT JOIN documents AS target ON target.id = links.resolved_target_id
-         WHERE links.source_document_id IN ({placeholders})
-         ORDER BY source.path ASC, links.byte_offset ASC"
-    );
+         WHERE links.source_document_id IN (SELECT value FROM json_each(?1))
+         ORDER BY source.path ASC, links.byte_offset ASC";
 
     let connection = Connection::open(paths.cache_db()).map_err(AppError::operation)?;
-    let mut statement = connection.prepare(&sql).map_err(AppError::operation)?;
+    let mut statement = connection.prepare(sql).map_err(AppError::operation)?;
     let rows = statement
-        .query_map(rusqlite::params_from_iter(document_ids.iter()), |row| {
+        .query_map([&id_list], |row| {
             Ok(ExportLinkRecord {
                 source_document_path: row.get(0)?,
                 raw_text: row.get(1)?,
