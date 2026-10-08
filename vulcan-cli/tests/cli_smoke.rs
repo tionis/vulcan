@@ -38659,3 +38659,81 @@ function on_refactor(event) { record("refactor", event); }
         }
     }
 }
+
+/// A paged query hydrates only its page, and paging with or without a glob,
+/// `--limit`/`--offset`, or the query's own limit prints what the full
+/// result sliced would.
+#[test]
+fn query_pages_load_only_the_notes_they_print() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("a")).unwrap();
+    for index in 0..12 {
+        fs::write(
+            vault_root.join(format!("a/n{index:02}.md")),
+            format!(
+                "---\nstatus: open\nrank: {}\n---\n[[n00]] #t\n",
+                (index * 5) % 12
+            ),
+        )
+        .unwrap();
+    }
+    run_scan(&vault_root);
+    let root = vault_root.to_str().unwrap();
+    let run = |arguments: &[&str]| -> Value {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args(["--vault", root, "--output", "json"])
+            .args(arguments)
+            .assert()
+            .success();
+        parse_stdout_json(&assert)
+    };
+    let paths = |result: &Value| -> Vec<String> {
+        result["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|note| note["document_path"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let full = run(&[
+        "query",
+        "--explain",
+        "from notes where status = open order by rank",
+    ]);
+    let all = paths(&full);
+    assert_eq!(all.len(), 12);
+    let paged = run(&[
+        "query",
+        "--explain",
+        "from notes where status = open order by rank limit 3 offset 2",
+    ]);
+    assert_eq!(paths(&paged), all[2..5]);
+    // The full result hydrates every match in the plan; a page loads only
+    // stored fields there and hydrates just the notes it prints.
+    assert_eq!(full["plan"]["hydrated"], 12, "{}", full["plan"]);
+    assert_eq!(paged["plan"]["hydrated"], 0, "{}", paged["plan"]);
+    assert_eq!(paged["plan"]["stored"], 12, "{}", paged["plan"]);
+    let flagged = run(&[
+        "query",
+        "--explain",
+        "--limit",
+        "2",
+        "--offset",
+        "4",
+        "from notes where status = open order by rank",
+    ]);
+    assert_eq!(paths(&flagged), all[4..6]);
+    // A glob filters before paging, so every match loads.
+    let globbed = run(&[
+        "query",
+        "--explain",
+        "--glob",
+        "a/n1*",
+        "from notes where status = open order by rank limit 1",
+    ]);
+    let first_globbed = all.iter().find(|path| path.starts_with("a/n1")).unwrap();
+    assert_eq!(paths(&globbed), [first_globbed.clone()]);
+    assert_eq!(globbed["plan"]["hydrated"], 12);
+}

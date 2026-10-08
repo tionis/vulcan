@@ -164,8 +164,7 @@ pub(crate) fn handle_query_command(
                 ));
             }
             let ast = QueryAst::from_dsl(dsl).map_err(CliError::operation)?;
-            vulcan_core::execute_query_report_explained(paths, ast, read_filter.as_ref())
-                .map_err(CliError::operation)?
+            execute_paged(paths, ast, read_filter.as_ref(), list_controls, glob)?
         }
         (None, Some(json)) => {
             if !filters.is_empty() || sort.is_some() || desc {
@@ -174,8 +173,7 @@ pub(crate) fn handle_query_command(
                 ));
             }
             let ast = QueryAst::from_json(json).map_err(CliError::operation)?;
-            vulcan_core::execute_query_report_explained(paths, ast, read_filter.as_ref())
-                .map_err(CliError::operation)?
+            execute_paged(paths, ast, read_filter.as_ref(), list_controls, glob)?
         }
         (None, None) => {
             let note_query = NoteQuery {
@@ -232,6 +230,40 @@ pub(crate) fn handle_query_command(
     Ok(())
 }
 
+/// Run `ast` loading only the notes the output shows: the page the printer
+/// slices (its offset and limit, or the query's), when no glob filters the
+/// notes first. Hydrating every match for a page of 50 cost seconds at 100K.
+fn execute_paged(
+    paths: &VaultPaths,
+    ast: QueryAst,
+    read_filter: Option<&vulcan_core::PermissionFilter>,
+    list_controls: &ListOutputControls,
+    glob: Option<&str>,
+) -> Result<QueryReport, CliError> {
+    let offset = if list_controls.offset > 0 {
+        list_controls.offset
+    } else {
+        ast.offset
+    };
+    // An empty page would also empty the report `--exit-code` inspects.
+    let page = list_controls
+        .limit
+        .or(ast.limit)
+        .filter(|limit| glob.is_none() && *limit > 0)
+        .map(|limit| vulcan_core::properties::NotePage {
+            offset: 0,
+            limit: Some(offset.saturating_add(limit)),
+        });
+    vulcan_core::execute_query_report_page_in(
+        &vulcan_core::note_store::DirectNoteStore::new(paths),
+        paths,
+        ast,
+        read_filter,
+        page,
+    )
+    .map_err(CliError::operation)
+}
+
 pub(crate) fn handle_ls_command(
     cli: &Cli,
     paths: &VaultPaths,
@@ -255,8 +287,22 @@ pub(crate) fn handle_ls_command(
         sort_descending: false,
     };
     let read_filter = selected_read_permission_filter(cli, paths)?;
-    let notes_report = query_notes_with_filter(paths, &note_query, read_filter.as_ref())
-        .map_err(CliError::operation)?;
+    let store = vulcan_core::note_store::DirectNoteStore::new(paths);
+    let notes_report = if matches!(
+        format,
+        crate::QueryFormatArg::Paths | crate::QueryFormatArg::Count
+    ) {
+        // Paths and counts read nothing a hydrated note adds.
+        vulcan_core::properties::query_notes_stored_in(
+            &store,
+            paths,
+            &note_query,
+            read_filter.as_ref(),
+        )
+    } else {
+        query_notes_with_filter(paths, &note_query, read_filter.as_ref())
+    }
+    .map_err(CliError::operation)?;
     let ast = QueryAst::from_note_query(&note_query);
     let export = crate::resolve_cli_export(export)?;
     crate::print_query_report(

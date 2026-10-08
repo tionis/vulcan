@@ -727,6 +727,36 @@ pub fn query_notes_page_in(
     }
 }
 
+/// [`query_notes_in`] for callers that read only each note's stored fields
+/// (path, name, extension, times, size, properties): matching notes are not
+/// hydrated unless a filter itself reads hydrated fields such as tags or
+/// links.
+pub fn query_notes_stored_in(
+    store: &dyn crate::note_store::NoteStore,
+    paths: &VaultPaths,
+    query: &NoteQuery,
+    filter: Option<&PermissionFilter>,
+) -> Result<NotesReport, PropertyError> {
+    let compiled = compile_note_filters(&query.filters)?;
+    let output = if compiled.expressions.iter().any(|expression| {
+        crate::expression::analysis::reads_row_file_fields(
+            &expression.expr,
+            crate::expression::analysis::RowBindings {
+                whole_rows: &[],
+                this_is_row: true,
+            },
+        )
+    }) {
+        NoteQueryOutput::Notes
+    } else {
+        NoteQueryOutput::StoredNotes
+    };
+    match query_notes_core_in(store, paths, query, filter, None, output, None)? {
+        NoteQueryOutcome::Notes(shared) => Ok(shared.into_report(query)),
+        NoteQueryOutcome::Paths(_) => unreachable!("notes output yields notes"),
+    }
+}
+
 /// [`query_notes_with_filter`] over `lookup`, an already loaded universe
 /// (for example a Bases evaluation's), with rows hydrated or carrying
 /// stored fields only. `top`, when given, states the caller keeps only the
