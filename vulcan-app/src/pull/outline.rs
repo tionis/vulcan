@@ -2341,7 +2341,7 @@ fn validate_managed_path(destination: &str, local_path: &str) -> Result<(), AppE
     let path = Path::new(local_path);
     if local_path.contains('\\')
         || path.is_absolute()
-        || path.extension().and_then(|extension| extension.to_str()) != Some("md")
+        || !vulcan_core::paths::has_markdown_extension(path)
         || path
             .components()
             .any(|component| !matches!(component, Component::Normal(_)))
@@ -3201,6 +3201,14 @@ mod tests {
     use std::cell::Cell;
     use tempfile::tempdir;
     use vulcan_core::initialize_vulcan_dir;
+
+    #[test]
+    fn managed_paths_accept_markdown_in_any_letter_case() {
+        assert!(validate_managed_path("Wiki", "Wiki/Page.md").is_ok());
+        assert!(validate_managed_path("Wiki", "Wiki/Page.MD").is_ok());
+        assert!(validate_managed_path("Wiki", "Wiki/page.txt").is_err());
+        assert!(validate_managed_path("Wiki", "Other/Page.md").is_err());
+    }
 
     struct MockApi {
         documents: Vec<OutlineRemoteDocument>,

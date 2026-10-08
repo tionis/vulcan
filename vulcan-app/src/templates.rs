@@ -4819,7 +4819,7 @@ fn collect_templates_recursive(
         let path = entry.path();
         if path.is_dir() {
             collect_templates_recursive(base_dir, &path, display_root, source, out)?;
-        } else if path.extension().and_then(|ext| ext.to_str()) == Some("md") {
+        } else if vulcan_core::paths::has_markdown_extension(&path) {
             let Some(name) = path
                 .file_name()
                 .and_then(|v| v.to_str())

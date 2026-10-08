@@ -655,9 +655,7 @@ fn walk_top(
 }
 
 fn is_markdown(path: &str) -> bool {
-    std::path::Path::new(path)
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+    crate::paths::has_markdown_extension(path)
 }
 
 /// Candidates after the predicate: the rows it does not exclude, in order.

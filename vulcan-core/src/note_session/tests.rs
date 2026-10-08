@@ -366,6 +366,12 @@ fn ranked_vault() -> (TempDir, VaultPaths) {
         .unwrap();
     }
     fs::write(root.join("x/data.csv"), "a,b\n").unwrap();
+    // The scanner treats `.MD` as Markdown; the SQL and in-memory paths agree.
+    fs::write(
+        root.join("x/Upper.MD"),
+        "---\ntype: task\nstatus: open\ntitle: \"b\"\npriority: 1\nname: n60\ntags: [g1]\n---\n",
+    )
+    .unwrap();
     let mut views = String::new();
     for (index, (sort, limit)) in [
         (

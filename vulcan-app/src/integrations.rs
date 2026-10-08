@@ -475,7 +475,7 @@ fn validate_document_bindings(
         }
         let valid = route.local_root.as_deref().is_some_and(|root| {
             valid_local_root(local_path)
-                && local_path.extension().and_then(|value| value.to_str()) == Some("md")
+                && vulcan_core::paths::has_markdown_extension(local_path)
                 && local_path.starts_with(root)
         });
         if !valid {
@@ -783,6 +783,28 @@ mod tests {
                 diagnostics: Vec::new(),
             }
         );
+    }
+
+    #[test]
+    fn document_bindings_accept_markdown_in_any_letter_case() {
+        let mut config = VaultConfig::default();
+        config
+            .publish
+            .outline
+            .profiles
+            .insert("players".into(), profile());
+        let mut bound = route("Players/Campaign");
+        bound
+            .document_bindings
+            .insert("upper".into(), PathBuf::from("Players/Campaign/Upper.MD"));
+        config.integrations.routes.insert("campaign".into(), bound);
+        assert!(validate_routes(&config).valid);
+
+        let mut text = route("Players/Campaign");
+        text.document_bindings
+            .insert("text".into(), PathBuf::from("Players/Campaign/notes.txt"));
+        config.integrations.routes.insert("campaign".into(), text);
+        assert!(!validate_routes(&config).valid);
     }
 
     #[test]

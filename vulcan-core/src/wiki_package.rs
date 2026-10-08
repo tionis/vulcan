@@ -1026,10 +1026,7 @@ pub fn logical_identity_v1(members: &[WikiPackageMemberV1]) -> String {
 
 #[must_use]
 pub fn is_markdown_path(path: &str) -> bool {
-    Path::new(path)
-        .extension()
-        .and_then(|value| value.to_str())
-        .is_some_and(|value| value.eq_ignore_ascii_case("md"))
+    crate::paths::has_markdown_extension(path)
 }
 
 fn valid_declared_path(path: &str) -> bool {

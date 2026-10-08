@@ -184,6 +184,16 @@ fn private_operational_state_dir(
         .join(device_local_vault_key(vault_root)?))
 }
 
+/// Whether `path` names a Markdown note: an `.md` extension in any letter
+/// case, as the scanner classifies notes.
+#[must_use]
+pub fn has_markdown_extension(path: impl AsRef<Path>) -> bool {
+    path.as_ref()
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("md"))
+}
+
 #[must_use]
 pub fn user_config_dir() -> Option<PathBuf> {
     user_config_dir_from_env(|name| std::env::var_os(name))

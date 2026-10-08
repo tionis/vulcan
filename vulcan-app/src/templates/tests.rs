@@ -1014,11 +1014,14 @@ fn list_templates_in_directory_scans_subdirectories() {
     std::fs::write(sub.join("nested.md"), "# Nested").expect("nested template should write");
     std::fs::write(root.join("top.md"), "# Top").expect("top template should write");
     std::fs::write(root.join("ignored.txt"), "ignore me").expect("ignored file should write");
+    // The scanner treats any letter case of `.md` as a note.
+    std::fs::write(root.join("Upper.MD"), "# Upper").expect("upper template should write");
 
     let templates = super::list_templates_in_directory(root, "Templates", "test")
         .expect("should list templates");
 
-    assert_eq!(templates.len(), 2);
+    assert_eq!(templates.len(), 3);
+    assert!(templates.iter().any(|template| template.name == "Upper.MD"));
     let names: Vec<&str> = templates
         .iter()
         .map(|template| template.name.as_str())
