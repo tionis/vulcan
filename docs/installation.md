@@ -116,11 +116,12 @@ verifies signed metadata against trusted keys, checks the archive's exact size a
 and atomically replaces the running executable. `--allow-downgrade` is the explicit exception for a
 reinstall or rollback. Restart a running daemon after applying an update.
 
-Current builds embed the separate `stable-2026-09` identity, and its hardware-held successor `stable-2026-10`, with stable-only authority. The
-`v0.2.1` release is the first stable trust bootstrap: once its descriptor is signed, ordinary
-self-update commands verify it without an exception. A binary from before that release cannot
-authenticate the bootstrap descriptor; install `v0.2.1` from a manually verified checksum/archive
-or package. Do not normalize `--allow-unsigned` as the stable update path.
+Current builds embed the separate, hardware-held `stable-2026-10` identity with stable-only
+authority. It replaced `stable-2026-09`: `v0.3.0` was signed with both keys and trusts both, and
+later stable releases are signed only with `stable-2026-10`. A binary older than `v0.3.0` cannot
+authenticate those releases; update it to `v0.3.0` first, or install the current release from a
+manually verified checksum/archive or package. Do not normalize `--allow-unsigned` as the stable
+update path.
 
 Rolling descriptors are signed by the dedicated `main-2026-09` identity after the automated build
 completes. Release binaries embed its public key with `main`-only authority, so a portable binary

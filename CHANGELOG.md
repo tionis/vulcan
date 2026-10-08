@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Stable signing-key rotation, final step.** The stable channel now trusts only the
+  hardware-held `stable-2026-10` key, and stable releases are signed only with it. The retired
+  `stable-2026-09` key is no longer accepted. Installations on 0.3.0 update normally. Older
+  binaries must first update to 0.3.0, which both keys signed, or be reinstalled from a
+  checksum-verified archive or package.
+
 ## 0.3.0 — 2026-10-08
 
 Vulcan 0.3.0 makes multi-device use dependable. Sync authenticates with per-device keys, can

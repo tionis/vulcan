@@ -196,15 +196,7 @@ idempotent no-op that also removes a leftover staged envelope; any other existin
 closed. No developer workstation,
 resident process, or systemd timer participates in the normal rolling release path.
 
-The separate stable-channel identity was created on 2026-09-02:
-
-- key ID: `stable-2026-09`
-- raw Ed25519 public key (base64): `sOrBt76ruZ2kSR+4glX9k/ZjSoS1YSvmK9yMSVCiWpE=`
-- SHA-256 fingerprint of the raw 32-byte public key:
-  `8a6aea759c18b6d82d1492fb83e6efcddb3562aeb8a60d9f054119b4bceceafd`
-- authority: `stable` only; it must never authorize `main` metadata
-
-Its hardware-held successor was added on 2026-10-04:
+The current stable-channel identity was added on 2026-10-04:
 
 - key ID: `stable-2026-10`
 - algorithm: `sshsig-ed25519`
@@ -217,13 +209,12 @@ Its hardware-held successor was added on 2026-10-04:
 - custody: the operator's OpenPGP card, exposed to `ssh-agent` by `gpg-agent`; no private key file
   exists. The signer passes the public key file to `ssh-keygen -Y sign -f`, and the card prompts for
   its PIN or touch.
-- authority: `stable` only
+- recovery: the operator keeps an offline copy of the key, so a lost or broken card is replaced
+  by loading that copy onto a new card rather than by a trust reset
+- authority: `stable` only; it must never authorize `main` metadata
 
-The live `stable-2026-09` private key is restricted to the signing machine at
-`~/.config/vulcan/release-signing/stable-2026-09.pem`. Its only Git-canonical recovery copy is the
-SOPS-encrypted Grimoire admin secret
-`secrets/groups/admin/vulcan-update-stable.sops.yaml`. Stable signing is approval-gated rather than
-scheduled: there is no service, timer, Actions secret, or unattended stable signer.
+Stable signing is approval-gated rather than scheduled: there is no service, timer, Actions secret,
+or unattended stable signer.
 
 After a version-tag workflow succeeds, an operator supplies both the exact immutable tag and its
 full commit ID. The signer requires the non-prerelease tag to be exactly `v<version>`, verifies the
@@ -239,39 +230,38 @@ signed bytes:
 
 ```sh
 python scripts/release/sign_stable_release.py \
-  --tag v0.2.1 \
+  --tag v<version> \
   --expected-commit <full-40-character-commit> \
-  --signing-key ~/.config/vulcan/release-signing/stable-2026-09.pem \
+  --ssh-signing-key ~/.config/vulcan/release-signing/stable-2026-10.pub \
   --dry-run
 python scripts/release/sign_stable_release.py \
-  --tag v0.2.1 \
+  --tag v<version> \
   --expected-commit <full-40-character-commit> \
-  --signing-key ~/.config/vulcan/release-signing/stable-2026-09.pem
+  --ssh-signing-key ~/.config/vulcan/release-signing/stable-2026-10.pub
 ```
 
-Pass `--ssh-signing-key <file>.pub` to sign with `stable-2026-10` as well, or alone once
-`stable-2026-09` is retired. Each run asks each signer exactly once.
+The dry run also signs, so the card is asked once per run. `ssh-agent` (here `gpg-agent`) must be
+able to prompt for the PIN on the operator's terminal.
 
-The `v0.2.1` release is the first stable release containing this public key and is therefore the
-trust bootstrap. Older binaries cannot authenticate that release and need one out-of-band
-checksummed archive/package installation; do not teach them to accept the signature by weakening
-channel policy. After bootstrap, stable signatures are the default portable-update path. The
-previous `v0.1.0` release predates this descriptor contract, so there is no older stable descriptor
-to retrofit or sign.
+The `v0.1.0` release predates this descriptor contract, so there is no older stable descriptor to
+retrofit or sign.
 
 Rotation uses an overlap release whose envelope carries signatures from both the retiring and new
 stable keys while clients embed both public keys. A later out-of-band release removes the retiring
 key.
 
-The `stable-2026-09` to `stable-2026-10` rotation proceeds as follows:
+Stable trust history:
 
-1. The first release that embeds `stable-2026-10` must carry a `stable-2026-09` signature, because
-   every installed binary trusts only that key. Adding the card signature is harmless.
-2. Subsequent releases carry both signatures for as long as binaries from before step 1 should keep
-   self-updating. Each such binary verifies the `stable-2026-09` signature and, once updated, trusts
-   both keys.
-3. A later release stops embedding `stable-2026-09` and is signed only with the card. Binaries that
-   never updated past step 1 can no longer verify the channel and need one checksummed manual
-   installation. Afterwards, retire the PEM file and its recovery copy. If the old private key is lost before overlap, or suspected compromised, stop signing with it,
+- `stable-2026-09` (raw Ed25519 `sOrBt76ruZ2kSR+4glX9k/ZjSoS1YSvmK9yMSVCiWpE=`, created 2026-09-02,
+  file-held) was the first stable identity. `v0.2.1` was its trust bootstrap; older binaries needed
+  one checksummed manual installation.
+- `v0.3.0` embedded both keys and its descriptor carried both signatures, so every `v0.2.1` binary
+  could self-update into trusting `stable-2026-10`.
+- The release after `v0.3.0` stops embedding `stable-2026-09` and is signed only with
+  `stable-2026-10`. Binaries older than `v0.3.0` can no longer verify the stable channel and need one
+  checksummed manual installation. The retired private key and its SOPS recovery copy are then
+  destroyed.
+
+If a stable private key is lost before an overlap, or suspected compromised, stop signing with it,
 remove its trust in a manually verified release, install that release through checksums/packages,
 and resume with a new identity. A compromised key cannot securely authorize its own revocation.

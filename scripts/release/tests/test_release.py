@@ -668,15 +668,15 @@ class ReleasePackagingTests(unittest.TestCase):
         key.chmod(0o600)
         return key
 
-    def test_overlap_envelope_carries_pem_and_ssh_signatures(self) -> None:
+    def test_rotation_overlap_envelope_carries_pem_and_ssh_signatures(self) -> None:
         signer = rolling_signer_script
         ssh_key = self.ssh_keypair("card")
         pem = self.pem_key("stable")
         payload = b'{"fixture":"overlap"}'
         signers = [
-            signer.Signer("stable-2026-09", signer.ED25519_ALGORITHM, pem),
-            # A private key file stands in for the agent-held card key.
-            signer.Signer("stable-2026-10", signer.SSHSIG_ALGORITHM, ssh_key),
+            signer.Signer("retiring", signer.ED25519_ALGORITHM, pem),
+            # A private key file stands in for an agent-held card key.
+            signer.Signer("successor", signer.SSHSIG_ALGORITHM, ssh_key),
         ]
         envelope_bytes = signer.signed_envelope(payload, signers)
         # Both schemes are deterministic, which the byte-comparison
@@ -686,7 +686,7 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertEqual(base64.b64decode(envelope["payload"]), payload)
         self.assertEqual(
             [(entry["algorithm"], entry["key_id"]) for entry in envelope["signatures"]],
-            [("ed25519", "stable-2026-09"), ("sshsig-ed25519", "stable-2026-10")],
+            [("ed25519", "retiring"), ("sshsig-ed25519", "successor")],
         )
         self.assertEqual(len(base64.b64decode(envelope["signatures"][0]["signature"])), 64)
 
@@ -753,12 +753,15 @@ class ReleasePackagingTests(unittest.TestCase):
         cli = (repository / "vulcan-cli/src/commands/update.rs").read_text(encoding="utf-8")
         self.assertIn(f'"{rolling_signer_script.SSHSIG_NAMESPACE}"', client)
         self.assertIn(f'"{rolling_signer_script.SSHSIG_ALGORITHM}"', client)
-        self.assertIn(stable_signer_script.STABLE_CARD_KEY_ID, cli)
-        self.assertIn(stable_signer_script.STABLE_CARD_PUBLIC_KEY, cli)
-        with self.assertRaisesRegex(ValueError, "at least one signing key"):
-            stable_signer_script.sign_stable_release(
-                "tionis/vulcan", "v1.2.3", "a" * 40, None, "stable-2026-09", True
-            )
+        self.assertIn(stable_signer_script.STABLE_KEY_ID, cli)
+        self.assertIn(stable_signer_script.STABLE_PUBLIC_KEY, cli)
+        # The retired file-held key must stay untrusted and unusable.
+        self.assertNotIn('"stable-2026-09"', cli)
+        self.assertNotIn("sOrBt76ruZ2kSR+4glX9k/ZjSoS1YSvmK9yMSVCiWpE=", cli)
+        self.assertEqual(
+            stable_signer_script.STABLE_KEYS,
+            {"stable-2026-10": (rolling_signer_script.SSHSIG_ALGORITHM, stable_signer_script.STABLE_PUBLIC_KEY)},
+        )
 
     def test_stable_promotion_never_moves_latest_backwards(self) -> None:
         promote = rolling_signer_script.should_promote
@@ -912,8 +915,7 @@ class ReleasePackagingTests(unittest.TestCase):
                 "tionis/vulcan",
                 "main",
                 "a" * 40,
-                self.root / "unused.pem",
-                stable_signer_script.STABLE_KEY_ID,
+                self.root / "unused.pub",
                 True,
             )
         with self.assertRaisesRegex(ValueError, "full lowercase"):
@@ -921,8 +923,7 @@ class ReleasePackagingTests(unittest.TestCase):
                 "tionis/vulcan",
                 "v1.2.3",
                 "abc123",
-                self.root / "unused.pem",
-                stable_signer_script.STABLE_KEY_ID,
+                self.root / "unused.pub",
                 True,
             )
 

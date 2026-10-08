@@ -16,17 +16,16 @@ workspace test gate and every archive build succeed.
   sizes, hashes, formats, and top-level directories match the canonical manifest.
 - [ ] After the version-tag workflow succeeds, independently resolve the immutable tag to its full
   commit ID. Run `scripts/release/sign_stable_release.py` first with `--dry-run`, then without it,
-  supplying that exact `--tag`, `--expected-commit`, and the protected `stable-2026-09` key, plus
-  `--ssh-signing-key` for the card-held `stable-2026-10` key while the rotation in
-  `docs/specs/update-channels.md` calls for it. Require
+  supplying that exact `--tag`, `--expected-commit`, and `--ssh-signing-key` with the public key
+  of the card-held `stable-2026-10` identity. Require
   `signed` or `already_signed` plus exact readback and a reported `public_propagation_seconds`;
   never copy the private key into Actions. The release stays out of `latest` until this step
   promotes it, so the stable channel never serves its unsigned descriptor; confirm GitHub now
   shows it as the latest release.
 - [ ] From a post-bootstrap portable build, run `vulcan self-update check` without
   `--allow-unsigned` and require `signature_verified: true` with
-  `verified_key_id: stable-2026-09`. For the first bootstrap release only, separately verify and
-  install the checksummed archive/package because older binaries do not contain the stable key.
+  `verified_key_id: stable-2026-10`. Binaries older than `v0.3.0` do not trust that key; update
+  them to `v0.3.0` first or install the checksummed archive/package.
 - [ ] Inspect both Debian packages with `dpkg-deb --info` and `dpkg-deb --contents`. On a clean
   amd64 Debian-family environment, install through `apt`, verify the binary/man page/completions,
   confirm no daemon service was enabled implicitly, upgrade once, and remove the package while

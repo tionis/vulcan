@@ -44,13 +44,8 @@ const MAIN_CHANNEL_URL: &str =
     "https://github.com/tionis/vulcan/releases/download/rolling-main/vulcan-update-channel.json";
 #[cfg(feature = "web")]
 const TRUSTED_UPDATE_KEYS: &[(&str, &str, &str)] = &[
-    (
-        "stable-2026-09",
-        "stable",
-        "sOrBt76ruZ2kSR+4glX9k/ZjSoS1YSvmK9yMSVCiWpE=",
-    ),
-    // Hardware-held (OpenPGP card, via ssh-agent) successor; signs with
-    // `sshsig-ed25519`. Overlaps stable-2026-09 during rotation.
+    // Hardware-held (OpenPGP card, via ssh-agent); signs with `sshsig-ed25519`.
+    // It replaced the file-held `stable-2026-09`, which is no longer trusted.
     (
         "stable-2026-10",
         "stable",
@@ -909,13 +904,11 @@ mod tests {
     #[test]
     fn embedded_update_keys_are_scoped_to_independent_channels() {
         let keys = trusted_update_keys().expect("decode trusted update keys");
-        assert_eq!(keys.len(), 3);
-        assert_eq!(keys[0].key_id, "stable-2026-09");
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0].key_id, "stable-2026-10");
         assert_eq!(keys[0].channel, "stable");
-        assert_eq!(keys[1].key_id, "stable-2026-10");
-        assert_eq!(keys[1].channel, "stable");
-        assert_eq!(keys[2].key_id, "main-2026-09");
-        assert_eq!(keys[2].channel, "main");
+        assert_eq!(keys[1].key_id, "main-2026-09");
+        assert_eq!(keys[1].channel, "main");
         assert!(keys.iter().all(|key| key.public_key.len() == 32));
         let distinct: std::collections::BTreeSet<_> =
             keys.iter().map(|key| key.public_key).collect();
