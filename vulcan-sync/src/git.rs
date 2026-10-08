@@ -42,6 +42,20 @@ const DEVICE_LOCAL_VULCAN_PATHS: [&str; 6] = [
     ".vulcan/write.lock",
     ".vulcan/write.intent",
 ];
+/// Excludes for the capture's `git add`. The final character is a bracket
+/// expression so Git treats each as a wildcard pattern: a literal exclude
+/// that names an ignored file is reported as an explicitly requested ignored
+/// addition and fails the capture. Excluding them keeps the capture from
+/// reading files another process holds locked (Windows refuses reads of a
+/// held `write.lock`) and from hashing the cache.
+const DEVICE_LOCAL_CAPTURE_EXCLUDES: [&str; 6] = [
+    ":(exclude).vulcan/config.local.tom[l]",
+    ":(exclude).vulcan/cache.d[b]",
+    ":(exclude).vulcan/cache.db-wa[l]",
+    ":(exclude).vulcan/cache.db-sh[m]",
+    ":(exclude).vulcan/write.loc[k]",
+    ":(exclude).vulcan/write.inten[t]",
+];
 const WORKTREE_CAPTURE_PATHS: [&str; 7] = [
     ".",
     ":(exclude).vulcan/config.local.toml",
@@ -2184,11 +2198,10 @@ impl GitCliEngine {
         operation: &'static str,
     ) -> Result<(), GitEngineError> {
         let mut command = self.index_command(repository, index_path)?;
-        // Add the complete worktree first, then remove device-local state from
-        // the alternate index below. Passing ignored files as negative
-        // pathspecs makes some Git versions treat them as explicitly requested
-        // ignored additions and fail the capture.
+        // Add the worktree without device-local state, then remove any that a
+        // commit tracked from the alternate index below.
         command.args(["add", "-A", "--", "."]);
+        command.args(DEVICE_LOCAL_CAPTURE_EXCLUDES);
         ensure_success(operation, self.execute(command)?)?;
         let mut command = self.index_command(repository, index_path)?;
         command.args(["update-index", "--force-remove", "--"]);
@@ -8108,6 +8121,16 @@ mod tests {
             fs::write(temporary.path().join(".vulcan").join(path), contents)
                 .expect("device-local file");
         }
+        // A held lock is unreadable on Windows; the capture must not read it.
+        #[cfg(unix)]
+        for path in ["write.lock", "cache.db"] {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(
+                temporary.path().join(".vulcan").join(path),
+                fs::Permissions::from_mode(0o000),
+            )
+            .expect("unreadable device-local file");
+        }
         let engine = GitCliEngine::default();
         let repository = engine
             .discover_repository(temporary.path())
@@ -8137,6 +8160,15 @@ mod tests {
                 .is_none());
         }
 
+        #[cfg(unix)]
+        for path in ["write.lock", "cache.db"] {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(
+                temporary.path().join(".vulcan").join(path),
+                fs::Permissions::from_mode(0o644),
+            )
+            .expect("readable device-local file");
+        }
         run_git(
             temporary.path(),
             &[
