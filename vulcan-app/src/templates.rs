@@ -149,6 +149,79 @@ fn write_template_result_with_staged_creates(
     Ok(())
 }
 
+/// A template's change to an existing note.
+struct TemplateNoteWrite<'a> {
+    path: &'a str,
+    before: &'a str,
+    after: &'a str,
+    /// The previous content `on_note_write` hooks receive.
+    hook_previous: Option<&'a str>,
+    operation: &'a str,
+    hook_operation: &'a str,
+}
+
+/// Write a template's change to an existing note. A collection record goes
+/// through the managed mdbase write, which validates it, runs lifecycle
+/// policies, and dispatches its own `on_note_write` hooks; template side
+/// effects cannot accompany it. Any other note runs the hooks and is written
+/// with the template's side effects.
+fn write_template_note(
+    paths: &VaultPaths,
+    write: &TemplateNoteWrite<'_>,
+    staged: &StagedTemplateCreates,
+    permission_profile: Option<&str>,
+    quiet: bool,
+) -> Result<(), AppError> {
+    if note_path_is_mdbase_managed(paths, write.path, permission_profile)? {
+        let side_effects = staged
+            .lock()
+            .map_err(|_| AppError::operation("template staging lock poisoned"))?;
+        if !side_effects.creates.is_empty() || side_effects.moved.is_some() {
+            return Err(AppError::operation(
+                "template side effects cannot be combined with an mdbase-managed note",
+            ));
+        }
+        drop(side_effects);
+        crate::notes::apply_mdbase_note_content_change(
+            paths,
+            &crate::mdbase::MdbaseManagedNoteWriteRequest {
+                path: write.path,
+                before: Some(write.before),
+                after: Some(write.after),
+                operation: crate::mdbase::MdbaseWriteOperation::Update,
+                mode: crate::mdbase::MdbaseManagedWriteMode::Validated,
+                dry_run: false,
+                permission_profile,
+                quiet,
+            },
+        )?;
+        return Ok(());
+    }
+    crate::plugins::dispatch_plugin_event(
+        paths,
+        permission_profile,
+        PluginEvent::OnNoteWrite,
+        &json!({
+            "kind": PluginEvent::OnNoteWrite,
+            "path": write.path,
+            "operation": write.hook_operation,
+            "existed_before": true,
+            "previous_content": write.hook_previous,
+            "content": write.after,
+        }),
+        quiet,
+    )?;
+    write_template_result_with_staged_creates(
+        paths,
+        write.path,
+        Some(write.before),
+        write.after,
+        staged,
+        permission_profile,
+        write.operation,
+    )
+}
+
 fn validate_template_batch(
     paths: &VaultPaths,
     changes: &[vulcan_core::ordinary_write::OrdinaryWriteChange],
@@ -901,28 +974,19 @@ pub fn apply_template_creation_trigger(
             .map_err(AppError::operation)?
     };
 
-    crate::plugins::dispatch_plugin_event(
+    write_template_note(
         paths,
-        permission_profile,
-        PluginEvent::OnNoteWrite,
-        &json!({
-            "kind": PluginEvent::OnNoteWrite,
-            "path": rendered.target_path,
-            "operation": "template-trigger",
-            "existed_before": true,
-            "previous_content": previous,
-            "content": rendered.content,
-        }),
-        quiet,
-    )?;
-    write_template_result_with_staged_creates(
-        paths,
-        &rendered.target_path,
-        Some(&expected_final),
-        &rendered.content,
+        &TemplateNoteWrite {
+            path: &rendered.target_path,
+            before: &expected_final,
+            after: &rendered.content,
+            hook_previous: Some(&previous),
+            operation: "template trigger",
+            hook_operation: "template-trigger",
+        },
         &staged,
         permission_profile,
-        "template trigger",
+        quiet,
     )?;
 
     let mut changed_paths = rendered.changed_paths;
@@ -1308,28 +1372,19 @@ pub fn apply_template_insert_with_filter(
         .map_err(AppError::operation)?;
     let updated =
         apply_template_insertion_mode(&prepared, request.mode).map_err(AppError::operation)?;
-    crate::plugins::dispatch_plugin_event(
+    write_template_note(
         paths,
-        permission_profile,
-        PluginEvent::OnNoteWrite,
-        &json!({
-            "kind": PluginEvent::OnNoteWrite,
-            "path": rendered.target_path,
-            "operation": "template-insert",
-            "existed_before": true,
-            "previous_content": expected_final,
-            "content": updated,
-        }),
-        quiet,
-    )?;
-    write_template_result_with_staged_creates(
-        paths,
-        &rendered.target_path,
-        Some(&expected_final),
-        &updated,
+        &TemplateNoteWrite {
+            path: &rendered.target_path,
+            before: &expected_final,
+            after: &updated,
+            hook_previous: Some(&expected_final),
+            operation: "template insert",
+            hook_operation: "template-insert",
+        },
         &staged,
         permission_profile,
-        "template insert",
+        quiet,
     )?;
 
     let mut changed_paths = vec![rendered.target_path.clone()];

@@ -1769,3 +1769,30 @@ fn template_timestamp_moves_time_of_day_onto_another_date() {
     );
     assert!(fixed_template_timestamp().on_date("not a date").is_none());
 }
+
+#[test]
+fn template_insert_writes_collection_records_through_managed_writes() {
+    let directory = tempdir().unwrap();
+    let root = directory.path();
+    fs::write(root.join("mdbase.yaml"), "spec_version: \"0.3.0\"\n").unwrap();
+    fs::create_dir_all(root.join(".vulcan/templates")).unwrap();
+    fs::write(root.join(".vulcan/templates/t.md"), "Inserted\n").unwrap();
+    fs::write(root.join("Note.md"), "---\ntitle: Note\n---\nbody\n").unwrap();
+    let paths = VaultPaths::new(root);
+    scan_vault(&paths, ScanMode::Full).unwrap();
+    let report = apply_template_insert(
+        &paths,
+        &TemplateInsertRequest {
+            template: "t".into(),
+            note: "Note.md".into(),
+            mode: TemplateInsertMode::Append,
+            engine: TemplateEngineKind::Native,
+            vars: HashMap::new(),
+        },
+    )
+    .expect("a collection record takes the managed write");
+    assert_eq!(report.note, "Note.md");
+    let written = fs::read_to_string(root.join("Note.md")).unwrap();
+    assert!(written.starts_with("---\ntitle: Note\n---\n"), "{written}");
+    assert!(written.contains("Inserted"), "{written}");
+}

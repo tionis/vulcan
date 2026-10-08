@@ -38544,7 +38544,9 @@ function on_note_write(event) {
 /// the hook's note behind.
 #[test]
 fn every_lifecycle_hook_may_write_without_deadlocking() {
-    lifecycle_hooks_may_write(false);
+    for collection in [false, true] {
+        lifecycle_hooks_may_write(collection);
+    }
 }
 
 fn lifecycle_hooks_may_write(collection: bool) {

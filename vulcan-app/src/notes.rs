@@ -1669,7 +1669,7 @@ fn apply_mdbase_note_change(
     apply_managed_mdbase_note_write(paths, request).map(|report| report.is_some())
 }
 
-fn apply_mdbase_note_content_change(
+pub(crate) fn apply_mdbase_note_content_change(
     paths: &VaultPaths,
     request: &MdbaseManagedNoteWriteRequest<'_>,
 ) -> Result<String, AppError> {
