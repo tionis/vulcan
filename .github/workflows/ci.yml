@@ -93,11 +93,11 @@ jobs:
 
       - name: Test workspace except CLI
         if: matrix.suite == 'core'
-        run: cargo test --workspace --exclude vulcan-cli
+        run: cargo test --workspace --exclude vulcan-cli --no-fail-fast
 
       - name: Test CLI
         if: matrix.suite == 'cli'
-        run: cargo test -p vulcan-cli
+        run: cargo test -p vulcan-cli --no-fail-fast
 
       - name: Run clippy
         if: matrix.suite == 'cli'
