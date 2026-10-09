@@ -1435,6 +1435,7 @@ fn resolve_sync_conflict_group_batch(
                     record.id,
                     device_id.as_str(),
                 ),
+                link: None,
             },
         )
         .map_err(AppError::operation)?;
@@ -1762,6 +1763,7 @@ fn resolve_sync_conflict_locked(
                     device_id.as_str(),
                     local
                 ),
+                link: None,
             },
         )
         .map_err(AppError::operation)?;

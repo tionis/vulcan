@@ -3304,6 +3304,7 @@ fn apply_approved_proposal(
                     context.proposal.proposal_id,
                     device_id.as_str(),
                 ),
+                link: None,
             },
         )
         .map_err(AppError::operation)?;

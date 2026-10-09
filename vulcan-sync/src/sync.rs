@@ -1340,7 +1340,8 @@ impl AttemptRemote {
     ) -> Result<(), GitSyncError> {
         if !self.observed {
             let fetched_before = self.fetched_before.take();
-            *self = observe_attempt_remote(engine, options, report)?;
+            let upstream = self.upstream.take();
+            *self = observe_attempt_remote(engine, options, report, upstream)?;
             self.fetched_before = fetched_before;
         }
         Ok(())
@@ -1351,8 +1352,9 @@ fn observe_attempt_remote(
     engine: &dyn GitEngine,
     options: &GitSyncOptions,
     report: &GitSyncReport,
+    upstream: Option<Result<Option<GitBranchUpstream>, GitEngineError>>,
 ) -> Result<AttemptRemote, GitSyncError> {
-    let upstream = resolve_branch_upstream(engine, report);
+    let upstream = upstream.or_else(|| resolve_branch_upstream(engine, report));
     let upstream_ref = sync_remote_upstream(options, upstream.as_ref())
         .map(|upstream| (upstream.remote.clone(), upstream.merge_ref.clone()));
     let query_live = options.remote_observation == GitRemoteObservation::Query;
@@ -1434,20 +1436,90 @@ fn capture_local_worktree(
     options: &GitSyncOptions,
     report: &GitSyncReport,
     target_before: Option<GitOid>,
+    tracking: Option<&GitRefName>,
 ) -> Result<crate::GitCapture, GitSyncError> {
     let base = match target_before.as_ref() {
         Some(target) => Some(target.clone()),
         None => engine.head_commit(&report.repository)?,
     };
+    let link = missing_branch_link(engine, report, tracking, base.as_ref())?;
     Ok(engine.capture_worktree(
         &report.repository,
         &GitCaptureRequest {
             base: base.clone(),
             target_ref: report.refs.local.clone(),
             target_before,
-            message: snapshot_message(&report.refs, options, base.as_ref()),
+            message: snapshot_message(&report.refs, options, base.as_ref(), link.as_ref()),
+            link,
         },
     )?)
+}
+
+/// Returns the published tip of the checked-out branch: the merge base of
+/// `HEAD` and its upstream tracking ref, so unpushed commits are never
+/// included. `None` for bare, detached, or upstream-less checkouts.
+pub fn git_published_branch_tip(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+) -> Result<Option<GitOid>, GitSyncError> {
+    if repository.work_tree.is_none() {
+        return Ok(None);
+    }
+    let Some(branch) = engine.head_reference(repository)? else {
+        return Ok(None);
+    };
+    // Unresolvable upstream configuration is the branch lane's failure to
+    // report; it only means there is nothing published to link.
+    let Ok(Some(upstream)) = engine.branch_upstream(repository, &branch) else {
+        return Ok(None);
+    };
+    let head = engine.head_commit(repository)?;
+    published_branch_tip(engine, repository, head.as_ref(), &upstream.tracking_ref)
+}
+
+fn published_branch_tip(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    head: Option<&GitOid>,
+    tracking: &GitRefName,
+) -> Result<Option<GitOid>, GitSyncError> {
+    let (Some(head), Some(tracking)) = (head, engine.read_ref(repository, tracking)?) else {
+        return Ok(None);
+    };
+    if *head == tracking {
+        return Ok(Some(tracking));
+    }
+    Ok(engine.merge_base(repository, head, &tracking)?)
+}
+
+/// The published branch tip when `base` does not already contain it, so a
+/// live snapshot must link it as an additional parent. `tracking` is the
+/// checked-out branch's upstream tracking ref, if it has one.
+fn missing_branch_link(
+    engine: &dyn GitEngine,
+    report: &GitSyncReport,
+    tracking: Option<&GitRefName>,
+    base: Option<&GitOid>,
+) -> Result<Option<GitOid>, GitSyncError> {
+    let (Some(base), Some(tracking)) = (base, tracking) else {
+        return Ok(None);
+    };
+    if report.repository.work_tree.is_none() || report.head_ref_before.is_none() {
+        return Ok(None);
+    }
+    let Some(tip) = published_branch_tip(
+        engine,
+        &report.repository,
+        report.head_before.as_ref(),
+        tracking,
+    )?
+    else {
+        return Ok(None);
+    };
+    if &tip == base || engine.is_ancestor(&report.repository, &tip, base)? {
+        return Ok(None);
+    }
+    Ok(Some(tip))
 }
 
 /// Pulls the checked-out branch from its upstream inside one attempt, before
@@ -2100,7 +2172,16 @@ fn capture_and_publish_device_backup(
     base: Option<GitOid>,
 ) -> Result<Option<crate::GitCapture>, GitSyncError> {
     control.emit(GitSyncPhase::Capturing, report, None)?;
-    let capture = capture_local_worktree(engine, options, report, base)?;
+    if remote.upstream.is_none() {
+        remote.upstream = resolve_branch_upstream(engine, report);
+    }
+    let tracking = remote
+        .upstream
+        .as_ref()
+        .and_then(|resolved| resolved.as_ref().ok())
+        .and_then(Option::as_ref)
+        .map(|upstream| upstream.tracking_ref.clone());
+    let capture = capture_local_worktree(engine, options, report, base, tracking.as_ref())?;
     report.local_snapshot = Some(capture.commit.clone());
     if capture.created {
         report.actions.push(GitSyncAction::SnapshotCreated);
@@ -2163,10 +2244,19 @@ fn pull_branch_and_refresh_device_backup(
                 .as_deref()
                 .is_some_and(|detail| detail.contains("conflict")))
     });
-    if !may_have_rewritten_worktree {
+    // A pushed or moved branch may now publish a tip the capture does not
+    // link yet; recapture so this attempt publishes the link.
+    let may_have_published_branch = report.branch.as_ref().is_some_and(|branch| branch.pushed);
+    if !may_have_rewritten_worktree && !may_have_published_branch {
         return Ok(Some(capture));
     }
-    if engine.worktree_matches_tree(&report.repository, &capture.commit)? {
+    let tracking = report
+        .branch
+        .as_ref()
+        .and_then(|branch| branch.tracking.clone());
+    if missing_branch_link(engine, report, tracking.as_ref(), Some(&capture.commit))?.is_none()
+        && engine.worktree_matches_tree(&report.repository, &capture.commit)?
+    {
         Ok(Some(capture))
     } else {
         capture_and_publish_device_backup(engine, options, report, control, remote, base)
@@ -4560,9 +4650,13 @@ fn snapshot_message(
     refs: &GitSyncRefs,
     options: &GitSyncOptions,
     source: Option<&GitOid>,
+    link: Option<&GitOid>,
 ) -> String {
+    let link = link.map_or_else(String::new, |link| {
+        format!("Vulcan-Sync-Branch-Link: {link}\n")
+    });
     format!(
-        "vulcan live snapshot\n\n{}",
+        "vulcan live snapshot\n\n{}{link}",
         sync_trailers(refs, options, source.map_or("unborn", GitOid::as_str))
     )
 }
@@ -7288,6 +7382,84 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         assert!(
             remote_tip.starts_with(&head),
             "remote main should equal the published head"
+        );
+    }
+
+    #[test]
+    fn live_links_the_published_branch_after_a_local_commit() {
+        let (_temporary, _remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap live");
+        fs::write(writer.join("Local.md"), "local\n").expect("local note");
+        let snapshot = sync_git_once(&engine, &writer, &GitSyncOptions::default())
+            .expect("sync the uncommitted note")
+            .accepted
+            .expect("accepted snapshot");
+        commit_all(&writer, "local");
+        let head = git_stdout(&writer, &["rev-parse", "HEAD"]);
+
+        let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
+            .expect("sync the committed note");
+
+        assert!(report.branch.as_ref().expect("branch lane").pushed);
+        let accepted = report.accepted.expect("accepted link");
+        assert_ne!(
+            accepted, snapshot,
+            "an unchanged tree still links the branch"
+        );
+        assert_eq!(
+            git_stdout(&writer, &["rev-parse", &format!("{accepted}^1")]),
+            snapshot.as_str()
+        );
+        assert_eq!(
+            git_stdout(&writer, &["rev-parse", &format!("{accepted}^2")]),
+            head
+        );
+        assert_eq!(
+            git_stdout(
+                &writer,
+                &[
+                    "log",
+                    "-1",
+                    "--format=%(trailers:key=Vulcan-Sync-Branch-Link,valueonly)",
+                    accepted.as_str()
+                ]
+            ),
+            head
+        );
+        assert_eq!(
+            git_stdout(&writer, &["rev-parse", &format!("{accepted}^{{tree}}")]),
+            git_stdout(&writer, &["rev-parse", &format!("{snapshot}^{{tree}}")])
+        );
+
+        let steady =
+            sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("steady sync");
+        assert_eq!(
+            steady.accepted,
+            Some(accepted),
+            "a linked branch needs no new link"
+        );
+    }
+
+    #[test]
+    fn published_branch_tip_excludes_unpushed_commits() {
+        let (_temporary, _remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        let repository = engine.discover_repository(&writer).expect("repository");
+        let published = git_stdout(&writer, &["rev-parse", "HEAD"]);
+        fs::write(writer.join("Local.md"), "local\n").expect("local note");
+        commit_all(&writer, "unpushed");
+
+        assert_eq!(
+            git_published_branch_tip(&engine, &repository)
+                .expect("published tip")
+                .map(|tip| tip.to_string()),
+            Some(published)
+        );
+        run_git(&writer, &["branch", "--unset-upstream"]);
+        assert_eq!(
+            git_published_branch_tip(&engine, &repository).expect("published tip"),
+            None
         );
     }
 

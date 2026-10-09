@@ -1308,6 +1308,10 @@ pub struct GitCaptureRequest {
     /// Exact target value observed by a serialized caller, if it already equals `base`.
     pub target_before: Option<GitOid>,
     pub message: String,
+    /// Extra parent recorded after `base`. Capture always creates a commit
+    /// when set, even for an unchanged tree, so the caller passes it only
+    /// when `base` does not already contain it.
+    pub link: Option<GitOid>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1800,6 +1804,7 @@ impl GitCliEngine {
                 target_before: None,
                 message: "vulcan sync recovery: capture materialized worktree after detached Git directory loss\n"
                     .to_string(),
+                link: None,
             },
         )?;
 
@@ -3562,7 +3567,7 @@ impl GitEngine for GitCliEngine {
             self.capture_worktree_tree_inner(repository, request.base.as_ref(), reuse_clean_base)?;
         let tree = tree_capture.tree;
 
-        if let Some(base) = &request.base {
+        if let Some(base) = request.base.as_ref().filter(|_| request.link.is_none()) {
             if tree_capture.reused_base || self.tree_oid(repository, base)? == tree {
                 if request.target_before.as_ref() != Some(base) {
                     self.update_ref(repository, &request.target_ref, base)?;
@@ -3575,7 +3580,12 @@ impl GitEngine for GitCliEngine {
             }
         }
 
-        let parents = request.base.iter().cloned().collect::<Vec<_>>();
+        let parents = request
+            .base
+            .iter()
+            .chain(&request.link)
+            .cloned()
+            .collect::<Vec<_>>();
         let commit = self.commit_tree(repository, &tree, &parents, &request.message)?;
         self.update_ref(repository, &request.target_ref, &commit)?;
         Ok(GitCapture {
@@ -8094,6 +8104,7 @@ mod tests {
                     target_ref: local_ref,
                     target_before: Some(head.clone()),
                     message: "vulcan sync snapshot\n".to_string(),
+                    link: None,
                 },
             )
             .expect("root-anchored capture");
@@ -8170,6 +8181,7 @@ mod tests {
                     target_ref: local_ref.clone(),
                     target_before: None,
                     message: "vulcan sync snapshot\n".to_string(),
+                    link: None,
                 },
             )
             .expect("capture should succeed");
@@ -8191,6 +8203,7 @@ mod tests {
                     target_ref: local_ref.clone(),
                     target_before: Some(capture.commit.clone()),
                     message: "vulcan sync snapshot\n".to_string(),
+                    link: None,
                 },
             )
             .expect("unchanged capture should succeed");
@@ -8207,6 +8220,7 @@ mod tests {
                     target_ref: local_ref,
                     target_before: Some(capture.commit.clone()),
                     message: "vulcan sync changed snapshot\n".to_string(),
+                    link: None,
                 },
             )
             .expect("changed capture should fall back to a full snapshot");
@@ -9821,6 +9835,7 @@ mod tests {
                     target_ref: local_ref,
                     target_before: None,
                     message: "accepted\n".to_string(),
+                    link: None,
                 },
             )
             .expect("capture");
@@ -9897,6 +9912,7 @@ mod tests {
                     target_ref: GitRefName::parse("refs/vulcan/sync/local/live").expect("ref"),
                     target_before: None,
                     message: "accepted\n".to_string(),
+                    link: None,
                 },
             )
             .expect("capture");
