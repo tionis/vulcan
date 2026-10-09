@@ -11998,7 +11998,7 @@
                 ]
               },
               {
-                "help": "OpenAI-compatible API base URL used with --agent",
+                "help": "OpenAI-compatible API base URL; defaults to the daemon's semantic agent, else http://localhost:11434/v1",
                 "id": "base_url",
                 "long": "base-url",
                 "possible_values": [],
@@ -12009,7 +12009,7 @@
                 ]
               },
               {
-                "help": "Provider model identifier required with --agent",
+                "help": "Provider model identifier; defaults to the daemon's semantic agent",
                 "id": "model",
                 "long": "model",
                 "possible_values": [],
@@ -12177,7 +12177,7 @@
                 ]
               },
               {
-                "help": "Use the configured model for grouping",
+                "help": "Use a model for grouping",
                 "id": "agent",
                 "long": "agent",
                 "possible_values": [
@@ -12191,7 +12191,7 @@
                 ]
               },
               {
-                "help": "OpenAI-compatible API base URL used with --agent",
+                "help": "OpenAI-compatible API base URL; defaults to the daemon's semantic agent, else http://localhost:11434/v1",
                 "id": "base_url",
                 "long": "base-url",
                 "possible_values": [],
@@ -12202,7 +12202,7 @@
                 ]
               },
               {
-                "help": "Provider model identifier",
+                "help": "Provider model identifier; defaults to the daemon's semantic agent",
                 "id": "model",
                 "long": "model",
                 "possible_values": [],

@@ -18537,7 +18537,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("--patch <patch-file> --dry-run"));
     assert!(git_skill.contains("agent_conflict_proposal_limit_per_conflict: 1"));
     assert!(git_skill.contains("agent_conflict_proposal_claim_scope: daemon_process"));
-    assert!(git_skill.contains("--agent --model <model>"));
+    assert!(git_skill.contains("vulcan daemon config set-agent semantic"));
+    assert!(git_skill.contains("--agent --base-url <openai-compatible-base> --model <model>"));
     assert!(git_skill.contains("every accepted path must appear exactly once"));
     assert!(git_skill.contains("--editor --dry-run"));
     assert!(git_skill.contains("vulcan sync propose <conflict-id> --model <model>"));

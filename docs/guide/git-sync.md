@@ -228,8 +228,11 @@ vulcan sync semantic-auto personal \
   --maximum-wait-seconds 21600
 ```
 
-Use `--agent --model <model> --base-url <url> --api-key-env <name>` for LLM-organized whole-file
-groups and commit messages. The model cannot change vault bytes: the generated history must still
+Use `--agent` for LLM-organized whole-file groups and commit messages. Without `--base-url`, the
+provider endpoint, model, and API key variable come from `vulcan daemon config set-agent semantic`,
+and `--model` or `--api-key-env` override single values. An explicit `--base-url` uses only the
+flags given (`--model` is then required) and never inherits the configured key variable; with no
+configured agent the endpoint defaults to `http://localhost:11434/v1`. The model cannot change vault bytes: the generated history must still
 reproduce the exact accepted live tree. `--dry-run` neither advances the debounce record nor creates
 Git objects or refs. `--no-publish` keeps a completed semantic history local. Schedule only one
 writer per semantic branch; cross-run races are still rejected by the local compare-and-swap and

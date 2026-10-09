@@ -5146,22 +5146,18 @@ pub enum SyncCommand {
             help = "Deterministic commit grouping strategy"
         )]
         group_by: SemanticGroupingArg,
-        #[arg(
-            long,
-            requires = "model",
-            help = "Request optional agent-assisted grouping"
-        )]
+        #[arg(long, help = "Request optional agent-assisted grouping")]
         agent: bool,
         #[arg(
             long,
-            default_value = "http://localhost:11434/v1",
-            help = "OpenAI-compatible API base URL used with --agent"
+            requires = "agent",
+            help = "OpenAI-compatible API base URL; defaults to the daemon's semantic agent, else http://localhost:11434/v1"
         )]
-        base_url: String,
+        base_url: Option<String>,
         #[arg(
             long,
             requires = "agent",
-            help = "Provider model identifier required with --agent"
+            help = "Provider model identifier; defaults to the daemon's semantic agent"
         )]
         model: Option<String>,
         #[arg(
@@ -5204,19 +5200,19 @@ pub enum SyncCommand {
         target: SyncTargetArgs,
         #[arg(long, value_enum, default_value_t, help = "Commit grouping strategy")]
         group_by: SemanticGroupingArg,
-        #[arg(
-            long,
-            requires = "model",
-            help = "Use the configured model for grouping"
-        )]
+        #[arg(long, help = "Use a model for grouping")]
         agent: bool,
         #[arg(
             long,
-            default_value = "http://localhost:11434/v1",
-            help = "OpenAI-compatible API base URL used with --agent"
+            requires = "agent",
+            help = "OpenAI-compatible API base URL; defaults to the daemon's semantic agent, else http://localhost:11434/v1"
         )]
-        base_url: String,
-        #[arg(long, requires = "agent", help = "Provider model identifier")]
+        base_url: Option<String>,
+        #[arg(
+            long,
+            requires = "agent",
+            help = "Provider model identifier; defaults to the daemon's semantic agent"
+        )]
         model: Option<String>,
         #[arg(
             long,

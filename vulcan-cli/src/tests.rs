@@ -3319,7 +3319,23 @@ fn parses_sync_conflicts_archive() {
 }
 
 #[test]
-fn parses_sync_semantic_commands() {
+fn parses_sync_semantic_agent_defaults() {
+    // The configured daemon semantic agent supplies the omitted provider values.
+    let configured =
+        Cli::try_parse_from(["vulcan", "sync", "semantic-auto", "personal", "--agent"])
+            .expect("agent without a model should parse");
+    assert!(matches!(
+        configured.command,
+        Command::Sync {
+            command: SyncCommand::SemanticAuto {
+                agent: true,
+                base_url: None,
+                model: None,
+                api_key_env: None,
+                ..
+            }
+        }
+    ));
     assert!(Cli::try_parse_from([
         "vulcan",
         "sync",
@@ -3328,9 +3344,14 @@ fn parses_sync_semantic_commands() {
         "main",
         "--to",
         "live",
-        "--agent",
+        "--base-url",
+        "http://localhost:11434/v1",
     ])
     .is_err());
+}
+
+#[test]
+fn parses_sync_semantic_commands() {
     assert!(Cli::try_parse_from([
         "vulcan",
         "sync",

@@ -917,7 +917,7 @@ fn handle_semantic_sync_command(
             target,
             *group_by,
             *agent,
-            base_url,
+            base_url.as_deref(),
             model.as_deref(),
             api_key_env.as_deref(),
             *dry_run,
@@ -949,7 +949,7 @@ fn handle_semantic_sync_command(
             target,
             *group_by,
             *agent,
-            base_url,
+            base_url.as_deref(),
             model.as_deref(),
             api_key_env.as_deref(),
             *quiet_seconds,
@@ -1284,7 +1284,7 @@ fn run_semantic_plan(
     target: &crate::SyncTargetArgs,
     group_by: SemanticGroupingArg,
     agent: bool,
-    base_url: &str,
+    base_url: Option<&str>,
     model: Option<&str>,
     api_key_env: Option<&str>,
     dry_run: bool,
@@ -1334,11 +1334,16 @@ fn create_agent_semantic_plan(
     paths: &VaultPaths,
     registration_profile: Option<&str>,
     options: &SemanticPlanOptions,
-    base_url: &str,
+    base_url: Option<&str>,
     model: Option<&str>,
     api_key_env: Option<&str>,
 ) -> Result<SemanticPlanReport, CliError> {
-    let model = model.ok_or_else(|| CliError::operation("--agent requires --model"))?;
+    let agent = resolve_semantic_agent(base_url, model, api_key_env)?;
+    let (base_url, model, api_key_env) = (
+        agent.base_url.as_str(),
+        agent.model.as_str(),
+        agent.api_key_env.as_deref(),
+    );
     let profile = cli
         .permissions
         .as_deref()
@@ -1367,13 +1372,75 @@ fn create_agent_semantic_plan(
     .map_err(CliError::operation)
 }
 
+#[cfg(feature = "web")]
+const DEFAULT_SEMANTIC_AGENT_BASE_URL: &str = "http://localhost:11434/v1";
+
+#[cfg(feature = "web")]
+/// The provider a direct `--agent` semantic command calls.
+#[derive(Debug, PartialEq, Eq)]
+struct SemanticAgentSelection {
+    base_url: String,
+    model: String,
+    api_key_env: Option<String>,
+}
+
+/// Selects the semantic provider from explicit flags and, unless `--base-url`
+/// names another endpoint, the daemon's configured semantic agent.
+#[cfg(feature = "web")]
+fn resolve_semantic_agent(
+    base_url: Option<&str>,
+    model: Option<&str>,
+    api_key_env: Option<&str>,
+) -> Result<SemanticAgentSelection, CliError> {
+    let configured = match base_url {
+        Some(_) => None,
+        None => {
+            WikiRegistry::user_default()
+                .and_then(|registry| registry.load())
+                .map_err(CliError::operation)?
+                .semantic_agent
+        }
+    };
+    select_semantic_agent(base_url, model, api_key_env, configured.as_ref())
+}
+
+#[cfg(feature = "web")]
+/// An explicit `--base-url` never inherits the configured key variable, so a
+/// configured credential cannot be sent to a different endpoint.
+fn select_semantic_agent(
+    base_url: Option<&str>,
+    model: Option<&str>,
+    api_key_env: Option<&str>,
+    configured: Option<&vulcan_daemon::registry::DaemonAgentConfig>,
+) -> Result<SemanticAgentSelection, CliError> {
+    let configured = configured.filter(|_| base_url.is_none());
+    let model = model
+        .map(str::to_string)
+        .or_else(|| configured.map(|agent| agent.model.clone()))
+        .ok_or_else(|| {
+            CliError::operation(
+                "--agent requires --model or a semantic agent configured with `vulcan daemon config set-agent semantic`",
+            )
+        })?;
+    Ok(SemanticAgentSelection {
+        base_url: base_url
+            .map(str::to_string)
+            .or_else(|| configured.map(|agent| agent.base_url.clone()))
+            .unwrap_or_else(|| DEFAULT_SEMANTIC_AGENT_BASE_URL.to_string()),
+        model,
+        api_key_env: api_key_env
+            .map(str::to_string)
+            .or_else(|| configured.and_then(|agent| agent.api_key_env.clone())),
+    })
+}
+
 #[cfg(not(feature = "web"))]
 fn create_agent_semantic_plan(
     _cli: &Cli,
     _paths: &VaultPaths,
     _registration_profile: Option<&str>,
     _options: &SemanticPlanOptions,
-    _base_url: &str,
+    _base_url: Option<&str>,
     _model: Option<&str>,
     _api_key_env: Option<&str>,
 ) -> Result<SemanticPlanReport, CliError> {
@@ -1472,7 +1539,7 @@ fn run_semantic_auto_command(
     target: &crate::SyncTargetArgs,
     group_by: SemanticGroupingArg,
     agent: bool,
-    base_url: &str,
+    base_url: Option<&str>,
     model: Option<&str>,
     api_key_env: Option<&str>,
     quiet_seconds: u64,
@@ -1531,7 +1598,7 @@ fn run_semantic_auto_with_optional_provider(
     paths: &VaultPaths,
     registration_profile: Option<&str>,
     options: &SemanticAutoOptions,
-    base_url: &str,
+    base_url: Option<&str>,
     model: Option<&str>,
     api_key_env: Option<&str>,
     store: &SyncStateStore,
@@ -1553,7 +1620,12 @@ fn run_semantic_auto_with_optional_provider(
         )
         .map_err(CliError::operation);
     }
-    let model = model.ok_or_else(|| CliError::operation("--agent requires --model"))?;
+    let agent = resolve_semantic_agent(base_url, model, api_key_env)?;
+    let (base_url, model, api_key_env) = (
+        agent.base_url.as_str(),
+        agent.model.as_str(),
+        agent.api_key_env.as_deref(),
+    );
     let profile = cli
         .permissions
         .as_deref()
@@ -1591,7 +1663,7 @@ fn run_semantic_auto_with_optional_provider(
     paths: &VaultPaths,
     _registration_profile: Option<&str>,
     options: &SemanticAutoOptions,
-    _base_url: &str,
+    _base_url: Option<&str>,
     _model: Option<&str>,
     _api_key_env: Option<&str>,
     store: &SyncStateStore,
@@ -4998,4 +5070,55 @@ fn print_forge_sync(
         );
     }
     Ok(())
+}
+
+#[cfg(all(test, feature = "web"))]
+mod semantic_agent_selection_tests {
+    use super::{select_semantic_agent, SemanticAgentSelection};
+    use vulcan_daemon::registry::DaemonAgentConfig;
+
+    fn configured() -> DaemonAgentConfig {
+        DaemonAgentConfig {
+            base_url: "https://openrouter.ai/api/v1".to_string(),
+            model: "anthropic/claude-haiku-5.5".to_string(),
+            api_key_env: Some("OPENROUTER_API_KEY".to_string()),
+        }
+    }
+
+    #[test]
+    fn configured_semantic_agent_supplies_every_omitted_value() {
+        let agent = configured();
+        assert_eq!(
+            select_semantic_agent(None, None, None, Some(&agent)).expect("selection"),
+            SemanticAgentSelection {
+                base_url: agent.base_url.clone(),
+                model: agent.model.clone(),
+                api_key_env: agent.api_key_env.clone(),
+            }
+        );
+        let overridden =
+            select_semantic_agent(None, Some("other/model"), Some("OTHER_KEY"), Some(&agent))
+                .expect("selection");
+        assert_eq!(overridden.base_url, agent.base_url);
+        assert_eq!(overridden.model, "other/model");
+        assert_eq!(overridden.api_key_env.as_deref(), Some("OTHER_KEY"));
+    }
+
+    #[test]
+    fn explicit_base_url_never_inherits_the_configured_agent() {
+        let agent = configured();
+        assert!(select_semantic_agent(Some("http://other/v1"), None, None, Some(&agent)).is_err());
+        let explicit =
+            select_semantic_agent(Some("http://other/v1"), Some("local"), None, Some(&agent))
+                .expect("selection");
+        assert_eq!(explicit.base_url, "http://other/v1");
+        assert_eq!(explicit.api_key_env, None);
+    }
+
+    #[test]
+    fn unconfigured_agent_requires_a_model_and_defaults_to_local() {
+        assert!(select_semantic_agent(None, None, None, None).is_err());
+        let local = select_semantic_agent(None, Some("llama"), None, None).expect("selection");
+        assert_eq!(local.base_url, "http://localhost:11434/v1");
+    }
 }
