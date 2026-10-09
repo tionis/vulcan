@@ -29,8 +29,8 @@ pub use contracts::{
 };
 
 pub use git::{
-    BranchPullConfig, CommitSigning, FastForwardOutcome, GitBranchUpstream, GitCapture,
-    GitCaptureRequest, GitCaseRenamePolicy, GitChange, GitChangeKind, GitCliEngine,
+    BranchAdvanceOutcome, BranchPullConfig, CommitSigning, FastForwardOutcome, GitBranchUpstream,
+    GitCapture, GitCaptureRequest, GitCaseRenamePolicy, GitChange, GitChangeKind, GitCliEngine,
     GitCloneRequest, GitCommitMetadata, GitConflictSide, GitContentMergeResolutionRequest,
     GitDetachedRecoveryReport, GitDetachedRecoveryRequest, GitEngine, GitEngineError,
     GitEngineKind, GitExecutableBitsPolicy, GitFilterRequirement, GitInstallation, GitMerge,

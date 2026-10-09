@@ -710,6 +710,20 @@ pub trait GitEngine: Send + Sync {
         merges: bool,
     ) -> Result<RebaseOutcome, GitEngineError>;
 
+    /// Fast-forwards the checked-out branch from `expected` to `target`
+    /// without touching worktree bytes. The normal index takes the two-way
+    /// index-only merge of a fast-forward checkout: entries equal to
+    /// `expected` move to `target`, other staged entries are preserved, and a
+    /// staged entry on a path `target` also changes refuses the advance with
+    /// the index untouched. The branch then moves by compare-and-swap.
+    fn advance_checked_out_branch(
+        &self,
+        repository: &GitRepository,
+        branch: &GitRefName,
+        expected: &GitOid,
+        target: &GitOid,
+    ) -> Result<BranchAdvanceOutcome, GitEngineError>;
+
     fn plan_tree_application(
         &self,
         repository: &GitRepository,
@@ -1274,6 +1288,17 @@ pub enum RebaseOutcome {
     Rebased,
     Conflicted,
     BlockedDirty,
+}
+
+/// Outcome of an index-only fast-forward of the checked-out branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BranchAdvanceOutcome {
+    Advanced,
+    /// A staged entry differs from both sides on a path the target changes.
+    BlockedStaged,
+    /// The branch or `HEAD` no longer identifies the expected revision.
+    Stale,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4567,6 +4592,46 @@ impl GitEngine for GitCliEngine {
         Err(command_failed("rebase the branch", &output))
     }
 
+    fn advance_checked_out_branch(
+        &self,
+        repository: &GitRepository,
+        branch: &GitRefName,
+        expected: &GitOid,
+        target: &GitOid,
+    ) -> Result<BranchAdvanceOutcome, GitEngineError> {
+        repository.require_work_tree()?;
+        if self.head_reference(repository)?.as_ref() != Some(branch)
+            || self.read_ref(repository, branch)?.as_ref() != Some(expected)
+        {
+            return Ok(BranchAdvanceOutcome::Stale);
+        }
+        // `-i` skips the worktree up-to-date check: the worktree is
+        // deliberately left as is, so only the index transition matters.
+        let mut command = self.repository_command(repository);
+        command.args(["read-tree", "-i", "-m", expected.as_str(), target.as_str()]);
+        let output = self.execute(command)?;
+        if !output.status.success() {
+            if bounded_lossy(&output.stderr).contains("would be overwritten by merge") {
+                return Ok(BranchAdvanceOutcome::BlockedStaged);
+            }
+            return Err(command_failed("merge the branch index", &output));
+        }
+        if self.compare_and_swap_ref(repository, branch, target, Some(expected))?
+            == GitRefUpdateResult::Stale
+        {
+            // Restore the index transition so it matches the unmoved branch.
+            let mut command = self.repository_command(repository);
+            command.args(["read-tree", "-i", "-m", target.as_str(), expected.as_str()]);
+            let _ = self.execute(command)?;
+            return Ok(BranchAdvanceOutcome::Stale);
+        }
+        // Refresh stat information only; this never stages content.
+        let mut command = self.repository_command(repository);
+        command.args(["update-index", "-q", "--refresh"]);
+        let _ = self.execute(command)?;
+        Ok(BranchAdvanceOutcome::Advanced)
+    }
+
     fn plan_tree_application(
         &self,
         repository: &GitRepository,
@@ -7051,6 +7116,100 @@ mod tests {
             engine.head_commit(&repository).expect("head"),
             Some(fetched)
         );
+    }
+
+    /// A checkout whose worktree already holds an upstream advance, plus
+    /// the old and new branch tips.
+    fn checkout_holding_upstream_advance() -> (
+        tempfile::TempDir,
+        PathBuf,
+        GitCliEngine,
+        GitRepository,
+        GitRefName,
+        GitOid,
+        GitOid,
+    ) {
+        let (temporary, remote, writer) = init_branch_remote();
+        let (engine, repository, remote_name, branch) = branch_fixture(&writer);
+        let before = engine.head_commit(&repository).expect("head").expect("tip");
+        advance_remote(&temporary, &remote, "other", "advanced\n");
+        let upstream = engine
+            .branch_upstream(&repository, &branch)
+            .expect("upstream")
+            .expect("tracking upstream");
+        let fetched = engine
+            .fetch_ref(
+                &repository,
+                &remote_name,
+                &upstream.merge_ref,
+                &upstream.tracking_ref,
+            )
+            .expect("fetch branch");
+        fs::write(writer.join("Home.md"), "advanced\n").expect("synchronized note");
+        (
+            temporary, writer, engine, repository, branch, before, fetched,
+        )
+    }
+
+    fn short_status(writer: &Path) -> String {
+        let output = Command::new("git")
+            .current_dir(writer)
+            .args(["status", "--short"])
+            .output()
+            .expect("status");
+        String::from_utf8(output.stdout).expect("status text")
+    }
+
+    #[test]
+    fn advance_checked_out_branch_moves_index_without_touching_the_worktree() {
+        let (_temporary, writer, engine, repository, branch, before, fetched) =
+            checkout_holding_upstream_advance();
+        assert_eq!(
+            engine
+                .fast_forward_branch(&repository, &branch, &fetched)
+                .expect("ordinary fast-forward"),
+            FastForwardOutcome::BlockedDirty
+        );
+        fs::write(writer.join("Local.md"), "local\n").expect("untracked note");
+        fs::write(writer.join("Staged.md"), "staged\n").expect("staged note");
+        run_git(&writer, &["add", "Staged.md"]);
+        assert_eq!(
+            engine
+                .advance_checked_out_branch(&repository, &branch, &before, &fetched)
+                .expect("advance"),
+            BranchAdvanceOutcome::Advanced
+        );
+        assert_eq!(
+            engine.head_commit(&repository).expect("head"),
+            Some(fetched.clone())
+        );
+        assert_eq!(
+            fs::read_to_string(writer.join("Home.md")).expect("note"),
+            "advanced\n"
+        );
+        assert_eq!(short_status(&writer), "A  Staged.md\n?? Local.md\n");
+        assert_eq!(
+            engine
+                .advance_checked_out_branch(&repository, &branch, &before, &fetched)
+                .expect("stale advance"),
+            BranchAdvanceOutcome::Stale
+        );
+    }
+
+    #[test]
+    fn advance_checked_out_branch_refuses_conflicting_staged_entries() {
+        let (_temporary, writer, engine, repository, branch, before, fetched) =
+            checkout_holding_upstream_advance();
+        fs::write(writer.join("Home.md"), "staged elsewhere\n").expect("staged note");
+        run_git(&writer, &["add", "Home.md"]);
+        assert_eq!(
+            engine
+                .advance_checked_out_branch(&repository, &branch, &before, &fetched)
+                .expect("advance"),
+            BranchAdvanceOutcome::BlockedStaged
+        );
+        assert_eq!(engine.head_commit(&repository).expect("head"), Some(before));
+        assert_eq!(short_status(&writer), "M  Home.md\n");
     }
 
     #[test]
