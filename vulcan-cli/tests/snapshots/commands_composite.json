@@ -2978,7 +2978,7 @@
       },
       {
         "about": "Inspect indexed Kanban boards and cards",
-        "after_help": "Notes:\n  `kanban show` defaults to column counts; add `--verbose` to include cards.\n  `kanban show --include-archive` adds the parsed archive section back into the output.\n  `kanban cards --status` matches a task status character, status name, or status type.\n  `kanban archive` rewrites the board note, supports `--dry-run`, and honors auto-commit unless `--no-commit` is set.\n  `kanban move` rewrites the board note and respects `new_card_insertion_method` for the target column.\n  `kanban add` inserts a new list item using the target column's configured insertion mode.\n\nExamples:\n  vulcan kanban list\n  vulcan kanban show Board\n  vulcan kanban show Board --verbose\n  vulcan kanban show Board --include-archive\n  vulcan kanban cards Board --column Todo\n  vulcan kanban archive Board build-release\n  vulcan kanban move Board build-release Done\n  vulcan kanban add Board Todo \"Build release\"\n  vulcan --output json kanban cards Board --status IN_PROGRESS",
+        "after_help": "Notes:\n  `kanban show` defaults to column counts; add `--cards` to include cards.\n  `kanban show --include-archive` adds the parsed archive section back into the output.\n  `kanban cards --status` matches a task status character, status name, or status type.\n  `kanban archive` rewrites the board note, supports `--dry-run`, and honors auto-commit unless `--no-commit` is set.\n  `kanban move` rewrites the board note and respects `new_card_insertion_method` for the target column.\n  `kanban add` inserts a new list item using the target column's configured insertion mode.\n\nExamples:\n  vulcan kanban list\n  vulcan kanban show Board\n  vulcan kanban show Board --cards\n  vulcan kanban show Board --include-archive\n  vulcan kanban cards Board --column Todo\n  vulcan kanban archive Board build-release\n  vulcan kanban move Board build-release Done\n  vulcan kanban add Board Todo \"Build release\"\n  vulcan --output json kanban cards Board --status IN_PROGRESS",
         "name": "kanban",
         "options": [],
         "subcommands": [
@@ -3005,8 +3005,8 @@
               },
               {
                 "help": "Include card details in the output",
-                "id": "verbose",
-                "long": "verbose",
+                "id": "cards",
+                "long": "cards",
                 "possible_values": [
                   "true",
                   "false"
@@ -3014,7 +3014,7 @@
                 "required": false,
                 "short": null,
                 "value_names": [
-                  "VERBOSE"
+                  "CARDS"
                 ]
               },
               {
@@ -13032,7 +13032,7 @@
           },
           {
             "about": "Start the multi-wiki synchronization daemon",
-            "after_help": "Notes:\n  The daemon only syncs registered wikis: `vulcan vault list` shows them,\n  `vulcan vault add` and `vulcan vault clone` register more.\n  Add --verbose, before or after `start`, for per-sync operational lines.\n\nExamples:\n  vulcan daemon start\n  vulcan --verbose daemon start\n  vulcan daemon start --detach\n  vulcan daemon status",
+            "after_help": "Notes:\n  The daemon only syncs registered wikis: `vulcan vault list` shows them,\n  `vulcan vault add` and `vulcan vault clone` register more.\n  Add -v/--verbose, before or after `start`, for per-sync operational lines.\n\nExamples:\n  vulcan daemon start\n  vulcan --verbose daemon start\n  vulcan daemon start --detach\n  vulcan daemon status",
             "name": "start",
             "options": [
               {
@@ -21070,15 +21070,12 @@
         ]
       },
       {
-        "help": "Enable extra diagnostic output",
+        "help": "Increase diagnostic output: -v verbose, -vv debug, -vvv trace",
         "id": "verbose",
         "long": "verbose",
-        "possible_values": [
-          "true",
-          "false"
-        ],
+        "possible_values": [],
         "required": false,
-        "short": null,
+        "short": "v",
         "value_names": [
           "VERBOSE"
         ]

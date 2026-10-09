@@ -66,7 +66,7 @@ pub(crate) fn handle_kanban_command(
         }
         KanbanCommand::Show {
             board,
-            verbose,
+            cards,
             include_archive,
         } => {
             selected_permission_guard(cli, paths)?
@@ -74,7 +74,7 @@ pub(crate) fn handle_kanban_command(
                 .map_err(CliError::operation)?;
             let report =
                 load_kanban_board(paths, board, *include_archive).map_err(CliError::operation)?;
-            print_kanban_board_report(cli.output, &report, *verbose)
+            print_kanban_board_report(cli.output, &report, *cards)
         }
         KanbanCommand::Cards {
             board,
@@ -104,7 +104,7 @@ pub(crate) fn handle_kanban_command(
                 .check_write_path(board)
                 .map_err(CliError::operation)?;
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let report = run_kanban_archive_command(paths, board, card, *dry_run)?;
             if !*dry_run {
                 auto_commit
@@ -113,7 +113,7 @@ pub(crate) fn handle_kanban_command(
                         "kanban-archive",
                         &kanban_archive_changed_files(&report),
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
             }
@@ -130,7 +130,7 @@ pub(crate) fn handle_kanban_command(
                 .check_write_path(board)
                 .map_err(CliError::operation)?;
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let report = run_kanban_move_command(paths, board, card, target_column, *dry_run)?;
             if !*dry_run {
                 auto_commit
@@ -139,7 +139,7 @@ pub(crate) fn handle_kanban_command(
                         "kanban-move",
                         &kanban_move_changed_files(&report),
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
             }
@@ -156,7 +156,7 @@ pub(crate) fn handle_kanban_command(
                 .check_write_path(board)
                 .map_err(CliError::operation)?;
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let report = run_kanban_add_command(paths, board, column, text, *dry_run)?;
             if !*dry_run {
                 auto_commit
@@ -165,7 +165,7 @@ pub(crate) fn handle_kanban_command(
                         "kanban-add",
                         &kanban_add_changed_files(&report),
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
             }
@@ -335,7 +335,7 @@ fn print_kanban_board_list(
 fn print_kanban_board_report(
     output: OutputFormat,
     report: &KanbanBoardRecord,
-    verbose: bool,
+    cards: bool,
 ) -> Result<(), CliError> {
     match output {
         OutputFormat::Human | OutputFormat::Markdown => {
@@ -358,7 +358,7 @@ fn print_kanban_board_report(
             for column in &report.columns {
                 println!();
                 println!("{} ({})", column.name, column.card_count);
-                if !verbose {
+                if !cards {
                     continue;
                 }
                 for card in &column.cards {

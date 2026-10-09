@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
+use vulcan_core::Verbosity;
 use vulcan_core::{
     resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
@@ -30,9 +31,10 @@ pub struct NotificationRuntimeOptions {
     pub initial_backoff_ms: u64,
     pub maximum_backoff_ms: u64,
     pub connect_timeout_ms: u64,
-    /// Enables operational stderr lines for advertisement discovery and
-    /// wake-up enqueueing. Off by default; set from `--verbose`.
-    pub verbose: bool,
+    /// Diagnostic level. At `Verbose` and above, advertisement discovery and
+    /// wake-up enqueueing emit operational stderr lines; set from the global
+    /// `-v`/`-q` flags.
+    pub verbosity: Verbosity,
 }
 
 impl Default for NotificationRuntimeOptions {
@@ -43,7 +45,7 @@ impl Default for NotificationRuntimeOptions {
             initial_backoff_ms: 1_000,
             maximum_backoff_ms: 60_000,
             connect_timeout_ms: 15_000,
-            verbose: false,
+            verbosity: Verbosity::Normal,
         }
     }
 }
@@ -223,7 +225,7 @@ async fn reconcile_listeners(
                 Arc::clone(supervisor),
                 options,
                 client.clone(),
-                options.verbose,
+                options.verbosity,
             )
         });
     }
@@ -245,9 +247,9 @@ fn spawn_listener(
     supervisor: Arc<SyncSupervisor>,
     options: NotificationRuntimeOptions,
     client: reqwest::Client,
-    verbose: bool,
+    verbosity: Verbosity,
 ) -> ListenerTask {
-    if verbose {
+    if verbosity.is_verbose() {
         eprintln!("{}", listener_line(registration.id.as_str()));
     }
     let stop = Arc::new(ShutdownSignal::new(false));
@@ -300,7 +302,7 @@ async fn run_listener(
             match refresh_for_registration_interruptible(&registration, &stop).await {
                 RefreshResult::Stopped => return Ok(()),
                 RefreshResult::Advertisement(discovered) => {
-                    if options.verbose {
+                    if options.verbosity.is_verbose() {
                         eprintln!(
                             "{}",
                             advertisement_line(
@@ -341,7 +343,7 @@ async fn run_listener(
             result = poll_endpoint(&client, current) => {
                 match result {
                     PollResult::Wake => {
-                        if options.verbose {
+                        if options.verbosity.is_verbose() {
                             eprintln!(
                                 "{}",
                                 wake_line(registration.id.as_str(), current)
@@ -696,7 +698,7 @@ mod tests {
                 initial_backoff_ms: 10,
                 maximum_backoff_ms: 50,
                 connect_timeout_ms: 100,
-                verbose: true,
+                verbosity: Verbosity::Verbose,
             },
             Arc::clone(&stop),
         ));
@@ -791,7 +793,7 @@ mod tests {
                 initial_backoff_ms: 10,
                 maximum_backoff_ms: 50,
                 connect_timeout_ms: 100,
-                verbose: true,
+                verbosity: Verbosity::Verbose,
             },
             Arc::clone(&stop),
         ));

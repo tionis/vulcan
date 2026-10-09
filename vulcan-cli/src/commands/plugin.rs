@@ -6,6 +6,7 @@ use crate::{
 };
 use serde::Serialize;
 use std::path::PathBuf;
+use vulcan_core::Verbosity;
 use vulcan_core::{PermissionGuard, PluginEvent, VaultPaths};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -69,7 +70,7 @@ pub(crate) fn handle_plugin_command(
                 config_target(*target),
                 *dry_run,
                 *no_commit,
-                cli.quiet,
+                cli.verbosity(),
             )
         }
         PluginCommand::Disable {
@@ -89,7 +90,7 @@ pub(crate) fn handle_plugin_command(
                 config_target(*target),
                 *dry_run,
                 *no_commit,
-                cli.quiet,
+                cli.verbosity(),
             )
         }
         PluginCommand::Set {
@@ -132,7 +133,7 @@ pub(crate) fn handle_plugin_command(
                 config_target(*target),
                 *dry_run,
                 *no_commit,
-                cli.quiet,
+                cli.verbosity(),
             )
         }
         PluginCommand::Delete {
@@ -151,7 +152,7 @@ pub(crate) fn handle_plugin_command(
                 config_target(*target),
                 *dry_run,
                 *no_commit,
-                cli.quiet,
+                cli.verbosity(),
             )
         }
         PluginCommand::Run { name } => {
@@ -173,7 +174,7 @@ fn run_plugin_toggle_command(
     target: app_config::ConfigTarget,
     dry_run: bool,
     no_commit: bool,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<(), CliError> {
     let had_gitignore = paths.gitignore_file().exists();
     let current = plugin_descriptor_for_name(paths, name);
@@ -185,7 +186,7 @@ fn run_plugin_toggle_command(
 
     if !dry_run && batch.updated {
         let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-        warn_auto_commit_if_needed(&auto_commit, quiet);
+        warn_auto_commit_if_needed(&auto_commit, verbosity);
         batch = app_config::apply_config_batch_report(paths, batch)?;
         auto_commit
             .commit(
@@ -193,7 +194,7 @@ fn run_plugin_toggle_command(
                 "plugin-config",
                 &config_changed_files(paths, &batch.config_path, had_gitignore),
                 None,
-                quiet,
+                verbosity,
             )
             .map_err(CliError::operation)?;
     }
@@ -233,7 +234,7 @@ fn run_plugin_set_command(
     target: app_config::ConfigTarget,
     dry_run: bool,
     no_commit: bool,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<(), CliError> {
     let mut operations = Vec::new();
     let mut labels = Vec::new();
@@ -348,7 +349,7 @@ fn run_plugin_set_command(
     let mut batch = app_config::plan_config_batch_report(paths, &operations, target, dry_run)?;
     if !dry_run && batch.updated {
         let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-        warn_auto_commit_if_needed(&auto_commit, quiet);
+        warn_auto_commit_if_needed(&auto_commit, verbosity);
         batch = app_config::apply_config_batch_report(paths, batch)?;
         auto_commit
             .commit(
@@ -356,7 +357,7 @@ fn run_plugin_set_command(
                 "plugin-config",
                 &config_changed_files(paths, &batch.config_path, had_gitignore),
                 None,
-                quiet,
+                verbosity,
             )
             .map_err(CliError::operation)?;
     }
@@ -380,7 +381,7 @@ fn run_plugin_delete_command(
     target: app_config::ConfigTarget,
     dry_run: bool,
     no_commit: bool,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<(), CliError> {
     let had_gitignore = paths.gitignore_file().exists();
     let operations = vec![app_config::ConfigMutationOperation::Unset {
@@ -389,7 +390,7 @@ fn run_plugin_delete_command(
     let mut batch = app_config::plan_config_batch_report(paths, &operations, target, dry_run)?;
     if !dry_run && batch.updated {
         let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-        warn_auto_commit_if_needed(&auto_commit, quiet);
+        warn_auto_commit_if_needed(&auto_commit, verbosity);
         batch = app_config::apply_config_batch_report(paths, batch)?;
         auto_commit
             .commit(
@@ -397,7 +398,7 @@ fn run_plugin_delete_command(
                 "plugin-config",
                 &config_changed_files(paths, &batch.config_path, had_gitignore),
                 None,
-                quiet,
+                verbosity,
             )
             .map_err(CliError::operation)?;
     }

@@ -90,22 +90,50 @@ fn formats_eta_compactly_for_progress_reporting() {
 
 #[test]
 fn query_ast_rendering_is_hidden_by_default() {
-    assert!(!should_render_query_ast(OutputFormat::Human, false, false));
+    assert!(!should_render_query_ast(
+        OutputFormat::Human,
+        false,
+        Verbosity::Normal
+    ));
     assert!(!should_render_query_ast(
         OutputFormat::Markdown,
         false,
-        false
+        Verbosity::Normal
     ));
-    assert!(!should_render_query_ast(OutputFormat::Json, false, false));
+    assert!(!should_render_query_ast(
+        OutputFormat::Json,
+        false,
+        Verbosity::Normal
+    ));
 }
 
 #[test]
 fn query_ast_rendering_requires_explicit_diagnostics() {
-    assert!(should_render_query_ast(OutputFormat::Human, true, false));
-    assert!(should_render_query_ast(OutputFormat::Json, true, false));
-    assert!(should_render_query_ast(OutputFormat::Human, false, true));
-    assert!(should_render_query_ast(OutputFormat::Markdown, false, true));
-    assert!(!should_render_query_ast(OutputFormat::Json, false, true));
+    assert!(should_render_query_ast(
+        OutputFormat::Human,
+        true,
+        Verbosity::Normal
+    ));
+    assert!(should_render_query_ast(
+        OutputFormat::Json,
+        true,
+        Verbosity::Normal
+    ));
+    assert!(should_render_query_ast(
+        OutputFormat::Human,
+        false,
+        Verbosity::Verbose
+    ));
+    assert!(should_render_query_ast(
+        OutputFormat::Markdown,
+        false,
+        Verbosity::Verbose
+    ));
+    assert!(!should_render_query_ast(
+        OutputFormat::Json,
+        false,
+        Verbosity::Verbose
+    ));
 }
 
 #[cfg(feature = "web")]
@@ -139,19 +167,19 @@ fn outline_publish_human_output_summarizes_actions_and_only_expands_verbose_deta
     );
     assert!(!should_print_outline_publish_action(
         OutlinePublishActionKind::Unchanged,
-        false
+        Verbosity::Normal
     ));
     assert!(!should_print_outline_publish_action(
         OutlinePublishActionKind::Create,
-        false
+        Verbosity::Normal
     ));
     assert!(should_print_outline_publish_action(
         OutlinePublishActionKind::Conflict,
-        false
+        Verbosity::Normal
     ));
     assert!(should_print_outline_publish_action(
         OutlinePublishActionKind::Unchanged,
-        true
+        Verbosity::Verbose
     ));
 }
 
@@ -181,7 +209,7 @@ fn parses_defaults_for_doctor_command() {
     assert_eq!(cli.fields, None);
     assert_eq!(cli.limit, None);
     assert_eq!(cli.offset, 0);
-    assert!(!cli.verbose);
+    assert_eq!(cli.verbosity(), Verbosity::Normal);
     assert_eq!(
         cli.command,
         Command::Doctor {
@@ -893,13 +921,70 @@ fn parses_kanban_list_command() {
 }
 
 #[test]
+fn verbosity_flags_count_at_any_level_and_quiet_wins() {
+    let parse = |args: &[&str]| {
+        let mut argv = vec!["vulcan", "--verbosity-default", "normal"];
+        argv.extend_from_slice(args);
+        Cli::try_parse_from(argv)
+            .expect("cli should parse")
+            .verbosity()
+    };
+    assert_eq!(parse(&["kanban", "list"]), Verbosity::Normal);
+    assert_eq!(parse(&["-v", "kanban", "list"]), Verbosity::Verbose);
+    assert_eq!(parse(&["kanban", "list", "--verbose"]), Verbosity::Verbose);
+    assert_eq!(
+        parse(&["kanban", "list", "-v", "--verbose"]),
+        Verbosity::Debug
+    );
+    assert_eq!(parse(&["kanban", "list", "-vvv"]), Verbosity::Trace);
+    assert_eq!(parse(&["-vvvvv", "kanban", "list"]), Verbosity::Trace);
+    assert_eq!(parse(&["-vv", "kanban", "list", "-q"]), Verbosity::Quiet);
+}
+
+#[test]
+fn verbosity_default_applies_only_without_explicit_flags() {
+    let parse = |args: &[&str]| {
+        Cli::try_parse_from(args)
+            .expect("cli should parse")
+            .verbosity()
+    };
+    let base = ["vulcan", "--verbosity-default", "debug", "kanban", "list"];
+    assert_eq!(parse(&base), Verbosity::Debug);
+    assert_eq!(parse(&[&base[..], &["-v"]].concat()), Verbosity::Verbose);
+    assert_eq!(parse(&[&base[..], &["-q"]].concat()), Verbosity::Quiet);
+    assert!(
+        Cli::try_parse_from(["vulcan", "--verbosity-default", "loud", "kanban", "list"]).is_err()
+    );
+}
+
+#[test]
+fn inherited_global_args_forward_only_level_and_color() {
+    assert!(inherited_global_args(Verbosity::Normal, ColorMode::Auto).is_empty());
+    assert_eq!(
+        inherited_global_args(Verbosity::Trace, ColorMode::Always),
+        ["-vvv", "--color", "always"]
+    );
+    for verbosity in Verbosity::ALL {
+        for color in [ColorMode::Auto, ColorMode::Always, ColorMode::Never] {
+            let mut argv = vec!["vulcan".to_string(), "--verbosity-default".to_string()];
+            argv.push("normal".to_string());
+            argv.extend(inherited_global_args(verbosity, color));
+            argv.extend(["kanban", "list"].map(String::from));
+            let child = Cli::try_parse_from(argv).expect("child args should parse");
+            assert_eq!(child.verbosity(), verbosity);
+            assert_eq!(child.color, color);
+        }
+    }
+}
+
+#[test]
 fn parses_kanban_show_command() {
     let cli = Cli::try_parse_from([
         "vulcan",
         "kanban",
         "show",
         "Board",
-        "--verbose",
+        "--cards",
         "--include-archive",
     ])
     .expect("cli should parse");
@@ -909,7 +994,7 @@ fn parses_kanban_show_command() {
         Command::Kanban {
             command: KanbanCommand::Show {
                 board: "Board".to_string(),
-                verbose: true,
+                cards: true,
                 include_archive: true,
             },
         }
@@ -4832,7 +4917,7 @@ fn template_command_lists_obsidian_templates_with_sources_and_conflicts() {
         TemplateEngineArg::Auto,
         &[],
         false,
-        false,
+        Verbosity::Normal,
         false,
         None,
     )
@@ -4890,7 +4975,7 @@ fn template_command_lists_templater_templates_with_sources() {
         TemplateEngineArg::Auto,
         &[],
         false,
-        false,
+        Verbosity::Normal,
         false,
         None,
     )
@@ -4941,7 +5026,7 @@ fn template_command_prefers_vulcan_template_over_obsidian_conflict() {
         TemplateEngineArg::Auto,
         &[],
         false,
-        false,
+        Verbosity::Normal,
         false,
         None,
     )
@@ -5027,7 +5112,7 @@ fn template_command_creates_note_and_renders_variables() {
         TemplateEngineArg::Auto,
         &[],
         false,
-        false,
+        Verbosity::Normal,
         false,
         None,
     )
@@ -5069,7 +5154,7 @@ fn template_insert_command_prepends_and_merges_frontmatter() {
         TemplateEngineArg::Auto,
         &[],
         false,
-        false,
+        Verbosity::Normal,
         false,
         None,
         None,
@@ -5124,7 +5209,7 @@ fn template_insert_command_appends_and_auto_commits() {
         TemplateEngineArg::Auto,
         &[],
         false,
-        false,
+        Verbosity::Normal,
         false,
         None,
         None,
@@ -6289,7 +6374,7 @@ fn parses_global_flags_and_scan_options() {
     );
     assert_eq!(cli.limit, Some(10));
     assert_eq!(cli.offset, 2);
-    assert!(cli.verbose);
+    assert_eq!(cli.verbosity(), Verbosity::Verbose);
     assert_eq!(
         cli.command,
         Command::Scan {
@@ -7604,6 +7689,21 @@ fn option_help_is_blank(option: &CliArgDescribe) -> bool {
         Some(help) => help.trim().is_empty(),
         None => true,
     }
+}
+
+#[test]
+fn describe_report_lists_verbosity_flags_but_not_hidden_globals() {
+    let report = describe_cli();
+    let ids = report
+        .global_options
+        .iter()
+        .map(|option| option.id.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        ids.contains(&"verbose") && ids.contains(&"quiet"),
+        "{ids:?}"
+    );
+    assert!(!ids.contains(&"verbosity_default"), "{ids:?}");
 }
 
 #[test]

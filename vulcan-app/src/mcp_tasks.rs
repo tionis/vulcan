@@ -1,5 +1,6 @@
 //! MCP task mutation workflows shared by stdio and hosted transports.
 
+use vulcan_core::Verbosity;
 use vulcan_core::{ProfilePermissionGuard, VaultPaths};
 
 use crate::commit::AutoCommitPolicy;
@@ -126,7 +127,13 @@ fn refresh_and_commit(
     }
     if !dry_run {
         AutoCommitPolicy::for_mutation(paths, no_commit)
-            .commit(paths, trigger, changed_paths, Some(profile_name), true)
+            .commit(
+                paths,
+                trigger,
+                changed_paths,
+                Some(profile_name),
+                Verbosity::Quiet,
+            )
             .map_err(|error| McpMethodError::tool(error.clone()))?;
     }
     Ok(())

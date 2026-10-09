@@ -16,6 +16,7 @@ use vulcan_app::templates::{
     parse_template_var_bindings, TemplateCreateRequest, TemplateEngineKind, TemplateInsertMode,
     TemplateInsertRequest, TemplatePreviewRequest,
 };
+use vulcan_core::Verbosity;
 use vulcan_core::{
     load_vault_config, PermissionFilter, PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
@@ -77,7 +78,7 @@ pub(crate) fn run_template_creation_triggers(
     paths: &VaultPaths,
     created_paths: &[String],
     permission_profile: Option<&str>,
-    quiet: bool,
+    verbosity: Verbosity,
     guard: &ProfilePermissionGuard,
 ) -> Result<Vec<String>, CliError> {
     if !load_vault_config(paths)
@@ -102,8 +103,13 @@ pub(crate) fn run_template_creation_triggers(
         }
         guard.check_read_path(path).map_err(CliError::operation)?;
         guard.check_write_path(path).map_err(CliError::operation)?;
-        let report =
-            apply_template_creation_trigger(paths, path, permission_profile, quiet, read_filter)?;
+        let report = apply_template_creation_trigger(
+            paths,
+            path,
+            permission_profile,
+            verbosity,
+            read_filter,
+        )?;
         changed_paths.extend(report.changed_paths);
     }
 
@@ -121,7 +127,7 @@ pub(crate) fn run_template_command(
     engine: TemplateEngineArg,
     vars: &[String],
     no_commit: bool,
-    quiet: bool,
+    verbosity: Verbosity,
     stdout_is_tty: bool,
     read_filter: Option<&PermissionFilter>,
 ) -> Result<TemplateCommandResult, CliError> {
@@ -161,11 +167,11 @@ pub(crate) fn run_template_command(
         opened_editor = true;
     }
 
-    run_incremental_scan(paths, OutputFormat::Human, false, false)?;
+    run_incremental_scan(paths, OutputFormat::Human, false, Verbosity::Normal)?;
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-    warn_auto_commit_if_needed(&auto_commit, quiet);
+    warn_auto_commit_if_needed(&auto_commit, verbosity);
     auto_commit
-        .commit(paths, "template", &created.changed_paths, None, quiet)
+        .commit(paths, "template", &created.changed_paths, None, verbosity)
         .map_err(CliError::operation)?;
 
     Ok(TemplateCommandResult::Create(TemplateCreateReport {
@@ -188,7 +194,7 @@ pub(crate) fn run_template_insert_command(
     engine: TemplateEngineArg,
     vars: &[String],
     no_commit: bool,
-    quiet: bool,
+    verbosity: Verbosity,
     interactive_note_selection: bool,
     read_filter: Option<&PermissionFilter>,
     permission_profile: Option<&str>,
@@ -210,19 +216,19 @@ pub(crate) fn run_template_insert_command(
         },
         read_filter,
         permission_profile,
-        quiet,
+        verbosity,
     )?;
 
-    run_incremental_scan(paths, OutputFormat::Human, false, false)?;
+    run_incremental_scan(paths, OutputFormat::Human, false, Verbosity::Normal)?;
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-    warn_auto_commit_if_needed(&auto_commit, quiet);
+    warn_auto_commit_if_needed(&auto_commit, verbosity);
     auto_commit
         .commit(
             paths,
             "template insert",
             &report.changed_paths,
             permission_profile,
-            quiet,
+            verbosity,
         )
         .map_err(CliError::operation)?;
 

@@ -20,6 +20,7 @@ use vulcan_core::mdbase::{
     MdbaseQuerySnapshot, MdbaseViewInvocation, MdbaseViewList, MDBASE_VIEW_SOURCE_FORMAT,
 };
 use vulcan_core::paths::secure_read_to_string;
+use vulcan_core::Verbosity;
 use vulcan_core::{
     resolve_permission_profile, PermissionFilter, PermissionGuard, ProfilePermissionGuard,
 };
@@ -100,7 +101,7 @@ pub struct MdbaseViewSourceOptions {
     pub permission_profile: Option<String>,
     pub dry_run: bool,
     pub no_commit: bool,
-    pub quiet: bool,
+    pub verbosity: Verbosity,
 }
 
 /// `read_view_source`: the exact source of one visible view record.
@@ -329,7 +330,7 @@ fn apply_source_write(
         &MdbaseWriteExecutionOptions {
             idempotency_key: ulid::Ulid::new().to_string(),
             no_commit: options.no_commit,
-            quiet: options.quiet,
+            verbosity: options.verbosity,
         },
         chrono::DateTime::<chrono::Utc>::from(SystemTime::now()),
     )

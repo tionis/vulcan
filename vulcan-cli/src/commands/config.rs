@@ -17,6 +17,7 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use toml::Value as TomlValue;
 use vulcan_core::config::QuickAddImporter;
+use vulcan_core::Verbosity;
 use vulcan_core::{
     all_importers, annotate_import_conflicts, load_permission_profiles, ConfigImportReport,
     CoreImporter, DataviewImporter, FolderNotesImporter, ImportTarget, KanbanImporter,
@@ -108,7 +109,8 @@ pub(crate) fn handle_config_command(
                     "config edit requires an interactive terminal with `--output human`",
                 ));
             }
-            config_tui::run_config_tui(paths, *no_commit, cli.quiet).map_err(CliError::operation)
+            config_tui::run_config_tui(paths, *no_commit, cli.verbosity())
+                .map_err(CliError::operation)
         }
         ConfigCommand::Set {
             key,
@@ -128,7 +130,7 @@ pub(crate) fn handle_config_command(
                 config_target(*target),
                 *dry_run,
                 *no_commit,
-                cli.quiet,
+                cli.verbosity(),
             )
         }
         ConfigCommand::Unset {
@@ -147,7 +149,7 @@ pub(crate) fn handle_config_command(
                 config_target(*target),
                 *dry_run,
                 *no_commit,
-                cli.quiet,
+                cli.verbosity(),
             )
         }
         ConfigCommand::Alias { command } => {
@@ -160,7 +162,7 @@ pub(crate) fn handle_config_command(
                     .check_config_write()
                     .map_err(CliError::operation)?;
             }
-            run_config_alias(paths, cli.output, command, cli.quiet)
+            run_config_alias(paths, cli.output, command, cli.verbosity())
         }
         ConfigCommand::Permissions { command } => match command {
             ConfigPermissionsCommand::Profile { command } => match command {
@@ -169,13 +171,13 @@ pub(crate) fn handle_config_command(
                     crate::selected_permission_guard(cli, paths)?
                         .check_config_read()
                         .map_err(CliError::operation)?;
-                    run_config_permissions_profile(paths, cli.output, command, cli.quiet)
+                    run_config_permissions_profile(paths, cli.output, command, cli.verbosity())
                 }
                 _ => {
                     crate::selected_permission_guard(cli, paths)?
                         .check_config_write()
                         .map_err(CliError::operation)?;
-                    run_config_permissions_profile(paths, cli.output, command, cli.quiet)
+                    run_config_permissions_profile(paths, cli.output, command, cli.verbosity())
                 }
             },
         },
@@ -198,7 +200,12 @@ pub(crate) fn handle_config_command(
                 return print_config_import_list_report(cli.output, paths, &report);
             }
             if selection.all {
-                return run_config_import_batch(paths, cli.output, &selection.args, cli.quiet);
+                return run_config_import_batch(
+                    paths,
+                    cli.output,
+                    &selection.args,
+                    cli.verbosity(),
+                );
             }
             let Some(command) = selection.command.as_ref() else {
                 return Err(CliError::operation(
@@ -211,7 +218,7 @@ pub(crate) fn handle_config_command(
                 cli.output,
                 importer.as_ref(),
                 &selection.args,
-                cli.quiet,
+                cli.verbosity(),
             )
         }
     }
@@ -278,7 +285,7 @@ fn run_config_import(
     output: OutputFormat,
     importer: &dyn PluginImporter,
     args: &ConfigImportArgs,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<(), CliError> {
     let target = config_import_target(args.target);
     let report = if args.dry_run {
@@ -287,7 +294,7 @@ fn run_config_import(
             .map_err(CliError::operation)?
     } else {
         let auto_commit = AutoCommitPolicy::for_mutation(paths, args.no_commit);
-        warn_auto_commit_if_needed(&auto_commit, quiet);
+        warn_auto_commit_if_needed(&auto_commit, verbosity);
         let had_gitignore = paths.gitignore_file().exists();
         let report = importer
             .import(paths, target)
@@ -299,7 +306,7 @@ fn run_config_import(
                     &format!("config-import-{}", importer.name()),
                     &config_import_changed_files(paths, had_gitignore, &report),
                     None,
-                    quiet,
+                    verbosity,
                 )
                 .map_err(CliError::operation)?;
         }
@@ -313,7 +320,7 @@ fn run_config_import_batch(
     paths: &VaultPaths,
     output: OutputFormat,
     args: &ConfigImportArgs,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<(), CliError> {
     let target = config_import_target(args.target);
     let discovered = discover_config_importers(paths);
@@ -334,7 +341,7 @@ fn run_config_import_batch(
         }
     } else {
         let auto_commit = AutoCommitPolicy::for_mutation(paths, args.no_commit);
-        warn_auto_commit_if_needed(&auto_commit, quiet);
+        warn_auto_commit_if_needed(&auto_commit, verbosity);
         let had_gitignore = paths.gitignore_file().exists();
         for importer in importers {
             reports.push(
@@ -347,7 +354,7 @@ fn run_config_import_batch(
         if reports.iter().any(|report| report.updated) {
             let changed_files = config_import_batch_changed_files(paths, had_gitignore, &reports);
             auto_commit
-                .commit(paths, "config-import-all", &changed_files, None, quiet)
+                .commit(paths, "config-import-all", &changed_files, None, verbosity)
                 .map_err(CliError::operation)?;
         }
     }
@@ -814,7 +821,7 @@ fn run_config_set(
     target: ConfigTarget,
     dry_run: bool,
     no_commit: bool,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<(), CliError> {
     let had_gitignore = paths.gitignore_file().exists();
     let mut report =
@@ -822,7 +829,7 @@ fn run_config_set(
 
     if !dry_run && report.updated {
         let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-        warn_auto_commit_if_needed(&auto_commit, quiet);
+        warn_auto_commit_if_needed(&auto_commit, verbosity);
         report = app_config::apply_config_set_report(paths, report)?;
         auto_commit
             .commit(
@@ -830,7 +837,7 @@ fn run_config_set(
                 "config-set",
                 &crate::config_changed_files(paths, &report.config_path, had_gitignore),
                 None,
-                quiet,
+                verbosity,
             )
             .map_err(CliError::operation)?;
     }
@@ -847,14 +854,14 @@ fn run_config_set_toml(
     target: ConfigTarget,
     dry_run: bool,
     no_commit: bool,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<(), CliError> {
     let had_gitignore = paths.gitignore_file().exists();
     let mut report = app_config::plan_config_set_report_to(paths, key, value, target, dry_run)?;
 
     if !dry_run && report.updated {
         let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-        warn_auto_commit_if_needed(&auto_commit, quiet);
+        warn_auto_commit_if_needed(&auto_commit, verbosity);
         report = app_config::apply_config_set_report(paths, report)?;
         auto_commit
             .commit(
@@ -862,7 +869,7 @@ fn run_config_set_toml(
                 "config-set",
                 &crate::config_changed_files(paths, &report.config_path, had_gitignore),
                 None,
-                quiet,
+                verbosity,
             )
             .map_err(CliError::operation)?;
     }
@@ -877,14 +884,14 @@ fn run_config_unset(
     target: ConfigTarget,
     dry_run: bool,
     no_commit: bool,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<(), CliError> {
     let had_gitignore = paths.gitignore_file().exists();
     let mut report = app_config::plan_config_unset_report(paths, key, target, dry_run)?;
 
     if !dry_run && report.updated {
         let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-        warn_auto_commit_if_needed(&auto_commit, quiet);
+        warn_auto_commit_if_needed(&auto_commit, verbosity);
         report = app_config::apply_config_unset_report(paths, report)?;
         auto_commit
             .commit(
@@ -892,7 +899,7 @@ fn run_config_unset(
                 "config-unset",
                 &crate::config_changed_files(paths, &report.config_path, had_gitignore),
                 None,
-                quiet,
+                verbosity,
             )
             .map_err(CliError::operation)?;
     }
@@ -904,7 +911,7 @@ fn run_config_alias(
     paths: &VaultPaths,
     output: OutputFormat,
     command: &ConfigAliasCommand,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<(), CliError> {
     match command {
         ConfigAliasCommand::List => run_config_show(paths, output, Some("aliases"), None),
@@ -922,7 +929,7 @@ fn run_config_alias(
             config_target(*target),
             *dry_run,
             *no_commit,
-            quiet,
+            verbosity,
         ),
         ConfigAliasCommand::Delete {
             name,
@@ -936,7 +943,7 @@ fn run_config_alias(
             config_target(*target),
             *dry_run,
             *no_commit,
-            quiet,
+            verbosity,
         ),
     }
 }
@@ -945,7 +952,7 @@ fn run_config_permissions_profile(
     paths: &VaultPaths,
     output: OutputFormat,
     command: &ConfigPermissionsProfileCommand,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<(), CliError> {
     match command {
         ConfigPermissionsProfileCommand::List => {
@@ -981,7 +988,7 @@ fn run_config_permissions_profile(
                 config_target(*target),
                 *dry_run,
                 *no_commit,
-                quiet,
+                verbosity,
             )
         }
         ConfigPermissionsProfileCommand::Set {
@@ -999,7 +1006,7 @@ fn run_config_permissions_profile(
             config_target(*target),
             *dry_run,
             *no_commit,
-            quiet,
+            verbosity,
         ),
         ConfigPermissionsProfileCommand::Delete {
             name,
@@ -1013,7 +1020,7 @@ fn run_config_permissions_profile(
             config_target(*target),
             *dry_run,
             *no_commit,
-            quiet,
+            verbosity,
         ),
     }
 }

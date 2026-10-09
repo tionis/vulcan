@@ -1,6 +1,7 @@
 use crate::config::EmbeddingProviderConfig;
 use crate::graph::resolve_note_reference;
 use crate::permissions::{PermissionError, PermissionFilter};
+use crate::verbosity::Verbosity;
 use crate::write_lock::acquire_write_lock;
 use crate::{load_vault_config, CacheDatabase, CacheError, VaultPaths};
 use rusqlite::{params, Connection};
@@ -137,7 +138,7 @@ pub type ClusterError = VectorError;
 pub struct VectorIndexQuery {
     pub provider: Option<String>,
     pub dry_run: bool,
-    pub verbose: bool,
+    pub verbosity: Verbosity,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -772,7 +773,7 @@ where
                 &VectorIndexQuery {
                     provider: query.provider.clone(),
                     dry_run: false,
-                    verbose: false,
+                    verbosity: Verbosity::Normal,
                 },
                 &mut on_progress,
             )?);
@@ -851,7 +852,7 @@ where
         &VectorIndexQuery {
             provider: query.provider.clone(),
             dry_run: false,
-            verbose: false,
+            verbosity: Verbosity::Normal,
         },
         &mut on_progress,
     )?;
@@ -2190,7 +2191,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: false,
-                verbose: false,
+                verbosity: Verbosity::Normal,
             },
         )
         .expect("vector index should succeed");
@@ -2199,7 +2200,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: false,
-                verbose: false,
+                verbosity: Verbosity::Normal,
             },
         )
         .expect("second vector index should succeed");
@@ -2274,7 +2275,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: false,
-                verbose: false,
+                verbosity: Verbosity::Normal,
             },
         )
         .expect("vector index should succeed");
@@ -2317,7 +2318,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: false,
-                verbose: false,
+                verbosity: Verbosity::Normal,
             },
         )
         .expect("vector index should succeed");
@@ -2465,7 +2466,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: false,
-                verbose: false,
+                verbosity: Verbosity::Normal,
             },
         )
         .expect("vector index should succeed");
@@ -2500,7 +2501,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: false,
-                verbose: false,
+                verbosity: Verbosity::Normal,
             },
         )
         .expect("vector index should succeed");
@@ -2535,7 +2536,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: false,
-                verbose: false,
+                verbosity: Verbosity::Normal,
             },
         )
         .expect("vector index should succeed");
@@ -2597,7 +2598,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: false,
-                verbose: false,
+                verbosity: Verbosity::Normal,
             },
         )
         .expect("vector index should succeed");
@@ -2650,7 +2651,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: true,
-                verbose: false,
+                verbosity: Verbosity::Normal,
             },
         )
         .expect("dry-run vector index should succeed");
@@ -2683,7 +2684,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: false,
-                verbose: false,
+                verbosity: Verbosity::Normal,
             },
             |progress| events.push(progress),
         )
@@ -2720,7 +2721,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: false,
-                verbose: false,
+                verbosity: Verbosity::Normal,
             },
         )
         .expect("vector index should succeed");
@@ -2768,7 +2769,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: false,
-                verbose: false,
+                verbosity: Verbosity::Normal,
             },
         )
         .expect("vector index should succeed");
@@ -2810,7 +2811,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: false,
-                verbose: false,
+                verbosity: Verbosity::Normal,
             },
         )
         .expect("vector index should succeed");
@@ -2846,7 +2847,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: false,
-                verbose: false,
+                verbosity: Verbosity::Normal,
             },
         )
         .expect("vector index should succeed");
@@ -2914,7 +2915,7 @@ mod tests {
             &VectorIndexQuery {
                 provider: None,
                 dry_run: false,
-                verbose: false,
+                verbosity: Verbosity::Normal,
             },
         )
         .expect("vector index should succeed");

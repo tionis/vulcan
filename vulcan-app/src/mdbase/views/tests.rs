@@ -189,7 +189,7 @@ fn cached_snapshots_serve_views_and_see_later_edits() {
 fn source_options() -> MdbaseViewSourceOptions {
     MdbaseViewSourceOptions {
         no_commit: true,
-        quiet: true,
+        verbosity: Verbosity::Quiet,
         ..MdbaseViewSourceOptions::default()
     }
 }

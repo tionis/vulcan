@@ -11,6 +11,7 @@ use vulcan_app::notes::{read_note_for_update, write_note_content};
 use vulcan_app::templates::{template_variables_for_path, TemplateTimestamp};
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::VaultPaths;
+use vulcan_core::Verbosity;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct InboxReport {
@@ -23,10 +24,10 @@ pub(crate) fn run_inbox_command(
     text: Option<&str>,
     file: Option<&PathBuf>,
     no_commit: bool,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<InboxReport, CliError> {
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-    warn_auto_commit_if_needed(&auto_commit, quiet);
+    warn_auto_commit_if_needed(&auto_commit, verbosity);
     let inbox_config = vulcan_core::load_vault_config(paths).config.inbox;
     let relative_path = normalize_relative_input_path(
         &inbox_config.path,
@@ -64,17 +65,17 @@ pub(crate) fn run_inbox_command(
         &updated,
         "inbox",
         None,
-        quiet,
+        verbosity,
     )
     .map_err(CliError::operation)?;
-    run_incremental_scan(paths, OutputFormat::Human, false, false)?;
+    run_incremental_scan(paths, OutputFormat::Human, false, Verbosity::Normal)?;
     auto_commit
         .commit(
             paths,
             "inbox",
             std::slice::from_ref(&relative_path),
             None,
-            false,
+            Verbosity::Normal,
         )
         .map_err(CliError::operation)?;
 

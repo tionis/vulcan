@@ -54,7 +54,7 @@ fn apply(paths: &VaultPaths, plan: &MdbaseWritePlanReport, key: &str) -> MdbaseW
         &MdbaseWriteExecutionOptions {
             idempotency_key: key.to_string(),
             no_commit: true,
-            quiet: true,
+            verbosity: Verbosity::Quiet,
         },
         now() + chrono::Duration::seconds(2),
     )
@@ -78,7 +78,7 @@ fn note_create_append_and_patch_report_policy_output_including_dry_run() {
             body: SOURCE.into(),
         },
         None,
-        true,
+        Verbosity::Quiet,
     )
     .unwrap();
     assert!(created.content.contains("id: created"));
@@ -98,7 +98,7 @@ fn note_create_append_and_patch_report_policy_output_including_dry_run() {
             vars: std::collections::HashMap::default(),
         },
         None,
-        true,
+        Verbosity::Quiet,
     )
     .unwrap();
     assert!(!appended.content.contains("id: created"));
@@ -122,7 +122,7 @@ fn note_create_append_and_patch_report_policy_output_including_dry_run() {
         replace_all: false,
         dry_run: true,
     };
-    let preview = apply_note_patch(&paths, &request, None, true).unwrap();
+    let preview = apply_note_patch(&paths, &request, None, Verbosity::Quiet).unwrap();
     assert!(preview.content.contains("Patched"));
     assert_ne!(
         preview.content,
@@ -134,7 +134,7 @@ fn note_create_append_and_patch_report_policy_output_including_dry_run() {
     );
     assert_eq!(list_mdbase_write_outbox(&paths).unwrap().len(), 2);
     request.dry_run = false;
-    let patched = apply_note_patch(&paths, &request, None, true).unwrap();
+    let patched = apply_note_patch(&paths, &request, None, Verbosity::Quiet).unwrap();
     assert_ne!(patched.content, preview.content);
     assert_eq!(
         patched.content,
@@ -166,7 +166,7 @@ fn script_results_refresh_after_implicit_and_explicit_lifecycle_commits() {
         None,
         DataviewJsEvalOptions {
             sandbox: Some(JsRuntimeSandbox::Fs),
-            mutation_committer: Some(mdbase_js_mutation_committer(&paths, None, true)),
+            mutation_committer: Some(mdbase_js_mutation_committer(&paths, None, Verbosity::Quiet)),
             ..Default::default()
         },
     )
@@ -406,7 +406,7 @@ fn raw_repair_skips_generation_and_callers_cannot_supply_generated_values() {
             mode: MdbaseManagedWriteMode::RawRepair,
             dry_run: false,
             permission_profile: None,
-            quiet: true,
+            verbosity: Verbosity::Quiet,
         },
     )
     .unwrap()
@@ -430,7 +430,7 @@ fn note_set_returns_authoritative_post_lifecycle_source() {
             preserve_frontmatter: false,
         },
         None,
-        true,
+        Verbosity::Quiet,
     )
     .unwrap();
     assert_eq!(

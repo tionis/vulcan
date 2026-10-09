@@ -26,6 +26,7 @@ use vulcan_core::paths::{
     RelativePathOptions,
 };
 use vulcan_core::properties::{extract_indexed_properties, load_note_index};
+use vulcan_core::Verbosity;
 use vulcan_core::{
     expected_periodic_note_path, load_vault_config, match_periodic_note_path, parse_document,
     parse_dql_with_diagnostics, period_range_for_date, query_backlinks,
@@ -869,7 +870,7 @@ pub fn apply_note_create(
     paths: &VaultPaths,
     request: &NoteCreateRequest,
     permission_profile: Option<&str>,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<NoteCreateReport, AppError> {
     let requested_path = normalize_note_path(&request.path)?;
     let config = load_vault_config(paths).config;
@@ -960,7 +961,7 @@ pub fn apply_note_create(
         &content,
         &staged_creates,
         permission_profile,
-        quiet,
+        verbosity,
     )?;
     changed_paths.push(final_path.clone());
     changed_paths.sort();
@@ -995,11 +996,11 @@ pub(crate) fn persist_note_create_with_template_effects(
     content: &str,
     staged_creates: &StagedTemplateCreates,
     permission_profile: Option<&str>,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<String, AppError> {
     let staged = staged_template_create_snapshot(staged_creates)?;
     if staged.is_empty() {
-        persist_note_create_content(paths, path, content, permission_profile, quiet)
+        persist_note_create_content(paths, path, content, permission_profile, verbosity)
     } else {
         persist_note_create_with_staged_creates(
             paths,
@@ -1007,7 +1008,7 @@ pub(crate) fn persist_note_create_with_template_effects(
             content,
             &staged,
             permission_profile,
-            quiet,
+            verbosity,
         )?;
         Ok(content.to_string())
     }
@@ -1018,7 +1019,7 @@ fn persist_note_create_content(
     path: &str,
     content: &str,
     permission_profile: Option<&str>,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<String, AppError> {
     if note_path_is_mdbase_managed(paths, path, permission_profile)? {
         return apply_mdbase_note_content_change(
@@ -1031,7 +1032,7 @@ fn persist_note_create_content(
                 mode: MdbaseManagedWriteMode::Validated,
                 dry_run: false,
                 permission_profile,
-                quiet,
+                verbosity,
             },
         );
     }
@@ -1042,7 +1043,7 @@ fn persist_note_create_content(
         "create",
         None,
         content,
-        quiet,
+        verbosity,
     )?;
     write_ordinary_note_if_unchanged_with_profile(
         paths,
@@ -1052,7 +1053,7 @@ fn persist_note_create_content(
         "create",
         permission_profile,
     )?;
-    dispatch_note_create_plugin_hooks(paths, permission_profile, path, content, quiet);
+    dispatch_note_create_plugin_hooks(paths, permission_profile, path, content, verbosity);
     Ok(content.to_string())
 }
 
@@ -1062,7 +1063,7 @@ fn persist_note_create_with_staged_creates(
     content: &str,
     staged: &BTreeMap<String, String>,
     permission_profile: Option<&str>,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<(), AppError> {
     if staged.contains_key(path) {
         return Err(AppError::operation(format!(
@@ -1088,7 +1089,7 @@ fn persist_note_create_with_staged_creates(
         "create",
         None,
         content,
-        quiet,
+        verbosity,
     )?;
     let mut changes = staged
         .iter()
@@ -1126,7 +1127,7 @@ fn persist_note_create_with_staged_creates(
         Ok(())
     })
     .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
-    dispatch_note_create_plugin_hooks(paths, permission_profile, path, content, quiet);
+    dispatch_note_create_plugin_hooks(paths, permission_profile, path, content, verbosity);
     Ok(())
 }
 
@@ -1179,7 +1180,7 @@ pub fn apply_note_append(
     paths: &VaultPaths,
     request: &NoteAppendRequest,
     permission_profile: Option<&str>,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<NoteAppendReport, AppError> {
     if request.periodic.is_some() && request.note.is_some() {
         return Err(AppError::operation(
@@ -1236,7 +1237,7 @@ pub fn apply_note_append(
                 mode: MdbaseManagedWriteMode::Validated,
                 dry_run: false,
                 permission_profile,
-                quiet,
+                verbosity,
             },
         )?;
     } else {
@@ -1247,7 +1248,7 @@ pub fn apply_note_append(
             "append",
             Some(&target.existing),
             &content,
-            quiet,
+            verbosity,
         )?;
         write_ordinary_note_if_unchanged_with_profile(
             paths,
@@ -1263,7 +1264,7 @@ pub fn apply_note_append(
                 permission_profile,
                 &target.path,
                 &content,
-                quiet,
+                verbosity,
             );
         }
     }
@@ -1286,7 +1287,7 @@ pub fn apply_note_set(
     paths: &VaultPaths,
     request: &NoteSetRequest,
     permission_profile: Option<&str>,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<NoteSetReport, AppError> {
     let path = resolve_existing_note_path(paths, &request.note)?;
     // Managed records take the vault lock inside their journaled transaction.
@@ -1309,7 +1310,7 @@ pub fn apply_note_set(
                 mode: MdbaseManagedWriteMode::Validated,
                 dry_run: false,
                 permission_profile,
-                quiet,
+                verbosity,
             },
         )?;
     } else {
@@ -1323,7 +1324,7 @@ pub fn apply_note_set(
             "set",
             Some(&existing),
             &content,
-            quiet,
+            verbosity,
         )?;
         write_ordinary_note_if_unchanged_with_profile(
             paths,
@@ -1355,7 +1356,7 @@ pub fn write_note_content(
     after: &str,
     operation: &str,
     permission_profile: Option<&str>,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<String, AppError> {
     if note_path_is_mdbase_managed(paths, path, permission_profile)? {
         return apply_mdbase_note_content_change(
@@ -1372,7 +1373,7 @@ pub fn write_note_content(
                 mode: MdbaseManagedWriteMode::Validated,
                 dry_run: false,
                 permission_profile,
-                quiet,
+                verbosity,
             },
         );
     }
@@ -1486,7 +1487,7 @@ pub fn apply_note_patch(
     paths: &VaultPaths,
     request: &NotePatchRequest,
     permission_profile: Option<&str>,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<NotePatchReport, AppError> {
     let source = if let Some(relative_path) = request.target.vault_relative_path.as_deref() {
         secure_read_to_string(paths.vault_root(), Path::new(relative_path))
@@ -1540,7 +1541,7 @@ pub fn apply_note_patch(
         &source,
         &application.updated_content,
         permission_profile,
-        quiet,
+        verbosity,
     )?;
 
     Ok(NotePatchReport {
@@ -1571,7 +1572,7 @@ fn persist_note_patch_content(
     source: &str,
     content: &str,
     permission_profile: Option<&str>,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<String, AppError> {
     if let Some(relative_path) = request.target.vault_relative_path.as_deref() {
         if note_path_is_mdbase_managed(paths, relative_path, permission_profile)? {
@@ -1585,7 +1586,7 @@ fn persist_note_patch_content(
                     mode: MdbaseManagedWriteMode::Validated,
                     dry_run: request.dry_run,
                     permission_profile,
-                    quiet,
+                    verbosity,
                 },
             );
         } else if !request.dry_run {
@@ -1596,7 +1597,7 @@ fn persist_note_patch_content(
                 "patch",
                 Some(source),
                 content,
-                quiet,
+                verbosity,
             )?;
             write_ordinary_note_if_unchanged_with_profile(
                 paths,
@@ -1618,7 +1619,7 @@ pub fn apply_note_delete(
     paths: &VaultPaths,
     request: &NoteDeleteRequest,
     permission_profile: Option<&str>,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<NoteDeleteReport, AppError> {
     let path = resolve_existing_note_path(paths, &request.note)?;
     let backlinks = match query_backlinks(paths, &path) {
@@ -1640,7 +1641,7 @@ pub fn apply_note_delete(
                 mode: MdbaseManagedWriteMode::Validated,
                 dry_run: request.dry_run,
                 permission_profile,
-                quiet,
+                verbosity,
             },
         )? {
             return Err(AppError::operation(
@@ -1649,7 +1650,7 @@ pub fn apply_note_delete(
         }
     } else if !request.dry_run {
         delete_ordinary_note_if_unchanged(paths, &path, &source, permission_profile)?;
-        dispatch_note_delete_plugin_hooks(paths, permission_profile, &path, quiet);
+        dispatch_note_delete_plugin_hooks(paths, permission_profile, &path, verbosity);
     }
 
     Ok(NoteDeleteReport {
@@ -2477,7 +2478,7 @@ fn dispatch_note_write_plugin_hooks(
     operation: &str,
     existing: Option<&str>,
     updated: &str,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<(), AppError> {
     plugins::dispatch_plugin_event(
         paths,
@@ -2491,7 +2492,7 @@ fn dispatch_note_write_plugin_hooks(
             "previous_content": existing,
             "content": updated,
         }),
-        quiet,
+        verbosity,
     )
 }
 
@@ -2500,7 +2501,7 @@ fn dispatch_note_create_plugin_hooks(
     permission_profile: Option<&str>,
     relative_path: &str,
     content: &str,
-    quiet: bool,
+    verbosity: Verbosity,
 ) {
     let _ = plugins::dispatch_plugin_event(
         paths,
@@ -2511,7 +2512,7 @@ fn dispatch_note_create_plugin_hooks(
             "path": relative_path,
             "content": content,
         }),
-        quiet,
+        verbosity,
     );
 }
 
@@ -2519,7 +2520,7 @@ fn dispatch_note_delete_plugin_hooks(
     paths: &VaultPaths,
     permission_profile: Option<&str>,
     relative_path: &str,
-    quiet: bool,
+    verbosity: Verbosity,
 ) {
     let _ = plugins::dispatch_plugin_event(
         paths,
@@ -2529,7 +2530,7 @@ fn dispatch_note_delete_plugin_hooks(
             "kind": PluginEvent::OnNoteDelete,
             "path": relative_path,
         }),
-        quiet,
+        verbosity,
     );
 }
 
@@ -2622,6 +2623,7 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use tempfile::tempdir;
+    use vulcan_core::Verbosity;
     use vulcan_core::{
         initialize_vulcan_dir, resolve_permission_profile, scan_vault_with_progress,
         ProfilePermissionGuard, ScanMode, VaultPaths,
@@ -2635,11 +2637,27 @@ mod tests {
             super::read_note_for_update(&paths, "New.md").expect("missing"),
             None
         );
-        super::write_note_content(&paths, "New.md", None, "first\n", "create", None, true)
-            .expect("create");
+        super::write_note_content(
+            &paths,
+            "New.md",
+            None,
+            "first\n",
+            "create",
+            None,
+            Verbosity::Quiet,
+        )
+        .expect("create");
         assert!(
-            super::write_note_content(&paths, "New.md", None, "again\n", "create", None, true)
-                .is_err(),
+            super::write_note_content(
+                &paths,
+                "New.md",
+                None,
+                "again\n",
+                "create",
+                None,
+                Verbosity::Quiet
+            )
+            .is_err(),
             "create must not replace an existing note"
         );
         assert!(
@@ -2650,7 +2668,7 @@ mod tests {
                 "lost update\n",
                 "append",
                 None,
-                true
+                Verbosity::Quiet
             )
             .is_err(),
             "a note that changed since it was read is not overwritten"
@@ -2662,7 +2680,7 @@ mod tests {
             "second\n",
             "append",
             None,
-            true,
+            Verbosity::Quiet,
         )
         .expect("update");
         assert_eq!(written, "second\n");
@@ -3055,7 +3073,7 @@ mod tests {
                 body: "Extra details\n".to_string(),
             },
             None,
-            true,
+            Verbosity::Quiet,
         )
         .expect("create report");
 
@@ -3093,7 +3111,7 @@ mod tests {
                 body: String::new(),
             },
             None,
-            true,
+            Verbosity::Quiet,
         )
         .expect("native template create");
 
@@ -3131,7 +3149,7 @@ mod tests {
                 body: String::new(),
             },
             Some("agent"),
-            true,
+            Verbosity::Quiet,
         )
         .expect_err("template side effect must be denied");
         assert!(!error.to_string().is_empty());
@@ -3152,7 +3170,7 @@ mod tests {
                 body: String::new(),
             },
             Some("agent"),
-            true,
+            Verbosity::Quiet,
         )
         .expect("allowed side effect");
         assert!(root.join("Allowed/Child.md").exists());
@@ -3181,7 +3199,7 @@ mod tests {
                 body: String::new(),
             },
             None,
-            true,
+            Verbosity::Quiet,
         )
         .expect_err("final-path collision must fail the whole template create");
 
@@ -3213,7 +3231,7 @@ mod tests {
                 body: String::new(),
             },
             None,
-            true,
+            Verbosity::Quiet,
         )
         .expect("journaled template create");
 
@@ -3259,7 +3277,7 @@ mod tests {
                 body: String::new(),
             },
             Some("agent"),
-            true,
+            Verbosity::Quiet,
         )
         .expect_err("template target move must be denied");
         assert!(!root.join("Denied/Moved.md").exists());
@@ -3292,7 +3310,7 @@ mod tests {
                 body: String::new(),
             },
             Some("agent"),
-            true,
+            Verbosity::Quiet,
         )
         .expect_err("creation trigger side effect must be denied");
         assert!(!root.join("Denied/Leak.md").exists());
@@ -3324,7 +3342,7 @@ mod tests {
             body: String::new(),
         };
 
-        apply_note_create(&VaultPaths::new(root), &request, None, true)
+        apply_note_create(&VaultPaths::new(root), &request, None, Verbosity::Quiet)
             .expect_err("target collision must leave side effect unpublished");
         assert!(!root.join("Allowed/Child.md").exists());
         assert_eq!(
@@ -3333,7 +3351,7 @@ mod tests {
         );
 
         fs::remove_file(root.join("Allowed/Main.md")).expect("remove test collision");
-        let report = apply_note_create(&VaultPaths::new(root), &request, None, true)
+        let report = apply_note_create(&VaultPaths::new(root), &request, None, Verbosity::Quiet)
             .expect("triggered create");
         assert_eq!(
             report.changed_paths,
@@ -3383,7 +3401,7 @@ folder_templates = [{ folder = "Projects", template = "project" }]
                 body: String::new(),
             },
             None,
-            true,
+            Verbosity::Quiet,
         )
         .expect("create report");
 
@@ -3403,7 +3421,7 @@ folder_templates = [{ folder = "Projects", template = "project" }]
                 body: String::new(),
             },
             None,
-            true,
+            Verbosity::Quiet,
         )
         .expect("explicit create report");
         assert_eq!(explicit.template.as_deref(), Some("manual"));
@@ -3433,7 +3451,7 @@ folder_templates = [{ folder = "Projects", template = "project" }]
                 body: "# {{title}}\n".to_string(),
             },
             None,
-            true,
+            Verbosity::Quiet,
         )
         .expect("create report");
 
@@ -3467,7 +3485,7 @@ folder_templates = [{ folder = "Projects", template = "project" }]
                 ]),
             },
             None,
-            true,
+            Verbosity::Quiet,
         )
         .expect("append report");
 
@@ -3504,7 +3522,7 @@ folder_templates = [{ folder = "Projects", template = "project" }]
                 preserve_frontmatter: true,
             },
             None,
-            true,
+            Verbosity::Quiet,
         )
         .expect("set report");
 
@@ -3540,7 +3558,7 @@ folder_templates = [{ folder = "Projects", template = "project" }]
                     preserve_frontmatter: false,
                 },
                 None,
-                true,
+                Verbosity::Quiet,
             );
             done_tx.send(result).expect("completion notification");
         });
@@ -3604,7 +3622,7 @@ folder_templates = [{ folder = "Projects", template = "project" }]
                     "updated\n",
                     "set",
                     Some("scoped"),
-                    true,
+                    Verbosity::Quiet,
                 )
                 .unwrap_err(),
                 super::write_ordinary_note_if_unchanged_with_profile(
@@ -3710,7 +3728,7 @@ folder_templates = [{ folder = "Projects", template = "project" }]
                         body: "new content\n".to_string(),
                     },
                     None,
-                    true,
+                    Verbosity::Quiet,
                 ))
                 .expect("completion notification");
         });
@@ -3766,7 +3784,7 @@ folder_templates = [{ folder = "Projects", template = "project" }]
                         dry_run: false,
                     },
                     None,
-                    true,
+                    Verbosity::Quiet,
                 ))
                 .expect("completion notification");
         });
@@ -3812,7 +3830,7 @@ folder_templates = [{ folder = "Projects", template = "project" }]
                     vars: HashMap::new(),
                 },
                 None,
-                true,
+                Verbosity::Quiet,
             );
             done_tx.send(result).expect("completion notification");
         });
@@ -3860,7 +3878,7 @@ folder_templates = [{ folder = "Projects", template = "project" }]
         let (done_tx, done_rx) = mpsc::channel();
         let worker = std::thread::spawn(move || {
             done_tx
-                .send(apply_note_patch(&paths, &request, None, true))
+                .send(apply_note_patch(&paths, &request, None, Verbosity::Quiet))
                 .expect("completion notification");
         });
         assert!(matches!(
@@ -3898,7 +3916,7 @@ folder_templates = [{ folder = "Projects", template = "project" }]
                 preserve_frontmatter: true,
             },
             None,
-            true,
+            Verbosity::Quiet,
         )
         .expect("set note");
         let unchecked = finish_note_set_report(&paths, applied.clone(), false).expect("unchecked");
@@ -3931,7 +3949,7 @@ folder_templates = [{ folder = "Projects", template = "project" }]
                 body: "[[Missing]]\n".to_string(),
             },
             None,
-            true,
+            Verbosity::Quiet,
         )
         .expect("create");
         let created = finish_note_create_report(&paths, created, true).expect("create report");
@@ -3955,7 +3973,7 @@ folder_templates = [{ folder = "Projects", template = "project" }]
                 vars: HashMap::new(),
             },
             None,
-            true,
+            Verbosity::Quiet,
         )
         .expect("append");
         let appended = finish_note_append_report(&paths, appended, true).expect("append report");
@@ -4014,7 +4032,7 @@ folder_templates = [{ folder = "Projects", template = "project" }]
                 dry_run: false,
             },
             None,
-            true,
+            Verbosity::Quiet,
         )
         .expect("patch report");
 
@@ -4047,7 +4065,8 @@ folder_templates = [{ folder = "Projects", template = "project" }]
             dry_run: true,
         };
 
-        let applied = apply_note_patch(&paths, &request, None, true).expect("patch preview");
+        let applied =
+            apply_note_patch(&paths, &request, None, Verbosity::Quiet).expect("patch preview");
         let report = finish_note_patch_report(&paths, &request, applied, true).expect("report");
         assert!(report.dry_run);
         assert!(report.checked);
@@ -4096,7 +4115,7 @@ folder_templates = [{ folder = "Projects", template = "project" }]
                 dry_run: false,
             },
             None,
-            true,
+            Verbosity::Quiet,
         )
         .expect_err("symlinked vault note should be rejected");
 
@@ -4125,7 +4144,7 @@ folder_templates = [{ folder = "Projects", template = "project" }]
                 dry_run: false,
             },
             None,
-            true,
+            Verbosity::Quiet,
         )
         .expect("delete report");
 

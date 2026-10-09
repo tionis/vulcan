@@ -954,7 +954,7 @@ mod tests {
                 },
                 &crate::mdbase::MdbaseFrontmatterPatchOptions {
                     no_commit: true,
-                    quiet: true,
+                    verbosity: vulcan_core::Verbosity::Quiet,
                     ..crate::mdbase::MdbaseFrontmatterPatchOptions::default()
                 },
             )

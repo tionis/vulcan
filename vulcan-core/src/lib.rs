@@ -110,6 +110,7 @@ pub mod textbundle;
 pub mod vault_discovery;
 #[cfg(feature = "vectors")]
 pub mod vector;
+pub mod verbosity;
 pub mod watch;
 #[cfg(feature = "web")]
 pub mod web;
@@ -362,6 +363,7 @@ pub use vector::{
     VectorNeighborsQuery, VectorNeighborsReport, VectorQueueReport, VectorRebuildQuery,
     VectorRepairQuery, VectorRepairReport,
 };
+pub use verbosity::Verbosity;
 pub use watch::{watch_vault, watch_vault_until, WatchError, WatchOptions, WatchReport};
 #[cfg(feature = "web")]
 pub use web::{

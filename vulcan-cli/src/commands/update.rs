@@ -2,8 +2,8 @@
 use crate::build_version;
 use crate::output::print_json;
 use crate::{
-    build_update_channel, Cli, CliError, OutputFormat, UpdateChannelArg, UpdateChannelArgs,
-    UpdateCommand, UpdateNetworkArg, UpdatePolicyArgs, UpdateScheduleCommand,
+    build_update_channel, inherited_global_args, Cli, CliError, OutputFormat, UpdateChannelArg,
+    UpdateChannelArgs, UpdateCommand, UpdateNetworkArg, UpdatePolicyArgs, UpdateScheduleCommand,
 };
 #[cfg(feature = "web")]
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -133,7 +133,11 @@ pub(crate) fn handle_update_command(
             channel,
             policy,
             notify_on_failure,
-        }) => match run_unattended_update(channel, policy) {
+        }) => match run_unattended_update(
+            channel,
+            policy,
+            &inherited_global_args(cli.verbosity(), cli.color),
+        ) {
             Ok(report) => print_unattended_report(cli.output, &report),
             Err(error) => {
                 if *notify_on_failure {
@@ -336,6 +340,7 @@ fn print_policy(options: &UpdateScheduleOptions) {
 fn run_unattended_update(
     options: &UpdateChannelArgs,
     policy_args: &UpdatePolicyArgs,
+    inherited_args: &[String],
 ) -> Result<UnattendedUpdateReport, CliError> {
     let policy = BackgroundPolicy {
         // Old installed jobs omit --network and retain their original `any` policy.
@@ -407,7 +412,7 @@ fn run_unattended_update(
             Ok(())
         },
         || apply_prepared_update(&prepared, &executable, false).map_err(Into::into),
-        || restore_daemon(&executable, service_installed),
+        || restore_daemon(&executable, service_installed, inherited_args),
     )?;
     Ok(UnattendedUpdateReport {
         action: "scheduled_update",
@@ -468,6 +473,7 @@ fn coordinate_daemon_replacement<T, E>(
 fn run_unattended_update(
     _options: &UpdateChannelArgs,
     _policy: &UpdatePolicyArgs,
+    _inherited_args: &[String],
 ) -> Result<UnattendedUpdateReport, CliError> {
     Err(CliError::operation(
         "the `self-update run` command requires a build with the `web` feature enabled",
@@ -543,8 +549,13 @@ fn daemon_service_is_installed(
 }
 
 #[cfg(feature = "web")]
-fn restore_daemon(executable: &std::path::Path, service_installed: bool) -> Result<(), CliError> {
+fn restore_daemon(
+    executable: &std::path::Path,
+    service_installed: bool,
+    inherited_args: &[String],
+) -> Result<(), CliError> {
     let mut command = Command::new(executable);
+    command.args(inherited_args);
     if service_installed {
         command.args(["daemon", "install"]);
     } else {

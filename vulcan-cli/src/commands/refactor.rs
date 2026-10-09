@@ -39,7 +39,7 @@ fn dispatch_refactor_plugin_hooks(
             "action": action,
             "paths": changed_paths,
         }),
-        cli.quiet,
+        cli.verbosity(),
     );
 }
 
@@ -60,7 +60,7 @@ pub(crate) fn handle_refactor_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             selected_permission_guard(cli, paths)?
                 .check_refactor_path(note)
                 .map_err(CliError::operation)?;
@@ -74,7 +74,7 @@ pub(crate) fn handle_refactor_command(
                         "rename-alias",
                         &changed_paths,
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
                 dispatch_refactor_plugin_hooks(cli, paths, "rename-alias", &changed_paths);
@@ -89,7 +89,7 @@ pub(crate) fn handle_refactor_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             selected_permission_guard(cli, paths)?
                 .check_refactor_path(note)
                 .map_err(CliError::operation)?;
@@ -103,7 +103,7 @@ pub(crate) fn handle_refactor_command(
                         "rename-heading",
                         &changed_paths,
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
                 dispatch_refactor_plugin_hooks(cli, paths, "rename-heading", &changed_paths);
@@ -118,7 +118,7 @@ pub(crate) fn handle_refactor_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             selected_permission_guard(cli, paths)?
                 .check_refactor_path(note)
                 .map_err(CliError::operation)?;
@@ -132,7 +132,7 @@ pub(crate) fn handle_refactor_command(
                         "rename-block-ref",
                         &changed_paths,
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
                 dispatch_refactor_plugin_hooks(cli, paths, "rename-block-ref", &changed_paths);
@@ -146,7 +146,7 @@ pub(crate) fn handle_refactor_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let guard = selected_permission_guard(cli, paths)?;
             if !guard.refactor_filter().path_permission().is_unrestricted() {
                 return Err(CliError::operation(
@@ -162,7 +162,7 @@ pub(crate) fn handle_refactor_command(
                         "rename-property",
                         &changed_paths,
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
                 dispatch_refactor_plugin_hooks(cli, paths, "rename-property", &changed_paths);
@@ -176,7 +176,7 @@ pub(crate) fn handle_refactor_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let guard = selected_permission_guard(cli, paths)?;
             if !guard.refactor_filter().path_permission().is_unrestricted() {
                 return Err(CliError::operation(
@@ -192,7 +192,7 @@ pub(crate) fn handle_refactor_command(
                         "merge-tags",
                         &changed_paths,
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
                 dispatch_refactor_plugin_hooks(cli, paths, "merge-tags", &changed_paths);
@@ -208,7 +208,7 @@ pub(crate) fn handle_refactor_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let guard = selected_permission_guard(cli, paths)?;
             let selection = resolve_bulk_note_selection(filters, *stdin)?;
             let note_paths = match &selection {
@@ -243,7 +243,7 @@ pub(crate) fn handle_refactor_command(
                         "rewrite",
                         &changed_paths,
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
                 dispatch_refactor_plugin_hooks(cli, paths, "rewrite", &changed_paths);
@@ -257,7 +257,7 @@ pub(crate) fn handle_refactor_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let guard = selected_permission_guard(cli, paths)?;
             guard
                 .check_refactor_path(source)
@@ -276,7 +276,7 @@ pub(crate) fn handle_refactor_command(
                         "move",
                         &changed_paths,
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
                 dispatch_refactor_plugin_hooks(cli, paths, "move", &changed_paths);
@@ -295,7 +295,7 @@ pub(crate) fn handle_refactor_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let guard = selected_permission_guard(cli, paths)?;
             if !guard.refactor_filter().path_permission().is_unrestricted() {
                 return Err(CliError::operation(
@@ -327,7 +327,7 @@ pub(crate) fn handle_refactor_command(
                         "split-note",
                         &report.changed_paths,
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
                 dispatch_refactor_plugin_hooks(cli, paths, "split-note", &report.changed_paths);
@@ -343,7 +343,7 @@ pub(crate) fn handle_refactor_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let guard = selected_permission_guard(cli, paths)?;
             if !guard.refactor_filter().path_permission().is_unrestricted() {
                 return Err(CliError::operation(
@@ -375,7 +375,7 @@ pub(crate) fn handle_refactor_command(
                         "folder-notes",
                         &report.changed_paths,
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
                 dispatch_refactor_plugin_hooks(cli, paths, "folder-notes", &report.changed_paths);
@@ -388,7 +388,7 @@ pub(crate) fn handle_refactor_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let guard = selected_permission_guard(cli, paths)?;
             if !guard.refactor_filter().path_permission().is_unrestricted() {
                 return Err(CliError::operation(
@@ -405,7 +405,7 @@ pub(crate) fn handle_refactor_command(
                         "link-mentions",
                         &changed_paths,
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
                 dispatch_refactor_plugin_hooks(cli, paths, "link-mentions", &changed_paths);

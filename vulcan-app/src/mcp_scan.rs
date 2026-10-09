@@ -1,5 +1,6 @@
 //! Permission-aware MCP index scan workflow.
 
+use vulcan_core::Verbosity;
 use vulcan_core::{PermissionGuard, ProfilePermissionGuard, ScanMode, ScanSummary, VaultPaths};
 
 use crate::commit::AutoCommitPolicy;
@@ -25,7 +26,7 @@ pub fn index_scan(
         },
         &auto_commit,
         Some(profile_name),
-        true,
+        Verbosity::Quiet,
         |_| {},
     )
     .map_err(|error| McpMethodError::tool(error.to_string()))

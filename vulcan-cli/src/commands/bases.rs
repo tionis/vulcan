@@ -402,7 +402,7 @@ pub(crate) fn handle_bases_command(
         } => {
             let guard = crate::selected_permission_guard(cli, paths)?;
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let report = crate::create_note_from_bases_view(
                 paths,
                 file,
@@ -412,14 +412,14 @@ pub(crate) fn handle_bases_command(
                 Some(&guard),
             )?;
             if !*dry_run {
-                crate::run_incremental_scan(paths, cli.output, use_stderr_color, cli.quiet)?;
+                crate::run_incremental_scan(paths, cli.output, use_stderr_color, cli.verbosity())?;
                 auto_commit
                     .commit(
                         paths,
                         "bases-create",
                         std::slice::from_ref(&report.path),
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
             }
@@ -459,7 +459,7 @@ pub(crate) fn handle_bases_command(
                 .check_write_path(file)
                 .map_err(CliError::operation)?;
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let spec = BaseViewSpec {
                 name: Some(name.clone()),
                 view_type: "table".to_string(),
@@ -481,7 +481,7 @@ pub(crate) fn handle_bases_command(
                         "bases-view-add",
                         std::slice::from_ref(file),
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
             }
@@ -497,7 +497,7 @@ pub(crate) fn handle_bases_command(
                 .check_write_path(file)
                 .map_err(CliError::operation)?;
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let report =
                 bases_view_delete(paths, file, name, *dry_run).map_err(CliError::operation)?;
             if !*dry_run {
@@ -507,7 +507,7 @@ pub(crate) fn handle_bases_command(
                         "bases-view-delete",
                         std::slice::from_ref(file),
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
             }
@@ -524,7 +524,7 @@ pub(crate) fn handle_bases_command(
                 .check_write_path(file)
                 .map_err(CliError::operation)?;
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let report = bases_view_rename(paths, file, old_name, new_name, *dry_run)
                 .map_err(CliError::operation)?;
             if !*dry_run {
@@ -534,7 +534,7 @@ pub(crate) fn handle_bases_command(
                         "bases-view-rename",
                         std::slice::from_ref(file),
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
             }
@@ -557,7 +557,7 @@ pub(crate) fn handle_bases_command(
                 .check_write_path(file)
                 .map_err(CliError::operation)?;
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let patch = BaseViewPatch {
                 add_filters: add_filters.clone(),
                 remove_filters: remove_filters.clone(),
@@ -599,7 +599,7 @@ pub(crate) fn handle_bases_command(
                         "bases-view-edit",
                         std::slice::from_ref(file),
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
             }

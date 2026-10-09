@@ -432,7 +432,7 @@ mod tests {
             &MdbaseWriteExecutionOptions {
                 idempotency_key: "schema-drift".to_string(),
                 no_commit: true,
-                quiet: true,
+                verbosity: Verbosity::Quiet,
             },
             now(),
         )
@@ -591,7 +591,7 @@ mod tests {
             &MdbaseWriteExecutionOptions {
                 idempotency_key: "swap".to_string(),
                 no_commit: true,
-                quiet: true,
+                verbosity: Verbosity::Quiet,
             },
             now(),
         )
@@ -711,7 +711,7 @@ mod tests {
             mode: MdbaseManagedWriteMode::Validated,
             dry_run: false,
             permission_profile: None,
-            quiet: true,
+            verbosity: Verbosity::Quiet,
         };
         assert!(apply_managed_mdbase_note_write(&paths, &request).is_err());
         assert!(!dir.path().join("a.md").exists());

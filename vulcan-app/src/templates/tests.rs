@@ -20,6 +20,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use tempfile::tempdir;
 use vulcan_core::permissions::{PathPermission, ResourceSpecifier};
+use vulcan_core::Verbosity;
 use vulcan_core::{
     resolve_permission_profile, scan_vault, PermissionFilter, ProfilePermissionGuard, ScanMode,
     VaultConfig, VaultPaths,
@@ -1285,8 +1286,9 @@ fn disabled_template_creation_trigger_does_not_read_the_target() {
     let temp_dir = tempdir().expect("temp dir");
     let paths = VaultPaths::new(temp_dir.path());
 
-    let report = apply_template_creation_trigger(&paths, "Missing.md", None, true, None)
-        .expect("disabled trigger should be a no-op");
+    let report =
+        apply_template_creation_trigger(&paths, "Missing.md", None, Verbosity::Quiet, None)
+            .expect("disabled trigger should be a no-op");
 
     assert!(!report.triggered);
     assert!(report.changed_paths.is_empty());
@@ -1319,7 +1321,7 @@ ignore_folders_on_creation = [{ folder = "Projects/Archive" }]
         &VaultPaths::new(root),
         "Projects/Alpha.md",
         None,
-        true,
+        Verbosity::Quiet,
         None,
     )
     .expect("trigger report");
@@ -1339,7 +1341,7 @@ ignore_folders_on_creation = [{ folder = "Projects/Archive" }]
         &VaultPaths::new(root),
         "Projects/Archive/Old.md",
         None,
-        true,
+        Verbosity::Quiet,
         None,
     )
     .expect("ignored report");
@@ -1373,7 +1375,7 @@ fn creation_trigger_rejects_a_concurrent_edit_after_rendering() {
                 &paths,
                 "Projects/Alpha.md",
                 None,
-                true,
+                Verbosity::Quiet,
                 None,
             ))
             .expect("result");
@@ -1430,7 +1432,7 @@ fn creation_trigger_stages_companion_until_existing_note_update_succeeds() {
                 &paths,
                 "Projects/Alpha.md",
                 None,
-                true,
+                Verbosity::Quiet,
                 None,
             ))
             .expect("result");
@@ -1455,7 +1457,7 @@ fn creation_trigger_stages_companion_until_existing_note_update_succeeds() {
         &VaultPaths::new(root),
         "Projects/Alpha.md",
         None,
-        true,
+        Verbosity::Quiet,
         None,
     )
     .expect("trigger");
@@ -1493,7 +1495,7 @@ fn creation_trigger_writes_to_a_template_moved_target() {
         &VaultPaths::new(root),
         "Projects/Alpha.md",
         None,
-        true,
+        Verbosity::Quiet,
         None,
     )
     .expect("trigger report");
@@ -1526,7 +1528,7 @@ file_templates = [{ regex = "[", template = "project" }]
         &VaultPaths::new(root),
         "Projects/Alpha.md",
         None,
-        true,
+        Verbosity::Quiet,
         None,
     )
     .expect_err("invalid regex should fail");

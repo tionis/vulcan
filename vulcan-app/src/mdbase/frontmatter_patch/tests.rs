@@ -26,7 +26,7 @@ fn request(revision: &str) -> MdbaseFrontmatterPatchRequest {
 fn options() -> MdbaseFrontmatterPatchOptions {
     MdbaseFrontmatterPatchOptions {
         no_commit: true,
-        quiet: true,
+        verbosity: Verbosity::Quiet,
         ..MdbaseFrontmatterPatchOptions::default()
     }
 }

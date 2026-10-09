@@ -1707,7 +1707,7 @@ The Tasks plugin query commands are part of the unified `vulcan tasks` CLI (see 
 #### 9.11.3 CLI surface
 
 - [x] `vulcan kanban list` — list all Kanban boards in the vault
-- [x] `vulcan kanban show <board>` — display board state (columns and card counts; `--verbose` shows all cards)
+- [x] `vulcan kanban show <board>` — display board state (columns and card counts; `--cards` shows all cards)
 - [x] `vulcan kanban cards <board> [--column <name>] [--status <status>]` — list cards with optional filters
 - [x] `vulcan kanban move <board> <card> <target-column>` — move a card between columns (rewrite the `.md` file)
 - [x] `vulcan kanban add <board> <column> <text>` — add a new card to a column
@@ -3395,6 +3395,7 @@ Power users want shortcuts like `vulcan t` → `vulcan tasks list` or `vulcan q`
 
 - [x] Add `--quiet` / `-q` global flag — suppress scan progress, warnings, and non-essential stderr output. Only errors and primary output remain.
 - [x] Respect `VULCAN_QUIET=1` environment variable as equivalent to `--quiet`
+- [x] Graded verbosity: counted `-v`/`--verbose` (`-v` verbose, `-vv` debug, `-vvv` trace) with `-q` winning, a `VULCAN_VERBOSITY` default, one shared `vulcan_core::Verbosity` threaded through CLI handlers, `vulcan-app` workflows, and daemon options in place of ad hoc `quiet`/`verbose` booleans, and inheritance of the level and `--color` by Vulcan child processes (detached daemon, post-update daemon restart). `kanban show --verbose` became `--cards` so the global flag has one meaning
 
 **Table output control**
 

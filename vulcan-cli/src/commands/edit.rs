@@ -53,7 +53,7 @@ fn resolve_edit_path(
     }
 
     if !paths.cache_db().exists() {
-        run_incremental_scan(paths, cli.output, use_stderr_color, cli.quiet)?;
+        run_incremental_scan(paths, cli.output, use_stderr_color, cli.verbosity())?;
     }
 
     let interactive = interactive_note_selection_allowed(cli, stdout_is_tty);
@@ -95,7 +95,7 @@ pub(crate) fn run_edit_command(
     }
 
     open_in_editor(&absolute_path).map_err(CliError::operation)?;
-    run_incremental_scan(paths, cli.output, use_stderr_color, cli.quiet)?;
+    run_incremental_scan(paths, cli.output, use_stderr_color, cli.verbosity())?;
 
     Ok(EditReport {
         path: relative_path,

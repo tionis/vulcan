@@ -408,7 +408,7 @@ pub(super) fn write_base_source(
             "view-source",
             &[path.to_string()],
             options.permission_profile.as_deref(),
-            options.quiet,
+            options.verbosity,
         )
         .map_err(AppError::operation)?;
     Ok(document.map(|document| base_document(path, document.to_string())))

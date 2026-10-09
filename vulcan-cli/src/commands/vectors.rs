@@ -5,6 +5,7 @@
 )]
 
 use std::time::Instant;
+use vulcan_core::Verbosity;
 
 use crate::output::{
     paginated_items, print_json, print_json_lines, print_selected_human_fields, ListOutputControls,
@@ -32,17 +33,17 @@ struct VectorIndexProgressReporter {
     started_at: Instant,
     last_batches_completed: usize,
     prepared: bool,
-    verbose: bool,
+    verbosity: Verbosity,
 }
 
 impl VectorIndexProgressReporter {
-    fn new(use_color: bool, verbose: bool) -> Self {
+    fn new(use_color: bool, verbosity: Verbosity) -> Self {
         Self {
             palette: AnsiPalette::new(use_color),
             started_at: Instant::now(),
             last_batches_completed: 0,
             prepared: false,
-            verbose,
+            verbosity,
         }
     }
 
@@ -54,7 +55,7 @@ impl VectorIndexProgressReporter {
                     return;
                 }
                 self.prepared = true;
-                if self.verbose {
+                if self.verbosity.is_verbose() {
                     eprintln!(
                         "{} {}:{}",
                         self.palette.dim("Provider:"),
@@ -122,7 +123,7 @@ impl VectorIndexProgressReporter {
                 }
                 if !progress.batch_failures.is_empty() {
                     let deduped = dedup_failure_messages(&progress.batch_failures);
-                    if self.verbose {
+                    if self.verbosity.is_verbose() {
                         for (message, count) in &deduped {
                             eprintln!(
                                 "  {} {} {}",
@@ -823,15 +824,15 @@ pub(crate) fn handle_vectors_command(
 ) -> Result<(), CliError> {
     match command {
         VectorsCommand::Index { dry_run } => {
-            let verbose = cli.verbose;
+            let verbosity = cli.verbosity();
             let mut progress = (cli.output == OutputFormat::Human)
-                .then(|| VectorIndexProgressReporter::new(use_stderr_color, verbose));
+                .then(|| VectorIndexProgressReporter::new(use_stderr_color, verbosity));
             let report = index_vectors_with_progress(
                 paths,
                 &VectorIndexQuery {
                     provider: cli.provider.clone(),
                     dry_run: *dry_run,
-                    verbose,
+                    verbosity,
                 },
                 |event| {
                     if let Some(progress) = progress.as_mut() {
@@ -845,7 +846,7 @@ pub(crate) fn handle_vectors_command(
         }
         VectorsCommand::Repair { dry_run } => {
             let mut progress = (cli.output == OutputFormat::Human)
-                .then(|| VectorIndexProgressReporter::new(use_stderr_color, false));
+                .then(|| VectorIndexProgressReporter::new(use_stderr_color, Verbosity::Normal));
             let report = repair_vectors_with_progress(
                 paths,
                 &VectorRepairQuery {
@@ -863,7 +864,7 @@ pub(crate) fn handle_vectors_command(
         }
         VectorsCommand::Rebuild { dry_run } => {
             let mut progress = (cli.output == OutputFormat::Human)
-                .then(|| VectorIndexProgressReporter::new(use_stderr_color, false));
+                .then(|| VectorIndexProgressReporter::new(use_stderr_color, Verbosity::Normal));
             let report = rebuild_vectors_with_progress(
                 paths,
                 &VectorRebuildQuery {
@@ -887,15 +888,15 @@ pub(crate) fn handle_vectors_command(
                 print_vector_queue_report(cli.output, &report)
             }
             VectorQueueCommand::Run { dry_run } => {
-                let verbose = cli.verbose;
+                let verbosity = cli.verbosity();
                 let mut progress = (cli.output == OutputFormat::Human)
-                    .then(|| VectorIndexProgressReporter::new(use_stderr_color, verbose));
+                    .then(|| VectorIndexProgressReporter::new(use_stderr_color, verbosity));
                 let report = index_vectors_with_progress(
                     paths,
                     &VectorIndexQuery {
                         provider: cli.provider.clone(),
                         dry_run: *dry_run,
-                        verbose,
+                        verbosity,
                     },
                     |event| {
                         if let Some(progress) = progress.as_mut() {

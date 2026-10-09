@@ -16,6 +16,7 @@ use vulcan_core::parser::parse_document;
 use vulcan_core::paths::{
     normalize_relative_input_path, secure_read_to_string, RelativePathOptions,
 };
+use vulcan_core::Verbosity;
 use vulcan_core::{
     load_vault_config, resolve_note_reference, resolve_permission_profile, MoveSummary,
     PermissionFilter, PermissionGuard, PluginEvent, ProfilePermissionGuard,
@@ -170,7 +171,7 @@ fn write_template_note(
     write: &TemplateNoteWrite<'_>,
     staged: &StagedTemplateCreates,
     permission_profile: Option<&str>,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<(), AppError> {
     if note_path_is_mdbase_managed(paths, write.path, permission_profile)? {
         let side_effects = staged
@@ -192,7 +193,7 @@ fn write_template_note(
                 mode: crate::mdbase::MdbaseManagedWriteMode::Validated,
                 dry_run: false,
                 permission_profile,
-                quiet,
+                verbosity,
             },
         )?;
         return Ok(());
@@ -209,7 +210,7 @@ fn write_template_note(
             "previous_content": write.hook_previous,
             "content": write.after,
         }),
-        quiet,
+        verbosity,
     )?;
     write_template_result_with_staged_creates(
         paths,
@@ -912,7 +913,7 @@ pub fn apply_template_creation_trigger(
     paths: &VaultPaths,
     relative_path: &str,
     permission_profile: Option<&str>,
-    quiet: bool,
+    verbosity: Verbosity,
     read_filter: Option<&PermissionFilter>,
 ) -> Result<TemplateCreationTriggerReport, AppError> {
     let relative_path = template_output_path(
@@ -986,7 +987,7 @@ pub fn apply_template_creation_trigger(
         },
         &staged,
         permission_profile,
-        quiet,
+        verbosity,
     )?;
 
     let mut changed_paths = rendered.changed_paths;
@@ -1325,7 +1326,7 @@ pub fn apply_template_insert(
     paths: &VaultPaths,
     request: &TemplateInsertRequest,
 ) -> Result<TemplateInsertReport, AppError> {
-    apply_template_insert_with_filter(paths, request, None, None, true)
+    apply_template_insert_with_filter(paths, request, None, None, Verbosity::Quiet)
 }
 
 /// Insert a rendered template into a note. Like every note write, the
@@ -1336,7 +1337,7 @@ pub fn apply_template_insert_with_filter(
     request: &TemplateInsertRequest,
     read_filter: Option<&PermissionFilter>,
     permission_profile: Option<&str>,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<TemplateInsertReport, AppError> {
     let config = load_vault_config(paths).config;
     let loaded = load_named_template(paths, &config, &request.template)?;
@@ -1384,7 +1385,7 @@ pub fn apply_template_insert_with_filter(
         },
         &staged,
         permission_profile,
-        quiet,
+        verbosity,
     )?;
 
     let mut changed_paths = vec![rendered.target_path.clone()];

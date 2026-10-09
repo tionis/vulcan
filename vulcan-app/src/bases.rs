@@ -11,6 +11,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
+use vulcan_core::Verbosity;
 use vulcan_core::{
     load_vault_config, plan_base_note_create, PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
@@ -42,7 +43,7 @@ pub fn apply_bases_note_create(
     title: Option<&str>,
     dry_run: bool,
     guard: Option<&ProfilePermissionGuard>,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<BasesCreateReport, AppError> {
     if let Some(guard) = guard {
         let normalized = normalize_relative_input_path(
@@ -113,7 +114,7 @@ pub fn apply_bases_note_create(
             &contents,
             &staged_creates,
             guard.map(PermissionGuard::profile_name),
-            quiet,
+            verbosity,
         )?;
     }
 
@@ -243,7 +244,15 @@ mod tests {
             resolve_permission_profile(&paths, Some("scoped")).unwrap(),
         );
         let create = |file: &str, dry_run: bool| {
-            apply_bases_note_create(&paths, file, 0, Some("Plan"), dry_run, Some(&guard), true)
+            apply_bases_note_create(
+                &paths,
+                file,
+                0,
+                Some("Plan"),
+                dry_run,
+                Some(&guard),
+                Verbosity::Quiet,
+            )
         };
 
         let preview = create("Public/ok.base", true).unwrap();
@@ -279,7 +288,7 @@ mod tests {
             None,
             false,
             None,
-            true,
+            Verbosity::Quiet,
         )
         .unwrap();
         let source = fs::read_to_string(root.join(&unguarded.path)).unwrap();

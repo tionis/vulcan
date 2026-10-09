@@ -3,6 +3,7 @@ use crate::mdbase::build_mdbase_query_report;
 use crate::mdbase::tests::{fixture, read_control_grant};
 use serde_json::json;
 use vulcan_core::permissions::{PathPermission, ResourceSpecifier};
+use vulcan_core::Verbosity;
 
 #[test]
 fn query_sql_snapshot_matches_sources_preserves_links_and_rejects_inconsistent_columns() {
@@ -645,7 +646,7 @@ fn benchmark_structural_writes(paths: &VaultPaths, samples: usize) {
                     now.timestamp_nanos_opt().unwrap()
                 ),
                 no_commit: true,
-                quiet: true,
+                verbosity: Verbosity::Quiet,
             },
             now,
             &mut stages,
@@ -721,7 +722,7 @@ fn benchmark_writes(
                     now.timestamp_nanos_opt().unwrap()
                 ),
                 no_commit: true,
-                quiet: true,
+                verbosity: Verbosity::Quiet,
             },
             now,
             &mut stages,

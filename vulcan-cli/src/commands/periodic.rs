@@ -23,6 +23,7 @@ use vulcan_app::periodic::{
     DailyNoteReadReport, DailyReadTarget, PeriodicShowReport, PeriodicTarget,
 };
 use vulcan_core::config::PeriodicConfig;
+use vulcan_core::Verbosity;
 use vulcan_core::{
     expected_periodic_note_path, export_daily_events_to_ics, load_vault_config,
     period_range_for_date, resolve_periodic_note, step_period_start, VaultPaths,
@@ -132,7 +133,7 @@ pub(crate) fn handle_daily_command(
                 None,
                 *no_edit,
                 *no_commit,
-                cli.quiet,
+                cli.verbosity(),
                 interactive_note_selection,
             )?;
             print_periodic_open_report(cli.output, &report)
@@ -183,7 +184,7 @@ pub(crate) fn handle_daily_command(
                 heading.as_deref(),
                 date.as_deref(),
                 *no_commit,
-                cli.quiet,
+                cli.verbosity(),
                 "daily",
             )?;
             print_daily_append_report(cli.output, &report)
@@ -211,7 +212,7 @@ fn handle_daily_open_command(
             date,
             no_edit,
             no_commit,
-            cli.quiet,
+            cli.verbosity(),
             interactive_note_selection,
         )?
     };
@@ -238,13 +239,20 @@ fn handle_daily_calendar_command(
     }
 
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-    warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+    warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
     let mut open_note = |date: &str| -> Result<String, String> {
         check_periodic_write_access(cli, paths, "daily", Some(date))
             .map_err(|error| error.to_string())?;
-        let report =
-            run_periodic_open_command(paths, "daily", Some(date), false, no_commit, true, true)
-                .map_err(|error| error.to_string())?;
+        let report = run_periodic_open_command(
+            paths,
+            "daily",
+            Some(date),
+            false,
+            no_commit,
+            Verbosity::Quiet,
+            true,
+        )
+        .map_err(|error| error.to_string())?;
         let action = if report.created { "Created" } else { "Edited" };
         Ok(match report.warnings.first() {
             Some(warning) => format!("{action} {} (warning: {warning})", report.path),
@@ -313,7 +321,7 @@ pub(crate) fn handle_today_command(
         None,
         no_edit,
         no_commit,
-        cli.quiet,
+        cli.verbosity(),
         interactive_note_selection,
     )?;
     print_periodic_open_report(cli.output, &report)
@@ -332,7 +340,7 @@ pub(crate) fn handle_weekly_command(
         args.date.as_deref(),
         args.no_edit,
         args.no_commit,
-        cli.quiet,
+        cli.verbosity(),
         interactive_note_selection,
     )?;
     print_periodic_open_report(cli.output, &report)
@@ -351,7 +359,7 @@ pub(crate) fn handle_monthly_command(
         args.date.as_deref(),
         args.no_edit,
         args.no_commit,
-        cli.quiet,
+        cli.verbosity(),
         interactive_note_selection,
     )?;
     print_periodic_open_report(cli.output, &report)
@@ -407,7 +415,7 @@ pub(crate) fn handle_periodic_command(
                 heading.as_deref(),
                 date.as_deref(),
                 *no_commit,
-                cli.quiet,
+                cli.verbosity(),
                 period_type,
             )?;
             print_daily_append_report(cli.output, &report)
@@ -448,7 +456,7 @@ pub(crate) fn handle_periodic_command(
                 date,
                 no_edit,
                 no_commit,
-                cli.quiet,
+                cli.verbosity(),
                 interactive_note_selection,
             )?;
             print_periodic_open_report(cli.output, &report)
@@ -492,7 +500,7 @@ fn write_periodic_note_if_missing(
     period_type: &str,
     relative_path: &str,
     warnings: &mut Vec<String>,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<bool, CliError> {
     let absolute_path = paths.vault_root().join(relative_path);
     if absolute_path.is_file() {
@@ -515,8 +523,16 @@ fn write_periodic_note_if_missing(
         None,
     )
     .map_err(CliError::operation)?;
-    write_note_content(paths, relative_path, None, &contents, "create", None, quiet)
-        .map_err(CliError::operation)?;
+    write_note_content(
+        paths,
+        relative_path,
+        None,
+        &contents,
+        "create",
+        None,
+        verbosity,
+    )
+    .map_err(CliError::operation)?;
     Ok(true)
 }
 
@@ -525,7 +541,7 @@ fn commit_periodic_changes_if_needed(
     paths: &VaultPaths,
     period_type: &str,
     changed_path: &str,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<(), CliError> {
     let changed_file = changed_path.to_string();
     auto_commit
@@ -534,7 +550,7 @@ fn commit_periodic_changes_if_needed(
             &format!("{period_type}-note"),
             std::slice::from_ref(&changed_file),
             None,
-            quiet,
+            verbosity,
         )
         .map_err(CliError::operation)?;
     Ok(())
@@ -547,17 +563,17 @@ fn run_periodic_open_command(
     date: Option<&str>,
     no_edit: bool,
     no_commit: bool,
-    quiet: bool,
+    verbosity: Verbosity,
     allow_editor: bool,
 ) -> Result<PeriodicOpenReport, CliError> {
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-    warn_auto_commit_if_needed(&auto_commit, quiet);
+    warn_auto_commit_if_needed(&auto_commit, verbosity);
 
     let config = load_vault_config(paths).config;
     let target = resolve_periodic_target(&config.periodic, period_type, date, true)?;
     let mut warnings = Vec::new();
     let created =
-        write_periodic_note_if_missing(paths, period_type, &target.path, &mut warnings, quiet)?;
+        write_periodic_note_if_missing(paths, period_type, &target.path, &mut warnings, verbosity)?;
     let absolute_path = paths.vault_root().join(&target.path);
     let opened_editor = !no_edit && allow_editor;
 
@@ -566,8 +582,14 @@ fn run_periodic_open_command(
     }
 
     if created || opened_editor {
-        run_incremental_scan(paths, OutputFormat::Human, false, quiet)?;
-        commit_periodic_changes_if_needed(&auto_commit, paths, period_type, &target.path, quiet)?;
+        run_incremental_scan(paths, OutputFormat::Human, false, verbosity)?;
+        commit_periodic_changes_if_needed(
+            &auto_commit,
+            paths,
+            period_type,
+            &target.path,
+            verbosity,
+        )?;
     }
 
     Ok(PeriodicOpenReport {
@@ -687,17 +709,17 @@ fn run_daily_append_command(
     heading: Option<&str>,
     date: Option<&str>,
     no_commit: bool,
-    quiet: bool,
+    verbosity: Verbosity,
     period_type: &str,
 ) -> Result<DailyAppendReport, CliError> {
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-    warn_auto_commit_if_needed(&auto_commit, quiet);
+    warn_auto_commit_if_needed(&auto_commit, verbosity);
 
     let config = load_vault_config(paths).config;
     let target = resolve_periodic_target(&config.periodic, period_type, date, true)?;
     let mut warnings = Vec::new();
     let created =
-        write_periodic_note_if_missing(paths, period_type, &target.path, &mut warnings, quiet)?;
+        write_periodic_note_if_missing(paths, period_type, &target.path, &mut warnings, verbosity)?;
     let existing = read_note_for_update(paths, &target.path).map_err(CliError::operation)?;
     let current = existing.as_deref().unwrap_or_default();
     let updated = heading.map_or_else(
@@ -711,12 +733,12 @@ fn run_daily_append_command(
         &updated,
         "append",
         None,
-        quiet,
+        verbosity,
     )
     .map_err(CliError::operation)?;
 
-    run_incremental_scan(paths, OutputFormat::Human, false, false)?;
-    commit_periodic_changes_if_needed(&auto_commit, paths, period_type, &target.path, quiet)?;
+    run_incremental_scan(paths, OutputFormat::Human, false, Verbosity::Normal)?;
+    commit_periodic_changes_if_needed(&auto_commit, paths, period_type, &target.path, verbosity)?;
 
     Ok(DailyAppendReport {
         period_type: target.period_type,

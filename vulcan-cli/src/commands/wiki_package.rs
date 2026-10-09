@@ -42,7 +42,7 @@ pub(crate) fn handle_wiki_package_command(
                 .check_refactor_path(destination)
                 .map_err(CliError::operation)?;
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let report = import_wiki_package(
                 paths,
                 &WikiPackageImportRequest {
@@ -63,7 +63,7 @@ pub(crate) fn handle_wiki_package_command(
                         "wiki-package-import",
                         &report.changed_paths,
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
             }

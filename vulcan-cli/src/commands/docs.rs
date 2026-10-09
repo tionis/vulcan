@@ -234,7 +234,7 @@ pub(crate) fn describe_cli() -> CliDescribeReport {
         version: command.get_version().map(ToString::to_string),
         global_options: command
             .get_arguments()
-            .filter(|argument| argument.is_global_set())
+            .filter(|argument| argument.is_global_set() && !argument.is_hide_set())
             .map(describe_argument)
             .collect(),
         commands: command

@@ -40,6 +40,7 @@ use vulcan_core::search::{SearchMode, SearchSort};
 use vulcan_core::PermissionFilter;
 #[cfg(test)]
 use vulcan_core::ScanMode;
+use vulcan_core::Verbosity;
 use vulcan_core::{
     AutoScanMode, BacklinkRecord, DataviewJsOutput, DoctorDiagnosticIssue, DoctorLinkIssue,
     DqlQueryResult, GitLogEntry, KanbanBoardRecord, NamedCount, NoteIdentity, NoteQuery,
@@ -852,7 +853,7 @@ impl BrowseState {
                 "browse",
                 changed,
                 self.authority.profile(),
-                false,
+                Verbosity::Normal,
             )
             .map(|_| ())
             .map_err(|error| error.to_string())

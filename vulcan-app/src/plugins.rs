@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use vulcan_core::Verbosity;
 use vulcan_core::{
     ensure_vulcan_dir, evaluate_dataview_js_with_options, load_vault_config,
     resolve_permission_profile, validate_vulcan_overrides_toml, DataviewJsEvalOptions,
@@ -97,7 +98,7 @@ pub fn dispatch_plugin_event(
     active_permission_profile: Option<&str>,
     event: PluginEvent,
     payload: &Value,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<(), AppError> {
     let plugins = list_plugins(paths)
         .into_iter()
@@ -110,7 +111,7 @@ pub fn dispatch_plugin_event(
     }
 
     if !trust::is_trusted(paths.vault_root()) {
-        let _ = quiet;
+        let _ = verbosity;
         return Ok(());
     }
 
@@ -251,7 +252,7 @@ fn invoke_plugin(
             mutation_committer: Some(mdbase_js_mutation_committer(
                 paths,
                 runtime_permission_profile.as_deref(),
-                true,
+                Verbosity::Quiet,
             )),
             tool_registry: Some(build_custom_tool_js_registry(
                 paths,

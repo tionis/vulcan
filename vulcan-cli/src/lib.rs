@@ -57,7 +57,7 @@ mod plugins {
     use crate::CliError;
     use serde_json::Value;
     pub(crate) use vulcan_app::plugins::{list_plugins, PluginDescriptor};
-    use vulcan_core::{DataviewJsResult, PluginEvent, VaultPaths};
+    use vulcan_core::{DataviewJsResult, PluginEvent, VaultPaths, Verbosity};
 
     pub(crate) fn run_plugin(
         paths: &VaultPaths,
@@ -73,14 +73,14 @@ mod plugins {
         active_permission_profile: Option<&str>,
         event: PluginEvent,
         payload: &Value,
-        quiet: bool,
+        verbosity: Verbosity,
     ) -> Result<(), CliError> {
         vulcan_app::plugins::dispatch_plugin_event(
             paths,
             active_permission_profile,
             event,
             payload,
-            quiet,
+            verbosity,
         )
         .map_err(CliError::operation)
     }
@@ -444,6 +444,7 @@ pub use cli::{
     UpdateNetworkArg, UpdatePolicyArgs, UpdateScheduleCommand, VaultCommand, VectorQueueCommand,
     VectorsCommand, WebCommand, WebFetchMode, WikiPackageCommand, WikiSourceLocatorsArg,
 };
+use vulcan_core::Verbosity;
 
 #[must_use]
 pub fn build_version() -> &'static str {
@@ -464,7 +465,7 @@ use crate::output::{
 use crate::resolve::{interactive_note_selection_allowed, resolve_note_argument};
 use bundle_server::{serve_frontend_bundle_profile, FrontendBundleServeOptions};
 use clap::error::ErrorKind;
-use clap::{CommandFactory, FromArgMatches};
+use clap::{CommandFactory, FromArgMatches, ValueEnum};
 use clap_complete::generate;
 use regex::Regex;
 use serde::Serialize;
@@ -874,7 +875,7 @@ struct SiteBuildProgressReporter {
 struct OutlinePublishProgressReporter {
     palette: AnsiPalette,
     last_phase: Option<OutlinePublishPhase>,
-    verbose: bool,
+    verbosity: Verbosity,
     interactive: bool,
     compact_line_active: bool,
     last_compact_processed: Option<usize>,
@@ -925,11 +926,11 @@ impl OutlinePullProgressReporter {
 
 #[cfg(feature = "web")]
 impl OutlinePublishProgressReporter {
-    fn new(use_color: bool, verbose: bool, interactive: bool) -> Self {
+    fn new(use_color: bool, verbosity: Verbosity, interactive: bool) -> Self {
         Self {
             palette: AnsiPalette::new(use_color),
             last_phase: None,
-            verbose,
+            verbosity,
             interactive,
             compact_line_active: false,
             last_compact_processed: None,
@@ -982,7 +983,7 @@ impl OutlinePublishProgressReporter {
             self.last_phase = Some(progress.phase);
             self.last_compact_processed = None;
         }
-        if self.verbose {
+        if self.verbosity.is_verbose() {
             let Some(path) = progress.current_path.as_deref() else {
                 return;
             };
@@ -1625,13 +1626,14 @@ fn run_publish_command(
         .collection_title
         .as_deref()
         .unwrap_or(profile);
-    let mut progress = (cli.output == OutputFormat::Human && !cli.quiet).then(|| {
-        OutlinePublishProgressReporter::new(
-            use_stderr_color,
-            cli.verbose,
-            io::stderr().is_terminal(),
-        )
-    });
+    let mut progress =
+        (cli.output == OutputFormat::Human && !cli.verbosity().is_quiet()).then(|| {
+            OutlinePublishProgressReporter::new(
+                use_stderr_color,
+                cli.verbosity(),
+                io::stderr().is_terminal(),
+            )
+        });
     if let Some(progress) = progress.as_ref() {
         progress.selecting();
     }
@@ -1701,7 +1703,7 @@ fn run_publish_command(
                 .as_ref()
                 .map(|collection| collection.id.clone())
                 .ok_or_else(|| CliError::operation("Outline collection creation returned no UUID"))?;
-            if cli.output == OutputFormat::Human && !cli.quiet {
+            if cli.output == OutputFormat::Human && !cli.verbosity().is_quiet() {
                 eprintln!(
                     "Created Outline collection `{}` ({collection_id}) and saved it to {}.",
                     collection_title, provision.config_path
@@ -1769,7 +1771,7 @@ fn run_publish_command(
         }
     }
     report.collection_provision = provision;
-    print_outline_publish_report(cli.output, &report, cli.verbose)
+    print_outline_publish_report(cli.output, &report, cli.verbosity())
 }
 
 #[cfg(feature = "web")]
@@ -2667,13 +2669,13 @@ fn run_configured_integration_route(
         create_collection: false,
     };
     let run_pull = || {
-        if cli.output == OutputFormat::Human && !cli.quiet {
+        if cli.output == OutputFormat::Human && !cli.verbosity().is_quiet() {
             eprintln!("route={name} phase=pull");
         }
         run_pull_command(cli, paths, &pull, false, Some(route), Some(name))
     };
     let run_push = || {
-        if cli.output == OutputFormat::Human && !cli.quiet {
+        if cli.output == OutputFormat::Human && !cli.verbosity().is_quiet() {
             eprintln!("route={name} phase=push");
         }
         let read_filter = selected_read_permission_filter(cli, paths)?;
@@ -2805,7 +2807,7 @@ fn outline_conflict_policy(
 fn print_outline_publish_report(
     output: OutputFormat,
     report: &vulcan_app::publish::outline::OutlinePublishReport,
-    verbose: bool,
+    verbosity: Verbosity,
 ) -> Result<(), CliError> {
     match output {
         OutputFormat::Json => print_json(&report)?,
@@ -2813,7 +2815,7 @@ fn print_outline_publish_report(
             print_outline_diagnostics(&report.diagnostics);
             println!("{}", outline_publish_action_summary(report));
             for action in &report.plan.actions {
-                if !should_print_outline_publish_action(action.kind, verbose) {
+                if !should_print_outline_publish_action(action.kind, verbosity) {
                     continue;
                 }
                 println!(
@@ -2914,8 +2916,11 @@ fn render_outline_publish_action_summary(
 }
 
 #[cfg(feature = "web")]
-fn should_print_outline_publish_action(kind: OutlinePublishActionKind, verbose: bool) -> bool {
-    verbose || kind == OutlinePublishActionKind::Conflict
+fn should_print_outline_publish_action(
+    kind: OutlinePublishActionKind,
+    verbosity: Verbosity,
+) -> bool {
+    verbosity.is_verbose() || kind == OutlinePublishActionKind::Conflict
 }
 
 #[cfg(feature = "web")]
@@ -3014,7 +3019,7 @@ fn run_pull_command(
                 .map_err(CliError::operation)?;
                 if report.applied && report.restored_local_files > 0 {
                     let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-                    warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+                    warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
                     let changed_paths = report
                         .files
                         .iter()
@@ -3026,7 +3031,7 @@ fn run_pull_command(
                             "pull-outline-abort-conflicts",
                             &changed_paths,
                             cli.permissions.as_deref(),
-                            cli.quiet,
+                            cli.verbosity(),
                         )
                         .map_err(CliError::operation)?;
                 }
@@ -3098,7 +3103,7 @@ fn run_pull_command(
         max_attachment_bytes: *max_attachment_bytes,
         max_total_attachment_bytes: *max_total_attachment_bytes,
     };
-    let mut progress = (cli.output == OutputFormat::Human && !cli.quiet)
+    let mut progress = (cli.output == OutputFormat::Human && !cli.verbosity().is_quiet())
         .then(|| OutlinePullProgressReporter::new(use_stderr_color));
     let plan = if *dry_run {
         pull_outline_with_options_progress_and_write_authorizer(
@@ -3211,7 +3216,7 @@ fn run_pull_command(
         }
     }
     let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-    warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+    warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
     let authorize_write = |path: &str| {
         guard
             .check_write_path(path)
@@ -3286,7 +3291,7 @@ fn run_pull_command(
                 "pull-outline",
                 &changed_paths,
                 cli.permissions.as_deref(),
-                cli.quiet,
+                cli.verbosity(),
             )
             .map_err(CliError::operation)?;
     }
@@ -3695,9 +3700,9 @@ fn run_incremental_scan(
     paths: &VaultPaths,
     output: OutputFormat,
     use_stderr_color: bool,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<ScanSummary, CliError> {
-    let mut progress = (output == OutputFormat::Human && !quiet)
+    let mut progress = (output == OutputFormat::Human && !verbosity.is_quiet())
         .then(|| ScanProgressReporter::new(use_stderr_color));
     refresh_cache_incrementally_with_progress(paths, |event| {
         if let Some(progress) = progress.as_mut() {
@@ -3821,14 +3826,33 @@ fn maybe_auto_refresh_command_cache(
             ) {
                 return Ok(());
             }
-            run_incremental_scan(paths, cli.output, use_stderr_color, cli.quiet)?;
+            run_incremental_scan(paths, cli.output, use_stderr_color, cli.verbosity())?;
             Ok(())
         }
     }
 }
 
-fn warn_auto_commit_if_needed(policy: &AutoCommitPolicy, quiet: bool) {
-    if !quiet {
+/// Global arguments a Vulcan child process launched by this invocation must
+/// inherit: the diagnostic level and color choice. Output format, vault, and
+/// scoping flags are deliberately not forwarded because children keep their
+/// own output contract and scope. Place them before the subcommand.
+pub(crate) fn inherited_global_args(verbosity: Verbosity, color: ColorMode) -> Vec<String> {
+    let mut args = verbosity
+        .cli_args()
+        .iter()
+        .map(|arg| (*arg).to_string())
+        .collect::<Vec<_>>();
+    if color != ColorMode::Auto {
+        let value = color
+            .to_possible_value()
+            .expect("color modes are not skipped");
+        args.extend(["--color".to_string(), value.get_name().to_string()]);
+    }
+    args
+}
+
+fn warn_auto_commit_if_needed(policy: &AutoCommitPolicy, verbosity: Verbosity) {
+    if !verbosity.is_quiet() {
         if let Some(message) = policy.warning() {
             eprintln!("warning: {message}");
         }
@@ -3861,8 +3885,16 @@ pub(crate) fn create_note_from_bases_view(
     dry_run: bool,
     guard: Option<&ProfilePermissionGuard>,
 ) -> Result<BasesCreateReport, CliError> {
-    vulcan_app::bases::apply_bases_note_create(paths, file, view_index, title, dry_run, guard, true)
-        .map_err(CliError::operation)
+    vulcan_app::bases::apply_bases_note_create(
+        paths,
+        file,
+        view_index,
+        title,
+        dry_run,
+        guard,
+        Verbosity::Quiet,
+    )
+    .map_err(CliError::operation)
 }
 
 pub(crate) fn inbox_input_text(
@@ -4871,7 +4903,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let report = run_edit_command(
                 &paths,
                 cli,
@@ -4886,7 +4918,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     "edit",
                     std::slice::from_ref(&report.path),
                     cli.permissions.as_deref(),
-                    cli.quiet,
+                    cli.verbosity(),
                 )
                 .map_err(CliError::operation)?;
             print_edit_report(cli.output, &report);
@@ -5139,7 +5171,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 .check_refactor_path(dest)
                 .map_err(CliError::operation)?;
             let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let summary =
                 move_note_with_profile(&paths, source, dest, dry_run, cli.permissions.as_deref())
                     .map_err(CliError::operation)?;
@@ -5151,7 +5183,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         "move",
                         &changed_paths,
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
                 let _ = crate::plugins::dispatch_plugin_event(
@@ -5163,7 +5195,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         "action": "move",
                         "paths": changed_paths,
                     }),
-                    cli.quiet,
+                    cli.verbosity(),
                 );
             }
             print_move_summary(cli.output, &summary)?;
@@ -5182,7 +5214,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 ));
             }
             let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let report = rename_property(&paths, old, new, dry_run).map_err(CliError::operation)?;
             if !dry_run {
                 let changed_paths = refactor_changed_files(&report);
@@ -5192,7 +5224,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         "rename-property",
                         &changed_paths,
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
                 let _ = crate::plugins::dispatch_plugin_event(
@@ -5204,7 +5236,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         "action": "rename-property",
                         "paths": changed_paths,
                     }),
-                    cli.quiet,
+                    cli.verbosity(),
                 );
             }
             print_refactor_report(cli.output, &report)?;
@@ -5223,7 +5255,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 ));
             }
             let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let report = merge_tags(&paths, source, dest, dry_run).map_err(CliError::operation)?;
             if !dry_run {
                 let changed_paths = refactor_changed_files(&report);
@@ -5233,7 +5265,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         "merge-tags",
                         &changed_paths,
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
                 let _ = crate::plugins::dispatch_plugin_event(
@@ -5245,7 +5277,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         "action": "merge-tags",
                         "paths": changed_paths,
                     }),
-                    cli.quiet,
+                    cli.verbosity(),
                 );
             }
             print_refactor_report(cli.output, &report)?;
@@ -5259,7 +5291,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let note = resolve_note_argument(
                 &paths,
                 Some(note.as_str()),
@@ -5279,7 +5311,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         "rename-alias",
                         &changed_paths,
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
                 let _ = crate::plugins::dispatch_plugin_event(
@@ -5291,7 +5323,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         "action": "rename-alias",
                         "paths": changed_paths,
                     }),
-                    cli.quiet,
+                    cli.verbosity(),
                 );
             }
             print_refactor_report(cli.output, &report)?;
@@ -5305,7 +5337,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let note = resolve_note_argument(
                 &paths,
                 Some(note.as_str()),
@@ -5325,7 +5357,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         "rename-heading",
                         &changed_paths,
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
                 let _ = crate::plugins::dispatch_plugin_event(
@@ -5337,7 +5369,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         "action": "rename-heading",
                         "paths": changed_paths,
                     }),
-                    cli.quiet,
+                    cli.verbosity(),
                 );
             }
             print_refactor_report(cli.output, &report)?;
@@ -5351,7 +5383,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let note = resolve_note_argument(
                 &paths,
                 Some(note.as_str()),
@@ -5371,7 +5403,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         "rename-block-ref",
                         &changed_paths,
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
                 let _ = crate::plugins::dispatch_plugin_event(
@@ -5383,7 +5415,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         "action": "rename-block-ref",
                         "paths": changed_paths,
                     }),
-                    cli.quiet,
+                    cli.verbosity(),
                 );
             }
             print_refactor_report(cli.output, &report)?;
@@ -5424,7 +5456,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 .map_err(CliError::operation)?;
             let auto_commit = AutoCommitPolicy::for_scan(&paths, no_commit);
             let trigger_guard = selected_permission_guard(cli, &paths)?;
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             if cli.output == OutputFormat::Human && stdout_is_tty {
                 println!(
                     "Watching {} (debounce {}ms)",
@@ -5437,7 +5469,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     &paths,
                     &report.created_paths,
                     cli.permissions.as_deref(),
-                    cli.quiet,
+                    cli.verbosity(),
                     &trigger_guard,
                 )?;
                 if !triggered_paths.is_empty() {
@@ -5457,7 +5489,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                             "scan",
                             &changed_paths,
                             cli.permissions.as_deref(),
-                            cli.quiet,
+                            cli.verbosity(),
                         )
                         .map_err(CliError::operation)?;
                 }
@@ -5471,7 +5503,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         "summary": &report.summary,
                         "paths": &report.paths,
                     }),
-                    cli.quiet,
+                    cli.verbosity(),
                 );
                 Ok::<(), CliError>(())
             })
@@ -5844,7 +5876,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                                 } else {
                                     CommitMode::Auto
                                 },
-                                quiet: cli.quiet,
+                                verbosity: cli.verbosity(),
                             },
                         )
                     }
@@ -5978,7 +6010,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                                 } else {
                                     CommitMode::Auto
                                 },
-                                quiet: cli.quiet,
+                                verbosity: cli.verbosity(),
                             },
                         )
                     }
@@ -6001,7 +6033,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                             } else {
                                 CommitMode::Auto
                             },
-                            quiet: cli.quiet,
+                            verbosity: cli.verbosity(),
                         },
                     ),
                     ExportProfileCommand::Rule { command } => match command {
@@ -6045,7 +6077,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                                     } else {
                                         CommitMode::Auto
                                     },
-                                    quiet: cli.quiet,
+                                    verbosity: cli.verbosity(),
                                 },
                             )
                         }
@@ -6086,7 +6118,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                                     } else {
                                         CommitMode::Auto
                                     },
-                                    quiet: cli.quiet,
+                                    verbosity: cli.verbosity(),
                                 },
                             )
                         }
@@ -6111,7 +6143,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                                 } else {
                                     CommitMode::Auto
                                 },
-                                quiet: cli.quiet,
+                                verbosity: cli.verbosity(),
                             },
                         ),
                         ExportProfileRuleCommand::Move {
@@ -6143,7 +6175,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                                 } else {
                                     CommitMode::Auto
                                 },
-                                quiet: cli.quiet,
+                                verbosity: cli.verbosity(),
                             },
                         ),
                     },
@@ -6590,8 +6622,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref file,
             no_commit,
         } => {
-            let report =
-                run_inbox_command(&paths, text.as_deref(), file.as_ref(), no_commit, cli.quiet)?;
+            let report = run_inbox_command(
+                &paths,
+                text.as_deref(),
+                file.as_ref(),
+                no_commit,
+                cli.verbosity(),
+            )?;
             print_inbox_report(cli.output, &report)
         }
         Command::Template {
@@ -6612,7 +6649,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     render.engine,
                     &render.vars,
                     no_commit,
-                    cli.quiet,
+                    cli.verbosity(),
                     stdout_is_tty,
                     read_filter.as_ref(),
                 )?,
@@ -6638,7 +6675,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     render.engine,
                     &render.vars,
                     *no_commit,
-                    cli.quiet,
+                    cli.verbosity(),
                     interactive_note_selection,
                     read_filter.as_ref(),
                     cli.permissions.as_deref(),
@@ -6663,7 +6700,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     render.engine,
                     &render.vars,
                     no_commit,
-                    cli.quiet,
+                    cli.verbosity(),
                     stdout_is_tty,
                     read_filter.as_ref(),
                 )?,
@@ -6693,7 +6730,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let report =
                 link_mentions(&paths, note.as_deref(), dry_run).map_err(CliError::operation)?;
             if !dry_run {
@@ -6704,7 +6741,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         "link-mentions",
                         &changed_paths,
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
                 let _ = crate::plugins::dispatch_plugin_event(
@@ -6716,7 +6753,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         "action": "link-mentions",
                         "paths": changed_paths,
                     }),
-                    cli.quiet,
+                    cli.verbosity(),
                 );
             }
             print_refactor_report(cli.output, &report)
@@ -6730,7 +6767,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let selection = resolve_bulk_note_selection(filters, stdin)?;
             let report = match &selection {
                 BulkNoteSelection::Filters(filters) => {
@@ -6749,7 +6786,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         "rewrite",
                         &changed_paths,
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
                 let _ = crate::plugins::dispatch_plugin_event(
@@ -6761,7 +6798,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         "action": "rewrite",
                         "paths": changed_paths,
                     }),
-                    cli.quiet,
+                    cli.verbosity(),
                 );
             }
             print_refactor_report(cli.output, &report)
@@ -6819,7 +6856,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 .check_index()
                 .map_err(CliError::operation)?;
             let auto_commit = AutoCommitPolicy::for_scan(&paths, no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let mut progress = (cli.output == OutputFormat::Human)
                 .then(|| ScanProgressReporter::new(use_stderr_color));
             let summary = scan_vault_with_progress(
@@ -6838,7 +6875,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             .map_err(CliError::operation)?;
             if summary.added + summary.updated + summary.deleted > 0 {
                 auto_commit
-                    .commit(&paths, "scan", &[], cli.permissions.as_deref(), cli.quiet)
+                    .commit(
+                        &paths,
+                        "scan",
+                        &[],
+                        cli.permissions.as_deref(),
+                        cli.verbosity(),
+                    )
                     .map_err(CliError::operation)?;
             }
             let _ = crate::plugins::dispatch_plugin_event(
@@ -6850,7 +6893,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     "mode": if full { "full" } else { "incremental" },
                     "summary": &summary,
                 }),
-                cli.quiet,
+                cli.verbosity(),
             );
             print_scan_summary(cli.output, &summary, use_stdout_color);
             Ok(())
@@ -7317,15 +7360,17 @@ struct QueryReportRenderOptions<'a> {
     format: QueryFormatArg,
     glob: Option<&'a str>,
     explain: bool,
-    verbose: bool,
+    verbosity: Verbosity,
     stdout_is_tty: bool,
     use_color: bool,
     no_header: bool,
     export: Option<&'a ResolvedExport>,
 }
 
-fn should_render_query_ast(output: OutputFormat, explain: bool, verbose: bool) -> bool {
-    explain || (verbose && matches!(output, OutputFormat::Human | OutputFormat::Markdown))
+fn should_render_query_ast(output: OutputFormat, explain: bool, verbosity: Verbosity) -> bool {
+    explain
+        || (verbosity.is_verbose()
+            && matches!(output, OutputFormat::Human | OutputFormat::Markdown))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -7410,7 +7455,7 @@ fn print_query_report(
 
     match output {
         OutputFormat::Human | OutputFormat::Markdown => {
-            if should_render_query_ast(output, options.explain, options.verbose) {
+            if should_render_query_ast(output, options.explain, options.verbosity) {
                 let ast_json = serde_json::to_string_pretty(&report.query)
                     .unwrap_or_else(|_| "{}".to_string());
                 println!("{}", palette.cyan("Query AST:"));
@@ -7495,7 +7540,7 @@ fn print_query_report(
                     unreachable!("tsv/csv handled above")
                 }
             };
-            if should_render_query_ast(output, options.explain, options.verbose) {
+            if should_render_query_ast(output, options.explain, options.verbosity) {
                 let mut payload = serde_json::json!({
                     "query": report.query,
                     "notes": rows,
@@ -9105,7 +9150,7 @@ impl CommitMode {
 struct ConfigMutationOptions {
     apply_mode: ApplyMode,
     commit_mode: CommitMode,
-    quiet: bool,
+    verbosity: Verbosity,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -9225,9 +9270,9 @@ fn commit_export_profile_changes(
         return Ok(());
     }
     let auto_commit = AutoCommitPolicy::for_mutation(paths, mutation.commit_mode.is_disabled());
-    warn_auto_commit_if_needed(&auto_commit, mutation.quiet);
+    warn_auto_commit_if_needed(&auto_commit, mutation.verbosity);
     auto_commit
-        .commit(paths, commit_scope, changed_paths, None, mutation.quiet)
+        .commit(paths, commit_scope, changed_paths, None, mutation.verbosity)
         .map_err(CliError::operation)?;
     Ok(())
 }

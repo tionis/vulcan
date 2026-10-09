@@ -38,6 +38,7 @@ use vulcan_app::notes::{
 };
 use vulcan_app::templates::parse_template_var_bindings;
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
+use vulcan_core::Verbosity;
 use vulcan_core::{
     git_log, query_backlinks_with_filter, query_links_with_filter, resolve_note_reference,
     BacklinkRecord, DoctorDiagnosticIssue, GitLogEntry, GraphQueryError, NoteMatchKind,
@@ -137,7 +138,7 @@ pub(crate) fn handle_note_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             check_write_markdown_source_access(cli, paths, note)?;
             let report = run_note_checkbox_command(
                 paths,
@@ -156,7 +157,7 @@ pub(crate) fn handle_note_command(
                 cli.permissions.as_deref(),
                 cli.output,
                 use_stderr_color,
-                cli.quiet,
+                cli.verbosity(),
             )?;
             if !*dry_run && report.changed {
                 auto_commit
@@ -165,7 +166,7 @@ pub(crate) fn handle_note_command(
                         "note-checkbox",
                         std::slice::from_ref(&report.path),
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
             }
@@ -209,7 +210,7 @@ pub(crate) fn handle_note_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             check_write_note_access(cli, paths, note)?;
             let report = run_note_set_command(
                 paths,
@@ -220,7 +221,7 @@ pub(crate) fn handle_note_command(
                 cli.permissions.as_deref(),
                 cli.output,
                 use_stderr_color,
-                cli.quiet,
+                cli.verbosity(),
             )?;
             auto_commit
                 .commit(
@@ -228,7 +229,7 @@ pub(crate) fn handle_note_command(
                     "note-set",
                     std::slice::from_ref(&report.path),
                     cli.permissions.as_deref(),
-                    cli.quiet,
+                    cli.verbosity(),
                 )
                 .map_err(CliError::operation)?;
             print_note_set_report(cli.output, &report)
@@ -241,7 +242,7 @@ pub(crate) fn handle_note_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             check_write_path_access(cli, paths, path)?;
             let report = run_note_create_command(
                 paths,
@@ -252,7 +253,7 @@ pub(crate) fn handle_note_command(
                 cli.permissions.as_deref(),
                 cli.output,
                 use_stderr_color,
-                cli.quiet,
+                cli.verbosity(),
             )?;
             auto_commit
                 .commit(
@@ -260,7 +261,7 @@ pub(crate) fn handle_note_command(
                     "note-create",
                     &report.changed_paths,
                     cli.permissions.as_deref(),
-                    cli.quiet,
+                    cli.verbosity(),
                 )
                 .map_err(CliError::operation)?;
             print_note_create_report(cli.output, &report)
@@ -278,7 +279,7 @@ pub(crate) fn handle_note_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let (note, text) = match (*periodic, text.as_deref()) {
                 (Some(_), None) => (None, note_or_text.as_str()),
                 (None, Some(text)) => (Some(note_or_text.as_str()), text),
@@ -317,7 +318,7 @@ pub(crate) fn handle_note_command(
                 cli.permissions.as_deref(),
                 cli.output,
                 use_stderr_color,
-                cli.quiet,
+                cli.verbosity(),
             )?;
             auto_commit
                 .commit(
@@ -325,7 +326,7 @@ pub(crate) fn handle_note_command(
                     "note-append",
                     std::slice::from_ref(&report.path),
                     cli.permissions.as_deref(),
-                    cli.quiet,
+                    cli.verbosity(),
                 )
                 .map_err(CliError::operation)?;
             print_note_append_report(cli.output, &report)
@@ -344,7 +345,7 @@ pub(crate) fn handle_note_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             check_write_markdown_source_access(cli, paths, note)?;
             let report = run_note_patch_command(
                 paths,
@@ -363,7 +364,7 @@ pub(crate) fn handle_note_command(
                 cli.permissions.as_deref(),
                 cli.output,
                 use_stderr_color,
-                cli.quiet,
+                cli.verbosity(),
             )?;
             if !*dry_run {
                 auto_commit
@@ -372,7 +373,7 @@ pub(crate) fn handle_note_command(
                         "note-patch",
                         std::slice::from_ref(&report.path),
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
             }
@@ -403,7 +404,7 @@ pub(crate) fn handle_note_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             check_write_note_access(cli, paths, note)?;
             let report = run_note_delete_command(
                 paths,
@@ -412,7 +413,7 @@ pub(crate) fn handle_note_command(
                 cli.permissions.as_deref(),
                 cli.output,
                 use_stderr_color,
-                cli.quiet,
+                cli.verbosity(),
             )?;
             if !*dry_run {
                 auto_commit
@@ -421,7 +422,7 @@ pub(crate) fn handle_note_command(
                         "note-delete",
                         std::slice::from_ref(&report.path),
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
             }
@@ -434,7 +435,7 @@ pub(crate) fn handle_note_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             check_refactor_note_access(cli, paths, note)?;
             let resolved = resolve_note_reference(paths, note).map_err(CliError::operation)?;
             let destination = note_rename_destination(&resolved.path, new_name);
@@ -453,7 +454,7 @@ pub(crate) fn handle_note_command(
                         "note-rename",
                         &crate::move_changed_files(&summary),
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                     )
                     .map_err(CliError::operation)?;
             }
@@ -705,7 +706,7 @@ pub(crate) fn run_note_checkbox_command(
     permission_profile: Option<&str>,
     output: OutputFormat,
     use_stderr_color: bool,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<NoteCheckboxReport, CliError> {
     let NoteCheckboxOptions {
         note,
@@ -765,7 +766,7 @@ pub(crate) fn run_note_checkbox_command(
                 "checkbox",
                 Some(&target.source),
                 &updated_content,
-                quiet,
+                verbosity,
             )?;
         }
         match target.target.vault_relative_path.as_deref() {
@@ -776,7 +777,7 @@ pub(crate) fn run_note_checkbox_command(
                 &updated_content,
                 "checkbox",
                 permission_profile,
-                quiet,
+                verbosity,
             )
             .map(drop),
             None => vulcan_core::paths::write_file_atomic(
@@ -787,7 +788,7 @@ pub(crate) fn run_note_checkbox_command(
         }
         .map_err(CliError::operation)?;
         if target.target.is_vault_managed() {
-            run_incremental_scan(paths, output, use_stderr_color, quiet)?;
+            run_incremental_scan(paths, output, use_stderr_color, verbosity)?;
         }
     }
     let diagnostics = maybe_check_markdown_target(paths, &target.target, &updated_content, check)?;
@@ -1064,7 +1065,7 @@ pub(crate) fn run_note_set_command(
     permission_profile: Option<&str>,
     output: OutputFormat,
     use_stderr_color: bool,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<NoteSetReport, CliError> {
     let replacement = note_set_input_text(file)?;
     run_note_set_with_content(
@@ -1076,7 +1077,7 @@ pub(crate) fn run_note_set_command(
         permission_profile,
         output,
         use_stderr_color,
-        quiet,
+        verbosity,
     )
 }
 
@@ -1090,7 +1091,7 @@ pub(crate) fn run_note_set_with_content(
     permission_profile: Option<&str>,
     output: OutputFormat,
     use_stderr_color: bool,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<NoteSetReport, CliError> {
     let report = apply_note_set(
         paths,
@@ -1100,10 +1101,10 @@ pub(crate) fn run_note_set_with_content(
             preserve_frontmatter,
         },
         permission_profile,
-        quiet,
+        verbosity,
     )?;
     let report = finish_note_set_report(paths, report, check)?;
-    run_incremental_scan(paths, output, use_stderr_color, quiet)?;
+    run_incremental_scan(paths, output, use_stderr_color, verbosity)?;
     Ok(report)
 }
 
@@ -1117,7 +1118,7 @@ pub(crate) fn run_note_create_command(
     permission_profile: Option<&str>,
     output: OutputFormat,
     use_stderr_color: bool,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<NoteCreateReport, CliError> {
     let body = read_optional_stdin_text().map_err(CliError::operation)?;
     run_note_create_with_body(
@@ -1130,7 +1131,7 @@ pub(crate) fn run_note_create_command(
         permission_profile,
         output,
         use_stderr_color,
-        quiet,
+        verbosity,
     )
 }
 
@@ -1145,7 +1146,7 @@ pub(crate) fn run_note_create_with_body(
     permission_profile: Option<&str>,
     output: OutputFormat,
     use_stderr_color: bool,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<NoteCreateReport, CliError> {
     let report = apply_note_create(
         paths,
@@ -1156,10 +1157,10 @@ pub(crate) fn run_note_create_with_body(
             body: body.to_string(),
         },
         permission_profile,
-        quiet,
+        verbosity,
     )?;
     let report = finish_note_create_report(paths, report, check)?;
-    run_incremental_scan(paths, output, use_stderr_color, quiet)?;
+    run_incremental_scan(paths, output, use_stderr_color, verbosity)?;
     Ok(report)
 }
 
@@ -1189,7 +1190,7 @@ pub(crate) fn run_note_append_command(
     permission_profile: Option<&str>,
     output: OutputFormat,
     use_stderr_color: bool,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<NoteAppendReport, CliError> {
     let NoteAppendOptions {
         note,
@@ -1213,10 +1214,10 @@ pub(crate) fn run_note_append_command(
             vars: parse_template_var_bindings(vars)?,
         },
         permission_profile,
-        quiet,
+        verbosity,
     )?;
     let report = finish_note_append_report(paths, report, check)?;
-    run_incremental_scan(paths, output, use_stderr_color, quiet)?;
+    run_incremental_scan(paths, output, use_stderr_color, verbosity)?;
     Ok(report)
 }
 
@@ -1226,7 +1227,7 @@ pub(crate) fn run_note_patch_command(
     permission_profile: Option<&str>,
     output: OutputFormat,
     use_stderr_color: bool,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<NotePatchReport, CliError> {
     let NotePatchOptions {
         note,
@@ -1252,9 +1253,9 @@ pub(crate) fn run_note_patch_command(
         replace_all,
         dry_run,
     };
-    let report = apply_note_patch(paths, &request, permission_profile, quiet)?;
+    let report = apply_note_patch(paths, &request, permission_profile, verbosity)?;
     if !report.dry_run && !report.changed_paths.is_empty() {
-        run_incremental_scan(paths, output, use_stderr_color, quiet)?;
+        run_incremental_scan(paths, output, use_stderr_color, verbosity)?;
     }
     finish_note_patch_report(paths, &request, report, check).map_err(Into::into)
 }
@@ -1266,7 +1267,7 @@ pub(crate) fn run_note_delete_command(
     permission_profile: Option<&str>,
     output: OutputFormat,
     use_stderr_color: bool,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<NoteDeleteReport, CliError> {
     let report = apply_note_delete(
         paths,
@@ -1275,10 +1276,10 @@ pub(crate) fn run_note_delete_command(
             dry_run,
         },
         permission_profile,
-        quiet,
+        verbosity,
     )?;
     if !report.dry_run {
-        run_incremental_scan(paths, output, use_stderr_color, quiet)?;
+        run_incremental_scan(paths, output, use_stderr_color, verbosity)?;
     }
 
     Ok(NoteDeleteReport {
@@ -1430,7 +1431,7 @@ fn dispatch_note_write_plugin_hooks(
     operation: &str,
     existing: Option<&str>,
     updated: &str,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<(), CliError> {
     crate::plugins::dispatch_plugin_event(
         paths,
@@ -1444,7 +1445,7 @@ fn dispatch_note_write_plugin_hooks(
             "previous_content": existing,
             "content": updated,
         }),
-        quiet,
+        verbosity,
     )
 }
 

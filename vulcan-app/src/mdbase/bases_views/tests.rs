@@ -6,6 +6,7 @@ use crate::mdbase::{
 use std::fs;
 use vulcan_core::mdbase::{MdbaseViewContextArg, MdbaseViewInvocation};
 use vulcan_core::permissions::{PathPermission, ResourceSpecifier};
+use vulcan_core::Verbosity;
 use vulcan_core::{scan_vault, PermissionFilter, ScanMode, VaultPaths};
 
 const BASE: &str = "filters:\n  and:\n    - 'file.ext == \"md\"'\nproperties:\n  status:\n    displayName: Status\nviews:\n  - name: Open Work\n    type: table\n    filters:\n      - 'status == \"open\"'\n    order:\n      - file.name\n      - status\n  - name: Open Work\n    type: board\n    order:\n      - file.name\n    groupBy:\n      property: status\n      direction: ASC\n";
@@ -47,7 +48,7 @@ fn invoke(view: &str) -> MdbaseViewInvocation {
 fn options() -> MdbaseViewSourceOptions {
     MdbaseViewSourceOptions {
         no_commit: true,
-        quiet: true,
+        verbosity: Verbosity::Quiet,
         ..MdbaseViewSourceOptions::default()
     }
 }

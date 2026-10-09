@@ -117,10 +117,17 @@ These global flags are available on all commands:
 - `--provider <NAME>`: override the embedding provider for vector commands
 - `--limit <N>`: cap returned rows
 - `--offset <N>`: paginate list output
-- `--verbose`: enable extra diagnostic output
-- `--quiet`: suppress non-essential stderr output
+- `-v`/`--verbose`: raise the diagnostic level; repeat for more (`-v` verbose, `-vv` debug, `-vvv` trace)
+- `-q`/`--quiet`: suppress progress, warnings, and other non-essential stderr output (wins over `-v`)
 - `--no-header`: suppress table headers for tabular human output
 - `--color <auto|always|never>`: control ANSI color output
+
+Verbosity levels:
+
+- Levels are ordered `quiet < normal < verbose < debug < trace`; each level includes the output of the levels below it. Commands that only distinguish "extra detail" treat every level from `verbose` up the same way.
+- `VULCAN_VERBOSITY=quiet|normal|verbose|debug|trace` sets the default level when neither `-v` nor `-q` is given; `VULCAN_QUIET=1` remains equivalent to `-q`.
+- Global flags may appear before or after any subcommand. Repeat `-v` in one position (`-vv`, or `-v --verbose`); a count given at a deeper subcommand replaces one given earlier rather than adding to it.
+- Vulcan processes launched by Vulcan itself (the detached `daemon start --detach` child and the daemon restart after `self-update run`) inherit the level and `--color`. They do not inherit `--output`, `--vault`, or scoping flags, because each child keeps its own output contract and scope. Installed service units are not rewritten with a level; set `VULCAN_VERBOSITY=<level>` in `daemon.env` in the Vulcan config directory instead, which `daemon start` reads on every platform when no `-v`/`-q` is given.
 
 Output rules:
 

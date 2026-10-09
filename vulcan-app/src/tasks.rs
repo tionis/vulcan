@@ -30,6 +30,7 @@ use vulcan_core::expression::parse_expression;
 use vulcan_core::ordinary_write::{recover_ordinary_write_batch, OrdinaryWriteChange};
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::properties::extract_indexed_properties;
+use vulcan_core::Verbosity;
 use vulcan_core::{
     active_tasknote_time_entry, evaluate_base_file, expected_periodic_note_path, extract_tasknote,
     inspect_base_file, load_tasks_blocks, load_vault_config, parse_tasknote_natural_language,
@@ -5043,7 +5044,7 @@ fn route_task_note_write(
             mode: MdbaseManagedWriteMode::Validated,
             dry_run,
             permission_profile: task_mutation_profile(paths, guard)?,
-            quiet: true,
+            verbosity: Verbosity::Quiet,
         },
     )
     .map(|report| report.is_some())
@@ -5063,7 +5064,7 @@ fn route_task_note_batch(
         allow_mixed_paths: true,
         dry_run,
         permission_profile,
-        quiet: true,
+        verbosity: Verbosity::Quiet,
     };
     let routed = apply_managed_mdbase_note_writes(paths, &request(true))?.is_some();
     if !routed {
@@ -5159,7 +5160,7 @@ where
                 allow_mixed_paths: false,
                 dry_run,
                 permission_profile: task_mutation_profile(paths, guard)?,
-                quiet: true,
+                verbosity: Verbosity::Quiet,
             },
         )?
         .is_some()

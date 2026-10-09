@@ -70,6 +70,7 @@ use vulcan_app::sync_semantic::{
 };
 use vulcan_app::sync_semantic_auto::{run_semantic_auto, SemanticAutoOptions, SemanticAutoReport};
 use vulcan_app::sync_state::SyncStateStore;
+use vulcan_core::Verbosity;
 use vulcan_core::{
     resolve_permission_profile, vulcan_user_data_dir, PermissionGuard, ProfilePermissionGuard,
     VaultPaths,
@@ -157,12 +158,7 @@ pub(crate) fn handle_sync_command(
         .map_err(CliError::operation)?;
     let mut observer = CliSyncProgress::new(
         options.max_retries.max(1),
-        progress_mode(
-            cli.output,
-            cli.quiet,
-            cli.verbose,
-            io::stderr().is_terminal(),
-        ),
+        progress_mode(cli.output, cli.verbosity(), io::stderr().is_terminal()),
     );
     let profile = match profile.unwrap_or(ManagedDirectoryProfileArg::Knowledge) {
         ManagedDirectoryProfileArg::Knowledge => SyncContentProfile::Knowledge,
@@ -171,7 +167,7 @@ pub(crate) fn handle_sync_command(
     let result = sync_git_vault_with_profile_and_progress(paths, &options, &mut observer, profile);
     observer.finish();
     let report = result.map_err(CliError::operation)?;
-    print_sync_report(cli.output, cli.verbose, &report)
+    print_sync_report(cli.output, cli.verbosity(), &report)
 }
 
 fn require_sync_knowledge_profile(cli: &Cli, command: &SyncCommand) -> Result<(), CliError> {
@@ -360,13 +356,12 @@ impl GitSyncObserver for CliSyncProgress {
 
 fn progress_mode(
     output: OutputFormat,
-    quiet: bool,
-    verbose: bool,
+    verbosity: Verbosity,
     stderr_is_terminal: bool,
 ) -> CliSyncProgressMode {
-    if quiet || output != OutputFormat::Human {
+    if verbosity.is_quiet() || output != OutputFormat::Human {
         CliSyncProgressMode::Silent
-    } else if verbose {
+    } else if verbosity.is_verbose() {
         CliSyncProgressMode::Verbose
     } else if stderr_is_terminal {
         CliSyncProgressMode::Transient
@@ -429,18 +424,20 @@ mod progress_tests {
     #[test]
     fn progress_is_transient_only_for_normal_interactive_human_output() {
         assert_eq!(
-            progress_mode(OutputFormat::Human, false, false, true),
+            progress_mode(OutputFormat::Human, Verbosity::Normal, true),
             CliSyncProgressMode::Transient
         );
-        assert_eq!(
-            progress_mode(OutputFormat::Human, false, true, true),
-            CliSyncProgressMode::Verbose
-        );
+        for verbosity in [Verbosity::Verbose, Verbosity::Debug, Verbosity::Trace] {
+            assert_eq!(
+                progress_mode(OutputFormat::Human, verbosity, true),
+                CliSyncProgressMode::Verbose
+            );
+        }
         for mode in [
-            progress_mode(OutputFormat::Human, true, true, true),
-            progress_mode(OutputFormat::Human, false, false, false),
-            progress_mode(OutputFormat::Json, false, true, true),
-            progress_mode(OutputFormat::Markdown, false, true, true),
+            progress_mode(OutputFormat::Human, Verbosity::Quiet, true),
+            progress_mode(OutputFormat::Human, Verbosity::Normal, false),
+            progress_mode(OutputFormat::Json, Verbosity::Verbose, true),
+            progress_mode(OutputFormat::Markdown, Verbosity::Verbose, true),
         ] {
             assert_eq!(mode, CliSyncProgressMode::Silent);
         }
@@ -3572,7 +3569,7 @@ fn print_registered_sync_report(
 
 fn print_sync_report(
     output: OutputFormat,
-    verbose: bool,
+    verbosity: Verbosity,
     report: &VaultSyncReport,
 ) -> Result<(), CliError> {
     match output {
@@ -3604,7 +3601,7 @@ fn print_sync_report(
                     device_backup_outcome_label(backup.outcome)
                 );
             }
-            if verbose {
+            if verbosity.is_verbose() {
                 println!("Remote ref: {}", report.sync.refs.live);
                 if let Some(accepted) = &report.sync.accepted {
                     println!("Accepted: {accepted}");

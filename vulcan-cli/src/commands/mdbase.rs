@@ -236,7 +236,7 @@ fn handle_patch(
         &MdbaseFrontmatterPatchOptions {
             dry_run,
             no_commit,
-            quiet: cli.quiet,
+            verbosity: cli.verbosity(),
         },
     )?;
     if cli.output == OutputFormat::Json {
@@ -265,7 +265,7 @@ fn handle_view_source(
         permission_profile: cli.permissions.clone(),
         dry_run,
         no_commit,
-        quiet: cli.quiet,
+        verbosity: cli.verbosity(),
     };
     let read = |file: &PathBuf| std::fs::read_to_string(file).map_err(CliError::operation);
     let document = match command {

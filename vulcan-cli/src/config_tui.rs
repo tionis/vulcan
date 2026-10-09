@@ -15,13 +15,18 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use toml::Value as TomlValue;
+use vulcan_core::Verbosity;
 use vulcan_core::{ConfigDiagnostic, VaultPaths};
 
 const FOOTER_HEIGHT: u16 = 7;
 const MAX_FOLDER_SUGGESTIONS: usize = 2_000;
 const VISIBLE_FOLDER_SUGGESTIONS: usize = 5;
 
-pub fn run_config_tui(paths: &VaultPaths, no_commit: bool, quiet: bool) -> Result<(), io::Error> {
+pub fn run_config_tui(
+    paths: &VaultPaths,
+    no_commit: bool,
+    verbosity: Verbosity,
+) -> Result<(), io::Error> {
     let mut state = ConfigTuiState::load(paths.clone()).map_err(io::Error::other)?;
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
     if let Some(message) = auto_commit.warning() {
@@ -35,7 +40,7 @@ pub fn run_config_tui(paths: &VaultPaths, no_commit: bool, quiet: bool) -> Resul
     let mut terminal = Terminal::new(backend)?;
     terminal.hide_cursor()?;
 
-    let result = run_event_loop(&mut terminal, &mut state, &auto_commit, quiet);
+    let result = run_event_loop(&mut terminal, &mut state, &auto_commit, verbosity);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -48,7 +53,7 @@ fn run_event_loop(
     terminal: &mut Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
     state: &mut ConfigTuiState,
     auto_commit: &AutoCommitPolicy,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<(), io::Error> {
     loop {
         terminal.draw(|frame| draw(frame, state))?;
@@ -62,7 +67,7 @@ fn run_event_loop(
                 ConfigTuiAction::Continue => {}
                 ConfigTuiAction::Quit => break,
                 ConfigTuiAction::Save => {
-                    state.save(auto_commit, quiet);
+                    state.save(auto_commit, verbosity);
                 }
                 ConfigTuiAction::Unset => state.unset_selected(),
                 ConfigTuiAction::ToggleTarget => state.toggle_target(),
@@ -1276,7 +1281,7 @@ impl ConfigTuiState {
         self.status = "Reverted unsaved changes.".to_string();
     }
 
-    fn save(&mut self, auto_commit: &AutoCommitPolicy, quiet: bool) {
+    fn save(&mut self, auto_commit: &AutoCommitPolicy, verbosity: Verbosity) {
         let had_gitignore = self.paths.gitignore_file().exists();
         let mut changed_files = BTreeSet::new();
 
@@ -1342,7 +1347,7 @@ impl ConfigTuiState {
             "config-edit",
             &changed_files.into_iter().collect::<Vec<_>>(),
             None,
-            quiet,
+            verbosity,
         );
 
         match Self::load(self.paths.clone()) {

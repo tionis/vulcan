@@ -54,6 +54,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use vulcan_app::device_identity::DeviceIdentityStore;
 use vulcan_app::sync::GitSyncOptions;
 use vulcan_app::sync_state::SyncStateStore;
+use vulcan_core::Verbosity;
 use vulcan_sync::{cached_notification_advertisement, GitCliEngine, GitEngine};
 use vulcan_sync::{GitBranchSync, SyncErrorCategory, SyncJobState, SyncJobTrigger};
 
@@ -127,9 +128,10 @@ pub struct DaemonProcessContext {
     /// The installation's device identity. Sync state must name devices and
     /// authenticate Git transport with the same key as the direct CLI.
     pub device_identity: DeviceIdentityStore,
-    /// Enables operational stderr lines (sync executions, notification
-    /// wake-ups). Off by default; set from the global `--verbose` flag.
-    pub verbose: bool,
+    /// Diagnostic level. At `Verbose` and above the daemon emits operational
+    /// stderr lines (sync executions, notification wake-ups); set from the
+    /// global `-v`/`-q` flags.
+    pub verbosity: Verbosity,
 }
 
 impl DaemonProcessContext {
@@ -145,7 +147,7 @@ impl DaemonProcessContext {
             state_root,
             device_identity: DeviceIdentityStore::user_default()
                 .map_err(|error| DaemonProcessError::Configuration(error.to_string()))?,
-            verbose: false,
+            verbosity: Verbosity::Normal,
         })
     }
 
@@ -427,7 +429,7 @@ fn ensure_daemon_service_budget(service_count: usize) -> Result<(), DaemonProces
 }
 
 fn log_daemon_started(context: &DaemonProcessContext, bind: SocketAddr, wiki_count: usize) {
-    if context.verbose {
+    if context.verbosity.is_verbose() {
         eprintln!("daemon started on {bind} with {wiki_count} registered wiki(s)");
     }
 }
@@ -529,7 +531,7 @@ fn daemon_worker_registrations(
     let sync_supervisor = Arc::clone(supervisor);
     let sync_state_store = Arc::clone(state_store);
     let sync_alert_sender = Arc::clone(&alert_sender);
-    let verbose = context.verbose;
+    let verbosity = context.verbosity;
     registrations.push(ServiceRegistration::new(sync_definition, move |service| {
         service.ready()?;
         run_job_worker(
@@ -537,7 +539,7 @@ fn daemon_worker_registrations(
             &sync_supervisor,
             &sync_state_store,
             service.stop(),
-            verbose,
+            verbosity,
             &sync_alert_sender,
         )
         .map_err(|error| error.to_string())
@@ -587,7 +589,7 @@ fn daemon_worker_registrations(
                     notification_registry.clone(),
                     Arc::clone(&notification_supervisor),
                     NotificationRuntimeOptions {
-                        verbose,
+                        verbosity,
                         ..NotificationRuntimeOptions::default()
                     },
                     Arc::clone(service.stop()),
@@ -850,7 +852,7 @@ fn run_job_worker(
     supervisor: &SyncSupervisor,
     state_store: &SyncStateStore,
     stop: &ShutdownSignal,
-    verbose: bool,
+    verbosity: Verbosity,
     alert_sender: &Mutex<Option<AlertDeliverySender>>,
 ) -> Result<(), DaemonProcessError> {
     let engine = vulcan_sync::GitCliEngine::default();
@@ -866,7 +868,7 @@ fn run_job_worker(
             &engine,
         )? {
             Some(execution) => {
-                if verbose {
+                if verbosity.is_verbose() {
                     eprintln!("{}", format_sync_execution(&execution));
                 }
                 if enqueue_busy_recovery(supervisor, &execution)? {
@@ -1383,7 +1385,7 @@ mod tests {
             device_identity: DeviceIdentityStore::at(
                 temporary.path().join("state/sync/device-identity"),
             ),
-            verbose: false,
+            verbosity: Verbosity::Normal,
         };
         let child_context = context.clone();
         let (result_sender, result_receiver) = std::sync::mpsc::channel();
@@ -1596,7 +1598,7 @@ mod tests {
             device_identity: DeviceIdentityStore::at(
                 temporary.path().join("state/sync/device-identity"),
             ),
-            verbose: false,
+            verbosity: Verbosity::Normal,
         };
         let child_context = context.clone();
         let (result_sender, result_receiver) = std::sync::mpsc::channel();
@@ -1645,7 +1647,7 @@ mod tests {
             device_identity: DeviceIdentityStore::at(
                 temporary.path().join("state/sync/device-identity"),
             ),
-            verbose: false,
+            verbosity: Verbosity::Normal,
         };
         let child_context = context.clone();
         let (result_sender, result_receiver) = std::sync::mpsc::channel();
@@ -1827,7 +1829,7 @@ mod tests {
             registry: WikiRegistry::at(temporary.path().join("daemon.toml")),
             state_root: temporary.path().join("state"),
             device_identity: installation,
-            verbose: false,
+            verbosity: Verbosity::Normal,
         };
         let store = context.sync_state_store();
         assert_eq!(
@@ -1879,7 +1881,7 @@ mod tests {
             device_identity: DeviceIdentityStore::at(
                 temporary.path().join("state/sync/device-identity"),
             ),
-            verbose: false,
+            verbosity: Verbosity::Normal,
         };
         let credential = CompanionCredentialStore::at(&context.state_root)
             .load_or_create(vec!["app://obsidian.md".to_string()])
@@ -1933,7 +1935,7 @@ mod tests {
             device_identity: DeviceIdentityStore::at(
                 temporary.path().join("state/sync/device-identity"),
             ),
-            verbose: false,
+            verbosity: Verbosity::Normal,
         };
         let status = daemon_status(&context).expect("offline daemon status");
         assert_eq!(status.wiki_statuses.len(), 1);

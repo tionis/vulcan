@@ -10,6 +10,7 @@ use std::path::Path;
 use vulcan_core::mdbase::is_mdbase_record_path;
 use vulcan_core::paths::secure_write;
 use vulcan_core::write_lock::acquire_write_lock;
+use vulcan_core::Verbosity;
 use vulcan_core::{
     plan_property_mutations_on_paths, resolve_permission_profile, BulkMutationReport,
     PermissionGuard, ProfilePermissionGuard, RefactorFileReport, ScanMode, VaultPaths,
@@ -24,7 +25,7 @@ pub fn apply_bulk_property_mutation(
     value: Option<&str>,
     dry_run: bool,
     permission_profile: Option<&str>,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<BulkMutationReport, AppError> {
     let selection =
         resolve_permission_profile(paths, permission_profile).map_err(AppError::operation)?;
@@ -67,7 +68,7 @@ pub fn apply_bulk_property_mutation(
         })
         .collect::<Vec<_>>();
     if !managed_changes.is_empty() {
-        apply_managed_property_batch(paths, &managed_changes, true, permission_profile, quiet)?;
+        apply_managed_property_batch(paths, &managed_changes, true, permission_profile, verbosity)?;
     }
 
     if !dry_run {
@@ -77,7 +78,7 @@ pub fn apply_bulk_property_mutation(
                 &managed_changes,
                 false,
                 permission_profile,
-                quiet,
+                verbosity,
             )?;
         }
         if !ordinary_indexes.is_empty() {
@@ -151,7 +152,7 @@ fn apply_managed_property_batch(
     changes: &[MdbaseManagedNoteWriteChange<'_>],
     dry_run: bool,
     permission_profile: Option<&str>,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Result<(), AppError> {
     let operation = if changes.len() == 1 {
         MdbaseWriteOperation::Update
@@ -167,7 +168,7 @@ fn apply_managed_property_batch(
             allow_mixed_paths: false,
             dry_run,
             permission_profile,
-            quiet,
+            verbosity,
         },
     )?
     .ok_or_else(|| AppError::operation("mdbase property batch contained no managed records"))?;
@@ -252,7 +253,7 @@ mod tests {
                     Some("done"),
                     dry_run,
                     Some("scoped"),
-                    true,
+                    Verbosity::Quiet,
                 )
                 .unwrap_err();
                 assert_eq!(error.code(), Some("permission_denied"));
@@ -275,7 +276,7 @@ mod tests {
             Some("done"),
             false,
             None,
-            true,
+            Verbosity::Quiet,
         )
         .expect("property batch should succeed");
 
@@ -304,7 +305,7 @@ mod tests {
             None,
             false,
             None,
-            true,
+            Verbosity::Quiet,
         )
         .expect_err("required property removal should fail");
 
@@ -333,7 +334,7 @@ mod tests {
             Some("active"),
             false,
             None,
-            true,
+            Verbosity::Quiet,
         )
         .expect("mixed update should succeed");
 

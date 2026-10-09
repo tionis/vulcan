@@ -21,6 +21,7 @@ use vulcan_app::web::{
 use vulcan_core::ProfilePermissionGuard;
 #[cfg(feature = "web")]
 use vulcan_core::SearchBackendKind;
+use vulcan_core::Verbosity;
 use vulcan_core::{
     evaluate_dataview_js_with_options, git_blame, git_commit, git_diff, git_recent_log, git_status,
     load_vault_config, DataviewJsEvalOptions, DataviewJsResult, GitBlameLine, GitCommitReport,
@@ -141,7 +142,7 @@ pub(crate) fn handle_git_command(
                     "action": "git-commit",
                     "message": message,
                 }),
-                cli.quiet,
+                cli.verbosity(),
             )?;
             let report = git_commit(paths.vault_root(), message).map_err(CliError::operation)?;
             if report.committed {
@@ -156,7 +157,7 @@ pub(crate) fn handle_git_command(
                         "files": report.files,
                         "sha": report.sha,
                     }),
-                    cli.quiet,
+                    cli.verbosity(),
                 );
             }
             print_git_commit_report(cli.output, &report)
@@ -505,7 +506,7 @@ fn run_js_command(
             mutation_committer: Some(mdbase_js_mutation_committer(
                 paths,
                 permission_profile,
-                true,
+                Verbosity::Quiet,
             )),
             tool_registry: Some(tool_registry),
             ..DataviewJsEvalOptions::default()
@@ -533,7 +534,7 @@ fn run_js_eval(
             mutation_committer: Some(mdbase_js_mutation_committer(
                 paths,
                 permission_profile,
-                true,
+                Verbosity::Quiet,
             )),
             tool_registry: Some(tool_registry),
             ..DataviewJsEvalOptions::default()

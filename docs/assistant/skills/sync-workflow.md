@@ -485,8 +485,9 @@ they commit.
   on large worktrees. Periodic sync reconciliation (every five minutes by default) repairs
   missed notifications. To request reconciliation immediately, use `vulcan sync run <wiki>`.
 - Companion connections share one status stream. Daemon jobs and successful companion mutations trigger updates; changes made by external processes are reconciled every 30 seconds while a companion is connected. Use `vulcan sync status <wiki>` for an immediate status read. With no companion connected, the stream performs no background snapshot work.
-- The daemon is quiet by default. Run `vulcan --verbose daemon start` (or with `--detach`,
-  which carries the flag to the background child and its `daemon.log`) for operational stderr
+- The daemon is quiet by default. Run `vulcan -v daemon start` (or with `--detach`,
+  which carries the level and `--color` to the background child and its `daemon.log`; an
+  installed service reads `VULCAN_VERBOSITY=<level>` from `daemon.env` instead) for operational stderr
   lines: one per completed sync job with wiki, triggers, state/outcome, watch-trigger detail,
   and branch-lane action, plus notification advertisement discovery and wake-up enqueueing
   identified by endpoint origin and fingerprint only. At the default quiet level, failed jobs

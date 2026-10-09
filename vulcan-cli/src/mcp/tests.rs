@@ -14,6 +14,7 @@ use vulcan_app::mcp_protocol::McpWebFetchArgs;
 #[cfg(feature = "oauth")]
 use vulcan_app::mcp_protocol::MCP_RESOURCE_NOT_FOUND;
 use vulcan_app::mcp_read_tools;
+use vulcan_core::Verbosity;
 use vulcan_core::{PermissionProfile, ProfilePermissionGuard, TasksQueryResult};
 use vulcan_daemon::mcp_http_codec::read_mcp_http_request;
 use vulcan_daemon::mcp_http_codec::MAX_MCP_HTTP_BODY_BYTES;
@@ -524,7 +525,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         device_identity: vulcan_app::device_identity::DeviceIdentityStore::at(
             temporary.path().join("state/sync/device-identity"),
         ),
-        verbose: false,
+        verbosity: Verbosity::Normal,
     };
     let wiki_id = vulcan_daemon::registry::WikiId::parse("personal").expect("wiki ID");
     process
@@ -4621,7 +4622,7 @@ fn named_runtime_rejects_a_definition_changed_before_listener_startup() {
         device_identity: vulcan_app::device_identity::DeviceIdentityStore::at(
             temporary.path().join("state/sync/device-identity"),
         ),
-        verbose: false,
+        verbosity: Verbosity::Normal,
     };
     let wiki_id = vulcan_daemon::registry::WikiId::parse("personal").expect("wiki ID");
     process
@@ -4687,7 +4688,7 @@ fn resident_mcp_service_groups_instances_and_accepts_multi_vault_definitions() {
         device_identity: vulcan_app::device_identity::DeviceIdentityStore::at(
             temporary.path().join("state/sync/device-identity"),
         ),
-        verbose: false,
+        verbosity: Verbosity::Normal,
     };
     let scheduler =
         Arc::new(MutationScheduler::new(MutationSchedulerConfig::default()).expect("scheduler"));

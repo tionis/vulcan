@@ -3,6 +3,7 @@
 mod query_profile;
 mod query_session;
 pub use query_session::MdbaseQuerySession;
+use vulcan_core::Verbosity;
 mod feature_gates;
 mod write_lifecycle;
 mod write_repair;
@@ -123,7 +124,7 @@ pub struct MdbaseWritePlanReport {
 pub struct MdbaseWriteExecutionOptions {
     pub idempotency_key: String,
     pub no_commit: bool,
-    pub quiet: bool,
+    pub verbosity: Verbosity,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -153,7 +154,7 @@ pub struct MdbaseManagedNoteWriteRequest<'a> {
     pub mode: MdbaseManagedWriteMode,
     pub dry_run: bool,
     pub permission_profile: Option<&'a str>,
-    pub quiet: bool,
+    pub verbosity: Verbosity,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,7 +174,7 @@ pub struct MdbaseManagedNoteWriteBatchRequest<'a> {
     pub allow_mixed_paths: bool,
     pub dry_run: bool,
     pub permission_profile: Option<&'a str>,
-    pub quiet: bool,
+    pub verbosity: Verbosity,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -200,7 +201,7 @@ pub struct MdbaseStatusReport {
 struct MdbaseJsMutationCommitter {
     paths: VaultPaths,
     permission_profile: Option<String>,
-    quiet: bool,
+    verbosity: Verbosity,
 }
 
 impl DataviewJsMutationCommitter for MdbaseJsMutationCommitter {
@@ -231,7 +232,7 @@ impl DataviewJsMutationCommitter for MdbaseJsMutationCommitter {
                 allow_mixed_paths: true,
                 dry_run: false,
                 permission_profile: self.permission_profile.as_deref(),
-                quiet: self.quiet,
+                verbosity: self.verbosity,
             },
         )
         .map(|report| report.is_some())
@@ -243,12 +244,12 @@ impl DataviewJsMutationCommitter for MdbaseJsMutationCommitter {
 pub fn mdbase_js_mutation_committer(
     paths: &VaultPaths,
     permission_profile: Option<&str>,
-    quiet: bool,
+    verbosity: Verbosity,
 ) -> Arc<dyn DataviewJsMutationCommitter> {
     Arc::new(MdbaseJsMutationCommitter {
         paths: paths.clone(),
         permission_profile: permission_profile.map(ToOwned::to_owned),
-        quiet,
+        verbosity,
     })
 }
 
@@ -1267,7 +1268,7 @@ fn apply_mdbase_write_timed(
     let config_revision = config_revision(&config)?;
     let profile = plan.permission_profile.clone();
     let plugin_payload = write_plugin_payload(&plan.preview);
-    let quiet = options.quiet;
+    let verbosity = options.verbosity;
     let mut scan = None;
     metrics.authorization_seconds = stage.elapsed().as_secs_f64();
     let mut reconcile = ReconcileStats::default();
@@ -1300,7 +1301,7 @@ fn apply_mdbase_write_timed(
             Some(&profile),
             PluginEvent::OnNoteWrite,
             &plugin_payload,
-            quiet,
+            verbosity,
         )
         .map_err(|error| {
             AppError::operation_with_code(
@@ -1346,7 +1347,7 @@ fn apply_mdbase_write_timed(
     if report.outcome.replayed {
         return Ok(report);
     }
-    dispatch_committed_path_events(paths, plan, options.quiet);
+    dispatch_committed_path_events(paths, plan, options.verbosity);
     if should_commit && report.outcome.follow_up_error.is_none() {
         apply_auto_commit(paths, plan, &config.git, options, &mut report);
     }
@@ -1491,7 +1492,7 @@ pub fn apply_managed_mdbase_note_write(
             allow_mixed_paths: false,
             dry_run: request.dry_run,
             permission_profile: request.permission_profile,
-            quiet: request.quiet,
+            verbosity: request.verbosity,
         },
     )
 }
@@ -1574,7 +1575,7 @@ pub fn apply_managed_mdbase_note_writes(
                 // Existing command adapters retain their established
                 // auto-commit boundary and changed-path aggregation.
                 no_commit: true,
-                quiet: request.quiet,
+                verbosity: request.verbosity,
             },
             DateTime::<Utc>::from(SystemTime::now()),
         )?)
@@ -1712,7 +1713,11 @@ fn write_plugin_payload(preview: &MdbaseWritePreview) -> serde_json::Value {
     payload
 }
 
-fn dispatch_committed_path_events(paths: &VaultPaths, plan: &MdbaseWritePlanReport, quiet: bool) {
+fn dispatch_committed_path_events(
+    paths: &VaultPaths,
+    plan: &MdbaseWritePlanReport,
+    verbosity: Verbosity,
+) {
     for change in &plan.preview.changes {
         let event = match (&change.before, &change.after) {
             (None, Some(_)) => Some(PluginEvent::OnNoteCreate),
@@ -1731,7 +1736,7 @@ fn dispatch_committed_path_events(paths: &VaultPaths, plan: &MdbaseWritePlanRepo
                     "path": change.path,
                     "content": change.after,
                 }),
-                quiet,
+                verbosity,
             );
         }
     }
@@ -1761,7 +1766,7 @@ fn apply_auto_commit(
         Some(&plan.permission_profile),
         PluginEvent::OnPreCommit,
         &payload,
-        options.quiet,
+        options.verbosity,
     ) {
         report
             .follow_up_errors
@@ -1786,7 +1791,7 @@ fn apply_auto_commit(
                 Some(&plan.permission_profile),
                 PluginEvent::OnPostCommit,
                 &post_payload,
-                options.quiet,
+                options.verbosity,
             );
             report.auto_commit = Some(commit);
         }
@@ -2494,7 +2499,7 @@ mod tests {
         let options = MdbaseWriteExecutionOptions {
             idempotency_key: "update-public".to_string(),
             no_commit: true,
-            quiet: true,
+            verbosity: Verbosity::Quiet,
         };
         let report =
             apply_mdbase_write(&paths, &plan, &options, now + chrono::Duration::seconds(1))
@@ -2654,7 +2659,7 @@ mod tests {
                 &MdbaseWriteExecutionOptions {
                     idempotency_key: key.to_string(),
                     no_commit: true,
-                    quiet: true,
+                    verbosity: Verbosity::Quiet,
                 },
                 now,
                 &mut stages,
@@ -2720,7 +2725,7 @@ mod tests {
             &MdbaseWriteExecutionOptions {
                 idempotency_key: "keep-indexed-current".to_string(),
                 no_commit: true,
-                quiet: true,
+                verbosity: Verbosity::Quiet,
             },
             now,
             &mut stages,
@@ -2825,7 +2830,7 @@ mod tests {
             &MdbaseWriteExecutionOptions {
                 idempotency_key: "revision-race".to_string(),
                 no_commit: true,
-                quiet: true,
+                verbosity: Verbosity::Quiet,
             },
             now + chrono::Duration::seconds(1),
         )
@@ -3002,7 +3007,7 @@ mod tests {
                                 allow_mixed_paths: true,
                                 dry_run,
                                 permission_profile: Some("scoped"),
-                                quiet: true,
+                                verbosity: Verbosity::Quiet,
                             },
                         )
                         .unwrap_err();
@@ -3038,7 +3043,7 @@ mod tests {
             allow_mixed_paths: false,
             dry_run: true,
             permission_profile: Some("scoped"),
-            quiet: true,
+            verbosity: Verbosity::Quiet,
         };
         assert!(apply_managed_mdbase_note_writes(&paths, &request)
             .unwrap()
@@ -3083,7 +3088,7 @@ mod tests {
         let options = MdbaseWriteExecutionOptions {
             idempotency_key: "denied-controls".into(),
             no_commit: true,
-            quiet: true,
+            verbosity: Verbosity::Quiet,
         };
         for denied in [
             "note:mdbase.yaml",
@@ -3173,7 +3178,7 @@ mod tests {
                 &MdbaseWriteExecutionOptions {
                     idempotency_key: "hidden-schema".into(),
                     no_commit: true,
-                    quiet: true,
+                    verbosity: Verbosity::Quiet,
                 },
                 now,
             )
@@ -3247,7 +3252,7 @@ mod tests {
                 allow_mixed_paths: false,
                 dry_run: true,
                 permission_profile: None,
-                quiet: true,
+                verbosity: Verbosity::Quiet,
             },
         )
         .expect_err("mixed managed batch should fail");
@@ -3269,7 +3274,7 @@ mod tests {
                 preserve_frontmatter: false,
             },
             None,
-            true,
+            Verbosity::Quiet,
         )
         .expect("managed note set should succeed");
 
@@ -3298,7 +3303,7 @@ mod tests {
                 body: created.to_string(),
             },
             None,
-            true,
+            Verbosity::Quiet,
         )
         .expect("managed note create should succeed");
         apply_note_append(
@@ -3313,7 +3318,7 @@ mod tests {
                 vars: std::collections::HashMap::default(),
             },
             None,
-            true,
+            Verbosity::Quiet,
         )
         .expect("managed note append should succeed");
         apply_note_patch(
@@ -3335,7 +3340,7 @@ mod tests {
                 dry_run: false,
             },
             None,
-            true,
+            Verbosity::Quiet,
         )
         .expect("managed note patch should succeed");
         apply_note_delete(
@@ -3345,7 +3350,7 @@ mod tests {
                 dry_run: false,
             },
             None,
-            true,
+            Verbosity::Quiet,
         )
         .expect("managed note delete should succeed");
 
@@ -3383,7 +3388,7 @@ mod tests {
                 body: String::new(),
             },
             None,
-            true,
+            Verbosity::Quiet,
         )
         .expect_err("managed side effect must remain forbidden");
         assert!(!directory.path().join("Side.md").exists());
@@ -3408,7 +3413,7 @@ mod tests {
                 mode: MdbaseManagedWriteMode::Validated,
                 dry_run: true,
                 permission_profile: None,
-                quiet: true,
+                verbosity: Verbosity::Quiet,
             },
         )
         .expect_err("direct managed write should reject invalid source");
@@ -3420,7 +3425,7 @@ mod tests {
                 preserve_frontmatter: false,
             },
             None,
-            true,
+            Verbosity::Quiet,
         )
         .expect_err("generic note set should reject invalid source");
 
@@ -3453,7 +3458,7 @@ mod tests {
                 mode: MdbaseManagedWriteMode::Validated,
                 dry_run: false,
                 permission_profile: None,
-                quiet: true,
+                verbosity: Verbosity::Quiet,
             },
         )
         .expect_err("stale before-image must reject the managed write");
@@ -3490,7 +3495,11 @@ mod tests {
             None,
             DataviewJsEvalOptions {
                 sandbox: Some(JsRuntimeSandbox::Fs),
-                mutation_committer: Some(mdbase_js_mutation_committer(&paths, None, true)),
+                mutation_committer: Some(mdbase_js_mutation_committer(
+                    &paths,
+                    None,
+                    Verbosity::Quiet,
+                )),
                 ..DataviewJsEvalOptions::default()
             },
         )
@@ -3528,7 +3537,7 @@ mod tests {
                     mutation_committer: Some(mdbase_js_mutation_committer(
                         &paths,
                         Some("scoped"),
-                        true,
+                        Verbosity::Quiet,
                     )),
                     ..DataviewJsEvalOptions::default()
                 },
@@ -3561,7 +3570,11 @@ mod tests {
             None,
             DataviewJsEvalOptions {
                 sandbox: Some(JsRuntimeSandbox::Fs),
-                mutation_committer: Some(mdbase_js_mutation_committer(&paths, None, true)),
+                mutation_committer: Some(mdbase_js_mutation_committer(
+                    &paths,
+                    None,
+                    Verbosity::Quiet,
+                )),
                 ..DataviewJsEvalOptions::default()
             },
         )
@@ -3590,7 +3603,11 @@ mod tests {
             None,
             DataviewJsEvalOptions {
                 sandbox: Some(JsRuntimeSandbox::Fs),
-                mutation_committer: Some(mdbase_js_mutation_committer(&paths, None, true)),
+                mutation_committer: Some(mdbase_js_mutation_committer(
+                    &paths,
+                    None,
+                    Verbosity::Quiet,
+                )),
                 ..DataviewJsEvalOptions::default()
             },
         )
@@ -3621,7 +3638,7 @@ mod tests {
                 mode: MdbaseManagedWriteMode::RawRepair,
                 dry_run: false,
                 permission_profile: None,
-                quiet: true,
+                verbosity: Verbosity::Quiet,
             },
         )
         .expect("raw repair should run")

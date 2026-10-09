@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use vulcan_core::mdbase::{MdbaseViewContextArg, MdbaseViewInvocation};
 use vulcan_core::permissions::{PathPermission, ResourceSpecifier};
+use vulcan_core::Verbosity;
 use vulcan_core::{PermissionFilter, VaultPaths};
 
 pub const RECORD_WRITE_FEATURE: &str = "vulcan.record_write.v1";
@@ -268,7 +269,7 @@ impl Collection {
             &MdbaseWriteExecutionOptions {
                 idempotency_key: key.to_string(),
                 no_commit: true,
-                quiet: true,
+                verbosity: Verbosity::Quiet,
             },
             now(),
         )
@@ -702,7 +703,7 @@ fn saved_view_sources_gate() -> Result<(), String> {
     let paths = &collection.paths;
     let options = MdbaseViewSourceOptions {
         no_commit: true,
-        quiet: true,
+        verbosity: Verbosity::Quiet,
         ..MdbaseViewSourceOptions::default()
     };
     let error_code = |result: Result<(), AppError>| {

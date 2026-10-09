@@ -3,6 +3,7 @@
 use serde_json::Value;
 use std::collections::BTreeMap;
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
+use vulcan_core::Verbosity;
 use vulcan_core::{load_vault_config, PermissionGuard, ProfilePermissionGuard, VaultPaths};
 
 use crate::commit::AutoCommitPolicy;
@@ -52,7 +53,7 @@ pub fn note_create(
             body: args.body,
         },
         Some(profile_name),
-        true,
+        Verbosity::Quiet,
     )
     .map_err(|error| McpMethodError::tool(error.to_string()))?;
     let report = finish_note_create_report(paths, applied, args.check)
@@ -64,7 +65,7 @@ pub fn note_create(
             "note-create",
             &report.changed_paths,
             Some(profile_name),
-            true,
+            Verbosity::Quiet,
         )
         .map_err(|error| McpMethodError::tool(error.clone()))?;
     Ok(report)
@@ -112,7 +113,7 @@ pub fn note_append(
             vars,
         },
         Some(profile_name),
-        true,
+        Verbosity::Quiet,
     )
     .map_err(|error| McpMethodError::tool(error.to_string()))?;
     let report = finish_note_append_report(paths, applied, args.check)
@@ -124,7 +125,7 @@ pub fn note_append(
             "note-append",
             std::slice::from_ref(&report.path),
             Some(profile_name),
-            true,
+            Verbosity::Quiet,
         )
         .map_err(|error| McpMethodError::tool(error.clone()))?;
     Ok(report)
@@ -184,7 +185,7 @@ pub fn note_patch(
         replace_all: args.all,
         dry_run: args.dry_run,
     };
-    let applied = apply_note_patch(paths, &request, Some(profile_name), true)
+    let applied = apply_note_patch(paths, &request, Some(profile_name), Verbosity::Quiet)
         .map_err(|error| McpMethodError::tool(error.to_string()))?;
     if !applied.dry_run && !applied.changed_paths.is_empty() {
         refresh_cache_incrementally(paths)
@@ -199,7 +200,7 @@ pub fn note_patch(
                 "note-patch",
                 std::slice::from_ref(&report.path),
                 Some(profile_name),
-                true,
+                Verbosity::Quiet,
             )
             .map_err(|error| McpMethodError::tool(error.clone()))?;
     }
@@ -226,7 +227,7 @@ pub fn note_set(
             preserve_frontmatter: args.preserve_frontmatter,
         },
         Some(profile_name),
-        true,
+        Verbosity::Quiet,
     )
     .map_err(|error| McpMethodError::tool(error.to_string()))?;
     let report = finish_note_set_report(paths, applied, args.check)
@@ -238,7 +239,7 @@ pub fn note_set(
             "note-set",
             std::slice::from_ref(&report.path),
             Some(profile_name),
-            true,
+            Verbosity::Quiet,
         )
         .map_err(|error| McpMethodError::tool(error.clone()))?;
     Ok(report)
@@ -263,7 +264,7 @@ pub fn note_delete(
             dry_run: args.dry_run,
         },
         Some(profile_name),
-        true,
+        Verbosity::Quiet,
     )
     .map_err(|error| McpMethodError::tool(error.to_string()))?;
     if !args.dry_run {
@@ -275,7 +276,7 @@ pub fn note_delete(
                 "note-delete",
                 &report.changed_paths,
                 Some(profile_name),
-                true,
+                Verbosity::Quiet,
             )
             .map_err(|error| McpMethodError::tool(error.clone()))?;
     }

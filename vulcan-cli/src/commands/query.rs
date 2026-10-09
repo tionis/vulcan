@@ -13,6 +13,7 @@ use crate::{
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use vulcan_app::properties::apply_bulk_property_mutation;
+use vulcan_core::Verbosity;
 use vulcan_core::{
     list_properties, list_query_fields, load_vault_config, query_backlinks_with_filter,
     query_links_with_filter, query_notes_with_filter, search_vault_with_filter, NamedCount,
@@ -127,7 +128,7 @@ pub(crate) fn handle_query_command(
             ));
         }
         if cli.output == crate::OutputFormat::Human
-            && !cli.quiet
+            && !cli.verbosity().is_quiet()
             && matches!(engine, QueryEngineArg::Auto)
         {
             eprintln!("(detected as Dataview query)");
@@ -217,7 +218,7 @@ pub(crate) fn handle_query_command(
             format,
             glob,
             explain,
-            verbose: cli.verbose,
+            verbosity: cli.verbosity(),
             stdout_is_tty,
             use_color: use_stdout_color,
             no_header: cli.no_header,
@@ -320,7 +321,7 @@ pub(crate) fn handle_ls_command(
             format,
             glob,
             explain: false,
-            verbose: false,
+            verbosity: Verbosity::Normal,
             stdout_is_tty,
             use_color: use_stdout_color,
             no_header: cli.no_header,
@@ -400,7 +401,7 @@ pub(crate) fn handle_update_command(
     no_commit: bool,
 ) -> Result<(), CliError> {
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-    warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+    warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
     let guard = selected_permission_guard(cli, paths)?;
     let selection = resolve_bulk_note_selection(filters, stdin)?;
     let note_paths = match &selection {
@@ -430,7 +431,7 @@ pub(crate) fn handle_update_command(
         Some(value),
         dry_run,
         cli.permissions.as_deref(),
-        cli.quiet,
+        cli.verbosity(),
     )
     .map_err(CliError::operation)?;
     if !dry_run {
@@ -440,7 +441,7 @@ pub(crate) fn handle_update_command(
                 "update",
                 &crate::bulk_mutation_changed_files(&report),
                 cli.permissions.as_deref(),
-                cli.quiet,
+                cli.verbosity(),
             )
             .map_err(CliError::operation)?;
     }
@@ -457,7 +458,7 @@ pub(crate) fn handle_unset_command(
     no_commit: bool,
 ) -> Result<(), CliError> {
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-    warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+    warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
     let guard = selected_permission_guard(cli, paths)?;
     let selection = resolve_bulk_note_selection(filters, stdin)?;
     let note_paths = match &selection {
@@ -487,7 +488,7 @@ pub(crate) fn handle_unset_command(
         None,
         dry_run,
         cli.permissions.as_deref(),
-        cli.quiet,
+        cli.verbosity(),
     )
     .map_err(CliError::operation)?;
     if !dry_run {
@@ -497,7 +498,7 @@ pub(crate) fn handle_unset_command(
                 "unset",
                 &crate::bulk_mutation_changed_files(&report),
                 cli.permissions.as_deref(),
-                cli.quiet,
+                cli.verbosity(),
             )
             .map_err(CliError::operation)?;
     }

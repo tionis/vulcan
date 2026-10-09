@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+use vulcan_core::Verbosity;
 use vulcan_core::{
     default_assistant_tool_reserved_names, evaluate_dataview_js_with_options,
     list_assistant_skills, load_assistant_skill, load_vault_config, resolve_permission_profile,
@@ -333,7 +334,7 @@ fn run_skill_command_tool_with_context(
             mutation_committer: Some(mdbase_js_mutation_committer(
                 paths,
                 effective_permission_profile.as_deref(),
-                true,
+                Verbosity::Quiet,
             )),
             tool_registry: Some(build_custom_tool_js_registry_with_context(
                 paths,

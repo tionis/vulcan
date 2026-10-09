@@ -1,6 +1,7 @@
 //! Permission-aware MCP configuration reports and mutations.
 
 use vulcan_core::write_lock::acquire_write_lock;
+use vulcan_core::Verbosity;
 use vulcan_core::{
     resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
@@ -70,7 +71,7 @@ pub fn config_set(
                 "config-set",
                 &config_set_changed_files(paths, had_gitignore),
                 Some(profile_name),
-                true,
+                Verbosity::Quiet,
             )
             .map_err(McpMethodError::tool)?;
     }

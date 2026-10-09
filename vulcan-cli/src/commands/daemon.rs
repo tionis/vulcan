@@ -1,4 +1,4 @@
-use crate::cli::NetworkNotificationModeArg;
+use crate::cli::{ColorMode, NetworkNotificationModeArg};
 use crate::output::print_json;
 use crate::{
     Cli, CliError, DaemonAgentKindArg, DaemonCommand, DaemonCompanionCommand, DaemonConfigCommand,
@@ -14,10 +14,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use vulcan_app::obsidian_companion::{
     install_obsidian_companion, ObsidianCompanionInstallReport, ObsidianCompanionInstallRequest,
 };
+use vulcan_core::verbosity::{Verbosity, VERBOSITY_ENV};
 use vulcan_daemon::alert_delivery::{alert_delivery_status, AlertDeliveryStatus};
 use vulcan_daemon::conflict_worker::{load_conflict_worker_status, ConflictWorkerStatus};
 use vulcan_daemon::credentials::CompanionCredentialStore;
 use vulcan_daemon::daemon_host::DAEMON_READINESS_TIMEOUT;
+use vulcan_daemon::environment::load_daemon_environment;
 use vulcan_daemon::host::ServiceRegistration;
 use vulcan_daemon::mutation_scheduler::MutationScheduler;
 #[cfg(test)]
@@ -76,7 +78,7 @@ pub(crate) fn handle_daemon_command(cli: &Cli, command: &DaemonCommand) -> Resul
         ),
         DaemonCommand::Start { detach, child } => {
             let mut context = context.clone();
-            context.verbose = cli.verbose;
+            context.verbosity = daemon_verbosity(cli, &context)?;
             if *detach {
                 start_detached(cli, &context)
             } else {
@@ -756,7 +758,7 @@ fn start_detached(cli: &Cli, context: &DaemonProcessContext) -> Result<(), CliEr
     let executable = std::env::current_exe().map_err(CliError::operation)?;
     let mut command = Command::new(executable);
     command
-        .args(detached_child_args(context.verbose))
+        .args(detached_child_args(context.verbosity, cli.color))
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(error_log));
@@ -1100,14 +1102,36 @@ fn format_age(timestamp_ms: u64) -> String {
     }
 }
 
-/// Arguments for the detached daemon child. The global `--verbose` flag must
-/// precede the subcommand so the child enables the same operational logging.
-fn detached_child_args(verbose: bool) -> Vec<&'static str> {
-    if verbose {
-        vec!["--verbose", "daemon", "start", "--child"]
-    } else {
-        vec!["daemon", "start", "--child"]
+/// The daemon's diagnostic level. Without `-v`/`-q` the level may come from
+/// `VULCAN_VERBOSITY` in `daemon.env`, which is only loaded here, after CLI
+/// parsing, so installed services on every platform can set it there.
+fn daemon_verbosity(cli: &Cli, context: &DaemonProcessContext) -> Result<Verbosity, CliError> {
+    if cli.verbose > 0 || cli.quiet || cli.verbosity_default.is_some() {
+        return Ok(cli.verbosity());
     }
+    let config_directory = context.registry.path().parent().ok_or_else(|| {
+        CliError::operation("daemon registry path has no configuration directory")
+    })?;
+    load_daemon_environment(config_directory).map_err(CliError::operation)?;
+    verbosity_from_environment(cli, std::env::var(VERBOSITY_ENV).ok().as_deref())
+}
+
+fn verbosity_from_environment(cli: &Cli, value: Option<&str>) -> Result<Verbosity, CliError> {
+    let Some(value) = value else {
+        return Ok(cli.verbosity());
+    };
+    let fallback = value
+        .parse::<Verbosity>()
+        .map_err(|error| CliError::operation(format!("{VERBOSITY_ENV}: {error}")))?;
+    Ok(Verbosity::from_flags(cli.verbose, cli.quiet, fallback))
+}
+
+/// Arguments for the detached daemon child. The inherited globals must
+/// precede the subcommand so the child logs at the same level and color.
+fn detached_child_args(verbosity: Verbosity, color: ColorMode) -> Vec<String> {
+    let mut args = crate::inherited_global_args(verbosity, color);
+    args.extend(["daemon", "start", "--child"].map(String::from));
+    args
 }
 
 #[cfg(test)]
@@ -1125,7 +1149,7 @@ mod tests {
             device_identity: vulcan_app::device_identity::DeviceIdentityStore::at(
                 temporary.path().join("state/sync/device-identity"),
             ),
-            verbose: false,
+            verbosity: Verbosity::Normal,
         };
         let scheduler = Arc::new(
             MutationScheduler::new(MutationSchedulerConfig::default()).expect("scheduler"),
@@ -1138,11 +1162,38 @@ mod tests {
     }
 
     #[test]
-    fn detached_child_preserves_verbose_logging() {
-        assert_eq!(detached_child_args(false), ["daemon", "start", "--child"]);
+    fn daemon_environment_supplies_the_level_only_without_flags() {
+        let cli = |args: &[&str]| {
+            <Cli as clap::Parser>::try_parse_from(
+                [&["vulcan"], args, &["daemon", "start"]].concat(),
+            )
+            .expect("cli should parse")
+        };
+        let plain = cli(&[]);
         assert_eq!(
-            detached_child_args(true),
-            ["--verbose", "daemon", "start", "--child"]
+            verbosity_from_environment(&plain, Some("debug")).expect("valid level"),
+            Verbosity::Debug
+        );
+        assert_eq!(
+            verbosity_from_environment(&cli(&["-q"]), Some("debug")).expect("valid level"),
+            Verbosity::Quiet
+        );
+        assert!(verbosity_from_environment(&plain, Some("loud")).is_err());
+    }
+
+    #[test]
+    fn detached_child_preserves_verbose_logging() {
+        assert_eq!(
+            detached_child_args(Verbosity::Normal, ColorMode::Auto),
+            ["daemon", "start", "--child"]
+        );
+        assert_eq!(
+            detached_child_args(Verbosity::Debug, ColorMode::Auto),
+            ["-vv", "daemon", "start", "--child"]
+        );
+        assert_eq!(
+            detached_child_args(Verbosity::Quiet, ColorMode::Never),
+            ["--quiet", "--color", "never", "daemon", "start", "--child"]
         );
     }
 

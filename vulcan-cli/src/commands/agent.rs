@@ -1230,14 +1230,14 @@ fn run_agent_import_command(
 
     if !changed_paths.is_empty() {
         let auto_commit = AutoCommitPolicy::for_mutation(paths, args.no_commit);
-        warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+        warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
         auto_commit
             .commit(
                 paths,
                 "agent-import",
                 &changed_paths,
                 cli.permissions.as_deref(),
-                cli.quiet,
+                cli.verbosity(),
             )
             .map_err(CliError::operation)?;
     }

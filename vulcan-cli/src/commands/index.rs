@@ -35,7 +35,7 @@ pub(crate) fn handle_index_command(
         }
         IndexCommand::Scan { full, no_commit } => {
             let auto_commit = AutoCommitPolicy::for_scan(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let mut progress = (cli.output == crate::OutputFormat::Human)
                 .then(|| crate::ScanProgressReporter::new(use_stderr_color));
             let summary = scan_vault_with_automation(
@@ -47,7 +47,7 @@ pub(crate) fn handle_index_command(
                 },
                 &auto_commit,
                 cli.permissions.as_deref(),
-                cli.quiet,
+                cli.verbosity(),
                 |event| {
                     if let Some(progress) = progress.as_mut() {
                         progress.record(&event);
@@ -77,7 +77,7 @@ pub(crate) fn handle_index_command(
         } => {
             let auto_commit = AutoCommitPolicy::for_scan(paths, *no_commit);
             let trigger_guard = selected_permission_guard(cli, paths)?;
-            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             if cli.output == crate::OutputFormat::Human && stdout_is_tty {
                 println!(
                     "Watching {} (debounce {}ms)",
@@ -95,7 +95,7 @@ pub(crate) fn handle_index_command(
                         paths,
                         &report.created_paths,
                         cli.permissions.as_deref(),
-                        cli.quiet,
+                        cli.verbosity(),
                         &trigger_guard,
                     )?;
                     if !triggered_paths.is_empty() {
@@ -116,7 +116,7 @@ pub(crate) fn handle_index_command(
                                 "scan",
                                 &changed_paths,
                                 cli.permissions.as_deref(),
-                                cli.quiet,
+                                cli.verbosity(),
                             )
                             .map_err(CliError::operation)?;
                     }
@@ -130,7 +130,7 @@ pub(crate) fn handle_index_command(
                             "summary": &report.summary,
                             "paths": &report.paths,
                         }),
-                        cli.quiet,
+                        cli.verbosity(),
                     );
                     Ok::<(), CliError>(())
                 },

@@ -18,6 +18,7 @@ use std::path::Path;
 use std::time::SystemTime;
 use vulcan_core::mdbase::{is_mdbase_record_path, mdbase_content_revision};
 use vulcan_core::paths::secure_read_to_string;
+use vulcan_core::Verbosity;
 use vulcan_core::{resolve_permission_profile, PermissionGuard, ProfilePermissionGuard};
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -38,7 +39,7 @@ pub struct MdbaseFrontmatterPatchRequest {
 pub struct MdbaseFrontmatterPatchOptions {
     pub dry_run: bool,
     pub no_commit: bool,
-    pub quiet: bool,
+    pub verbosity: Verbosity,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -128,7 +129,7 @@ pub fn patch_mdbase_frontmatter(
         &MdbaseWriteExecutionOptions {
             idempotency_key: ulid::Ulid::new().to_string(),
             no_commit: options.no_commit,
-            quiet: options.quiet,
+            verbosity: options.verbosity,
         },
         now,
     )?;

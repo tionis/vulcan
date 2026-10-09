@@ -7,6 +7,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::process::Command as ProcessCommand;
 use vulcan_core::note_session::NoteStoreSession;
 use vulcan_core::properties::load_note_index;
+use vulcan_core::Verbosity;
 use vulcan_core::{
     doctor_vault as core_doctor_vault, evaluate_base_file as core_evaluate_base_file,
     evaluate_dataview_js_query as core_evaluate_dataview_js_query,
@@ -357,7 +358,7 @@ pub fn build_dataview_query_js_report(
             mutation_committer: Some(mdbase_js_mutation_committer(
                 paths,
                 permission_profile,
-                true,
+                Verbosity::Quiet,
             )),
             tool_registry: Some(build_custom_tool_js_registry(
                 paths,
@@ -490,7 +491,7 @@ pub fn move_note_with_profile(
                 allow_mixed_paths: true,
                 dry_run,
                 permission_profile,
-                quiet: true,
+                verbosity: Verbosity::Quiet,
             },
         )?;
         if routed.is_some() {

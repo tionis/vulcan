@@ -1,6 +1,7 @@
 use crate::commit::AutoCommitPolicy;
 use crate::AppError;
 use serde_json::json;
+use vulcan_core::Verbosity;
 use vulcan_core::{
     scan_vault_with_progress, PluginEvent, ScanMode, ScanProgress, ScanSummary, VaultPaths,
 };
@@ -11,7 +12,7 @@ pub fn scan_vault_with_automation<F>(
     mode: ScanMode,
     auto_commit: &AutoCommitPolicy,
     active_permission_profile: Option<&str>,
-    quiet: bool,
+    verbosity: Verbosity,
     on_progress: F,
 ) -> Result<ScanSummary, AppError>
 where
@@ -21,7 +22,7 @@ where
         scan_vault_with_progress(paths, mode, on_progress).map_err(AppError::operation)?;
     if summary.added + summary.updated + summary.deleted > 0 {
         auto_commit
-            .commit(paths, "scan", &[], active_permission_profile, quiet)
+            .commit(paths, "scan", &[], active_permission_profile, verbosity)
             .map_err(AppError::operation)?;
     }
     let _ = crate::plugins::dispatch_plugin_event(
@@ -33,7 +34,7 @@ where
             "mode": if mode == ScanMode::Full { "full" } else { "incremental" },
             "summary": &summary,
         }),
-        quiet,
+        verbosity,
     );
     Ok(summary)
 }
@@ -71,6 +72,7 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
     use vulcan_core::properties::load_note_index;
+    use vulcan_core::Verbosity;
     use vulcan_core::{
         initialize_vulcan_dir, scan_vault_with_progress, ScanMode, ScanPhase, VaultPaths,
     };
@@ -137,7 +139,7 @@ mod tests {
             ScanMode::Full,
             &AutoCommitPolicy::for_scan(&paths, false),
             None,
-            true,
+            Verbosity::Quiet,
             |event| events.push(event),
         )
         .expect("requested scan");
@@ -153,7 +155,7 @@ mod tests {
             ScanMode::Incremental,
             &AutoCommitPolicy::for_scan(&paths, false),
             None,
-            true,
+            Verbosity::Quiet,
             |_| {},
         )
         .expect("unchanged scan");

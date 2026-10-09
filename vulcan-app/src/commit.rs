@@ -1,4 +1,5 @@
 use serde_json::json;
+use vulcan_core::Verbosity;
 use vulcan_core::{
     auto_commit, git_status, is_git_repo, load_vault_config, AutoCommitReport, GitConfig,
     GitTrigger, PluginEvent, VaultPaths,
@@ -55,7 +56,7 @@ impl AutoCommitPolicy {
         action: &str,
         changed_files: &[String],
         permission_profile: Option<&str>,
-        quiet: bool,
+        verbosity: Verbosity,
     ) -> Result<Option<AutoCommitReport>, String> {
         let Self::Enabled(config) = self else {
             return Ok(None);
@@ -81,7 +82,7 @@ impl AutoCommitPolicy {
                 "action": action,
                 "files": candidate_files,
             }),
-            quiet,
+            verbosity,
         )
         .map_err(|error| error.to_string())?;
 
@@ -99,7 +100,7 @@ impl AutoCommitPolicy {
                     "sha": report.sha,
                     "message": report.message,
                 }),
-                quiet,
+                verbosity,
             );
             Ok(Some(report))
         } else {

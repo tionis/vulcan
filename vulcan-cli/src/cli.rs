@@ -2,6 +2,7 @@ use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use vulcan_core::verbosity::{Verbosity, VERBOSITY_ENV};
 
 const ROOT_AFTER_HELP: &str = "\
 Quick start:
@@ -623,7 +624,7 @@ const DAEMON_START_AFTER_HELP: &str = "\
 Notes:
   The daemon only syncs registered wikis: `vulcan vault list` shows them,
   `vulcan vault add` and `vulcan vault clone` register more.
-  Add --verbose, before or after `start`, for per-sync operational lines.
+  Add -v/--verbose, before or after `start`, for per-sync operational lines.
 
 Examples:
   vulcan daemon start
@@ -978,7 +979,7 @@ Examples:
 
 const KANBAN_COMMAND_AFTER_HELP: &str = "\
 Notes:
-  `kanban show` defaults to column counts; add `--verbose` to include cards.
+  `kanban show` defaults to column counts; add `--cards` to include cards.
   `kanban show --include-archive` adds the parsed archive section back into the output.
   `kanban cards --status` matches a task status character, status name, or status type.
   `kanban archive` rewrites the board note, supports `--dry-run`, and honors auto-commit unless `--no-commit` is set.
@@ -988,7 +989,7 @@ Notes:
 Examples:
   vulcan kanban list
   vulcan kanban show Board
-  vulcan kanban show Board --verbose
+  vulcan kanban show Board --cards
   vulcan kanban show Board --include-archive
   vulcan kanban cards Board --column Todo
   vulcan kanban archive Board build-release
@@ -6533,7 +6534,7 @@ pub enum KanbanCommand {
         #[arg(help = "Board path, filename, or alias")]
         board: String,
         #[arg(long, help = "Include card details in the output")]
-        verbose: bool,
+        cards: bool,
         #[arg(long, help = "Include archived cards in the output")]
         include_archive: bool,
     },
@@ -8899,11 +8900,15 @@ ancestor `.vulcan/` vault."
 
     #[arg(
         long,
+        short = 'v',
         global = true,
-        action = ArgAction::SetTrue,
-        help = "Enable extra diagnostic output"
+        action = ArgAction::Count,
+        help = "Increase diagnostic output: -v verbose, -vv debug, -vvv trace",
+        long_help = "Increase diagnostic output. Repeat for more detail: -v verbose, -vv debug, \
+-vvv trace. Overrides VULCAN_VERBOSITY; --quiet wins over -v. Vulcan processes launched by this \
+one (such as a detached daemon) inherit the level."
     )]
-    pub verbose: bool,
+    pub verbose: u8,
 
     #[arg(
         long,
@@ -8914,6 +8919,16 @@ ancestor `.vulcan/` vault."
         help = "Suppress scan progress, warnings, and non-essential stderr output"
     )]
     pub quiet: bool,
+
+    /// Default level from `VULCAN_VERBOSITY` when neither `-v` nor `-q` is given.
+    #[arg(
+        long = "verbosity-default",
+        global = true,
+        hide = true,
+        env = VERBOSITY_ENV,
+        value_parser = clap::value_parser!(Verbosity)
+    )]
+    pub verbosity_default: Option<Verbosity>,
 
     #[arg(
         long,
@@ -8935,4 +8950,18 @@ ancestor `.vulcan/` vault."
 
     #[command(subcommand)]
     pub command: Command,
+}
+
+impl Cli {
+    /// The invocation's diagnostic level, combining `-v`/`-q` with the
+    /// `VULCAN_VERBOSITY` default. Thread this value instead of re-reading
+    /// the raw flags.
+    #[must_use]
+    pub fn verbosity(&self) -> Verbosity {
+        Verbosity::from_flags(
+            self.verbose,
+            self.quiet,
+            self.verbosity_default.unwrap_or_default(),
+        )
+    }
 }
