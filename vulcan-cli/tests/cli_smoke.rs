@@ -7842,6 +7842,11 @@ fn sync_semantic_plan_and_apply_create_reviewable_exact_history() {
     assert_eq!(applied["applied_revision"], tip);
     assert_eq!(applied["proposal_ref_released"], true);
     assert_eq!(run_git_stdout(&vault, &["rev-parse", "main"]), tip);
+    assert_eq!(
+        run_git_stdout(&vault, &["status", "--short"]),
+        "",
+        "applying to the checked-out branch must move its index too"
+    );
     assert!(!ProcessCommand::new("git")
         .arg("-C")
         .arg(&vault)
@@ -7877,6 +7882,94 @@ fn sync_semantic_plan_and_apply_create_reviewable_exact_history() {
     );
     let repeated_publication = parse_stdout_json(&sync(&["semantic-publish", plan_id]).success());
     assert_eq!(repeated_publication["already_published"], true);
+}
+
+#[test]
+fn sync_semantic_auto_repeats_on_the_checked_out_tracked_branch() {
+    let temporary = TempDir::new().expect("temp dir");
+    let state_home = temporary.path().join("state");
+    let remote = temporary.path().join("remote.git");
+    run_git_ok(
+        temporary.path(),
+        &[
+            "init",
+            "--quiet",
+            "--bare",
+            remote.to_str().expect("remote"),
+        ],
+    );
+    let vault = temporary.path().join("wiki");
+    fs::create_dir(&vault).expect("vault");
+    init_git_repo(&vault);
+    run_git_ok(
+        &vault,
+        &["remote", "add", "origin", remote.to_str().expect("remote")],
+    );
+    fs::write(vault.join("Home.md"), "initial\n").expect("initial note");
+    commit_all(&vault, "Initial");
+    run_git_ok(&vault, &["push", "--quiet", "-u", "origin", "main"]);
+    let sync = |arguments: &[&str]| {
+        Command::cargo_bin("vulcan")
+            .expect("binary")
+            .env("XDG_STATE_HOME", &state_home)
+            .arg("--vault")
+            .arg(&vault)
+            .args(["--output", "json", "sync"])
+            .args(arguments)
+            .assert()
+    };
+    let automatic = || {
+        parse_stdout_json(
+            &sync(&[
+                "semantic-auto",
+                "--quiet-seconds",
+                "0",
+                "--maximum-wait-seconds",
+                "60",
+            ])
+            .success(),
+        )
+    };
+    sync(&["run"]).success();
+
+    for (round, contents) in ["revised\n", "revised again\n"].into_iter().enumerate() {
+        fs::write(vault.join("Home.md"), contents).expect("revision");
+        sync(&["run"]).success();
+        let report = automatic();
+        assert_eq!(report["outcome"], "completed", "round {round}: {report}");
+        let tip = report["application"]["applied_revision"]
+            .as_str()
+            .expect("semantic tip");
+        assert_eq!(run_git_stdout(&vault, &["rev-parse", "HEAD"]), tip);
+        assert_eq!(run_git_stdout(&vault, &["status", "--short"]), "");
+        assert_eq!(
+            run_git_stdout(&vault, &["ls-remote", "origin", "refs/heads/main"])
+                .split_whitespace()
+                .next(),
+            Some(tip)
+        );
+        // The next cycle links the published semantic tip into live.
+        sync(&["run"]).success();
+        let live = run_git_stdout(
+            &vault,
+            &["ls-remote", "origin", "refs/heads/__vulcan-sync/live"],
+        )
+        .split_whitespace()
+        .next()
+        .expect("live tip")
+        .to_string();
+        assert!(
+            ProcessCommand::new("git")
+                .arg("-C")
+                .arg(&vault)
+                .args(["merge-base", "--is-ancestor", tip, &live])
+                .status()
+                .expect("git should launch")
+                .success(),
+            "round {round}: live must contain the published semantic tip"
+        );
+    }
+    assert_eq!(automatic()["outcome"], "up_to_date");
 }
 
 #[test]
@@ -7968,6 +8061,25 @@ fn sync_semantic_auto_debounces_and_publishes_a_finite_cycle() {
         .success(),
     );
     assert_eq!(retry["outcome"], "up_to_date");
+
+    // The separate semantic branch is never linked into live; its applied
+    // tip's recorded target keeps the next cycle valid.
+    fs::write(vault.join("Home.md"), "revised again\n").expect("second revision");
+    sync(&["run"]).success();
+    let second = parse_stdout_json(
+        &sync(&[
+            "semantic-auto",
+            "--semantic-ref",
+            "refs/heads/semantic",
+            "--quiet-seconds",
+            "0",
+            "--maximum-wait-seconds",
+            "60",
+        ])
+        .success(),
+    );
+    assert_eq!(second["outcome"], "completed");
+    assert_eq!(second["source_revision"], tip);
 }
 
 #[test]

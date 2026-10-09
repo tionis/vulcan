@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use ulid::Ulid;
 use vulcan_core::VaultPaths;
 use vulcan_sync::{
-    semantic_proposal_ref as namespace_semantic_proposal_ref, GitChange, GitChangeKind,
-    GitCliEngine, GitEngine, GitOid, GitPushResult, GitRefDeleteResult, GitRefName,
+    semantic_proposal_ref as namespace_semantic_proposal_ref, BranchAdvanceOutcome, GitChange,
+    GitChangeKind, GitCliEngine, GitEngine, GitOid, GitPushResult, GitRefDeleteResult, GitRefName,
     GitRefUpdateResult, GitRemote, GitRepository, GitSyncOptions, GitSyncRefs,
 };
 
@@ -908,11 +908,7 @@ pub fn apply_semantic_plan_with_state_store(
     plan.status = SemanticPlanStatus::Applying;
     plan.version = SEMANTIC_PLAN_VERSION;
     save_plan(store, &plan, false)?;
-    if engine
-        .compare_and_swap_ref(&repository, &semantic_ref, &tip, Some(&source))
-        .map_err(AppError::operation)?
-        != GitRefUpdateResult::Updated
-    {
+    if !advance_semantic_branch(&engine, &repository, &semantic_ref, &source, &tip)? {
         return Err(AppError::operation(
             "semantic branch changed while applying the proposal; the plan is stale",
         ));
@@ -924,6 +920,41 @@ pub fn apply_semantic_plan_with_state_store(
         proposal_ref_released: true,
         ..report
     })
+}
+
+/// Moves the semantic branch from `source` to `tip`. A checked-out semantic
+/// branch moves its normal index with it through the two-way index-only
+/// merge of a fast-forward checkout; worktree bytes already equal the tip.
+/// Returns false when the branch moved first.
+fn advance_semantic_branch(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    semantic_ref: &GitRefName,
+    source: &GitOid,
+    tip: &GitOid,
+) -> Result<bool, AppError> {
+    let checked_out = repository.work_tree.is_some()
+        && engine
+            .head_reference(repository)
+            .map_err(AppError::operation)?
+            .as_ref()
+            == Some(semantic_ref);
+    if !checked_out {
+        return Ok(engine
+            .compare_and_swap_ref(repository, semantic_ref, tip, Some(source))
+            .map_err(AppError::operation)?
+            == GitRefUpdateResult::Updated);
+    }
+    match engine
+        .advance_checked_out_branch(repository, semantic_ref, source, tip)
+        .map_err(AppError::operation)?
+    {
+        BranchAdvanceOutcome::Advanced => Ok(true),
+        BranchAdvanceOutcome::Stale => Ok(false),
+        BranchAdvanceOutcome::BlockedStaged => Err(AppError::operation(
+            "staged changes conflict with the semantic proposal; the semantic branch was not moved",
+        )),
+    }
 }
 
 struct SemanticApplyRuntime<'a> {
@@ -1000,12 +1031,9 @@ fn validate_plan_inputs(
             options.semantic_ref
         )));
     }
-    if !engine
-        .is_ancestor(repository, source, target)
-        .map_err(AppError::operation)?
-    {
+    if !semantic_source_precedes_target(engine, repository, source, target)? {
         return Err(AppError::operation(
-            "semantic source must be an ancestor of the accepted target",
+            "semantic source must be an ancestor of the accepted target or an applied semantic tip whose recorded target is",
         ));
     }
     validate_accepted_target(
@@ -1015,6 +1043,46 @@ fn validate_plan_inputs(
         &options.live_ref,
         target,
     )
+}
+
+/// Whether the semantic source projects history the accepted target already
+/// contains. Live links the published checked-out branch, so a checked-out
+/// semantic branch is an ancestor of later live tips. A separate semantic
+/// branch is never linked; its applied tip instead records the live target
+/// it projected, which must be an ancestor of the new target with the same
+/// tree as the source.
+fn semantic_source_precedes_target(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    source: &GitOid,
+    target: &GitOid,
+) -> Result<bool, AppError> {
+    if engine
+        .is_ancestor(repository, source, target)
+        .map_err(AppError::operation)?
+    {
+        return Ok(true);
+    }
+    let metadata = engine
+        .commit_metadata_batch(repository, std::slice::from_ref(source))
+        .map_err(AppError::operation)?;
+    let Some(recorded) = metadata.first().and_then(|metadata| {
+        metadata
+            .message
+            .lines()
+            .rev()
+            .find_map(|line| line.strip_prefix("Vulcan-Semantic-Target: "))
+            .and_then(|value| GitOid::parse(value.trim()).ok())
+    }) else {
+        return Ok(false);
+    };
+    Ok(engine
+        .is_ancestor(repository, &recorded, target)
+        .map_err(AppError::operation)?
+        && engine
+            .tree_oid(repository, &recorded)
+            .map_err(AppError::operation)?
+            == metadata[0].tree)
 }
 
 fn validate_accepted_target(
