@@ -11,7 +11,8 @@ require_confirmation: false
 # Sync Workflow
 
 Vulcan synchronizes canonical vault files through finite, recoverable transactions. Live snapshots
-are deliberately non-semantic and do not advance the user's checked-out branch. Use the direct CLI
+are deliberately non-semantic and never create commits on the user's checked-out branch; they link
+its already-published tip so the branch stays an ancestor of live. Use the direct CLI
 for one-shot work and the daemon for scheduling, watching, multiple wikis, or a companion client;
 both execute the same application workflow.
 
@@ -308,8 +309,13 @@ branch from its upstream before the canonical hidden live ref moves, following t
 `branch.<name>.rebase`) with `--no-edit` and no implicit autostash. Watch the human output or
 the JSON `branch` report for `fast-forwarded`, `merged`, `rebased`, `paused` (diverged past
 `pull.ff=only`, interactive rebase, or a merge/rebase conflict left for ordinary Git),
-`deferred` (dirty worktree, retried next cycle), or `skipped` (no upstream, deleted upstream,
-detached HEAD, or bare repository). After a healthy pull lane, the branch tip is published to its
+`adopted` (the upstream tip had already reached this worktree through live, so only the branch and
+normal index moved and no file was rewritten), `deferred` (dirty worktree or a staged entry that
+conflicts with the upstream, retried next cycle), or `skipped` (no upstream, deleted upstream,
+detached HEAD, or bare repository). A large apparent uncommitted diff after another device's
+commits arrived through live clears once the branch adopts those commits; do not commit, reset, or
+stash it manually. Live snapshots record the published branch tip (the merge base of `HEAD` and its
+upstream tracking ref) as a second parent, so unpushed commits are never published through live. After a healthy pull lane, the branch tip is published to its
 upstream with the observed tracking ref as an exact lease — never force-pushed — before hidden
 file reconciliation. Ordinary commits therefore still fetch, pull, and push when the file lane
 later preserves a conflict. A moved remote reports for the next cycle; transport or policy
@@ -623,6 +629,9 @@ they commit.
   exits: `deferred` means the accepted live revision has not passed `--quiet-seconds`, `up_to_date`
   means no semantic tree change exists, and `completed` includes application plus leased
   publication. Use `--maximum-wait-seconds` to cap batching and `--dry-run` for a state-free preview.
+  The default semantic branch is the checked-out `refs/heads/main`; applying moves its index with it,
+  and the next sync links the published semantic tip into live so later cycles keep working. A
+  separate `--semantic-ref` branch continues from its applied tip's recorded live target.
   `deferred` and `up_to_date` describe locally accepted refs; idle calls do not query the remote.
   Due work validates remote agreement before planning, applying, or publishing through the
   existing guarded workflows. Continuing target changes reset quiet time but retain the first
@@ -633,7 +642,9 @@ they commit.
 - Current local bytes must be captured before remote application or publication.
 - A remote update uses an exact lease; never replace a rejected push with unconditional force.
 - The user's normal index and semantic branch are not sync scratch space; staged entries sync
-  as worktree bytes without pausing and are never staged, reset, or rewritten by sync.
+  as worktree bytes without pausing and are never staged, reset, or rewritten by sync. The only
+  index change is the fast-forward checkout transition of an `adopted` branch or a checked-out
+  semantic application, which preserves unrelated staged entries and refuses conflicting ones.
 - Scan only after the complete accepted tree has been applied and verified.
 - Treat policy, platform, link-validation, deletion-limit, stale-input, and worktree-drift failures as
   reasons to preserve and stop. Do not bypass them to make synchronization appear seamless.
