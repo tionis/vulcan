@@ -3723,6 +3723,10 @@ fn branch_lane_message(branch: &GitBranchSync) -> Option<String> {
             "Branch {name} rebased at {}.",
             revision.as_deref().unwrap_or("unknown"),
         )),
+        GitBranchSyncAction::Adopted => Some(format!(
+            "Branch {name} adopted {} already synchronized through live.",
+            revision.as_deref().unwrap_or("unknown"),
+        )),
         GitBranchSyncAction::Paused => Some(format!(
             "Branch {name} paused: {}.",
             branch.detail.as_deref().unwrap_or("unknown reason"),
@@ -3815,6 +3819,10 @@ mod sync_report_tests {
         assert!(
             branch_lane_message(&branch_lane(GitBranchSyncAction::FastForwarded, None))
                 .is_some_and(|line| line.contains("main") && line.contains("fast-forwarded"))
+        );
+        assert!(
+            branch_lane_message(&branch_lane(GitBranchSyncAction::Adopted, None))
+                .is_some_and(|line| line.contains("main") && line.contains("adopted"))
         );
         assert!(branch_lane_message(&branch_lane(
             GitBranchSyncAction::Paused,

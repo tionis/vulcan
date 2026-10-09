@@ -1,15 +1,16 @@
 use crate::{
     conflict_ref, local_epoch_ref, local_sync_ref, remote_conflict_ref, remote_device_ref,
-    remote_epoch_ref, sync_profile_key, BranchPullConfig, FastForwardOutcome, GitBranchUpstream,
-    GitCaptureRequest, GitContentMergeResolutionRequest, GitEngine, GitEngineError,
-    GitInstallation, GitOid, GitPathObject, GitPlatformPreflight, GitPlatformProfile,
-    GitPushResult, GitRefMirror, GitRefName, GitRefPush, GitReference, GitRemote, GitRepository,
-    GitRepositoryRequirements, GitResolvedPath, GitSafetyState, GitTreeApplyPlan, MergeAutomation,
-    MergeBranchOutcome, MergeFileKind, MergePolicy, MergeResolution, PullFastForward, PullRebase,
-    RebaseOutcome, SyncAction, SyncBackend, SyncCapabilities, SyncCapability, SyncConflict,
-    SyncContext, SyncError, SyncErrorCategory, SyncOperation, SyncOperationMode, SyncOutcome,
-    SyncPlan, SyncProgress, SyncReport, SyncResolutionState, SyncState, SyncStatus,
-    DEFAULT_REMOTE_LIVE_REF, GIT_PLATFORM_PREFLIGHT_VERSION, LOCAL_REGISTRATION_MIRROR_ROOT,
+    remote_epoch_ref, sync_profile_key, BranchAdvanceOutcome, BranchPullConfig, FastForwardOutcome,
+    GitBranchUpstream, GitCaptureRequest, GitContentMergeResolutionRequest, GitEngine,
+    GitEngineError, GitInstallation, GitOid, GitPathObject, GitPlatformPreflight,
+    GitPlatformProfile, GitPushResult, GitRefMirror, GitRefName, GitRefPush, GitReference,
+    GitRemote, GitRepository, GitRepositoryRequirements, GitResolvedPath, GitSafetyState,
+    GitTreeApplyPlan, MergeAutomation, MergeBranchOutcome, MergeFileKind, MergePolicy,
+    MergeResolution, PullFastForward, PullRebase, RebaseOutcome, SyncAction, SyncBackend,
+    SyncCapabilities, SyncCapability, SyncConflict, SyncContext, SyncError, SyncErrorCategory,
+    SyncOperation, SyncOperationMode, SyncOutcome, SyncPlan, SyncProgress, SyncReport,
+    SyncResolutionState, SyncState, SyncStatus, DEFAULT_REMOTE_LIVE_REF,
+    GIT_PLATFORM_PREFLIGHT_VERSION, LOCAL_REGISTRATION_MIRROR_ROOT,
     REMOTE_REGISTRATION_BRANCH_ROOT, SYNC_CONTRACT_VERSION, VULCAN_REF_NAMESPACE_VERSION,
 };
 use serde::{Deserialize, Serialize, Serializer};
@@ -487,6 +488,9 @@ pub enum GitBranchSyncAction {
     FastForwarded,
     Merged,
     Rebased,
+    /// Fast-forwarded through the index only to an upstream tip the
+    /// synchronized worktree already contained through live history.
+    Adopted,
     /// Nothing to do or nothing known: no upstream, detached HEAD, or a bare
     /// repository without a worktree. The detail names the reason.
     Skipped,
@@ -1637,6 +1641,7 @@ fn pull_branch_lane(
     engine: &dyn GitEngine,
     report: &mut GitSyncReport,
     remote: &mut AttemptRemote,
+    capture: &GitOid,
 ) -> Result<(), GitSyncError> {
     // Branch operations must not start while another Git operation owns the
     // worktree; the live pause check then reports it with guidance. Pure
@@ -1654,6 +1659,7 @@ fn pull_branch_lane(
             GitBranchSyncAction::FastForwarded
                 | GitBranchSyncAction::Merged
                 | GitBranchSyncAction::Rebased
+                | GitBranchSyncAction::Adopted
         ) && existing.after == engine.head_commit(repository)?
         {
             return Ok(());
@@ -1702,7 +1708,12 @@ fn pull_branch_lane(
             report.branch = Some(lane);
             return Ok(());
         }
+        if try_adopt_upstream(engine, report, &branch, &head, &fetched, capture, &mut lane)? {
+            report.branch = Some(lane);
+            return Ok(());
+        }
     }
+    let repository = &report.repository;
     let config = match engine.branch_pull_config(repository, &branch) {
         Ok(config) => config,
         // An unreadable pull strategy (e.g. a typo'd pull.ff value) fails
@@ -1744,6 +1755,72 @@ fn record_branch_move(
     lane.after = engine.head_commit(&report.repository)?;
     report.head_before.clone_from(&lane.after);
     report.head_ref_before = engine.head_reference(&report.repository)?;
+    Ok(())
+}
+
+/// Adopts an upstream tip that fast-forwards `head` and that `contains` (the
+/// captured snapshot or the applied accepted live tip) already contains. The
+/// worktree already descends from the upstream content through live, so only
+/// the branch and normal index move; an ordinary pull would instead rewrite
+/// bytes that later live history changed. Returns true when the lane is
+/// complete and the caller should record it.
+fn try_adopt_upstream(
+    engine: &dyn GitEngine,
+    report: &mut GitSyncReport,
+    branch: &GitRefName,
+    head: &GitOid,
+    upstream: &GitOid,
+    contains: &GitOid,
+    lane: &mut GitBranchSync,
+) -> Result<bool, GitSyncError> {
+    let repository = &report.repository;
+    if !engine.is_ancestor(repository, head, upstream)?
+        || !engine.is_ancestor(repository, upstream, contains)?
+    {
+        return Ok(false);
+    }
+    match engine.advance_checked_out_branch(repository, branch, head, upstream)? {
+        BranchAdvanceOutcome::Advanced => {
+            record_branch_move(engine, report, lane, GitBranchSyncAction::Adopted)?;
+            lane.detail = None;
+        }
+        BranchAdvanceOutcome::BlockedStaged => {
+            lane.action = GitBranchSyncAction::Deferred;
+            lane.detail = Some(
+                "staged changes conflict with the upstream branch; retrying next cycle".to_string(),
+            );
+        }
+        BranchAdvanceOutcome::Stale => {
+            lane.action = GitBranchSyncAction::Failed;
+            lane.detail = Some("the branch moved while adopting its upstream".to_string());
+        }
+    }
+    Ok(true)
+}
+
+/// Adopts the fetched upstream tip after the accepted live tip was applied,
+/// when the pull deferred because the worktree already held upstream bytes
+/// that only arrived through live.
+fn adopt_upstream_after_application(
+    engine: &dyn GitEngine,
+    report: &mut GitSyncReport,
+    accepted: &GitOid,
+) -> Result<(), GitSyncError> {
+    let Some(mut lane) = report
+        .branch
+        .take_if(|lane| lane.action == GitBranchSyncAction::Deferred)
+    else {
+        return Ok(());
+    };
+    if let (Some(tracking), Some(head)) = (lane.tracking.clone(), report.head_before.clone()) {
+        if let Some(upstream) = engine.read_ref(&report.repository, &tracking)? {
+            let branch = lane.branch.clone();
+            try_adopt_upstream(
+                engine, report, &branch, &head, &upstream, accepted, &mut lane,
+            )?;
+        }
+    }
+    report.branch = Some(lane);
     Ok(())
 }
 
@@ -1967,6 +2044,7 @@ fn push_branch_lane(
                 | GitBranchSyncAction::FastForwarded
                 | GitBranchSyncAction::Merged
                 | GitBranchSyncAction::Rebased
+                | GitBranchSyncAction::Adopted
         )
     });
     if !healthy {
@@ -2105,6 +2183,7 @@ fn run_attempt(
         refs_before.pending.as_ref(),
         &accepted,
     )?;
+    adopt_upstream_after_application(engine, report, &accepted)?;
     report.outcome = outcome;
     report.accepted = Some(accepted);
     control.emit(GitSyncPhase::Completed, report, None)?;
@@ -2230,7 +2309,7 @@ fn pull_branch_and_refresh_device_backup(
     base: Option<GitOid>,
 ) -> Result<Option<crate::GitCapture>, GitSyncError> {
     control.check()?;
-    pull_branch_lane(engine, report, remote)?;
+    pull_branch_lane(engine, report, remote, &capture.commit)?;
     push_branch_lane(engine, report)?;
     let may_have_rewritten_worktree = report.branch.as_ref().is_some_and(|branch| {
         matches!(
@@ -7439,6 +7518,70 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
             Some(accepted),
             "a linked branch needs no new link"
         );
+    }
+
+    /// Two tracked devices where the writer's edit reached the reader
+    /// through live before the writer committed and pushed it.
+    fn reader_holding_writer_commit_through_live() -> (TempDir, PathBuf, PathBuf, String) {
+        let (temporary, remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        let options = GitSyncOptions::default();
+        sync_git_once(&engine, &writer, &options).expect("writer bootstrap");
+        let reader = clone_reader(&temporary, &remote, &writer);
+        sync_git_once(&engine, &reader, &options).expect("reader adoption");
+        fs::write(writer.join("Home.md"), "edited\n").expect("writer edit");
+        sync_git_once(&engine, &writer, &options).expect("writer publishes the edit");
+        sync_git_once(&engine, &reader, &options).expect("reader receives the edit");
+        assert_eq!(git_stdout(&reader, &["status", "--short"]), "M Home.md");
+        commit_all(&writer, "edit");
+        sync_git_once(&engine, &writer, &options).expect("writer publishes the commit");
+        let committed = git_stdout(&writer, &["rev-parse", "HEAD"]);
+        (temporary, writer, reader, committed)
+    }
+
+    #[test]
+    fn branch_adopts_upstream_commits_that_arrived_through_live() {
+        let (_temporary, _writer, reader, committed) = reader_holding_writer_commit_through_live();
+        let engine = GitCliEngine::default();
+
+        let report =
+            sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("reader sync");
+
+        let lane = report.branch.as_ref().expect("branch lane report");
+        assert_eq!(lane.action, GitBranchSyncAction::Adopted, "{lane:?}");
+        assert_eq!(
+            lane.after.as_ref().map(ToString::to_string),
+            Some(committed.clone())
+        );
+        assert_eq!(git_stdout(&reader, &["rev-parse", "HEAD"]), committed);
+        assert_eq!(git_stdout(&reader, &["status", "--short"]), "");
+        assert_eq!(
+            fs::read_to_string(reader.join("Home.md")).expect("note"),
+            "edited\n"
+        );
+    }
+
+    #[test]
+    fn branch_adoption_defers_on_conflicting_staged_entries() {
+        let (_temporary, _writer, reader, committed) = reader_holding_writer_commit_through_live();
+        let engine = GitCliEngine::default();
+        fs::write(reader.join("Home.md"), "staged\n").expect("staged note");
+        run_git(&reader, &["add", "Home.md"]);
+        fs::write(reader.join("Home.md"), "edited\n").expect("restore worktree");
+
+        let report =
+            sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("reader sync");
+        let (action, detail) = branch_action(&report);
+        assert_eq!(action, GitBranchSyncAction::Deferred);
+        assert!(detail.expect("detail").contains("staged changes"));
+        assert_ne!(git_stdout(&reader, &["rev-parse", "HEAD"]), committed);
+
+        run_git(&reader, &["restore", "--staged", "Home.md"]);
+        let report =
+            sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("reader retry");
+        assert_eq!(branch_action(&report).0, GitBranchSyncAction::Adopted);
+        assert_eq!(git_stdout(&reader, &["rev-parse", "HEAD"]), committed);
+        assert_eq!(git_stdout(&reader, &["status", "--short"]), "");
     }
 
     #[test]
