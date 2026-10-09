@@ -10,9 +10,9 @@ use std::fs;
 use std::path::PathBuf;
 use vulcan_core::VaultPaths;
 use vulcan_sync::{
-    find_git_live_epoch, git_live_epoch_id, local_epoch_ref, remote_epoch_ref, GitEngine, GitOid,
-    GitPushResult, GitRefCreateResult, GitRefDeleteResult, GitRefName, GitReference, GitRemote,
-    GitSyncOptions, GitSyncRefs, VULCAN_REF_NAMESPACE_VERSION,
+    find_git_live_epoch, git_live_epoch_id, git_published_branch_tip, local_epoch_ref,
+    remote_epoch_ref, GitEngine, GitOid, GitPushResult, GitRefCreateResult, GitRefDeleteResult,
+    GitRefName, GitReference, GitRemote, GitSyncOptions, GitSyncRefs, VULCAN_REF_NAMESPACE_VERSION,
 };
 
 pub const SYNC_RETENTION_PLAN_VERSION: u32 = 2;
@@ -133,6 +133,9 @@ pub struct SyncEpochRolloverReport {
     pub epoch_id: String,
     pub previous_revision: String,
     pub root_revision: String,
+    /// The published live tip: the root, or a same-tree commit on top of it
+    /// that links the published checked-out branch.
+    pub live_revision: String,
     pub local_archive_ref: GitRefName,
     pub remote_archive_ref: GitRefName,
     pub tree_unchanged: bool,
@@ -479,14 +482,29 @@ fn rollover_live_epoch(
             ),
         )
         .map_err(AppError::operation)?;
-    publish_epoch_root(engine, repository, options, &previous, &root)?;
+    // Epoch roots stay parentless; a reproducible same-tree commit keeps the
+    // published branch an ancestor of live across the rollover.
+    let live = match git_published_branch_tip(engine, repository).map_err(AppError::operation)? {
+        Some(branch) => engine
+            .create_reproducible_commit(
+                repository,
+                &previous_tree,
+                &[root.clone(), branch.clone()],
+                &format!(
+                    "vulcan live snapshot\n\nVulcan-Sync-Version: 2\nVulcan-Ref-Namespace: {VULCAN_REF_NAMESPACE_VERSION}\nVulcan-Sync-Profile: {profile}\nVulcan-Sync-Source: {root}\nVulcan-Sync-Semantic: false\nVulcan-Sync-Branch-Link: {branch}\n"
+                ),
+            )
+            .map_err(AppError::operation)?,
+        None => root.clone(),
+    };
+    publish_epoch_root(engine, repository, options, &previous, &live)?;
     engine
         .update_refs(
             repository,
             &[
-                (&refs.local, &root),
-                (&refs.fetched, &root),
-                (&refs.pending, &root),
+                (&refs.local, &live),
+                (&refs.fetched, &live),
+                (&refs.pending, &live),
             ],
         )
         .map_err(AppError::operation)?;
@@ -494,6 +512,7 @@ fn rollover_live_epoch(
         epoch_id,
         previous_revision: previous.to_string(),
         root_revision: root.to_string(),
+        live_revision: live.to_string(),
         local_archive_ref,
         remote_archive_ref,
         tree_unchanged: true,

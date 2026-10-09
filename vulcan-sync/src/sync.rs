@@ -3466,10 +3466,19 @@ fn epoch_bridge_parent(
             return Err(invalid_epoch("epoch archive chain contains a cycle"));
         }
         let archived = fetch_epoch_archive(engine, options, repository, &epoch)?;
-        if engine.merge_base(repository, &archived, capture)?.is_some() {
+        // Live history links the checked-out branch, so unrelated epochs can
+        // share branch commits. Membership in the archived epoch therefore
+        // requires its own root; only the oldest, rootless epoch falls back
+        // to any shared ancestry.
+        let older = find_git_live_epoch(engine, repository, refs, &archived)?;
+        let contained = match &older {
+            Some(older) => engine.is_ancestor(repository, &older.root, capture)?,
+            None => engine.merge_base(repository, &archived, capture)?.is_some(),
+        };
+        if contained {
             return Ok(archived);
         }
-        epoch = find_git_live_epoch(engine, repository, refs, &archived)?.ok_or_else(|| {
+        epoch = older.ok_or_else(|| {
             invalid_epoch("offline candidate has no common ancestry with the epoch archive chain")
         })?;
     }

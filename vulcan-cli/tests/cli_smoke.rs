@@ -7070,6 +7070,10 @@ fn sync_epoch_rollover_reconciles_an_offline_device_without_retaining_old_live_a
     );
     fs::write(writer.join("Home.md"), "base\n").expect("base note");
     commit_all(&writer, "Base");
+    // Tracked branches make live link the branch, so every epoch shares
+    // branch history and bridging must still select the right archive.
+    run_git_ok(&writer, &["push", "--quiet", "-u", "origin", "main"]);
+    let branch_tip = run_git_stdout(&writer, &["rev-parse", "HEAD"]);
     let sync = |vault: &std::path::Path| {
         Command::cargo_bin("vulcan")
             .expect("binary")
@@ -7187,6 +7191,17 @@ fn sync_epoch_rollover_reconciles_an_offline_device_without_retaining_old_live_a
     assert_eq!(
         run_git_stdout(&remote, &["rev-list", "--parents", "-n", "1", epoch_root]),
         epoch_root
+    );
+    let linked_live = rollover["epoch_rollover"]["live_revision"]
+        .as_str()
+        .expect("live revision");
+    assert_eq!(
+        run_git_stdout(&remote, &["rev-parse", "refs/heads/__vulcan-sync/live"]),
+        linked_live
+    );
+    assert_eq!(
+        run_git_stdout(&remote, &["rev-list", "--parents", "-n", "1", linked_live]),
+        format!("{linked_live} {epoch_root} {branch_tip}")
     );
 
     let reconciled = parse_stdout_json(&sync(&reader));
