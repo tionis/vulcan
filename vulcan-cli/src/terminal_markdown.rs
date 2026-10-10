@@ -801,7 +801,17 @@ impl Renderer {
             return;
         }
         let style = self.current_style();
-        self.push_span(StyledSpan::new(text, style));
+        if !self.options.styled || !self.link_stack.is_empty() {
+            self.push_span(StyledSpan::new(text, style));
+            return;
+        }
+        let tag_style = style.merge(SpanStyle::tone(Tone::Info));
+        for (piece, is_tag) in split_tags(text) {
+            self.push_span(StyledSpan::new(
+                piece,
+                if is_tag { tag_style } else { style },
+            ));
+        }
     }
 
     /// Give up on callout detection, keeping any probed text.
@@ -1315,6 +1325,47 @@ fn split_keeping_spaces(text: &str) -> Vec<&str> {
     pieces
 }
 
+/// Split text into runs, marking Obsidian `#tags`: a `#` at the start or
+/// after whitespace or an opening bracket, followed by letters, digits,
+/// `_`, `-`, or `/`, and not only digits.
+fn split_tags(text: &str) -> Vec<(&str, bool)> {
+    let mut pieces = Vec::new();
+    let mut plain_start = 0;
+    let mut chars = text.char_indices().peekable();
+    let mut previous = None::<char>;
+    while let Some((index, ch)) = chars.next() {
+        let starts_tag = ch == '#'
+            && previous.is_none_or(|previous| previous.is_whitespace() || "([{".contains(previous));
+        if starts_tag {
+            let body_start = index + 1;
+            let mut body_end = body_start;
+            while let Some(&(next_index, next)) = chars.peek() {
+                if next.is_alphanumeric() || matches!(next, '_' | '-' | '/') {
+                    body_end = next_index + next.len_utf8();
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            let body = &text[body_start..body_end];
+            if !body.is_empty() && !body.chars().all(|ch| ch.is_ascii_digit()) {
+                if plain_start < index {
+                    pieces.push((&text[plain_start..index], false));
+                }
+                pieces.push((&text[index..body_end], true));
+                plain_start = body_end;
+            }
+            previous = text[..body_end].chars().next_back();
+            continue;
+        }
+        previous = Some(ch);
+    }
+    if plain_start < text.len() {
+        pieces.push((&text[plain_start..], false));
+    }
+    pieces
+}
+
 /// Split an Obsidian callout marker such as `[!warning]- Title`.
 fn parse_callout_marker(text: &str) -> Option<(String, String)> {
     let rest = text.strip_prefix("[!")?;
@@ -1491,6 +1542,23 @@ mod tests {
             plain("> [!embed] Card\n> Card body\n"),
             "┃ ↳ Card\n┃ Card body"
         );
+    }
+
+    #[test]
+    fn tags_are_highlighted_in_styled_output() {
+        assert_eq!(
+            split_tags("see #project/list, not#this or #123 (#ok)"),
+            vec![
+                ("see ", false),
+                ("#project/list", true),
+                (", not#this or #123 (", false),
+                ("#ok", true),
+                (")", false),
+            ]
+        );
+        let rendered = render_terminal_markdown("tagged #alpha", true);
+        assert_eq!(rendered, "tagged \u{1b}[94m#alpha\u{1b}[0m");
+        assert_eq!(plain("tagged #alpha"), "tagged #alpha");
     }
 
     #[test]
