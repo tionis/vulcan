@@ -11,6 +11,7 @@ use crate::parser::types::{
     SemanticBlockKind,
 };
 use pulldown_cmark::{CodeBlockKind, Event, Tag, TagEnd};
+use regex::Regex;
 use std::ops::Range;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Mutex, OnceLock};
@@ -105,6 +106,7 @@ struct SemanticProcessor<'a> {
     current_metadata: Option<MetadataAccumulator>,
     current_links: Vec<LinkAccumulator>,
     semantic_blocks: Vec<SemanticBlock>,
+    code_ranges: Vec<Range<usize>>,
     saw_body_content: bool,
 }
 
@@ -121,11 +123,15 @@ impl<'a> SemanticProcessor<'a> {
             current_metadata: None,
             current_links: Vec::new(),
             semantic_blocks: Vec::new(),
+            code_ranges: Vec::new(),
             saw_body_content: false,
         }
     }
 
     fn process_event(&mut self, event: Event<'a>, range: Range<usize>) {
+        if matches!(event, Event::Start(Tag::CodeBlock(_)) | Event::Code(_)) {
+            self.code_ranges.push(range.clone());
+        }
         match event {
             Event::Start(tag) => self.handle_start(tag, range),
             Event::End(tag_end) => self.handle_end(tag_end, range),
@@ -474,6 +480,27 @@ impl<'a> SemanticProcessor<'a> {
         self.parsed.links.push(parsed_link);
     }
 
+    /// HedgeDoc/markdown-it image sizes such as `![](a.png =30%x)` are not
+    /// `CommonMark`, so the image is neither rendered by Obsidian nor indexed.
+    fn report_sized_image_syntax(&mut self) {
+        for found in sized_image_regex().find_iter(self.source) {
+            let range = found.range();
+            if overlaps_comment(&range, self.comment_regions)
+                || overlaps_comment(&range, &self.code_ranges)
+            {
+                continue;
+            }
+            self.parsed.diagnostics.push(ParseDiagnostic {
+                kind: ParseDiagnosticKind::UnsupportedSyntax,
+                message: format!(
+                    "Image size suffix `{}` is HedgeDoc syntax; the image is not rendered or indexed",
+                    found.as_str()
+                ),
+                byte_range: Some(range),
+            });
+        }
+    }
+
     fn finalize_metadata(&mut self) {
         let Some(metadata) = self.current_metadata.take() else {
             return;
@@ -535,6 +562,7 @@ impl<'a> SemanticProcessor<'a> {
 
     fn finish(mut self, extract_dataview: bool) -> ParsedDocument {
         self.parsed.block_refs = detect_block_refs(self.source, &self.semantic_blocks);
+        self.report_sized_image_syntax();
         if extract_dataview {
             let dataview =
                 extract_dataview_metadata(self.source, self.comment_regions, &self.semantic_blocks);
@@ -840,6 +868,14 @@ fn dedupe_tags(values: Vec<crate::parser::types::RawTag>) -> Vec<crate::parser::
     }
 
     deduped
+}
+
+fn sized_image_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(r"!\[[^\]\n]*\]\([^()\s]+\s+=\d*%?x\d*%?\)")
+            .expect("sized image regex should compile")
+    })
 }
 
 #[cfg(test)]

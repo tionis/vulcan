@@ -237,6 +237,25 @@ mod tests {
     }
 
     #[test]
+    fn hedgedoc_image_size_suffix_is_reported_outside_code() {
+        let parsed = parse_document(
+            "![](a.png =30%x)\n\n- ![x](b.png =100x200)\n\n```\n![](c.png =10x)\n```\n\n`![](d.png =x5)`\n",
+            &VaultConfig::default(),
+        );
+
+        let reported = parsed
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.kind == ParseDiagnosticKind::UnsupportedSyntax)
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(reported.len(), 2, "{reported:?}");
+        assert!(reported[0].contains("`![](a.png =30%x)`"));
+        assert!(reported[1].contains("`![x](b.png =100x200)`"));
+        assert!(parsed.links.is_empty());
+    }
+
+    #[test]
     fn frontmatter_repairs_unindented_markdown_lines_in_block_scalars() {
         let source = concat!(
             "---\n",
