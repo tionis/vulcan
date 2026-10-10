@@ -237,6 +237,54 @@ mod tests {
     }
 
     #[test]
+    fn web_clipper_linked_wikilink_embeds_keep_embed_and_url() {
+        // pulldown-cmark 0.13 turns these into images pointing at the URL and
+        // corrupts neighbouring events when two share a line.
+        let parsed = parse_document(
+            "[![[a.png]]](https://example.com) and [![[b.png|small]]](https://x.org/a)\n\n`[![[c.png]]](https://code.example)`\n",
+            &VaultConfig::default(),
+        );
+
+        let links = parsed
+            .links
+            .iter()
+            .map(|link| {
+                (
+                    link.link_kind,
+                    link.target_path_candidate.clone(),
+                    link.raw_text.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            links,
+            vec![
+                (
+                    LinkKind::External,
+                    None,
+                    "[![[a.png]]](https://example.com)".to_string()
+                ),
+                (
+                    LinkKind::Embed,
+                    Some("a.png".to_string()),
+                    "![[a.png]]".to_string()
+                ),
+                (
+                    LinkKind::External,
+                    None,
+                    "[![[b.png|small]]](https://x.org/a)".to_string()
+                ),
+                (
+                    LinkKind::Embed,
+                    Some("b.png".to_string()),
+                    "![[b.png|small]]".to_string()
+                ),
+            ]
+        );
+        assert_eq!(parsed.links[3].display_text.as_deref(), Some("small"));
+    }
+
+    #[test]
     fn hedgedoc_image_size_suffix_is_reported_outside_code() {
         let parsed = parse_document(
             "![](a.png =30%x)\n\n- ![x](b.png =100x200)\n\n```\n![](c.png =10x)\n```\n\n`![](d.png =x5)`\n",

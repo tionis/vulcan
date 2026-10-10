@@ -10,7 +10,7 @@ use crate::parser::types::{
     OriginContext, ParseDiagnostic, ParseDiagnosticKind, ParsedDocument, RawHeading, SemanticBlock,
     SemanticBlockKind,
 };
-use pulldown_cmark::{CodeBlockKind, Event, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, LinkType, Tag, TagEnd};
 use regex::Regex;
 use std::ops::Range;
 use std::panic::{self, AssertUnwindSafe};
@@ -459,6 +459,10 @@ impl<'a> SemanticProcessor<'a> {
             return;
         };
 
+        if self.is_misparsed_linked_wikilink_embed(&link, byte_offset_end) {
+            return;
+        }
+
         let raw_text = complete_raw_link_text(self.source, link.byte_offset, byte_offset_end);
         let parsed_link = classify_link(
             link.link_type,
@@ -478,6 +482,52 @@ impl<'a> SemanticProcessor<'a> {
         }
 
         self.parsed.links.push(parsed_link);
+    }
+
+    /// pulldown-cmark 0.13 misparses a wikilink embed used as link text, the
+    /// Obsidian Web Clipper's `[![[image.png]]](https://…)`: it reports inline
+    /// images pointing at the outer URL (or nothing at all), drops the embed,
+    /// and corrupts neighbouring events when several share a line. Such image
+    /// events are discarded here and recovered from source in `finish`.
+    fn is_misparsed_linked_wikilink_embed(&self, link: &LinkAccumulator, end: usize) -> bool {
+        link.is_image
+            && !matches!(link.link_type, LinkType::WikiLink { .. })
+            && self.source[link.byte_offset..end].starts_with("![[")
+    }
+
+    fn recover_linked_wikilink_embeds(&mut self) {
+        for captures in linked_wikilink_embed_regex().captures_iter(self.source) {
+            let whole = captures.get(0).expect("match");
+            if overlaps_comment(&whole.range(), self.comment_regions)
+                || overlaps_comment(&whole.range(), &self.code_ranges)
+            {
+                continue;
+            }
+            let embed = captures.name("embed").expect("embed group");
+            let inner = captures.name("inner").expect("inner group").as_str();
+            let (target, display) = match inner.split_once('|') {
+                Some((target, display)) => (target, Some(display.to_string())),
+                None => (inner, None),
+            };
+            self.parsed.links.push(classify_link(
+                LinkType::WikiLink {
+                    has_pothole: display.is_some(),
+                },
+                true,
+                target,
+                embed.as_str().to_string(),
+                display,
+                embed.start(),
+            ));
+            self.parsed.links.push(classify_link(
+                LinkType::Inline,
+                false,
+                captures.name("url").expect("url group").as_str(),
+                whole.as_str().to_string(),
+                None,
+                whole.start(),
+            ));
+        }
     }
 
     /// HedgeDoc/markdown-it image sizes such as `![](a.png =30%x)` are not
@@ -563,6 +613,7 @@ impl<'a> SemanticProcessor<'a> {
     fn finish(mut self, extract_dataview: bool) -> ParsedDocument {
         self.parsed.block_refs = detect_block_refs(self.source, &self.semantic_blocks);
         self.report_sized_image_syntax();
+        self.recover_linked_wikilink_embeds();
         if extract_dataview {
             let dataview =
                 extract_dataview_metadata(self.source, self.comment_regions, &self.semantic_blocks);
@@ -868,6 +919,14 @@ fn dedupe_tags(values: Vec<crate::parser::types::RawTag>) -> Vec<crate::parser::
     }
 
     deduped
+}
+
+fn linked_wikilink_embed_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(r"\[(?P<embed>!\[\[(?P<inner>[^\]\n]+)\]\])\]\((?P<url>[^()\s]+)\)")
+            .expect("linked wikilink embed regex should compile")
+    })
 }
 
 fn sized_image_regex() -> &'static Regex {
