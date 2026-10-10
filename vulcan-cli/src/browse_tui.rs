@@ -7,7 +7,10 @@ use crate::editor::{open_in_editor, with_terminal_suspended};
 use crate::note_picker::{
     handle_picker_key, NotePickerState, PickerAction, Redraw, TerminalRestore, Viewport,
 };
-use crate::terminal_markdown::{render_styled_lines, to_ratatui_lines, TerminalMarkdownOptions};
+use crate::terminal_markdown::{
+    laid_out_links, render_styled_lines, to_ratatui_lines, LaidOutLink, SpanLink,
+    TerminalMarkdownOptions,
+};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -323,7 +326,59 @@ fn prepare_browse_refresh(
     }
 }
 
+fn is_external_link(target: &str) -> bool {
+    target.contains("://") || target.starts_with("mailto:")
+}
+
+/// A link target as a note reference: no `#heading` or `^block`, `%20`
+/// decoded as in Markdown links.
+fn decode_link_target(target: &str) -> String {
+    let note = target.split(['#', '^']).next().unwrap_or_default();
+    let mut decoded = Vec::with_capacity(note.len());
+    let bytes = note.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let Ok(byte) = u8::from_str_radix(&note[index + 1..index + 3], 16) {
+                decoded.push(byte);
+                index += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&decoded).trim().to_string()
+}
+
+/// Open `url` with the platform's default handler, detached from browse.
+fn open_external_link(url: &str) -> io::Result<()> {
+    let mut command = if cfg!(target_os = "macos") {
+        let mut command = std::process::Command::new("open");
+        command.arg(url);
+        command
+    } else if cfg!(windows) {
+        let mut command = std::process::Command::new("cmd");
+        command.args(["/C", "start", "", url]);
+        command
+    } else {
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(url);
+        command
+    };
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+}
+
 fn note_preview_widget(state: &BrowseState, area: Rect) -> Paragraph<'static> {
+    state
+        .rendered_preview
+        .visible_rows
+        .set(area.height.saturating_sub(2));
     Paragraph::new(state.preview_lines_for_width(area.width.saturating_sub(2)))
         .block(
             Block::default()
@@ -701,7 +756,20 @@ struct RenderedPreview {
     pending: bool,
     scroll: u16,
     /// Lines laid out for the last pane width.
-    layout: std::cell::RefCell<Option<(u16, Vec<Line<'static>>)>>,
+    layout: std::cell::RefCell<Option<PreviewLayout>>,
+    /// The link Tab selected, as an index into the layout's links.
+    selected_link: Option<usize>,
+    /// Rows the preview pane showed at the last draw, to keep the selected
+    /// link in view.
+    visible_rows: std::cell::Cell<u16>,
+}
+
+#[derive(Debug)]
+struct PreviewLayout {
+    width: u16,
+    lines: Vec<Line<'static>>,
+    /// Followable links (not images), in reading order.
+    links: Vec<LaidOutLink>,
 }
 
 /// Evaluated previews of recently viewed notes, so moving back to a note
@@ -1035,6 +1103,31 @@ impl BrowseState {
                 self.set_status(error);
             }
             return BrowseAction::Continue;
+        }
+
+        if self.uses_rendered_preview() {
+            match key.code {
+                KeyCode::Tab => {
+                    self.select_preview_link(1);
+                    return BrowseAction::Continue;
+                }
+                KeyCode::BackTab => {
+                    self.select_preview_link(-1);
+                    return BrowseAction::Continue;
+                }
+                KeyCode::Enter => {
+                    if let Some(SpanLink::Link(target)) = self.selected_preview_link() {
+                        self.follow_preview_link(&target);
+                        return BrowseAction::Continue;
+                    }
+                }
+                KeyCode::Esc if self.rendered_preview.selected_link.is_some() => {
+                    self.rendered_preview.selected_link = None;
+                    self.clear_status();
+                    return BrowseAction::Continue;
+                }
+                _ => {}
+            }
         }
 
         if matches!(key.code, KeyCode::PageUp | KeyCode::PageDown)
@@ -1582,6 +1675,7 @@ impl BrowseState {
         };
         self.rendered_preview.path = selected_path;
         self.rendered_preview.layout.replace(None);
+        self.rendered_preview.selected_link = None;
         self.rendered_preview.stale = false;
     }
 
@@ -1608,6 +1702,7 @@ impl BrowseState {
         self.rendered_preview.markdown = note.markdown;
         self.rendered_preview.pending = false;
         self.rendered_preview.layout.replace(None);
+        self.rendered_preview.selected_link = None;
         true
     }
 
@@ -1621,11 +1716,15 @@ impl BrowseState {
         }
     }
 
-    fn rendered_preview_lines(&self, width: u16) -> Vec<Line<'static>> {
-        if let Some((cached_width, lines)) = self.rendered_preview.layout.borrow().as_ref() {
-            if *cached_width == width {
-                return lines.clone();
-            }
+    fn ensure_preview_layout(&self, width: u16) {
+        if self
+            .rendered_preview
+            .layout
+            .borrow()
+            .as_ref()
+            .is_some_and(|layout| layout.width == width)
+        {
+            return;
         }
         let styled = render_styled_lines(
             &self.rendered_preview.markdown,
@@ -1635,11 +1734,123 @@ impl BrowseState {
                 preserve_line_breaks: !self.strict_line_breaks,
             },
         );
-        let lines = to_ratatui_lines(&styled);
-        self.rendered_preview
-            .layout
-            .replace(Some((width, lines.clone())));
+        let links = laid_out_links(&styled)
+            .into_iter()
+            .filter(|link| matches!(link.target, SpanLink::Link(_)))
+            .collect();
+        self.rendered_preview.layout.replace(Some(PreviewLayout {
+            width,
+            lines: to_ratatui_lines(&styled),
+            links,
+        }));
+    }
+
+    fn rendered_preview_lines(&self, width: u16) -> Vec<Line<'static>> {
+        self.ensure_preview_layout(width);
+        let layout = self.rendered_preview.layout.borrow();
+        let layout = layout.as_ref().expect("layout was just built");
+        let mut lines = layout.lines.clone();
+        if let Some(link) = self
+            .rendered_preview
+            .selected_link
+            .and_then(|index| layout.links.get(index))
+        {
+            for &(line, first, last) in &link.segments {
+                if let Some(spans) = lines.get_mut(line).map(|line| &mut line.spans) {
+                    for span in spans.iter_mut().take(last + 1).skip(first) {
+                        span.style = span.style.add_modifier(Modifier::REVERSED);
+                    }
+                }
+            }
+        }
         lines
+    }
+
+    /// Select the next (`step` 1) or previous (`step` -1) link in the
+    /// rendered preview and scroll it into view.
+    fn select_preview_link(&mut self, step: isize) {
+        // Each link's first line, read before the selection changes.
+        let link_lines = self
+            .rendered_preview
+            .layout
+            .borrow()
+            .as_ref()
+            .map(|layout| {
+                layout
+                    .links
+                    .iter()
+                    .map(|link| link.segments[0].0)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if link_lines.is_empty() {
+            self.set_status("No links in this preview.");
+            return;
+        }
+        let count = link_lines.len();
+        let next = match self.rendered_preview.selected_link {
+            Some(index) => (index.cast_signed() + step).rem_euclid(count.cast_signed()),
+            None if step < 0 => count.cast_signed() - 1,
+            None => 0,
+        }
+        .cast_unsigned();
+        self.rendered_preview.selected_link = Some(next);
+        let line = u16::try_from(link_lines[next]).unwrap_or(u16::MAX);
+        let rows = self.rendered_preview.visible_rows.get().max(1);
+        if line < self.rendered_preview.scroll || line >= self.rendered_preview.scroll + rows {
+            self.rendered_preview.scroll = line.saturating_sub(rows / 3);
+        }
+        self.set_status(format!(
+            "Link {}/{count}: Enter follows it, Esc clears the selection.",
+            next + 1
+        ));
+    }
+
+    fn selected_preview_link(&self) -> Option<SpanLink> {
+        let layout = self.rendered_preview.layout.borrow();
+        let index = self.rendered_preview.selected_link?;
+        layout
+            .as_ref()?
+            .links
+            .get(index)
+            .map(|link| link.target.clone())
+    }
+
+    /// Follow the selected link: a note opens in browse, a URL in the
+    /// default browser.
+    fn follow_preview_link(&mut self, target: &str) {
+        if is_external_link(target) {
+            match open_external_link(target) {
+                Ok(()) => self.set_status(format!("Opened {target} in the default browser.")),
+                Err(error) => self.set_status(format!("Could not open {target}: {error}")),
+            }
+            return;
+        }
+        let note = decode_link_target(target);
+        if note.is_empty() {
+            self.set_status("That link points within this note.");
+            return;
+        }
+        let resolved = vulcan_core::resolve_note_reference_with_filter(
+            &self.paths,
+            &note,
+            self.authority.read_filter(),
+        );
+        match resolved {
+            Ok(reference) if self.authority.can_read(&reference.path) => {
+                self.open_note_in_browse(&reference.path);
+            }
+            _ => self.set_status(format!("No readable note matches `{note}`.")),
+        }
+    }
+
+    fn open_note_in_browse(&mut self, path: &str) {
+        self.mode = BrowseMode::Fuzzy;
+        self.preview_toggled = false;
+        self.picker.set_query("");
+        self.picker.select_path(path);
+        self.refresh_preview();
+        self.set_status(format!("Opened {path}."));
     }
 
     fn scroll_rendered_preview(&mut self, delta: i32) {
@@ -1650,7 +1861,7 @@ impl BrowseState {
                 .layout
                 .borrow()
                 .as_ref()
-                .map_or(0, |(_, lines)| lines.len())
+                .map_or(0, |layout| layout.lines.len())
         };
         let max_scroll = u16::try_from(line_count.saturating_sub(1)).unwrap_or(u16::MAX);
         let next = i32::from(self.rendered_preview.scroll) + delta;
@@ -1772,10 +1983,10 @@ impl BrowseState {
             "Keys: Enter move, Esc cancel, Backspace edit destination".to_string()
         } else {
             match self.mode {
-                BrowseMode::Fuzzy => "Keys: type to filter, Up/Down move, Enter/Ctrl-E edit, Ctrl-V source/rendered, PgUp/PgDn scroll preview, o open Kanban board when query is empty, Ctrl-N new, Ctrl-R move, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, Ctrl-F full-text, Ctrl-T tags, Ctrl-P props, Ctrl-Y calendar, Esc quit".to_string(),
+                BrowseMode::Fuzzy => "Keys: type to filter, Up/Down move, Enter/Ctrl-E edit, Ctrl-V source/rendered, PgUp/PgDn scroll preview, Tab/Shift-Tab select link, Enter follow link, o open Kanban board when query is empty, Ctrl-N new, Ctrl-R move, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, Ctrl-F full-text, Ctrl-T tags, Ctrl-P props, Ctrl-Y calendar, Esc quit".to_string(),
                 BrowseMode::FullText => "Keys: type to search, Backspace edit query, Up/Down move, Enter edit, Ctrl-V rendered note, Ctrl-E explain, Ctrl-S sort, Alt-C case, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, Ctrl-Y calendar, / fuzzy, Esc quit".to_string(),
-                BrowseMode::Tag => "Keys: type to filter tags, Backspace edit query, Up/Down move, Enter/Ctrl-E edit, Ctrl-V source/rendered, PgUp/PgDn scroll preview, o open Kanban board when query is empty, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, Ctrl-Y calendar, / fuzzy, Esc quit".to_string(),
-                BrowseMode::Property => "Keys: type a predicate, Backspace edit query, Up/Down move, Enter/Ctrl-E edit, Ctrl-V source/rendered, PgUp/PgDn scroll preview, o open Kanban board when query is empty, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, Ctrl-Y calendar, / fuzzy, Esc quit".to_string(),
+                BrowseMode::Tag => "Keys: type to filter tags, Backspace edit query, Up/Down move, Enter/Ctrl-E edit, Ctrl-V source/rendered, PgUp/PgDn scroll preview, Tab/Shift-Tab select link, Enter follow link, o open Kanban board when query is empty, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, Ctrl-Y calendar, / fuzzy, Esc quit".to_string(),
+                BrowseMode::Property => "Keys: type a predicate, Backspace edit query, Up/Down move, Enter/Ctrl-E edit, Ctrl-V source/rendered, PgUp/PgDn scroll preview, Tab/Shift-Tab select link, Enter follow link, o open Kanban board when query is empty, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, Ctrl-Y calendar, / fuzzy, Esc quit".to_string(),
                 BrowseMode::Calendar => "Keys: arrows move day, PageUp/PageDown or [/] change month, Home/End jump month, t today, Enter edit or create daily note, type YYYY-MM or YYYY-MM-DD to jump, / fuzzy, Esc quit".to_string(),
             }
         }
@@ -5249,6 +5460,109 @@ mod tests {
         state.picker.select_path("Alpha.md");
         state.refresh_rendered_preview_if_needed();
         assert!(state.rendered_preview.pending);
+    }
+
+    #[test]
+    fn tab_selects_preview_links_and_enter_follows_them() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(
+            temp_dir.path(),
+            "Home.md",
+            "See [[Target]] and [the site](https://example.test).\n",
+        );
+        write_note(temp_dir.path(), "Target.md", "# Target\n");
+        scan_fixture(&paths);
+        let mut state = BrowseState::new(paths, vec![note("Home.md", &[]), note("Target.md", &[])])
+            .expect("state should build");
+        state.picker.select_path("Home.md");
+        state.refresh_rendered_preview_if_needed();
+        state.settle_rendered_preview();
+        let _ = state.preview_lines();
+
+        state.handle_key(key(KeyCode::Tab));
+        assert_eq!(
+            state.status_line(),
+            "Link 1/2: Enter follows it, Esc clears the selection."
+        );
+        let highlighted = state
+            .preview_lines()
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .filter(|span| span.style.add_modifier.contains(Modifier::REVERSED))
+            .map(|span| span.content.to_string())
+            .collect::<String>();
+        assert_eq!(highlighted, "Target");
+
+        // Shift-Tab wraps back from the first link to the last.
+        state.handle_key(key(KeyCode::BackTab));
+        assert!(state.status_line().starts_with("Link 2/2"));
+        state.handle_key(key(KeyCode::Tab));
+
+        assert_eq!(
+            state.handle_key(key(KeyCode::Enter)),
+            BrowseAction::Continue
+        );
+        assert_eq!(state.selected_path(), Some("Target.md"));
+        assert_eq!(state.status_line(), "Opened Target.md.");
+    }
+
+    #[test]
+    fn esc_clears_a_link_selection_before_quitting() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(temp_dir.path(), "Home.md", "See [[Target]].\n");
+        write_note(temp_dir.path(), "Target.md", "# Target\n");
+        scan_fixture(&paths);
+        let mut state = BrowseState::new(paths, vec![note("Home.md", &[]), note("Target.md", &[])])
+            .expect("state should build");
+        state.picker.select_path("Home.md");
+        state.refresh_rendered_preview_if_needed();
+        state.settle_rendered_preview();
+        let _ = state.preview_lines();
+
+        state.handle_key(key(KeyCode::Tab));
+        assert_eq!(state.handle_key(key(KeyCode::Esc)), BrowseAction::Continue);
+        assert_eq!(state.rendered_preview.selected_link, None);
+        // Without a selection Enter edits again and Esc quits.
+        assert_eq!(state.handle_key(key(KeyCode::Esc)), BrowseAction::Quit);
+    }
+
+    #[test]
+    fn links_to_unreadable_notes_are_not_followed() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let root = temp_dir.path();
+        let paths = VaultPaths::new(root);
+        write_note(root, "Public/Home.md", "See [[Private/Secret]].\n");
+        write_note(root, "Private/Secret.md", "# Secret\n");
+        scan_fixture(&paths);
+        fs::write(
+            paths.config_file(),
+            "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\"] }\nwrite = { allow = [] }\n",
+        )
+        .unwrap();
+        let selection = vulcan_core::resolve_permission_profile(&paths, Some("scoped")).unwrap();
+        let authority = BrowseAuthority::new(
+            vulcan_core::ProfilePermissionGuard::new(&paths, selection),
+            Some("scoped".to_string()),
+        )
+        .unwrap();
+        let notes = load_notes(&paths, &authority).unwrap();
+        let mut state =
+            BrowseState::new_with_authority(paths, notes, authority).expect("state should build");
+        state.picker.select_path("Public/Home.md");
+        state.refresh_rendered_preview_if_needed();
+        state.settle_rendered_preview();
+        let _ = state.preview_lines();
+
+        state.handle_key(key(KeyCode::Tab));
+        state.handle_key(key(KeyCode::Enter));
+
+        assert_eq!(state.selected_path(), Some("Public/Home.md"));
+        assert_eq!(
+            state.status_line(),
+            "No readable note matches `Private/Secret`."
+        );
     }
 
     #[test]

@@ -68,10 +68,20 @@ impl SpanStyle {
     }
 }
 
+/// What a span links to, so interactive views can follow it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SpanLink {
+    /// A wikilink target or Markdown link destination.
+    Link(String),
+    /// An image's source.
+    Image(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StyledSpan {
     pub text: String,
     pub style: SpanStyle,
+    pub link: Option<SpanLink>,
 }
 
 impl StyledSpan {
@@ -79,8 +89,60 @@ impl StyledSpan {
         Self {
             text: text.into(),
             style,
+            link: None,
         }
     }
+
+    /// The same text and link with `style` layered over the span's own.
+    fn restyled(&self, style: SpanStyle) -> Self {
+        Self {
+            text: self.text.clone(),
+            style: self.style.merge(style),
+            link: self.link.clone(),
+        }
+    }
+}
+
+/// One link in laid-out lines, possibly wrapped over several lines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LaidOutLink {
+    pub target: SpanLink,
+    /// `(line, first span, last span)` for each line the link covers.
+    pub segments: Vec<(usize, usize, usize)>,
+}
+
+/// The links in `lines`, in reading order. Consecutive spans with the same
+/// target, also across a wrap, form one link.
+pub(crate) fn laid_out_links(lines: &[StyledLine]) -> Vec<LaidOutLink> {
+    let mut found: Vec<LaidOutLink> = Vec::new();
+    let mut previous_end: Option<(usize, usize)> = None;
+    for (line_index, line) in lines.iter().enumerate() {
+        for (span_index, span) in line.iter().enumerate() {
+            let Some(target) = span.link.as_ref() else {
+                previous_end = None;
+                continue;
+            };
+            let continues = found.last().is_some_and(|link| &link.target == target)
+                && previous_end.is_some_and(|(line, span)| {
+                    (line == line_index && span + 1 == span_index)
+                        || (line + 1 == line_index && span_index == 0)
+                });
+            if continues {
+                let link = found.last_mut().expect("continued link exists");
+                match link.segments.last_mut() {
+                    Some(segment) if segment.0 == line_index => segment.2 = span_index,
+                    _ => link.segments.push((line_index, span_index, span_index)),
+                }
+            } else {
+                found.push(LaidOutLink {
+                    target: target.clone(),
+                    segments: vec![(line_index, span_index, span_index)],
+                });
+            }
+            previous_end = Some((line_index, span_index));
+        }
+    }
+    found
 }
 
 pub(crate) type StyledLine = Vec<StyledSpan>;
@@ -343,6 +405,13 @@ enum CalloutState {
     Title,
 }
 
+/// An open link or image.
+struct LinkFrame {
+    target: SpanLink,
+    /// Show the destination after the text (Markdown links, not wikilinks).
+    show_destination: bool,
+}
+
 struct Renderer {
     options: TerminalMarkdownOptions,
     lines: Vec<StyledLine>,
@@ -356,7 +425,7 @@ struct Renderer {
     code_block: Option<(String, String)>,
     metadata: Option<String>,
     table: Option<TableState>,
-    link_stack: Vec<Option<String>>,
+    link_stack: Vec<LinkFrame>,
     callout: Option<CalloutState>,
     callout_title: Vec<StyledSpan>,
     callout_kind: String,
@@ -626,13 +695,18 @@ impl Renderer {
                     link_type,
                     LinkType::WikiLink { .. } | LinkType::Autolink | LinkType::Email
                 );
-                self.link_stack
-                    .push(show_destination.then(|| dest_url.to_string()));
+                self.link_stack.push(LinkFrame {
+                    target: SpanLink::Link(dest_url.to_string()),
+                    show_destination,
+                });
             }
             Tag::Image { dest_url, .. } => {
                 self.style_stack.push(SpanStyle::muted());
+                self.link_stack.push(LinkFrame {
+                    target: SpanLink::Image(dest_url.to_string()),
+                    show_destination: false,
+                });
                 self.push_span(StyledSpan::new("[image: ", SpanStyle::muted()));
-                self.link_stack.push(Some(dest_url.to_string()));
             }
             Tag::MetadataBlock(_) => {
                 self.flush_paragraph();
@@ -738,7 +812,12 @@ impl Renderer {
             }
             TagEnd::Link => {
                 self.style_stack.pop();
-                if let Some(Some(destination)) = self.link_stack.pop() {
+                let frame = self.link_stack.pop();
+                if let Some(LinkFrame {
+                    target: SpanLink::Link(destination),
+                    show_destination: true,
+                }) = frame
+                {
                     let text = spans_text(&self.inline);
                     if !destination.is_empty() && !text.ends_with(destination.as_str()) {
                         self.push_span(StyledSpan::new(
@@ -750,7 +829,13 @@ impl Renderer {
             }
             TagEnd::Image => {
                 self.style_stack.pop();
-                let destination = self.link_stack.pop().flatten().unwrap_or_default();
+                let destination = match self.link_stack.last() {
+                    Some(LinkFrame {
+                        target: SpanLink::Image(destination),
+                        ..
+                    }) => destination.clone(),
+                    _ => String::new(),
+                };
                 let alt_is_empty = self
                     .inline
                     .last()
@@ -760,7 +845,9 @@ impl Renderer {
                 } else {
                     "]".to_string()
                 };
+                // The closing bracket still belongs to the image.
                 self.push_span(StyledSpan::new(suffix, SpanStyle::muted()));
+                self.link_stack.pop();
             }
             TagEnd::MetadataBlock(_) => {
                 if let Some(metadata) = self.metadata.take() {
@@ -849,14 +936,21 @@ impl Renderer {
         }
     }
 
-    fn push_span(&mut self, span: StyledSpan) {
+    fn push_span(&mut self, mut span: StyledSpan) {
+        if span.link.is_none() {
+            span.link = self.link_stack.last().map(|frame| frame.target.clone());
+        }
         if self.callout == Some(CalloutState::Title) {
             self.callout_title.push(span);
             return;
         }
         self.resolve_callout_probe();
         if let Some(last) = self.inline.last_mut() {
-            if last.style == span.style && span.text != "\n" && last.text != "\n" {
+            if last.style == span.style
+                && last.link == span.link
+                && span.text != "\n"
+                && last.text != "\n"
+            {
                 last.text.push_str(&span.text);
                 return;
             }
@@ -902,11 +996,7 @@ impl Renderer {
                 label_style,
             ));
         } else {
-            line.extend(
-                title
-                    .into_iter()
-                    .map(|span| StyledSpan::new(span.text, span.style.merge(label_style))),
-            );
+            line.extend(title.into_iter().map(|span| span.restyled(label_style)));
         }
         let saved = std::mem::replace(&mut self.inline, line);
         self.flush_paragraph();
@@ -1028,7 +1118,7 @@ impl Renderer {
         };
         let styled = spans
             .into_iter()
-            .map(|span| StyledSpan::new(span.text, span.style.merge(heading_style)))
+            .map(|span| span.restyled(heading_style))
             .collect::<Vec<_>>();
         let mut lines = wrap_spans(&styled, self.available_width());
         if !self.options.styled && level <= 2 {
@@ -1112,7 +1202,7 @@ impl Renderer {
                         .get(index)
                         .into_iter()
                         .flatten()
-                        .map(|span| StyledSpan::new(span.text.clone(), span.style.merge(style)))
+                        .map(|span| span.restyled(style))
                         .collect::<Vec<_>>();
                     wrap_spans(&cell, Some(*width))
                 })
@@ -1244,14 +1334,18 @@ fn trim_spans(mut spans: Vec<StyledSpan>) -> Vec<StyledSpan> {
 fn wrap_spans(spans: &[StyledSpan], width: Option<usize>) -> Vec<StyledLine> {
     let mut lines = vec![Vec::new()];
     let mut current_width = 0_usize;
-    let push_piece = |line: &mut StyledLine, text: &str, style: SpanStyle| {
+    let push_piece = |line: &mut StyledLine, text: &str, source: &StyledSpan| {
         if let Some(last) = line.last_mut() {
-            if last.style == style {
+            if last.style == source.style && last.link == source.link {
                 last.text.push_str(text);
                 return;
             }
         }
-        line.push(StyledSpan::new(text, style));
+        line.push(StyledSpan {
+            text: text.to_string(),
+            style: source.style,
+            link: source.link.clone(),
+        });
     };
 
     for span in spans {
@@ -1262,7 +1356,7 @@ fn wrap_spans(spans: &[StyledSpan], width: Option<usize>) -> Vec<StyledLine> {
         }
         let Some(width) = width else {
             let line = lines.last_mut().expect("at least one line");
-            push_piece(line, &span.text, span.style);
+            push_piece(line, &span.text, span);
             continue;
         };
         for piece in split_keeping_spaces(&span.text) {
@@ -1271,7 +1365,7 @@ fn wrap_spans(spans: &[StyledSpan], width: Option<usize>) -> Vec<StyledLine> {
             if is_space {
                 if current_width > 0 && current_width + piece_width <= width {
                     let line = lines.last_mut().expect("at least one line");
-                    push_piece(line, piece, span.style);
+                    push_piece(line, piece, span);
                     current_width += piece_width;
                 }
                 continue;
@@ -1289,7 +1383,7 @@ fn wrap_spans(spans: &[StyledSpan], width: Option<usize>) -> Vec<StyledLine> {
             }
             if piece_width <= width {
                 let line = lines.last_mut().expect("at least one line");
-                push_piece(line, piece, span.style);
+                push_piece(line, piece, span);
                 current_width += piece_width;
                 continue;
             }
@@ -1299,7 +1393,7 @@ fn wrap_spans(spans: &[StyledSpan], width: Option<usize>) -> Vec<StyledLine> {
                 let ch_width = ch.width().unwrap_or(0);
                 if current_width + ch_width > width && current_width > 0 {
                     let line = lines.last_mut().expect("at least one line");
-                    push_piece(line, &chunk, span.style);
+                    push_piece(line, &chunk, span);
                     chunk.clear();
                     lines.push(Vec::new());
                     current_width = 0;
@@ -1309,7 +1403,7 @@ fn wrap_spans(spans: &[StyledSpan], width: Option<usize>) -> Vec<StyledLine> {
             }
             if !chunk.is_empty() {
                 let line = lines.last_mut().expect("at least one line");
-                push_piece(line, &chunk, span.style);
+                push_piece(line, &chunk, span);
             }
         }
     }
@@ -1607,6 +1701,45 @@ mod tests {
             "a \u{1b}[1;93mmarked\u{1b}[0m b == c"
         );
         assert_eq!(plain("a ==marked== b"), "a ==marked== b");
+    }
+
+    #[test]
+    fn spans_carry_their_link_targets() {
+        let lines = render_styled_lines(
+            "See [[Projects/Alpha|Alpha]] and [the site](https://x.test) ![[pic.png]]",
+            TerminalMarkdownOptions {
+                width: None,
+                styled: true,
+                preserve_line_breaks: false,
+            },
+        );
+        let targets = laid_out_links(&lines)
+            .into_iter()
+            .map(|link| link.target)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            targets,
+            vec![
+                SpanLink::Link("Projects/Alpha".to_string()),
+                SpanLink::Link("https://x.test".to_string()),
+                SpanLink::Image("pic.png".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_wrapped_link_is_one_link_over_several_lines() {
+        let lines = render_styled_lines(
+            "[one two three four](https://x.test) after",
+            TerminalMarkdownOptions {
+                width: Some(12),
+                styled: true,
+                preserve_line_breaks: false,
+            },
+        );
+        let laid_out = laid_out_links(&lines);
+        assert_eq!(laid_out.len(), 1, "{lines:?}");
+        assert!(laid_out[0].segments.len() > 1, "{laid_out:?}");
     }
 
     #[test]
