@@ -693,6 +693,8 @@ impl BrowseMode {
 #[derive(Debug, Default)]
 struct RenderedPreview {
     path: Option<String>,
+    /// The note's file contents, shown in source mode.
+    source: String,
     markdown: String,
     stale: bool,
     /// The source is shown while the worker evaluates the note.
@@ -989,7 +991,7 @@ impl BrowseState {
         }
 
         if matches!(key.code, KeyCode::PageUp | KeyCode::PageDown)
-            && self.uses_rendered_preview()
+            && self.uses_file_preview()
             && self.mode != BrowseMode::FullText
         {
             self.scroll_rendered_preview(if key.code == KeyCode::PageUp {
@@ -1422,6 +1424,41 @@ impl BrowseState {
         self.uses_note_preview() && self.selected_path().is_some() && self.wants_rendered_preview()
     }
 
+    /// Whether the preview shows the selected note's whole source.
+    fn uses_source_preview(&self) -> bool {
+        self.uses_note_preview()
+            && self.selected_path().is_some()
+            && self.preview_toggled
+            && matches!(
+                self.mode,
+                BrowseMode::Fuzzy | BrowseMode::Tag | BrowseMode::Property
+            )
+    }
+
+    /// Whether the preview shows the selected note's file, rendered or not.
+    fn uses_file_preview(&self) -> bool {
+        self.uses_rendered_preview() || self.uses_source_preview()
+    }
+
+    /// The note's source with a dim line-number gutter.
+    fn source_preview_lines(&self) -> Vec<Line<'static>> {
+        let source = &self.rendered_preview.source;
+        let width = source.lines().count().max(1).to_string().len();
+        source
+            .lines()
+            .enumerate()
+            .map(|(index, line)| {
+                Line::from(vec![
+                    Span::styled(
+                        format!("{:>width$} ", index + 1),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::raw(line.to_string()),
+                ])
+            })
+            .collect()
+    }
+
     fn wants_rendered_preview(&self) -> bool {
         match self.mode {
             BrowseMode::Calendar => false,
@@ -1458,7 +1495,7 @@ impl BrowseState {
     }
 
     fn refresh_rendered_preview_if_needed(&mut self) {
-        if self.uses_rendered_preview() {
+        if self.uses_file_preview() {
             self.refresh_rendered_preview();
         }
     }
@@ -1474,14 +1511,21 @@ impl BrowseState {
         // Show the source at once; the worker swaps in the evaluated note.
         self.rendered_preview.pending = false;
         self.rendered_preview.markdown = match selected_path.as_deref() {
-            None => "*No matching note selected.*".to_string(),
+            None => {
+                self.rendered_preview.source.clear();
+                "*No matching note selected.*".to_string()
+            }
             Some(path) => match fs::read_to_string(self.paths.vault_root().join(path)) {
                 Ok(source) => {
                     self.preview_worker.request(path);
                     self.rendered_preview.pending = true;
+                    self.rendered_preview.source.clone_from(&source);
                     source
                 }
-                Err(error) => format!("> [!danger] Could not read {path}\n> {error}"),
+                Err(error) => {
+                    self.rendered_preview.source.clear();
+                    format!("> [!danger] Could not read {path}\n> {error}")
+                }
             },
         };
         self.rendered_preview.path = selected_path;
@@ -1542,12 +1586,15 @@ impl BrowseState {
     }
 
     fn scroll_rendered_preview(&mut self, delta: i32) {
-        let line_count = self
-            .rendered_preview
-            .layout
-            .borrow()
-            .as_ref()
-            .map_or(0, |(_, lines)| lines.len());
+        let line_count = if self.uses_source_preview() {
+            self.rendered_preview.source.lines().count()
+        } else {
+            self.rendered_preview
+                .layout
+                .borrow()
+                .as_ref()
+                .map_or(0, |(_, lines)| lines.len())
+        };
         let max_scroll = u16::try_from(line_count.saturating_sub(1)).unwrap_or(u16::MAX);
         let next = i32::from(self.rendered_preview.scroll) + delta;
         self.rendered_preview.scroll = u16::try_from(next.max(0))
@@ -1556,7 +1603,7 @@ impl BrowseState {
     }
 
     fn preview_scroll(&self) -> u16 {
-        if self.uses_rendered_preview() {
+        if self.uses_file_preview() {
             self.rendered_preview.scroll
         } else {
             0
@@ -1874,6 +1921,9 @@ impl BrowseState {
         }
         if self.uses_rendered_preview() {
             return self.rendered_preview_lines(width);
+        }
+        if self.uses_source_preview() {
+            return self.source_preview_lines();
         }
         match self.mode {
             BrowseMode::Fuzzy => self.picker.preview_lines(),
@@ -5077,6 +5127,29 @@ mod tests {
         assert!(!state.rendered_preview.pending);
         assert_eq!(state.preview_title(), "Rendered: Alpha.md");
         assert!(preview_text(&state.preview_lines()).contains("Status: draft"));
+    }
+
+    #[test]
+    fn source_preview_shows_the_whole_file_and_scrolls() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        let long_note = (1..=40)
+            .map(|line| format!("Line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        write_note(temp_dir.path(), "Long.md", &long_note);
+        scan_fixture(&paths);
+        let mut state =
+            BrowseState::new(paths, vec![note("Long.md", &[])]).expect("state should build");
+        state.picker.select_path("Long.md");
+        state.refresh_rendered_preview_if_needed();
+        state.handle_key(ctrl('v'));
+
+        let preview = state.preview_lines();
+        assert_eq!(preview.len(), 40);
+        assert_eq!(preview_text(&preview[39..]), "40 \nLine 40");
+        state.handle_key(key(KeyCode::PageDown));
+        assert_eq!(state.preview_scroll(), 10);
     }
 
     #[test]

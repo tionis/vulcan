@@ -812,7 +812,7 @@ Primary keys:
 
 - `Enter`: edit the selected note
 - `Ctrl-V`: toggle the preview pane between the rendered note (Dataview, Tasks, and `.base` embeds evaluated, `dataviewjs` run in the configured sandbox) and its source; in full-text mode it toggles between the matching snippet and the rendered note
-- `PageUp` / `PageDown`: scroll the rendered note preview
+- `PageUp` / `PageDown`: scroll the note preview, rendered or source (the source view shows the whole file with line numbers)
 - `Ctrl-N`: create a new note
 - `Ctrl-R`: move or rename the selected note
 - `Ctrl-B`: backlinks view
