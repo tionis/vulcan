@@ -249,7 +249,7 @@ fn render_html_internal(
             message: diagnostic.message.clone(),
         })
         .collect::<Vec<_>>();
-    let rendered_markdown = render_markdown_with_replacements(
+    let (rendered_markdown, fragments) = render_markdown_with_replacements(
         paths,
         source,
         source_path,
@@ -286,7 +286,7 @@ fn render_html_internal(
             ),
         });
     }
-    let mut html = rendered.html;
+    let mut html = restore_rendered_fragments(&rendered.html, &fragments);
     if !headings.is_empty() {
         html = inject_heading_ids(&html, &headings);
     }
@@ -307,7 +307,7 @@ fn render_markdown_with_replacements(
     env: &HtmlRenderEnvironment<'_>,
     state: &mut HtmlRenderState,
     diagnostics: &mut Vec<HtmlRenderDiagnostic>,
-) -> String {
+) -> (String, Vec<String>) {
     let mut replacements = Vec::new();
 
     for field in crate::dynamic_content::rendered_inline_fields(parsed) {
@@ -1457,10 +1457,17 @@ fn render_html_table_from_cells(
     rendered
 }
 
+/// Splice the renderer's HTML into `source` as placeholders, returning the
+/// HTML fragments they stand for. The renderer's own HTML is trusted: it
+/// must not pass through the raw-HTML sanitizer meant for user content,
+/// which cleans each inline tag on its own and so closes every `<span>` or
+/// `<a>` at once. [`restore_rendered_fragments`] puts it back after the
+/// Markdown is rendered.
 fn apply_markdown_replacements(
     source: &str,
     mut replacements: Vec<HtmlMarkdownReplacement>,
-) -> String {
+) -> (String, Vec<String>) {
+    let mut fragments = Vec::new();
     replacements.sort_by(|left, right| left.start.cmp(&right.start).then(right.end.cmp(&left.end)));
     let mut rendered = String::new();
     let mut cursor = 0_usize;
@@ -1472,11 +1479,31 @@ fn apply_markdown_replacements(
             continue;
         }
         rendered.push_str(&source[cursor..replacement.start]);
-        rendered.push_str(&replacement.replacement);
+        rendered.push_str(&fragment_placeholder(fragments.len()));
+        fragments.push(replacement.replacement);
         cursor = replacement.end;
     }
     rendered.push_str(&source[cursor..]);
-    rendered
+    (rendered, fragments)
+}
+
+/// Private-use characters pass through Markdown rendering unescaped.
+fn fragment_placeholder(index: usize) -> String {
+    format!("\u{E000}{index}\u{E001}")
+}
+
+fn restore_rendered_fragments(html: &str, fragments: &[String]) -> String {
+    if fragments.is_empty() {
+        return html.to_string();
+    }
+    let mut restored = html.to_string();
+    for (index, fragment) in fragments.iter().enumerate() {
+        let placeholder = fragment_placeholder(index);
+        // A block on its own line became a paragraph; drop the wrapper.
+        restored = restored.replace(&format!("<p>{placeholder}</p>"), fragment);
+        restored = restored.replace(&placeholder, fragment);
+    }
+    restored
 }
 
 pub(crate) fn build_resolver_documents(
@@ -1960,6 +1987,40 @@ mod tests {
 
         assert!(rendered.html.contains("<hr />"));
         assert!(rendered.html.contains("<p>After</p>"));
+    }
+
+    #[test]
+    fn renderer_html_bypasses_the_raw_html_sanitizer() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should exist");
+        let paths = VaultPaths::new(&vault_root);
+        let mut targets = super::HtmlLinkTargets::default();
+        targets
+            .tag_hrefs
+            .insert("project".to_string(), "/tags/project".to_string());
+
+        let rendered = render_vault_html(
+            &paths,
+            "status:: active and #project <span onclick=\"evil()\">user</span>\n",
+            &HtmlRenderOptions {
+                link_targets: Some(&targets),
+                full_document: false,
+                ..HtmlRenderOptions::default()
+            },
+        );
+
+        let html = rendered.html;
+        assert!(
+            html.contains("<span class=\"dataview-inline-field-key\">status</span>"),
+            "{html}"
+        );
+        assert!(
+            html.contains("<a class=\"tag-link\" href=\"/tags/project\">#project</a>"),
+            "{html}"
+        );
+        assert!(!html.contains("onclick"), "{html}");
+        assert!(!html.contains('\u{E000}'), "{html}");
     }
 
     #[test]
