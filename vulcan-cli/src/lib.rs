@@ -21,6 +21,7 @@
 //!   the concepts without importing terminal rendering or CLI-only state.
 
 mod bases_tui;
+mod browse_preview;
 mod browse_tui;
 mod bundle_server;
 mod calendar_view;

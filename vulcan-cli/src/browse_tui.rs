@@ -1,4 +1,5 @@
 use crate::bases_tui;
+use crate::browse_preview::{PreviewWorker, RenderedNote};
 use crate::calendar_view::CalendarViewState;
 use crate::commands::browse::BrowseAuthority;
 use crate::commit::AutoCommitPolicy;
@@ -44,7 +45,6 @@ use vulcan_core::{
     KanbanBoardRecord, NamedCount, NoteIdentity, NoteQuery, OutgoingLinkRecord, ResolutionStatus,
     ScanSummary, SearchHit, SearchQuery, VaultPaths,
 };
-use vulcan_core::{DataviewJsRenderPolicy, EvaluatedMarkdownOptions, EvaluatedMarkdownRenderer};
 
 const FULL_TEXT_LIMIT: usize = 200;
 const FULL_TEXT_CONTEXT_SIZE: usize = 18;
@@ -119,14 +119,28 @@ fn run_event_loop(
         if state.poll_background_refresh() {
             redraw.invalidate();
         }
+        if state.poll_rendered_preview() {
+            redraw.invalidate();
+        }
         if redraw.take() {
             terminal.draw(|frame| draw(frame, state))?;
         }
 
         // Only poll while a finite refresh is outstanding. Once it completes,
         // read blocks without idle wakeups, just like the picker and Bases.
-        if state.background_refresh.is_some() && !event::poll(Duration::from_millis(200))? {
-            continue;
+        // The same holds while a rendered preview is being evaluated.
+        let poll_interval = if state.rendered_preview.pending {
+            Some(Duration::from_millis(50))
+        } else {
+            state
+                .background_refresh
+                .is_some()
+                .then(|| Duration::from_millis(200))
+        };
+        if let Some(interval) = poll_interval {
+            if !event::poll(interval)? {
+                continue;
+            }
         }
 
         let event = event::read()?;
@@ -681,6 +695,8 @@ struct RenderedPreview {
     path: Option<String>,
     markdown: String,
     stale: bool,
+    /// The source is shown while the worker evaluates the note.
+    pending: bool,
     scroll: u16,
     /// Lines laid out for the last pane width.
     layout: std::cell::RefCell<Option<(u16, Vec<Line<'static>>)>>,
@@ -759,7 +775,7 @@ struct BrowseState {
     /// notes show their source, and full-text snippets show the rendered note.
     preview_toggled: bool,
     rendered_preview: RenderedPreview,
-    markdown_renderer: Option<EvaluatedMarkdownRenderer>,
+    preview_worker: PreviewWorker,
     status: String,
     authority: BrowseAuthority,
 }
@@ -814,7 +830,14 @@ impl BrowseState {
                 stale: true,
                 ..RenderedPreview::default()
             },
-            markdown_renderer: None,
+            preview_worker: PreviewWorker::spawn(
+                paths.clone(),
+                authority
+                    .read_filter()
+                    .is_some()
+                    .then(|| authority.guard().clone()),
+                authority.profile().map(ToOwned::to_owned),
+            ),
             status: "Ready.".to_string(),
             authority,
         };
@@ -1431,7 +1454,7 @@ impl BrowseState {
     /// example after a scan or an edit.
     fn invalidate_rendered_preview(&mut self) {
         self.rendered_preview.stale = true;
-        self.markdown_renderer = None;
+        self.preview_worker.reset();
     }
 
     fn refresh_rendered_preview_if_needed(&mut self) {
@@ -1448,43 +1471,53 @@ impl BrowseState {
         if self.rendered_preview.path != selected_path {
             self.rendered_preview.scroll = 0;
         }
-        self.rendered_preview.markdown = selected_path.as_deref().map_or_else(
-            || "*No matching note selected.*".to_string(),
-            |path| self.evaluate_note_markdown(path),
-        );
+        // Show the source at once; the worker swaps in the evaluated note.
+        self.rendered_preview.pending = false;
+        self.rendered_preview.markdown = match selected_path.as_deref() {
+            None => "*No matching note selected.*".to_string(),
+            Some(path) => match fs::read_to_string(self.paths.vault_root().join(path)) {
+                Ok(source) => {
+                    self.preview_worker.request(path);
+                    self.rendered_preview.pending = true;
+                    source
+                }
+                Err(error) => format!("> [!danger] Could not read {path}\n> {error}"),
+            },
+        };
         self.rendered_preview.path = selected_path;
         self.rendered_preview.layout.replace(None);
         self.rendered_preview.stale = false;
     }
 
-    /// The note's Markdown with Dataview, Tasks, and Bases content evaluated
-    /// under the session's read authority. `DataviewJS` runs with the
-    /// configured sandbox tier, as `dataview eval` does.
-    fn evaluate_note_markdown(&mut self, path: &str) -> String {
-        let source = match fs::read_to_string(self.paths.vault_root().join(path)) {
-            Ok(source) => source,
-            Err(error) => return format!("> [!danger] Could not read {path}\n> {error}"),
+    /// Take the evaluated note from the worker; true when the preview changed.
+    fn poll_rendered_preview(&mut self) -> bool {
+        if !self.rendered_preview.pending {
+            return false;
+        }
+        let Some(note) = self.preview_worker.try_take() else {
+            return false;
         };
-        let guard = self
-            .authority
-            .read_filter()
-            .is_some()
-            .then(|| self.authority.guard() as &dyn vulcan_core::PermissionGuard);
-        let paths = &self.paths;
-        let renderer = self
-            .markdown_renderer
-            .get_or_insert_with(|| EvaluatedMarkdownRenderer::load(paths, guard));
-        renderer
-            .render(
-                &source,
-                &EvaluatedMarkdownOptions {
-                    source_path: Some(path),
-                    dataview_js: DataviewJsRenderPolicy::On,
-                    guard,
-                    permission_profile: self.authority.profile(),
-                },
-            )
-            .markdown
+        self.apply_rendered_note(note)
+    }
+
+    fn apply_rendered_note(&mut self, note: RenderedNote) -> bool {
+        if self.rendered_preview.path.as_deref() != Some(note.path.as_str()) {
+            return false;
+        }
+        self.rendered_preview.markdown = note.markdown;
+        self.rendered_preview.pending = false;
+        self.rendered_preview.layout.replace(None);
+        true
+    }
+
+    /// Wait for the worker so tests see the evaluated note.
+    #[cfg(test)]
+    fn settle_rendered_preview(&mut self) {
+        if self.rendered_preview.pending {
+            if let Some(note) = self.preview_worker.wait() {
+                self.apply_rendered_note(note);
+            }
+        }
     }
 
     fn rendered_preview_lines(&self, width: u16) -> Vec<Line<'static>> {
@@ -1784,7 +1817,25 @@ impl BrowseState {
         if let Some(view) = self.links_view.as_ref() {
             return view.preview_title();
         }
-        let title = match self.mode {
+        let title = self.mode_preview_title();
+        if !self.uses_rendered_preview() {
+            return title;
+        }
+        let evaluating = if self.rendered_preview.pending {
+            " (evaluating…)"
+        } else {
+            ""
+        };
+        // Keep mode context such as an active tag in the title.
+        match (title.strip_prefix("Preview: "), self.selected_path()) {
+            (Some(rest), _) => format!("Rendered: {rest}{evaluating}"),
+            (None, Some(path)) => format!("Rendered: {path}{evaluating}"),
+            (None, None) => title,
+        }
+    }
+
+    fn mode_preview_title(&self) -> String {
+        match self.mode {
             BrowseMode::Fuzzy => self
                 .picker
                 .selected_path()
@@ -1796,15 +1847,6 @@ impl BrowseState {
             BrowseMode::Tag => self.tag_filter.preview_title(),
             BrowseMode::Property => self.property_filter.preview_title(),
             BrowseMode::Calendar => self.calendar.preview_title(),
-        };
-        if !self.uses_rendered_preview() {
-            return title;
-        }
-        // Keep mode context such as an active tag in the title.
-        match (title.strip_prefix("Preview: "), self.selected_path()) {
-            (Some(rest), _) => format!("Rendered: {rest}"),
-            (None, Some(path)) => format!("Rendered: {path}"),
-            (None, None) => title,
         }
     }
 
@@ -3921,6 +3963,7 @@ mod tests {
             BrowseState::new_with_authority(paths, notes, authority).expect("state should build");
         state.picker.select_path("Public/Home.md");
         state.refresh_rendered_preview_if_needed();
+        state.settle_rendered_preview();
         let preview = preview_text(&state.preview_lines());
         assert!(preview.contains("Public/Target"), "{preview}");
         assert!(!preview.contains("Private"), "{preview}");
@@ -4941,6 +4984,7 @@ mod tests {
         .expect("state should build");
         state.picker.select_path("Dashboard.md");
         state.refresh_rendered_preview_if_needed();
+        state.settle_rendered_preview();
 
         assert_eq!(state.preview_title(), "Rendered: Dashboard.md");
         assert!(state.status_bar_line().contains("Preview: rendered"));
@@ -4957,6 +5001,7 @@ mod tests {
         assert!(preview_text(&state.preview_lines()).contains("`= this.status`"));
 
         state.handle_key(ctrl('v'));
+        state.settle_rendered_preview();
         assert_eq!(state.status_line(), "Preview mode: rendered.");
         assert_eq!(state.preview_title(), "Rendered: Dashboard.md");
     }
@@ -4976,6 +5021,7 @@ mod tests {
             BrowseState::new(paths, vec![note("Dashboard.md", &[])]).expect("state should build");
         state.picker.select_path("Dashboard.md");
         state.refresh_rendered_preview_if_needed();
+        state.settle_rendered_preview();
 
         let preview = preview_text(&state.preview_lines());
         assert!(preview.contains("from the js block"), "{preview}");
@@ -4996,14 +5042,41 @@ mod tests {
             .expect("state should build");
         state.picker.select_path("Alpha.md");
         state.refresh_rendered_preview_if_needed();
+        state.settle_rendered_preview();
 
         assert!(preview_text(&state.preview_lines()).contains("draft"));
 
         state.picker.select_path("Beta.md");
         state.refresh_rendered_preview_if_needed();
+        state.settle_rendered_preview();
 
         assert_eq!(state.preview_title(), "Rendered: Beta.md");
         assert_eq!(preview_text(&state.preview_lines()), "Beta");
+    }
+
+    #[test]
+    fn rendered_preview_shows_the_source_until_evaluation_finishes() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(
+            temp_dir.path(),
+            "Alpha.md",
+            "---\nstatus: draft\n---\n\nStatus: `= this.status`\n",
+        );
+        scan_fixture(&paths);
+        let mut state =
+            BrowseState::new(paths, vec![note("Alpha.md", &[])]).expect("state should build");
+        state.picker.select_path("Alpha.md");
+        state.refresh_rendered_preview_if_needed();
+
+        assert!(state.rendered_preview.pending);
+        assert_eq!(state.preview_title(), "Rendered: Alpha.md (evaluating…)");
+        assert!(preview_text(&state.preview_lines()).contains("this.status"));
+
+        state.settle_rendered_preview();
+        assert!(!state.rendered_preview.pending);
+        assert_eq!(state.preview_title(), "Rendered: Alpha.md");
+        assert!(preview_text(&state.preview_lines()).contains("Status: draft"));
     }
 
     #[test]
@@ -5051,6 +5124,7 @@ mod tests {
         assert!(preview_text(&state.preview_lines()).contains("dashboard"));
 
         state.handle_key(ctrl('v'));
+        state.settle_rendered_preview();
 
         assert_eq!(state.preview_title(), "Rendered: Dashboard.md");
         assert!(preview_text(&state.preview_lines()).contains("Status: draft"));
