@@ -85,6 +85,12 @@ pub(crate) enum DynamicOutcome {
     /// An inline expression that could not be evaluated because the note is
     /// not indexed.
     Unevaluated(String),
+    /// The result of an inline `DataviewJS` expression.
+    InlineJs(DataviewJsResult),
+    /// An inline `DataviewJS` expression while `DataviewJS` is turned off.
+    InlineJsDisabled,
+    /// An Obsidian comment, which renders as nothing.
+    Hidden,
     Dql(DqlQueryResult),
     DataviewJs(DataviewJsResult),
     Tasks(TasksQueryResult),
@@ -143,6 +149,16 @@ pub(crate) fn evaluate_dynamic_regions(
         });
     }
 
+    for comment in &parsed.comment_regions {
+        regions.push(DynamicRegion {
+            start: comment.start,
+            end: comment.end,
+            outcome: DynamicOutcome::Hidden,
+        });
+    }
+
+    push_inline_js_regions(ctx, source_path, parsed, diagnostics, &mut regions);
+
     for block in &parsed.dataview_blocks {
         regions.push(DynamicRegion {
             start: block.byte_range.start,
@@ -192,6 +208,8 @@ pub(crate) fn evaluate_dynamic_regions(
 
 fn has_dynamic_content(parsed: &ParsedDocument) -> bool {
     !parsed.inline_expressions.is_empty()
+        || !parsed.inline_js_expressions.is_empty()
+        || !parsed.comment_regions.is_empty()
         || !parsed.dataview_blocks.is_empty()
         || !parsed.tasks_blocks.is_empty()
         || parsed.links.iter().any(|link| {
@@ -202,6 +220,46 @@ fn has_dynamic_content(parsed: &ParsedDocument) -> bool {
                         .as_deref()
                         .is_some_and(is_base_path))
         })
+}
+
+/// Evaluate inline `DataviewJS` expressions. Like Dataview, they run only
+/// where the vault enables them.
+fn push_inline_js_regions(
+    ctx: &DynamicContentContext<'_>,
+    source_path: Option<&str>,
+    parsed: &ParsedDocument,
+    diagnostics: &mut Vec<RenderDiagnostic>,
+    regions: &mut Vec<DynamicRegion>,
+) {
+    if !ctx.config.dataview.enable_inline_dataview_js {
+        return;
+    }
+    for expression in &parsed.inline_js_expressions {
+        let outcome = match dataview_js_options(ctx) {
+            None => {
+                diagnostics.push(RenderDiagnostic {
+                    kind: "dataviewjs_disabled".to_string(),
+                    message: "DataviewJS rendering is disabled for this render".to_string(),
+                });
+                DynamicOutcome::InlineJsDisabled
+            }
+            Some(options) => evaluate_dataview_js_with_options(
+                ctx.paths,
+                &expression.expression,
+                source_path,
+                options,
+            )
+            .map_or_else(
+                |error| DynamicOutcome::InlineError(error.to_string()),
+                DynamicOutcome::InlineJs,
+            ),
+        };
+        regions.push(DynamicRegion {
+            start: expression.byte_range.start,
+            end: expression.byte_range.end,
+            outcome,
+        });
+    }
 }
 
 pub(crate) fn is_base_path(candidate: &str) -> bool {
@@ -253,29 +311,15 @@ fn evaluate_dataview_js_block(
     source: &str,
     diagnostics: &mut Vec<RenderDiagnostic>,
 ) -> DynamicOutcome {
-    let options = match ctx.dataview_js {
-        DataviewJsRenderPolicy::Off => {
-            diagnostics.push(RenderDiagnostic {
-                kind: "dataviewjs_disabled".to_string(),
-                message: "DataviewJS rendering is disabled for this render".to_string(),
-            });
-            return DynamicOutcome::Disabled {
-                title: "DataviewJS disabled:".to_string(),
-                message: "DataviewJS evaluation is turned off for this render".to_string(),
-            };
-        }
-        DataviewJsRenderPolicy::Static => crate::DataviewJsEvalOptions {
-            sandbox: Some(JsRuntimeSandbox::Strict),
-            deterministic_static: true,
-            read_only: true,
-            permission_profile: ctx.permission_profile.map(ToOwned::to_owned),
-            ..crate::DataviewJsEvalOptions::default()
-        },
-        DataviewJsRenderPolicy::On => crate::DataviewJsEvalOptions {
-            permission_profile: ctx.permission_profile.map(ToOwned::to_owned),
-            read_only: true,
-            ..crate::DataviewJsEvalOptions::default()
-        },
+    let Some(options) = dataview_js_options(ctx) else {
+        diagnostics.push(RenderDiagnostic {
+            kind: "dataviewjs_disabled".to_string(),
+            message: "DataviewJS rendering is disabled for this render".to_string(),
+        });
+        return DynamicOutcome::Disabled {
+            title: "DataviewJS disabled:".to_string(),
+            message: "DataviewJS evaluation is turned off for this render".to_string(),
+        };
     };
     evaluate_dataview_js_with_options(ctx.paths, source, source_path, options).map_or_else(
         |error| DynamicOutcome::Error {
@@ -284,6 +328,26 @@ fn evaluate_dataview_js_block(
         },
         DynamicOutcome::DataviewJs,
     )
+}
+
+/// Evaluation options for the render's `DataviewJS` policy; `None` when it
+/// is off. Renders are always read-only.
+fn dataview_js_options(ctx: &DynamicContentContext<'_>) -> Option<crate::DataviewJsEvalOptions> {
+    match ctx.dataview_js {
+        DataviewJsRenderPolicy::Off => None,
+        DataviewJsRenderPolicy::Static => Some(crate::DataviewJsEvalOptions {
+            sandbox: Some(JsRuntimeSandbox::Strict),
+            deterministic_static: true,
+            read_only: true,
+            permission_profile: ctx.permission_profile.map(ToOwned::to_owned),
+            ..crate::DataviewJsEvalOptions::default()
+        }),
+        DataviewJsRenderPolicy::On => Some(crate::DataviewJsEvalOptions {
+            permission_profile: ctx.permission_profile.map(ToOwned::to_owned),
+            read_only: true,
+            ..crate::DataviewJsEvalOptions::default()
+        }),
+    }
 }
 
 fn evaluate_tasks_block(ctx: &DynamicContentContext<'_>, source: &str) -> DynamicOutcome {
@@ -679,6 +743,18 @@ fn outcome_markdown(outcome: &DynamicOutcome) -> Option<MarkdownReplacement> {
         DynamicOutcome::InlineError(error) => {
             MarkdownReplacement::Inline(format!("*(Dataview error: {error})*"))
         }
+        DynamicOutcome::InlineJs(result) => MarkdownReplacement::Inline(
+            dataview_js_markdown(result)
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
+        DynamicOutcome::InlineJsDisabled => {
+            MarkdownReplacement::Inline("*(DataviewJS disabled)*".to_string())
+        }
+        DynamicOutcome::Hidden => MarkdownReplacement::Inline(String::new()),
         DynamicOutcome::Dql(result) => MarkdownReplacement::Block(dql_markdown(result)),
         DynamicOutcome::DataviewJs(result) => {
             MarkdownReplacement::Block(dataview_js_markdown(result))
@@ -1347,6 +1423,64 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(kinds.contains(&"embed_cycle"), "{kinds:?}");
         assert!(kinds.contains(&"unresolved_embed"), "{kinds:?}");
+    }
+
+    #[test]
+    fn obsidian_comments_are_hidden() {
+        let (_temp_dir, paths, _) = build_vault();
+        let source = "Visible %%inline secret%% text\n\n%%\nblock secret\n%%\n\nAfter\n";
+        let rendered = render_evaluated_markdown(
+            &paths,
+            source,
+            &EvaluatedMarkdownOptions {
+                source_path: Some("Home.md"),
+                ..EvaluatedMarkdownOptions::default()
+            },
+        );
+        assert!(
+            !rendered.markdown.contains("secret"),
+            "{}",
+            rendered.markdown
+        );
+        assert!(
+            rendered.markdown.contains("Visible  text"),
+            "{}",
+            rendered.markdown
+        );
+        assert!(rendered.markdown.contains("After"), "{}", rendered.markdown);
+
+        let html = crate::render_note_html(&paths, "Home.md", source).html;
+        assert!(!html.contains("secret"), "{html}");
+        assert!(html.contains("After"), "{html}");
+    }
+
+    #[cfg(feature = "js_runtime")]
+    #[test]
+    fn inline_dataviewjs_follows_the_vault_setting_and_render_policy() {
+        let (_temp_dir, paths, _) = build_vault();
+        let source = "---\nstatus: draft\n---\nJS: `$= dv.current().status`\n";
+        let render = |policy| {
+            render_evaluated_markdown(
+                &paths,
+                source,
+                &EvaluatedMarkdownOptions {
+                    source_path: Some("Home.md"),
+                    dataview_js: policy,
+                    ..EvaluatedMarkdownOptions::default()
+                },
+            )
+            .markdown
+        };
+        // Off in the vault, as in Dataview: the code stays as written.
+        assert!(render(DataviewJsRenderPolicy::On).contains("`$= dv.current().status`"));
+
+        std::fs::write(
+            paths.vault_root().join(".vulcan/config.toml"),
+            "[dataview]\nenable_inline_dataview_js = true\n",
+        )
+        .expect("config should write");
+        assert!(render(DataviewJsRenderPolicy::On).contains("JS: draft"));
+        assert!(render(DataviewJsRenderPolicy::Off).contains("JS: *(DataviewJS disabled)*"));
     }
 
     #[test]

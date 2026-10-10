@@ -351,6 +351,24 @@ impl<'a> SemanticProcessor<'a> {
             return;
         }
 
+        // The JS prefix goes first: with the defaults neither prefix starts
+        // the other, but a configured pair may.
+        let inline_js_prefix = self.config.dataview.inline_js_query_prefix.as_str();
+        if !inline_js_prefix.is_empty() {
+            if let Some(expression) = text.strip_prefix(inline_js_prefix).map(str::trim) {
+                if !expression.is_empty() {
+                    self.parsed
+                        .inline_js_expressions
+                        .push(crate::RawInlineExpression {
+                            expression: expression.to_string(),
+                            byte_range: range.clone(),
+                            line_number: line_number_for_offset(self.source, range.start),
+                        });
+                }
+                return;
+            }
+        }
+
         let inline_query_prefix = self.config.dataview.inline_query_prefix.as_str();
         if !inline_query_prefix.is_empty() {
             if let Some(expression) = text.strip_prefix(inline_query_prefix).map(str::trim) {

@@ -1,7 +1,7 @@
 ---
 name: dataview-and-bases
 description: Work with Dataview, DataviewJS, Bases, and .base files. Use when the user asks about Dataview DQL, inline fields, DataviewJS blocks, Bases views, formulas, saved task views, or .base editing/evaluation.
-version: 15
+version: 16
 tools:
   - dataview
   - bases
@@ -37,6 +37,7 @@ and translating view logic into Vulcan queries.
 - `query --language dql --explain` and `bases eval --explain` add the note plan (candidates, decided and excluded rows, rows left to the DQL or Bases evaluator, rows loaded with stored fields only, hydrated notes, stage timings) to the output.
 - DQL `FROM "Folder"` matches the folder's exact, case-sensitive spelling and everything below it (`FROM ""` is the whole vault); `FROM #tag` includes nested tags (`#tag/sub`) but not tags that merely share a prefix (`#tags`).
 - DataviewJS runs inside Vulcan's JS sandbox; write/network helpers depend on sandbox and permissions.
+- Inline DataviewJS (`` `$= ...` ``) is evaluated only when the vault sets `[dataview] enable_inline_dataview_js = true` (off by default, as in Dataview), and then follows the same `--dataviewjs` policy as blocks. Obsidian comments (`%% ... %%`) are hidden in rendered output.
 - Rendered reads run `dataviewjs` read-only: a block that writes or executes shows an error there instead. Use `dataview eval` only when the user wants the block's side effects.
 - Evaluated reads (`note get --evaluate`, `note get --mode html`, `render`, browse previews) run every query under the selected `--permissions` profile, so tables and lists cover only readable notes. A short table under a restricted profile is not a reason to broaden the profile.
 - With a read-scoped query, `file.inlinks` describes readable backlink sources, including readable notes outside the query's selected rows. Do not treat its count as a whole-vault count or broaden the grant to discover hidden sources. Authored outgoing links in readable notes are still source content, not proof that their targets are readable.

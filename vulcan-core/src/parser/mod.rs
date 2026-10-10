@@ -38,6 +38,7 @@ pub(crate) fn parse_document_fragment(
     parsed.dataview_blocks.clear();
     parsed.tasks_blocks.clear();
     parsed.inline_expressions.clear();
+    parsed.inline_js_expressions.clear();
     shift_parsed_document_offsets(&mut parsed, base_offset);
     parsed
 }
@@ -67,13 +68,15 @@ fn parse_document_internal(
     };
     let comment_regions = scan_comment_regions(source, options);
     let parser = Parser::new_ext(source, options).into_offset_iter();
-    process_events(
+    let mut parsed = process_events(
         source,
         config,
         &comment_regions,
         parser,
         include_metadata_blocks,
-    )
+    );
+    parsed.comment_regions = comment_regions;
+    parsed
 }
 
 fn shift_parsed_document_offsets(parsed: &mut ParsedDocument, base_offset: usize) {
@@ -117,9 +120,17 @@ fn shift_parsed_document_offsets(parsed: &mut ParsedDocument, base_offset: usize
         block.byte_range.start += base_offset;
         block.byte_range.end += base_offset;
     }
-    for expression in &mut parsed.inline_expressions {
+    for expression in parsed
+        .inline_expressions
+        .iter_mut()
+        .chain(&mut parsed.inline_js_expressions)
+    {
         expression.byte_range.start += base_offset;
         expression.byte_range.end += base_offset;
+    }
+    for region in &mut parsed.comment_regions {
+        region.start += base_offset;
+        region.end += base_offset;
     }
     for chunk in &mut parsed.chunk_texts {
         chunk.byte_offset_start += base_offset;

@@ -16,6 +16,11 @@ pub struct ParsedDocument {
     pub dataview_blocks: Vec<RawDataviewBlock>,
     pub tasks_blocks: Vec<RawTasksBlock>,
     pub inline_expressions: Vec<RawInlineExpression>,
+    /// Inline `DataviewJS` expressions (`` `$= ...` ``), whose text is the
+    /// JavaScript after the prefix.
+    pub inline_js_expressions: Vec<RawInlineExpression>,
+    /// Byte ranges of Obsidian comments (`%% ... %%`), hidden when rendered.
+    pub comment_regions: Vec<std::ops::Range<usize>>,
     pub chunk_texts: Vec<ChunkText>,
     pub diagnostics: Vec<ParseDiagnostic>,
 }

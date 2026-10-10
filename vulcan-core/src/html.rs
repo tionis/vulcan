@@ -405,6 +405,13 @@ fn render_dynamic_outcome_html(
         }
         DynamicOutcome::Unevaluated(expression) => escape_html_text(expression),
         DynamicOutcome::InlineError(error) => render_message_html("Dataview inline error:", error),
+        DynamicOutcome::InlineJs(result) => strip_paragraph_wrapper(
+            &render_dataview_js_result_html(paths, result, source_path, env, state, diagnostics),
+        ),
+        DynamicOutcome::InlineJsDisabled => {
+            render_message_html("DataviewJS disabled:", "inline DataviewJS is turned off")
+        }
+        DynamicOutcome::Hidden => String::new(),
         DynamicOutcome::Dql(result) => {
             render_dql_query_html(paths, result, source_path, env, state, diagnostics)
         }
