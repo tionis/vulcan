@@ -456,6 +456,27 @@ mod tests {
     }
 
     #[test]
+    fn list_items_after_a_nested_sublist_are_kept() {
+        let parsed = parse_document(
+            "- a\n  - b\n- c\n- [ ] d\n\n> quote\n> > nested\n> after [[Target]]\n",
+            &VaultConfig::default(),
+        );
+
+        let items = parsed
+            .list_items
+            .iter()
+            .map(|item| item.text.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(items, ["a", "b", "c", "d"]);
+        assert_eq!(parsed.tasks.len(), 1);
+        assert_eq!(parsed.tasks[0].text, "d");
+        assert!(parsed
+            .links
+            .iter()
+            .any(|link| link.target_path_candidate.as_deref() == Some("Target")));
+    }
+
+    #[test]
     fn comments_are_stripped_from_chunks_but_links_inside_are_reported() {
         let parsed = parse_document(
             "Visible %% hidden [[Secret]] %% still visible\n\n[[Open]]",

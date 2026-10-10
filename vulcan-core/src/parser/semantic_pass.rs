@@ -161,6 +161,13 @@ impl<'a> SemanticProcessor<'a> {
     }
 
     fn handle_start(&mut self, tag: Tag<'a>, range: Range<usize>) {
+        // A block nested in one of its own kind (a sublist, a quote in a
+        // quote) must not end the outer block at its own end tag.
+        if let Some(block) = self.current_block.as_mut() {
+            if same_block_end(block.end_tag, tag.to_end()) {
+                block.nesting += 1;
+            }
+        }
         match tag {
             Tag::Heading { level, .. } => {
                 self.current_heading = Some(HeadingAccumulator {
@@ -441,14 +448,20 @@ impl<'a> SemanticProcessor<'a> {
             heading_path: self.heading_path.clone(),
             text: String::new(),
             code_language,
+            nesting: 0,
         });
     }
 
     fn finalize_block(&mut self, tag_end: TagEnd, byte_offset_end: usize) {
-        let Some(block) = self.current_block.take() else {
+        let Some(mut block) = self.current_block.take() else {
             return;
         };
-        if block.end_tag != tag_end {
+        if !same_block_end(block.end_tag, tag_end) {
+            self.current_block = Some(block);
+            return;
+        }
+        if block.nesting > 0 {
+            block.nesting -= 1;
             self.current_block = Some(block);
             return;
         }
@@ -694,6 +707,17 @@ struct BlockAccumulator {
     heading_path: Vec<String>,
     text: String,
     code_language: Option<String>,
+    /// Open blocks of the same kind nested inside this one.
+    nesting: usize,
+}
+
+/// Whether `end` closes a block that ends with `block_end`. Quotes match
+/// regardless of their alert kind.
+fn same_block_end(block_end: TagEnd, end: TagEnd) -> bool {
+    match (block_end, end) {
+        (TagEnd::BlockQuote(_), TagEnd::BlockQuote(_)) => true,
+        _ => block_end == end,
+    }
 }
 
 struct MetadataAccumulator {
