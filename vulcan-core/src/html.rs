@@ -1,20 +1,19 @@
 use crate::bases::{BasesEvalReport, BasesEvaluatedView, BasesRow};
-use crate::config::{load_vault_config, JsRuntimeSandbox, VaultConfig};
+use crate::config::{load_vault_config, VaultConfig};
 use crate::dataview_js::{DataviewJsOutput, DataviewJsResult};
-use crate::dql::{
-    evaluate_dql_with_note_index_and_config, DqlDiagnostic, DqlQueryResult, DqlQueryType,
+use crate::dql::{DqlDiagnostic, DqlQueryResult, DqlQueryType};
+use crate::dynamic_content::{
+    evaluate_dynamic_regions, is_base_path, DynamicContentContext, DynamicOutcome,
 };
 use crate::note::{read_note, NoteReadOptions};
+use crate::parse_document;
 use crate::parser::{
     fragment_parser_options, parser_options, LinkKind, ParseDiagnosticKind, ParsedDocument,
 };
 use crate::paths::VaultPaths;
-use crate::properties::{evaluate_note_inline_expressions, load_note_index, NoteRecord};
+use crate::properties::{load_note_index, NoteRecord};
 use crate::resolver::{resolve_link, ResolverDocument, ResolverLink};
-use crate::tasks::{evaluate_tasks_query, evaluate_tasks_query_with_note_index, TasksQueryResult};
-use crate::{
-    evaluate_base_file, evaluate_dataview_js_with_options, evaluate_dql_with_filter, parse_document,
-};
+use crate::tasks::TasksQueryResult;
 use ammonia::Builder as HtmlSanitizer;
 use pulldown_cmark::{
     html, CowStr, Event as MarkdownEvent, Parser as MarkdownParser, Tag as MarkdownTag,
@@ -26,13 +25,9 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum HtmlDataviewJsPolicy {
-    #[default]
-    Off,
-    Static,
-}
+pub use crate::dynamic_content::{
+    DataviewJsRenderPolicy as HtmlDataviewJsPolicy, RenderDiagnostic as HtmlRenderDiagnostic,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -78,12 +73,6 @@ pub struct HtmlRenderHeading {
     pub level: u8,
     pub text: String,
     pub id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HtmlRenderDiagnostic {
-    pub kind: String,
-    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -305,59 +294,27 @@ fn render_markdown_with_replacements(
         });
     }
 
-    if let (Some(source_path), Some(note_index)) = (source_path, env.note_index) {
-        if let Some(note) = note_by_path(note_index, source_path) {
-            let inline_results = evaluate_note_inline_expressions(note, note_index);
-            for (index, expression) in parsed.inline_expressions.iter().enumerate() {
-                let result = inline_results.get(index).cloned();
-                let replacement = result.map_or_else(
-                    || escape_html_text(&expression.expression),
-                    |evaluated| {
-                        evaluated.error.as_ref().map_or_else(
-                            || {
-                                render_json_value_html(
-                                    paths,
-                                    &evaluated.value,
-                                    Some(source_path),
-                                    env,
-                                    state,
-                                    diagnostics,
-                                )
-                            },
-                            |error| render_message_html("Dataview inline error:", error),
-                        )
-                    },
-                );
-                replacements.push(HtmlMarkdownReplacement {
-                    start: expression.byte_range.start,
-                    end: expression.byte_range.end,
-                    replacement,
-                });
-            }
-        }
-    }
-
-    for block in &parsed.dataview_blocks {
+    let ctx = DynamicContentContext {
+        paths,
+        config: env.config,
+        note_index: env.note_index,
+        guard: None,
+        permission_profile: None,
+        dataview_js: env.dataview_js_policy,
+    };
+    for region in evaluate_dynamic_regions(&ctx, source_path, parsed, diagnostics) {
+        let replacement = render_dynamic_outcome_html(
+            paths,
+            &region.outcome,
+            source_path,
+            env,
+            state,
+            diagnostics,
+        );
         replacements.push(HtmlMarkdownReplacement {
-            start: block.byte_range.start,
-            end: block.byte_range.end,
-            replacement: render_dataview_block_html(
-                paths,
-                source_path,
-                &block.language,
-                &block.text,
-                env,
-                state,
-                diagnostics,
-            ),
-        });
-    }
-
-    for block in &parsed.tasks_blocks {
-        replacements.push(HtmlMarkdownReplacement {
-            start: block.byte_range.start,
-            end: block.byte_range.end,
-            replacement: render_tasks_block_html(paths, &block.text, env),
+            start: region.start,
+            end: region.end,
+            replacement,
         });
     }
 
@@ -365,21 +322,15 @@ fn render_markdown_with_replacements(
         if link.link_kind != LinkKind::Embed {
             continue;
         }
-        let replacement = if link
+        if link
             .target_path_candidate
             .as_deref()
-            .is_some_and(|candidate| {
-                Path::new(candidate)
-                    .extension()
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("base"))
-            }) {
-            render_base_embed_html(
-                paths,
-                source_path,
-                link.target_path_candidate.as_deref().unwrap_or_default(),
-                link.target_heading.as_deref(),
-            )
-        } else if link.is_note_embed {
+            .is_some_and(is_base_path)
+        {
+            // Evaluated with the other dynamic regions above.
+            continue;
+        }
+        let replacement = if link.is_note_embed {
             render_note_embed_html(paths, source_path, link, env, state, diagnostics)
         } else {
             render_asset_embed_html(source_path, link, env)
@@ -409,112 +360,30 @@ fn render_markdown_with_replacements(
     apply_markdown_replacements(source, replacements)
 }
 
-fn render_dataview_block_html(
+fn render_dynamic_outcome_html(
     paths: &VaultPaths,
+    outcome: &DynamicOutcome,
     source_path: Option<&str>,
-    language: &str,
-    source: &str,
     env: &HtmlRenderEnvironment<'_>,
     state: &mut HtmlRenderState,
-    diagnostics: &mut Vec<HtmlRenderDiagnostic>,
+    diagnostics: &mut [HtmlRenderDiagnostic],
 ) -> String {
-    if language == "dataview" {
-        let result = if let Some(note_index) = env.note_index {
-            evaluate_dql_with_note_index_and_config(
-                paths,
-                source,
-                source_path,
-                None,
-                env.config,
-                note_index,
-            )
-        } else {
-            evaluate_dql_with_filter(paths, source, source_path, None)
-        };
-        return match result {
-            Ok(result) => {
-                render_dql_query_html(paths, &result, source_path, env, state, diagnostics)
-            }
-            Err(error) => render_message_html("Dataview error:", &error.to_string()),
-        };
-    }
-    if language == "dataviewjs" {
-        if env.dataview_js_policy != HtmlDataviewJsPolicy::Static {
-            diagnostics.push(HtmlRenderDiagnostic {
-                kind: "dataviewjs_disabled".to_string(),
-                message: "DataviewJS rendering is disabled for this HTML render".to_string(),
-            });
-            return render_message_html(
-                "DataviewJS disabled:",
-                "enable static DataviewJS rendering in the caller to evaluate this block",
-            );
+    match outcome {
+        DynamicOutcome::InlineValue(value) => {
+            render_json_value_html(paths, value, source_path, env, state, diagnostics)
         }
-        return match evaluate_dataview_js_with_options(
-            paths,
-            source,
-            source_path,
-            crate::DataviewJsEvalOptions {
-                sandbox: Some(JsRuntimeSandbox::Strict),
-                deterministic_static: true,
-                ..crate::DataviewJsEvalOptions::default()
-            },
-        ) {
-            Ok(result) => {
-                render_dataview_js_result_html(paths, &result, source_path, env, state, diagnostics)
-            }
-            Err(error) => render_message_html("DataviewJS error:", &error.to_string()),
-        };
-    }
-    render_message_html(
-        "Dataview error:",
-        &format!("unsupported block language `{language}`"),
-    )
-}
-
-fn render_tasks_block_html(
-    paths: &VaultPaths,
-    source: &str,
-    env: &HtmlRenderEnvironment<'_>,
-) -> String {
-    let result = if let Some(note_index) = env.note_index {
-        evaluate_tasks_query_with_note_index(source, note_index)
-    } else {
-        evaluate_tasks_query(paths, source)
-    };
-    match result {
-        Ok(result) => render_tasks_query_html(&result),
-        Err(error) => render_message_html("Tasks error:", &error.to_string()),
-    }
-}
-
-fn render_base_embed_html(
-    paths: &VaultPaths,
-    source_path: Option<&str>,
-    base_path: &str,
-    view_name: Option<&str>,
-) -> String {
-    let resolved_path = resolve_relative_asset_path(source_path, base_path)
-        .unwrap_or_else(|| base_path.to_string());
-    match evaluate_base_file(paths, &resolved_path) {
-        Ok(mut report) => {
-            if let Some(view_name) = view_name.map(str::trim).filter(|value| !value.is_empty()) {
-                if let Some(view) = report
-                    .views
-                    .iter()
-                    .find(|view| view.name.as_deref() == Some(view_name))
-                    .cloned()
-                {
-                    report.views = vec![view];
-                } else {
-                    return render_message_html(
-                        "Bases error:",
-                        &format!("view `{view_name}` was not found in {resolved_path}"),
-                    );
-                }
-            }
-            render_bases_report_html(&report)
+        DynamicOutcome::Unevaluated(expression) => escape_html_text(expression),
+        DynamicOutcome::Dql(result) => {
+            render_dql_query_html(paths, result, source_path, env, state, diagnostics)
         }
-        Err(error) => render_message_html("Bases error:", &error.to_string()),
+        DynamicOutcome::DataviewJs(result) => {
+            render_dataview_js_result_html(paths, result, source_path, env, state, diagnostics)
+        }
+        DynamicOutcome::Tasks(result) => render_tasks_query_html(result),
+        DynamicOutcome::Base(report) => render_bases_report_html(report),
+        DynamicOutcome::Disabled { title, message } | DynamicOutcome::Error { title, message } => {
+            render_message_html(title, message)
+        }
     }
 }
 
@@ -1607,7 +1476,10 @@ fn resolve_embedded_note_path(
         .map(|document| document.path.clone())
 }
 
-fn resolve_relative_asset_path(source_document_path: Option<&str>, target: &str) -> Option<String> {
+pub(crate) fn resolve_relative_asset_path(
+    source_document_path: Option<&str>,
+    target: &str,
+) -> Option<String> {
     let target = target.trim();
     if target.is_empty() {
         return None;

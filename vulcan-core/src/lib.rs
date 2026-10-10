@@ -60,6 +60,7 @@ pub mod decomposition;
 pub mod doctor;
 pub mod dql;
 pub mod durable;
+pub mod dynamic_content;
 pub mod exchange;
 pub mod expression;
 mod extraction;
@@ -186,6 +187,10 @@ pub use dql::{
     evaluate_dql, evaluate_dql_with_filter, evaluate_dql_with_guard, evaluate_parsed_dql,
     evaluate_parsed_dql_with_filter, load_dataview_blocks, parse_dql_with_diagnostics,
     DataviewBlockRecord, DqlDiagnostic, DqlEvalError, DqlParseOutput, DqlQueryResult,
+};
+pub use dynamic_content::{
+    render_evaluated_markdown, DataviewJsRenderPolicy, EvaluatedMarkdown, EvaluatedMarkdownOptions,
+    EvaluatedMarkdownRenderer, RenderDiagnostic,
 };
 pub use folder_notes::{FolderNotePlacement, FolderNotesConfig};
 pub use git::{
