@@ -189,7 +189,8 @@ pub use dql::{
     DataviewBlockRecord, DqlDiagnostic, DqlEvalError, DqlParseOutput, DqlQueryResult,
 };
 pub use dynamic_content::{
-    render_evaluated_markdown, DataviewJsRenderPolicy, EvaluatedMarkdown, EvaluatedMarkdownOptions,
+    dataview_js_result_markdown, dql_result_markdown, render_evaluated_markdown,
+    DataviewJsRenderPolicy, DataviewMarkdownOptions, EvaluatedMarkdown, EvaluatedMarkdownOptions,
     EvaluatedMarkdownRenderer, RenderDiagnostic,
 };
 pub use folder_notes::{FolderNotePlacement, FolderNotesConfig};

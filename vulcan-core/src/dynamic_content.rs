@@ -546,7 +546,7 @@ impl EvaluatedMarkdownRenderer {
             evaluate_dynamic_regions(&ctx, source_path, &parsed, &mut diagnostics)
                 .into_iter()
                 .filter_map(|region| {
-                    outcome_markdown(&region.outcome)
+                    outcome_markdown(&region.outcome, self.config.dataview.display_result_count)
                         .map(|replacement| (region.start, region.end, replacement))
                 }),
         );
@@ -703,7 +703,7 @@ fn splice_markdown_regions(source: &str, regions: Vec<DynamicRegion>) -> String 
         regions
             .into_iter()
             .filter_map(|region| {
-                outcome_markdown(&region.outcome)
+                outcome_markdown(&region.outcome, false)
                     .map(|replacement| (region.start, region.end, replacement))
             })
             .collect(),
@@ -772,7 +772,14 @@ enum MarkdownReplacement {
     Block(String),
 }
 
-fn outcome_markdown(outcome: &DynamicOutcome) -> Option<MarkdownReplacement> {
+fn outcome_markdown(
+    outcome: &DynamicOutcome,
+    show_result_count: bool,
+) -> Option<MarkdownReplacement> {
+    let options = DataviewMarkdownOptions {
+        show_result_count,
+        empty_placeholder: true,
+    };
     Some(match outcome {
         DynamicOutcome::Unevaluated(_) => return None,
         DynamicOutcome::InlineValue(value) => MarkdownReplacement::Inline(inline_value(value)),
@@ -780,20 +787,26 @@ fn outcome_markdown(outcome: &DynamicOutcome) -> Option<MarkdownReplacement> {
             MarkdownReplacement::Inline(format!("*(Dataview error: {error})*"))
         }
         DynamicOutcome::InlineJs(result) => MarkdownReplacement::Inline(
-            dataview_js_markdown(result)
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-                .collect::<Vec<_>>()
-                .join(" "),
+            dataview_js_markdown(
+                result,
+                DataviewMarkdownOptions {
+                    show_result_count: false,
+                    empty_placeholder: false,
+                },
+            )
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join(" "),
         ),
         DynamicOutcome::InlineJsDisabled => {
             MarkdownReplacement::Inline("*(DataviewJS disabled)*".to_string())
         }
         DynamicOutcome::Hidden => MarkdownReplacement::Inline(String::new()),
-        DynamicOutcome::Dql(result) => MarkdownReplacement::Block(dql_markdown(result)),
+        DynamicOutcome::Dql(result) => MarkdownReplacement::Block(dql_markdown(result, options)),
         DynamicOutcome::DataviewJs(result) => {
-            MarkdownReplacement::Block(dataview_js_markdown(result))
+            MarkdownReplacement::Block(dataview_js_markdown(result, options))
         }
         DynamicOutcome::Tasks(result) => MarkdownReplacement::Block(tasks_markdown(result)),
         DynamicOutcome::Base(report) => MarkdownReplacement::Block(bases_markdown(report)),
@@ -875,7 +888,33 @@ fn markdown_table(headers: &[String], rows: &[Vec<String>]) -> String {
     rendered
 }
 
-fn dql_markdown(result: &DqlQueryResult) -> String {
+/// How Dataview results are written as Markdown.
+#[derive(Debug, Clone, Copy)]
+pub struct DataviewMarkdownOptions {
+    /// Follows Dataview's `displayResultCount`.
+    pub show_result_count: bool,
+    /// Write "*No results.*" for empty lists, task lists, and calendars, as a
+    /// rendered note does; command output leaves them empty instead.
+    pub empty_placeholder: bool,
+}
+
+/// A DQL result as Markdown, as `dataview query` prints it and as notes
+/// render it.
+#[must_use]
+pub fn dql_result_markdown(result: &DqlQueryResult, options: DataviewMarkdownOptions) -> String {
+    dql_markdown(result, options)
+}
+
+/// A `DataviewJS` result as Markdown; see [`dql_result_markdown`].
+#[must_use]
+pub fn dataview_js_result_markdown(
+    result: &DataviewJsResult,
+    options: DataviewMarkdownOptions,
+) -> String {
+    dataview_js_markdown(result, options)
+}
+
+fn dql_markdown(result: &DqlQueryResult, options: DataviewMarkdownOptions) -> String {
     let mut sections = Vec::new();
     let body = match result.query_type {
         DqlQueryType::Table => markdown_table(
@@ -931,9 +970,23 @@ fn dql_markdown(result: &DqlQueryResult) -> String {
         }
     };
     if result.rows.is_empty() {
-        sections.push("*No results.*".to_string());
+        // An empty table still shows its columns.
+        if result.query_type == DqlQueryType::Table {
+            sections.push(markdown_table(&result.columns, &[]).trim_end().to_string());
+        } else if options.empty_placeholder {
+            sections.push("*No results.*".to_string());
+        }
     } else if !body.is_empty() {
         sections.push(body.trim_end().to_string());
+        if options.show_result_count {
+            match result.query_type {
+                DqlQueryType::Table => {
+                    sections.push(format!("{} result(s)", result.result_count));
+                }
+                DqlQueryType::Task => sections.push(format!("{} task(s)", result.result_count)),
+                DqlQueryType::List | DqlQueryType::Calendar => {}
+            }
+        }
     }
     if let Some(diagnostics) = dql_diagnostics_markdown(&result.diagnostics) {
         sections.push(diagnostics);
@@ -1001,7 +1054,7 @@ fn task_file(task: &Value) -> String {
         .to_string()
 }
 
-fn dataview_js_markdown(result: &DataviewJsResult) -> String {
+fn dataview_js_markdown(result: &DataviewJsResult, options: DataviewMarkdownOptions) -> String {
     if result.outputs.is_empty() {
         return result.value.as_ref().map(inline_value).unwrap_or_default();
     }
@@ -1009,7 +1062,7 @@ fn dataview_js_markdown(result: &DataviewJsResult) -> String {
         .outputs
         .iter()
         .map(|output| match output {
-            DataviewJsOutput::Query { result } => dql_markdown(result),
+            DataviewJsOutput::Query { result } => dql_markdown(result, options),
             DataviewJsOutput::Table { headers, rows } => markdown_table(
                 headers,
                 &rows

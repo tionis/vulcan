@@ -11991,7 +11991,8 @@ fn dataview_eval_human_output_keeps_empty_table_headers() {
 
     assert!(stdout.contains("| File | status | priority |"));
     assert!(stdout.contains("| --- | --- | --- |"));
-    assert!(stdout.contains("| [[Projects/Alpha]] | active | 1.0 |"));
+    // Integral numbers print as Dataview shows them.
+    assert!(stdout.contains("| [[Projects/Alpha]] | active | 1 |"));
     // Dashboard's `reviewed` is `[true, false]`, so it is not reviewed.
     assert!(!stdout.contains("[[Dashboard]]"));
     assert!(stdout.contains("1 result(s)"));
@@ -12168,8 +12169,9 @@ fn dataview_eval_human_output_shows_unsupported_dql_diagnostics() {
         .expect("stdout should be valid utf-8");
 
     assert!(stdout.contains("File | slug"));
-    assert!(stdout.contains("[[Projects/Alpha]] | null"));
-    assert!(stdout.contains("Diagnostics:"));
+    // Null renders as Dataview's dash.
+    assert!(stdout.contains("[[Projects/Alpha]] | -"));
+    assert!(stdout.contains("> [!warning] Diagnostics"));
     assert!(stdout.contains("unknown method `slugify`"));
 }
 

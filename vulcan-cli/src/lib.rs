@@ -459,9 +459,8 @@ pub fn build_update_channel() -> &'static str {
 
 use crate::commit::AutoCommitPolicy;
 use crate::output::{
-    markdown_table_column_count, markdown_table_header_lines, markdown_table_row, paginated_items,
-    print_json, print_json_lines, print_selected_human_fields, render_dataview_inline_value,
-    render_human_value, select_fields, ListOutputControls,
+    paginated_items, print_json, print_json_lines, print_selected_human_fields,
+    render_dataview_inline_value, render_human_value, select_fields, ListOutputControls,
 };
 use crate::resolve::{interactive_note_selection_allowed, resolve_note_argument};
 use bundle_server::{serve_frontend_bundle_profile, FrontendBundleServeOptions};
@@ -576,7 +575,7 @@ use vulcan_core::{
     resolve_permission_profile, save_saved_report, scan_vault, scan_vault_with_progress,
     search_vault_with_filter, verify_cache, watch_vault, AutoScanMode, BacklinkRecord,
     BacklinksReport, BasesEvalReport, BulkMutationReport, CacheVerifyReport, ChangeAnchor,
-    ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, DataviewJsOutput, DataviewJsResult,
+    ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, DataviewJsResult,
     DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult,
     DuplicateSuggestionsReport, LinkSuggestion, LinkSuggestionsReport, MentionSuggestion,
     MentionSuggestionsReport, MergeCandidate, MoveSummary, NoteQuery, NoteRecord, NotesReport,
@@ -8874,22 +8873,13 @@ fn print_dql_query_result(
 }
 
 fn render_dql_query_markdown(result: &DqlQueryResult, show_result_count: bool) -> String {
-    let mut sections = Vec::new();
-    let body = match result.query_type {
-        vulcan_core::dql::DqlQueryType::Table => {
-            render_dql_table_markdown(result, show_result_count)
-        }
-        vulcan_core::dql::DqlQueryType::List => render_dql_list_markdown(result),
-        vulcan_core::dql::DqlQueryType::Task => render_dql_task_markdown(result, show_result_count),
-        vulcan_core::dql::DqlQueryType::Calendar => render_dql_calendar_markdown(result),
-    };
-    if !body.is_empty() {
-        sections.push(body);
-    }
-    let diagnostics = render_dql_diagnostics_markdown(&result.diagnostics);
-    if !diagnostics.is_empty() {
-        sections.push(diagnostics);
-    }
+    let mut rendered = vulcan_core::dql_result_markdown(
+        result,
+        vulcan_core::DataviewMarkdownOptions {
+            show_result_count,
+            empty_placeholder: false,
+        },
+    );
     if let Some(plan) = result.plan.as_ref() {
         let mut lines = vec!["**Query plan**".to_string(), String::new()];
         lines.extend(
@@ -8897,9 +8887,10 @@ fn render_dql_query_markdown(result: &DqlQueryResult, show_result_count: bool) -
                 .into_iter()
                 .map(|line| format!("- {line}")),
         );
-        sections.push(lines.join("\n"));
+        rendered.push_str("\n\n");
+        rendered.push_str(&lines.join("\n"));
     }
-    sections.join("\n\n")
+    rendered
 }
 
 fn render_dataview_block_markdown(result: &DataviewBlockResult, show_result_count: bool) -> String {
@@ -8937,192 +8928,13 @@ pub(crate) fn render_dataview_eval_markdown(
 }
 
 fn render_dataview_js_markdown(result: &DataviewJsResult, show_result_count: bool) -> String {
-    if result.outputs.is_empty() {
-        return result
-            .value
-            .as_ref()
-            .map(render_dataview_inline_value)
-            .unwrap_or_default();
-    }
-
-    result
-        .outputs
-        .iter()
-        .map(|output| match output {
-            DataviewJsOutput::Query { result } => {
-                render_dql_query_markdown(result, show_result_count)
-            }
-            DataviewJsOutput::Table { headers, rows } => {
-                render_dataview_table_markdown(headers, rows)
-            }
-            DataviewJsOutput::List { items } => items
-                .iter()
-                .map(|item| format!("- {}", render_dataview_inline_value(item)))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            DataviewJsOutput::TaskList {
-                tasks,
-                group_by_file,
-            } => render_dataview_task_list_markdown(tasks, *group_by_file),
-            DataviewJsOutput::Paragraph { text } | DataviewJsOutput::Span { text } => text.clone(),
-            DataviewJsOutput::Header { level, text } => {
-                format!("{} {text}", "#".repeat((*level).max(1)))
-            }
-            DataviewJsOutput::Element {
-                element,
-                text,
-                attrs: _,
-            } => format!("<{element}> {text}"),
-        })
-        .filter(|section| !section.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n")
-}
-
-fn render_dataview_table_markdown(headers: &[String], rows: &[Vec<Value>]) -> String {
-    let column_count = markdown_table_column_count(headers.len(), rows.iter().map(Vec::len));
-    let mut lines = Vec::new();
-    if column_count > 0 {
-        let [header, separator] = markdown_table_header_lines(headers, column_count);
-        lines.push(header);
-        lines.push(separator);
-    }
-    lines.extend(
-        rows.iter().map(|row| {
-            markdown_table_row(row.iter().map(render_dataview_inline_value), column_count)
-        }),
-    );
-    lines.join("\n")
-}
-
-fn render_dataview_task_list_markdown(tasks: &[Value], group_by_file: bool) -> String {
-    let mut lines = Vec::new();
-    let mut current_file: Option<&str> = None;
-    for task in tasks {
-        let file = task
-            .get("path")
-            .and_then(Value::as_str)
-            .or_else(|| {
-                task.get("file")
-                    .and_then(|file| file.get("path"))
-                    .and_then(Value::as_str)
-            })
-            .unwrap_or("<unknown>");
-        if group_by_file && current_file != Some(file) {
-            current_file = Some(file);
-            lines.push(format!("### {file}"));
-        }
-        let status = task.get("status").and_then(Value::as_str).unwrap_or(" ");
-        let text = task
-            .get("text")
-            .map(render_dataview_inline_value)
-            .unwrap_or_default();
-        lines.push(format!("- [{status}] {text}"));
-    }
-    lines.join("\n")
-}
-
-fn render_dql_table_markdown(result: &DqlQueryResult, show_result_count: bool) -> String {
-    let column_count = result.columns.len();
-    let mut lines = Vec::new();
-    if column_count > 0 {
-        let [header, separator] = markdown_table_header_lines(&result.columns, column_count);
-        lines.push(header);
-        lines.push(separator);
-    }
-    lines.extend(result.rows.iter().map(|row| {
-        markdown_table_row(
-            result
-                .columns
-                .iter()
-                .map(|column| render_dataview_inline_value(&row[column])),
-            column_count,
-        )
-    }));
-    if show_result_count {
-        lines.push(format!("{} result(s)", result.result_count));
-    }
-    lines.join("\n")
-}
-
-fn render_dql_list_markdown(result: &DqlQueryResult) -> String {
-    if result.rows.is_empty() {
-        return String::new();
-    }
-    result
-        .rows
-        .iter()
-        .map(|row| match result.columns.as_slice() {
-            [column] => format!("- {}", render_dataview_inline_value(&row[column])),
-            [left, right, ..] => format!(
-                "- {}: {}",
-                render_dataview_inline_value(&row[left]),
-                render_dataview_inline_value(&row[right])
-            ),
-            [] => format!("- {}", serde_json::to_string(row).unwrap_or_default()),
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn render_dql_task_markdown(result: &DqlQueryResult, show_result_count: bool) -> String {
-    if result.rows.is_empty() {
-        return String::new();
-    }
-
-    let file_column = result.columns.first().map_or("File", String::as_str);
-    let mut current_file: Option<&str> = None;
-    let mut lines = Vec::new();
-    for row in &result.rows {
-        let file = row[file_column].as_str().unwrap_or_default();
-        if current_file != Some(file) {
-            current_file = Some(file);
-            lines.push(format!("### {file}"));
-        }
-        let status = row["status"].as_str().unwrap_or(" ");
-        let text = render_dataview_inline_value(&row["text"]);
-        lines.push(format!("- [{status}] {text}"));
-    }
-    if show_result_count {
-        lines.push(format!("{} task(s)", result.result_count));
-    }
-    lines.join("\n")
-}
-
-fn render_dql_calendar_markdown(result: &DqlQueryResult) -> String {
-    if result.rows.is_empty() {
-        return "No calendar entries.".to_string();
-    }
-
-    let file_column = result.columns.get(1).map_or("File", String::as_str);
-    let mut current_date: Option<&str> = None;
-    let mut lines = Vec::new();
-    for row in &result.rows {
-        let date = row["date"].as_str().unwrap_or_default();
-        if current_date != Some(date) {
-            current_date = Some(date);
-            lines.push(format!("### {date}"));
-        }
-        lines.push(format!(
-            "- {}",
-            render_dataview_inline_value(&row[file_column])
-        ));
-    }
-    lines.join("\n")
-}
-
-fn render_dql_diagnostics_markdown(diagnostics: &[vulcan_core::DqlDiagnostic]) -> String {
-    if diagnostics.is_empty() {
-        return String::new();
-    }
-    std::iter::once("Diagnostics:".to_string())
-        .chain(
-            diagnostics
-                .iter()
-                .map(|diagnostic| format!("- {}", diagnostic.message)),
-        )
-        .collect::<Vec<_>>()
-        .join("\n")
+    vulcan_core::dataview_js_result_markdown(
+        result,
+        vulcan_core::DataviewMarkdownOptions {
+            show_result_count,
+            empty_placeholder: false,
+        },
+    )
 }
 
 fn print_static_search_index_report(
