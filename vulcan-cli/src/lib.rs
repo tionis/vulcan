@@ -498,17 +498,17 @@ use vulcan_app::export::{
     apply_export_profile_rule_update, apply_export_profile_set, build_content_transform_rules,
     build_export_profile_list, build_export_profile_rule_list, build_export_profile_show_report,
     execute_export_selection, execute_graph_export_selection, export_profile_format_label,
-    export_profile_query_args, load_export_links, load_exported_notes, prepare_export_data,
+    export_profile_query_args, prepare_evaluated_export_data, prepare_export_data,
     prepare_outline_export_data, render_csv_export_payload, render_json_export_payload,
     render_markdown_export_payload, require_export_profile_format, require_export_profile_path,
     validate_export_profile_config, write_epub_export as app_write_epub_export,
     write_sqlite_export, write_zip_export, BoolConfigUpdate, ConfigValueUpdate, CsvExportSummary,
     EpubExportOptions as AppEpubExportOptions, EpubRenderCallbacks as AppEpubRenderCallbacks,
-    ExportProfileCreateRequest, ExportProfileDeleteReport, ExportProfileListEntry,
-    ExportProfileRuleListEntry, ExportProfileRuleMoveRequest, ExportProfileRuleRequest,
-    ExportProfileRuleWriteAction, ExportProfileRuleWriteReport, ExportProfileSetRequest,
-    ExportProfileShowReport, ExportProfileWriteAction, ExportProfileWriteReport, JsonExportSummary,
-    MarkdownExportSummary,
+    ExportEvaluation, ExportProfileCreateRequest, ExportProfileDeleteReport,
+    ExportProfileListEntry, ExportProfileRuleListEntry, ExportProfileRuleMoveRequest,
+    ExportProfileRuleRequest, ExportProfileRuleWriteAction, ExportProfileRuleWriteReport,
+    ExportProfileSetRequest, ExportProfileShowReport, ExportProfileWriteAction,
+    ExportProfileWriteReport, JsonExportSummary, MarkdownExportSummary, PreparedExportData,
 };
 #[cfg(feature = "web")]
 use vulcan_app::integrations::{begin_route_run, ensure_route_owner};
@@ -6222,14 +6222,15 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         &transforms.replace_rules,
                     )
                     .map_err(CliError::operation)?;
-                    let mut prepared = prepare_export_data(
+                    let evaluation_guard = export_evaluation_guard(cli, &paths, evaluate)?;
+                    let prepared = prepare_evaluated_export_data(
                         &paths,
                         &report,
                         read_filter.as_ref(),
                         transform_rules.as_deref(),
+                        export_evaluation(&paths, evaluate, evaluation_guard.as_ref()),
                     )
                     .map_err(CliError::operation)?;
-                    evaluate_export_notes(cli, &paths, evaluate, &mut prepared.notes)?;
                     let payload = render_markdown_export_payload(&prepared.notes, title.as_deref());
                     let summary = MarkdownExportSummary {
                         path: path
@@ -6255,14 +6256,15 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         &transforms.replace_rules,
                     )
                     .map_err(CliError::operation)?;
-                    let mut prepared = prepare_export_data(
+                    let evaluation_guard = export_evaluation_guard(cli, &paths, evaluate)?;
+                    let prepared = prepare_evaluated_export_data(
                         &paths,
                         &report,
                         read_filter.as_ref(),
                         transform_rules.as_deref(),
+                        export_evaluation(&paths, evaluate, evaluation_guard.as_ref()),
                     )
                     .map_err(CliError::operation)?;
-                    evaluate_export_notes(cli, &paths, evaluate, &mut prepared.notes)?;
                     let payload = render_json_export_payload(&report, &prepared.notes, *pretty)
                         .map_err(CliError::operation)?;
                     let summary = JsonExportSummary {
@@ -6377,14 +6379,15 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         &transforms.replace_rules,
                     )
                     .map_err(CliError::operation)?;
-                    let mut prepared = prepare_export_data(
+                    let evaluation_guard = export_evaluation_guard(cli, &paths, evaluate)?;
+                    let prepared = prepare_evaluated_export_data(
                         &paths,
                         &report,
                         read_filter.as_ref(),
                         transform_rules.as_deref(),
+                        export_evaluation(&paths, evaluate, evaluation_guard.as_ref()),
                     )
                     .map_err(CliError::operation)?;
-                    evaluate_export_notes(cli, &paths, evaluate, &mut prepared.notes)?;
                     let summary =
                         write_zip_export(&paths, path, &report, &prepared.notes, &prepared.links)
                             .map_err(CliError::operation)?;
@@ -6518,10 +6521,15 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     path,
                 } => {
                     let report = execute_export_query_args(&paths, query, read_filter.as_ref())?;
-                    let mut notes =
-                        load_exported_notes(&paths, &report).map_err(CliError::operation)?;
-                    let links = load_export_links(&paths, &notes).map_err(CliError::operation)?;
-                    evaluate_export_notes(cli, &paths, evaluate, &mut notes)?;
+                    let evaluation_guard = export_evaluation_guard(cli, &paths, evaluate)?;
+                    let PreparedExportData { notes, links } = prepare_evaluated_export_data(
+                        &paths,
+                        &report,
+                        read_filter.as_ref(),
+                        None,
+                        export_evaluation(&paths, evaluate, evaluation_guard.as_ref()),
+                    )
+                    .map_err(CliError::operation)?;
                     let summary = write_sqlite_export(path, &report, &notes, &links)
                         .map_err(CliError::operation)?;
                     match cli.output {
@@ -9047,31 +9055,8 @@ struct ExportContentRequest<'a> {
     selection: Option<&'a SelectionPlan>,
     read_filter: Option<&'a PermissionFilter>,
     transforms: Option<&'a [ContentTransformRuleConfig]>,
-    /// Evaluate dynamic content after transforms, under this guard.
+    /// Evaluate dynamic content after transforms.
     evaluation: Option<ExportEvaluation<'a>>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ExportEvaluation<'a> {
-    guard: &'a ProfilePermissionGuard,
-    dataview_js: vulcan_core::DataviewJsRenderPolicy,
-}
-
-impl ExportContentRequest<'_> {
-    fn evaluate_notes(
-        &self,
-        paths: &VaultPaths,
-        notes: &mut [vulcan_app::export::ExportedNoteDocument],
-    ) {
-        if let Some(evaluation) = self.evaluation {
-            vulcan_app::export::evaluate_exported_notes(
-                paths,
-                notes,
-                Some(evaluation.guard),
-                evaluation.dataview_js,
-            );
-        }
-    }
 }
 
 fn parse_selection_json(value: Option<&str>) -> Result<Option<SelectionPlan>, CliError> {
@@ -9378,25 +9363,26 @@ fn finish_export_profile_binary<T: Serialize>(
     serde_json::to_value(summary).map_err(CliError::operation)
 }
 
-/// Apply `export --evaluate` to the notes an export writes. Links stay
-/// those the notes author, collected before evaluation.
-fn evaluate_export_notes(
+/// The guard `export --evaluate` evaluates under, when it is set.
+fn export_evaluation_guard(
     cli: &Cli,
     paths: &VaultPaths,
     args: &ExportEvaluateArgs,
-    notes: &mut [vulcan_app::export::ExportedNoteDocument],
-) -> Result<(), CliError> {
-    if !args.evaluate {
-        return Ok(());
-    }
-    let guard = selected_permission_guard(cli, paths)?;
-    vulcan_app::export::evaluate_exported_notes(
-        paths,
-        notes,
-        Some(&guard),
-        DataviewJsArg::resolve(args.dataview_js, paths),
-    );
-    Ok(())
+) -> Result<Option<ProfilePermissionGuard>, CliError> {
+    args.evaluate
+        .then(|| selected_permission_guard(cli, paths))
+        .transpose()
+}
+
+fn export_evaluation<'a>(
+    paths: &VaultPaths,
+    args: &ExportEvaluateArgs,
+    guard: Option<&'a ProfilePermissionGuard>,
+) -> Option<ExportEvaluation<'a>> {
+    guard.map(|guard| ExportEvaluation {
+        guard: Some(guard),
+        dataview_js: DataviewJsArg::resolve(args.dataview_js, paths),
+    })
 }
 
 fn run_markdown_export_profile(
@@ -9414,9 +9400,14 @@ fn run_markdown_export_profile(
         request.read_filter,
     )
     .map_err(CliError::operation)?;
-    let mut prepared = prepare_export_data(paths, &report, request.read_filter, request.transforms)
-        .map_err(CliError::operation)?;
-    request.evaluate_notes(paths, &mut prepared.notes);
+    let prepared = prepare_evaluated_export_data(
+        paths,
+        &report,
+        request.read_filter,
+        request.transforms,
+        request.evaluation,
+    )
+    .map_err(CliError::operation)?;
     let payload = render_markdown_export_payload(&prepared.notes, title);
     let summary = MarkdownExportSummary {
         path: output_path.display().to_string(),
@@ -9440,9 +9431,14 @@ fn run_json_export_profile(
         request.read_filter,
     )
     .map_err(CliError::operation)?;
-    let mut prepared = prepare_export_data(paths, &report, request.read_filter, request.transforms)
-        .map_err(CliError::operation)?;
-    request.evaluate_notes(paths, &mut prepared.notes);
+    let prepared = prepare_evaluated_export_data(
+        paths,
+        &report,
+        request.read_filter,
+        request.transforms,
+        request.evaluation,
+    )
+    .map_err(CliError::operation)?;
     let payload = render_json_export_payload(&report, &prepared.notes, pretty)
         .map_err(CliError::operation)?;
     let summary = JsonExportSummary {
@@ -9563,9 +9559,14 @@ fn run_zip_export_profile(
         request.read_filter,
     )
     .map_err(CliError::operation)?;
-    let mut prepared = prepare_export_data(paths, &report, request.read_filter, request.transforms)
-        .map_err(CliError::operation)?;
-    request.evaluate_notes(paths, &mut prepared.notes);
+    let prepared = prepare_evaluated_export_data(
+        paths,
+        &report,
+        request.read_filter,
+        request.transforms,
+        request.evaluation,
+    )
+    .map_err(CliError::operation)?;
     let summary = write_zip_export(
         paths,
         output_path,
@@ -9591,9 +9592,14 @@ fn run_sqlite_export_profile(
         request.read_filter,
     )
     .map_err(CliError::operation)?;
-    let mut notes = load_exported_notes(paths, &report).map_err(CliError::operation)?;
-    let links = load_export_links(paths, &notes).map_err(CliError::operation)?;
-    request.evaluate_notes(paths, &mut notes);
+    let PreparedExportData { notes, links } = prepare_evaluated_export_data(
+        paths,
+        &report,
+        request.read_filter,
+        None,
+        request.evaluation,
+    )
+    .map_err(CliError::operation)?;
     let summary =
         write_sqlite_export(output_path, &report, &notes, &links).map_err(CliError::operation)?;
     finish_export_profile_binary(output, &summary.path, &summary)
@@ -9743,7 +9749,7 @@ fn run_export_profile(
         read_filter,
         transforms: profile.content_transform_rules.as_deref(),
         evaluation: evaluation_guard.as_ref().map(|guard| ExportEvaluation {
-            guard,
+            guard: Some(guard),
             dataview_js: profile.dataview_js.unwrap_or_else(|| {
                 vulcan_core::load_vault_config(paths)
                     .config

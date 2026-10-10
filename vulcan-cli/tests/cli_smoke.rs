@@ -4830,6 +4830,84 @@ fn exports_evaluate_dynamic_content_on_request() {
 }
 
 #[test]
+fn evaluated_exports_include_links_from_query_results() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    write_dynamic_content_vault(&vault_root);
+    let export_json = |extra: &[&str]| {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .arg("--vault")
+            .arg(&vault_root)
+            .args(extra)
+            .args([
+                "export",
+                "json",
+                r#"from notes where file.path = "Dashboard.md""#,
+                "--evaluate",
+            ])
+            .assert()
+            .success();
+        let json: Value =
+            serde_json::from_slice(&assert.get_output().stdout).expect("export should be json");
+        json.to_string()
+    };
+
+    // The table row's link to the secret note is exported like an authored
+    // link, and a restricted profile still keeps it out.
+    assert!(export_json(&[]).contains("Private/Secret"));
+    assert!(!export_json(&["--permissions", "public"]).contains("Private/Secret"));
+}
+
+#[test]
+fn evaluated_zip_exports_copy_attachments_linked_from_query_results() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("Art")).expect("art folder should exist");
+    fs::write(
+        vault_root.join("Gallery.md"),
+        "```dataview\nTABLE cover FROM \"Art\"\n```\n",
+    )
+    .expect("gallery should be written");
+    fs::write(
+        vault_root.join("Art/Piece.md"),
+        "---\ncover: \"[[pic.png]]\"\n---\n# Piece\n",
+    )
+    .expect("piece should be written");
+    fs::write(vault_root.join("pic.png"), b"png").expect("image should be written");
+    run_scan(&vault_root);
+    let archive_entries = |evaluate: bool| {
+        let archive = temp_dir.path().join(format!("gallery-{evaluate}.zip"));
+        let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+        command.arg("--vault").arg(&vault_root).args([
+            "export",
+            "zip",
+            r#"from notes where file.path = "Gallery.md""#,
+            "-o",
+        ]);
+        command.arg(&archive);
+        if evaluate {
+            command.arg("--evaluate");
+        }
+        command.assert().success();
+        let mut zip = ZipArchive::new(fs::File::open(&archive).expect("archive should open"))
+            .expect("archive should be a zip");
+        (0..zip.len())
+            .map(|index| zip.by_index(index).expect("entry").name().to_string())
+            .collect::<Vec<_>>()
+    };
+
+    assert!(!archive_entries(false)
+        .iter()
+        .any(|name| name.ends_with("pic.png")));
+    let evaluated = archive_entries(true);
+    assert!(
+        evaluated.iter().any(|name| name.ends_with("pic.png")),
+        "{evaluated:?}"
+    );
+}
+
+#[test]
 fn export_profiles_can_evaluate_dynamic_content() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

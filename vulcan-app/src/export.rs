@@ -366,33 +366,26 @@ pub fn execute_graph_export_selection(
     Ok(graph)
 }
 
-/// Replace each exported note's dynamic content (Dataview, Tasks, Bases and
-/// note embeds) with its evaluated result, as `note get --evaluate` does.
-/// Runs after content transforms, so excluded sections are never evaluated.
-/// Queries see only notes `guard` can read; `DataviewJS` is read-only.
-pub fn evaluate_exported_notes(
-    paths: &VaultPaths,
-    notes: &mut [ExportedNoteDocument],
-    guard: Option<&dyn vulcan_core::PermissionGuard>,
-    dataview_js: vulcan_core::DataviewJsRenderPolicy,
-) -> Vec<vulcan_core::RenderDiagnostic> {
-    let renderer = vulcan_core::EvaluatedMarkdownRenderer::load(paths, guard);
-    let permission_profile = guard.map(vulcan_core::PermissionGuard::profile_name);
-    let mut diagnostics = Vec::new();
-    for note in notes {
-        let evaluated = renderer.render(
-            &note.content,
-            &vulcan_core::EvaluatedMarkdownOptions {
-                source_path: Some(&note.note.document_path),
-                dataview_js,
-                guard,
-                permission_profile,
-            },
-        );
-        note.content = evaluated.markdown;
-        diagnostics.extend(evaluated.diagnostics);
+/// How an export evaluates dynamic content (Dataview, Tasks, Bases, and
+/// note embeds), as `note get --evaluate` does.
+#[derive(Clone, Copy)]
+pub struct ExportEvaluation<'a> {
+    /// Queries see only notes this guard can read.
+    pub guard: Option<&'a dyn vulcan_core::PermissionGuard>,
+    pub dataview_js: vulcan_core::DataviewJsRenderPolicy,
+}
+
+impl std::fmt::Debug for ExportEvaluation<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ExportEvaluation")
+            .field(
+                "guard",
+                &self.guard.map(vulcan_core::PermissionGuard::profile_name),
+            )
+            .field("dataview_js", &self.dataview_js)
+            .finish()
     }
-    diagnostics
 }
 
 pub fn load_exported_notes(
@@ -677,7 +670,52 @@ pub fn prepare_export_data(
     read_filter: Option<&PermissionFilter>,
     transform_rules: Option<&[ContentTransformRuleConfig]>,
 ) -> Result<PreparedExportData, AppError> {
+    prepare_evaluated_export_data(paths, report, read_filter, transform_rules, None)
+}
+
+/// [`prepare_export_data`], then evaluate each note's dynamic content when
+/// `evaluation` is set. Evaluation runs after content transforms, so
+/// excluded sections are never evaluated, and links, tags, and backlinks
+/// are derived from the evaluated notes, so links that appear only in query
+/// results are exported (and their attachments copied) like authored ones.
+pub fn prepare_evaluated_export_data(
+    paths: &VaultPaths,
+    report: &QueryReport,
+    read_filter: Option<&PermissionFilter>,
+    transform_rules: Option<&[ContentTransformRuleConfig]>,
+    evaluation: Option<ExportEvaluation<'_>>,
+) -> Result<PreparedExportData, AppError> {
     let notes = load_exported_notes(paths, report)?;
+    if let Some(evaluation) = evaluation {
+        let effective_transforms = transform_rules
+            .filter(|rules| content_transform_rules_have_effective_transforms(rules))
+            .map(|rules| build_effective_content_transforms(paths, report, read_filter, rules))
+            .transpose()?
+            .unwrap_or_default();
+        let renderer = vulcan_core::EvaluatedMarkdownRenderer::load(paths, evaluation.guard);
+        let permission_profile = evaluation
+            .guard
+            .map(vulcan_core::PermissionGuard::profile_name);
+        return prepare_rewritten_export_data(paths, notes, read_filter, |entry| {
+            let transformed = effective_transforms
+                .get(&entry.note.document_path)
+                .map_or_else(
+                    || entry.content.clone(),
+                    |transforms| apply_content_transforms(&entry.content, transforms),
+                );
+            renderer
+                .render(
+                    &transformed,
+                    &vulcan_core::EvaluatedMarkdownOptions {
+                        source_path: Some(&entry.note.document_path),
+                        dataview_js: evaluation.dataview_js,
+                        guard: evaluation.guard,
+                        permission_profile,
+                    },
+                )
+                .markdown
+        });
+    }
     let Some(transform_rules) =
         transform_rules.filter(|rules| content_transform_rules_have_effective_transforms(rules))
     else {
