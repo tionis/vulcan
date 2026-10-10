@@ -420,7 +420,9 @@ fn render_dynamic_outcome_html(
         DynamicOutcome::DataviewJs(result) => {
             render_dataview_js_result_html(paths, result, source_path, env, state, diagnostics)
         }
-        DynamicOutcome::Tasks(result) => render_tasks_query_html(result),
+        DynamicOutcome::Tasks(result) => {
+            render_tasks_query_html(paths, result, source_path, env, state, diagnostics)
+        }
         DynamicOutcome::Base(report) => render_bases_report_html(report),
         DynamicOutcome::Disabled { title, message } | DynamicOutcome::Error { title, message } => {
             render_message_html(title, message)
@@ -683,10 +685,33 @@ fn render_dataview_js_result_html(
         .join("\n")
 }
 
-fn render_tasks_query_html(result: &TasksQueryResult) -> String {
+fn render_tasks_query_html(
+    paths: &VaultPaths,
+    result: &TasksQueryResult,
+    source_path: Option<&str>,
+    env: &HtmlRenderEnvironment<'_>,
+    state: &mut HtmlRenderState,
+    diagnostics: &mut [HtmlRenderDiagnostic],
+) -> String {
     if result.tasks.is_empty() {
         return "<p>No matching tasks.</p>".to_string();
     }
+    // Task text is Markdown: links resolve and inline fields render as in
+    // the task's own note.
+    let mut render_item = |task: &Value| {
+        let status = task.get("status").and_then(Value::as_str).unwrap_or(" ");
+        let text = task.get("text").cloned().unwrap_or(Value::Null);
+        let text_html = render_json_value_html(paths, &text, source_path, env, state, diagnostics);
+        match task.get("path").and_then(Value::as_str) {
+            Some(path) if !path.is_empty() => format!(
+                "<li><span class=\"task-status\">[{status}]</span> <span class=\"task-text\">{text_html}</span> <span class=\"task-path\">{}</span></li>",
+                escape_html_text(path)
+            ),
+            _ => format!(
+                "<li><span class=\"task-status\">[{status}]</span> <span class=\"task-text\">{text_html}</span></li>"
+            ),
+        }
+    };
 
     if !result.groups.is_empty() {
         let mut rendered = String::from("<div class=\"tasks-query-groups\">");
@@ -699,7 +724,7 @@ fn render_tasks_query_html(result: &TasksQueryResult) -> String {
             )
             .expect("writing to string cannot fail");
             for task in &group.tasks {
-                rendered.push_str(&render_single_task_item_html(task));
+                rendered.push_str(&render_item(task));
             }
             rendered.push_str("</ul></section>");
         }
@@ -709,30 +734,10 @@ fn render_tasks_query_html(result: &TasksQueryResult) -> String {
 
     let mut rendered = String::from("<ul class=\"tasks-query-list\">");
     for task in &result.tasks {
-        rendered.push_str(&render_single_task_item_html(task));
+        rendered.push_str(&render_item(task));
     }
     rendered.push_str("</ul>");
     rendered
-}
-
-fn render_single_task_item_html(task: &Value) -> String {
-    let status = task.get("status").and_then(Value::as_str).unwrap_or(" ");
-    let text = task
-        .get("text")
-        .map(render_plain_json_value)
-        .unwrap_or_default();
-    let path = task.get("path").and_then(Value::as_str);
-    match path {
-        Some(path) if !path.is_empty() => format!(
-            "<li><span class=\"task-status\">[{status}]</span> <span class=\"task-text\">{}</span> <span class=\"task-path\">{}</span></li>",
-            escape_html_text(&text),
-            escape_html_text(path)
-        ),
-        _ => format!(
-            "<li><span class=\"task-status\">[{status}]</span> <span class=\"task-text\">{}</span></li>",
-            escape_html_text(&text)
-        ),
-    }
 }
 
 #[allow(clippy::format_collect)]

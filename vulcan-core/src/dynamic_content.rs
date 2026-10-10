@@ -1202,13 +1202,33 @@ fn grouped_tasks_markdown<'a>(
     rendered
 }
 
+/// A task's text with its inline fields written as a rendered note shows
+/// them, as Dataview does in task listings.
+fn fields_as_markdown(text: &str) -> String {
+    let parsed = parse_document(text, &VaultConfig::default());
+    let replacements = rendered_inline_fields(&parsed)
+        .iter()
+        .map(|field| {
+            (
+                field.byte_range.start,
+                field.byte_range.end,
+                MarkdownReplacement::Inline(inline_field_markdown(text, field)),
+            )
+        })
+        .collect();
+    splice_markdown(text, replacements)
+}
+
 fn push_task_markdown(rendered: &mut String, task: &Value, depth: usize) {
     let status = task
         .get("status")
         .and_then(Value::as_str)
         .filter(|status| status.chars().count() == 1)
         .unwrap_or(" ");
-    let text = task.get("text").map(inline_value).unwrap_or_default();
+    let text = task
+        .get("text")
+        .map(|text| fields_as_markdown(&inline_value(text)))
+        .unwrap_or_default();
     let _ = writeln!(rendered, "{}- [{status}] {text}", "  ".repeat(depth));
     if let Some(children) = task.get("children").and_then(Value::as_array) {
         for child in children {
@@ -1362,7 +1382,10 @@ fn tasks_markdown(result: &TasksQueryResult) -> String {
             .iter()
             .map(|task| {
                 let status = task.get("status").and_then(Value::as_str).unwrap_or(" ");
-                let text = task.get("text").map(inline_value).unwrap_or_default();
+                let text = task
+                    .get("text")
+                    .map(|text| fields_as_markdown(&inline_value(text)))
+                    .unwrap_or_default();
                 match task.get("path").and_then(Value::as_str) {
                     Some(path) if !path.is_empty() => format!("- [{status}] {text} ({path})\n"),
                     _ => format!("- [{status}] {text}\n"),
@@ -1927,6 +1950,45 @@ mod tests {
             ),
             "Status: **done** today\n\n## Links\n\n[site](https://example.test) and ![Pic](pic.png)\n\n> quoted\n> lines\n\n``a`b``"
         );
+    }
+
+    #[test]
+    fn task_listings_render_inline_fields() {
+        let temp_dir = tempfile::TempDir::new().expect("temp dir should be created");
+        let root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(root.join(".vulcan")).expect(".vulcan dir should exist");
+        std::fs::write(root.join("Todo.md"), "- [ ] Ship [due:: 2026-04-01]\n")
+            .expect("todo should write");
+        let home = "```tasks\nnot done\n```\n\n```dataview\nTASK FROM \"Todo\"\n```\n";
+        std::fs::write(root.join("Home.md"), home).expect("home should write");
+        let paths = VaultPaths::new(&root);
+        crate::scan_vault(&paths, crate::ScanMode::Full).expect("scan should succeed");
+
+        let markdown = render_evaluated_markdown(
+            &paths,
+            home,
+            &EvaluatedMarkdownOptions {
+                source_path: Some("Home.md"),
+                ..EvaluatedMarkdownOptions::default()
+            },
+        )
+        .markdown;
+        assert!(
+            markdown.contains("- [ ] Ship **due**: 2026-04-01 (Todo.md)"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("- [ ] Ship **due**: 2026-04-01\n"),
+            "{markdown}"
+        );
+        assert!(!markdown.contains("[due::"), "{markdown}");
+
+        let html = crate::render_note_html(&paths, "Home.md", home).html;
+        assert!(
+            html.contains("<span class=\"dataview-inline-field-key\">due</span>"),
+            "{html}"
+        );
+        assert!(!html.contains("[due::"), "{html}");
     }
 
     #[test]
