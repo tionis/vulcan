@@ -19,7 +19,7 @@ use crate::permissions::PermissionGuard;
 use crate::properties::{
     evaluate_note_inline_expressions, load_note_index, load_note_index_with_guard, NoteRecord,
 };
-use crate::resolver::ResolverDocument;
+use crate::resolver::{resolve_link, ResolverDocument, ResolverLink};
 use crate::tasks::{evaluate_tasks_query_with_note_index, TasksQueryResult};
 use crate::{
     evaluate_base_file, evaluate_base_file_with_guard, evaluate_dataview_js_with_options,
@@ -337,6 +337,165 @@ fn push_inline_js_regions(
     }
 }
 
+pub(crate) fn build_resolver_documents(
+    note_index: &HashMap<String, NoteRecord>,
+) -> Vec<ResolverDocument> {
+    let mut documents = note_index
+        .values()
+        .map(|note| ResolverDocument {
+            id: note.document_id.clone(),
+            path: note.document_path.clone(),
+            filename: note.file_name.clone(),
+            aliases: note.aliases.clone(),
+        })
+        .collect::<Vec<_>>();
+    documents.sort_by(|left, right| left.path.cmp(&right.path));
+    documents
+}
+
+pub(crate) fn note_by_path<'a>(
+    note_index: &'a HashMap<String, NoteRecord>,
+    path: &str,
+) -> Option<&'a NoteRecord> {
+    note_index.values().find(|note| note.document_path == path)
+}
+
+/// Resolve a note embed in `source_path` to the embedded note's path.
+fn resolve_note_embed(
+    config: &VaultConfig,
+    note_index: &HashMap<String, NoteRecord>,
+    documents: &[ResolverDocument],
+    source_path: &str,
+    link: &crate::RawLink,
+) -> Option<String> {
+    let source_note = note_by_path(note_index, source_path)?;
+    let resolution = resolve_link(
+        documents,
+        &ResolverLink {
+            source_document_id: source_note.document_id.clone(),
+            source_path: source_path.to_string(),
+            target_path_candidate: link.target_path_candidate.clone(),
+            link_kind: LinkKind::Embed,
+        },
+        config.link_resolution,
+    );
+    let target_id = resolution.resolved_target_id?;
+    documents
+        .iter()
+        .find(|document| document.id == target_id)
+        .map(|document| document.path.clone())
+}
+
+/// What resolving a note embed reads.
+pub(crate) struct NoteEmbedContext<'a> {
+    pub paths: &'a VaultPaths,
+    pub config: &'a VaultConfig,
+    /// The note universe visible to the render; embeds of notes outside it
+    /// do not resolve.
+    pub note_index: Option<&'a HashMap<String, NoteRecord>>,
+    pub documents: Option<&'a [ResolverDocument]>,
+    /// How deep embeds may nest before transclusion stops.
+    pub max_depth: usize,
+}
+
+/// A note embed resolved to the content it shows.
+pub(crate) struct NoteEmbed {
+    pub target_path: String,
+    /// Identifies the embed in the stack of embeds being rendered, to stop
+    /// cycles.
+    pub key: String,
+    /// The embedded note, or its heading or block, without frontmatter.
+    pub content: String,
+}
+
+/// Why a note embed cannot be shown.
+pub(crate) struct EmbedFailure {
+    pub kind: &'static str,
+    pub message: String,
+}
+
+impl EmbedFailure {
+    pub(crate) fn into_diagnostic(self) -> RenderDiagnostic {
+        RenderDiagnostic {
+            kind: self.kind.to_string(),
+            message: self.message,
+        }
+    }
+}
+
+/// Resolve a note embed in `source_path` and select what it shows. Both the
+/// HTML and the Markdown renderer transclude through this, so they agree on
+/// resolution, depth and cycle limits, and failures; they differ only in
+/// how they format the content.
+pub(crate) fn resolve_note_embed_content(
+    ctx: &NoteEmbedContext<'_>,
+    source_path: Option<&str>,
+    link: &crate::RawLink,
+    embed_stack: &[String],
+) -> Result<NoteEmbed, EmbedFailure> {
+    let fail = |kind, message| Err(EmbedFailure { kind, message });
+    let Some(source_path) = source_path else {
+        return fail(
+            "unresolved_embed",
+            "note embeds require a source note path".to_string(),
+        );
+    };
+    let Some(target_path) =
+        ctx.note_index
+            .zip(ctx.documents)
+            .and_then(|(note_index, documents)| {
+                resolve_note_embed(ctx.config, note_index, documents, source_path, link)
+            })
+    else {
+        return fail(
+            "unresolved_embed",
+            format!("could not resolve embedded note `{}`", link.raw_text),
+        );
+    };
+    let key = format!(
+        "{target_path}#{}^{}",
+        link.target_heading.as_deref().unwrap_or_default(),
+        link.target_block.as_deref().unwrap_or_default()
+    );
+    if embed_stack.len() >= ctx.max_depth.max(1) {
+        return fail(
+            "embed_depth_limit",
+            format!("embed depth limit reached at `{}`", link.raw_text),
+        );
+    }
+    if embed_stack.contains(&key) {
+        return fail(
+            "embed_cycle",
+            format!("embed cycle detected at `{}`", link.raw_text),
+        );
+    }
+    let Ok(target_source) = std::fs::read_to_string(ctx.paths.vault_root().join(&target_path))
+    else {
+        return fail(
+            "missing_embed_target",
+            format!("embedded note `{target_path}` could not be read"),
+        );
+    };
+    let target_parsed = parse_document(&target_source, ctx.config);
+    match crate::note::read_note(
+        &target_source,
+        &target_parsed,
+        &crate::note::NoteReadOptions {
+            heading: link.target_heading.clone(),
+            block_ref: link.target_block.clone(),
+            no_frontmatter: true,
+            ..crate::note::NoteReadOptions::default()
+        },
+    ) {
+        Ok(selection) => Ok(NoteEmbed {
+            target_path,
+            key,
+            content: selection.content,
+        }),
+        Err(error) => fail("invalid_embed_target", error.to_string()),
+    }
+}
+
 pub(crate) fn is_base_path(candidate: &str) -> bool {
     Path::new(candidate)
         .extension()
@@ -642,67 +801,33 @@ impl EvaluatedMarkdownRenderer {
         embed_stack: &mut Vec<String>,
         diagnostics: &mut Vec<RenderDiagnostic>,
     ) -> String {
-        let fail = |diagnostics: &mut Vec<RenderDiagnostic>, kind: &str, message: String| {
-            let rendered = callout("warning", "Embed error", &message);
-            diagnostics.push(RenderDiagnostic {
-                kind: kind.to_string(),
-                message,
-            });
-            rendered
-        };
         let documents = self
             .resolver_documents
-            .get_or_init(|| crate::html::build_resolver_documents(note_index));
-        let Some(target_path) =
-            crate::html::resolve_note_embed(&self.config, note_index, documents, source_path, link)
-        else {
-            return fail(
-                diagnostics,
-                "unresolved_embed",
-                format!("could not resolve embedded note `{}`", link.raw_text),
-            );
-        };
-        let key = format!(
-            "{target_path}#{}^{}",
-            link.target_heading.as_deref().unwrap_or_default(),
-            link.target_block.as_deref().unwrap_or_default()
-        );
-        if embed_stack.len() >= MAX_EMBED_DEPTH {
-            return fail(
-                diagnostics,
-                "embed_depth_limit",
-                format!("embed depth limit reached at `{}`", link.raw_text),
-            );
-        }
-        if embed_stack.contains(&key) {
-            return fail(
-                diagnostics,
-                "embed_cycle",
-                format!("embed cycle detected at `{}`", link.raw_text),
-            );
-        }
-        let Ok(target_source) = std::fs::read_to_string(self.paths.vault_root().join(&target_path))
-        else {
-            return fail(
-                diagnostics,
-                "missing_embed_target",
-                format!("embedded note `{target_path}` could not be read"),
-            );
-        };
-        let target_parsed = parse_document(&target_source, &self.config);
-        let selected = match crate::note::read_note(
-            &target_source,
-            &target_parsed,
-            &crate::note::NoteReadOptions {
-                heading: link.target_heading.clone(),
-                block_ref: link.target_block.clone(),
-                no_frontmatter: true,
-                ..crate::note::NoteReadOptions::default()
+            .get_or_init(|| build_resolver_documents(note_index));
+        let embed = match resolve_note_embed_content(
+            &NoteEmbedContext {
+                paths: &self.paths,
+                config: &self.config,
+                note_index: Some(note_index),
+                documents: Some(documents),
+                max_depth: MAX_EMBED_DEPTH,
             },
+            Some(source_path),
+            link,
+            embed_stack,
         ) {
-            Ok(selection) => selection.content,
-            Err(error) => return fail(diagnostics, "invalid_embed_target", error.to_string()),
+            Ok(embed) => embed,
+            Err(failure) => {
+                let rendered = callout("warning", "Embed error", &failure.message);
+                diagnostics.push(failure.into_diagnostic());
+                return rendered;
+            }
         };
+        let NoteEmbed {
+            target_path,
+            key,
+            content: selected,
+        } = embed;
         embed_stack.push(key);
         let embedded = self.render_nested(&selected, Some(&target_path), options, embed_stack);
         embed_stack.pop();
@@ -1562,6 +1687,27 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(kinds.contains(&"embed_cycle"), "{kinds:?}");
         assert!(kinds.contains(&"unresolved_embed"), "{kinds:?}");
+
+        // HTML transcludes through the same resolver and reports the same
+        // failures.
+        let html = crate::render_note_html(&paths, "Home.md", home);
+        assert!(
+            html.html
+                .contains("<section class=\"note-embed\" data-note-path=\"Card.md\">"),
+            "{}",
+            html.html
+        );
+        assert!(html.html.contains("Card status: active"), "{}", html.html);
+        let mut html_kinds = html
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.kind.as_str())
+            .filter(|kind| kind.contains("embed"))
+            .collect::<Vec<_>>();
+        let mut markdown_kinds = kinds;
+        html_kinds.sort_unstable();
+        markdown_kinds.sort_unstable();
+        assert_eq!(html_kinds, markdown_kinds);
     }
 
     #[test]

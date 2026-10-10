@@ -3,9 +3,9 @@ use crate::config::{load_vault_config, VaultConfig};
 use crate::dataview_js::{DataviewJsOutput, DataviewJsResult};
 use crate::dql::{DqlDiagnostic, DqlQueryResult, DqlQueryType};
 use crate::dynamic_content::{
-    evaluate_dynamic_regions, is_base_path, DynamicContentContext, DynamicOutcome,
+    evaluate_dynamic_regions, is_base_path, resolve_note_embed_content, DynamicContentContext,
+    DynamicOutcome, NoteEmbedContext,
 };
-use crate::note::{read_note, NoteReadOptions};
 use crate::parse_document;
 use crate::parser::{
     fragment_parser_options, parser_options, LinkKind, ParseDiagnosticKind, ParsedDocument,
@@ -13,7 +13,7 @@ use crate::parser::{
 use crate::paths::VaultPaths;
 use crate::permissions::PermissionGuard;
 use crate::properties::{load_note_index, load_note_index_with_guard, NoteRecord};
-use crate::resolver::{resolve_link, ResolverDocument, ResolverLink};
+use crate::resolver::ResolverDocument;
 use crate::tasks::TasksQueryResult;
 use ammonia::Builder as HtmlSanitizer;
 use pulldown_cmark::{
@@ -23,7 +23,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 pub use crate::dynamic_content::{
@@ -149,7 +148,9 @@ impl VaultHtmlRenderer {
             Some(guard) => load_note_index_with_guard(paths, guard).ok(),
             None => load_note_index(paths).ok(),
         };
-        let resolver_documents = note_index.as_ref().map(build_resolver_documents);
+        let resolver_documents = note_index
+            .as_ref()
+            .map(crate::dynamic_content::build_resolver_documents);
         Self {
             paths: paths.clone(),
             config,
@@ -435,81 +436,40 @@ fn render_note_embed_html(
     state: &mut HtmlRenderState,
     diagnostics: &mut Vec<HtmlRenderDiagnostic>,
 ) -> String {
-    let Some(source_path) = source_path else {
-        return render_message_html("Embed error:", "note embeds require a source note path");
-    };
-    let Some(target_path) = resolve_embedded_note_path(source_path, link, env) else {
-        diagnostics.push(HtmlRenderDiagnostic {
-            kind: "unresolved_embed".to_string(),
-            message: format!("could not resolve embedded note `{}`", link.raw_text),
-        });
-        return render_message_html(
-            "Embed error:",
-            &format!("unresolved note embed {}", link.raw_text),
-        );
-    };
-    let embed_key = format!(
-        "{} -> {}#{}^{}",
-        source_path,
-        target_path,
-        link.target_heading.clone().unwrap_or_default(),
-        link.target_block.clone().unwrap_or_default()
-    );
-    if state.embed_stack.len() >= env.max_embed_depth {
-        diagnostics.push(HtmlRenderDiagnostic {
-            kind: "embed_depth_limit".to_string(),
-            message: format!(
-                "embed depth limit reached while rendering {}",
-                link.raw_text
-            ),
-        });
-        return render_message_html("Embed error:", "embed depth limit reached");
-    }
-    if state
-        .embed_stack
-        .iter()
-        .any(|candidate| candidate == &embed_key)
-    {
-        diagnostics.push(HtmlRenderDiagnostic {
-            kind: "embed_cycle".to_string(),
-            message: format!("embed cycle detected while rendering {}", link.raw_text),
-        });
-        return render_message_html("Embed error:", "embed cycle detected");
-    }
-    let Ok(target_source) = fs::read_to_string(paths.vault_root().join(&target_path)) else {
-        diagnostics.push(HtmlRenderDiagnostic {
-            kind: "missing_embed_target".to_string(),
-            message: format!("embedded note `{target_path}` could not be read"),
-        });
-        return render_message_html("Embed error:", &format!("could not read {target_path}"));
-    };
-    let target_parsed = parse_document(&target_source, env.config);
-    let selection = read_note(
-        &target_source,
-        &target_parsed,
-        &NoteReadOptions {
-            heading: link.target_heading.clone(),
-            block_ref: link.target_block.clone(),
-            no_frontmatter: true,
-            ..NoteReadOptions::default()
+    let embed = match resolve_note_embed_content(
+        &NoteEmbedContext {
+            paths,
+            config: env.config,
+            note_index: env.note_index,
+            documents: env.resolver_documents,
+            max_depth: env.max_embed_depth,
         },
-    );
-    let selected = match selection {
-        Ok(selection) => selection.content,
-        Err(error) => {
-            diagnostics.push(HtmlRenderDiagnostic {
-                kind: "invalid_embed_target".to_string(),
-                message: error.to_string(),
-            });
-            return render_message_html("Embed error:", &error.to_string());
+        source_path,
+        link,
+        &state.embed_stack,
+    ) {
+        Ok(embed) => embed,
+        Err(failure) => {
+            let rendered = render_message_html("Embed error:", &failure.message);
+            diagnostics.push(failure.into_diagnostic());
+            return rendered;
         }
     };
-    state.embed_stack.push(embed_key);
-    let rendered = render_html_internal(paths, &selected, Some(&target_path), false, env, state);
+    state.embed_stack.push(embed.key);
+    let rendered = render_html_internal(
+        paths,
+        &embed.content,
+        Some(&embed.target_path),
+        false,
+        env,
+        state,
+    );
     let _ = state.embed_stack.pop();
+    // Problems inside the embedded note belong to this render too.
+    diagnostics.extend(rendered.diagnostics);
     format!(
         "<section class=\"note-embed\" data-note-path=\"{}\">{}</section>",
-        escape_html_text(&target_path),
+        escape_html_text(&embed.target_path),
         rendered.html
     )
 }
@@ -1504,69 +1464,6 @@ fn restore_rendered_fragments(html: &str, fragments: &[String]) -> String {
         restored = restored.replace(&placeholder, fragment);
     }
     restored
-}
-
-pub(crate) fn build_resolver_documents(
-    note_index: &HashMap<String, NoteRecord>,
-) -> Vec<ResolverDocument> {
-    let mut documents = note_index
-        .values()
-        .map(|note| ResolverDocument {
-            id: note.document_id.clone(),
-            path: note.document_path.clone(),
-            filename: note.file_name.clone(),
-            aliases: note.aliases.clone(),
-        })
-        .collect::<Vec<_>>();
-    documents.sort_by(|left, right| left.path.cmp(&right.path));
-    documents
-}
-
-fn note_by_path<'a>(
-    note_index: &'a HashMap<String, NoteRecord>,
-    path: &str,
-) -> Option<&'a NoteRecord> {
-    note_index.values().find(|note| note.document_path == path)
-}
-
-fn resolve_embedded_note_path(
-    source_path: &str,
-    link: &crate::RawLink,
-    env: &HtmlRenderEnvironment<'_>,
-) -> Option<String> {
-    resolve_note_embed(
-        env.config,
-        env.note_index?,
-        env.resolver_documents?,
-        source_path,
-        link,
-    )
-}
-
-/// Resolve a note embed in `source_path` to the embedded note's path.
-pub(crate) fn resolve_note_embed(
-    config: &VaultConfig,
-    note_index: &HashMap<String, NoteRecord>,
-    documents: &[ResolverDocument],
-    source_path: &str,
-    link: &crate::RawLink,
-) -> Option<String> {
-    let source_note = note_by_path(note_index, source_path)?;
-    let resolution = resolve_link(
-        documents,
-        &ResolverLink {
-            source_document_id: source_note.document_id.clone(),
-            source_path: source_path.to_string(),
-            target_path_candidate: link.target_path_candidate.clone(),
-            link_kind: LinkKind::Embed,
-        },
-        config.link_resolution,
-    );
-    let target_id = resolution.resolved_target_id?;
-    documents
-        .iter()
-        .find(|document| document.id == target_id)
-        .map(|document| document.path.clone())
 }
 
 pub(crate) fn resolve_relative_asset_path(
