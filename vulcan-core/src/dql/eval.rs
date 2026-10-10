@@ -1247,6 +1247,10 @@ fn path_source(path: &str, note_lookup: &dyn NoteLookup) -> SourceExpr {
     }
 
     let normalized = path.trim_end_matches('/');
+    // As in Dataview, `FROM ""` (or `"/"`) is the whole vault.
+    if normalized.is_empty() {
+        return SourceExpr::Folder(String::new());
+    }
     let folder_prefix = format!("{normalized}/");
     let exact_file = format!("{normalized}.md");
     let folder_exists = note_lookup
@@ -2027,6 +2031,10 @@ LIMIT 1"#,
         assert_eq!(count("LIST FROM \"projects\""), lower);
         assert_eq!(count("LIST FROM \"Projects\""), upper);
         assert_eq!(count("LIST FROM \"A_b\""), 1);
+        // The empty folder is the whole vault.
+        assert_eq!(count("LIST FROM \"\""), 4);
+        assert_eq!(count("LIST FROM \"/\""), 4);
+        assert_eq!(count("LIST FROM \"\" AND -#project"), 2);
         // Tags include nested tags but not tags sharing a prefix.
         assert_eq!(count("LIST FROM #project"), 2);
         // Combinations and link sources resolve in one query.
