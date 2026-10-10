@@ -14,6 +14,7 @@ use vulcan_app::mcp_protocol::McpWebFetchArgs;
 #[cfg(feature = "oauth")]
 use vulcan_app::mcp_protocol::MCP_RESOURCE_NOT_FOUND;
 use vulcan_app::mcp_read_tools;
+#[cfg(feature = "oauth")]
 use vulcan_core::Verbosity;
 use vulcan_core::{PermissionProfile, ProfilePermissionGuard, TasksQueryResult};
 use vulcan_daemon::mcp_http_codec::read_mcp_http_request;
