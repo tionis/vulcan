@@ -4667,6 +4667,35 @@ fn evaluated_note_reads_respect_the_permission_profile() {
 }
 
 #[test]
+fn daily_show_human_output_evaluates_the_note() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("Journal/Daily")).expect("daily folder should exist");
+    fs::write(
+        vault_root.join("Journal/Daily/2026-05-08.md"),
+        "---\nmood: calm\n---\nMood: `= this.mood`\n%%private%%\n",
+    )
+    .expect("daily note should be written");
+    run_scan(&vault_root);
+    let show = |output: &str| {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .arg("--vault")
+            .arg(&vault_root)
+            .args(["--output", output, "daily", "show", "2026-05-08"])
+            .assert()
+            .success();
+        String::from_utf8(assert.get_output().stdout.clone()).expect("stdout should be utf-8")
+    };
+
+    let human = show("human");
+    assert!(human.contains("Mood: calm"), "{human}");
+    assert!(!human.contains("private"), "{human}");
+    // Markdown output keeps the source for scripts.
+    assert!(show("markdown").contains("`= this.mood`"));
+}
+
+#[test]
 fn render_evaluates_vault_notes_unless_raw() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

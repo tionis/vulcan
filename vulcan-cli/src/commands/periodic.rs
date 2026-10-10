@@ -123,7 +123,7 @@ pub(crate) fn handle_daily_command(
                     .check_read_path(path)
                     .map_err(CliError::operation)?;
             }
-            print_daily_read_report(cli.output, &report, stdout_is_tty, use_stdout_color)
+            print_daily_read_report(cli, paths, &report, stdout_is_tty, use_stdout_color)
         }
         DailyCommand::Today { no_edit, no_commit } => {
             check_periodic_write_access(cli, paths, "daily", None)?;
@@ -140,7 +140,7 @@ pub(crate) fn handle_daily_command(
         }
         DailyCommand::Show { date } => {
             let report = run_daily_show_command(paths, date.as_deref(), "daily")?;
-            print_daily_show_report(cli.output, &report, stdout_is_tty, use_stdout_color)
+            print_daily_show_report(cli, paths, &report, stdout_is_tty, use_stdout_color)
         }
         DailyCommand::List {
             from,
@@ -287,15 +287,19 @@ pub(crate) fn run_daily_latest_command(
 }
 
 fn print_daily_read_report(
-    output: OutputFormat,
+    cli: &Cli,
+    paths: &VaultPaths,
     report: &DailyNoteReadReport,
     stdout_is_tty: bool,
     use_stdout_color: bool,
 ) -> Result<(), CliError> {
+    let output = cli.output;
     match output {
         OutputFormat::Json => print_json(report),
-        OutputFormat::Human | OutputFormat::Markdown if report.exists => print_markdown_output(
-            output,
+        OutputFormat::Human | OutputFormat::Markdown if report.exists => print_periodic_note(
+            cli,
+            paths,
+            report.path.as_deref(),
             report.content.as_deref().unwrap_or_default(),
             stdout_is_tty,
             use_stdout_color,
@@ -399,7 +403,7 @@ pub(crate) fn handle_periodic_command(
         }
         Some(PeriodicSubcommand::Show { period_type, date }) => {
             let report = run_daily_show_command(paths, date.as_deref(), period_type)?;
-            print_daily_show_report(cli.output, &report, stdout_is_tty, use_stdout_color)
+            print_daily_show_report(cli, paths, &report, stdout_is_tty, use_stdout_color)
         }
         Some(PeriodicSubcommand::Append {
             text,
@@ -897,17 +901,60 @@ fn print_periodic_open_report(
 }
 
 fn print_daily_show_report(
-    output: OutputFormat,
+    cli: &Cli,
+    paths: &VaultPaths,
     report: &PeriodicShowReport,
     stdout_is_tty: bool,
     use_color: bool,
 ) -> Result<(), CliError> {
-    match output {
-        OutputFormat::Human | OutputFormat::Markdown => {
-            print_markdown_output(output, &report.content, stdout_is_tty, use_color)
-        }
+    match cli.output {
+        OutputFormat::Human | OutputFormat::Markdown => print_periodic_note(
+            cli,
+            paths,
+            Some(&report.path),
+            &report.content,
+            stdout_is_tty,
+            use_color,
+        ),
         OutputFormat::Json => print_json(report),
     }
+}
+
+/// Print a periodic note's content. Human output shows it as `render` does,
+/// with Dataview, Tasks, Bases, and note embeds evaluated under the selected
+/// profile (`dataviewjs` stays off); Markdown output keeps the source.
+fn print_periodic_note(
+    cli: &Cli,
+    paths: &VaultPaths,
+    path: Option<&str>,
+    content: &str,
+    stdout_is_tty: bool,
+    use_color: bool,
+) -> Result<(), CliError> {
+    if cli.output != OutputFormat::Human {
+        return print_markdown_output(cli.output, content, stdout_is_tty, use_color);
+    }
+    let guard = crate::selected_permission_guard(cli, paths)?;
+    let evaluated = vulcan_core::render_evaluated_markdown(
+        paths,
+        content,
+        &vulcan_core::EvaluatedMarkdownOptions {
+            source_path: path,
+            dataview_js: vulcan_core::DataviewJsRenderPolicy::Off,
+            guard: Some(&guard),
+            permission_profile: Some(guard.profile_name()),
+        },
+    );
+    let strict_line_breaks = vulcan_core::load_vault_config(paths)
+        .config
+        .strict_line_breaks;
+    crate::print_note_markdown_output(
+        cli.output,
+        &evaluated.markdown,
+        stdout_is_tty,
+        use_color,
+        strict_line_breaks,
+    )
 }
 
 fn print_daily_list_report(

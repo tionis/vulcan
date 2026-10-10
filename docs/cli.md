@@ -295,7 +295,7 @@ Shared behavior:
 - `vulcan daily today [--no-edit] [--no-commit]`: shorthand for `daily open today`.
 - `vulcan daily calendar [date|YYYY-MM] [--no-commit]`: interactive month calendar. Days with notes are marked (`+`, or `*` with events), today is underlined, and the right pane previews the selected note. Enter or `e` creates the note from the daily template when missing and opens it in `$EDITOR`, then returns to the calendar. Keys: arrows/`hjkl` move, `[`/`]` or PageUp/PageDown change month, `t` jumps to today, typing `YYYY-MM-DD` jumps to a date, `q`/Esc quits. Bare `vulcan daily` opens the same picker. Without an interactive terminal, both list that month's daily notes instead.
 - `vulcan daily latest`: read the newest existing daily note from the configured daily-note folder. JSON includes `date`, `path`, `exists`, and `content`.
-- `vulcan daily show [date]`: print one daily note's contents. Defaults to today.
+- `vulcan daily show [date]`: print one daily note's contents. Defaults to today. Human output shows the note rendered, with Dataview, Tasks, `.base` embeds, and note embeds evaluated as in `vulcan render`; `--output markdown` prints the source.
 - `vulcan daily list [--from <date>] [--to <date>] [--week] [--month]`: list daily notes and extracted schedule events across a date window.
 - `vulcan daily export-ics [--from <date>] [--to <date>] [--week] [--month] [--path <file.ics>] [--calendar-name <name>]`: export extracted daily-note events as an ICS calendar. Without `--path`, the calendar is written to stdout.
 - `vulcan daily append <text> [--heading <heading>] [--date <date>] [--no-commit]`: append text to one daily note, creating it first when needed.
