@@ -4853,7 +4853,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             commands::render::RenderOptions {
                 mode,
                 evaluate: !raw,
-                dataview_js: dataview_js.into(),
+                dataview_js: DataviewJsArg::resolve(dataview_js, &render_paths),
                 guard: guard
                     .as_ref()
                     .map(|guard| guard as &dyn vulcan_core::PermissionGuard),

@@ -312,7 +312,7 @@ pub fn note_get(
             no_frontmatter: args.no_frontmatter,
             raw: args.raw,
             evaluate: args.evaluate,
-            dataview_js: parse_dataview_js_policy(args.dataview_js.as_deref())?,
+            dataview_js: parse_dataview_js_policy(paths, args.dataview_js.as_deref())?,
             guard: Some(guard),
         },
     )
@@ -341,10 +341,18 @@ pub fn note_info(
         .map_err(|error| McpMethodError::tool(error.to_string()))
 }
 
+/// The requested policy, or the vault's `dataview.render_dataview_js`.
 fn parse_dataview_js_policy(
+    paths: &VaultPaths,
     policy: Option<&str>,
 ) -> Result<DataviewJsRenderPolicy, McpMethodError> {
-    match policy.unwrap_or("off") {
+    let Some(policy) = policy else {
+        return Ok(vulcan_core::load_vault_config(paths)
+            .config
+            .dataview
+            .render_dataview_js);
+    };
+    match policy {
         "off" => Ok(DataviewJsRenderPolicy::Off),
         "static" => Ok(DataviewJsRenderPolicy::Static),
         "on" => Ok(DataviewJsRenderPolicy::On),

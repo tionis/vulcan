@@ -1239,7 +1239,7 @@ fn parses_note_get_command() {
                 no_frontmatter: false,
                 raw: true,
                 evaluate: false,
-                dataview_js: DataviewJsArg::Off,
+                dataview_js: None,
             },
         }
     );
@@ -1274,7 +1274,7 @@ fn parses_note_get_html_mode_command() {
                 no_frontmatter: false,
                 raw: false,
                 evaluate: false,
-                dataview_js: DataviewJsArg::Static,
+                dataview_js: Some(DataviewJsArg::Static),
             },
         }
     );

@@ -1934,6 +1934,7 @@ fn config_path_description(path: &str) -> String {
         "link_style" => "Select wikilink or Markdown link formatting for generated links.".to_string(),
         "attachment_folder" => "Override the preferred folder for new attachments.".to_string(),
         "strict_line_breaks" => "Mirror Obsidian's strict line break behavior when rendering Markdown.".to_string(),
+        "dataview.render_dataview_js" => "Default `--dataviewjs` policy for `render`, `note get`, `daily show`, and MCP `note_get`: `off` leaves a notice, `static` runs blocks deterministically in the strict sandbox, `on` uses the configured sandbox tier. Rendering never writes.".to_string(),
         "folder_notes.placement" => "Choose whether a folder note lives inside its folder or beside it in the parent folder.".to_string(),
         "folder_notes.name" => "Set the exact folder-note stem/template; `{{folder_name}}` expands to the folder's basename.".to_string(),
         "sync.merge_automation" => "Set the device-local ceiling to allow shared policy automation or require review for every Git conflict.".to_string(),

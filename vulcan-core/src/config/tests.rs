@@ -247,6 +247,7 @@ task_completion_use_emoji_shorthand = true
 task_completion_text = "done-on"
 recursive_subtask_completion = true
 display_result_count = false
+render_dataview_js = "on"
 default_date_format = "yyyy-MM-dd"
 default_datetime_format = "yyyy-MM-dd HH:mm"
 timezone = "+02:00"
@@ -949,6 +950,10 @@ fn assert_override_dataview_and_templates(config: &VaultConfig) {
     assert_eq!(config.dataview.task_completion_text, "done-on");
     assert!(config.dataview.recursive_subtask_completion);
     assert!(!config.dataview.display_result_count);
+    assert_eq!(
+        config.dataview.render_dataview_js,
+        crate::DataviewJsRenderPolicy::On
+    );
     assert_eq!(config.dataview.default_date_format, "yyyy-MM-dd");
     assert_eq!(config.dataview.default_datetime_format, "yyyy-MM-dd HH:mm");
     assert_eq!(config.dataview.timezone.as_deref(), Some("+02:00"));

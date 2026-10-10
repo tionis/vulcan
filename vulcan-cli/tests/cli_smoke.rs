@@ -4626,6 +4626,39 @@ fn note_get_evaluate_runs_dataviewjs_on_request() {
     }
 }
 
+#[cfg(feature = "js_runtime")]
+#[test]
+fn render_dataview_js_setting_sets_the_default_policy() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    write_dynamic_content_vault(&vault_root);
+    let config = vault_root.join(".vulcan/config.toml");
+    let mut contents = fs::read_to_string(&config).unwrap_or_default();
+    contents.push_str("\n[dataview]\nrender_dataview_js = \"static\"\n");
+    fs::write(config, contents).expect("config should be written");
+
+    let json = vulcan_json(&vault_root, &["note", "get", "Dashboard", "--evaluate"]);
+    assert_eq!(json["metadata"]["dataview_js"], "static");
+    assert!(json["content"]
+        .as_str()
+        .unwrap()
+        .contains("from the js block"));
+
+    // An explicit flag still wins.
+    let json = vulcan_json(
+        &vault_root,
+        &[
+            "note",
+            "get",
+            "Dashboard",
+            "--evaluate",
+            "--dataviewjs",
+            "off",
+        ],
+    );
+    assert_eq!(json["metadata"]["dataview_js"], "off");
+}
+
 #[test]
 fn evaluated_note_reads_respect_the_permission_profile() {
     let temp_dir = TempDir::new().expect("temp dir should be created");

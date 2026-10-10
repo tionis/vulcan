@@ -840,6 +840,9 @@ Dataview compatibility flags, rendering behavior, and JS limits.
 - `dataview.recursive_subtask_completion` — type: `boolean`; target: `shared|local`; default: `false`
   Dataview rendering compatibility, inline query prefixes, and JS execution limits.
   Example: `vulcan config set dataview.recursive_subtask_completion <value>`
+- `dataview.render_dataview_js` — type: `string`; target: `shared|local`; default: `off`
+  Default `--dataviewjs` policy for `render`, `note get`, `daily show`, and MCP `note_get`: `off` leaves a notice, `static` runs blocks deterministically in the strict sandbox, `on` uses the configured sandbox tier. Rendering never writes.
+  Example: `vulcan config set dataview.render_dataview_js <value>`
 - `dataview.task_completion_text` — type: `string`; target: `shared|local`; default: `completion`
   Dataview rendering compatibility, inline query prefixes, and JS execution limits.
   Example: `vulcan config set dataview.task_completion_text <value>`

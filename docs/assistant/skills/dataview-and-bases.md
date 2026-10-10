@@ -1,7 +1,7 @@
 ---
 name: dataview-and-bases
 description: Work with Dataview, DataviewJS, Bases, and .base files. Use when the user asks about Dataview DQL, inline fields, DataviewJS blocks, Bases views, formulas, saved task views, or .base editing/evaluation.
-version: 16
+version: 17
 tools:
   - dataview
   - bases
@@ -22,7 +22,7 @@ and translating view logic into Vulcan queries.
 
 ## Recommended Flow
 
-- To see a note the way Obsidian shows it, read it with `vulcan note get <note> --evaluate`: inline expressions, `dataview`, `tasks`, and embedded `.base` views are replaced by their results. Add `--dataviewjs static` (strict sandbox, deterministic) or `--dataviewjs on` (configured sandbox tier) to run `dataviewjs` blocks; by default they show a "DataviewJS disabled" notice. `vulcan render <file>` evaluates the same way for terminal output.
+- To see a note the way Obsidian shows it, read it with `vulcan note get <note> --evaluate`: inline expressions, `dataview`, `tasks`, and embedded `.base` views are replaced by their results. Add `--dataviewjs static` (strict sandbox, deterministic) or `--dataviewjs on` (configured sandbox tier) to run `dataviewjs` blocks; without the flag the vault's `[dataview] render_dataview_js` applies, and by default (`off`) they show a "DataviewJS disabled" notice. `vulcan render <file>` evaluates the same way for terminal output.
 - Use `vulcan dataview query` for DQL strings and `vulcan dataview eval` to debug individual Dataview blocks and their raw result data.
 - Use `vulcan dataview query-js` only when JavaScript behavior matters.
 - Use `vulcan bases eval <file>` to inspect `.base` output and diagnostics.

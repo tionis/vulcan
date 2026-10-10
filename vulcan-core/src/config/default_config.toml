@@ -181,6 +181,7 @@ name = "{{folder_name}}"   # note stem; examples: index, README, readme, {{folde
 # task_completion_text = "completion"
 # recursive_subtask_completion = false
 # display_result_count = true
+# render_dataview_js = "off"  # off, static, or on: default `--dataviewjs` for render, note get, daily show
 # default_date_format = "MMMM dd, yyyy"
 # default_datetime_format = "h:mm a - MMMM dd, yyyy"
 # timezone = "+02:00"  # optional fixed offset override; default is system local time

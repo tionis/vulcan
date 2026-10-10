@@ -15204,7 +15204,7 @@
       },
       {
         "about": "Render markdown from a file or stdin in the terminal",
-        "after_help": "Notes:\n  `render` defaults to Vulcan's terminal markdown renderer, wrapped to the terminal width.\n  Files inside the vault are evaluated first: inline Dataview expressions and `dataview`,\n  `tasks`, and `.base` embeds show their results. `dataviewjs` blocks stay off unless\n  `--dataviewjs static|on` is given. `--raw` skips evaluation in terminal mode.\n  `render --mode html` uses the same HTML pipeline as `note get --mode html`.\n  When stdout is not a TTY, the rendered output is emitted without ANSI escapes.\n  Use `--output markdown` with terminal mode to print the evaluated markdown\n  (or, with `--raw`, the original source unchanged).\n\nExamples:\n  vulcan render Dashboard.md\n  vulcan render --dataviewjs on Dashboard.md\n  vulcan render --raw Dashboard.md\n  vulcan render --mode html README.md\n  cat README.md | vulcan render\n  vulcan --output markdown render Dashboard.md",
+        "after_help": "Notes:\n  `render` defaults to Vulcan's terminal markdown renderer, wrapped to the terminal width.\n  Files inside the vault are evaluated first: inline Dataview expressions and `dataview`,\n  `tasks`, and `.base` embeds show their results. `dataviewjs` blocks follow\n  `--dataviewjs off|static|on`, defaulting to the vault's `dataview.render_dataview_js` (off). `--raw` skips evaluation in terminal mode.\n  `render --mode html` uses the same HTML pipeline as `note get --mode html`.\n  When stdout is not a TTY, the rendered output is emitted without ANSI escapes.\n  Use `--output markdown` with terminal mode to print the evaluated markdown\n  (or, with `--raw`, the original source unchanged).\n\nExamples:\n  vulcan render Dashboard.md\n  vulcan render --dataviewjs on Dashboard.md\n  vulcan render --raw Dashboard.md\n  vulcan render --mode html README.md\n  cat README.md | vulcan render\n  vulcan --output markdown render Dashboard.md",
         "name": "render",
         "options": [
           {
@@ -15247,7 +15247,7 @@
             ]
           },
           {
-            "help": "How evaluation treats dataviewjs blocks",
+            "help": "How evaluation treats dataviewjs blocks [default: dataview.render_dataview_js, off]",
             "id": "dataview_js",
             "long": "dataviewjs",
             "possible_values": [
@@ -16321,7 +16321,7 @@
           },
           {
             "about": "Read one note, optionally narrowed by selectors",
-            "after_help": "Selectors:\n  --mode <markdown|html>    render selected content as markdown (default) or HTML\n  --section <id>          limit to one semantic section from `note outline`\n  --heading <name>        limit to one heading section, including nested subheadings\n  --block-ref <id>        limit to the block tagged with ^<id>\n  --lines <range>         limit to a 1-based line range within the current selection\n  --match <regex>         keep only lines matching the regex\n  --context <n>           include N surrounding lines around each --match hit\n  --no-frontmatter        strip a leading YAML frontmatter block from the output\n  --raw                   print only the selected content without line numbers\n\nEvaluation:\n  --evaluate              replace Dataview, Tasks, and Bases embeds with their results\n                          (markdown mode; HTML mode always evaluates)\n  --dataviewjs <policy>   off (default), static (strict sandbox, deterministic), or\n                          on (configured sandbox tier and permission profile)\n\nLine range syntax:\n  1-10    first ten lines\n  50-     line 50 through the end\n  -5      last five lines\n  7       only line 7\n\nExamples:\n  vulcan note get Dashboard\n  vulcan note get Dashboard --section tasks@9\n  vulcan note outline Dashboard\n  vulcan note get Dashboard --mode html\n  vulcan note get Dashboard --evaluate --dataviewjs on\n  vulcan note get Dashboard --heading Tasks --match TODO --context 1\n  vulcan note get Dashboard --block-ref status-card\n  vulcan note get Dashboard --lines 10-20 --raw",
+            "after_help": "Selectors:\n  --mode <markdown|html>    render selected content as markdown (default) or HTML\n  --section <id>          limit to one semantic section from `note outline`\n  --heading <name>        limit to one heading section, including nested subheadings\n  --block-ref <id>        limit to the block tagged with ^<id>\n  --lines <range>         limit to a 1-based line range within the current selection\n  --match <regex>         keep only lines matching the regex\n  --context <n>           include N surrounding lines around each --match hit\n  --no-frontmatter        strip a leading YAML frontmatter block from the output\n  --raw                   print only the selected content without line numbers\n\nEvaluation:\n  --evaluate              replace Dataview, Tasks, and Bases embeds with their results\n                          (markdown mode; HTML mode always evaluates)\n  --dataviewjs <policy>   off, static (strict sandbox, deterministic), or on (configured\n                          sandbox tier and permission profile); defaults to the vault's\n                          dataview.render_dataview_js, which is off unless set\n\nLine range syntax:\n  1-10    first ten lines\n  50-     line 50 through the end\n  -5      last five lines\n  7       only line 7\n\nExamples:\n  vulcan note get Dashboard\n  vulcan note get Dashboard --section tasks@9\n  vulcan note outline Dashboard\n  vulcan note get Dashboard --mode html\n  vulcan note get Dashboard --evaluate --dataviewjs on\n  vulcan note get Dashboard --heading Tasks --match TODO --context 1\n  vulcan note get Dashboard --block-ref status-card\n  vulcan note get Dashboard --lines 10-20 --raw",
             "name": "get",
             "options": [
               {
@@ -16458,7 +16458,7 @@
                 ]
               },
               {
-                "help": "How evaluation treats dataviewjs blocks",
+                "help": "How evaluation treats dataviewjs blocks [default: dataview.render_dataview_js, off]",
                 "id": "dataview_js",
                 "long": "dataviewjs",
                 "possible_values": [

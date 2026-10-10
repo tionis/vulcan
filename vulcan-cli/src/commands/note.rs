@@ -192,7 +192,7 @@ pub(crate) fn handle_note_command(
                 paths,
                 NoteGetOptions {
                     evaluate: *evaluate,
-                    dataview_js: (*dataview_js).into(),
+                    dataview_js: crate::DataviewJsArg::resolve(*dataview_js, paths),
                     guard: Some(&guard),
                     note,
                     mode: *mode,

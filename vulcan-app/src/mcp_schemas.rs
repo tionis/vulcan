@@ -170,7 +170,7 @@ pub fn note_get_input_schema() -> Value {
             (
                 "dataview_js",
                 schema_string_enum(
-                    "How evaluation treats dataviewjs blocks: `off` (default) leaves a notice, `static` runs them deterministically in the strict sandbox, `on` uses the configured sandbox tier.",
+                    "How evaluation treats dataviewjs blocks: `off` leaves a notice, `static` runs them deterministically in the strict sandbox, `on` uses the configured sandbox tier. Defaults to the vault's `dataview.render_dataview_js` (`off` unless set).",
                     &["off", "static", "on"],
                 ),
             ),

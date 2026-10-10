@@ -138,8 +138,8 @@ const RENDER_COMMAND_AFTER_HELP: &str = "\
 Notes:
   `render` defaults to Vulcan's terminal markdown renderer, wrapped to the terminal width.
   Files inside the vault are evaluated first: inline Dataview expressions and `dataview`,
-  `tasks`, and `.base` embeds show their results. `dataviewjs` blocks stay off unless
-  `--dataviewjs static|on` is given. `--raw` skips evaluation in terminal mode.
+  `tasks`, and `.base` embeds show their results. `dataviewjs` blocks follow
+  `--dataviewjs off|static|on`, defaulting to the vault's `dataview.render_dataview_js` (off). `--raw` skips evaluation in terminal mode.
   `render --mode html` uses the same HTML pipeline as `note get --mode html`.
   When stdout is not a TTY, the rendered output is emitted without ANSI escapes.
   Use `--output markdown` with terminal mode to print the evaluated markdown
@@ -454,8 +454,9 @@ Selectors:
 Evaluation:
   --evaluate              replace Dataview, Tasks, and Bases embeds with their results
                           (markdown mode; HTML mode always evaluates)
-  --dataviewjs <policy>   off (default), static (strict sandbox, deterministic), or
-                          on (configured sandbox tier and permission profile)
+  --dataviewjs <policy>   off, static (strict sandbox, deterministic), or on (configured
+                          sandbox tier and permission profile); defaults to the vault's
+                          dataview.render_dataview_js, which is off unless set
 
 Line range syntax:
   1-10    first ten lines
@@ -5896,10 +5897,9 @@ pub struct RenderArgs {
     #[arg(
         long = "dataviewjs",
         value_enum,
-        default_value_t = DataviewJsArg::Off,
-        help = "How evaluation treats dataviewjs blocks"
+        help = "How evaluation treats dataviewjs blocks [default: dataview.render_dataview_js, off]"
     )]
-    pub dataview_js: DataviewJsArg,
+    pub dataview_js: Option<DataviewJsArg>,
 }
 
 /// How rendering treats `dataviewjs` blocks.
@@ -5912,6 +5912,25 @@ pub enum DataviewJsArg {
     Static,
     /// Evaluate with the configured sandbox tier and permission profile.
     On,
+}
+
+impl DataviewJsArg {
+    /// The policy to render with: the flag when given, else the vault's
+    /// `dataview.render_dataview_js` setting.
+    pub(crate) fn resolve(
+        flag: Option<Self>,
+        paths: &vulcan_core::VaultPaths,
+    ) -> vulcan_core::DataviewJsRenderPolicy {
+        flag.map_or_else(
+            || {
+                vulcan_core::load_vault_config(paths)
+                    .config
+                    .dataview
+                    .render_dataview_js
+            },
+            Into::into,
+        )
+    }
 }
 
 impl From<DataviewJsArg> for vulcan_core::DataviewJsRenderPolicy {
@@ -7298,10 +7317,9 @@ pub enum NoteCommand {
         #[arg(
             long = "dataviewjs",
             value_enum,
-            default_value_t = DataviewJsArg::Off,
-            help = "How evaluation treats dataviewjs blocks"
+            help = "How evaluation treats dataviewjs blocks [default: dataview.render_dataview_js, off]"
         )]
-        dataview_js: DataviewJsArg,
+        dataview_js: Option<DataviewJsArg>,
     },
     #[command(about = "Replace one note's contents from stdin or a file")]
     Set {

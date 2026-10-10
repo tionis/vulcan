@@ -370,6 +370,7 @@ pub(super) struct PartialDataviewConfig {
     pub(super) task_completion_text: Option<String>,
     pub(super) recursive_subtask_completion: Option<bool>,
     pub(super) display_result_count: Option<bool>,
+    pub(super) render_dataview_js: Option<crate::DataviewJsRenderPolicy>,
     pub(super) default_date_format: Option<String>,
     pub(super) default_datetime_format: Option<String>,
     pub(super) timezone: Option<String>,
