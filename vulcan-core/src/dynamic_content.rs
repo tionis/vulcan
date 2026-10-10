@@ -41,7 +41,8 @@ pub enum DataviewJsRenderPolicy {
     /// publication does.
     Static,
     /// Evaluate with the vault's configured sandbox tier and the caller's
-    /// permission profile, as `dataview eval` does.
+    /// permission profile, as `dataview eval` does, except that writes and
+    /// host execution are denied: rendering never changes the vault.
     On,
 }
 
@@ -264,11 +265,13 @@ fn evaluate_dataview_js_block(
         DataviewJsRenderPolicy::Static => crate::DataviewJsEvalOptions {
             sandbox: Some(JsRuntimeSandbox::Strict),
             deterministic_static: true,
+            read_only: true,
             permission_profile: ctx.permission_profile.map(ToOwned::to_owned),
             ..crate::DataviewJsEvalOptions::default()
         },
         DataviewJsRenderPolicy::On => crate::DataviewJsEvalOptions {
             permission_profile: ctx.permission_profile.map(ToOwned::to_owned),
+            read_only: true,
             ..crate::DataviewJsEvalOptions::default()
         },
     };
@@ -1053,6 +1056,36 @@ mod tests {
             );
             assert!(rendered.diagnostics.is_empty());
         }
+    }
+
+    #[cfg(feature = "js_runtime")]
+    #[test]
+    fn rendering_never_lets_dataviewjs_write() {
+        let (_temp_dir, paths, _) = build_vault();
+        std::fs::write(
+            paths.vault_root().join(".vulcan/config.toml"),
+            "[js_runtime]\ndefault_sandbox = \"fs\"\n",
+        )
+        .expect("config should write");
+        let source = "```dataviewjs\nvault.create('Created.md', '# Created')\n```\n";
+        let rendered = render_evaluated_markdown(
+            &paths,
+            source,
+            &EvaluatedMarkdownOptions {
+                source_path: Some("Home.md"),
+                dataview_js: DataviewJsRenderPolicy::On,
+                ..EvaluatedMarkdownOptions::default()
+            },
+        );
+
+        assert!(!paths.vault_root().join("Created.md").exists());
+        assert!(
+            rendered
+                .markdown
+                .contains("not allowed while rendering a note"),
+            "{}",
+            rendered.markdown
+        );
     }
 
     #[test]

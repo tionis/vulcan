@@ -91,6 +91,12 @@ The sandbox model is shared by:
 - JavaScript plugins and lifecycle hooks
 - skill command scripts, subject to their stricter declaration rules
 
+Rendering a note (`browse` previews, `render`, `note get --evaluate` or `--mode html`, and MCP
+`note_get`) runs `dataviewjs` blocks read-only: even under `fs` or higher, filesystem writes,
+refactors, and host or shell execution fail with an error shown in place of the block. Network
+reads still follow the sandbox tier. Use `vulcan dataview eval` to run a block with its full
+authority.
+
 These surfaces may inherit sandbox, permission, and trust settings from their command or
 configuration. Do not assume that a script which works under an interactive `vulcan run` invocation
 has the same authority when projected as a tool.

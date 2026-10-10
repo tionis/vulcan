@@ -79,6 +79,10 @@ pub struct DataviewJsEvalOptions {
     pub permission_profile: Option<String>,
     pub resolved_permissions: Option<ResolvedPermissionProfile>,
     pub deterministic_static: bool,
+    /// Deny filesystem writes, refactors, and host or shell execution even
+    /// when the sandbox tier and profile allow them. Renders that only show
+    /// a note set this so viewing never changes the vault.
+    pub read_only: bool,
     pub disable_policy_hooks: bool,
     pub tool_registry: Option<Arc<dyn DataviewJsToolRegistry>>,
     pub mutation_committer: Option<Arc<dyn DataviewJsMutationCommitter>>,
@@ -93,6 +97,7 @@ impl std::fmt::Debug for DataviewJsEvalOptions {
             .field("permission_profile", &self.permission_profile)
             .field("resolved_permissions", &self.resolved_permissions)
             .field("deterministic_static", &self.deterministic_static)
+            .field("read_only", &self.read_only)
             .field("disable_policy_hooks", &self.disable_policy_hooks)
             .field(
                 "tool_registry",
@@ -325,6 +330,7 @@ mod runtime {
         sandbox: JsRuntimeSandbox,
         permissions: Option<ProfilePermissionGuard>,
         deterministic_static: bool,
+        read_only: bool,
         runtime_timeout: Option<Duration>,
         transaction: Mutex<Option<JsTransactionState>>,
         tool_registry: Option<Arc<dyn DataviewJsToolRegistry>>,
@@ -3685,6 +3691,7 @@ globalThis.Function = undefined;
                 sandbox,
                 permissions,
                 deterministic_static: options.deterministic_static,
+                read_only: options.read_only,
                 runtime_timeout: timeout,
                 transaction: Mutex::new(None),
                 tool_registry: options.tool_registry,
@@ -5408,6 +5415,13 @@ globalThis.Function = undefined;
     ) -> Result<(), DataviewJsError> {
         if state.deterministic_static {
             return Err(static_mode_denied(operation, capability));
+        }
+        // A read-only render may still read the web; it must not change
+        // anything.
+        if state.read_only && capability != "network access" {
+            return Err(DataviewJsError::Message(format!(
+                "{capability} via {operation} is not allowed while rendering a note"
+            )));
         }
         Ok(())
     }
