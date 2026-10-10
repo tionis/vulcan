@@ -135,8 +135,11 @@ fn scan_block(
                 .to_string();
             let (tags, outlinks) = extract_list_item_metadata(&trimmed_visible);
             let mut inline_item_fields = Vec::new();
+            // A bare `key:: value` field starts after the list marker and
+            // checkbox, as in Dataview.
             scan_inline_field_variants(
                 raw_line,
+                list_line.text_start,
                 line_start,
                 line_number,
                 comment_regions,
@@ -157,6 +160,7 @@ fn scan_block(
                 is_task: list_line.status_char.is_some(),
                 block_id: parse_list_item_block_id(&trimmed_visible),
                 annotated: !inline_item_fields.is_empty(),
+                inline_fields: inline_item_fields.clone(),
             });
             item_stack.push((list_line.indent, item_index));
 
@@ -179,6 +183,7 @@ fn scan_block(
 
         scan_inline_field_variants(
             raw_line,
+            0,
             line_start,
             line_number,
             comment_regions,
@@ -221,6 +226,7 @@ enum InlineFieldTarget<'a> {
 
 fn scan_inline_field_variants(
     raw_line: &str,
+    bare_field_start: usize,
     line_start: usize,
     line_number: usize,
     comment_regions: &[Range<usize>],
@@ -265,8 +271,13 @@ fn scan_inline_field_variants(
         }
     }
 
-    if let Some(field) = parse_bare_inline_field(raw_line, line_start, comment_regions, line_number)
-    {
+    let bare_field_start = bare_field_start.min(raw_line.len());
+    if let Some(field) = parse_bare_inline_field(
+        &raw_line[bare_field_start..],
+        line_start + bare_field_start,
+        comment_regions,
+        line_number,
+    ) {
         property_value_ranges.push(field.1.clone());
         push_inline_field(
             &mut target,
@@ -487,6 +498,28 @@ mod tests {
         assert_eq!(extraction.tasks[0].list_item_index, 0);
         assert_eq!(extraction.tasks[0].status_char, ' ');
         assert_eq!(extraction.tasks[0].inline_fields[0].key, "due");
+    }
+
+    #[test]
+    fn bare_fields_on_list_lines_start_after_the_marker() {
+        let source = "- status:: done\n- [ ] due:: soon\n";
+        let block = SemanticBlock {
+            block_kind: SemanticBlockKind::List,
+            text: source.to_string(),
+            byte_offset_start: 0,
+            byte_offset_end: source.len(),
+            heading_path: Vec::new(),
+            code_language: None,
+        };
+
+        let extraction = extract_dataview_metadata(source, &[], &[block]);
+
+        let item_field = &extraction.list_items[0].inline_fields[0];
+        assert_eq!(item_field.key, "status");
+        assert_eq!(&source[item_field.byte_range.clone()], "status:: done");
+        let task_field = &extraction.tasks[0].inline_fields[0];
+        assert_eq!(task_field.key, "due");
+        assert_eq!(&source[task_field.byte_range.clone()], "due:: soon");
     }
 
     #[test]

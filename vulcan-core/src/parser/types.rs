@@ -114,6 +114,8 @@ pub struct RawListItem {
     pub is_task: bool,
     pub block_id: Option<String>,
     pub annotated: bool,
+    /// Inline fields on the item's line; a task carries the same fields.
+    pub inline_fields: Vec<RawTaskField>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

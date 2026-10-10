@@ -102,6 +102,12 @@ fn shift_parsed_document_offsets(parsed: &mut ParsedDocument, base_offset: usize
     }
     for list_item in &mut parsed.list_items {
         list_item.byte_offset += base_offset;
+        for inline_field in &mut list_item.inline_fields {
+            inline_field.byte_range.start += base_offset;
+            inline_field.byte_range.end += base_offset;
+            inline_field.value_byte_range.start += base_offset;
+            inline_field.value_byte_range.end += base_offset;
+        }
     }
     for task in &mut parsed.tasks {
         task.byte_offset += base_offset;
