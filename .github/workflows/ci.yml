@@ -102,3 +102,9 @@ jobs:
       - name: Run clippy
         if: matrix.suite == 'cli'
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Feature-gated code (js_runtime, oauth, vectors, web) only compiles
+      # out without default features, so drift there is invisible above.
+      - name: Run clippy without default features
+        if: matrix.os == 'ubuntu-latest' && matrix.suite == 'cli'
+        run: cargo clippy --workspace --all-targets --no-default-features -- -D warnings
