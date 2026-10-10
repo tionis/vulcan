@@ -361,6 +361,7 @@ struct Renderer {
     callout_title: Vec<StyledSpan>,
     callout_kind: String,
     callout_probe: String,
+    in_highlight: bool,
 }
 
 impl Renderer {
@@ -383,6 +384,7 @@ impl Renderer {
             callout_title: Vec::new(),
             callout_kind: String::new(),
             callout_probe: String::new(),
+            in_highlight: false,
         }
     }
 
@@ -811,12 +813,28 @@ impl Renderer {
             self.push_span(StyledSpan::new(text, style));
             return;
         }
-        let tag_style = style.merge(SpanStyle::tone(Tone::Info));
-        for (piece, is_tag) in split_tags(text) {
-            self.push_span(StyledSpan::new(
-                piece,
-                if is_tag { tag_style } else { style },
-            ));
+        // Obsidian `==highlights==` may span several text events, so the
+        // open state lives on the renderer.
+        for (run, toggles) in split_highlight_markers(text, self.in_highlight) {
+            let style = if self.in_highlight {
+                style.merge(SpanStyle {
+                    tone: Some(Tone::Warning),
+                    bold: true,
+                    ..SpanStyle::default()
+                })
+            } else {
+                style
+            };
+            let tag_style = style.merge(SpanStyle::tone(Tone::Info));
+            for (piece, is_tag) in split_tags(run) {
+                self.push_span(StyledSpan::new(
+                    piece,
+                    if is_tag { tag_style } else { style },
+                ));
+            }
+            if toggles {
+                self.in_highlight = !self.in_highlight;
+            }
         }
     }
 
@@ -985,6 +1003,7 @@ impl Renderer {
     }
 
     fn flush_paragraph(&mut self) {
+        self.in_highlight = false;
         if self.callout == Some(CalloutState::Detect) && !self.callout_probe.is_empty() {
             self.resolve_callout_probe();
         }
@@ -1318,6 +1337,34 @@ fn split_keeping_spaces(text: &str) -> Vec<&str> {
     pieces
 }
 
+/// Split text at `==` highlight markers, dropping the markers. Each run is
+/// paired with whether a marker ends it. A marker opens a highlight only
+/// before a non-space character and closes one only after a non-space
+/// character, so `a == b` stays literal.
+fn split_highlight_markers(text: &str, mut open: bool) -> Vec<(&str, bool)> {
+    let mut runs = Vec::new();
+    let mut start = 0;
+    let mut search = 0;
+    while let Some(offset) = text[search..].find("==") {
+        let marker = search + offset;
+        let before = text[..marker].chars().next_back();
+        let after = text[marker + 2..].chars().next();
+        let valid = if open {
+            before.is_some_and(|ch| !ch.is_whitespace())
+        } else {
+            after.is_some_and(|ch| !ch.is_whitespace())
+        };
+        if valid {
+            runs.push((&text[start..marker], true));
+            open = !open;
+            start = marker + 2;
+        }
+        search = marker + 2;
+    }
+    runs.push((&text[start..], false));
+    runs
+}
+
 /// Split text into runs, marking Obsidian `#tags`: a `#` at the start or
 /// after whitespace or an opening bracket, followed by letters, digits,
 /// `_`, `-`, or `/`, and not only digits.
@@ -1551,6 +1598,15 @@ mod tests {
             plain("> [!embed] Card\n> Card body\n"),
             "┃ ↳ Card\n┃ Card body"
         );
+    }
+
+    #[test]
+    fn obsidian_highlights_are_styled() {
+        assert_eq!(
+            render_terminal_markdown("a ==marked== b == c", true),
+            "a \u{1b}[1;93mmarked\u{1b}[0m b == c"
+        );
+        assert_eq!(plain("a ==marked== b"), "a ==marked== b");
     }
 
     #[test]

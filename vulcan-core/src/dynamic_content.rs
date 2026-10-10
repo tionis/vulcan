@@ -1229,46 +1229,128 @@ fn task_file(task: &Value) -> String {
         .to_string()
 }
 
+/// One piece of `DataviewJS` output as Markdown. Dataview lays inline
+/// pieces (`dv.span`, inline elements) side by side and blocks one per line.
+enum JsMarkdownPiece {
+    Block(String),
+    Inline(String),
+}
+
 fn dataview_js_markdown(result: &DataviewJsResult, options: DataviewMarkdownOptions) -> String {
     if result.outputs.is_empty() {
         return result.value.as_ref().map(inline_value).unwrap_or_default();
     }
-    result
-        .outputs
-        .iter()
-        .map(|output| match output {
-            DataviewJsOutput::Query { result } => dql_markdown(result, options),
-            DataviewJsOutput::Table { headers, rows } => markdown_table(
-                headers,
-                &rows
-                    .iter()
-                    .map(|row| row.iter().map(table_cell).collect())
-                    .collect::<Vec<_>>(),
-            ),
-            DataviewJsOutput::List { items } => {
-                items.iter().fold(String::new(), |mut rendered, item| {
-                    let _ = writeln!(rendered, "- {}", inline_value(item));
-                    rendered
-                })
+    let pieces = result.outputs.iter().map(|output| match output {
+        DataviewJsOutput::Query { result } => JsMarkdownPiece::Block(dql_markdown(result, options)),
+        DataviewJsOutput::Table { headers, rows } => JsMarkdownPiece::Block(markdown_table(
+            headers,
+            &rows
+                .iter()
+                .map(|row| row.iter().map(table_cell).collect())
+                .collect::<Vec<_>>(),
+        )),
+        DataviewJsOutput::List { items } => {
+            JsMarkdownPiece::Block(items.iter().fold(String::new(), |mut rendered, item| {
+                let _ = writeln!(rendered, "- {}", inline_value(item));
+                rendered
+            }))
+        }
+        DataviewJsOutput::TaskList {
+            tasks,
+            group_by_file,
+        } => JsMarkdownPiece::Block(grouped_tasks_markdown(
+            tasks.iter().map(|task| (task_file(task), task)),
+            *group_by_file,
+        )),
+        DataviewJsOutput::Paragraph { text } => JsMarkdownPiece::Block(text.clone()),
+        DataviewJsOutput::Span { text } => JsMarkdownPiece::Inline(text.clone()),
+        DataviewJsOutput::Header { level, text } => {
+            JsMarkdownPiece::Block(format!("{} {text}", "#".repeat((*level).clamp(1, 6))))
+        }
+        DataviewJsOutput::Element {
+            element,
+            text,
+            attrs,
+        } => element_markdown(element, text, attrs),
+    });
+
+    let mut blocks = Vec::new();
+    let mut inline_run = String::new();
+    for piece in pieces {
+        match piece {
+            JsMarkdownPiece::Inline(text) => inline_run.push_str(&text),
+            JsMarkdownPiece::Block(text) => {
+                if !inline_run.trim().is_empty() {
+                    blocks.push(std::mem::take(&mut inline_run));
+                }
+                inline_run.clear();
+                blocks.push(text);
             }
-            DataviewJsOutput::TaskList {
-                tasks,
-                group_by_file,
-            } => grouped_tasks_markdown(
-                tasks.iter().map(|task| (task_file(task), task)),
-                *group_by_file,
-            ),
-            DataviewJsOutput::Paragraph { text }
-            | DataviewJsOutput::Span { text }
-            | DataviewJsOutput::Element { text, .. } => text.clone(),
-            DataviewJsOutput::Header { level, text } => {
-                format!("{} {text}", "#".repeat((*level).clamp(1, 6)))
-            }
-        })
-        .map(|section| section.trim_end().to_string())
-        .filter(|section| !section.is_empty())
+        }
+    }
+    if !inline_run.trim().is_empty() {
+        blocks.push(inline_run);
+    }
+    blocks
+        .into_iter()
+        .map(|block| block.trim_end().to_string())
+        .filter(|block| !block.is_empty())
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+/// A `dv.el(element, text, attrs)` call as the Markdown that produces the
+/// same structure. The text is Markdown, as in Dataview.
+fn element_markdown(
+    element: &str,
+    text: &str,
+    attrs: &serde_json::Map<String, Value>,
+) -> JsMarkdownPiece {
+    let attr = |name: &str| {
+        attrs
+            .get(name)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+    };
+    let element = element.trim().to_ascii_lowercase();
+    match element.as_str() {
+        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+            let level = usize::from(element.as_bytes()[1] - b'0');
+            JsMarkdownPiece::Block(format!("{} {text}", "#".repeat(level)))
+        }
+        "blockquote" => JsMarkdownPiece::Block(
+            text.lines()
+                .map(|line| format!("> {line}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        "pre" => JsMarkdownPiece::Block(format!("```\n{}\n```", text.trim_end())),
+        "li" => JsMarkdownPiece::Block(format!("- {text}")),
+        "hr" => JsMarkdownPiece::Block("---".to_string()),
+        "p" | "div" | "section" | "article" | "header" | "footer" | "main" | "aside" | "nav"
+        | "figure" | "figcaption" | "details" | "summary" | "ul" | "ol" | "table" => {
+            JsMarkdownPiece::Block(text.to_string())
+        }
+        "strong" | "b" => JsMarkdownPiece::Inline(format!("**{text}**")),
+        "em" | "i" => JsMarkdownPiece::Inline(format!("*{text}*")),
+        "s" | "del" | "strike" => JsMarkdownPiece::Inline(format!("~~{text}~~")),
+        "mark" => JsMarkdownPiece::Inline(format!("=={text}==")),
+        "code" | "kbd" | "samp" => {
+            let fence = if text.contains('`') { "``" } else { "`" };
+            JsMarkdownPiece::Inline(format!("{fence}{text}{fence}"))
+        }
+        "br" => JsMarkdownPiece::Inline("\n".to_string()),
+        "a" => JsMarkdownPiece::Inline(
+            attr("href").map_or_else(|| text.to_string(), |href| format!("[{text}]({href})")),
+        ),
+        "img" => {
+            let alt = attr("alt").unwrap_or(text);
+            JsMarkdownPiece::Inline(
+                attr("src").map_or_else(|| alt.to_string(), |src| format!("![{alt}]({src})")),
+            )
+        }
+        _ => JsMarkdownPiece::Inline(text.to_string()),
+    }
 }
 
 fn tasks_markdown(result: &TasksQueryResult) -> String {
@@ -1808,6 +1890,43 @@ mod tests {
         .expect("config should write");
         assert!(render(DataviewJsRenderPolicy::On).contains("JS: draft"));
         assert!(render(DataviewJsRenderPolicy::Off).contains("JS: *(DataviewJS disabled)*"));
+    }
+
+    #[test]
+    fn dataviewjs_elements_keep_their_structure_in_markdown() {
+        let element = |element: &str, text: &str, attrs: Value| DataviewJsOutput::Element {
+            element: element.to_string(),
+            text: text.to_string(),
+            attrs: attrs.as_object().cloned().unwrap_or_default(),
+        };
+        let result = DataviewJsResult {
+            outputs: vec![
+                DataviewJsOutput::Span {
+                    text: "Status: ".into(),
+                },
+                element("strong", "done", json!({})),
+                DataviewJsOutput::Span {
+                    text: " today".into(),
+                },
+                element("h2", "Links", json!({})),
+                element("a", "site", json!({ "href": "https://example.test" })),
+                element("span", " and ", json!({ "cls": "sep" })),
+                element("img", "", json!({ "src": "pic.png", "alt": "Pic" })),
+                element("blockquote", "quoted\nlines", json!({})),
+                element("code", "a`b", json!({})),
+            ],
+            value: None,
+        };
+        assert_eq!(
+            dataview_js_markdown(
+                &result,
+                DataviewMarkdownOptions {
+                    show_result_count: false,
+                    empty_placeholder: false,
+                },
+            ),
+            "Status: **done** today\n\n## Links\n\n[site](https://example.test) and ![Pic](pic.png)\n\n> quoted\n> lines\n\n``a`b``"
+        );
     }
 
     #[test]
