@@ -315,8 +315,7 @@ fn render_markdown_with_replacements(
             end: field.byte_range.end,
             replacement: render_inline_field_html(
                 paths,
-                &field.key,
-                &field.value_text,
+                field,
                 source_path,
                 env,
                 state,
@@ -582,8 +581,7 @@ fn render_asset_embed_html(
 
 fn render_inline_field_html(
     paths: &VaultPaths,
-    key: &str,
-    value_text: &str,
+    field: &crate::parser::RawInlineField,
     source_path: Option<&str>,
     env: &HtmlRenderEnvironment<'_>,
     state: &mut HtmlRenderState,
@@ -591,15 +589,21 @@ fn render_inline_field_html(
 ) -> String {
     let value_html = render_json_value_html(
         paths,
-        &Value::String(value_text.to_string()),
+        &Value::String(field.value_text.clone()),
         source_path,
         env,
         state,
         diagnostics,
     );
+    // Like Dataview, a parenthesized field shows only its value.
+    if field.kind == crate::parser::types::InlineFieldKind::Parenthesized {
+        return format!(
+            "<span class=\"dataview-inline-field dataview-inline-field-value\">{value_html}</span>"
+        );
+    }
     format!(
         "<span class=\"dataview-inline-field\"><span class=\"dataview-inline-field-key\">{}</span><span class=\"dataview-inline-field-separator\">:</span> <span class=\"dataview-inline-field-value\">{}</span></span>",
-        escape_html_text(key),
+        escape_html_text(&field.key),
         value_html
     )
 }

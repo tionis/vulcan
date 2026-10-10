@@ -206,8 +206,33 @@ pub(crate) fn evaluate_dynamic_regions(
     regions
 }
 
+/// An inline field as Dataview's reading view shows it: a bold key and its
+/// value, or only the value for a parenthesized field.
+fn inline_field_markdown(source: &str, field: &crate::parser::RawInlineField) -> String {
+    if field.kind == crate::parser::types::InlineFieldKind::Parenthesized {
+        return field.value_text.clone();
+    }
+    // The parser lowercases keys; show the key as written.
+    let written = source
+        .get(field.byte_range.start..field.value_byte_range.start)
+        .map(|text| {
+            text.trim()
+                .trim_start_matches(['[', '('])
+                .trim_end_matches(':')
+                .trim()
+        })
+        .filter(|key| !key.is_empty())
+        .unwrap_or(&field.key);
+    if written.starts_with("**") || written.starts_with("__") {
+        format!("{written}: {}", field.value_text)
+    } else {
+        format!("**{written}**: {}", field.value_text)
+    }
+}
+
 fn has_dynamic_content(parsed: &ParsedDocument) -> bool {
-    !parsed.inline_expressions.is_empty()
+    !parsed.inline_fields.is_empty()
+        || !parsed.inline_expressions.is_empty()
         || !parsed.inline_js_expressions.is_empty()
         || !parsed.comment_regions.is_empty()
         || !parsed.dataview_blocks.is_empty()
@@ -506,14 +531,25 @@ impl EvaluatedMarkdownRenderer {
             dataview_js: options.dataview_js,
         };
         let mut diagnostics = Vec::new();
-        let mut replacements =
+        let mut replacements = parsed
+            .inline_fields
+            .iter()
+            .map(|field| {
+                (
+                    field.byte_range.start,
+                    field.byte_range.end,
+                    MarkdownReplacement::Inline(inline_field_markdown(source, field)),
+                )
+            })
+            .collect::<Vec<_>>();
+        replacements.extend(
             evaluate_dynamic_regions(&ctx, source_path, &parsed, &mut diagnostics)
                 .into_iter()
                 .filter_map(|region| {
                     outcome_markdown(&region.outcome)
                         .map(|replacement| (region.start, region.end, replacement))
-                })
-                .collect::<Vec<_>>();
+                }),
+        );
         if let (Some(source_path), Some(note_index)) = (source_path, note_index.as_ref()) {
             for link in &parsed.links {
                 if link.link_kind != LinkKind::Embed
@@ -1423,6 +1459,18 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(kinds.contains(&"embed_cycle"), "{kinds:?}");
         assert!(kinds.contains(&"unresolved_embed"), "{kinds:?}");
+    }
+
+    #[test]
+    fn inline_fields_render_like_dataview_reading_view() {
+        let (_temp_dir, paths, _) = build_vault();
+        let source = "**Due Date**:: 2026-04\nOwner:: [[Bob]]\nInline (hidden:: only value) and [shown:: both].\n";
+        let rendered =
+            render_evaluated_markdown(&paths, source, &EvaluatedMarkdownOptions::default());
+        assert_eq!(
+            rendered.markdown,
+            "**Due Date**: 2026-04\n**Owner**: [[Bob]]\nInline only value and **shown**: both.\n"
+        );
     }
 
     #[test]
