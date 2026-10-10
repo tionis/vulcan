@@ -161,7 +161,7 @@ pub(crate) fn print_help_command(
                 let markdown = render_help_search_markdown(keyword, &report);
                 println!(
                     "{}",
-                    terminal_markdown::render_terminal_markdown(&markdown, use_color)
+                    terminal_markdown::render_terminal_markdown_for_stdout(&markdown, use_color)
                 );
                 Ok(())
             }
@@ -186,7 +186,7 @@ pub(crate) fn print_help_command(
             let markdown = render_help_topic_markdown(&report);
             println!(
                 "{}",
-                terminal_markdown::render_terminal_markdown(&markdown, use_color)
+                terminal_markdown::render_terminal_markdown_for_stdout(&markdown, use_color)
             );
             Ok(())
         }

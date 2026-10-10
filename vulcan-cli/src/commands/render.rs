@@ -90,7 +90,7 @@ pub(crate) fn print_render_report(
         OutputFormat::Json => print_json(report),
         OutputFormat::Human => {
             let rendered = if report.mode == "terminal" && stdout_is_tty {
-                terminal_markdown::render_terminal_markdown(&report.source, use_color)
+                terminal_markdown::render_terminal_markdown_for_stdout(&report.source, use_color)
             } else {
                 report.rendered.clone()
             };

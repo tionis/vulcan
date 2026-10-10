@@ -4753,6 +4753,7 @@ dependencies = [
  "tokio",
  "toml",
  "ulid",
+ "unicode-width 0.2.2",
  "vulcan-app",
  "vulcan-core",
  "vulcan-daemon",

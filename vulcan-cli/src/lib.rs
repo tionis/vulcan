@@ -7014,7 +7014,7 @@ pub(crate) fn print_markdown_output(
         )),
         OutputFormat::Human => {
             let rendered = if stdout_is_tty {
-                terminal_markdown::render_terminal_markdown(markdown, use_color)
+                terminal_markdown::render_terminal_markdown_for_stdout(markdown, use_color)
             } else {
                 markdown.to_string()
             };

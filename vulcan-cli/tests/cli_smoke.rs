@@ -17751,8 +17751,8 @@ fn render_human_output_formats_markdown_files() {
         .stdout(
             predicate::str::contains("---\ntitle: Sample\ntags:\n  - demo\n---")
                 .and(predicate::str::contains("Title"))
-                .and(predicate::str::contains("| Name  | Hours |"))
-                .and(predicate::str::contains("| ----- | ----: |"))
+                .and(predicate::str::contains("│ Name  │ Hours │"))
+                .and(predicate::str::contains("│ Alpha │     2 │"))
                 .and(predicate::str::contains("# Title").not()),
         );
 }
