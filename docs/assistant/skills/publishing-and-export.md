@@ -1,7 +1,7 @@
 ---
 name: publishing-and-export
 description: Build static sites, export or package vault content, and operate Outline collection setup, publication, pull, exact document bindings, or named subtree routes. Use when the user asks about site builds, export profiles, EPUB/ZIP/SQLite/JSON/CSV output, Outline ZIP, collection or wiki discovery/creation, API publishing or pull, wiki synchronization, local/remote document identity, graph-based publication scope, reconciliation conflicts, render diagnostics, publish filters, content transforms, or route/link policy.
-version: 2
+version: 3
 tools:
   - site
   - export
@@ -26,7 +26,7 @@ static output target or a configured Outline publication, import, or named route
 
 ## Recommended Flow
 
-- Use `vulcan render` for one Markdown file or stdin.
+- Use `vulcan render` for one Markdown file or stdin. Files inside the vault render with Dataview, Tasks, and `.base` embeds evaluated under the selected `--permissions` profile; `--raw` renders the source as-is and `--dataviewjs static|on` runs `dataviewjs` blocks.
 - Use `vulcan export ...` for one-off artifacts such as Markdown, JSON, CSV, graph, EPUB, ZIP, SQLite, search index, or frontend bundle outputs.
 - Use export profiles for repeatable export settings.
 - Use `vulcan site build --profile <name>` for static sites and `vulcan site doctor` for publish diagnostics.

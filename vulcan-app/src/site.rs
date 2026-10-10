@@ -1913,6 +1913,8 @@ fn render_site_plan_note(
         adjusted.as_ref(),
         &HtmlRenderOptions {
             source_path: Some(&note.note.document_path),
+            guard: None,
+            permission_profile: None,
             full_document: true,
             link_targets: Some(&shared.link_targets),
             dataview_js_policy: match plan.profile.dataview_js {

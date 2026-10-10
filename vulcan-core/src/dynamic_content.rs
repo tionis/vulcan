@@ -78,6 +78,8 @@ pub(crate) struct DynamicContentContext<'a> {
 #[derive(Debug, Clone)]
 pub(crate) enum DynamicOutcome {
     InlineValue(Value),
+    /// An inline expression that failed to evaluate.
+    InlineError(String),
     /// An inline expression that could not be evaluated because the note is
     /// not indexed.
     Unevaluated(String),
@@ -116,17 +118,21 @@ pub(crate) fn evaluate_dynamic_regions(
             .find(|note| note.document_path == path)
             .map(|note| (note, index))
     });
+    // Results are keyed by expression text rather than position so a
+    // partial selection of the note still pairs each expression correctly.
     let inline_results = note.map(|(note, index)| evaluate_note_inline_expressions(note, index));
-    for (index, expression) in parsed.inline_expressions.iter().enumerate() {
-        let outcome = match inline_results.as_ref().map(|results| results.get(index)) {
-            Some(Some(evaluated)) => evaluated.error.as_ref().map_or_else(
+    let results_by_expression = inline_results
+        .iter()
+        .flatten()
+        .map(|result| (result.expression.as_str(), result))
+        .collect::<HashMap<_, _>>();
+    for expression in &parsed.inline_expressions {
+        let outcome = match results_by_expression.get(expression.expression.as_str()) {
+            Some(evaluated) => evaluated.error.as_ref().map_or_else(
                 || DynamicOutcome::InlineValue(evaluated.value.clone()),
-                |error| DynamicOutcome::Error {
-                    title: "Dataview inline error:".to_string(),
-                    message: error.clone(),
-                },
+                |error| DynamicOutcome::InlineError(error.clone()),
             ),
-            _ => DynamicOutcome::Unevaluated(expression.expression.clone()),
+            None => DynamicOutcome::Unevaluated(expression.expression.clone()),
         };
         regions.push(DynamicRegion {
             start: expression.byte_range.start,
@@ -180,6 +186,19 @@ pub(crate) fn evaluate_dynamic_regions(
     }
 
     regions
+}
+
+fn has_dynamic_content(parsed: &ParsedDocument) -> bool {
+    !parsed.inline_expressions.is_empty()
+        || !parsed.dataview_blocks.is_empty()
+        || !parsed.tasks_blocks.is_empty()
+        || parsed.links.iter().any(|link| {
+            link.link_kind == LinkKind::Embed
+                && link
+                    .target_path_candidate
+                    .as_deref()
+                    .is_some_and(is_base_path)
+        })
 }
 
 pub(crate) fn is_base_path(candidate: &str) -> bool {
@@ -341,27 +360,26 @@ pub struct EvaluatedMarkdown {
     pub diagnostics: Vec<RenderDiagnostic>,
 }
 
-/// Loads the vault context once so several notes can be rendered cheaply.
+/// Holds the vault context so several notes can be rendered cheaply. The
+/// note index loads on the first note that has dynamic content, so notes
+/// without any never pay for it.
 #[derive(Debug, Clone)]
 pub struct EvaluatedMarkdownRenderer {
     paths: VaultPaths,
     config: VaultConfig,
-    note_index: Option<HashMap<String, NoteRecord>>,
+    note_index: std::cell::OnceCell<Option<HashMap<String, NoteRecord>>>,
     guarded: bool,
 }
 
 impl EvaluatedMarkdownRenderer {
+    /// Prepare a renderer for `guard`'s note universe, or the whole vault.
+    /// Every render must pass the same guard.
     #[must_use]
     pub fn load(paths: &VaultPaths, guard: Option<&dyn PermissionGuard>) -> Self {
-        let config = load_vault_config(paths).config;
-        let note_index = match guard {
-            Some(guard) => load_note_index_with_guard(paths, guard).ok(),
-            None => load_note_index(paths).ok(),
-        };
         Self {
             paths: paths.clone(),
-            config,
-            note_index,
+            config: load_vault_config(paths).config,
+            note_index: std::cell::OnceCell::new(),
             guarded: guard.is_some(),
         }
     }
@@ -371,8 +389,8 @@ impl EvaluatedMarkdownRenderer {
     ///
     /// # Panics
     ///
-    /// Panics when `options.guard` is set but the renderer was loaded without
-    /// one, since the loaded note universe would not match the guard.
+    /// Panics when `options.guard` disagrees with the guard the renderer was
+    /// loaded with, since the loaded note universe would not match.
     #[must_use]
     pub fn render(
         &self,
@@ -380,18 +398,28 @@ impl EvaluatedMarkdownRenderer {
         options: &EvaluatedMarkdownOptions<'_>,
     ) -> EvaluatedMarkdown {
         assert!(
-            options.guard.is_none() || self.guarded,
-            "a guarded render needs a renderer loaded with the same guard"
+            options.guard.is_some() == self.guarded,
+            "a render must use the guard the renderer was loaded with"
         );
+        let parsed = parse_document(source, &self.config);
+        if !has_dynamic_content(&parsed) {
+            return EvaluatedMarkdown {
+                markdown: source.to_string(),
+                diagnostics: Vec::new(),
+            };
+        }
+        let note_index = self.note_index.get_or_init(|| match options.guard {
+            Some(guard) => load_note_index_with_guard(&self.paths, guard).ok(),
+            None => load_note_index(&self.paths).ok(),
+        });
         let ctx = DynamicContentContext {
             paths: &self.paths,
             config: &self.config,
-            note_index: self.note_index.as_ref(),
+            note_index: note_index.as_ref(),
             guard: options.guard,
             permission_profile: options.permission_profile,
             dataview_js: options.dataview_js,
         };
-        let parsed = parse_document(source, &self.config);
         let mut diagnostics = Vec::new();
         let regions =
             evaluate_dynamic_regions(&ctx, options.source_path, &parsed, &mut diagnostics);
@@ -478,6 +506,9 @@ fn outcome_markdown(outcome: &DynamicOutcome) -> Option<MarkdownReplacement> {
     Some(match outcome {
         DynamicOutcome::Unevaluated(_) => return None,
         DynamicOutcome::InlineValue(value) => MarkdownReplacement::Inline(inline_value(value)),
+        DynamicOutcome::InlineError(error) => {
+            MarkdownReplacement::Inline(format!("*(Dataview error: {error})*"))
+        }
         DynamicOutcome::Dql(result) => MarkdownReplacement::Block(dql_markdown(result)),
         DynamicOutcome::DataviewJs(result) => {
             MarkdownReplacement::Block(dataview_js_markdown(result))

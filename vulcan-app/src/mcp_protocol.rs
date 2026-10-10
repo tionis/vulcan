@@ -431,6 +431,10 @@ pub struct McpNoteGetArgs {
     pub no_frontmatter: bool,
     #[serde(default)]
     pub raw: bool,
+    #[serde(default)]
+    pub evaluate: bool,
+    #[serde(default)]
+    pub dataview_js: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -7,9 +7,9 @@ use serde_json::{Map, Value};
 use std::fs;
 use vulcan_core::config::TasksDefaultSource;
 use vulcan_core::{
-    execute_query_report_with_filter, query_notes_with_filter, search_vault_with_filter, NoteQuery,
-    PermissionGuard, ProfilePermissionGuard, QueryAst, QueryReport, SearchQuery, SearchSort,
-    TasksQueryResult, VaultPaths,
+    execute_query_report_with_filter, query_notes_with_filter, search_vault_with_filter,
+    DataviewJsRenderPolicy, NoteQuery, PermissionGuard, ProfilePermissionGuard, QueryAst,
+    QueryReport, SearchQuery, SearchSort, TasksQueryResult, VaultPaths,
 };
 
 use crate::mcp_access;
@@ -311,6 +311,9 @@ pub fn note_get(
             context: args.context,
             no_frontmatter: args.no_frontmatter,
             raw: args.raw,
+            evaluate: args.evaluate,
+            dataview_js: parse_dataview_js_policy(args.dataview_js.as_deref())?,
+            guard: Some(guard),
         },
     )
     .map_err(|error| McpMethodError::tool(error.to_string()))
@@ -336,6 +339,19 @@ pub fn note_info(
     mcp_access::check_read_note_access(paths, guard, &args.note)?;
     build_note_info_report(paths, &args.note, Some(&guard.read_filter()))
         .map_err(|error| McpMethodError::tool(error.to_string()))
+}
+
+fn parse_dataview_js_policy(
+    policy: Option<&str>,
+) -> Result<DataviewJsRenderPolicy, McpMethodError> {
+    match policy.unwrap_or("off") {
+        "off" => Ok(DataviewJsRenderPolicy::Off),
+        "static" => Ok(DataviewJsRenderPolicy::Static),
+        "on" => Ok(DataviewJsRenderPolicy::On),
+        other => Err(McpMethodError::invalid_params(format!(
+            "unsupported `note_get.dataview_js`: {other}"
+        ))),
+    }
 }
 
 fn parse_note_get_mode(mode: Option<&str>) -> Result<NoteReadMode, McpMethodError> {

@@ -31,12 +31,13 @@ use vulcan_core::{
     expected_periodic_note_path, load_vault_config, match_periodic_note_path, parse_document,
     parse_dql_with_diagnostics, period_range_for_date, query_backlinks,
     query_backlinks_with_filter, query_links_with_filter, query_note_link_confidence_with_filter,
-    render_note_fragment_html, render_note_html, render_vault_html, resolve_link,
-    resolve_note_reference, resolve_note_reference_with_filter, resolve_permission_profile,
-    BacklinkRecord, DoctorByteRange, DoctorDiagnosticIssue, GraphConfidenceBreakdown,
-    GraphQueryError, LinkResolutionProblem, NoteLineSpan, NoteMatchKind, ParsedDocument,
-    PeriodicConfig, PermissionFilter, PermissionGuard, PluginEvent, ProfilePermissionGuard,
-    RefactorChange, ResolverDocument, ResolverLink, VaultConfig, VaultPaths,
+    render_evaluated_markdown, render_vault_html, resolve_link, resolve_note_reference,
+    resolve_note_reference_with_filter, resolve_permission_profile, BacklinkRecord,
+    DataviewJsRenderPolicy, DoctorByteRange, DoctorDiagnosticIssue, EvaluatedMarkdownOptions,
+    GraphConfidenceBreakdown, GraphQueryError, LinkResolutionProblem, NoteLineSpan, NoteMatchKind,
+    ParsedDocument, PeriodicConfig, PermissionFilter, PermissionGuard, PluginEvent,
+    ProfilePermissionGuard, RefactorChange, RenderDiagnostic, ResolverDocument, ResolverLink,
+    VaultConfig, VaultPaths,
 };
 
 #[derive(Debug, Clone)]
@@ -260,7 +261,7 @@ impl NoteReadMode {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct NoteGetOptions<'a> {
     pub note: &'a str,
     pub mode: NoteReadMode,
@@ -272,6 +273,13 @@ pub struct NoteGetOptions<'a> {
     pub context: usize,
     pub no_frontmatter: bool,
     pub raw: bool,
+    /// In Markdown mode, replace dynamic content (Dataview, Tasks, Bases
+    /// embeds) with its evaluated result. HTML mode always evaluates.
+    pub evaluate: bool,
+    pub dataview_js: DataviewJsRenderPolicy,
+    /// The caller's read authority; evaluated queries and embeds see only
+    /// notes it can read.
+    pub guard: Option<&'a dyn PermissionGuard>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -280,6 +288,9 @@ pub struct NoteGetReport {
     pub content: String,
     pub frontmatter: Option<JsonValue>,
     pub metadata: NoteGetMetadata,
+    /// Diagnostics from evaluating dynamic content.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<RenderDiagnostic>,
     #[serde(skip)]
     pub display_lines: Vec<vulcan_core::NoteSelectedLine>,
 }
@@ -447,6 +458,10 @@ pub struct NoteGetMetadata {
     pub context: usize,
     pub no_frontmatter: bool,
     pub raw: bool,
+    /// Whether dynamic content was replaced by its evaluated result.
+    pub evaluated: bool,
+    /// The `DataviewJS` policy used when content was evaluated.
+    pub dataview_js: String,
     pub match_count: usize,
     pub total_lines: usize,
     pub has_more_before: bool,
@@ -471,6 +486,9 @@ pub fn read_note(
         context,
         no_frontmatter,
         raw,
+        evaluate,
+        dataview_js,
+        guard,
     } = options;
     let target = resolve_existing_markdown_target(paths, note)?;
     let source = target.read_source()?;
@@ -495,33 +513,19 @@ pub fn read_note(
             .iter()
             .enumerate()
             .all(|(expected, actual)| actual.line_number == expected + 1);
-    let content = match mode {
-        NoteReadMode::Markdown => selection.content.clone(),
-        NoteReadMode::Html if full_document && !no_frontmatter => {
-            target.vault_relative_path.as_deref().map_or_else(
-                || {
-                    render_vault_html(
-                        paths,
-                        &selection.content,
-                        &HtmlRenderOptions {
-                            full_document: true,
-                            ..HtmlRenderOptions::default()
-                        },
-                    )
-                    .html
-                },
-                |path| render_note_html(paths, path, &selection.content).html,
-            )
-        }
-        NoteReadMode::Html => {
-            render_note_fragment_html(
-                paths,
-                target.vault_relative_path.as_deref(),
-                &selection.content,
-            )
-            .html
-        }
-    };
+    let (content, render_diagnostics) = render_note_selection(
+        paths,
+        &selection.content,
+        target.vault_relative_path.as_deref(),
+        NoteSelectionRender {
+            mode,
+            evaluate,
+            full_document: full_document && !no_frontmatter,
+            dataview_js,
+            guard,
+        },
+    );
+
     let frontmatter = parsed
         .frontmatter
         .as_ref()
@@ -542,14 +546,68 @@ pub fn read_note(
             context,
             no_frontmatter,
             raw,
+            evaluated: evaluate || mode == NoteReadMode::Html,
+            dataview_js: dataview_js.as_str().to_string(),
             match_count: selection.match_count,
             total_lines: selection.total_lines,
             has_more_before: selection.has_more_before,
             has_more_after: selection.has_more_after,
             line_spans: selection.line_spans.clone(),
         },
+        diagnostics: render_diagnostics,
         display_lines: selection.selected_lines,
     })
+}
+
+#[derive(Clone, Copy)]
+struct NoteSelectionRender<'a> {
+    mode: NoteReadMode,
+    evaluate: bool,
+    full_document: bool,
+    dataview_js: DataviewJsRenderPolicy,
+    guard: Option<&'a dyn PermissionGuard>,
+}
+
+/// Render selected note content for `note get`, evaluating dynamic content
+/// when asked (Markdown) or always (HTML).
+fn render_note_selection(
+    paths: &VaultPaths,
+    content: &str,
+    source_path: Option<&str>,
+    render: NoteSelectionRender<'_>,
+) -> (String, Vec<RenderDiagnostic>) {
+    let permission_profile = render.guard.map(PermissionGuard::profile_name);
+    match render.mode {
+        NoteReadMode::Markdown if render.evaluate => {
+            let evaluated = render_evaluated_markdown(
+                paths,
+                content,
+                &EvaluatedMarkdownOptions {
+                    source_path,
+                    dataview_js: render.dataview_js,
+                    guard: render.guard,
+                    permission_profile,
+                },
+            );
+            (evaluated.markdown, evaluated.diagnostics)
+        }
+        NoteReadMode::Markdown => (content.to_string(), Vec::new()),
+        NoteReadMode::Html => {
+            let rendered = render_vault_html(
+                paths,
+                content,
+                &HtmlRenderOptions {
+                    source_path,
+                    guard: render.guard,
+                    permission_profile,
+                    full_document: render.full_document,
+                    dataview_js_policy: render.dataview_js,
+                    ..HtmlRenderOptions::default()
+                },
+            );
+            (rendered.html, rendered.diagnostics)
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2623,6 +2681,7 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use tempfile::tempdir;
+    use vulcan_core::DataviewJsRenderPolicy;
     use vulcan_core::Verbosity;
     use vulcan_core::{
         initialize_vulcan_dir, resolve_permission_profile, scan_vault_with_progress,
@@ -2834,6 +2893,9 @@ mod tests {
                 context: 0,
                 no_frontmatter: false,
                 raw: false,
+                evaluate: false,
+                dataview_js: DataviewJsRenderPolicy::Off,
+                guard: None,
             },
         )
         .unwrap();
@@ -2858,6 +2920,9 @@ mod tests {
                 context: 0,
                 no_frontmatter: false,
                 raw: false,
+                evaluate: false,
+                dataview_js: DataviewJsRenderPolicy::Off,
+                guard: None,
             },
         )
         .unwrap();
@@ -2926,6 +2991,9 @@ mod tests {
                     context: 0,
                     no_frontmatter: false,
                     raw: false,
+                    evaluate: false,
+                    dataview_js: DataviewJsRenderPolicy::Off,
+                    guard: None,
                 },
             )
         };

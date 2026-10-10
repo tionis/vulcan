@@ -6,13 +6,13 @@ use crate::editor::{open_in_editor, with_terminal_suspended};
 use crate::note_picker::{
     handle_picker_key, NotePickerState, PickerAction, Redraw, TerminalRestore, Viewport,
 };
-use crate::output::{markdown_table_column_count, markdown_table_header_lines, markdown_table_row};
+use crate::terminal_markdown::{render_styled_lines, to_ratatui_lines, TerminalMarkdownOptions};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
@@ -26,14 +26,12 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, SystemTime};
 use vulcan_app::browse::{
-    doctor_vault, evaluate_base_file_with_guard, evaluate_dataview_js_query, evaluate_dql,
-    evaluate_note_inline_expressions, git_log, is_git_repo, list_kanban_boards,
-    list_note_identities, list_tagged_note_identities, list_tags, load_dataview_blocks,
-    load_kanban_board, move_note_with_profile, query_notes, refresh_browse_cache,
+    doctor_vault, evaluate_base_file_with_guard, git_log, is_git_repo, list_kanban_boards,
+    list_note_identities, list_tagged_note_identities, list_tags, load_kanban_board,
+    move_note_with_profile, query_notes, refresh_browse_cache,
 };
 use vulcan_app::scan::refresh_cache_incrementally;
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
-use vulcan_core::properties::load_note_index;
 #[cfg(test)]
 use vulcan_core::scan_vault;
 use vulcan_core::search::{SearchMode, SearchSort};
@@ -42,16 +40,14 @@ use vulcan_core::PermissionFilter;
 use vulcan_core::ScanMode;
 use vulcan_core::Verbosity;
 use vulcan_core::{
-    AutoScanMode, BacklinkRecord, DataviewJsOutput, DoctorDiagnosticIssue, DoctorLinkIssue,
-    DqlQueryResult, GitLogEntry, KanbanBoardRecord, NamedCount, NoteIdentity, NoteQuery,
-    OutgoingLinkRecord, ResolutionStatus, ScanSummary, SearchHit, SearchQuery, VaultPaths,
+    AutoScanMode, BacklinkRecord, DoctorDiagnosticIssue, DoctorLinkIssue, GitLogEntry,
+    KanbanBoardRecord, NamedCount, NoteIdentity, NoteQuery, OutgoingLinkRecord, ResolutionStatus,
+    ScanSummary, SearchHit, SearchQuery, VaultPaths,
 };
+use vulcan_core::{DataviewJsRenderPolicy, EvaluatedMarkdownOptions, EvaluatedMarkdownRenderer};
 
 const FULL_TEXT_LIMIT: usize = 200;
 const FULL_TEXT_CONTEXT_SIZE: usize = 18;
-const DATAVIEW_PREVIEW_LINE_LIMIT: usize = 24;
-const DATAVIEW_INLINE_PREVIEW_LIMIT: usize = 4;
-const DATAVIEW_BLOCK_PREVIEW_LIMIT: usize = 6;
 
 pub(crate) fn run_browse_tui(
     paths: &VaultPaths,
@@ -313,6 +309,18 @@ fn prepare_browse_refresh(
     }
 }
 
+fn note_preview_widget(state: &BrowseState, area: Rect) -> Paragraph<'static> {
+    Paragraph::new(state.preview_lines_for_width(area.width.saturating_sub(2)))
+        .block(
+            Block::default()
+                .title(state.preview_title())
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .wrap(Wrap { trim: false })
+        .scroll((state.preview_scroll(), 0))
+}
+
 #[allow(clippy::too_many_lines)]
 fn draw(frame: &mut Frame<'_>, state: &BrowseState) {
     let area = frame.area();
@@ -400,15 +408,7 @@ fn draw(frame: &mut Frame<'_>, state: &BrowseState) {
         && state.move_prompt.is_none()
     {
         draw_calendar_view(frame, body[0], &state.calendar);
-        let preview = Paragraph::new(state.preview_lines())
-            .block(
-                Block::default()
-                    .title(state.preview_title())
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Cyan)),
-            )
-            .wrap(Wrap { trim: false });
-        frame.render_widget(preview, body[1]);
+        frame.render_widget(note_preview_widget(state, body[1]), body[1]);
 
         let footer_lines = if footer_height >= 5 {
             vec![
@@ -475,15 +475,10 @@ fn draw(frame: &mut Frame<'_>, state: &BrowseState) {
             .direction(Direction::Vertical)
             .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
             .split(body[1]);
-        let preview = Paragraph::new(state.preview_lines())
-            .block(
-                Block::default()
-                    .title(state.preview_title())
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Cyan)),
-            )
-            .wrap(Wrap { trim: false });
-        frame.render_widget(preview, preview_layout[0]);
+        frame.render_widget(
+            note_preview_widget(state, preview_layout[0]),
+            preview_layout[0],
+        );
 
         let explain = Paragraph::new(state.full_text.explain_preview_lines())
             .block(
@@ -495,15 +490,7 @@ fn draw(frame: &mut Frame<'_>, state: &BrowseState) {
             .wrap(Wrap { trim: false });
         frame.render_widget(explain, preview_layout[1]);
     } else {
-        let preview = Paragraph::new(state.preview_lines())
-            .block(
-                Block::default()
-                    .title(state.preview_title())
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Cyan)),
-            )
-            .wrap(Wrap { trim: false });
-        frame.render_widget(preview, body[1]);
+        frame.render_widget(note_preview_widget(state, body[1]), body[1]);
     }
 
     let footer_lines = if footer_height >= 5 {
@@ -688,34 +675,19 @@ impl BrowseMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PreviewMode {
-    File,
-    Dataview,
-}
-
-impl PreviewMode {
-    fn toggle(self) -> Self {
-        match self {
-            Self::File => Self::Dataview,
-            Self::Dataview => Self::File,
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::File => "file",
-            Self::Dataview => "dataview",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-struct CachedDataviewPreview {
+/// The selected note rendered with its dynamic content evaluated.
+#[derive(Debug, Default)]
+struct RenderedPreview {
     path: Option<String>,
-    lines: Vec<String>,
+    markdown: String,
     stale: bool,
+    scroll: u16,
+    /// Lines laid out for the last pane width.
+    layout: std::cell::RefCell<Option<(u16, Vec<Line<'static>>)>>,
 }
+
+/// Lines a PageUp/PageDown press scrolls the rendered preview.
+const PREVIEW_SCROLL_STEP: i32 = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MovePrompt {
@@ -783,8 +755,11 @@ struct BrowseState {
     last_scan_label: String,
     viewport: Viewport,
     mode: BrowseMode,
-    preview_mode: PreviewMode,
-    dataview_preview: CachedDataviewPreview,
+    /// Ctrl-V flips the preview away from the mode's default: rendered
+    /// notes show their source, and full-text snippets show the rendered note.
+    preview_toggled: bool,
+    rendered_preview: RenderedPreview,
+    markdown_renderer: Option<EvaluatedMarkdownRenderer>,
     status: String,
     authority: BrowseAuthority,
 }
@@ -812,7 +787,7 @@ impl BrowseState {
             Vec::new()
         };
         let last_scan_label = last_scan_label(&paths);
-        Ok(Self {
+        let mut state = Self {
             paths: paths.clone(),
             all_notes: notes.clone(),
             picker: NotePickerState::new(paths.clone(), notes.clone(), ""),
@@ -834,11 +809,17 @@ impl BrowseState {
             last_scan_label,
             viewport: Viewport::default(),
             mode: BrowseMode::Fuzzy,
-            preview_mode: PreviewMode::File,
-            dataview_preview: CachedDataviewPreview::default(),
+            preview_toggled: false,
+            rendered_preview: RenderedPreview {
+                stale: true,
+                ..RenderedPreview::default()
+            },
+            markdown_renderer: None,
             status: "Ready.".to_string(),
             authority,
-        })
+        };
+        state.refresh_rendered_preview_if_needed();
+        Ok(state)
     }
 
     /// Auto-commit `changed` under the session's profile; without Git
@@ -896,7 +877,7 @@ impl BrowseState {
                         if let Err(error) = self.handle_mode_key(key) {
                             self.set_status(error);
                         } else {
-                            self.refresh_dataview_preview_if_needed();
+                            self.refresh_rendered_preview_if_needed();
                         }
                         return BrowseAction::Continue;
                     }
@@ -984,12 +965,24 @@ impl BrowseState {
             return BrowseAction::Continue;
         }
 
+        if matches!(key.code, KeyCode::PageUp | KeyCode::PageDown)
+            && self.uses_rendered_preview()
+            && self.mode != BrowseMode::FullText
+        {
+            self.scroll_rendered_preview(if key.code == KeyCode::PageUp {
+                -PREVIEW_SCROLL_STEP
+            } else {
+                PREVIEW_SCROLL_STEP
+            });
+            return BrowseAction::Continue;
+        }
+
         match key.code {
             KeyCode::Esc => BrowseAction::Quit,
             KeyCode::Char('/') if self.mode != BrowseMode::Fuzzy => {
                 self.clear_status();
                 self.mode = BrowseMode::Fuzzy;
-                self.refresh_dataview_preview_if_needed();
+                self.refresh_rendered_preview_if_needed();
                 BrowseAction::Continue
             }
             KeyCode::Enter => self.edit_selected_path(),
@@ -998,7 +991,7 @@ impl BrowseState {
                 if let Err(error) = self.handle_mode_key(key) {
                     self.set_status(error);
                 } else {
-                    self.refresh_dataview_preview_if_needed();
+                    self.refresh_rendered_preview_if_needed();
                 }
                 BrowseAction::Continue
             }
@@ -1014,7 +1007,7 @@ impl BrowseState {
             KeyCode::Esc => {
                 self.git_view = None;
                 self.clear_status();
-                self.refresh_dataview_preview_if_needed();
+                self.refresh_rendered_preview_if_needed();
                 BrowseAction::Continue
             }
             KeyCode::Up | KeyCode::Char('k') => {
@@ -1038,7 +1031,7 @@ impl BrowseState {
             KeyCode::Esc => {
                 self.kanban_view = None;
                 self.clear_status();
-                self.refresh_dataview_preview_if_needed();
+                self.refresh_rendered_preview_if_needed();
                 BrowseAction::Continue
             }
             KeyCode::Left | KeyCode::Char('h') => {
@@ -1071,7 +1064,7 @@ impl BrowseState {
             KeyCode::Esc => {
                 self.doctor_view = None;
                 self.clear_status();
-                self.refresh_dataview_preview_if_needed();
+                self.refresh_rendered_preview_if_needed();
                 BrowseAction::Continue
             }
             KeyCode::Up | KeyCode::Char('k') => {
@@ -1126,7 +1119,7 @@ impl BrowseState {
             KeyCode::Esc => {
                 self.backlinks_view = None;
                 self.clear_status();
-                self.refresh_dataview_preview_if_needed();
+                self.refresh_rendered_preview_if_needed();
                 BrowseAction::Continue
             }
             KeyCode::Char('o') => match view.selected_path() {
@@ -1165,7 +1158,7 @@ impl BrowseState {
             KeyCode::Esc => {
                 self.links_view = None;
                 self.clear_status();
-                self.refresh_dataview_preview_if_needed();
+                self.refresh_rendered_preview_if_needed();
                 BrowseAction::Continue
             }
             KeyCode::Char('o') => match view.selected_path() {
@@ -1287,7 +1280,7 @@ impl BrowseState {
             BrowseMode::Calendar => self.calendar.refresh(&self.paths)?,
             BrowseMode::Fuzzy => {}
         }
-        self.refresh_dataview_preview_if_needed();
+        self.refresh_rendered_preview_if_needed();
         Ok(())
     }
 
@@ -1317,8 +1310,8 @@ impl BrowseState {
             view.reload(&self.paths, self.authority.read_filter())?;
         }
         self.refresh_last_scan_label();
-        self.invalidate_dataview_preview();
-        self.refresh_dataview_preview_if_needed();
+        self.invalidate_rendered_preview();
+        self.refresh_rendered_preview_if_needed();
         Ok(())
     }
 
@@ -1375,8 +1368,8 @@ impl BrowseState {
         self.property_filter.select_path(path);
         self.calendar.refresh(&self.paths)?;
         self.refresh_last_scan_label();
-        self.invalidate_dataview_preview();
-        self.refresh_dataview_preview_if_needed();
+        self.invalidate_rendered_preview();
+        self.refresh_rendered_preview_if_needed();
         Ok(())
     }
 
@@ -1387,7 +1380,7 @@ impl BrowseState {
             BrowseMode::Tag => self.tag_filter.refresh_preview(),
             BrowseMode::Property => self.property_filter.refresh_preview(),
         }
-        self.refresh_dataview_preview_if_needed();
+        self.refresh_rendered_preview_if_needed();
     }
 
     fn uses_note_preview(&self) -> bool {
@@ -1400,10 +1393,28 @@ impl BrowseState {
             && self.move_prompt.is_none()
     }
 
-    fn uses_dataview_preview(&self) -> bool {
-        self.uses_note_preview()
-            && self.mode != BrowseMode::Calendar
-            && self.preview_mode == PreviewMode::Dataview
+    /// Whether the preview shows the rendered note. Without a selection the
+    /// mode's own empty-state preview stays visible.
+    fn uses_rendered_preview(&self) -> bool {
+        self.uses_note_preview() && self.selected_path().is_some() && self.wants_rendered_preview()
+    }
+
+    fn wants_rendered_preview(&self) -> bool {
+        match self.mode {
+            BrowseMode::Calendar => false,
+            BrowseMode::FullText => self.preview_toggled,
+            BrowseMode::Fuzzy | BrowseMode::Tag | BrowseMode::Property => !self.preview_toggled,
+        }
+    }
+
+    fn preview_label(&self) -> &'static str {
+        if self.wants_rendered_preview() {
+            "rendered"
+        } else if self.mode == BrowseMode::FullText {
+            "snippet"
+        } else {
+            "source"
+        }
     }
 
     fn toggle_preview_mode(&mut self) {
@@ -1411,35 +1422,112 @@ impl BrowseState {
             self.set_status("Calendar mode uses a fixed event preview.");
             return;
         }
-        self.preview_mode = self.preview_mode.toggle();
-        if self.preview_mode == PreviewMode::Dataview {
-            self.refresh_dataview_preview();
+        self.preview_toggled = !self.preview_toggled;
+        self.refresh_rendered_preview_if_needed();
+        self.set_status(format!("Preview mode: {}.", self.preview_label()));
+    }
+
+    /// Mark the rendered preview and the loaded note index out of date, for
+    /// example after a scan or an edit.
+    fn invalidate_rendered_preview(&mut self) {
+        self.rendered_preview.stale = true;
+        self.markdown_renderer = None;
+    }
+
+    fn refresh_rendered_preview_if_needed(&mut self) {
+        if self.uses_rendered_preview() {
+            self.refresh_rendered_preview();
         }
-        self.set_status(format!("Preview mode: {}.", self.preview_mode.label()));
     }
 
-    fn invalidate_dataview_preview(&mut self) {
-        self.dataview_preview.stale = true;
-    }
-
-    fn refresh_dataview_preview_if_needed(&mut self) {
-        if self.uses_dataview_preview() {
-            self.refresh_dataview_preview();
-        }
-    }
-
-    fn refresh_dataview_preview(&mut self) {
+    fn refresh_rendered_preview(&mut self) {
         let selected_path = self.selected_path().map(ToOwned::to_owned);
-        if !self.dataview_preview.stale && self.dataview_preview.path == selected_path {
+        if !self.rendered_preview.stale && self.rendered_preview.path == selected_path {
             return;
         }
-
-        self.dataview_preview.path.clone_from(&selected_path);
-        self.dataview_preview.lines = selected_path.map_or_else(
-            || vec!["No matching note selected.".to_string()],
-            |path| build_dataview_preview(&self.paths, &path, &self.authority),
+        if self.rendered_preview.path != selected_path {
+            self.rendered_preview.scroll = 0;
+        }
+        self.rendered_preview.markdown = selected_path.as_deref().map_or_else(
+            || "*No matching note selected.*".to_string(),
+            |path| self.evaluate_note_markdown(path),
         );
-        self.dataview_preview.stale = false;
+        self.rendered_preview.path = selected_path;
+        self.rendered_preview.layout.replace(None);
+        self.rendered_preview.stale = false;
+    }
+
+    /// The note's Markdown with Dataview, Tasks, and Bases content evaluated
+    /// under the session's read authority. `DataviewJS` runs with the
+    /// configured sandbox tier, as `dataview eval` does.
+    fn evaluate_note_markdown(&mut self, path: &str) -> String {
+        let source = match fs::read_to_string(self.paths.vault_root().join(path)) {
+            Ok(source) => source,
+            Err(error) => return format!("> [!danger] Could not read {path}\n> {error}"),
+        };
+        let guard = self
+            .authority
+            .read_filter()
+            .is_some()
+            .then(|| self.authority.guard() as &dyn vulcan_core::PermissionGuard);
+        let paths = &self.paths;
+        let renderer = self
+            .markdown_renderer
+            .get_or_insert_with(|| EvaluatedMarkdownRenderer::load(paths, guard));
+        renderer
+            .render(
+                &source,
+                &EvaluatedMarkdownOptions {
+                    source_path: Some(path),
+                    dataview_js: DataviewJsRenderPolicy::On,
+                    guard,
+                    permission_profile: self.authority.profile(),
+                },
+            )
+            .markdown
+    }
+
+    fn rendered_preview_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if let Some((cached_width, lines)) = self.rendered_preview.layout.borrow().as_ref() {
+            if *cached_width == width {
+                return lines.clone();
+            }
+        }
+        let styled = render_styled_lines(
+            &self.rendered_preview.markdown,
+            TerminalMarkdownOptions {
+                width: Some(usize::from(width.max(20))),
+                styled: true,
+                preserve_line_breaks: true,
+            },
+        );
+        let lines = to_ratatui_lines(&styled);
+        self.rendered_preview
+            .layout
+            .replace(Some((width, lines.clone())));
+        lines
+    }
+
+    fn scroll_rendered_preview(&mut self, delta: i32) {
+        let line_count = self
+            .rendered_preview
+            .layout
+            .borrow()
+            .as_ref()
+            .map_or(0, |(_, lines)| lines.len());
+        let max_scroll = u16::try_from(line_count.saturating_sub(1)).unwrap_or(u16::MAX);
+        let next = i32::from(self.rendered_preview.scroll) + delta;
+        self.rendered_preview.scroll = u16::try_from(next.max(0))
+            .unwrap_or(u16::MAX)
+            .min(max_scroll);
+    }
+
+    fn preview_scroll(&self) -> u16 {
+        if self.uses_rendered_preview() {
+            self.rendered_preview.scroll
+        } else {
+            0
+        }
     }
 
     fn selected_path(&self) -> Option<&str> {
@@ -1547,10 +1635,10 @@ impl BrowseState {
             "Keys: Enter move, Esc cancel, Backspace edit destination".to_string()
         } else {
             match self.mode {
-                BrowseMode::Fuzzy => "Keys: type to filter, Up/Down move, Enter/Ctrl-E edit, Ctrl-V preview, o open Kanban board when query is empty, Ctrl-N new, Ctrl-R move, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, Ctrl-F full-text, Ctrl-T tags, Ctrl-P props, Ctrl-Y calendar, Esc quit".to_string(),
-                BrowseMode::FullText => "Keys: type to search, Backspace edit query, Up/Down move, Enter edit, Ctrl-V preview, Ctrl-E explain, Ctrl-S sort, Alt-C case, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, Ctrl-Y calendar, / fuzzy, Esc quit".to_string(),
-                BrowseMode::Tag => "Keys: type to filter tags, Backspace edit query, Up/Down move, Enter/Ctrl-E edit, Ctrl-V preview, o open Kanban board when query is empty, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, Ctrl-Y calendar, / fuzzy, Esc quit".to_string(),
-                BrowseMode::Property => "Keys: type a predicate, Backspace edit query, Up/Down move, Enter/Ctrl-E edit, Ctrl-V preview, o open Kanban board when query is empty, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, Ctrl-Y calendar, / fuzzy, Esc quit".to_string(),
+                BrowseMode::Fuzzy => "Keys: type to filter, Up/Down move, Enter/Ctrl-E edit, Ctrl-V source/rendered, PgUp/PgDn scroll preview, o open Kanban board when query is empty, Ctrl-N new, Ctrl-R move, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, Ctrl-F full-text, Ctrl-T tags, Ctrl-P props, Ctrl-Y calendar, Esc quit".to_string(),
+                BrowseMode::FullText => "Keys: type to search, Backspace edit query, Up/Down move, Enter edit, Ctrl-V rendered note, Ctrl-E explain, Ctrl-S sort, Alt-C case, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, Ctrl-Y calendar, / fuzzy, Esc quit".to_string(),
+                BrowseMode::Tag => "Keys: type to filter tags, Backspace edit query, Up/Down move, Enter/Ctrl-E edit, Ctrl-V source/rendered, PgUp/PgDn scroll preview, o open Kanban board when query is empty, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, Ctrl-Y calendar, / fuzzy, Esc quit".to_string(),
+                BrowseMode::Property => "Keys: type a predicate, Backspace edit query, Up/Down move, Enter/Ctrl-E edit, Ctrl-V source/rendered, PgUp/PgDn scroll preview, o open Kanban board when query is empty, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, Ctrl-Y calendar, / fuzzy, Esc quit".to_string(),
                 BrowseMode::Calendar => "Keys: arrows move day, PageUp/PageDown or [/] change month, Home/End jump month, t today, Enter edit or create daily note, type YYYY-MM or YYYY-MM-DD to jump, / fuzzy, Esc quit".to_string(),
             }
         }
@@ -1696,13 +1784,7 @@ impl BrowseState {
         if let Some(view) = self.links_view.as_ref() {
             return view.preview_title();
         }
-        if self.uses_dataview_preview() {
-            return self.selected_path().map_or_else(
-                || "Dataview Preview".to_string(),
-                |path| format!("Dataview: {path}"),
-            );
-        }
-        match self.mode {
+        let title = match self.mode {
             BrowseMode::Fuzzy => self
                 .picker
                 .selected_path()
@@ -1714,10 +1796,25 @@ impl BrowseState {
             BrowseMode::Tag => self.tag_filter.preview_title(),
             BrowseMode::Property => self.property_filter.preview_title(),
             BrowseMode::Calendar => self.calendar.preview_title(),
+        };
+        if !self.uses_rendered_preview() {
+            return title;
+        }
+        // Keep mode context such as an active tag in the title.
+        match (title.strip_prefix("Preview: "), self.selected_path()) {
+            (Some(rest), _) => format!("Rendered: {rest}"),
+            (None, Some(path)) => format!("Rendered: {path}"),
+            (None, None) => title,
         }
     }
 
+    #[cfg(test)]
     fn preview_lines(&self) -> Vec<Line<'static>> {
+        self.preview_lines_for_width(80)
+    }
+
+    /// Preview lines for a pane `width` columns wide (inside its borders).
+    fn preview_lines_for_width(&self, width: u16) -> Vec<Line<'static>> {
         if let Some(view) = self.kanban_view.as_ref() {
             return view.preview_lines();
         }
@@ -1733,14 +1830,8 @@ impl BrowseState {
         if let Some(view) = self.links_view.as_ref() {
             return view.preview_lines();
         }
-        if self.uses_dataview_preview() {
-            return self
-                .dataview_preview
-                .lines
-                .iter()
-                .cloned()
-                .map(Line::from)
-                .collect();
+        if self.uses_rendered_preview() {
+            return self.rendered_preview_lines(width);
         }
         match self.mode {
             BrowseMode::Fuzzy => self.picker.preview_lines(),
@@ -1782,7 +1873,7 @@ impl BrowseState {
 
     fn status_bar_line(&self) -> String {
         let preview_meta = (self.uses_note_preview() && self.mode != BrowseMode::Calendar)
-            .then(|| format!(" | Preview: {}", self.preview_mode.label()));
+            .then(|| format!(" | Preview: {}", self.preview_label()));
         let full_text_meta = (self.mode == BrowseMode::FullText
             && self.kanban_view.is_none()
             && self.git_view.is_none()
@@ -3368,362 +3459,6 @@ impl PropertyFilterState {
 
 /// The selected note's Dataview results. Restricted sessions evaluate inline
 /// expressions and blocks inside the profile's readable universe.
-fn build_dataview_preview(
-    paths: &VaultPaths,
-    path: &str,
-    authority: &BrowseAuthority,
-) -> Vec<String> {
-    let inline_results = if authority.read_filter().is_some() {
-        match vulcan_app::browse::build_dataview_inline_report(paths, path, Some(authority.guard()))
-        {
-            Ok(report) => report.results,
-            Err(error) => {
-                return vec![format!(
-                    "Failed to evaluate Dataview inline fields: {error}"
-                )]
-            }
-        }
-    } else {
-        let note_index = match load_note_index(paths) {
-            Ok(note_index) => note_index,
-            Err(error) => return vec![format!("Failed to load Dataview note index: {error}")],
-        };
-        let Some(note) = note_index
-            .values()
-            .find(|note| note.document_path.as_str() == path)
-        else {
-            return vec![format!("Selected note is not indexed: {path}")];
-        };
-        evaluate_note_inline_expressions(note, &note_index)
-    };
-    let blocks = match load_dataview_blocks(paths, path, None) {
-        Ok(blocks) => blocks,
-        Err(error)
-            if error
-                .to_string()
-                .starts_with("no Dataview blocks found in ") =>
-        {
-            Vec::new()
-        }
-        Err(error) => return vec![format!("Failed to load Dataview blocks: {error}")],
-    };
-
-    if inline_results.is_empty() && blocks.is_empty() {
-        return vec!["No Dataview inline expressions or blocks.".to_string()];
-    }
-
-    let mut lines = Vec::new();
-    append_dataview_inline_preview(&mut lines, &inline_results);
-    append_dataview_block_preview(paths, &mut lines, &blocks, authority);
-    truncate_preview_strings(
-        lines,
-        DATAVIEW_PREVIEW_LINE_LIMIT,
-        "Dataview preview truncated",
-    )
-}
-
-fn append_dataview_inline_preview(
-    lines: &mut Vec<String>,
-    inline_results: &[vulcan_core::EvaluatedInlineExpression],
-) {
-    if inline_results.is_empty() {
-        return;
-    }
-
-    lines.push(format!("Inline expressions ({})", inline_results.len()));
-    let visible = inline_results
-        .iter()
-        .take(DATAVIEW_INLINE_PREVIEW_LIMIT)
-        .map(|result| {
-            result.error.as_ref().map_or_else(
-                || {
-                    format!(
-                        "- {} => {}",
-                        result.expression,
-                        render_preview_value(&result.value)
-                    )
-                },
-                |error| format!("- {} => error: {error}", result.expression),
-            )
-        });
-    lines.extend(visible);
-
-    let hidden_count = inline_results
-        .len()
-        .saturating_sub(DATAVIEW_INLINE_PREVIEW_LIMIT);
-    if hidden_count > 0 {
-        lines.push(format!("... {hidden_count} more inline expression(s)"));
-    }
-}
-
-fn append_dataview_block_preview(
-    paths: &VaultPaths,
-    lines: &mut Vec<String>,
-    blocks: &[vulcan_core::DataviewBlockRecord],
-    authority: &BrowseAuthority,
-) {
-    if blocks.is_empty() {
-        return;
-    }
-
-    if !lines.is_empty() {
-        lines.push(String::new());
-    }
-    lines.push(format!("Dataview blocks ({})", blocks.len()));
-    for block in blocks {
-        lines.push(format!(
-            "Block {} ({}, line {})",
-            block.block_index, block.language, block.line_number
-        ));
-        let block_lines = dataview_block_preview_lines(paths, block, authority);
-        let visible_lines = block_lines
-            .iter()
-            .take(DATAVIEW_BLOCK_PREVIEW_LIMIT)
-            .map(|line| format!("  {line}"));
-        lines.extend(visible_lines);
-
-        let hidden_count = block_lines
-            .len()
-            .saturating_sub(DATAVIEW_BLOCK_PREVIEW_LIMIT);
-        if hidden_count > 0 {
-            lines.push(format!("  ... {hidden_count} more line(s)"));
-        }
-    }
-}
-
-fn dataview_block_preview_lines(
-    paths: &VaultPaths,
-    block: &vulcan_core::DataviewBlockRecord,
-    authority: &BrowseAuthority,
-) -> Vec<String> {
-    let restricted = authority.read_filter().is_some();
-    match block.language.as_str() {
-        "dataview" if restricted => {
-            match vulcan_app::browse::build_dataview_query_report_with_guard(
-                paths,
-                &block.source,
-                Some(&block.file),
-                authority.guard(),
-            ) {
-                Ok(result) => dql_preview_lines(&result),
-                Err(error) => vec![format!("error: {error}")],
-            }
-        }
-        "dataview" => match evaluate_dql(paths, &block.source, Some(&block.file)) {
-            Ok(result) => dql_preview_lines(&result),
-            Err(error) => vec![format!("error: {error}")],
-        },
-        "dataviewjs" if restricted => match vulcan_core::evaluate_dataview_js_with_options(
-            paths,
-            &block.source,
-            Some(&block.file),
-            vulcan_core::DataviewJsEvalOptions {
-                permission_profile: authority.profile().map(ToOwned::to_owned),
-                ..vulcan_core::DataviewJsEvalOptions::default()
-            },
-        ) {
-            Ok(result) => dataview_js_preview_lines(&result),
-            Err(error) => vec![format!("error: {error}")],
-        },
-        "dataviewjs" => match evaluate_dataview_js_query(paths, &block.source, Some(&block.file)) {
-            Ok(result) => dataview_js_preview_lines(&result),
-            Err(error) => vec![format!("error: {error}")],
-        },
-        language => vec![format!(
-            "error: unsupported Dataview block language `{language}`"
-        )],
-    }
-}
-
-fn dql_preview_lines(result: &DqlQueryResult) -> Vec<String> {
-    let mut lines = match result.query_type {
-        vulcan_core::dql::DqlQueryType::Table => dql_table_preview_lines(result),
-        vulcan_core::dql::DqlQueryType::List => dql_list_preview_lines(result),
-        vulcan_core::dql::DqlQueryType::Task => dql_task_preview_lines(result),
-        vulcan_core::dql::DqlQueryType::Calendar => dql_calendar_preview_lines(result),
-    };
-
-    if result.rows.is_empty() {
-        lines.push("No results.".to_string());
-    } else {
-        lines.push(format!("{} result(s)", result.result_count));
-    }
-
-    for diagnostic in &result.diagnostics {
-        lines.push(format!("Diagnostic: {}", diagnostic.message));
-    }
-    lines
-}
-
-fn dql_table_preview_lines(result: &DqlQueryResult) -> Vec<String> {
-    let mut lines = Vec::new();
-    let preview_rows = result.rows.iter().take(3).collect::<Vec<_>>();
-    let column_count = result.columns.len();
-    if column_count > 0 {
-        let [header, separator] = markdown_table_header_lines(&result.columns, column_count);
-        lines.push(header);
-        lines.push(separator);
-    }
-
-    for row in preview_rows {
-        lines.push(markdown_table_row(
-            result
-                .columns
-                .iter()
-                .map(|column| render_preview_value(&row[column])),
-            column_count,
-        ));
-    }
-    lines
-}
-
-fn dql_list_preview_lines(result: &DqlQueryResult) -> Vec<String> {
-    result
-        .rows
-        .iter()
-        .take(4)
-        .map(|row| match result.columns.as_slice() {
-            [column] => format!("- {}", render_preview_value(&row[column])),
-            [left, right, ..] => format!(
-                "- {}: {}",
-                render_preview_value(&row[left]),
-                render_preview_value(&row[right])
-            ),
-            [] => format!("- {}", render_preview_value(row)),
-        })
-        .collect()
-}
-
-fn dql_task_preview_lines(result: &DqlQueryResult) -> Vec<String> {
-    result
-        .rows
-        .iter()
-        .take(4)
-        .map(|row| {
-            let file_column = result.columns.first().map_or("File", String::as_str);
-            let file = row[file_column].as_str().unwrap_or("<unknown>");
-            let status = row["status"].as_str().unwrap_or(" ");
-            let text = render_preview_value(&row["text"]);
-            format!("{file}: - [{status}] {text}")
-        })
-        .collect()
-}
-
-fn dql_calendar_preview_lines(result: &DqlQueryResult) -> Vec<String> {
-    result
-        .rows
-        .iter()
-        .take(4)
-        .map(|row| {
-            let file_column = result.columns.get(1).map_or("File", String::as_str);
-            let date = row["date"].as_str().unwrap_or_default();
-            let file = render_preview_value(&row[file_column]);
-            format!("{date}: {file}")
-        })
-        .collect()
-}
-
-fn dataview_js_preview_lines(result: &vulcan_core::DataviewJsResult) -> Vec<String> {
-    let mut lines = Vec::new();
-
-    if result.outputs.is_empty() {
-        if let Some(value) = &result.value {
-            lines.push(render_preview_value(value));
-        } else {
-            lines.push("No DataviewJS output.".to_string());
-        }
-        return lines;
-    }
-
-    for output in &result.outputs {
-        match output {
-            DataviewJsOutput::Query { result } => lines.extend(dql_preview_lines(result)),
-            DataviewJsOutput::Table { headers, rows } => {
-                let preview_rows = rows.iter().take(3).collect::<Vec<_>>();
-                let column_count = markdown_table_column_count(
-                    headers.len(),
-                    preview_rows.iter().map(|row| row.len()),
-                );
-                if column_count > 0 {
-                    let [header, separator] = markdown_table_header_lines(headers, column_count);
-                    lines.push(header);
-                    lines.push(separator);
-                }
-                lines.extend(preview_rows.into_iter().map(|row| {
-                    markdown_table_row(row.iter().map(render_preview_value), column_count)
-                }));
-            }
-            DataviewJsOutput::List { items } => lines.extend(
-                items
-                    .iter()
-                    .take(4)
-                    .map(|item| format!("- {}", render_preview_value(item))),
-            ),
-            DataviewJsOutput::TaskList {
-                tasks,
-                group_by_file: _,
-            } => lines.extend(tasks.iter().take(4).map(dataview_js_task_preview_line)),
-            DataviewJsOutput::Paragraph { text } | DataviewJsOutput::Span { text } => {
-                lines.push(text.clone());
-            }
-            DataviewJsOutput::Header { level, text } => {
-                lines.push(format!("{} {text}", "#".repeat((*level).max(1))));
-            }
-            DataviewJsOutput::Element {
-                element,
-                text,
-                attrs: _,
-            } => {
-                lines.push(format!("<{element}> {text}"));
-            }
-        }
-    }
-
-    lines
-}
-
-fn dataview_js_task_preview_line(task: &Value) -> String {
-    let file = task
-        .get("path")
-        .and_then(Value::as_str)
-        .or_else(|| {
-            task.get("file")
-                .and_then(|file| file.get("path"))
-                .and_then(Value::as_str)
-        })
-        .unwrap_or("<unknown>");
-    let status = task.get("status").and_then(Value::as_str).unwrap_or(" ");
-    let text = task
-        .get("text")
-        .map(render_preview_value)
-        .unwrap_or_default();
-    format!("{file}: - [{status}] {text}")
-}
-
-fn render_preview_value(value: &Value) -> String {
-    match value {
-        Value::String(text) => text.clone(),
-        _ => serde_json::to_string(value).expect("Dataview preview values should serialize"),
-    }
-}
-
-fn truncate_preview_strings(
-    mut lines: Vec<String>,
-    limit: usize,
-    truncated_label: &str,
-) -> Vec<String> {
-    if lines.len() <= limit {
-        return lines;
-    }
-
-    let hidden_count = lines.len() - limit;
-    lines.truncate(limit.saturating_sub(1));
-    lines.push(format!(
-        "... {truncated_label}; {hidden_count} more line(s)"
-    ));
-    lines
-}
-
 fn best_matching_tag<'a>(tags: &'a [NamedCount], query: &str) -> Option<&'a NamedCount> {
     if query.trim().is_empty() {
         return None;
@@ -4180,12 +3915,15 @@ mod tests {
         let notes = load_notes(&paths, &authority).unwrap();
         assert!(notes.iter().all(|note| note.path.starts_with("Public/")));
         assert_eq!(notes.len(), 3);
-        let preview = build_dataview_preview(&paths, "Public/Home.md", &authority);
-        assert!(!preview.join("\n").contains("Private"), "{preview:?}");
         assert!(authority.check_git().is_err());
         assert!(authority.check_create("Private/New.md").is_err());
         let mut state =
             BrowseState::new_with_authority(paths, notes, authority).expect("state should build");
+        state.picker.select_path("Public/Home.md");
+        state.refresh_rendered_preview_if_needed();
+        let preview = preview_text(&state.preview_lines());
+        assert!(preview.contains("Public/Target"), "{preview}");
+        assert!(!preview.contains("Private"), "{preview}");
 
         state.handle_key(ctrl('f'));
         for character in "dashboard".chars() {
@@ -5182,13 +4920,13 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_v_toggles_dataview_preview_for_selected_note() {
+    fn notes_preview_rendered_and_ctrl_v_shows_their_source() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let paths = VaultPaths::new(temp_dir.path());
         write_note(
             temp_dir.path(),
             "Dashboard.md",
-            "---\nstatus: draft\n---\n\n`= this.status`\n\n```dataview\nLIST FROM #project\n```\n",
+            "---\nstatus: draft\n---\n\nStatus: `= this.status`\n\n```dataview\nLIST FROM #project\n```\n",
         );
         write_note(
             temp_dir.path(),
@@ -5202,29 +4940,49 @@ mod tests {
         )
         .expect("state should build");
         state.picker.select_path("Dashboard.md");
+        state.refresh_rendered_preview_if_needed();
 
-        assert!(state.preview_title().contains("Dashboard.md"));
+        assert_eq!(state.preview_title(), "Rendered: Dashboard.md");
+        assert!(state.status_bar_line().contains("Preview: rendered"));
+        let preview = preview_text(&state.preview_lines());
+        assert!(preview.contains("Status: draft"), "{preview}");
+        assert!(preview.contains("Projects/Alpha"), "{preview}");
+        assert!(!preview.contains("```"), "{preview}");
 
         let action = state.handle_key(ctrl('v'));
 
         assert_eq!(action, BrowseAction::Continue);
-        assert_eq!(state.preview_title(), "Dataview: Dashboard.md");
-        assert_eq!(state.status_line(), "Preview mode: dataview.");
-        assert!(state.status_bar_line().contains("Preview: dataview"));
-
-        let preview = preview_text(&state.preview_lines());
-        assert!(preview.contains("Inline expressions (1)"));
-        assert!(preview.contains("this.status => draft"));
-        assert!(preview.contains("Dataview blocks (1)"));
-        assert!(preview.contains("Block 0 (dataview"));
+        assert_eq!(state.status_line(), "Preview mode: source.");
+        assert_eq!(state.preview_title(), "Preview: Dashboard.md");
+        assert!(preview_text(&state.preview_lines()).contains("`= this.status`"));
 
         state.handle_key(ctrl('v'));
-        assert_eq!(state.status_line(), "Preview mode: file.");
-        assert_eq!(state.preview_title(), "Preview: Dashboard.md");
+        assert_eq!(state.status_line(), "Preview mode: rendered.");
+        assert_eq!(state.preview_title(), "Rendered: Dashboard.md");
+    }
+
+    #[cfg(feature = "js_runtime")]
+    #[test]
+    fn rendered_preview_runs_dataviewjs() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(
+            temp_dir.path(),
+            "Dashboard.md",
+            "```dataviewjs\ndv.paragraph('from the js block')\n```\n",
+        );
+        scan_fixture(&paths);
+        let mut state =
+            BrowseState::new(paths, vec![note("Dashboard.md", &[])]).expect("state should build");
+        state.picker.select_path("Dashboard.md");
+        state.refresh_rendered_preview_if_needed();
+
+        let preview = preview_text(&state.preview_lines());
+        assert!(preview.contains("from the js block"), "{preview}");
     }
 
     #[test]
-    fn dataview_preview_refreshes_when_selected_note_changes() {
+    fn rendered_preview_refreshes_when_selected_note_changes() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let paths = VaultPaths::new(temp_dir.path());
         write_note(
@@ -5237,28 +4995,48 @@ mod tests {
         let mut state = BrowseState::new(paths, vec![note("Alpha.md", &[]), note("Beta.md", &[])])
             .expect("state should build");
         state.picker.select_path("Alpha.md");
-        state.handle_key(ctrl('v'));
+        state.refresh_rendered_preview_if_needed();
 
-        assert!(preview_text(&state.preview_lines()).contains("this.status => draft"));
+        assert!(preview_text(&state.preview_lines()).contains("draft"));
 
         state.picker.select_path("Beta.md");
-        state.refresh_dataview_preview_if_needed();
+        state.refresh_rendered_preview_if_needed();
 
-        assert_eq!(state.preview_title(), "Dataview: Beta.md");
-        assert_eq!(
-            preview_text(&state.preview_lines()),
-            "No Dataview inline expressions or blocks."
-        );
+        assert_eq!(state.preview_title(), "Rendered: Beta.md");
+        assert_eq!(preview_text(&state.preview_lines()), "Beta");
     }
 
     #[test]
-    fn ctrl_v_switches_full_text_preview_from_snippet_to_dataview_details() {
+    fn page_keys_scroll_the_rendered_preview() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        let long_note = (1..=40)
+            .map(|line| format!("Line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        write_note(temp_dir.path(), "Long.md", &long_note);
+        scan_fixture(&paths);
+        let mut state =
+            BrowseState::new(paths, vec![note("Long.md", &[])]).expect("state should build");
+        state.picker.select_path("Long.md");
+        state.refresh_rendered_preview_if_needed();
+        let _ = state.preview_lines();
+
+        state.handle_key(key(KeyCode::PageDown));
+        assert_eq!(state.preview_scroll(), 10);
+        state.handle_key(key(KeyCode::PageUp));
+        state.handle_key(key(KeyCode::PageUp));
+        assert_eq!(state.preview_scroll(), 0);
+    }
+
+    #[test]
+    fn ctrl_v_switches_full_text_preview_from_snippet_to_rendered_note() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let paths = VaultPaths::new(temp_dir.path());
         write_note(
             temp_dir.path(),
             "Dashboard.md",
-            "---\nstatus: draft\n---\n\nrelease dashboard\n\n`= this.status`\n",
+            "---\nstatus: draft\n---\n\nrelease dashboard\n\nStatus: `= this.status`\n",
         );
         scan_fixture(&paths);
         let mut state =
@@ -5274,8 +5052,8 @@ mod tests {
 
         state.handle_key(ctrl('v'));
 
-        assert_eq!(state.preview_title(), "Dataview: Dashboard.md");
-        assert!(preview_text(&state.preview_lines()).contains("this.status => draft"));
+        assert_eq!(state.preview_title(), "Rendered: Dashboard.md");
+        assert!(preview_text(&state.preview_lines()).contains("Status: draft"));
     }
 
     #[test]

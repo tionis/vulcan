@@ -8,10 +8,10 @@ use crate::commit::AutoCommitPolicy;
 use crate::output::{print_json, ListOutputControls};
 use crate::resolve::resolve_note_argument;
 use crate::{
-    print_diagnostic_section, print_markdown_output, run_incremental_scan,
-    selected_permission_guard, selected_read_permission_filter, warn_auto_commit_if_needed,
-    AnsiPalette, Cli, CliError, NoteAppendMode, NoteAppendPeriodicArg, NoteCheckboxState,
-    NoteCommand, NoteGetMode, OutputFormat,
+    print_diagnostic_section, run_incremental_scan, selected_permission_guard,
+    selected_read_permission_filter, warn_auto_commit_if_needed, AnsiPalette, Cli, CliError,
+    NoteAppendMode, NoteAppendPeriodicArg, NoteCheckboxState, NoteCommand, NoteGetMode,
+    OutputFormat,
 };
 use regex::Regex;
 use serde::Serialize;
@@ -183,11 +183,17 @@ pub(crate) fn handle_note_command(
             context,
             no_frontmatter,
             raw,
+            evaluate,
+            dataview_js,
         } => {
             check_read_markdown_source_access(cli, paths, note)?;
+            let guard = crate::selected_permission_guard(cli, paths)?;
             let report = run_note_get_command(
                 paths,
                 NoteGetOptions {
+                    evaluate: *evaluate,
+                    dataview_js: (*dataview_js).into(),
+                    guard: Some(&guard),
                     note,
                     mode: *mode,
                     section_id: section_id.as_deref(),
@@ -588,7 +594,7 @@ pub(crate) struct NoteDoctorReport {
     pub(crate) diagnostics: Vec<DoctorDiagnosticIssue>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub(crate) struct NoteGetOptions<'a> {
     pub(crate) note: &'a str,
     pub(crate) mode: NoteGetMode,
@@ -600,6 +606,9 @@ pub(crate) struct NoteGetOptions<'a> {
     pub(crate) context: usize,
     pub(crate) no_frontmatter: bool,
     pub(crate) raw: bool,
+    pub(crate) evaluate: bool,
+    pub(crate) dataview_js: vulcan_core::DataviewJsRenderPolicy,
+    pub(crate) guard: Option<&'a dyn vulcan_core::PermissionGuard>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -685,6 +694,9 @@ pub(crate) fn run_note_get_command(
             context: options.context,
             no_frontmatter: options.no_frontmatter,
             raw: options.raw,
+            evaluate: options.evaluate,
+            dataview_js: options.dataview_js,
+            guard: options.guard,
         },
     )
     .map_err(CliError::operation)
@@ -1467,14 +1479,18 @@ pub(crate) fn print_note_get_report(
 ) -> Result<(), CliError> {
     match output {
         OutputFormat::Human => {
+            // Evaluated content no longer maps onto source line numbers.
+            let evaluated_markdown =
+                report.metadata.mode == "markdown" && report.metadata.evaluated;
             if report.metadata.mode == "html"
                 || report.metadata.raw
+                || evaluated_markdown
                 || (report.metadata.lines.is_none() && report.metadata.match_pattern.is_none())
             {
                 if report.metadata.mode == "html" || report.metadata.raw {
                     print!("{}", report.content);
                 } else {
-                    return print_markdown_output(
+                    return crate::print_note_markdown_output(
                         output,
                         &report.content,
                         stdout_is_tty,
@@ -1501,7 +1517,12 @@ pub(crate) fn print_note_get_report(
             {
                 print!("{}", report.content);
             } else {
-                print_markdown_output(output, &report.content, stdout_is_tty, use_color)?;
+                crate::print_note_markdown_output(
+                    output,
+                    &report.content,
+                    stdout_is_tty,
+                    use_color,
+                )?;
                 return Ok(());
             }
             Ok(())

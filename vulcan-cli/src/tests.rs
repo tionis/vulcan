@@ -1238,6 +1238,8 @@ fn parses_note_get_command() {
                 context: 1,
                 no_frontmatter: false,
                 raw: true,
+                evaluate: false,
+                dataview_js: DataviewJsArg::Off,
             },
         }
     );
@@ -1245,8 +1247,17 @@ fn parses_note_get_command() {
 
 #[test]
 fn parses_note_get_html_mode_command() {
-    let cli = Cli::try_parse_from(["vulcan", "note", "get", "Dashboard", "--mode", "html"])
-        .expect("cli should parse");
+    let cli = Cli::try_parse_from([
+        "vulcan",
+        "note",
+        "get",
+        "Dashboard",
+        "--mode",
+        "html",
+        "--dataviewjs",
+        "static",
+    ])
+    .expect("cli should parse");
 
     assert_eq!(
         cli.command,
@@ -1262,6 +1273,8 @@ fn parses_note_get_html_mode_command() {
                 context: 0,
                 no_frontmatter: false,
                 raw: false,
+                evaluate: false,
+                dataview_js: DataviewJsArg::Static,
             },
         }
     );

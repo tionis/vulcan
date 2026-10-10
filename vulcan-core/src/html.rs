@@ -11,7 +11,8 @@ use crate::parser::{
     fragment_parser_options, parser_options, LinkKind, ParseDiagnosticKind, ParsedDocument,
 };
 use crate::paths::VaultPaths;
-use crate::properties::{load_note_index, NoteRecord};
+use crate::permissions::PermissionGuard;
+use crate::properties::{load_note_index, load_note_index_with_guard, NoteRecord};
 use crate::resolver::{resolve_link, ResolverDocument, ResolverLink};
 use crate::tasks::TasksQueryResult;
 use ammonia::Builder as HtmlSanitizer;
@@ -45,9 +46,14 @@ pub struct HtmlLinkTargets {
     pub tag_hrefs: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub struct HtmlRenderOptions<'a> {
     pub source_path: Option<&'a str>,
+    /// Read authority; queries and embeds see only notes this guard can
+    /// read. Load the renderer with the same guard.
+    pub guard: Option<&'a dyn PermissionGuard>,
+    /// Permission profile name handed to `DataviewJS`.
+    pub permission_profile: Option<&'a str>,
     pub full_document: bool,
     pub link_targets: Option<&'a HtmlLinkTargets>,
     pub dataview_js_policy: HtmlDataviewJsPolicy,
@@ -59,6 +65,8 @@ impl Default for HtmlRenderOptions<'_> {
     fn default() -> Self {
         Self {
             source_path: None,
+            guard: None,
+            permission_profile: None,
             full_document: true,
             link_targets: None,
             dataview_js_policy: HtmlDataviewJsPolicy::Off,
@@ -92,6 +100,7 @@ pub struct VaultHtmlRenderer {
     config: VaultConfig,
     note_index: Option<HashMap<String, NoteRecord>>,
     resolver_documents: Option<Vec<ResolverDocument>>,
+    guarded: bool,
 }
 
 #[derive(Debug, Default)]
@@ -105,6 +114,8 @@ struct HtmlRenderEnvironment<'a> {
     resolver_documents: Option<&'a [ResolverDocument]>,
     link_targets: &'a HtmlLinkTargets,
     dataview_js_policy: HtmlDataviewJsPolicy,
+    guard: Option<&'a dyn PermissionGuard>,
+    permission_profile: Option<&'a str>,
     raw_html_policy: HtmlRawHtmlPolicy,
     max_embed_depth: usize,
 }
@@ -127,19 +138,37 @@ struct RenderedMarkdownHtml {
 impl VaultHtmlRenderer {
     #[must_use]
     pub fn load(paths: &VaultPaths) -> Self {
+        Self::load_with_guard(paths, None)
+    }
+
+    /// Load the vault context visible to `guard`, or the whole vault.
+    #[must_use]
+    pub fn load_with_guard(paths: &VaultPaths, guard: Option<&dyn PermissionGuard>) -> Self {
         let config = load_vault_config(paths).config;
-        let note_index = load_note_index(paths).ok();
+        let note_index = match guard {
+            Some(guard) => load_note_index_with_guard(paths, guard).ok(),
+            None => load_note_index(paths).ok(),
+        };
         let resolver_documents = note_index.as_ref().map(build_resolver_documents);
         Self {
             paths: paths.clone(),
             config,
             note_index,
             resolver_documents,
+            guarded: guard.is_some(),
         }
     }
 
+    /// # Panics
+    ///
+    /// Panics when `options.guard` is set but the renderer was loaded without
+    /// one, since the loaded note universe would not match the guard.
     #[must_use]
     pub fn render(&self, source: &str, options: &HtmlRenderOptions<'_>) -> HtmlRenderResult {
+        assert!(
+            options.guard.is_none() || self.guarded,
+            "a guarded render needs a renderer loaded with the same guard"
+        );
         let empty_targets = HtmlLinkTargets::default();
         let env = HtmlRenderEnvironment {
             config: &self.config,
@@ -147,6 +176,8 @@ impl VaultHtmlRenderer {
             resolver_documents: self.resolver_documents.as_deref(),
             link_targets: options.link_targets.unwrap_or(&empty_targets),
             dataview_js_policy: options.dataview_js_policy,
+            guard: options.guard,
+            permission_profile: options.permission_profile,
             raw_html_policy: options.raw_html_policy,
             max_embed_depth: options.max_embed_depth.max(1),
         };
@@ -168,7 +199,7 @@ pub fn render_vault_html(
     source: &str,
     options: &HtmlRenderOptions<'_>,
 ) -> HtmlRenderResult {
-    VaultHtmlRenderer::load(paths).render(source, options)
+    VaultHtmlRenderer::load_with_guard(paths, options.guard).render(source, options)
 }
 
 #[must_use]
@@ -298,8 +329,8 @@ fn render_markdown_with_replacements(
         paths,
         config: env.config,
         note_index: env.note_index,
-        guard: None,
-        permission_profile: None,
+        guard: env.guard,
+        permission_profile: env.permission_profile,
         dataview_js: env.dataview_js_policy,
     };
     for region in evaluate_dynamic_regions(&ctx, source_path, parsed, diagnostics) {
@@ -373,6 +404,7 @@ fn render_dynamic_outcome_html(
             render_json_value_html(paths, value, source_path, env, state, diagnostics)
         }
         DynamicOutcome::Unevaluated(expression) => escape_html_text(expression),
+        DynamicOutcome::InlineError(error) => render_message_html("Dataview inline error:", error),
         DynamicOutcome::Dql(result) => {
             render_dql_query_html(paths, result, source_path, env, state, diagnostics)
         }

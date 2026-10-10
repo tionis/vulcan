@@ -811,7 +811,8 @@ Modes:
 Primary keys:
 
 - `Enter`: edit the selected note
-- `Ctrl-V`: toggle the preview pane between the raw file/snippet view and a Dataview inspector for the selected note
+- `Ctrl-V`: toggle the preview pane between the rendered note (Dataview, Tasks, and `.base` embeds evaluated, `dataviewjs` run in the configured sandbox) and its source; in full-text mode it toggles between the matching snippet and the rendered note
+- `PageUp` / `PageDown`: scroll the rendered note preview
 - `Ctrl-N`: create a new note
 - `Ctrl-R`: move or rename the selected note
 - `Ctrl-B`: backlinks view
@@ -919,6 +920,8 @@ Behavior:
 - `note get` reads one note from disk and can compose `--section`, `--heading`, `--block-ref`, `--lines`, `--match`, `--context`, and `--no-frontmatter`.
 - `note get --raw` prints only the selected content; without `--raw`, line-oriented selectors show line numbers in human output.
 - `note get --output json` returns the selected `content`, parsed `frontmatter`, and selection `metadata`, including continuation hints (`total_lines`, `has_more_before`, `has_more_after`) and `section_id` when applicable.
+- `note get --evaluate` replaces inline Dataview expressions, `dataview` and `tasks` blocks, and `.base` embeds with their results as Markdown, under the selected `--permissions` profile. `--mode html` always evaluates. `--dataviewjs off|static|on` controls `dataviewjs` blocks (default `off`, which leaves a visible notice). JSON output reports `metadata.evaluated`, `metadata.dataview_js`, and evaluation `diagnostics`.
+- `vulcan render <file>` renders Markdown in the terminal, wrapped to the terminal width. Files inside the vault are evaluated the same way as `note get --evaluate`; `--raw` renders the source unchanged.
 - `note set` reads replacement content from stdin by default; `--file <path>` switches the input source.
 - `note set --no-frontmatter` preserves the leading YAML block byte-for-byte and replaces only the note body.
 - `note create` creates an empty note when stdin is a TTY, or merges piped stdin content with an optional template body when provided.

@@ -1,7 +1,7 @@
 ---
 name: note-operations
 description: Read, create, append, and patch notes safely through Vulcan instead of raw filesystem edits.
-version: 5
+version: 6
 tools:
   - note_outline
   - note_get
@@ -27,6 +27,7 @@ Use this skill when the task is centered on one note or a small set of notes and
 
 1. Start with `note outline` when the note might be long or structurally complex, then use `note get --section <id>` or `note get --heading <name>` to narrow the read.
 2. Use `note info` for a quick metadata and link-count summary, or read the target with `note get` before patching so the agent is editing the right content.
+   - `note get` returns the note source, which is what patches must match. Add `--evaluate` only to see dynamic content (Dataview, Tasks, Bases embeds) as results; never patch against evaluated output.
 3. Prefer `note append` for additive changes and `note patch --section|--heading|--block-ref|--lines` for surgical replacements inside one resolved scope.
 4. Use `note set` only when replacing the whole note is intentional.
 5. Switch to a vault-relative path when note names or aliases are ambiguous.

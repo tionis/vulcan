@@ -4537,6 +4537,159 @@ fn note_get_html_mode_renders_selected_markdown() {
     assert!(!html.contains("status: active"));
 }
 
+fn write_dynamic_content_vault(vault_root: &Path) {
+    fs::create_dir_all(vault_root.join("Private")).expect("vault should be created");
+    fs::write(
+        vault_root.join("Dashboard.md"),
+        concat!(
+            "---\nstatus: draft\n---\n",
+            "# Dashboard\n\n",
+            "Status: `= this.status`\n\n",
+            "```dataview\nTABLE status\nWHERE status = \"classified\"\n```\n\n",
+            "```dataviewjs\ndv.paragraph('from the js block')\n```\n",
+        ),
+    )
+    .expect("dashboard should be written");
+    fs::write(
+        vault_root.join("Private/Secret.md"),
+        "---\nstatus: classified\n---\n# Secret\n",
+    )
+    .expect("secret should be written");
+    run_scan(vault_root);
+    let config = vault_root.join(".vulcan/config.toml");
+    let mut contents = fs::read_to_string(&config).unwrap_or_default();
+    contents.push_str(
+        "\n[permissions.profiles.public]\nread = { allow = [\"note:Dashboard.md\"] }\nwrite = { allow = [] }\n",
+    );
+    fs::write(config, contents).expect("config should be written");
+}
+
+fn vulcan_json(vault_root: &Path, args: &[&str]) -> Value {
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .arg("--vault")
+        .arg(vault_root)
+        .args(["--output", "json"])
+        .args(args)
+        .assert()
+        .success();
+    parse_stdout_json(&assert)
+}
+
+#[test]
+fn note_get_evaluate_replaces_dynamic_content() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    write_dynamic_content_vault(&vault_root);
+
+    let raw = vulcan_json(&vault_root, &["note", "get", "Dashboard"]);
+    assert!(raw["content"].as_str().unwrap().contains("```dataview"));
+    assert_eq!(raw["metadata"]["evaluated"], false);
+
+    let json = vulcan_json(&vault_root, &["note", "get", "Dashboard", "--evaluate"]);
+    let content = json["content"].as_str().unwrap();
+    assert_eq!(json["metadata"]["evaluated"], true);
+    assert_eq!(json["metadata"]["dataview_js"], "off");
+    assert!(content.contains("Status: draft"), "{content}");
+    assert!(
+        content.contains("| [[Private/Secret]] | classified |"),
+        "{content}"
+    );
+    assert!(
+        content.contains("> [!info] DataviewJS disabled"),
+        "{content}"
+    );
+    assert_eq!(json["diagnostics"][0]["kind"], "dataviewjs_disabled");
+}
+
+#[cfg(feature = "js_runtime")]
+#[test]
+fn note_get_evaluate_runs_dataviewjs_on_request() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    write_dynamic_content_vault(&vault_root);
+
+    for policy in ["static", "on"] {
+        let json = vulcan_json(
+            &vault_root,
+            &[
+                "note",
+                "get",
+                "Dashboard",
+                "--evaluate",
+                "--dataviewjs",
+                policy,
+            ],
+        );
+        let content = json["content"].as_str().unwrap();
+        assert!(content.contains("from the js block"), "{policy}: {content}");
+    }
+}
+
+#[test]
+fn evaluated_note_reads_respect_the_permission_profile() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    write_dynamic_content_vault(&vault_root);
+
+    let markdown = vulcan_json(
+        &vault_root,
+        &[
+            "--permissions",
+            "public",
+            "note",
+            "get",
+            "Dashboard",
+            "--evaluate",
+        ],
+    );
+    let content = markdown["content"].as_str().unwrap();
+    assert!(content.contains("Status: draft"), "{content}");
+    assert!(!content.contains("classified"), "{content}");
+
+    let unscoped = vulcan_json(&vault_root, &["note", "get", "Dashboard", "--mode", "html"]);
+    assert!(unscoped["content"].as_str().unwrap().contains("classified"));
+
+    let html = vulcan_json(
+        &vault_root,
+        &[
+            "--permissions",
+            "public",
+            "note",
+            "get",
+            "Dashboard",
+            "--mode",
+            "html",
+        ],
+    );
+    let content = html["content"].as_str().unwrap();
+    assert!(!content.contains("classified"), "{content}");
+}
+
+#[test]
+fn render_evaluates_vault_notes_unless_raw() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    write_dynamic_content_vault(&vault_root);
+    let dashboard = vault_root.join("Dashboard.md");
+    let dashboard = dashboard.to_str().expect("path should be utf-8");
+
+    let json = vulcan_json(&vault_root, &["render", dashboard]);
+    assert_eq!(json["evaluated"], true);
+    let markdown = json["markdown"].as_str().unwrap();
+    assert!(markdown.contains("Status: draft"), "{markdown}");
+    let rendered = json["rendered"].as_str().unwrap();
+    assert!(
+        rendered.contains("│ Private/Secret │ classified │"),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("TABLE status"), "{rendered}");
+
+    let raw = vulcan_json(&vault_root, &["render", "--raw", dashboard]);
+    assert_eq!(raw["evaluated"], false);
+    assert_eq!(raw["markdown"], raw["source"]);
+}
+
 #[test]
 fn note_get_markdown_output_preserves_raw_markdown() {
     let temp_dir = TempDir::new().expect("temp dir should be created");

@@ -161,6 +161,19 @@ pub fn note_get_input_schema() -> Value {
                     "Return only the selected content without line numbers in human output.",
                 ),
             ),
+            (
+                "evaluate",
+                schema_boolean(
+                    "In markdown mode, replace Dataview, Tasks, and Bases embeds with their evaluated results. HTML mode always evaluates.",
+                ),
+            ),
+            (
+                "dataview_js",
+                schema_string_enum(
+                    "How evaluation treats dataviewjs blocks: `off` (default) leaves a notice, `static` runs them deterministically in the strict sandbox, `on` uses the configured sandbox tier.",
+                    &["off", "static", "on"],
+                ),
+            ),
         ],
         &["note"],
     )

@@ -92,6 +92,9 @@ pub(crate) struct TerminalMarkdownOptions {
     /// Use color and text attributes. Without them, structure is kept with
     /// plain-text conventions such as backticks around inline code.
     pub styled: bool,
+    /// Keep single line breaks inside paragraphs, as Obsidian shows notes,
+    /// instead of reflowing them like prose.
+    pub preserve_line_breaks: bool,
 }
 
 /// The terminal width when stdout is an interactive terminal.
@@ -105,12 +108,14 @@ pub(crate) fn stdout_width() -> Option<usize> {
         .filter(|columns| *columns >= 20)
 }
 
+#[cfg(test)]
 pub(crate) fn render_terminal_markdown(markdown: &str, use_color: bool) -> String {
     render_terminal_markdown_with(
         markdown,
         TerminalMarkdownOptions {
             width: None,
             styled: use_color,
+            preserve_line_breaks: false,
         },
     )
 }
@@ -122,6 +127,33 @@ pub(crate) fn render_terminal_markdown_for_stdout(markdown: &str, use_color: boo
         TerminalMarkdownOptions {
             width: stdout_width(),
             styled: use_color,
+            preserve_line_breaks: false,
+        },
+    )
+}
+
+/// Render a vault note without wrapping or color, keeping its line breaks.
+pub(crate) fn render_note_markdown(markdown: &str) -> String {
+    render_terminal_markdown_with(
+        markdown,
+        TerminalMarkdownOptions {
+            width: None,
+            styled: false,
+            preserve_line_breaks: true,
+        },
+    )
+}
+
+/// Render a vault note for stdout: like
+/// [`render_terminal_markdown_for_stdout`], but line breaks inside
+/// paragraphs are kept as Obsidian shows them.
+pub(crate) fn render_note_markdown_for_stdout(markdown: &str, use_color: bool) -> String {
+    render_terminal_markdown_with(
+        markdown,
+        TerminalMarkdownOptions {
+            width: stdout_width(),
+            styled: use_color,
+            preserve_line_breaks: true,
         },
     )
 }
@@ -160,6 +192,55 @@ fn parser_options() -> Options {
         | Options::ENABLE_MATH
         | Options::ENABLE_GFM
         | Options::ENABLE_WIKILINKS
+}
+
+/// Convert styled lines into ratatui lines for TUI panes.
+pub(crate) fn to_ratatui_lines(lines: &[StyledLine]) -> Vec<ratatui::text::Line<'static>> {
+    use ratatui::style::{Modifier, Style};
+    use ratatui::text::{Line, Span};
+
+    lines
+        .iter()
+        .map(|line| {
+            Line::from(
+                line.iter()
+                    .map(|span| {
+                        let mut style = Style::default();
+                        if let Some(tone) = span.style.tone {
+                            style = style.fg(ratatui_color(tone));
+                        }
+                        let mut modifiers = Modifier::empty();
+                        for (enabled, modifier) in [
+                            (span.style.bold, Modifier::BOLD),
+                            (span.style.italic, Modifier::ITALIC),
+                            (span.style.underline, Modifier::UNDERLINED),
+                            (span.style.dim, Modifier::DIM),
+                            (span.style.strike, Modifier::CROSSED_OUT),
+                        ] {
+                            if enabled {
+                                modifiers |= modifier;
+                            }
+                        }
+                        Span::styled(span.text.clone(), style.add_modifier(modifiers))
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect()
+}
+
+fn ratatui_color(tone: Tone) -> ratatui::style::Color {
+    use ratatui::style::Color;
+    match tone {
+        Tone::Heading => Color::Cyan,
+        Tone::Code => Color::Yellow,
+        Tone::Link => Color::Blue,
+        Tone::Muted => Color::DarkGray,
+        Tone::Info => Color::LightBlue,
+        Tone::Success => Color::Green,
+        Tone::Warning => Color::LightYellow,
+        Tone::Danger => Color::LightRed,
+    }
 }
 
 fn ansi_color(tone: Tone) -> &'static str {
@@ -360,6 +441,8 @@ impl Renderer {
                     self.finish_callout_title();
                 } else if let Some((_, body)) = self.code_block.as_mut() {
                     body.push('\n');
+                } else if self.options.preserve_line_breaks && self.table.is_none() {
+                    self.push_span(StyledSpan::new("\n", SpanStyle::default()));
                 } else {
                     self.push_text(" ");
                 }
@@ -773,17 +856,18 @@ impl Renderer {
             bold: true,
             ..SpanStyle::default()
         };
+        // Like Obsidian, a callout shows its title, or its kind when untitled.
         let title = trim_spans(std::mem::take(&mut self.callout_title));
         let mut line = vec![StyledSpan::new(
-            format!(
-                "{} {}",
-                callout_icon(&self.callout_kind),
-                callout_label(&self.callout_kind)
-            ),
+            format!("{} ", callout_icon(&self.callout_kind)),
             label_style,
         )];
-        if !title.is_empty() {
-            line.push(StyledSpan::new(": ", label_style));
+        if title.is_empty() {
+            line.push(StyledSpan::new(
+                callout_label(&self.callout_kind),
+                label_style,
+            ));
+        } else {
             line.extend(
                 title
                     .into_iter()
@@ -861,9 +945,11 @@ impl Renderer {
         if self.lines.is_empty() || self.lines.last().is_some_and(|line| line_width(line) == 0) {
             return;
         }
+        // Containers that have not shown a line yet start after the blank.
         let blank = self
             .containers
             .iter()
+            .filter(|container| container.used)
             .flat_map(|container| container.blank.iter().cloned())
             .collect::<Vec<_>>();
         self.lines.push(blank);
@@ -886,7 +972,7 @@ impl Renderer {
         if self.callout == Some(CalloutState::Detect) && !self.callout_probe.is_empty() {
             self.resolve_callout_probe();
         }
-        let spans = trim_spans(std::mem::take(&mut self.inline));
+        let spans = strip_block_id(trim_spans(std::mem::take(&mut self.inline)));
         if spans.is_empty() || self.table.is_some() {
             return;
         }
@@ -1090,6 +1176,25 @@ fn truncate_spans(spans: &[StyledSpan], width: usize) -> Vec<StyledSpan> {
     truncated
 }
 
+/// Drop a trailing Obsidian block id such as ` ^status-card`, which Obsidian
+/// hides in reading view.
+fn strip_block_id(mut spans: Vec<StyledSpan>) -> Vec<StyledSpan> {
+    let Some(last) = spans.last_mut() else {
+        return spans;
+    };
+    let Some(caret) = last.text.rfind('^') else {
+        return spans;
+    };
+    let id = &last.text[caret + 1..];
+    let before = &last.text[..caret];
+    let is_id = !id.is_empty() && id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-');
+    if !is_id || !(before.is_empty() || before.ends_with(char::is_whitespace)) {
+        return spans;
+    }
+    last.text = before.trim_end().to_string();
+    trim_spans(spans)
+}
+
 fn spans_text(spans: &[StyledSpan]) -> String {
     spans.iter().map(|span| span.text.as_str()).collect()
 }
@@ -1277,6 +1382,7 @@ mod tests {
             TerminalMarkdownOptions {
                 width: Some(width),
                 styled: false,
+                preserve_line_breaks: false,
             },
         )
     }
@@ -1356,9 +1462,31 @@ mod tests {
     fn renders_callouts_with_their_title() {
         assert_eq!(
             plain("> [!warning] Careful\n> Body text\n"),
-            "┃ ! Warning: Careful\n┃ Body text"
+            "┃ ! Careful\n┃ Body text"
         );
         assert_eq!(plain("> [!NOTE]\n> GFM alert\n"), "┃ i Note\n┃ GFM alert");
+    }
+
+    #[test]
+    fn note_mode_keeps_line_breaks_and_hides_block_ids() {
+        let rendered = render_terminal_markdown_with(
+            "status:: draft\nowner:: Bob ^status-card\n\n- item ^list-child\n",
+            TerminalMarkdownOptions {
+                width: None,
+                styled: false,
+                preserve_line_breaks: true,
+            },
+        );
+        assert_eq!(rendered, "status:: draft\nowner:: Bob\n\n- item");
+        assert_eq!(plain("a\nb"), "a b");
+    }
+
+    #[test]
+    fn callouts_after_other_blocks_start_cleanly() {
+        assert_eq!(
+            plain("Text\n\n> [!info] Title\n> Body\n"),
+            "Text\n\n┃ i Title\n┃ Body"
+        );
     }
 
     #[test]
@@ -1383,5 +1511,24 @@ mod tests {
             rendered,
             "\u{1b}[1mbold\u{1b}[0m and \u{1b}[33mcode\u{1b}[0m"
         );
+    }
+
+    #[test]
+    fn ratatui_lines_carry_styles() {
+        let lines = render_styled_lines(
+            "# Title",
+            TerminalMarkdownOptions {
+                width: None,
+                styled: true,
+                preserve_line_breaks: false,
+            },
+        );
+        let converted = to_ratatui_lines(&lines);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0].spans[0].content, "Title");
+        assert!(converted[0].spans[0]
+            .style
+            .add_modifier
+            .contains(ratatui::style::Modifier::BOLD));
     }
 }

@@ -136,16 +136,22 @@ See also:
 
 const RENDER_COMMAND_AFTER_HELP: &str = "\
 Notes:
-  `render` defaults to Vulcan's terminal markdown renderer.
+  `render` defaults to Vulcan's terminal markdown renderer, wrapped to the terminal width.
+  Files inside the vault are evaluated first: inline Dataview expressions and `dataview`,
+  `tasks`, and `.base` embeds show their results. `dataviewjs` blocks stay off unless
+  `--dataviewjs static|on` is given. `--raw` skips evaluation in terminal mode.
   `render --mode html` uses the same HTML pipeline as `note get --mode html`.
   When stdout is not a TTY, the rendered output is emitted without ANSI escapes.
-  Use `--output markdown` with terminal mode to print the original markdown source unchanged.
+  Use `--output markdown` with terminal mode to print the evaluated markdown
+  (or, with `--raw`, the original source unchanged).
 
 Examples:
-  vulcan render README.md
+  vulcan render Dashboard.md
+  vulcan render --dataviewjs on Dashboard.md
+  vulcan render --raw Dashboard.md
   vulcan render --mode html README.md
   cat README.md | vulcan render
-  vulcan --output markdown render README.md";
+  vulcan --output markdown render Dashboard.md";
 
 const NOTES_COMMAND_AFTER_HELP: &str = "\
 Sort keys:
@@ -445,6 +451,12 @@ Selectors:
   --no-frontmatter        strip a leading YAML frontmatter block from the output
   --raw                   print only the selected content without line numbers
 
+Evaluation:
+  --evaluate              replace Dataview, Tasks, and Bases embeds with their results
+                          (markdown mode; HTML mode always evaluates)
+  --dataviewjs <policy>   off (default), static (strict sandbox, deterministic), or
+                          on (configured sandbox tier and permission profile)
+
 Line range syntax:
   1-10    first ten lines
   50-     line 50 through the end
@@ -456,6 +468,7 @@ Examples:
   vulcan note get Dashboard --section tasks@9
   vulcan note outline Dashboard
   vulcan note get Dashboard --mode html
+  vulcan note get Dashboard --evaluate --dataviewjs on
   vulcan note get Dashboard --heading Tasks --match TODO --context 1
   vulcan note get Dashboard --block-ref status-card
   vulcan note get Dashboard --lines 10-20 --raw";
@@ -5875,6 +5888,40 @@ pub struct RenderArgs {
         help = "Rendering target for the Markdown input"
     )]
     pub mode: RenderMode,
+    #[arg(
+        long,
+        help = "Render the terminal view from the source without evaluating dynamic content"
+    )]
+    pub raw: bool,
+    #[arg(
+        long = "dataviewjs",
+        value_enum,
+        default_value_t = DataviewJsArg::Off,
+        help = "How evaluation treats dataviewjs blocks"
+    )]
+    pub dataview_js: DataviewJsArg,
+}
+
+/// How rendering treats `dataviewjs` blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+pub enum DataviewJsArg {
+    /// Leave blocks unevaluated with a visible notice.
+    #[default]
+    Off,
+    /// Evaluate in the strict sandbox with determinism constraints.
+    Static,
+    /// Evaluate with the configured sandbox tier and permission profile.
+    On,
+}
+
+impl From<DataviewJsArg> for vulcan_core::DataviewJsRenderPolicy {
+    fn from(value: DataviewJsArg) -> Self {
+        match value {
+            DataviewJsArg::Off => Self::Off,
+            DataviewJsArg::Static => Self::Static,
+            DataviewJsArg::On => Self::On,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
@@ -7243,6 +7290,18 @@ pub enum NoteCommand {
         no_frontmatter: bool,
         #[arg(long, help = "Print only the selected content without line numbers")]
         raw: bool,
+        #[arg(
+            long,
+            help = "Replace Dataview, Tasks, and Bases embeds with their evaluated results"
+        )]
+        evaluate: bool,
+        #[arg(
+            long = "dataviewjs",
+            value_enum,
+            default_value_t = DataviewJsArg::Off,
+            help = "How evaluation treats dataviewjs blocks"
+        )]
+        dataview_js: DataviewJsArg,
     },
     #[command(about = "Replace one note's contents from stdin or a file")]
     Set {

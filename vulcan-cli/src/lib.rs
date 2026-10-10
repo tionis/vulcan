@@ -421,8 +421,8 @@ pub use cli::{
     ConfigCommand, ConfigImportArgs, ConfigImportCommand, ConfigImportSelection,
     ConfigPermissionsCommand, ConfigPermissionsProfileCommand, ConfigTargetArg, DaemonAgentKindArg,
     DaemonCommand, DaemonCompanionCommand, DaemonConfigCommand, DaemonWebhookFormatArg,
-    DailyCommand, DataviewCommand, DescribeFormatArg, DeviceConfigCommand, EpubTocStyle,
-    ExchangeCommand, ExportArgs, ExportCommand, ExportFormat, ExportProfileCommand,
+    DailyCommand, DataviewCommand, DataviewJsArg, DescribeFormatArg, DeviceConfigCommand,
+    EpubTocStyle, ExchangeCommand, ExportArgs, ExportCommand, ExportFormat, ExportProfileCommand,
     ExportProfileFormatArg, ExportProfileRuleCommand, ExportQueryArgs, ExportTransformArgs,
     FolderNotePlacementArg, GitCommand, GraphCommand, GraphExportFormat, IndexCommand, InitArgs,
     IntegrationCommand, KanbanCommand, LoginModeArg, McpCommand, McpConnectionsCommand,
@@ -4830,11 +4830,35 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         return Ok(());
     }
 
-    if let Command::Render(RenderArgs { ref file, mode }) = cli.command {
+    if let Command::Render(RenderArgs {
+        ref file,
+        mode,
+        raw,
+        dataview_js,
+    }) = cli.command
+    {
         let stdout_is_tty = io::stdout().is_terminal();
         let use_stdout_color = resolve_use_color(cli.color, stdout_is_tty);
         let render_paths = VaultPaths::new(vault_discovery.root.clone());
-        let report = commands::render::run_render_command(&render_paths, file.as_ref(), mode)?;
+        // `render` also works outside a vault, where only an explicitly
+        // requested profile is an error.
+        let guard = match selected_permission_guard(cli, &render_paths) {
+            Ok(guard) => Some(guard),
+            Err(error) if cli.permissions.is_some() => return Err(error),
+            Err(_) => None,
+        };
+        let report = commands::render::run_render_command(
+            &render_paths,
+            file.as_ref(),
+            commands::render::RenderOptions {
+                mode,
+                evaluate: !raw,
+                dataview_js: dataview_js.into(),
+                guard: guard
+                    .as_ref()
+                    .map(|guard| guard as &dyn vulcan_core::PermissionGuard),
+            },
+        )?;
         return commands::render::print_render_report(
             cli.output,
             &report,
@@ -7008,13 +7032,38 @@ pub(crate) fn print_markdown_output(
     stdout_is_tty: bool,
     use_color: bool,
 ) -> Result<(), CliError> {
+    print_markdown_output_with(output, markdown, stdout_is_tty, use_color, false)
+}
+
+/// [`print_markdown_output`] for vault notes, keeping line breaks inside
+/// paragraphs as Obsidian shows them.
+pub(crate) fn print_note_markdown_output(
+    output: OutputFormat,
+    markdown: &str,
+    stdout_is_tty: bool,
+    use_color: bool,
+) -> Result<(), CliError> {
+    print_markdown_output_with(output, markdown, stdout_is_tty, use_color, true)
+}
+
+fn print_markdown_output_with(
+    output: OutputFormat,
+    markdown: &str,
+    stdout_is_tty: bool,
+    use_color: bool,
+    note: bool,
+) -> Result<(), CliError> {
     match output {
         OutputFormat::Json => Err(CliError::operation(
             "markdown helper cannot print JSON output directly",
         )),
         OutputFormat::Human => {
             let rendered = if stdout_is_tty {
-                terminal_markdown::render_terminal_markdown_for_stdout(markdown, use_color)
+                if note {
+                    terminal_markdown::render_note_markdown_for_stdout(markdown, use_color)
+                } else {
+                    terminal_markdown::render_terminal_markdown_for_stdout(markdown, use_color)
+                }
             } else {
                 markdown.to_string()
             };
