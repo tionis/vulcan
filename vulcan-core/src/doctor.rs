@@ -556,8 +556,7 @@ fn load_orphan_assets(
         "
         SELECT DISTINCT resolved_target_id
         FROM links
-        WHERE link_kind = 'embed'
-          AND resolved_target_id IS NOT NULL
+        WHERE resolved_target_id IS NOT NULL
         ",
     )?;
     let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
@@ -565,7 +564,10 @@ fn load_orphan_assets(
 
     let mut orphan_assets = indexed_documents
         .iter()
-        .filter(|document| document.extension != "md" && document.extension != "base")
+        // Linking to an attachment (e.g. a thumbnail linking to its full-size
+        // image) uses it as much as embedding does. Scripts, configs and other
+        // non-media files are not attachments, so they are never orphans.
+        .filter(|document| is_attachment_target_candidate(&document.path))
         .filter(|document| paths_on_disk.contains(&document.path))
         .filter(|document| !referenced_asset_ids.contains(&document.id))
         .map(|document| document.path.clone())
@@ -597,6 +599,12 @@ fn is_attachment_target_candidate(target: &str) -> bool {
                     | "mov"
                     | "avi"
                     | "mkv"
+                    | "webm"
+                    | "flac"
+                    | "bmp"
+                    | "tif"
+                    | "tiff"
+                    | "avif"
             )
         })
 }
@@ -1057,6 +1065,33 @@ mod tests {
             Some("assets/missing.png")
         );
         assert_eq!(report.orphan_assets, vec!["assets/orphan.jpg".to_string()]);
+    }
+
+    #[test]
+    fn doctor_counts_linked_attachments_and_ignores_non_media_files() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("attachments", &vault_root);
+        fs::write(
+            vault_root.join("Gallery.md"),
+            "# Gallery\n\n[![thumb](assets/thumb.png)](assets/full.png)\n\n![](assets/sized.png =30%x)\n",
+        )
+        .expect("gallery note should be written");
+        for asset in ["thumb.png", "full.png", "sized.png"] {
+            fs::write(vault_root.join("assets").join(asset), asset).expect("asset written");
+        }
+        fs::write(vault_root.join("assets/tool.sh"), "echo").expect("script written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let report = doctor_vault(&paths).expect("doctor should succeed");
+
+        // full.png is only linked (not embedded) and tool.sh is not media.
+        assert_eq!(report.orphan_assets, vec!["assets/sized.png".to_string()]);
+        assert!(report.unsupported_syntax.iter().any(|issue| {
+            issue.document_path.as_deref() == Some("Gallery.md")
+                && issue.message.contains("`![](assets/sized.png =30%x)`")
+        }));
     }
 
     #[test]
