@@ -1083,33 +1083,48 @@ impl Renderer {
             bold: true,
             ..SpanStyle::default()
         };
+        // Cells wider than their column wrap onto extra lines of the row.
         let render_row = |row: &[Vec<StyledSpan>], style: SpanStyle| {
-            let mut line = vec![StyledSpan::new("│ ", border)];
-            for (index, width) in widths.iter().enumerate() {
-                let cell = row.get(index).cloned().unwrap_or_default();
-                let cell = truncate_spans(&cell, *width)
-                    .into_iter()
-                    .map(|span| StyledSpan::new(span.text, span.style.merge(style)))
-                    .collect::<Vec<_>>();
-                let padding = width.saturating_sub(line_width(&cell));
-                let (left, right) = match table.alignments.get(index) {
-                    Some(Alignment::Right) => (padding, 0),
-                    Some(Alignment::Center) => (padding / 2, padding - padding / 2),
-                    _ => (0, padding),
-                };
-                line.push(StyledSpan::new(" ".repeat(left), SpanStyle::default()));
-                line.extend(cell);
-                line.push(StyledSpan::new(" ".repeat(right), SpanStyle::default()));
-                line.push(StyledSpan::new(
-                    if index + 1 == widths.len() {
-                        " │"
-                    } else {
-                        " │ "
-                    },
-                    border,
-                ));
-            }
-            line
+            let cells = widths
+                .iter()
+                .enumerate()
+                .map(|(index, width)| {
+                    let cell = row
+                        .get(index)
+                        .into_iter()
+                        .flatten()
+                        .map(|span| StyledSpan::new(span.text.clone(), span.style.merge(style)))
+                        .collect::<Vec<_>>();
+                    wrap_spans(&cell, Some(*width))
+                })
+                .collect::<Vec<_>>();
+            let height = cells.iter().map(Vec::len).max().unwrap_or(1).max(1);
+            (0..height)
+                .map(|line_index| {
+                    let mut line = vec![StyledSpan::new("│ ", border)];
+                    for (index, width) in widths.iter().enumerate() {
+                        let cell = cells[index].get(line_index).cloned().unwrap_or_default();
+                        let padding = width.saturating_sub(line_width(&cell));
+                        let (left, right) = match table.alignments.get(index) {
+                            Some(Alignment::Right) => (padding, 0),
+                            Some(Alignment::Center) => (padding / 2, padding - padding / 2),
+                            _ => (0, padding),
+                        };
+                        line.push(StyledSpan::new(" ".repeat(left), SpanStyle::default()));
+                        line.extend(cell);
+                        line.push(StyledSpan::new(" ".repeat(right), SpanStyle::default()));
+                        line.push(StyledSpan::new(
+                            if index + 1 == widths.len() {
+                                " │"
+                            } else {
+                                " │ "
+                            },
+                            border,
+                        ));
+                    }
+                    line
+                })
+                .collect::<Vec<_>>()
         };
         let rule = |left: &str, middle: &str, right: &str| {
             let body = widths
@@ -1122,14 +1137,14 @@ impl Renderer {
 
         let mut lines = vec![rule("┌", "┬", "┐")];
         if !table.header.is_empty() {
-            lines.push(render_row(&table.header, header_style));
+            lines.extend(render_row(&table.header, header_style));
             lines.push(rule("├", "┼", "┤"));
         }
         lines.extend(
             table
                 .rows
                 .iter()
-                .map(|row| render_row(row, SpanStyle::default())),
+                .flat_map(|row| render_row(row, SpanStyle::default())),
         );
         lines.push(rule("└", "┴", "┘"));
         lines
@@ -1166,34 +1181,6 @@ fn shrink_columns(widths: &mut [usize], available: usize) {
     }
 }
 
-fn truncate_spans(spans: &[StyledSpan], width: usize) -> Vec<StyledSpan> {
-    if line_width(spans) <= width {
-        return spans.to_vec();
-    }
-    let mut remaining = width.saturating_sub(1);
-    let mut truncated = Vec::new();
-    for span in spans {
-        let mut text = String::new();
-        for ch in span.text.chars() {
-            let ch_width = ch.width().unwrap_or(0);
-            if ch_width > remaining {
-                break;
-            }
-            remaining -= ch_width;
-            text.push(ch);
-        }
-        let done = text.len() < span.text.len();
-        truncated.push(StyledSpan::new(text, span.style));
-        if done {
-            break;
-        }
-    }
-    truncated.push(StyledSpan::new("…", SpanStyle::muted()));
-    truncated
-}
-
-/// Drop a trailing Obsidian block id such as ` ^status-card`, which Obsidian
-/// hides in reading view.
 fn strip_block_id(mut spans: Vec<StyledSpan>) -> Vec<StyledSpan> {
     let Some(last) = spans.last_mut() else {
         return spans;
@@ -1504,13 +1491,27 @@ mod tests {
     }
 
     #[test]
-    fn wide_tables_shrink_to_the_width() {
-        let rendered = plain_width("| A | B |\n| --- | --- |\n| abcdefghijkl | x |", 16);
+    fn wide_tables_wrap_cells_to_the_width() {
+        let rendered = plain_width(
+            "| Name | Note |\n| --- | --- |\n| Alpha | one two three four five six |",
+            26,
+        );
         assert!(
-            rendered.lines().all(|line| text_width(line) <= 16),
+            rendered.lines().all(|line| text_width(line) <= 26),
             "{rendered}"
         );
-        assert!(rendered.contains('…'), "{rendered}");
+        assert_eq!(
+            rendered,
+            concat!(
+                "┌───────┬────────────────┐\n",
+                "│ Name  │ Note           │\n",
+                "├───────┼────────────────┤\n",
+                "│ Alpha │ one two three  │\n",
+                "│       │ four five six  │\n",
+                "└───────┴────────────────┘"
+            ),
+            "{rendered}"
+        );
     }
 
     #[test]
