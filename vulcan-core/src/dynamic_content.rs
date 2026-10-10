@@ -206,23 +206,69 @@ pub(crate) fn evaluate_dynamic_regions(
     regions
 }
 
+/// An inline field to render, from the page or from a list item or task.
+pub(crate) struct RenderedInlineField<'a> {
+    pub key: &'a str,
+    pub value_text: &'a str,
+    pub kind: crate::parser::types::InlineFieldKind,
+    pub byte_range: std::ops::Range<usize>,
+    pub value_byte_range: std::ops::Range<usize>,
+}
+
+impl RenderedInlineField<'_> {
+    pub(crate) fn is_parenthesized(&self) -> bool {
+        self.kind == crate::parser::types::InlineFieldKind::Parenthesized
+    }
+
+    /// The key as written in `source`; the parser lowercases keys.
+    pub(crate) fn written_key<'s>(&'s self, source: &'s str) -> &'s str {
+        source
+            .get(self.byte_range.start..self.value_byte_range.start)
+            .map(|text| {
+                text.trim()
+                    .trim_start_matches(['[', '('])
+                    .trim_end_matches(':')
+                    .trim()
+            })
+            .filter(|key| !key.is_empty())
+            .unwrap_or(self.key)
+    }
+}
+
+/// Every inline field the document shows: page fields plus the fields on
+/// list item and task lines (tasks are list items, so each appears once).
+pub(crate) fn rendered_inline_fields(parsed: &ParsedDocument) -> Vec<RenderedInlineField<'_>> {
+    let page = parsed
+        .inline_fields
+        .iter()
+        .map(|field| RenderedInlineField {
+            key: &field.key,
+            value_text: &field.value_text,
+            kind: field.kind,
+            byte_range: field.byte_range.clone(),
+            value_byte_range: field.value_byte_range.clone(),
+        });
+    let items = parsed
+        .list_items
+        .iter()
+        .flat_map(|item| &item.inline_fields)
+        .map(|field| RenderedInlineField {
+            key: &field.key,
+            value_text: &field.value_text,
+            kind: field.kind,
+            byte_range: field.byte_range.clone(),
+            value_byte_range: field.value_byte_range.clone(),
+        });
+    page.chain(items).collect()
+}
+
 /// An inline field as Dataview's reading view shows it: a bold key and its
 /// value, or only the value for a parenthesized field.
-fn inline_field_markdown(source: &str, field: &crate::parser::RawInlineField) -> String {
-    if field.kind == crate::parser::types::InlineFieldKind::Parenthesized {
-        return field.value_text.clone();
+fn inline_field_markdown(source: &str, field: &RenderedInlineField<'_>) -> String {
+    if field.is_parenthesized() {
+        return field.value_text.to_string();
     }
-    // The parser lowercases keys; show the key as written.
-    let written = source
-        .get(field.byte_range.start..field.value_byte_range.start)
-        .map(|text| {
-            text.trim()
-                .trim_start_matches(['[', '('])
-                .trim_end_matches(':')
-                .trim()
-        })
-        .filter(|key| !key.is_empty())
-        .unwrap_or(&field.key);
+    let written = field.written_key(source);
     if written.starts_with("**") || written.starts_with("__") {
         format!("{written}: {}", field.value_text)
     } else {
@@ -232,6 +278,10 @@ fn inline_field_markdown(source: &str, field: &crate::parser::RawInlineField) ->
 
 fn has_dynamic_content(parsed: &ParsedDocument) -> bool {
     !parsed.inline_fields.is_empty()
+        || parsed
+            .list_items
+            .iter()
+            .any(|item| !item.inline_fields.is_empty())
         || !parsed.inline_expressions.is_empty()
         || !parsed.inline_js_expressions.is_empty()
         || !parsed.comment_regions.is_empty()
@@ -531,8 +581,7 @@ impl EvaluatedMarkdownRenderer {
             dataview_js: options.dataview_js,
         };
         let mut diagnostics = Vec::new();
-        let mut replacements = parsed
-            .inline_fields
+        let mut replacements = rendered_inline_fields(&parsed)
             .iter()
             .map(|field| {
                 (
@@ -1542,6 +1591,18 @@ mod tests {
         let html = crate::render_note_html(&paths, "Home.md", "one\ntwo\n").html;
         assert!(html.contains("one\ntwo"), "{html}");
         assert!(!html.contains("<br"), "{html}");
+    }
+
+    #[test]
+    fn list_item_and_task_fields_render_like_page_fields() {
+        let (_temp_dir, paths, _) = build_vault();
+        let source = "- Item [Kind:: note]\n- [ ] Task [due:: 2026-04-01] (owner:: Bob)\n  - [x] Status:: done\n- Mood:: calm\n";
+        let rendered =
+            render_evaluated_markdown(&paths, source, &EvaluatedMarkdownOptions::default());
+        assert_eq!(
+            rendered.markdown,
+            "- Item **Kind**: note\n- [ ] Task **due**: 2026-04-01 Bob\n  - [x] **Status**: done\n- **Mood**: calm\n"
+        );
     }
 
     #[test]
