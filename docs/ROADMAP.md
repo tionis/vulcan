@@ -21,7 +21,8 @@ The numbered phases describe dependency order, not a requirement to implement ev
 - **Committed application-platform direction:** Phase 19 owns immutable `.vapp` packages, installation/instance lifecycle, sandboxed browser applications, typed app CLI commands, QuickJS host functions, server/browser WebAssembly components, and explicit canonical app data. It builds on the daemon, WebUI, and capability model without extending the Phase 10 gate.
 - **Candidate capability tracks:** mdbase expansion, shared query planning and execution (QRY), and additional native vault workflows with compatibility adapters are maintained below as detailed design backlogs. They retain no implied promise of implementation order or completion before Phase 10.
 - **Promotion gate:** move a candidate into the committed path only when there is a concrete use case, a capability-oriented domain and public surface, an identified dependency/ownership boundary, a sustainable adapter compatibility and testing strategy, and enough maintenance budget to support the advertised surface. Promote only the smallest independently useful native slice; importing one plugin's settings is not by itself a product boundary.
-- **Placement rule:** durable Markdown semantics, parsing, diagnostics, and mutation-free exports may live in core/app tracks; daemon transports belong to Phase 10+, sync protocols to Phase 12, editor behavior to Phase 14, and supervised runtimes or first-party external integrations to Phase 15.
+- **Optional addition:** 9.40 gives terminal editors (Neovim, Vim, Helix, and other LSP clients) live vault semantics through an editor-neutral `vulcan lsp` stdio server and a thin `vulcan.nvim` plugin. It depends only on completed core/app foundations (9.29, the QRY.6 retained note-store session), does not depend on 10.5 or 10.7, and does not block MDB work.
+- **Placement rule:** durable Markdown semantics, parsing, diagnostics, and mutation-free exports may live in core/app tracks; daemon transports belong to Phase 10+, sync protocols to Phase 12, browser editing behavior to Phase 14, and supervised runtimes or first-party external integrations to Phase 15. Editor-neutral language-server adapters over `vulcan-core`/`vulcan-app` (Phase 9.40) are client-owned stdio transports like MCP stdio: they may land as optional additions, must work without a daemon, and must not depend on 10.7.
 
 This keeps Vulcan's long-term interoperability ambition without treating every plausible adapter, plugin behavior, or external runtime as a prerequisite for the next platform layer.
 
@@ -6638,8 +6639,8 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 - [ ] Integrate `automerge` for ephemeral editing sessions (one Automerge doc per actively-edited note)
 - [ ] Markdown editor component (CodeMirror or ProseMirror with Automerge text binding — TBD)
 - [ ] Live preview (split-pane or toggle)
-- [ ] Wikilink autocomplete (uses `/notes` API for suggestions)
-- [ ] Tag autocomplete
+- [ ] Wikilink autocomplete (uses `/notes` API for suggestions; reuse `vulcan-app::editor::completion` from 9.40)
+- [ ] Tag autocomplete (reuse `vulcan-app::editor::completion` from 9.40)
 - [ ] Frontmatter property editor (structured form UI, not raw YAML editing)
 - [ ] Optional Wikilink Types relationship autocomplete sourced from the imported type registry; author ordinary alias annotations/frontmatter and preserve non-type `@` text.
 - [ ] Optional configurable symbol-link autocomplete (including @ Symbol Linking-style folder, alias, and template mappings) implemented as editor assistance over ordinary Markdown links and existing note/template APIs.
@@ -8340,6 +8341,73 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [ ] Decide whether to offer an opt-in vault-scoped sync lane (vault-relative trees on a dedicated live-ref namespace, deterministic seed ancestry from `HEAD:<prefix>`, and apply limited to the vault prefix).
 - [ ] Consider MkDocs `nav` awareness for navigation-oriented commands and publication, and a diagnostic for links to repository files that MkDocs will not publish.
 
+## Phase 9.40: Editor integration — `vulcan lsp` and `vulcan.nvim`
+
+**Goal:** Make Neovim, Vim, and other terminal editors a real alternative to Obsidian by giving them live vault semantics: link navigation, backlinks, completion, diagnostics, link-safe renames, task toggling, and rendered query blocks.
+
+**Spec:** [`docs/specs/editor-integration.md`](specs/editor-integration.md) is the design contract.
+
+**Boundary:** `vulcan lsp` is a synchronous, client-owned stdio language server in a new `vulcan-lsp` crate over `vulcan-core` and a new transport-neutral `vulcan-app::editor` module. It never writes unsaved buffer text into the cache, never writes an open file behind the client's back, works without a daemon, and does not depend on 10.7. `vulcan.nvim` is a thin UI layer with no vault semantics of its own. Graph views stay in Phase 13.3; canvas and Excalidraw stay in Phase 18.
+
+**Depends on:** 9.29 (done), QRY.6 `NoteStoreSession` (done). Optional later: OBS.2 (subpath diagnostics), MDB items (schema-enum completion), 10.5 (daemon-backed store).
+
+### 9.40.1 Editor services in core and app
+
+- [ ] Add `LineIndex` to `vulcan-core` with byte ↔ line/column conversion for UTF-8, UTF-16, and UTF-32, plus a CJK/emoji test fixture
+- [ ] Add "semantic element at byte offset" lookup over `ParsedDocument` (links, embeds, tags, headings, block ids, inline fields, property keys); verify frontmatter-origin link offsets are document-absolute
+- [ ] Add overlay-aware link resolution: cache identities with open-buffer overlays replacing them, plus `overlay:<uri>` documents for unsaved new buffers
+- [ ] Expose dynamic-region evaluation with byte ranges as a public core API
+- [ ] Add `vulcan-app::editor` (`EditorSession`, `completion`, `diagnostics`, `navigation`, `edits`, `render`) with no LSP types
+- [ ] Move checkbox and task toggling out of `vulcan-cli/src/commands/note.rs` into a plan-only `vulcan-app` workflow (text in, replacement and report out), including recurrence; rebuild `tasks complete` on it
+- [ ] Add plan-only variants of `rename_heading` and `rename_block_ref` that return `OrdinaryWriteChange` batches
+- [ ] Rebuild shell completion candidates (`collect_complete_candidates`) on `editor::completion`
+- [ ] Add `boundary_guard.rs` rules: `vulcan-app`/`vulcan-core` never depend on `lsp-types`; `vulcan-lsp` never depends on `vulcan-cli` or `vulcan-daemon`
+
+### 9.40.2 `vulcan lsp` MVP
+
+- [ ] Create the `vulcan-lsp` crate (`lsp-server` + `lsp-types`, pinned and MSRV-checked) and the `vulcan lsp [--vault] [--permissions]` subcommand with `describe`/`help` entries
+- [ ] Threading: main loop with inline overlay updates, reader pool over one shared `NoteStoreSession`, single writer thread for the write lock, cancellation (`RequestCanceled`, `ContentModified`)
+- [ ] Position-encoding negotiation (prefer UTF-8, fall back to UTF-16)
+- [ ] Freshness: startup refresh with `$/progress`, scan on `didSave`, `watcher = own|client|off`, advisory `.vulcan/editor-watch.lock` lease with store-clock polling for non-holders, no lease when a daemon owns the vault, rename hints from `didRenameFiles`
+- [ ] Definition, references (backlinks plus overlay deltas), hover, document and workspace symbols
+- [ ] Completion after `[[` (notes, aliases, `#heading`, `^block`), tags, property keys, and inline-field keys
+- [ ] Debounced diagnostics for open buffers: parse diagnostics and unresolved/ambiguous/outside-vault links using `doctor` categories
+- [ ] Mutation contract: open files as versioned `TextDocumentEdit`s, closed files as a journaled preimage-checked batch; disk first, then `workspace/applyEdit`, with a compensating inverse batch on rejection and the specified failure reports
+- [ ] Server-performed moves with `moved: { from, to }` results and refusal of dirty moved buffers; `rename` on links, filenames, headings, and block ids; `willRenameFiles`
+- [ ] Code actions with lazy `resolve`: create note from unresolved link, disambiguate, convert link style, toggle task; `dryRun` on every `vulcan.*` command
+- [ ] `executeCommand`: `vulcan.scan`, `vulcan.note.create`, `vulcan.note.move`, `vulcan.task.toggle`, `vulcan.periodic.open`, `vulcan.template.insert`
+- [ ] Custom protocol v1: `experimental.vulcan` advertisement, `vulcan/render` (Dataview and Tasks blocks), `vulcan/outline`, `vulcan/backlinks`, `vulcan/status`, `vulcan/indexChanged`
+- [ ] Safety defaults: DataviewJS off unless enabled in `config.local.toml`; permission profile guard on every workflow; `autoCommit` defaults to false
+- [ ] `[editor]` config section with default and override tests
+- [ ] Protocol-level tests against fixture vaults: snapshots, CLI JSON parity, move roundtrip, open/closed split, failure paths, overlay leaves `cache.db` unchanged, encoding, concurrent processes, DataviewJS not executed by default
+- [ ] Add a `vulcan lsp` row to the unified-hosting inventory as a client-owned stdio transport
+
+### 9.40.3 `vulcan.nvim`
+
+- [ ] Create `integrations/vulcan.nvim/` with LSP registration (root markers `.vulcan/`, `.vulcan.toml`, `.obsidian/`) and `:checkhealth vulcan`
+- [ ] Pickers (telescope, fzf-lua, or snacks) over notes, search, tags, backlinks, and periodic notes
+- [ ] `:Vulcan daily|weekly|template|capture` commands; floating-terminal launchers for `browse`, `bases`, and `kanban`
+- [ ] Virtual-line rendering of `vulcan/render` results; buffer re-pointing after moves; `doctor` results in quickfix
+- [ ] Headless `nvim` smoke tests
+- [ ] `docs/guide/editors.md`: Neovim setup, recommended companions (render-markdown.nvim or markview.nvim, image.nvim or snacks.image), and plain Vim recipes (`yegappan/lsp` or `vim-lsp` plus fzf.vim)
+- [ ] Return a cursor offset from template insertion so `tp.file.cursor()` can place the cursor
+
+### 9.40.4 Agent skills and documentation
+
+- [ ] New bundled `editor-integration` skill registered in `BUNDLED_SKILL_FILES` with installed-payload and discovery tests
+- [ ] Update `diagnostics-and-repair`, `note-operations`, and `refactoring` skills and `AGENTS.template.md` for LSP-open vaults
+- [ ] Document `vulcan lsp` in `docs/cli.md`
+
+### 9.40.5 Later capabilities
+
+- [ ] Heading and block subpath diagnostics once OBS.2 lands in core
+- [ ] mdbase schema-enum value completion once the MDB items land
+- [ ] Inlay hints and code lens (backlink counts, due dates)
+- [ ] Extract-section code action over the note split refactor
+- [ ] Minimal-diff `TextEdit`s, semantic tokens, multi-root workspaces
+- [ ] Daemon-backed note store through 10.5 client routing
+- [ ] Pull-model `workspace/diagnostic`, only if requested
+
 ---
 
 ## Capability tracks and connector appendices
@@ -8949,6 +9017,7 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 | Crate | Type | Purpose |
 |-------|------|---------|
 | `vulcan-daemon` | lib | axum router, middleware, vault registry, daemon lifecycle |
+| `vulcan-lsp` | lib | Phase 9.40 synchronous stdio language server over `vulcan-core` and `vulcan-app::editor`; the only crate that depends on `lsp-types`/`lsp-server` |
 | `vulcan-auth` | lib | Canonical authorization-object parsing and mutation, rooted grant attenuation/revocation, reserved-path and Git-ingress validation, credential/session secret handling, audit lineage, and request-authority resolution |
 | `vulcan-sync` | lib | Sync backend trait and implementations (obsidian-headless, git remote, passive) |
 | `vulcan-app-package` | lib | Phase 19 canonical manifest, strict ZIP validation, read-only package VFS, BLAKE3 identities, deterministic builder, and signature evidence |
@@ -8965,6 +9034,8 @@ Phase 19's package inspection and validation must remain usable without enabling
 | `aho-corasick` | Multi-pattern string matching for mention detection | 8 |
 | `askama` or `maud` | Rust-side HTML templating for shared renderer / static site builder | 9.20 |
 | `axum` | HTTP framework for daemon | 10 |
+| `lsp-server` | Synchronous LSP message loop (rust-analyzer) for `vulcan lsp` | 9.40 |
+| `lsp-types` | LSP protocol types for `vulcan lsp` | 9.40 |
 | `tokio` | Async runtime for axum | 10 |
 | `tower-http` | CORS, compression, logging middleware | 10 |
 | `argon2` | Token hashing | 10 |

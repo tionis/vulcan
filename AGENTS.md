@@ -97,6 +97,8 @@ See `docs/ROADMAP.md` for the full dependency graph and detailed task lists.
 
 **Phase 15 — external knowledge hub:** Add typed external-document bindings, explicit pull/push routes, durable reconciliation state, scheduling, and first-party connectors for Outline, HedgeDoc/HedgeSync, simple Git-backed wikis, and SilverBullet. All remote-to-remote flow passes through the canonical local vault.
 
+**Phase 9.40 — terminal editor integration (planned, optional):** An editor-neutral `vulcan lsp` stdio server in a new `vulcan-lsp` crate, transport-neutral `vulcan-app::editor` services, and a thin in-repo `integrations/vulcan.nvim/` plugin. Daemon-independent; see `docs/specs/editor-integration.md`.
+
 **Candidate capability tracks:** Continue bounded mdbase and remaining Obsidian-plugin compatibility slices without making them serial blockers for the daemon.
 
 ## Key modules for new work

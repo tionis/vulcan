@@ -32,6 +32,7 @@ User-facing CLI usage, filter syntax, and examples are documented separately in 
 - **Capability and compatibility model:** Design stable CLI, config, API, and domain boundaries around native Vulcan capabilities. Obsidian plugins and other tools contribute optional persisted-format adapters, settings importers, migration aliases, providers, and conformance profiles; they do not define Vulcan's product taxonomy or cap what a native workflow may do.
 - **Authorization model:** Resolve all human, group, agent, automation, share, and service authority from typed, vault-canonical capability objects. Delegation may only attenuate authority. A reserved authorization namespace and dedicated mutation workflows protect those objects across WebUI/API/managed-sync paths; direct filesystem control remains trusted. Roles and ACL-like administration views are convenience projections over the grant graph, while runtime enforcement continues through `PermissionGrant`, `PermissionGuard`, and `PermissionFilter`. Capability grants are unsigned vault objects; the signed key registry above only authenticates *who* changed them when a governed ingress policy requires signatures (§4.3).
 - **Chunk sizing:** Chunk sizes are configured in characters (`chunking.target_size`, default 4000 characters, estimated at 4 characters per token ≈ 1000 tokens). Embedding requests cap each input at the model's `max_input_tokens` using a script-aware version of that estimate (alphabetic text ≈ 4 characters per token; CJK, kana, Hangul, Thai, emoji and similar dense scripts ≈ 1 character per token) and report truncated chunks. Chunk sizing still uses the flat character estimate, so dense-script chunks hold more tokens than the nominal target and rely on that cap. A lightweight tokenizer may replace the estimate later for model-specific accuracy.
+- **Terminal editor integration (planned, Roadmap 9.40):** An editor-neutral, synchronous `vulcan lsp` stdio server gives Neovim, Vim, and other LSP clients link navigation, backlinks, completion, diagnostics, link-safe renames, and rendered query blocks. Unsaved buffers are an in-memory overlay that never reaches the cache, open files are only changed through versioned editor edits, and the server works without a daemon. `vulcan.nvim` stays a thin UI layer. See [the editor integration contract](specs/editor-integration.md).
 - **CI:** GitHub Actions (`cargo test` + `clippy` + `fmt --check`), structured for future migration to Forgejo CI.
 
 ## 1. Project context and problem statement
@@ -138,6 +139,7 @@ The workspace boundary contract for the current and upcoming phases is:
 - `vulcan-secrets` owns bounded synchronous opaque-secret custody below application workflows: redacted/zeroizing values, closed provider references, and protected-file storage. It has no vault, OAuth, signing, or authorization semantics; native keychains and device-key provider integration remain separate roadmap work.
 - `vulcan-cli` owns `clap` parsing, terminal I/O, TUI state, editor/browser launching, shell completions, and human/JSON rendering. It should call shared services rather than becoming the primary home of business logic.
 - `vulcan-daemon` owns long-lived transports, async boundaries, background scheduling, HTTP/WebSocket endpoints, and adapter/runtime state that should not live in the CLI or rebuildable cache.
+- The planned `vulcan-lsp` library (Roadmap 9.40) owns the synchronous, client-owned LSP stdio transport: protocol types, position-encoding negotiation, request routing, and `WorkspaceEdit` assembly. It depends on `vulcan-core` and the transport-neutral `vulcan-app::editor` services, never on `vulcan-cli` or `vulcan-daemon`, and neither core nor app may depend on LSP types (see §4.9).
 - The migration from today's daemon and CLI-owned listeners to one reusable host follows the
   [unified hosting contract and inventory](./specs/unified-hosting.md). Resident services come only
   from device configuration; foreground hosts remain invocation-local; direct finite commands and
@@ -532,6 +534,42 @@ checks. Static allowed signers ship first; scoped accepted-registry authority an
 in-vault sigchains extend Phase 12.17 later. Execution trust never comes from merely syncing a key
 file. RSS imports retain portable canonical bindings so node handoff does not lose article identity;
 offline reassignment/revocation is eventual, and overlap remains recoverable rather than exactly once.
+
+### 4.9 Terminal editor integration
+
+Terminal editors become a first-class way to work in a vault through the Language Server Protocol,
+specified in [the editor integration contract](specs/editor-integration.md) and Roadmap 9.40. One
+editor-neutral server covers Neovim, Vim, Helix, Emacs, and Zed, instead of a per-editor plugin
+that would have to reimplement link resolution.
+
+- **Placement.** `vulcan lsp` lives in a new `vulcan-lsp` crate, the only crate that depends on
+  LSP types. Reusable editor services (completion candidates, overlay diagnostics, navigation, and
+  edit planning) live in a transport-neutral `vulcan-app::editor` module that the Phase 14 WebUI
+  editor and MCP completion can reuse. Byte/position conversion and "element at offset" lookup live
+  in `vulcan-core`. The CLI only adds the subcommand.
+- **Runtime.** The server is synchronous (`lsp-server`, no Tokio) and client-owned like MCP stdio:
+  it works without the daemon and does not depend on unified hosting. Readers share one retained
+  `NoteStoreSession`; a single writer thread owns the write lock, so a CLI mutation never stalls
+  completion.
+- **Overlay.** Unsaved buffer text is parsed in memory for outline, diagnostics, and its own links.
+  Cross-document facts (identities, backlinks, catalogs) come from the cache, with open buffers'
+  identities replaced by their overlays so links to unsaved new notes resolve. Buffer text is never
+  written to the cache; scans only read saved bytes.
+- **Mutations.** Each file in a plan is handled by whether it is open in the editor: open files get
+  versioned `TextDocumentEdit`s, closed files get the journaled preimage-checked batch. The disk side
+  runs first, then the editor edit, and an editor rejection triggers a compensating inverse batch
+  that leaves later external edits alone. Moves are always performed by Vulcan under its move
+  journal, never delegated to an editor `RenameFile`.
+- **Freshness.** Saves trigger targeted scans. One LSP process per vault holds an advisory watch
+  lease and runs the watcher; other processes poll the store clock, and no process watches when a
+  daemon owns the vault.
+- **Safety.** DataviewJS rendering is off unless device-local configuration enables it, so opening
+  an untrusted vault in an editor executes no code. Permission profiles apply to every workflow, and
+  the LSP never auto-commits unless asked.
+- **Scope.** The plugin layer (`vulcan.nvim`) carries no vault semantics: pickers, periodic notes,
+  capture, TUI launchers, and rendered query blocks call the server or `--output json`. Bases,
+  queries, and search are not mirrored over LSP. Graph views remain Phase 13.3 WebUI work and
+  canvas editing remains Phase 18.
 
 ## 5. Data model overview
 
@@ -1733,7 +1771,7 @@ Post-v1 phases are tracked in `docs/ROADMAP.md` and include:
 
 - **Phase 7:** Post-v1 workflow features (move/rename variants, suggest, saved reports, link-mentions, automation)
 - **Phase 8:** Performance optimizations
-- **Phase 9:** CLI refinements, native workflows, and compatibility adapters — edit, browse TUI, auto-commit, additional commands, advanced search operators, enhanced templates (9.1–9.7), Dataview-compatible metadata and querying (9.8), Templater-compatible templates (9.9), shared task semantics with a Tasks adapter (9.10), native boards with Kanban compatibility (9.11), external-agent integration through JSON/MCP plus vault-native guidance and skills (9.12), native capture/automation with QuickAdd import (9.13), capability and adapter notes (9.14), the primary task model with TaskNotes compatibility (9.15), periodic notes with daily events (9.16), unified settings migration (9.17), **CLI redesign — two-level command hierarchy, note CRUD, query enhancements, JS runtime/REPL, web tools, git ops, integrated docs, task mutations (9.18)**, MCP/tooling hardening (9.19, 9.23), vault-native programmable skill command tools (9.24), and the completed pre-daemon boundary gate (9.29). Outline publishing (9.30) and folder-note normalization (9.31) are completed optional additions, not extensions of the Phase 10 prerequisite chain.
+- **Phase 9:** CLI refinements, native workflows, and compatibility adapters — edit, browse TUI, auto-commit, additional commands, advanced search operators, enhanced templates (9.1–9.7), Dataview-compatible metadata and querying (9.8), Templater-compatible templates (9.9), shared task semantics with a Tasks adapter (9.10), native boards with Kanban compatibility (9.11), external-agent integration through JSON/MCP plus vault-native guidance and skills (9.12), native capture/automation with QuickAdd import (9.13), capability and adapter notes (9.14), the primary task model with TaskNotes compatibility (9.15), periodic notes with daily events (9.16), unified settings migration (9.17), **CLI redesign — two-level command hierarchy, note CRUD, query enhancements, JS runtime/REPL, web tools, git ops, integrated docs, task mutations (9.18)**, MCP/tooling hardening (9.19, 9.23), vault-native programmable skill command tools (9.24), and the completed pre-daemon boundary gate (9.29). Outline publishing (9.30) and folder-note normalization (9.31) are completed optional additions, not extensions of the Phase 10 prerequisite chain. Terminal editor integration through `vulcan lsp` and `vulcan.nvim` (9.40) is a planned optional addition that does not depend on the daemon.
 - **Phase 10:** Multi-vault daemon with REST API — in progress. `vulcan daemon start/install`, the first vault-registry slice, sync supervision, and the companion transport exist; the REST API and full hosting consolidation (10.7) remain
 - **Phase 11:** Git auto-versioning at the daemon level
 - **Phase 12:** Device and file-tree synchronization through pluggable backends — the Git baseline (12.1–12.14) is implemented, with cryptographic identity, key management, synced secrets, deterministic artifact mergers, and selective materialization (12.15–12.20) as follow-ons; optional full-Space SilverBullet protocol support belongs here, while selective wiki exchange does not
@@ -1745,7 +1783,7 @@ Post-v1 phases are tracked in `docs/ROADMAP.md` and include:
 - **Phase 18:** Canvas support (parsing, indexing, CLI, WebUI rendering, interactive editor) and Excalidraw support (18.8)
 - **Phase 19:** Vulcan Apps — immutable `.vapp` packages, sandboxed browser/QuickJS/WASM/CLI surfaces, capability-bound instances, logical storage profiles, vault-native and canonical data, and an experimental replicated structured-store boundary
 
-Detailed mdbase and native vault-capability plans with Obsidian compatibility adapters remain **candidate capability tracks**, not numbered delivery gates. The SilverBullet appendix is promoted connector design referenced by Phases 12 and 15. Candidate durable Markdown/core slices may still be promoted independently; daemon, sync, editor, and runtime slices belong to Phases 10, 12, 14, and 15 respectively.
+Detailed mdbase and native vault-capability plans with Obsidian compatibility adapters remain **candidate capability tracks**, not numbered delivery gates. The SilverBullet appendix is promoted connector design referenced by Phases 12 and 15. Candidate durable Markdown/core slices may still be promoted independently; daemon, sync, browser editor, and runtime slices belong to Phases 10, 12, 14, and 15 respectively; editor-neutral language-server adapters are the 9.40 exception.
 
 The design decisions in this document (three-layer architecture, cache as derived index, vault as source of truth, provider abstraction, parser pipeline) are load-bearing for all later phases. See the roadmap for dependency edges and implementation details.
 
