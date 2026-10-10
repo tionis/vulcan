@@ -140,6 +140,9 @@ pub(crate) fn handle_daily_command(
         }
         DailyCommand::Show { date } => {
             let report = run_daily_show_command(paths, date.as_deref(), "daily")?;
+            crate::selected_permission_guard(cli, paths)?
+                .check_read_path(&report.path)
+                .map_err(CliError::operation)?;
             print_daily_show_report(cli, paths, &report, stdout_is_tty, use_stdout_color)
         }
         DailyCommand::List {
@@ -403,6 +406,9 @@ pub(crate) fn handle_periodic_command(
         }
         Some(PeriodicSubcommand::Show { period_type, date }) => {
             let report = run_daily_show_command(paths, date.as_deref(), period_type)?;
+            crate::selected_permission_guard(cli, paths)?
+                .check_read_path(&report.path)
+                .map_err(CliError::operation)?;
             print_daily_show_report(cli, paths, &report, stdout_is_tty, use_stdout_color)
         }
         Some(PeriodicSubcommand::Append {

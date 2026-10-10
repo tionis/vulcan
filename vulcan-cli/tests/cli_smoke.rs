@@ -4696,6 +4696,50 @@ fn daily_show_human_output_evaluates_the_note() {
 }
 
 #[test]
+fn daily_show_respects_the_permission_profile() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("Journal/Daily")).expect("daily folder should exist");
+    fs::write(
+        vault_root.join("Journal/Daily/2026-05-08.md"),
+        "secret entry\n",
+    )
+    .expect("daily note should be written");
+    fs::write(vault_root.join("Public.md"), "# Public\n").expect("note should be written");
+    run_scan(&vault_root);
+    let config = vault_root.join(".vulcan/config.toml");
+    let mut contents = fs::read_to_string(&config).unwrap_or_default();
+    contents.push_str(
+        "\n[permissions.profiles.public]\nread = { allow = [\"note:Public.md\"] }\nwrite = { allow = [] }\n",
+    );
+    fs::write(config, contents).expect("config should be written");
+
+    for args in [
+        ["daily", "show", "2026-05-08"].as_slice(),
+        [
+            "periodic",
+            "show",
+            "--type",
+            "daily",
+            "--date",
+            "2026-05-08",
+        ]
+        .as_slice(),
+    ] {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .arg("--vault")
+            .arg(&vault_root)
+            .args(["--permissions", "public"])
+            .args(args)
+            .assert()
+            .failure();
+        let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+        assert!(!stdout.contains("secret entry"), "{args:?}: {stdout}");
+    }
+}
+
+#[test]
 fn render_evaluates_vault_notes_unless_raw() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
