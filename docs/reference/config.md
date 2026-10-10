@@ -1022,6 +1022,14 @@ Named export profiles stored in config and managed by dedicated export commands.
   Named export profile metadata; dedicated `export profile` commands are preferred for edits.
   Preferred command: `vulcan export profile rule add`
   Example: `vulcan export profile create team-book --format epub 'from notes' -o exports/team.epub`
+- `export.profiles.<name>.dataview_js` — type: `enum`; target: `shared`; values: `off`, `static`, `on`
+  DataviewJS policy when `evaluate` is set: `off`, `static`, or `on`; defaults to `dataview.render_dataview_js`.
+  Preferred command: `vulcan export profile set`
+  Example: `vulcan export profile create team-book --format epub 'from notes' -o exports/team.epub`
+- `export.profiles.<name>.evaluate` — type: `boolean`; target: `shared`
+  Evaluate Dataview, Tasks, Bases, and note embeds in markdown, json, zip, and sqlite exports, after content transforms, under the selected profile.
+  Preferred command: `vulcan export profile set`
+  Example: `vulcan export profile create team-book --format epub 'from notes' -o exports/team.epub`
 - `export.profiles.<name>.format` — type: `enum`; target: `shared`; values: `markdown`, `json`, `csv`, `graph`, `epub`, `zip`, `sqlite`, `search-index`
   Named export profile metadata; dedicated `export profile` commands are preferred for edits.
   Preferred command: `vulcan export profile set`

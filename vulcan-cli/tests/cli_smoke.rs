@@ -4773,6 +4773,88 @@ fn daily_show_respects_the_permission_profile() {
 }
 
 #[test]
+fn exports_evaluate_dynamic_content_on_request() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    write_dynamic_content_vault(&vault_root);
+    let export = |args: &[&str]| {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .arg("--vault")
+            .arg(&vault_root)
+            .args(args)
+            .assert()
+            .success();
+        String::from_utf8(assert.get_output().stdout.clone()).expect("stdout should be utf-8")
+    };
+
+    let raw = export(&[
+        "export",
+        "markdown",
+        r#"from notes where file.path = "Dashboard.md""#,
+    ]);
+    assert!(raw.contains("```dataview"), "{raw}");
+
+    let evaluated = export(&[
+        "export",
+        "markdown",
+        r#"from notes where file.path = "Dashboard.md""#,
+        "--evaluate",
+    ]);
+    assert!(evaluated.contains("Status: draft"), "{evaluated}");
+    assert!(
+        evaluated.contains("| [[Private/Secret]] | classified |"),
+        "{evaluated}"
+    );
+    assert!(!evaluated.contains("```dataview"), "{evaluated}");
+
+    let json = export(&[
+        "export",
+        "json",
+        r#"from notes where file.path = "Dashboard.md""#,
+        "--evaluate",
+    ]);
+    assert!(json.contains("Status: draft"), "{json}");
+
+    // A restricted profile keeps hidden notes out of evaluated content too.
+    let scoped = export(&[
+        "--permissions",
+        "public",
+        "export",
+        "markdown",
+        r#"from notes where file.path = "Dashboard.md""#,
+        "--evaluate",
+    ]);
+    assert!(scoped.contains("Status: draft"), "{scoped}");
+    assert!(!scoped.contains("classified"), "{scoped}");
+}
+
+#[test]
+fn export_profiles_can_evaluate_dynamic_content() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    write_dynamic_content_vault(&vault_root);
+    let config = vault_root.join(".vulcan/config.toml");
+    let mut contents = fs::read_to_string(&config).unwrap_or_default();
+    contents.push_str(
+        "\n[export.profiles.dash]\nformat = \"markdown\"\nquery = 'from notes where file.path = \"Dashboard.md\"'\npath = \"out/dash.md\"\nevaluate = true\n",
+    );
+    fs::write(config, contents).expect("config should be written");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .arg("--vault")
+        .arg(&vault_root)
+        .args(["export", "profile", "run", "dash"])
+        .assert()
+        .success();
+    let exported =
+        fs::read_to_string(vault_root.join("out/dash.md")).expect("profile output should exist");
+    assert!(exported.contains("Status: draft"), "{exported}");
+    assert!(!exported.contains("```dataview"), "{exported}");
+}
+
+#[test]
 fn render_evaluates_vault_notes_unless_raw() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

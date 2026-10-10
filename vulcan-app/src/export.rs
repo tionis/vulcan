@@ -366,6 +366,35 @@ pub fn execute_graph_export_selection(
     Ok(graph)
 }
 
+/// Replace each exported note's dynamic content (Dataview, Tasks, Bases and
+/// note embeds) with its evaluated result, as `note get --evaluate` does.
+/// Runs after content transforms, so excluded sections are never evaluated.
+/// Queries see only notes `guard` can read; `DataviewJS` is read-only.
+pub fn evaluate_exported_notes(
+    paths: &VaultPaths,
+    notes: &mut [ExportedNoteDocument],
+    guard: Option<&dyn vulcan_core::PermissionGuard>,
+    dataview_js: vulcan_core::DataviewJsRenderPolicy,
+) -> Vec<vulcan_core::RenderDiagnostic> {
+    let renderer = vulcan_core::EvaluatedMarkdownRenderer::load(paths, guard);
+    let permission_profile = guard.map(vulcan_core::PermissionGuard::profile_name);
+    let mut diagnostics = Vec::new();
+    for note in notes {
+        let evaluated = renderer.render(
+            &note.content,
+            &vulcan_core::EvaluatedMarkdownOptions {
+                source_path: Some(&note.note.document_path),
+                dataview_js,
+                guard,
+                permission_profile,
+            },
+        );
+        note.content = evaluated.markdown;
+        diagnostics.extend(evaluated.diagnostics);
+    }
+    diagnostics
+}
+
 pub fn load_exported_notes(
     paths: &VaultPaths,
     report: &QueryReport,
@@ -3170,6 +3199,18 @@ pub fn validate_export_profile_config(
             "export profile `{name}` only supports `pretty` for json, search-index, and frontend-bundle exports"
         )));
     }
+    let writes_note_content = matches!(
+        format,
+        ExportProfileFormat::Markdown
+            | ExportProfileFormat::Json
+            | ExportProfileFormat::Zip
+            | ExportProfileFormat::Sqlite
+    );
+    if !writes_note_content && (profile.evaluate.is_some() || profile.dataview_js.is_some()) {
+        return Err(AppError::operation(format!(
+            "export profile `{name}` only supports `evaluate` and `dataview_js` for markdown, json, zip, and sqlite exports"
+        )));
+    }
     if !matches!(format, ExportProfileFormat::Graph) && profile.graph_format.is_some() {
         return Err(AppError::operation(format!(
             "export profile `{name}` only supports `graph_format` for graph exports"
@@ -3376,6 +3417,8 @@ fn build_export_profile_config(request: &ExportProfileCreateRequest) -> ExportPr
         frontmatter: request.frontmatter.then_some(true),
         pretty: request.pretty.then_some(true),
         graph_format: request.graph_format,
+        evaluate: None,
+        dataview_js: None,
         content_transform_rules: None,
     }
 }

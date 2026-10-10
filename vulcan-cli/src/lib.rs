@@ -423,27 +423,28 @@ pub use cli::{
     ConfigPermissionsCommand, ConfigPermissionsProfileCommand, ConfigTargetArg, DaemonAgentKindArg,
     DaemonCommand, DaemonCompanionCommand, DaemonConfigCommand, DaemonWebhookFormatArg,
     DailyCommand, DataviewCommand, DataviewJsArg, DescribeFormatArg, DeviceConfigCommand,
-    EpubTocStyle, ExchangeCommand, ExportArgs, ExportCommand, ExportFormat, ExportProfileCommand,
-    ExportProfileFormatArg, ExportProfileRuleCommand, ExportQueryArgs, ExportTransformArgs,
-    FolderNotePlacementArg, GitCommand, GraphCommand, GraphExportFormat, IndexCommand, InitArgs,
-    IntegrationCommand, KanbanCommand, LoginModeArg, McpCommand, McpConnectionsCommand,
-    McpRemoteCommand, McpToolPackArg, McpToolPackModeArg, McpTransportArg, MdbaseCommand,
-    MdbaseWriteRepairCommand, NoteAppendPeriodicArg, NoteCheckboxState, NoteCommand, NoteGetMode,
-    OrdinaryWriteRepairCommand, OutlineBlockReferencePolicyArg, OutlineCollectionPermissionArg,
-    OutlineCollectionsCommand, OutlineCommand, OutlineExcludedTargetPolicyArg,
-    OutlinePullConflictOperationArg, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand,
-    PluginCommand, PluginEventArg, PluginSandboxArg, PropertySortArg, PublishCommand, PullCommand,
-    QueryEngineArg, QueryFormatArg, RefactorCommand, RefreshMode, RenderArgs, RenderMode,
-    RepairCommand, SavedCommand, SavedCreateCommand, SearchBackendArg, SearchMode, SearchSortArg,
-    SemanticGroupingArg, SiteCommand, SkillCommand, SuggestCommand, SuggestLinkStatusArg,
-    SyncCheckpointKindArg, SyncCommand, SyncConflictSideArg, SyncDeviceCommand, SyncForgeCommand,
-    SyncScheduleCommand, SyncSelectionArgs, SyncTargetArgs, SyncTransportCommand, TagSortArg,
-    TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand,
-    TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg, TemplateRenderArgs,
-    TemplateSubcommand, TermuxNetworkArg, TextBundleCommand, ToolCommand, ToolInitTemplateArg,
-    TransportPolicyArg, TrustCommand, UpdateChannelArg, UpdateChannelArgs, UpdateCommand,
-    UpdateNetworkArg, UpdatePolicyArgs, UpdateScheduleCommand, VaultCommand, VectorQueueCommand,
-    VectorsCommand, WebCommand, WebFetchMode, WikiPackageCommand, WikiSourceLocatorsArg,
+    EpubTocStyle, ExchangeCommand, ExportArgs, ExportCommand, ExportEvaluateArgs, ExportFormat,
+    ExportProfileCommand, ExportProfileFormatArg, ExportProfileRuleCommand, ExportQueryArgs,
+    ExportTransformArgs, FolderNotePlacementArg, GitCommand, GraphCommand, GraphExportFormat,
+    IndexCommand, InitArgs, IntegrationCommand, KanbanCommand, LoginModeArg, McpCommand,
+    McpConnectionsCommand, McpRemoteCommand, McpToolPackArg, McpToolPackModeArg, McpTransportArg,
+    MdbaseCommand, MdbaseWriteRepairCommand, NoteAppendPeriodicArg, NoteCheckboxState, NoteCommand,
+    NoteGetMode, OrdinaryWriteRepairCommand, OutlineBlockReferencePolicyArg,
+    OutlineCollectionPermissionArg, OutlineCollectionsCommand, OutlineCommand,
+    OutlineExcludedTargetPolicyArg, OutlinePullConflictOperationArg, OutputFormat,
+    PeriodicOpenArgs, PeriodicSubcommand, PluginCommand, PluginEventArg, PluginSandboxArg,
+    PropertySortArg, PublishCommand, PullCommand, QueryEngineArg, QueryFormatArg, RefactorCommand,
+    RefreshMode, RenderArgs, RenderMode, RepairCommand, SavedCommand, SavedCreateCommand,
+    SearchBackendArg, SearchMode, SearchSortArg, SemanticGroupingArg, SiteCommand, SkillCommand,
+    SuggestCommand, SuggestLinkStatusArg, SyncCheckpointKindArg, SyncCommand, SyncConflictSideArg,
+    SyncDeviceCommand, SyncForgeCommand, SyncScheduleCommand, SyncSelectionArgs, SyncTargetArgs,
+    SyncTransportCommand, TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand,
+    TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg,
+    TemplateRenderArgs, TemplateSubcommand, TermuxNetworkArg, TextBundleCommand, ToolCommand,
+    ToolInitTemplateArg, TransportPolicyArg, TrustCommand, UpdateChannelArg, UpdateChannelArgs,
+    UpdateCommand, UpdateNetworkArg, UpdatePolicyArgs, UpdateScheduleCommand, VaultCommand,
+    VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode, WikiPackageCommand,
+    WikiSourceLocatorsArg,
 };
 use vulcan_core::Verbosity;
 
@@ -1553,6 +1554,7 @@ fn outline_export_request<'a>(
         selection: profile.selection.as_ref(),
         read_filter,
         transforms: profile.content_transform_rules.as_deref(),
+        evaluation: None,
     };
     let source_count = usize::from(request.query.is_some())
         + usize::from(request.query_json.is_some())
@@ -6207,6 +6209,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 ExportCommand::Markdown {
                     query,
                     transforms,
+                    evaluate,
                     path,
                     title,
                 } => {
@@ -6219,13 +6222,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         &transforms.replace_rules,
                     )
                     .map_err(CliError::operation)?;
-                    let prepared = prepare_export_data(
+                    let mut prepared = prepare_export_data(
                         &paths,
                         &report,
                         read_filter.as_ref(),
                         transform_rules.as_deref(),
                     )
                     .map_err(CliError::operation)?;
+                    evaluate_export_notes(cli, &paths, evaluate, &mut prepared.notes)?;
                     let payload = render_markdown_export_payload(&prepared.notes, title.as_deref());
                     let summary = MarkdownExportSummary {
                         path: path
@@ -6238,6 +6242,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 ExportCommand::Json {
                     query,
                     transforms,
+                    evaluate,
                     path,
                     pretty,
                 } => {
@@ -6250,13 +6255,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         &transforms.replace_rules,
                     )
                     .map_err(CliError::operation)?;
-                    let prepared = prepare_export_data(
+                    let mut prepared = prepare_export_data(
                         &paths,
                         &report,
                         read_filter.as_ref(),
                         transform_rules.as_deref(),
                     )
                     .map_err(CliError::operation)?;
+                    evaluate_export_notes(cli, &paths, evaluate, &mut prepared.notes)?;
                     let payload = render_json_export_payload(&report, &prepared.notes, *pretty)
                         .map_err(CliError::operation)?;
                     let summary = JsonExportSummary {
@@ -6359,6 +6365,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 ExportCommand::Zip {
                     query,
                     transforms,
+                    evaluate,
                     path,
                 } => {
                     let report = execute_export_query_args(&paths, query, read_filter.as_ref())?;
@@ -6370,13 +6377,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         &transforms.replace_rules,
                     )
                     .map_err(CliError::operation)?;
-                    let prepared = prepare_export_data(
+                    let mut prepared = prepare_export_data(
                         &paths,
                         &report,
                         read_filter.as_ref(),
                         transform_rules.as_deref(),
                     )
                     .map_err(CliError::operation)?;
+                    evaluate_export_notes(cli, &paths, evaluate, &mut prepared.notes)?;
                     let summary =
                         write_zip_export(&paths, path, &report, &prepared.notes, &prepared.links)
                             .map_err(CliError::operation)?;
@@ -6452,6 +6460,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                             selection: selection.as_ref(),
                             read_filter: read_filter.as_ref(),
                             transforms: transform_rules.as_deref(),
+                            evaluation: None,
                         };
                         run_outline_zip_export(
                             cli.output,
@@ -6503,11 +6512,16 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         )
                     }
                 }
-                ExportCommand::Sqlite { query, path } => {
+                ExportCommand::Sqlite {
+                    query,
+                    evaluate,
+                    path,
+                } => {
                     let report = execute_export_query_args(&paths, query, read_filter.as_ref())?;
-                    let notes =
+                    let mut notes =
                         load_exported_notes(&paths, &report).map_err(CliError::operation)?;
                     let links = load_export_links(&paths, &notes).map_err(CliError::operation)?;
+                    evaluate_export_notes(cli, &paths, evaluate, &mut notes)?;
                     let summary = write_sqlite_export(path, &report, &notes, &links)
                         .map_err(CliError::operation)?;
                     match cli.output {
@@ -9033,6 +9047,31 @@ struct ExportContentRequest<'a> {
     selection: Option<&'a SelectionPlan>,
     read_filter: Option<&'a PermissionFilter>,
     transforms: Option<&'a [ContentTransformRuleConfig]>,
+    /// Evaluate dynamic content after transforms, under this guard.
+    evaluation: Option<ExportEvaluation<'a>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ExportEvaluation<'a> {
+    guard: &'a ProfilePermissionGuard,
+    dataview_js: vulcan_core::DataviewJsRenderPolicy,
+}
+
+impl ExportContentRequest<'_> {
+    fn evaluate_notes(
+        &self,
+        paths: &VaultPaths,
+        notes: &mut [vulcan_app::export::ExportedNoteDocument],
+    ) {
+        if let Some(evaluation) = self.evaluation {
+            vulcan_app::export::evaluate_exported_notes(
+                paths,
+                notes,
+                Some(evaluation.guard),
+                evaluation.dataview_js,
+            );
+        }
+    }
 }
 
 fn parse_selection_json(value: Option<&str>) -> Result<Option<SelectionPlan>, CliError> {
@@ -9339,6 +9378,27 @@ fn finish_export_profile_binary<T: Serialize>(
     serde_json::to_value(summary).map_err(CliError::operation)
 }
 
+/// Apply `export --evaluate` to the notes an export writes. Links stay
+/// those the notes author, collected before evaluation.
+fn evaluate_export_notes(
+    cli: &Cli,
+    paths: &VaultPaths,
+    args: &ExportEvaluateArgs,
+    notes: &mut [vulcan_app::export::ExportedNoteDocument],
+) -> Result<(), CliError> {
+    if !args.evaluate {
+        return Ok(());
+    }
+    let guard = selected_permission_guard(cli, paths)?;
+    vulcan_app::export::evaluate_exported_notes(
+        paths,
+        notes,
+        Some(&guard),
+        DataviewJsArg::resolve(args.dataview_js, paths),
+    );
+    Ok(())
+}
+
 fn run_markdown_export_profile(
     output: OutputFormat,
     paths: &VaultPaths,
@@ -9354,8 +9414,9 @@ fn run_markdown_export_profile(
         request.read_filter,
     )
     .map_err(CliError::operation)?;
-    let prepared = prepare_export_data(paths, &report, request.read_filter, request.transforms)
+    let mut prepared = prepare_export_data(paths, &report, request.read_filter, request.transforms)
         .map_err(CliError::operation)?;
+    request.evaluate_notes(paths, &mut prepared.notes);
     let payload = render_markdown_export_payload(&prepared.notes, title);
     let summary = MarkdownExportSummary {
         path: output_path.display().to_string(),
@@ -9379,8 +9440,9 @@ fn run_json_export_profile(
         request.read_filter,
     )
     .map_err(CliError::operation)?;
-    let prepared = prepare_export_data(paths, &report, request.read_filter, request.transforms)
+    let mut prepared = prepare_export_data(paths, &report, request.read_filter, request.transforms)
         .map_err(CliError::operation)?;
+    request.evaluate_notes(paths, &mut prepared.notes);
     let payload = render_json_export_payload(&report, &prepared.notes, pretty)
         .map_err(CliError::operation)?;
     let summary = JsonExportSummary {
@@ -9501,8 +9563,9 @@ fn run_zip_export_profile(
         request.read_filter,
     )
     .map_err(CliError::operation)?;
-    let prepared = prepare_export_data(paths, &report, request.read_filter, request.transforms)
+    let mut prepared = prepare_export_data(paths, &report, request.read_filter, request.transforms)
         .map_err(CliError::operation)?;
+    request.evaluate_notes(paths, &mut prepared.notes);
     let summary = write_zip_export(
         paths,
         output_path,
@@ -9528,8 +9591,9 @@ fn run_sqlite_export_profile(
         request.read_filter,
     )
     .map_err(CliError::operation)?;
-    let notes = load_exported_notes(paths, &report).map_err(CliError::operation)?;
+    let mut notes = load_exported_notes(paths, &report).map_err(CliError::operation)?;
     let links = load_export_links(paths, &notes).map_err(CliError::operation)?;
+    request.evaluate_notes(paths, &mut notes);
     let summary =
         write_sqlite_export(output_path, &report, &notes, &links).map_err(CliError::operation)?;
     finish_export_profile_binary(output, &summary.path, &summary)
@@ -9667,12 +9731,26 @@ fn run_export_profile(
         require_export_profile_path(paths, name, &profile).map_err(CliError::operation)?;
     let (query, query_json, selection) =
         export_profile_query_args(name, format, &profile).map_err(CliError::operation)?;
+    let evaluation_guard = profile
+        .evaluate
+        .unwrap_or(false)
+        .then(|| selected_permission_guard(cli, paths))
+        .transpose()?;
     let request = ExportContentRequest {
         query,
         query_json,
         selection,
         read_filter,
         transforms: profile.content_transform_rules.as_deref(),
+        evaluation: evaluation_guard.as_ref().map(|guard| ExportEvaluation {
+            guard,
+            dataview_js: profile.dataview_js.unwrap_or_else(|| {
+                vulcan_core::load_vault_config(paths)
+                    .config
+                    .dataview
+                    .render_dataview_js
+            }),
+        }),
     };
 
     let summary = match format {

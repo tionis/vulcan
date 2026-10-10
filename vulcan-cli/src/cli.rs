@@ -2442,6 +2442,23 @@ pub enum CheckpointCommand {
     },
 }
 
+/// Evaluation for exports that write note content.
+#[derive(Debug, Clone, PartialEq, Eq, Args, Default)]
+pub struct ExportEvaluateArgs {
+    #[arg(
+        long,
+        help = "Replace Dataview, Tasks, Bases, and note embeds with their evaluated results, after content transforms"
+    )]
+    pub evaluate: bool,
+    #[arg(
+        long = "dataviewjs",
+        value_enum,
+        requires = "evaluate",
+        help = "How evaluation treats dataviewjs blocks [default: dataview.render_dataview_js, off]"
+    )]
+    pub dataview_js: Option<DataviewJsArg>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum ExportCommand {
     #[command(about = "Run or manage named export profiles from config")]
@@ -2455,6 +2472,8 @@ pub enum ExportCommand {
         query: ExportQueryArgs,
         #[command(flatten)]
         transforms: ExportTransformArgs,
+        #[command(flatten)]
+        evaluate: ExportEvaluateArgs,
         #[arg(
             short = 'o',
             long = "path",
@@ -2470,6 +2489,8 @@ pub enum ExportCommand {
         query: ExportQueryArgs,
         #[command(flatten)]
         transforms: ExportTransformArgs,
+        #[command(flatten)]
+        evaluate: ExportEvaluateArgs,
         #[arg(
             short = 'o',
             long = "path",
@@ -2549,6 +2570,8 @@ pub enum ExportCommand {
         query: ExportQueryArgs,
         #[command(flatten)]
         transforms: ExportTransformArgs,
+        #[command(flatten)]
+        evaluate: ExportEvaluateArgs,
         #[arg(
             short = 'o',
             long = "path",
@@ -2623,6 +2646,8 @@ pub enum ExportCommand {
     Sqlite {
         #[command(flatten)]
         query: ExportQueryArgs,
+        #[command(flatten)]
+        evaluate: ExportEvaluateArgs,
         #[arg(
             short = 'o',
             long = "path",

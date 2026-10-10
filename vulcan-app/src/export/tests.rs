@@ -192,6 +192,37 @@ fn export_profile_create_list_and_show_reports_share_app_layer_logic() {
 }
 
 #[test]
+fn export_profile_evaluate_only_applies_to_note_content_formats() {
+    for (format, allowed) in [
+        (ExportProfileFormat::Markdown, true),
+        (ExportProfileFormat::Json, true),
+        (ExportProfileFormat::Zip, true),
+        (ExportProfileFormat::Sqlite, true),
+        (ExportProfileFormat::Csv, false),
+        (ExportProfileFormat::Graph, false),
+        (ExportProfileFormat::Epub, false),
+    ] {
+        let profile = ExportProfileConfig {
+            format: Some(format),
+            query: Some("from notes".to_string()),
+            path: Some(PathBuf::from("out/export")),
+            evaluate: Some(true),
+            ..ExportProfileConfig::default()
+        };
+        let result = super::validate_export_profile_config("profile", &profile);
+        if allowed {
+            assert!(result.is_ok(), "{format:?}: {result:?}");
+        } else {
+            let error = result.expect_err("non-content formats should reject evaluate");
+            assert!(
+                error.to_string().contains("`evaluate`"),
+                "{format:?}: {error}"
+            );
+        }
+    }
+}
+
+#[test]
 fn export_profile_output_rejects_absolute_and_traversing_paths() {
     let (_temp_dir, paths) = export_paths();
     for unsafe_path in [Path::new("/tmp/public.zip"), Path::new("../public.zip")] {

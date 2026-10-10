@@ -5594,6 +5594,35 @@
                 ]
               },
               {
+                "help": "Replace Dataview, Tasks, Bases, and note embeds with their evaluated results, after content transforms",
+                "id": "evaluate",
+                "long": "evaluate",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EVALUATE"
+                ]
+              },
+              {
+                "help": "How evaluation treats dataviewjs blocks [default: dataview.render_dataview_js, off]",
+                "id": "dataview_js",
+                "long": "dataviewjs",
+                "possible_values": [
+                  "off",
+                  "static",
+                  "on"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DATAVIEW_JS"
+                ]
+              },
+              {
                 "help": "Destination Markdown file; omit to print the combined document to stdout",
                 "id": "path",
                 "long": "path",
@@ -5710,6 +5739,35 @@
                   "MODE",
                   "PATTERN",
                   "REPLACEMENT"
+                ]
+              },
+              {
+                "help": "Replace Dataview, Tasks, Bases, and note embeds with their evaluated results, after content transforms",
+                "id": "evaluate",
+                "long": "evaluate",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EVALUATE"
+                ]
+              },
+              {
+                "help": "How evaluation treats dataviewjs blocks [default: dataview.render_dataview_js, off]",
+                "id": "dataview_js",
+                "long": "dataviewjs",
+                "possible_values": [
+                  "off",
+                  "static",
+                  "on"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DATAVIEW_JS"
                 ]
               },
               {
@@ -6124,6 +6182,35 @@
                 ]
               },
               {
+                "help": "Replace Dataview, Tasks, Bases, and note embeds with their evaluated results, after content transforms",
+                "id": "evaluate",
+                "long": "evaluate",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EVALUATE"
+                ]
+              },
+              {
+                "help": "How evaluation treats dataviewjs blocks [default: dataview.render_dataview_js, off]",
+                "id": "dataview_js",
+                "long": "dataviewjs",
+                "possible_values": [
+                  "off",
+                  "static",
+                  "on"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DATAVIEW_JS"
+                ]
+              },
+              {
                 "help": "Destination ZIP archive",
                 "id": "path",
                 "long": "path",
@@ -6373,6 +6460,35 @@
                 "short": null,
                 "value_names": [
                   "SELECTION_JSON"
+                ]
+              },
+              {
+                "help": "Replace Dataview, Tasks, Bases, and note embeds with their evaluated results, after content transforms",
+                "id": "evaluate",
+                "long": "evaluate",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EVALUATE"
+                ]
+              },
+              {
+                "help": "How evaluation treats dataviewjs blocks [default: dataview.render_dataview_js, off]",
+                "id": "dataview_js",
+                "long": "dataviewjs",
+                "possible_values": [
+                  "off",
+                  "static",
+                  "on"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DATAVIEW_JS"
                 ]
               },
               {

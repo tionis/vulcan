@@ -2151,6 +2151,13 @@ pub struct ExportProfileConfig {
     pub frontmatter: Option<bool>,
     pub pretty: Option<bool>,
     pub graph_format: Option<ExportGraphFormatConfig>,
+    /// Evaluate dynamic content in Markdown, JSON, ZIP, and `SQLite` exports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluate: Option<bool>,
+    /// The `DataviewJS` policy when evaluating; defaults to
+    /// `dataview.render_dataview_js`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataview_js: Option<crate::DataviewJsRenderPolicy>,
     #[serde(
         default,
         rename = "content_transforms",
@@ -4055,6 +4062,12 @@ fn merge_export_profile_config(target: &mut ExportProfileConfig, profile: Export
     }
     if let Some(graph_format) = profile.graph_format {
         target.graph_format = Some(graph_format);
+    }
+    if let Some(evaluate) = profile.evaluate {
+        target.evaluate = Some(evaluate);
+    }
+    if let Some(dataview_js) = profile.dataview_js {
+        target.dataview_js = Some(dataview_js);
     }
     if let Some(content_transform_rules) = profile.content_transform_rules {
         target.content_transform_rules = Some(content_transform_rules);
