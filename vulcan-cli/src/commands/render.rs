@@ -23,6 +23,8 @@ pub(crate) struct RenderReport {
     evaluated: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     diagnostics: Vec<RenderDiagnostic>,
+    #[serde(skip)]
+    strict_line_breaks: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -70,6 +72,9 @@ pub(crate) fn run_render_command(
     };
 
     let permission_profile = options.guard.map(PermissionGuard::profile_name);
+    let strict_line_breaks = vulcan_core::load_vault_config(paths)
+        .config
+        .strict_line_breaks;
     // Dynamic content only has meaning for notes inside the vault. HTML
     // output always evaluates, like `note get --mode html`.
     let evaluate = source_path.is_some() && (options.evaluate || options.mode == RenderMode::Html);
@@ -85,11 +90,12 @@ pub(crate) fn run_render_command(
                     permission_profile,
                 },
             );
-            let rendered = terminal_markdown::render_note_markdown(&evaluated.markdown);
+            let rendered =
+                terminal_markdown::render_note_markdown(&evaluated.markdown, strict_line_breaks);
             (evaluated.markdown, rendered, evaluated.diagnostics)
         }
         RenderMode::Terminal => {
-            let rendered = terminal_markdown::render_note_markdown(&source);
+            let rendered = terminal_markdown::render_note_markdown(&source, strict_line_breaks);
             (source.clone(), rendered, Vec::new())
         }
         RenderMode::Html => {
@@ -119,6 +125,7 @@ pub(crate) fn run_render_command(
         .to_string(),
         evaluated: evaluate,
         diagnostics,
+        strict_line_breaks,
     })
 }
 
@@ -132,7 +139,11 @@ pub(crate) fn print_render_report(
         OutputFormat::Json => print_json(report),
         OutputFormat::Human => {
             let rendered = if report.mode == "terminal" && stdout_is_tty {
-                terminal_markdown::render_note_markdown_for_stdout(&report.markdown, use_color)
+                terminal_markdown::render_note_markdown_for_stdout(
+                    &report.markdown,
+                    use_color,
+                    report.strict_line_breaks,
+                )
             } else {
                 report.rendered.clone()
             };

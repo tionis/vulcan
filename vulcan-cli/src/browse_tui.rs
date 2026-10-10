@@ -819,6 +819,8 @@ struct BrowseState {
     rendered_preview: RenderedPreview,
     preview_worker: PreviewWorker,
     evaluated_previews: EvaluatedPreviewCache,
+    /// The vault's Obsidian `strictLineBreaks` setting.
+    strict_line_breaks: bool,
     status: String,
     authority: BrowseAuthority,
 }
@@ -882,6 +884,9 @@ impl BrowseState {
                 authority.profile().map(ToOwned::to_owned),
             ),
             evaluated_previews: EvaluatedPreviewCache::default(),
+            strict_line_breaks: vulcan_core::load_vault_config(&paths)
+                .config
+                .strict_line_breaks,
             status: "Ready.".to_string(),
             authority,
         };
@@ -1627,7 +1632,7 @@ impl BrowseState {
             TerminalMarkdownOptions {
                 width: Some(usize::from(width.max(20))),
                 styled: true,
-                preserve_line_breaks: true,
+                preserve_line_breaks: !self.strict_line_breaks,
             },
         );
         let lines = to_ratatui_lines(&styled);

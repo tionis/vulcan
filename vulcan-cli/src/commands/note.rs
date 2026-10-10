@@ -206,7 +206,16 @@ pub(crate) fn handle_note_command(
                     raw: *raw,
                 },
             )?;
-            print_note_get_report(cli.output, &report, stdout_is_tty, use_stdout_color)
+            let strict_line_breaks = vulcan_core::load_vault_config(paths)
+                .config
+                .strict_line_breaks;
+            print_note_get_report(
+                cli.output,
+                &report,
+                stdout_is_tty,
+                use_stdout_color,
+                strict_line_breaks,
+            )
         }
         NoteCommand::Set {
             note,
@@ -1476,6 +1485,7 @@ pub(crate) fn print_note_get_report(
     report: &NoteGetReport,
     stdout_is_tty: bool,
     use_color: bool,
+    strict_line_breaks: bool,
 ) -> Result<(), CliError> {
     match output {
         OutputFormat::Human => {
@@ -1495,6 +1505,7 @@ pub(crate) fn print_note_get_report(
                         &report.content,
                         stdout_is_tty,
                         use_color,
+                        strict_line_breaks,
                     );
                 }
             } else {
@@ -1522,6 +1533,7 @@ pub(crate) fn print_note_get_report(
                     &report.content,
                     stdout_is_tty,
                     use_color,
+                    strict_line_breaks,
                 )?;
                 return Ok(());
             }

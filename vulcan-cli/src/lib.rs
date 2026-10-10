@@ -7033,26 +7033,34 @@ pub(crate) fn print_markdown_output(
     stdout_is_tty: bool,
     use_color: bool,
 ) -> Result<(), CliError> {
-    print_markdown_output_with(output, markdown, stdout_is_tty, use_color, false)
+    print_markdown_output_with(output, markdown, stdout_is_tty, use_color, None)
 }
 
-/// [`print_markdown_output`] for vault notes, keeping line breaks inside
-/// paragraphs as Obsidian shows them.
+/// [`print_markdown_output`] for vault notes, showing line breaks inside
+/// paragraphs as Obsidian does under the vault's `strict_line_breaks`.
 pub(crate) fn print_note_markdown_output(
     output: OutputFormat,
     markdown: &str,
     stdout_is_tty: bool,
     use_color: bool,
+    strict_line_breaks: bool,
 ) -> Result<(), CliError> {
-    print_markdown_output_with(output, markdown, stdout_is_tty, use_color, true)
+    print_markdown_output_with(
+        output,
+        markdown,
+        stdout_is_tty,
+        use_color,
+        Some(strict_line_breaks),
+    )
 }
 
+/// `note_strict_line_breaks` is `Some` for vault notes and `None` for prose.
 fn print_markdown_output_with(
     output: OutputFormat,
     markdown: &str,
     stdout_is_tty: bool,
     use_color: bool,
-    note: bool,
+    note_strict_line_breaks: Option<bool>,
 ) -> Result<(), CliError> {
     match output {
         OutputFormat::Json => Err(CliError::operation(
@@ -7060,10 +7068,13 @@ fn print_markdown_output_with(
         )),
         OutputFormat::Human => {
             let rendered = if stdout_is_tty {
-                if note {
-                    terminal_markdown::render_note_markdown_for_stdout(markdown, use_color)
-                } else {
-                    terminal_markdown::render_terminal_markdown_for_stdout(markdown, use_color)
+                match note_strict_line_breaks {
+                    Some(strict) => terminal_markdown::render_note_markdown_for_stdout(
+                        markdown, use_color, strict,
+                    ),
+                    None => {
+                        terminal_markdown::render_terminal_markdown_for_stdout(markdown, use_color)
+                    }
                 }
             } else {
                 markdown.to_string()

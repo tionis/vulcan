@@ -132,28 +132,34 @@ pub(crate) fn render_terminal_markdown_for_stdout(markdown: &str, use_color: boo
     )
 }
 
-/// Render a vault note without wrapping or color, keeping its line breaks.
-pub(crate) fn render_note_markdown(markdown: &str) -> String {
+/// Render a vault note without wrapping or color. Line breaks inside
+/// paragraphs show as Obsidian shows them: kept, unless the vault sets
+/// `strict_line_breaks`.
+pub(crate) fn render_note_markdown(markdown: &str, strict_line_breaks: bool) -> String {
     render_terminal_markdown_with(
         markdown,
         TerminalMarkdownOptions {
             width: None,
             styled: false,
-            preserve_line_breaks: true,
+            preserve_line_breaks: !strict_line_breaks,
         },
     )
 }
 
 /// Render a vault note for stdout: like
-/// [`render_terminal_markdown_for_stdout`], but line breaks inside
-/// paragraphs are kept as Obsidian shows them.
-pub(crate) fn render_note_markdown_for_stdout(markdown: &str, use_color: bool) -> String {
+/// [`render_terminal_markdown_for_stdout`], with line breaks inside
+/// paragraphs as in [`render_note_markdown`].
+pub(crate) fn render_note_markdown_for_stdout(
+    markdown: &str,
+    use_color: bool,
+    strict_line_breaks: bool,
+) -> String {
     render_terminal_markdown_with(
         markdown,
         TerminalMarkdownOptions {
             width: stdout_width(),
             styled: use_color,
-            preserve_line_breaks: true,
+            preserve_line_breaks: !strict_line_breaks,
         },
     )
 }
@@ -1534,6 +1540,8 @@ mod tests {
         );
         assert_eq!(rendered, "status:: draft\nowner:: Bob\n\n- item");
         assert_eq!(plain("a\nb"), "a b");
+        assert_eq!(render_note_markdown("a\nb", false), "a\nb");
+        assert_eq!(render_note_markdown("a\nb", true), "a b");
     }
 
     #[test]

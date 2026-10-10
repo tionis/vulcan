@@ -1474,6 +1474,24 @@ mod tests {
     }
 
     #[test]
+    fn html_line_breaks_follow_obsidian_strict_line_breaks() {
+        let (_temp_dir, paths, _) = build_vault();
+        let html = crate::render_note_html(&paths, "Home.md", "one\ntwo\n").html;
+        assert!(html.contains("one<br />\ntwo"), "{html}");
+
+        std::fs::create_dir_all(paths.vault_root().join(".obsidian"))
+            .expect(".obsidian should exist");
+        std::fs::write(
+            paths.vault_root().join(".obsidian/app.json"),
+            r#"{"strictLineBreaks": true}"#,
+        )
+        .expect("app.json should write");
+        let html = crate::render_note_html(&paths, "Home.md", "one\ntwo\n").html;
+        assert!(html.contains("one\ntwo"), "{html}");
+        assert!(!html.contains("<br"), "{html}");
+    }
+
+    #[test]
     fn obsidian_comments_are_hidden() {
         let (_temp_dir, paths, _) = build_vault();
         let source = "Visible %%inline secret%% text\n\n%%\nblock secret\n%%\n\nAfter\n";

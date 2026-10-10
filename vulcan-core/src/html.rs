@@ -266,6 +266,7 @@ fn render_html_internal(
         env.link_targets,
         &env.config.folder_notes,
         env.raw_html_policy,
+        env.config.strict_line_breaks,
     );
     if rendered.sanitized_raw_html_events > 0 {
         diagnostics.push(HtmlRenderDiagnostic {
@@ -1191,6 +1192,7 @@ fn render_markdown_html_with_targets(
     link_targets: &HtmlLinkTargets,
     folder_notes: &crate::folder_notes::FolderNotesConfig,
     raw_html_policy: HtmlRawHtmlPolicy,
+    strict_line_breaks: bool,
 ) -> RenderedMarkdownHtml {
     let empty_path = String::new();
     let source_path = source_path.unwrap_or(&empty_path);
@@ -1249,6 +1251,8 @@ fn render_markdown_html_with_targets(
             &mut rendered_html.stripped_raw_html_events,
             false,
         ),
+        // Obsidian shows single line breaks unless strictLineBreaks is set.
+        MarkdownEvent::SoftBreak if !strict_line_breaks => MarkdownEvent::HardBreak,
         other => other,
     });
 
