@@ -899,7 +899,8 @@ fn inline_value(value: &Value) -> String {
     }
 }
 
-fn format_number(number: &serde_json::Number) -> String {
+/// A number as Dataview shows it: integral floats without a fraction.
+pub(crate) fn format_number(number: &serde_json::Number) -> String {
     match number.as_f64() {
         Some(float) if number.is_f64() && float.fract() == 0.0 && float.abs() < 1e15 => {
             format!("{float:.0}")

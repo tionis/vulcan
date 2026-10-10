@@ -625,7 +625,7 @@ fn render_json_value_html(
         ),
         Value::Null => String::new(),
         Value::Bool(flag) => escape_html_text(&flag.to_string()),
-        Value::Number(number) => escape_html_text(&number.to_string()),
+        Value::Number(number) => escape_html_text(&crate::dynamic_content::format_number(number)),
         other => {
             escape_html_text(&serde_json::to_string(other).unwrap_or_else(|_| other.to_string()))
         }
@@ -1765,7 +1765,7 @@ fn render_plain_json_value(value: &Value) -> String {
         Value::Null => String::new(),
         Value::String(text) => text.clone(),
         Value::Bool(flag) => flag.to_string(),
-        Value::Number(number) => number.to_string(),
+        Value::Number(number) => crate::dynamic_content::format_number(number),
         other => serde_json::to_string(other).unwrap_or_else(|_| other.to_string()),
     }
 }
@@ -1987,6 +1987,16 @@ mod tests {
 
         assert!(rendered.html.contains("<hr />"));
         assert!(rendered.html.contains("<p>After</p>"));
+    }
+
+    #[test]
+    fn numbers_render_like_dataview() {
+        assert_eq!(super::render_plain_json_value(&serde_json::json!(1.0)), "1");
+        assert_eq!(
+            super::render_plain_json_value(&serde_json::json!(1.5)),
+            "1.5"
+        );
+        assert_eq!(super::render_plain_json_value(&serde_json::json!(3)), "3");
     }
 
     #[test]
