@@ -704,6 +704,46 @@ struct RenderedPreview {
     layout: std::cell::RefCell<Option<(u16, Vec<Line<'static>>)>>,
 }
 
+/// Evaluated previews of recently viewed notes, so moving back to a note
+/// shows it at once. An entry is used only while the note's source is
+/// unchanged, and the cache clears whenever the index changes.
+#[derive(Debug, Default)]
+struct EvaluatedPreviewCache {
+    entries: std::collections::HashMap<String, (String, String)>,
+    order: std::collections::VecDeque<String>,
+}
+
+impl EvaluatedPreviewCache {
+    const CAPACITY: usize = 64;
+
+    fn get(&self, path: &str, source: &str) -> Option<&str> {
+        self.entries
+            .get(path)
+            .filter(|(cached_source, _)| cached_source == source)
+            .map(|(_, markdown)| markdown.as_str())
+    }
+
+    fn insert(&mut self, path: String, source: String, markdown: String) {
+        if self
+            .entries
+            .insert(path.clone(), (source, markdown))
+            .is_none()
+        {
+            self.order.push_back(path);
+            while self.order.len() > Self::CAPACITY {
+                if let Some(oldest) = self.order.pop_front() {
+                    self.entries.remove(&oldest);
+                }
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.order.clear();
+    }
+}
+
 /// Lines a PageUp/PageDown press scrolls the rendered preview.
 const PREVIEW_SCROLL_STEP: i32 = 10;
 
@@ -778,6 +818,7 @@ struct BrowseState {
     preview_toggled: bool,
     rendered_preview: RenderedPreview,
     preview_worker: PreviewWorker,
+    evaluated_previews: EvaluatedPreviewCache,
     status: String,
     authority: BrowseAuthority,
 }
@@ -840,6 +881,7 @@ impl BrowseState {
                     .then(|| authority.guard().clone()),
                 authority.profile().map(ToOwned::to_owned),
             ),
+            evaluated_previews: EvaluatedPreviewCache::default(),
             status: "Ready.".to_string(),
             authority,
         };
@@ -1491,6 +1533,7 @@ impl BrowseState {
     /// example after a scan or an edit.
     fn invalidate_rendered_preview(&mut self) {
         self.rendered_preview.stale = true;
+        self.evaluated_previews.clear();
         self.preview_worker.reset();
     }
 
@@ -1517,10 +1560,14 @@ impl BrowseState {
             }
             Some(path) => match fs::read_to_string(self.paths.vault_root().join(path)) {
                 Ok(source) => {
-                    self.preview_worker.request(path);
-                    self.rendered_preview.pending = true;
                     self.rendered_preview.source.clone_from(&source);
-                    source
+                    if let Some(markdown) = self.evaluated_previews.get(path, &source) {
+                        markdown.to_string()
+                    } else {
+                        self.preview_worker.request(path);
+                        self.rendered_preview.pending = true;
+                        source
+                    }
                 }
                 Err(error) => {
                     self.rendered_preview.source.clear();
@@ -1548,6 +1595,11 @@ impl BrowseState {
         if self.rendered_preview.path.as_deref() != Some(note.path.as_str()) {
             return false;
         }
+        self.evaluated_previews.insert(
+            note.path,
+            self.rendered_preview.source.clone(),
+            note.markdown.clone(),
+        );
         self.rendered_preview.markdown = note.markdown;
         self.rendered_preview.pending = false;
         self.rendered_preview.layout.replace(None);
@@ -5150,6 +5202,48 @@ mod tests {
         assert_eq!(preview_text(&preview[39..]), "40 \nLine 40");
         state.handle_key(key(KeyCode::PageDown));
         assert_eq!(state.preview_scroll(), 10);
+    }
+
+    #[test]
+    fn revisited_notes_reuse_their_evaluated_preview_until_they_change() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        write_note(
+            temp_dir.path(),
+            "Alpha.md",
+            "---\nstatus: draft\n---\n\nStatus: `= this.status`\n",
+        );
+        write_note(temp_dir.path(), "Beta.md", "# Beta\n");
+        scan_fixture(&paths);
+        let mut state = BrowseState::new(
+            paths.clone(),
+            vec![note("Alpha.md", &[]), note("Beta.md", &[])],
+        )
+        .expect("state should build");
+        state.picker.select_path("Alpha.md");
+        state.refresh_rendered_preview_if_needed();
+        state.settle_rendered_preview();
+        state.picker.select_path("Beta.md");
+        state.refresh_rendered_preview_if_needed();
+        state.settle_rendered_preview();
+
+        state.picker.select_path("Alpha.md");
+        state.refresh_rendered_preview_if_needed();
+        assert!(!state.rendered_preview.pending);
+        assert!(preview_text(&state.preview_lines()).contains("Status: draft"));
+
+        // A changed source is evaluated again.
+        write_note(
+            temp_dir.path(),
+            "Alpha.md",
+            "---\nstatus: draft\n---\n\nNow: `= this.status`\n",
+        );
+        state.picker.select_path("Beta.md");
+        state.refresh_rendered_preview_if_needed();
+        state.settle_rendered_preview();
+        state.picker.select_path("Alpha.md");
+        state.refresh_rendered_preview_if_needed();
+        assert!(state.rendered_preview.pending);
     }
 
     #[test]
