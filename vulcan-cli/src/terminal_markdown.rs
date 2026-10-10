@@ -1346,12 +1346,16 @@ fn callout_tone(kind: &str) -> Tone {
         "tip" | "hint" | "success" | "check" | "done" => Tone::Success,
         "warning" | "caution" | "attention" | "question" | "help" | "faq" => Tone::Warning,
         "danger" | "error" | "failure" | "fail" | "missing" | "bug" => Tone::Danger,
-        "quote" | "cite" | "example" => Tone::Muted,
+        "quote" | "cite" | "example" | "embed" => Tone::Muted,
         _ => Tone::Info,
     }
 }
 
 fn callout_icon(kind: &str) -> &'static str {
+    // Transcluded notes, as written by the evaluated-Markdown renderer.
+    if kind == "embed" {
+        return "↳";
+    }
     match callout_tone(kind) {
         Tone::Success => "✓",
         Tone::Warning => "!",
@@ -1479,6 +1483,14 @@ mod tests {
         );
         assert_eq!(rendered, "status:: draft\nowner:: Bob\n\n- item");
         assert_eq!(plain("a\nb"), "a b");
+    }
+
+    #[test]
+    fn embed_callouts_show_the_embedded_note_title() {
+        assert_eq!(
+            plain("> [!embed] Card\n> Card body\n"),
+            "┃ ↳ Card\n┃ Card body"
+        );
     }
 
     #[test]

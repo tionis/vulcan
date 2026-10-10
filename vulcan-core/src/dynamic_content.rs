@@ -19,6 +19,7 @@ use crate::permissions::PermissionGuard;
 use crate::properties::{
     evaluate_note_inline_expressions, load_note_index, load_note_index_with_guard, NoteRecord,
 };
+use crate::resolver::ResolverDocument;
 use crate::tasks::{evaluate_tasks_query_with_note_index, TasksQueryResult};
 use crate::{
     evaluate_base_file, evaluate_base_file_with_guard, evaluate_dataview_js_with_options,
@@ -195,10 +196,11 @@ fn has_dynamic_content(parsed: &ParsedDocument) -> bool {
         || !parsed.tasks_blocks.is_empty()
         || parsed.links.iter().any(|link| {
             link.link_kind == LinkKind::Embed
-                && link
-                    .target_path_candidate
-                    .as_deref()
-                    .is_some_and(is_base_path)
+                && (link.is_note_embed
+                    || link
+                        .target_path_candidate
+                        .as_deref()
+                        .is_some_and(is_base_path))
         })
 }
 
@@ -371,8 +373,13 @@ pub struct EvaluatedMarkdownRenderer {
     paths: VaultPaths,
     config: VaultConfig,
     note_index: std::cell::OnceCell<Option<HashMap<String, NoteRecord>>>,
+    resolver_documents: std::cell::OnceCell<Vec<ResolverDocument>>,
     guarded: bool,
 }
+
+/// How deep note embeds nest before the renderer stops transcluding, as in
+/// the HTML renderer.
+const MAX_EMBED_DEPTH: usize = 4;
 
 impl EvaluatedMarkdownRenderer {
     /// Prepare a renderer for `guard`'s note universe, or the whole vault.
@@ -383,6 +390,7 @@ impl EvaluatedMarkdownRenderer {
             paths: paths.clone(),
             config: load_vault_config(paths).config,
             note_index: std::cell::OnceCell::new(),
+            resolver_documents: std::cell::OnceCell::new(),
             guarded: guard.is_some(),
         }
     }
@@ -404,6 +412,16 @@ impl EvaluatedMarkdownRenderer {
             options.guard.is_some() == self.guarded,
             "a render must use the guard the renderer was loaded with"
         );
+        self.render_nested(source, options.source_path, options, &mut Vec::new())
+    }
+
+    fn render_nested(
+        &self,
+        source: &str,
+        source_path: Option<&str>,
+        options: &EvaluatedMarkdownOptions<'_>,
+        embed_stack: &mut Vec<String>,
+    ) -> EvaluatedMarkdown {
         let parsed = parse_document(source, &self.config);
         if !has_dynamic_content(&parsed) {
             return EvaluatedMarkdown {
@@ -424,13 +442,147 @@ impl EvaluatedMarkdownRenderer {
             dataview_js: options.dataview_js,
         };
         let mut diagnostics = Vec::new();
-        let regions =
-            evaluate_dynamic_regions(&ctx, options.source_path, &parsed, &mut diagnostics);
-        let markdown = splice_markdown_regions(source, regions);
+        let mut replacements =
+            evaluate_dynamic_regions(&ctx, source_path, &parsed, &mut diagnostics)
+                .into_iter()
+                .filter_map(|region| {
+                    outcome_markdown(&region.outcome)
+                        .map(|replacement| (region.start, region.end, replacement))
+                })
+                .collect::<Vec<_>>();
+        if let (Some(source_path), Some(note_index)) = (source_path, note_index.as_ref()) {
+            for link in &parsed.links {
+                if link.link_kind != LinkKind::Embed
+                    || !link.is_note_embed
+                    || link
+                        .target_path_candidate
+                        .as_deref()
+                        .is_some_and(is_base_path)
+                {
+                    continue;
+                }
+                let body = self.note_embed_markdown(
+                    source_path,
+                    link,
+                    note_index,
+                    options,
+                    embed_stack,
+                    &mut diagnostics,
+                );
+                replacements.push((
+                    link.byte_offset,
+                    link.byte_offset + link.raw_text.len(),
+                    MarkdownReplacement::Block(body),
+                ));
+            }
+        }
         EvaluatedMarkdown {
-            markdown,
+            markdown: splice_markdown(source, replacements),
             diagnostics,
         }
+    }
+
+    /// Transclude one note embed as a callout holding the embedded note's
+    /// evaluated content, or explain why it cannot be shown.
+    fn note_embed_markdown(
+        &self,
+        source_path: &str,
+        link: &crate::RawLink,
+        note_index: &HashMap<String, NoteRecord>,
+        options: &EvaluatedMarkdownOptions<'_>,
+        embed_stack: &mut Vec<String>,
+        diagnostics: &mut Vec<RenderDiagnostic>,
+    ) -> String {
+        let fail = |diagnostics: &mut Vec<RenderDiagnostic>, kind: &str, message: String| {
+            let rendered = callout("warning", "Embed error", &message);
+            diagnostics.push(RenderDiagnostic {
+                kind: kind.to_string(),
+                message,
+            });
+            rendered
+        };
+        let documents = self
+            .resolver_documents
+            .get_or_init(|| crate::html::build_resolver_documents(note_index));
+        let Some(target_path) =
+            crate::html::resolve_note_embed(&self.config, note_index, documents, source_path, link)
+        else {
+            return fail(
+                diagnostics,
+                "unresolved_embed",
+                format!("could not resolve embedded note `{}`", link.raw_text),
+            );
+        };
+        let key = format!(
+            "{target_path}#{}^{}",
+            link.target_heading.as_deref().unwrap_or_default(),
+            link.target_block.as_deref().unwrap_or_default()
+        );
+        if embed_stack.len() >= MAX_EMBED_DEPTH {
+            return fail(
+                diagnostics,
+                "embed_depth_limit",
+                format!("embed depth limit reached at `{}`", link.raw_text),
+            );
+        }
+        if embed_stack.contains(&key) {
+            return fail(
+                diagnostics,
+                "embed_cycle",
+                format!("embed cycle detected at `{}`", link.raw_text),
+            );
+        }
+        let Ok(target_source) = std::fs::read_to_string(self.paths.vault_root().join(&target_path))
+        else {
+            return fail(
+                diagnostics,
+                "missing_embed_target",
+                format!("embedded note `{target_path}` could not be read"),
+            );
+        };
+        let target_parsed = parse_document(&target_source, &self.config);
+        let selected = match crate::note::read_note(
+            &target_source,
+            &target_parsed,
+            &crate::note::NoteReadOptions {
+                heading: link.target_heading.clone(),
+                block_ref: link.target_block.clone(),
+                no_frontmatter: true,
+                ..crate::note::NoteReadOptions::default()
+            },
+        ) {
+            Ok(selection) => selection.content,
+            Err(error) => return fail(diagnostics, "invalid_embed_target", error.to_string()),
+        };
+        embed_stack.push(key);
+        let embedded = self.render_nested(&selected, Some(&target_path), options, embed_stack);
+        embed_stack.pop();
+        diagnostics.extend(embedded.diagnostics);
+
+        let title = link
+            .display_text
+            .as_deref()
+            .filter(|text| !text.trim().is_empty())
+            .map_or_else(
+                || {
+                    let name = target_path.strip_suffix(".md").unwrap_or(&target_path);
+                    match (&link.target_heading, &link.target_block) {
+                        (Some(heading), _) => format!("{name} > {heading}"),
+                        (None, Some(block)) => format!("{name} ^{block}"),
+                        (None, None) => name.to_string(),
+                    }
+                },
+                ToOwned::to_owned,
+            );
+        let mut rendered = format!("> [!embed] {title}");
+        for line in embedded.markdown.trim().lines() {
+            rendered.push_str("\n>");
+            if !line.is_empty() {
+                rendered.push(' ');
+                rendered.push_str(line);
+            }
+        }
+        rendered
     }
 }
 
@@ -444,25 +596,40 @@ pub fn render_evaluated_markdown(
     EvaluatedMarkdownRenderer::load(paths, options.guard).render(source, options)
 }
 
-fn splice_markdown_regions(source: &str, mut regions: Vec<DynamicRegion>) -> String {
-    regions.sort_by(|left, right| left.start.cmp(&right.start).then(right.end.cmp(&left.end)));
+#[cfg(test)]
+fn splice_markdown_regions(source: &str, regions: Vec<DynamicRegion>) -> String {
+    splice_markdown(
+        source,
+        regions
+            .into_iter()
+            .filter_map(|region| {
+                outcome_markdown(&region.outcome)
+                    .map(|replacement| (region.start, region.end, replacement))
+            })
+            .collect(),
+    )
+}
+
+/// Replace `(start, end)` byte ranges of `source`. Block replacements keep
+/// the container prefix (quote markers, indentation) of the line they
+/// start on.
+fn splice_markdown(
+    source: &str,
+    mut replacements: Vec<(usize, usize, MarkdownReplacement)>,
+) -> String {
+    replacements.sort_by(|left, right| left.0.cmp(&right.0).then(right.1.cmp(&left.1)));
     let mut rendered = String::with_capacity(source.len());
     let mut cursor = 0_usize;
-    for region in regions {
-        if region.start < cursor || region.end < region.start || region.end > source.len() {
+    for (start, end, replacement) in replacements {
+        if start < cursor || end < start || end > source.len() {
             continue;
         }
-        let Some(replacement) = outcome_markdown(&region.outcome) else {
-            continue;
-        };
-        rendered.push_str(&source[cursor..region.start]);
+        rendered.push_str(&source[cursor..start]);
         match replacement {
             MarkdownReplacement::Inline(text) => rendered.push_str(&text),
             MarkdownReplacement::Block(body) => {
-                let line_start = source[..region.start]
-                    .rfind('\n')
-                    .map_or(0, |index| index + 1);
-                let lead = &source[line_start..region.start];
+                let line_start = source[..start].rfind('\n').map_or(0, |index| index + 1);
+                let lead = &source[line_start..start];
                 // Blocks nested in quotes, callouts, or list items keep their
                 // container prefix on every line.
                 let prefix = if lead.chars().all(|ch| ch == '>' || ch.is_whitespace()) {
@@ -472,14 +639,14 @@ fn splice_markdown_regions(source: &str, mut regions: Vec<DynamicRegion>) -> Str
                     String::new()
                 };
                 rendered.push_str(&indent_continuation(body.trim_end(), &prefix));
-                if source[..region.end].ends_with('\n') {
+                if source[..end].ends_with('\n') {
                     rendered.push('\n');
-                } else if !source[region.end..].starts_with('\n') {
+                } else if !source[end..].starts_with('\n') {
                     rendered.push_str("\n\n");
                 }
             }
         }
-        cursor = region.end;
+        cursor = end;
     }
     rendered.push_str(&source[cursor..]);
     rendered
@@ -1123,6 +1290,63 @@ mod tests {
             "{}",
             rendered.markdown
         );
+    }
+
+    #[test]
+    fn note_embeds_are_transcluded_with_their_content_evaluated() {
+        let temp_dir = tempfile::TempDir::new().expect("temp dir should be created");
+        let root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(root.join(".vulcan")).expect(".vulcan dir should exist");
+        let home = "# Home\n\n![[Card]]\n\n![[Card#Details]]\n\n![[Loop]]\n\n![[Missing]]\n";
+        for (path, contents) in [
+            ("Home.md", home),
+            (
+                "Card.md",
+                "---\nstatus: active\n---\nCard status: `= this.status`\n\n## Details\nOnly details\n",
+            ),
+            ("Loop.md", "Loop body\n\n![[Loop]]\n"),
+        ] {
+            std::fs::write(root.join(path), contents).expect("note should write");
+        }
+        let paths = VaultPaths::new(&root);
+        crate::scan_vault(&paths, crate::ScanMode::Full).expect("scan should succeed");
+
+        let rendered = render_evaluated_markdown(
+            &paths,
+            home,
+            &EvaluatedMarkdownOptions {
+                source_path: Some("Home.md"),
+                ..EvaluatedMarkdownOptions::default()
+            },
+        );
+        let markdown = &rendered.markdown;
+
+        assert!(
+            markdown.contains(
+                "> [!embed] Card\n> Card status: active\n>\n> ## Details\n> Only details"
+            ),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("> [!embed] Card > Details\n> ## Details\n> Only details"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("> [!embed] Loop\n> Loop body"),
+            "{markdown}"
+        );
+        assert!(markdown.contains("embed cycle detected"), "{markdown}");
+        assert!(
+            markdown.contains("could not resolve embedded note `![[Missing]]`"),
+            "{markdown}"
+        );
+        let kinds = rendered
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.kind.as_str())
+            .collect::<Vec<_>>();
+        assert!(kinds.contains(&"embed_cycle"), "{kinds:?}");
+        assert!(kinds.contains(&"unresolved_embed"), "{kinds:?}");
     }
 
     #[test]

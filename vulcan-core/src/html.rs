@@ -1462,7 +1462,9 @@ fn apply_markdown_replacements(
     rendered
 }
 
-fn build_resolver_documents(note_index: &HashMap<String, NoteRecord>) -> Vec<ResolverDocument> {
+pub(crate) fn build_resolver_documents(
+    note_index: &HashMap<String, NoteRecord>,
+) -> Vec<ResolverDocument> {
     let mut documents = note_index
         .values()
         .map(|note| ResolverDocument {
@@ -1488,9 +1490,24 @@ fn resolve_embedded_note_path(
     link: &crate::RawLink,
     env: &HtmlRenderEnvironment<'_>,
 ) -> Option<String> {
-    let note_index = env.note_index?;
+    resolve_note_embed(
+        env.config,
+        env.note_index?,
+        env.resolver_documents?,
+        source_path,
+        link,
+    )
+}
+
+/// Resolve a note embed in `source_path` to the embedded note's path.
+pub(crate) fn resolve_note_embed(
+    config: &VaultConfig,
+    note_index: &HashMap<String, NoteRecord>,
+    documents: &[ResolverDocument],
+    source_path: &str,
+    link: &crate::RawLink,
+) -> Option<String> {
     let source_note = note_by_path(note_index, source_path)?;
-    let documents = env.resolver_documents?;
     let resolution = resolve_link(
         documents,
         &ResolverLink {
@@ -1499,7 +1516,7 @@ fn resolve_embedded_note_path(
             target_path_candidate: link.target_path_candidate.clone(),
             link_kind: LinkKind::Embed,
         },
-        env.config.link_resolution,
+        config.link_resolution,
     );
     let target_id = resolution.resolved_target_id?;
     documents
