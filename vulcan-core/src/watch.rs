@@ -537,19 +537,14 @@ fn normalize_watch_path(paths: &VaultPaths, path: &Path) -> Option<String> {
     Some(normalized.join("/"))
 }
 
+/// Backends that watch the canonical root (macOS `FSEvents`) report canonical
+/// paths, so a vault opened through a symlink would otherwise drop every
+/// event.
 fn relative_watch_path(paths: &VaultPaths, path: &Path) -> Option<PathBuf> {
     paths
         .relative_to_vault(path)
         .or_else(|| windows_relative_watch_path(paths, path))
-        .or_else(|| canonical_relative_watch_path(paths, path))
-}
-
-/// Backends that watch the canonical root (macOS `FSEvents`) report canonical
-/// paths, so a vault opened through a symlink (`/var` is `/private/var` on
-/// macOS) would otherwise drop every event.
-fn canonical_relative_watch_path(paths: &VaultPaths, path: &Path) -> Option<PathBuf> {
-    let canonical = std::fs::canonicalize(paths.vault_root()).ok()?;
-    path.strip_prefix(canonical).ok().map(Path::to_path_buf)
+        .or_else(|| paths.resolve_relative_to_vault(path))
 }
 
 #[cfg(windows)]

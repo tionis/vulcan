@@ -4956,6 +4956,26 @@ fn render_evaluates_vault_notes_unless_raw() {
     assert_eq!(raw["markdown"], raw["source"]);
 }
 
+/// A vault opened through a symlink (macOS temporary directories live under
+/// `/var`, which is `/private/var`) must still recognize its own notes.
+#[cfg(unix)]
+#[test]
+fn render_evaluates_notes_of_a_vault_opened_through_a_symlink() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let real_root = temp_dir.path().join("vault");
+    write_dynamic_content_vault(&real_root);
+    let vault_root = temp_dir.path().join("linked");
+    std::os::unix::fs::symlink(&real_root, &vault_root).expect("vault symlink");
+    let dashboard = vault_root.join("Dashboard.md");
+    let dashboard = dashboard.to_str().expect("path should be utf-8");
+
+    let json = vulcan_json(&vault_root, &["render", dashboard]);
+
+    assert_eq!(json["evaluated"], true, "{json}");
+    let markdown = json["markdown"].as_str().unwrap();
+    assert!(markdown.contains("Status: draft"), "{markdown}");
+}
+
 #[test]
 fn note_get_markdown_output_preserves_raw_markdown() {
     let temp_dir = TempDir::new().expect("temp dir should be created");

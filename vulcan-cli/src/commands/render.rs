@@ -53,7 +53,7 @@ pub(crate) fn run_render_command(
             let contents = fs::read_to_string(path).map_err(CliError::operation)?;
             let absolute = fs::canonicalize(path).map_err(CliError::operation)?;
             let source_path = paths
-                .relative_to_vault(&absolute)
+                .resolve_relative_to_vault(&absolute)
                 .map(|relative| path_buf_to_slash_string(&relative));
             (Some(path.display().to_string()), contents, source_path)
         }

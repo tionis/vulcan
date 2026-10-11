@@ -751,7 +751,7 @@ fn resolve_existing_direct_markdown_target(
 
         let absolute_path = fs::canonicalize(&absolute_candidate).map_err(AppError::operation)?;
         let vault_relative_path = paths
-            .relative_to_vault(&absolute_path)
+            .resolve_relative_to_vault(&absolute_path)
             .map(|path| path.to_string_lossy().replace('\\', "/"));
         let display_path = vault_relative_path.clone().unwrap_or_else(|| {
             if candidate.is_absolute() {

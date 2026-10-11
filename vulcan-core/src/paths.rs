@@ -157,6 +157,19 @@ impl VaultPaths {
             .ok()
             .map(Path::to_path_buf)
     }
+
+    /// Like [`Self::relative_to_vault`], but also accepts a canonical path,
+    /// such as one from `fs::canonicalize` or a backend that watches the
+    /// canonical root. A vault opened through a symlink (`/var` is
+    /// `/private/var` on macOS) or without Windows' `\\?\` verbatim prefix
+    /// otherwise appears not to contain its own files.
+    #[must_use]
+    pub fn resolve_relative_to_vault(&self, path: &Path) -> Option<PathBuf> {
+        self.relative_to_vault(path).or_else(|| {
+            let canonical = fs::canonicalize(&self.vault_root).ok()?;
+            path.strip_prefix(canonical).ok().map(Path::to_path_buf)
+        })
+    }
 }
 
 #[cfg(any(test, target_os = "android"))]
@@ -1515,6 +1528,34 @@ mod tests {
         assert_eq!(
             paths.relative_to_vault(file),
             Some(PathBuf::from("notes/alpha.md"))
+        );
+    }
+
+    #[test]
+    fn resolves_canonical_paths_inside_a_vault_opened_through_a_symlink() {
+        let temporary = tempfile::TempDir::new().expect("temporary directory");
+        let real = temporary.path().join("real");
+        fs::create_dir_all(real.join("notes")).expect("vault directory");
+        fs::write(real.join("notes/alpha.md"), "alpha\n").expect("note");
+        let linked = temporary.path().join("linked");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &linked).expect("vault symlink");
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_dir(&real, &linked).is_err() {
+            // Creating symlinks needs Developer Mode or elevation on Windows.
+            return;
+        }
+        let paths = VaultPaths::new(&linked);
+        let canonical = fs::canonicalize(linked.join("notes/alpha.md")).expect("canonical note");
+
+        assert_eq!(paths.relative_to_vault(&canonical), None);
+        assert_eq!(
+            paths.resolve_relative_to_vault(&canonical),
+            Some(PathBuf::from("notes").join("alpha.md"))
+        );
+        assert_eq!(
+            paths.resolve_relative_to_vault(&temporary.path().join("elsewhere.md")),
+            None
         );
     }
 
