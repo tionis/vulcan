@@ -10,9 +10,13 @@
 
 - Sync sweeps Vulcan's own refs at most once a day per repository: remote backups of devices that
   are no longer registered are deleted when live already contains them, local device recovery refs
-  are released once their backup is gone, and remote-tracking copies of Vulcan refs the remote no
-  longer has are pruned. Backups that hold content live lacks are kept and reported by
-  `vulcan sync doctor`.
+  are released once their backup is gone. Backups that hold content live lacks are kept and reported
+  by `vulcan sync doctor`.
+- Plain `git fetch` and `git pull` no longer download Vulcan's hidden sync refs (device backups,
+  conflict records): the daily sweep adds `^refs/heads/__vulcan-sync/*` to the remote's fetch
+  refspecs and drops the remote-tracking copies Git made of them, and Vulcan's own fetches no
+  longer create such copies. Git tools without negative-refspec support (Git before 2.29,
+  isomorphic-git) cannot fetch from a remote configured this way.
 
 - **Stable signing-key rotation, final step.** The stable channel now trusts only the
   hardware-held `stable-2026-10` key, and stable releases are signed only with it. The retired

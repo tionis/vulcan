@@ -283,9 +283,10 @@ that keeps both histories reachable.
   remote backup ref; device, Git, and vault access are unchanged.
 - Sync also sweeps Vulcan's refs at most once a day. It deletes remote backups of devices that are
   no longer registered when live already contains them (same exact-lease rule), releases local
-  device recovery refs once their remote backup is gone and live contains them, and drops
-  remote-tracking copies (`refs/remotes/<remote>/__vulcan-sync/...`) of refs the remote no longer
-  has. A `sync.device-backups` doctor warning lists unregistered devices whose backups hold content
+  device recovery refs once their remote backup is gone and live contains them, adds
+  `^refs/heads/__vulcan-sync/*` to the remote's fetch refspecs so plain `git fetch`/`git pull`
+  skip Vulcan's hidden refs, and drops every `refs/remotes/<remote>/__vulcan-sync/...` copy. Do not
+  remove that refspec line, and do not read Vulcan state from `refs/remotes`. A `sync.device-backups` doctor warning lists unregistered devices whose backups hold content
   live lacks; inspect those with `sync devices fetch` before pruning. Registered devices' backups
   are never swept.
 - A safety-head publication failure stops canonical reconciliation. Do not delete the head or

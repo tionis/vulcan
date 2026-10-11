@@ -588,6 +588,16 @@ pub trait GitEngine: Send + Sync {
         Ok(())
     }
 
+    /// Adds `^<prefix>/*` to `remote.<remote>.fetch` so plain `git fetch`
+    /// and `git pull` skip the refs beneath `prefix`. Leaves a remote without
+    /// configured fetch refspecs alone. Returns whether it added the line.
+    fn exclude_from_default_fetch(
+        &self,
+        repository: &GitRepository,
+        remote: &GitRemote,
+        prefix: &GitRefName,
+    ) -> Result<bool, GitEngineError>;
+
     fn is_ancestor(
         &self,
         repository: &GitRepository,
@@ -4047,7 +4057,14 @@ impl GitEngine for GitCliEngine {
         let local_prefix = mirror.local_prefix.as_str().trim_end_matches('/');
         let mut command = self.repository_command(repository);
         command
-            .args(["fetch", "--no-tags", "--force", "--prune", "--"])
+            .args([
+                "fetch",
+                "--no-tags",
+                "--force",
+                "--prune",
+                "--refmap=",
+                "--",
+            ])
             .arg(remote.as_str())
             .arg(format!("+{}:{}", source.as_str(), destination.as_str()))
             .arg(format!("+{remote_prefix}/*:{local_prefix}/*"));
@@ -4096,6 +4113,7 @@ impl GitEngine for GitCliEngine {
             OsString::from("fetch"),
             OsString::from("--no-tags"),
             OsString::from("--force"),
+            OsString::from("--refmap="),
             OsString::from("--"),
             OsString::from(remote.as_str()),
             OsString::from(refspec),
@@ -4129,11 +4147,49 @@ impl GitEngine for GitCliEngine {
             return Ok(());
         }
         let mut command = self.repository_command(repository);
-        command.args(["fetch", "--no-tags", "--force", "--", remote.as_str()]);
+        command.args([
+            "fetch",
+            "--no-tags",
+            "--force",
+            "--refmap=",
+            "--",
+            remote.as_str(),
+        ]);
         for (source, destination) in mappings {
             command.arg(format!("+{}:{}", source.as_str(), destination.as_str()));
         }
         ensure_success("fetch refs", self.execute(command)?).map(drop)
+    }
+
+    fn exclude_from_default_fetch(
+        &self,
+        repository: &GitRepository,
+        remote: &GitRemote,
+        prefix: &GitRefName,
+    ) -> Result<bool, GitEngineError> {
+        let key = format!("remote.{remote}.fetch");
+        let mut command = self.repository_command(repository);
+        command.args(["config", "--get-all", &key]);
+        let output = self.execute(command)?;
+        // Exit status 1: the key is unset, e.g. the remote is a URL.
+        if output.status.code() == Some(1) {
+            return Ok(false);
+        }
+        let output = ensure_success("read the remote's fetch refspecs", output)?;
+        let configured = decode_stdout("read the remote's fetch refspecs", output.stdout)?;
+        let exclusion = format!("^{prefix}/*");
+        if configured.lines().any(|line| line.trim() == exclusion)
+            || !configured.lines().any(|line| !line.trim().starts_with('^'))
+        {
+            return Ok(false);
+        }
+        let mut command = self.repository_command(repository);
+        command.args(["config", "--add", &key, &exclusion]);
+        ensure_success(
+            "exclude Vulcan refs from the default fetch",
+            self.execute(command)?,
+        )?;
+        Ok(true)
     }
 
     fn is_ancestor(
@@ -9376,6 +9432,92 @@ mod tests {
                 reference: missing_ref,
             }) if missing_remote == remote && missing_ref == live
         ));
+    }
+
+    #[test]
+    fn hidden_refs_stay_out_of_remote_tracking_refs() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let remote_path = temporary.path().join("remote.git");
+        let remote_path = remote_path.to_str().expect("remote path");
+        run_git(
+            temporary.path(),
+            &["init", "--quiet", "--bare", remote_path],
+        );
+        let worktree = temporary.path().join("wiki");
+        fs::create_dir(&worktree).expect("worktree");
+        init_repo(&worktree);
+        run_git(&worktree, &["remote", "add", "origin", remote_path]);
+        fs::write(worktree.join("Home.md"), "home\n").expect("note");
+        commit_all(&worktree, "initial");
+        run_git(
+            &worktree,
+            &[
+                "push",
+                "--quiet",
+                remote_path,
+                "HEAD:refs/heads/main",
+                "HEAD:refs/heads/__vulcan-sync/live",
+                "HEAD:refs/heads/__vulcan-sync/devices/p/d",
+            ],
+        );
+        let engine = GitCliEngine::default();
+        let repository = engine.discover_repository(&worktree).expect("repository");
+        let remote = GitRemote::parse("origin").expect("remote");
+        let tracking = |worktree: &Path| {
+            run_git_capture(
+                worktree,
+                &["for-each-ref", "--format=%(refname)", "refs/remotes"],
+            )
+        };
+
+        // Vulcan's own fetches never leave remote-tracking copies.
+        let live = GitRefName::parse("refs/heads/__vulcan-sync/live").expect("live");
+        let device = GitRefName::parse("refs/heads/__vulcan-sync/devices/p/d").expect("device");
+        engine
+            .fetch_ref(
+                &repository,
+                &remote,
+                &live,
+                &GitRefName::parse("refs/vulcan/test/live").expect("ref"),
+            )
+            .expect("fetch");
+        engine
+            .fetch_refs(
+                &repository,
+                &remote,
+                &[(
+                    device,
+                    GitRefName::parse("refs/vulcan/test/device").expect("ref"),
+                )],
+            )
+            .expect("fetch refs");
+        assert_eq!(tracking(&worktree), "");
+
+        let root = GitRefName::parse("refs/heads/__vulcan-sync").expect("root");
+        assert!(engine
+            .exclude_from_default_fetch(&repository, &remote, &root)
+            .expect("exclude"));
+        assert!(!engine
+            .exclude_from_default_fetch(&repository, &remote, &root)
+            .expect("already excluded"));
+        let configured =
+            run_git_capture(&worktree, &["config", "--get-all", "remote.origin.fetch"]);
+        assert_eq!(
+            configured
+                .lines()
+                .filter(|line| *line == "^refs/heads/__vulcan-sync/*")
+                .count(),
+            1
+        );
+        // A plain fetch now brings only the user's branches.
+        run_git(&worktree, &["fetch", "--quiet", "origin"]);
+        assert_eq!(tracking(&worktree), "refs/remotes/origin/main");
+
+        // A URL remote has no configured refspecs to extend.
+        let url = GitRemote::parse(remote_path).expect("url remote");
+        assert!(!engine
+            .exclude_from_default_fetch(&repository, &url, &root)
+            .expect("url remote"));
     }
 
     #[test]

@@ -5,9 +5,10 @@
 //! are no longer registered, fetches only those, and deletes the ones live
 //! already contains with an exact lease each in one push. It then releases
 //! local device recovery refs whose remote backup is gone and whose history
-//! live contains, and drops remote-tracking copies of Vulcan refs the remote
-//! no longer has. Backups with content live lacks are kept and recorded for
-//! `sync doctor`.
+//! live contains. It also keeps Vulcan refs out of plain `git fetch` and
+//! `git pull` with a negative fetch refspec and drops the remote-tracking
+//! copies Git still makes of them. Backups with content live lacks are kept
+//! and recorded for `sync doctor`.
 
 use crate::durable_file;
 use crate::AppError;
@@ -39,6 +40,10 @@ pub struct RefSweepReport {
     pub retained_device_backups: Vec<String>,
     pub released_recovery_refs: usize,
     pub pruned_tracking_refs: usize,
+    /// Whether this sweep added `^refs/heads/__vulcan-sync/*` to the remote's
+    /// fetch refspecs.
+    #[serde(default)]
+    pub fetch_exclusion_added: bool,
 }
 
 /// Whether the last sweep recorded at `state` is older than the interval.
@@ -153,8 +158,10 @@ pub(crate) fn sweep_vulcan_refs(
         &remaining,
         live,
     )?;
-    report.pruned_tracking_refs =
-        prune_tracking_refs(engine, repository, remote.as_str(), &remaining)?;
+    report.fetch_exclusion_added = engine
+        .exclude_from_default_fetch(repository, remote, &root)
+        .map_err(AppError::operation)?;
+    report.pruned_tracking_refs = prune_tracking_refs(engine, repository, remote.as_str())?;
     report.swept_at_unix_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| {
@@ -225,18 +232,16 @@ fn release_device_recovery_refs(
     Ok(released)
 }
 
-/// Drops remote-tracking copies (`refs/remotes/<remote>/__vulcan-sync/...`)
-/// of Vulcan refs the remote no longer has. Git creates them when Vulcan
-/// pushes to a remote whose fetch refspec covers `refs/heads/*`, and only a
-/// pruning fetch would ever remove them.
+/// Drops every remote-tracking copy (`refs/remotes/<remote>/__vulcan-sync/...`)
+/// of a Vulcan ref. Nothing reads them, and pushes recreate them although the
+/// fetch refspecs exclude Vulcan refs, which also stops pruning fetches from
+/// removing them.
 fn prune_tracking_refs(
     engine: &dyn GitEngine,
     repository: &GitRepository,
     remote: &str,
-    remaining_remote: &BTreeSet<String>,
 ) -> Result<usize, AppError> {
-    let tracking_root = format!("refs/remotes/{remote}/__vulcan-sync");
-    let Ok(prefix) = GitRefName::parse(&tracking_root) else {
+    let Ok(prefix) = GitRefName::parse(format!("refs/remotes/{remote}/__vulcan-sync")) else {
         return Ok(0);
     };
     let mut pruned = 0;
@@ -244,14 +249,10 @@ fn prune_tracking_refs(
         .list_refs(repository, &prefix)
         .map_err(AppError::operation)?
     {
-        let Some(rest) = reference.name.as_str().strip_prefix(&tracking_root) else {
-            continue;
-        };
-        if !remaining_remote.contains(&format!("{VULCAN_REMOTE_ROOT}{rest}"))
-            && engine
-                .delete_ref(repository, &reference.name, &reference.target)
-                .map_err(AppError::operation)?
-                == GitRefDeleteResult::Deleted
+        if engine
+            .delete_ref(repository, &reference.name, &reference.target)
+            .map_err(AppError::operation)?
+            == GitRefDeleteResult::Deleted
         {
             pruned += 1;
         }

@@ -4151,7 +4151,8 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         git(&["update-ref", &format!("{recovery}/live"), &live]);
         let stale_tracking = "refs/remotes/origin/__vulcan-sync/conflicts/gone/record";
         git(&["update-ref", stale_tracking, &live]);
-        git(&["fetch", "-q", "origin"]);
+        // The pushes above left tracking copies of refs the remote still has.
+        assert!(!git(&["for-each-ref", "refs/remotes/origin/__vulcan-sync/devices"]).is_empty());
 
         let engine = vulcan_sync::GitCliEngine::default();
         let repository = engine
@@ -4175,14 +4176,25 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         assert!(!remote.contains("01oldcontained"));
         assert!(remote.contains("01oldunique") && remote.contains("vdev1registered"));
         assert!(git(&["for-each-ref", &recovery]).is_empty());
-        let tracking = git(&[
-            "for-each-ref",
-            "--format=%(refname)",
-            "refs/remotes/origin/__vulcan-sync",
-        ]);
-        assert!(!tracking.contains("conflicts/gone"));
-        assert!(!tracking.contains("01oldcontained"));
-        assert!(tracking.contains("__vulcan-sync/live"));
+        // Tracking copies are all dropped, also those of refs the remote
+        // still has, and plain fetches no longer bring them back.
+        let tracking = || {
+            git(&[
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/remotes/origin/__vulcan-sync",
+            ])
+        };
+        assert!(tracking().is_empty());
+        git(&["fetch", "-q", "origin"]);
+        assert!(tracking().is_empty());
+        assert_eq!(
+            git(&["config", "--get-all", "remote.origin.fetch"])
+                .lines()
+                .filter(|line| *line == "^refs/heads/__vulcan-sync/*")
+                .count(),
+            1
+        );
         assert!(git(&["for-each-ref", "refs/vulcan/sweep"]).is_empty());
         // Recorded for diagnostics, and not due again for a day.
         assert_eq!(
