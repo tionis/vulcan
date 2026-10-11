@@ -5890,10 +5890,6 @@ docs/
                  FROM links JOIN documents AS source ON source.id = links.source_document_id
                  LEFT JOIN documents AS target ON target.id = links.resolved_target_id
                  ORDER BY 1",
-                "SELECT documents.path || '|' || diagnostics.kind || '|' || diagnostics.message
-                        || '|' || diagnostics.detail
-                 FROM diagnostics JOIN documents ON documents.id = diagnostics.document_id
-                 ORDER BY 1",
                 "SELECT key || '|' || observed_type || '|' || usage_count || '|' || namespace
                  FROM property_catalog ORDER BY 1",
             ] {
@@ -5906,24 +5902,34 @@ docs/
                 );
             }
             // Diagnostics name candidate documents by ID, which a rebuild
-            // reassigns; compare their paths instead.
-            let mut ids = connection
-                .prepare("SELECT id, path FROM documents")
+            // reassigns, so candidates compare as a set of paths.
+            let mut statement = connection
+                .prepare(
+                    "SELECT documents.path, diagnostics.kind, diagnostics.message,
+                            diagnostics.detail
+                     FROM diagnostics JOIN documents ON documents.id = diagnostics.document_id",
+                )
                 .unwrap();
-            let ids = ids
+            let diagnostics = statement
                 .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
                 })
                 .unwrap()
                 .map(Result::unwrap)
                 .collect::<Vec<_>>();
-            let mut rows = rows
-                .into_iter()
-                .map(|row| {
-                    ids.iter()
-                        .fold(row, |row, (id, path)| row.replace(id.as_str(), path))
-                })
-                .collect::<Vec<_>>();
+            rows.extend(
+                diagnostics
+                    .into_iter()
+                    .map(|(path, kind, message, detail)| {
+                        let detail = normalize_diagnostic_detail(connection, &detail);
+                        format!("{path}|{kind}|{message}|{detail}")
+                    }),
+            );
             rows.sort();
             rows
         }
