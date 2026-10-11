@@ -409,9 +409,60 @@ fn detect_image_mode() -> ImageMode {
     ImageMode::graphics(picker)
 }
 
-/// Encoded images for the graphics protocol, by vault-relative path.
+/// Encoded images for the graphics protocol, by key.
 #[derive(Default)]
-struct ImageProtocols(std::cell::RefCell<HashMap<String, StatefulProtocol>>);
+struct ImageProtocols(std::cell::RefCell<HashMap<String, SizedProtocol>>);
+
+/// An image encoded for the graphics protocol at a size in cells.
+struct SizedProtocol {
+    cells: (u16, u16),
+    protocol: StatefulProtocol,
+}
+
+/// `image` scaled with a smooth filter to fit `cells` of `font_size`
+/// pixels, keeping its aspect ratio.
+fn scale_for_cells(
+    image: &image::DynamicImage,
+    cells: (u16, u16),
+    font_size: (u16, u16),
+) -> image::DynamicImage {
+    image.resize(
+        u32::from(cells.0) * u32::from(font_size.0.max(1)),
+        u32::from(cells.1) * u32::from(font_size.1.max(1)),
+        image::imageops::FilterType::CatmullRom,
+    )
+}
+
+/// The protocol for `image` shown in `cells` (columns, rows), re-encoded
+/// when the size changes. Vulcan scales the image to the cells' pixel size
+/// with a smooth filter first, so it is drawn without the library's
+/// nearest-neighbor resampling, which makes photos blocky, and cropping
+/// cuts the scaled image rather than the full-size one.
+fn sized_protocol<'a>(
+    protocols: &'a mut HashMap<String, SizedProtocol>,
+    key: &str,
+    picker: &Picker,
+    image: &image::DynamicImage,
+    cells: (u16, u16),
+) -> &'a mut StatefulProtocol {
+    let stale = protocols
+        .get(key)
+        .is_none_or(|existing| existing.cells != cells);
+    if stale {
+        let scaled = scale_for_cells(image, cells, picker.font_size());
+        protocols.insert(
+            key.to_string(),
+            SizedProtocol {
+                cells,
+                protocol: picker.new_resize_protocol(scaled),
+            },
+        );
+    }
+    &mut protocols
+        .get_mut(key)
+        .expect("protocol was just inserted")
+        .protocol
+}
 
 impl std::fmt::Debug for ImageProtocols {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -2121,15 +2172,15 @@ impl BrowseState {
         match &self.image_mode {
             ImageMode::Graphics { picker, .. } => {
                 let mut protocols = self.image_protocols.0.borrow_mut();
-                // A separate entry, so the preview's encoding is not resized.
-                let protocol = protocols
-                    .entry(format!("viewer:{path}"))
-                    .or_insert_with(|| picker.new_resize_protocol(image.clone()));
-                frame.render_stateful_widget(
-                    StatefulImage::default().resize(Resize::Scale(None)),
-                    target,
-                    protocol,
+                // A separate entry, so the preview's encoding is kept.
+                let protocol = sized_protocol(
+                    &mut protocols,
+                    &format!("viewer:{path}"),
+                    picker,
+                    image,
+                    (target.width, target.height),
                 );
+                frame.render_stateful_widget(StatefulImage::default(), target, protocol);
             }
             ImageMode::HalfBlocks | ImageMode::Off => {
                 frame.render_widget(
@@ -2184,15 +2235,19 @@ impl BrowseState {
                 height,
                 ..inner
             };
-            let protocol = protocols
-                .entry(placed.path.clone())
-                .or_insert_with(|| picker.new_resize_protocol(image.clone()));
-            // The rows were sized to the image, so scaling fills them; an
-            // image cut off at the bottom is cropped instead of shrunk.
+            let protocol = sized_protocol(
+                &mut protocols,
+                &placed.path,
+                picker,
+                image,
+                (placed.columns, placed.rows),
+            );
+            // The image is already scaled to its rows; one cut off at the
+            // bottom is cropped instead of shrunk.
             let widget = if height < placed.rows {
                 StatefulImage::default().resize(Resize::Crop(None))
             } else {
-                StatefulImage::default().resize(Resize::Scale(None))
+                StatefulImage::default()
             };
             frame.render_stateful_widget(widget, target, protocol);
         }
@@ -6216,6 +6271,26 @@ mod tests {
                 .any(|cell| cell.symbol().contains('\u{1b}')),
             "the kitty protocol should transmit the image"
         );
+    }
+
+    #[test]
+    fn graphics_images_are_scaled_smoothly_to_their_cells() {
+        use image::GenericImageView as _;
+        // A hard black-to-white edge.
+        let mut edge = image::RgbaImage::new(2, 1);
+        edge.put_pixel(0, 0, image::Rgba([0, 0, 0, 255]));
+        edge.put_pixel(1, 0, image::Rgba([255, 255, 255, 255]));
+        let scaled = scale_for_cells(&image::DynamicImage::ImageRgba8(edge), (4, 1), (10, 20));
+
+        // 4 columns of 10 pixels, keeping the 2:1 aspect ratio.
+        assert_eq!(scaled.dimensions(), (40, 20));
+        // Smoothing blends the edge; nearest-neighbor would keep only black
+        // and white, the blocky look.
+        let blended = scaled
+            .to_rgba8()
+            .pixels()
+            .any(|pixel| pixel.0[0] > 20 && pixel.0[0] < 235);
+        assert!(blended);
     }
 
     #[test]
