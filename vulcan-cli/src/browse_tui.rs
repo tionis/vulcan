@@ -8,7 +8,7 @@ use crate::note_picker::{
     handle_picker_key, NotePickerState, PickerAction, Redraw, TerminalRestore, Viewport,
 };
 use crate::preview_images::{
-    halfblock_lines, image_cells, is_previewable_image, load_preview_image,
+    halfblock_lines, image_cells, is_previewable_image, load_preview_image, PREVIEW_UPSCALE,
 };
 use crate::terminal_markdown::{
     laid_out_links, render_styled_lines, to_ratatui_lines, LaidOutLink, SpanLink,
@@ -335,7 +335,8 @@ fn prepare_browse_refresh(
     }
 }
 
-/// The most rows an image takes in the preview.
+/// The most rows an image takes in the preview before the pane's height is
+/// known.
 const MAX_IMAGE_ROWS: u16 = 30;
 /// Half-blocks show two pixels per cell, as a font twice as tall as wide.
 const HALFBLOCK_FONT_SIZE: (u16, u16) = (10, 20);
@@ -1061,7 +1062,7 @@ struct BrowseState {
     evaluated_previews: EvaluatedPreviewCache,
     /// Decoded preview images by vault-relative path; `None` when decoding
     /// failed.
-    preview_images: std::cell::RefCell<HashMap<String, Option<image::DynamicImage>>>,
+    preview_images: std::cell::RefCell<HashMap<String, Result<image::DynamicImage, &'static str>>>,
     /// How preview images are drawn.
     image_mode: ImageMode,
     /// Encoded images for the graphics protocol, by vault-relative path.
@@ -2008,16 +2009,18 @@ impl BrowseState {
             .entry(path.clone())
             .or_insert_with(|| load_preview_image(&self.paths.vault_root().join(&path)))
             .as_ref()
-            .ok_or("the file could not be decoded, or is over 32 MiB")?;
+            .map_err(|reason| *reason)?;
+        // Images may use the pane's height once it is known.
         let visible = self.rendered_preview.visible_rows.get();
         let max_rows = if visible > 0 {
-            visible.saturating_sub(1).clamp(8, MAX_IMAGE_ROWS)
+            visible.saturating_sub(1).max(8)
         } else {
             MAX_IMAGE_ROWS
         };
         Ok(match &self.image_mode {
             ImageMode::Graphics { picker, .. } => {
-                let (columns, rows) = image_cells(image, width, max_rows, picker.font_size());
+                let (columns, rows) =
+                    image_cells(image, width, max_rows, picker.font_size(), PREVIEW_UPSCALE);
                 PreviewImage::Reserved {
                     path,
                     columns,
@@ -2026,7 +2029,8 @@ impl BrowseState {
             }
             ImageMode::HalfBlocks | ImageMode::Off => {
                 // Half-blocks show two pixels per cell, like a 1:2 font.
-                let (columns, rows) = image_cells(image, width, max_rows, HALFBLOCK_FONT_SIZE);
+                let (columns, rows) =
+                    image_cells(image, width, max_rows, HALFBLOCK_FONT_SIZE, PREVIEW_UPSCALE);
                 PreviewImage::Lines(halfblock_lines(image, columns, rows))
             }
         })
@@ -2066,7 +2070,7 @@ impl BrowseState {
             if row >= inner.height {
                 continue;
             }
-            let Some(Some(image)) = images.get(&placed.path) else {
+            let Some(Ok(image)) = images.get(&placed.path) else {
                 continue;
             };
             let height = placed.rows.min(inner.height - row);
@@ -6008,13 +6012,13 @@ mod tests {
         state.settle_rendered_preview();
 
         let lines = state.preview_lines();
-        // 100x100 pixels, enlarged twice, at the half-block cell size of
-        // 10x20 pixels: 20 columns by 10 rows.
-        assert_eq!(halfblock_rows(&lines), 10, "{lines:?}");
+        // 100x100 pixels, enlarged three times, at the half-block cell size
+        // of 10x20 pixels: 30 columns by 15 rows.
+        assert_eq!(halfblock_rows(&lines), 15, "{lines:?}");
         assert!(lines
             .iter()
             .filter(|line| line.spans.iter().any(|span| span.content == "▀"))
-            .all(|line| line.spans.len() == 20));
+            .all(|line| line.spans.len() == 30));
         // The image takes the place of its `[image: ...]` line.
         assert!(!preview_text(&lines).contains("[image:"));
 
@@ -6057,8 +6061,9 @@ mod tests {
             let layout = state.rendered_preview.layout.borrow();
             let placed = &layout.as_ref().expect("layout").images;
             assert_eq!(placed.len(), 1);
-            // 40x60 pixels enlarged twice at a 10x20 font: 8 columns, 6 rows.
-            assert_eq!((placed[0].columns, placed[0].rows), (8, 6));
+            // 40x60 pixels enlarged three times at a 10x20 font: 12 columns
+            // by 9 rows.
+            assert_eq!((placed[0].columns, placed[0].rows), (12, 9));
             assert_eq!(placed[0].path, "pic.png");
         }
         // Links after the image keep their place.

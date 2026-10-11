@@ -27,33 +27,35 @@ pub(crate) fn is_previewable_image(path: &str) -> bool {
         })
 }
 
-/// Decode an image file for previewing; `None` when it is too large or not
-/// a supported image.
-pub(crate) fn load_preview_image(path: &Path) -> Option<DynamicImage> {
-    let size = std::fs::metadata(path).ok()?.len();
+/// Decode an image file for previewing, or say why it cannot be shown.
+pub(crate) fn load_preview_image(path: &Path) -> Result<DynamicImage, &'static str> {
+    const UNREADABLE: &str = "the file could not be read";
+    let size = std::fs::metadata(path).map_err(|_| UNREADABLE)?.len();
     if size > MAX_IMAGE_BYTES {
-        return None;
+        return Err("the file is over 32 MiB");
     }
     image::ImageReader::open(path)
-        .ok()?
+        .map_err(|_| UNREADABLE)?
         .with_guessed_format()
-        .ok()?
+        .map_err(|_| UNREADABLE)?
         .decode()
-        .ok()
+        .map_err(|_| "the file could not be decoded; it may be damaged")
 }
 
-/// How much a small image may be enlarged. Terminals on high-density
-/// screens use large cells, so an image at its pixel size can look tiny.
-const MAX_UPSCALE: f64 = 2.0;
+/// How much a small image may be enlarged in a preview. Terminals on
+/// high-density screens use large cells, so an image at its pixel size can
+/// look tiny.
+pub(crate) const PREVIEW_UPSCALE: f64 = 3.0;
 
 /// The size in cells to show `image` at: as wide as `max_columns` allows,
 /// at most `max_rows` tall, keeping its aspect ratio for cells of
-/// `font_size` pixels, and enlarged at most [`MAX_UPSCALE`] times.
+/// `font_size` pixels, and enlarged at most `max_upscale` times.
 pub(crate) fn image_cells(
     image: &DynamicImage,
     max_columns: u16,
     max_rows: u16,
     font_size: (u16, u16),
+    max_upscale: f64,
 ) -> (u16, u16) {
     let (width, height) = image.dimensions();
     let (font_width, font_height) = (f64::from(font_size.0.max(1)), f64::from(font_size.1.max(1)));
@@ -61,8 +63,8 @@ pub(crate) fn image_cells(
         return (1, 1);
     }
     // Columns and rows at the largest allowed size.
-    let natural_columns = f64::from(width) * MAX_UPSCALE / font_width;
-    let natural_rows = f64::from(height) * MAX_UPSCALE / font_height;
+    let natural_columns = f64::from(width) * max_upscale / font_width;
+    let natural_rows = f64::from(height) * max_upscale / font_height;
     let scale = (f64::from(max_columns) / natural_columns)
         .min(f64::from(max_rows) / natural_rows)
         .min(1.0);
@@ -149,13 +151,28 @@ mod tests {
         // A large image shrinks to the width: 2000x1000 at 80 columns is
         // 800x400 pixels, 20 rows of 20 pixels.
         let large = DynamicImage::ImageRgba8(RgbaImage::new(2000, 1000));
-        assert_eq!(image_cells(&large, 80, 40, font), (80, 20));
+        assert_eq!(image_cells(&large, 80, 40, font, PREVIEW_UPSCALE), (80, 20));
         // Height limits apply too, keeping the proportions.
-        assert_eq!(image_cells(&large, 80, 10, font), (40, 10));
-        // A small image is enlarged at most twice: 100x50 becomes 200x100
-        // pixels, 20 columns by 5 rows.
+        assert_eq!(image_cells(&large, 80, 10, font, PREVIEW_UPSCALE), (40, 10));
+        // A small image is enlarged at most three times: 100x50 becomes
+        // 300x150 pixels, 30 columns by 8 rows.
         let small = DynamicImage::ImageRgba8(RgbaImage::new(100, 50));
-        assert_eq!(image_cells(&small, 80, 40, font), (20, 5));
+        assert_eq!(image_cells(&small, 80, 40, font, PREVIEW_UPSCALE), (30, 8));
+    }
+
+    #[test]
+    fn unreadable_and_damaged_files_say_why() {
+        let dir = tempfile::TempDir::new().expect("temp dir should be created");
+        let damaged = dir.path().join("damaged.png");
+        std::fs::write(&damaged, b"\x89PNG\r\n\x1a\nnot really a png").unwrap();
+        assert_eq!(
+            load_preview_image(&damaged).err(),
+            Some("the file could not be decoded; it may be damaged")
+        );
+        assert_eq!(
+            load_preview_image(&dir.path().join("missing.png")).err(),
+            Some("the file could not be read")
+        );
     }
 
     #[test]
