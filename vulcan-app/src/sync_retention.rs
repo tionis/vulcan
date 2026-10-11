@@ -142,6 +142,40 @@ pub struct SyncEpochRolloverReport {
 }
 
 /// Builds a bounded, mutation-free retention plan for one synchronized vault.
+/// Releases detached-HEAD rescue refs
+/// (`refs/vulcan/recovery/detached-git-loss/...`) whose tips the accepted
+/// `live` revision already contains. They keep commits a detached checkout
+/// would otherwise lose; once live holds their whole history they protect
+/// nothing. Device recovery refs are left to the device workflow, which
+/// releases them with their remote backup. Each delete expects the listed
+/// tip, so a ref that moved meanwhile is kept. Returns the number released.
+/// The caller holds the repository lock.
+pub(crate) fn release_contained_rescue_refs(
+    engine: &dyn vulcan_sync::GitEngine,
+    repository: &vulcan_sync::GitRepository,
+    live: &vulcan_sync::GitOid,
+) -> Result<usize, AppError> {
+    let prefix = GitRefName::parse(format!(
+        "{}/recovery/detached-git-loss",
+        vulcan_sync::LOCAL_VULCAN_REF_ROOT
+    ))
+    .map_err(AppError::operation)?;
+    let mut released = 0;
+    for reference in engine
+        .list_refs_contained_in(repository, &prefix, live)
+        .map_err(AppError::operation)?
+    {
+        if engine
+            .delete_ref(repository, &reference.name, &reference.target)
+            .map_err(AppError::operation)?
+            == vulcan_sync::GitRefDeleteResult::Deleted
+        {
+            released += 1;
+        }
+    }
+    Ok(released)
+}
+
 pub fn plan_sync_retention(
     paths: &VaultPaths,
     options: &SyncRetentionPlanOptions,

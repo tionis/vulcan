@@ -132,6 +132,15 @@ pub trait GitEngine: Send + Sync {
         prefix: &GitRefName,
     ) -> Result<Vec<GitReference>, GitEngineError>;
 
+    /// Lists the refs beneath `prefix` whose tips are reachable from
+    /// `target`, that is, whose history `target` already contains.
+    fn list_refs_contained_in(
+        &self,
+        repository: &GitRepository,
+        prefix: &GitRefName,
+        target: &GitOid,
+    ) -> Result<Vec<GitReference>, GitEngineError>;
+
     fn head_commit(&self, repository: &GitRepository) -> Result<Option<GitOid>, GitEngineError>;
 
     fn head_reference(
@@ -2937,6 +2946,21 @@ impl GitEngine for GitCliEngine {
             .args(["for-each-ref", "--format=%(refname)%00%(objectname)%00"])
             .arg(prefix.as_str());
         let output = ensure_success("list Git refs", self.execute(command)?)?;
+        parse_reference_list(&output.stdout)
+    }
+
+    fn list_refs_contained_in(
+        &self,
+        repository: &GitRepository,
+        prefix: &GitRefName,
+        target: &GitOid,
+    ) -> Result<Vec<GitReference>, GitEngineError> {
+        let mut command = self.repository_command(repository);
+        command
+            .args(["for-each-ref", "--format=%(refname)%00%(objectname)%00"])
+            .arg(format!("--merged={}", target.as_str()))
+            .arg(prefix.as_str());
+        let output = ensure_success("list contained Git refs", self.execute(command)?)?;
         parse_reference_list(&output.stdout)
     }
 

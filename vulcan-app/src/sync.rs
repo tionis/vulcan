@@ -1838,8 +1838,9 @@ fn supersede_obsolete_conflicts(
     ))
 }
 
-/// Carries overtaken conflicts forward, then archives long-closed ones, under
-/// the vault and repository locks. Both are opportunistic: if the locks are
+/// Carries overtaken conflicts forward, archives long-closed ones, and
+/// releases detached-HEAD rescue refs live already contains, under the vault
+/// and repository locks. Both are opportunistic: if the locks are
 /// busy or a step fails, the conflicts stay as they are and the next sync
 /// tries again.
 fn carry_forward_overtaken_conflicts(
@@ -1879,6 +1880,8 @@ fn carry_forward_overtaken_conflicts(
         crate::sync_conflicts::CONFLICT_ARCHIVE_AFTER,
         false,
     );
+    let _ =
+        crate::sync_retention::release_contained_rescue_refs(engine, &sync.repository, frontier);
     carried
 }
 
@@ -3941,6 +3944,58 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         for id in [&conflict.id, &second.id] {
             assert_eq!(historical_conflict(&fixture, id).record.id, *id);
         }
+    }
+
+    #[test]
+    fn sync_releases_rescue_refs_that_live_already_contains() {
+        let fixture = structured_sync_fixture(&[("Home.md", "base\n")]);
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&fixture.reader)
+                .args(args)
+                .output()
+                .expect("git");
+            assert!(output.status.success(), "{args:?}");
+            String::from_utf8(output.stdout)
+                .expect("utf-8")
+                .trim()
+                .to_string()
+        };
+        let live = git(&[
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+            "refs/vulcan/sync/",
+        ])
+        .lines()
+        .find_map(|line| {
+            let (name, oid) = line.split_once(' ')?;
+            name.ends_with("/remotes/live").then(|| oid.to_string())
+        })
+        .expect("fetched live ref");
+        let unique = git(&["commit-tree", "HEAD^{tree}", "-m", "only here"]);
+        let contained = "refs/vulcan/recovery/detached-git-loss/01arz3ndektsv4rrffq69g5fa1";
+        let rescued = "refs/vulcan/recovery/detached-git-loss/01arz3ndektsv4rrffq69g5fa2";
+        // A device review anchor is the device workflow's to release.
+        let device = "refs/vulcan/recovery/devices/profile/live";
+        git(&["update-ref", contained, &live]);
+        git(&["update-ref", rescued, &unique]);
+        git(&["update-ref", device, &live]);
+
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("sync");
+        let remaining = git(&[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/vulcan/recovery",
+        ]);
+        // Live holds the first rescue's whole history; the second is the
+        // only copy of its commit and stays.
+        assert_eq!(remaining.lines().collect::<Vec<_>>(), [rescued, device]);
     }
 
     #[test]
