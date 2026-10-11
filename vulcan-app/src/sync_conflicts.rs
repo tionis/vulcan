@@ -726,6 +726,21 @@ pub fn archive_sync_conflicts_with_state_store(
     )
 }
 
+/// The number of unresolved conflicts, read through the open-conflict index:
+/// cost follows the open conflicts, not every recently closed one, so status
+/// polling stays cheap. Use [`list_sync_conflicts_with_state_store`] for the
+/// summaries themselves.
+pub fn open_sync_conflict_count_with_state_store(
+    paths: &vulcan_core::VaultPaths,
+    state_store: &SyncStateStore,
+) -> Result<usize, AppError> {
+    let work_tree = crate::sync_state::sync_work_tree(paths.vault_root())?;
+    let repository_key = crate::sync_state::repository_state_key(&work_tree);
+    Ok(SyncConflictStore::from_state_store(state_store)
+        .open_records(&repository_key)?
+        .len())
+}
+
 pub fn get_sync_conflict(
     paths: &vulcan_core::VaultPaths,
     conflict_id: &str,

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-use vulcan_app::sync_conflicts::list_sync_conflicts_with_state_store;
+use vulcan_app::sync_conflicts::open_sync_conflict_count_with_state_store;
 use vulcan_app::sync_state::{repository_state_key, SyncJournal, SyncJournalPhase, SyncStateStore};
 use vulcan_core::VaultPaths;
 pub use vulcan_sync::SyncState;
@@ -155,15 +155,17 @@ fn reconstruct_sync_status(
         return Ok(report_from_journal(registration, journal));
     }
 
-    let conflicts =
-        list_sync_conflicts_with_state_store(&VaultPaths::new(&registration.path), state_store)
-            .map_err(|error| DaemonSyncStatusError::State(error.to_string()))?;
-    if conflicts.count > 0 {
+    let open_conflicts = open_sync_conflict_count_with_state_store(
+        &VaultPaths::new(&registration.path),
+        state_store,
+    )
+    .map_err(|error| DaemonSyncStatusError::State(error.to_string()))?;
+    if open_conflicts > 0 {
         return Ok(base_report(
             registration,
             DaemonSyncStatusSource::Conflict,
             SyncState::Conflicted,
-            conflicts.count,
+            open_conflicts,
             Some("unresolved preserved synchronization conflicts".to_string()),
         ));
     }

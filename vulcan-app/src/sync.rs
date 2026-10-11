@@ -3944,6 +3944,55 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
     }
 
     #[test]
+    fn open_conflict_count_never_reads_closed_conflicts() {
+        let fixture = structured_sync_fixture(&[("Home.md", "base\n")]);
+        fs::write(fixture.writer.join("Home.md"), "writer\n").expect("writer edit");
+        fs::write(fixture.reader.join("Home.md"), "reader\n").expect("reader edit");
+        for root in [&fixture.writer, &fixture.reader] {
+            sync_git_vault_with_state_store(
+                &VaultPaths::new(root),
+                &GitSyncOptions::default(),
+                &fixture.store,
+            )
+            .expect("sync");
+        }
+        let count = || {
+            crate::sync_conflicts::open_sync_conflict_count_with_state_store(
+                &VaultPaths::new(&fixture.reader),
+                &fixture.store,
+            )
+            .expect("open count")
+        };
+        assert_eq!(count(), 1);
+        let conflict = conflict_listing(&fixture).conflicts[0].clone();
+        crate::sync_conflicts::resolve_sync_conflict_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &conflict.id,
+            &crate::sync_conflicts::ResolveSyncConflictOptions {
+                side: crate::sync_conflicts::SyncConflictResolutionSide::Local,
+                group_ids: Vec::new(),
+                remote: vulcan_sync::GitRemote::parse("origin").expect("remote"),
+                live_ref: vulcan_sync::GitRefName::parse("refs/heads/__vulcan-sync/live")
+                    .expect("live ref"),
+                dry_run: false,
+            },
+            &fixture.store,
+        )
+        .expect("resolve");
+        assert_eq!(count(), 0);
+        // Once closed, the count never opens the record again.
+        let record = fixture
+            .store
+            .root()
+            .join(&conflict_listing(&fixture).repository_key)
+            .join("conflicts")
+            .join(&conflict.id)
+            .join("record.json");
+        fs::write(&record, b"not a record").expect("corrupt closed record");
+        assert_eq!(count(), 0);
+    }
+
+    #[test]
     fn archiving_on_demand_previews_then_moves_closed_conflicts() {
         let fixture = structured_sync_fixture(&[("Home.md", "base\n")]);
         fs::write(fixture.writer.join("Home.md"), "writer\n").expect("writer edit");
