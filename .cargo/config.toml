@@ -1,2 +1,7 @@
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "link-arg=/STACK:8388608"]
+
+# Resolve dependency updates to versions that support the workspace's
+# rust-version (MSRV), so `cargo update` cannot break the MSRV build.
+[resolver]
+incompatible-rust-versions = "fallback"

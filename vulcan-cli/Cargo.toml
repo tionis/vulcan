@@ -30,6 +30,7 @@ crossterm.workspace = true
 csv.workspace = true
 fs2.workspace = true
 ratatui.workspace = true
+image.workspace = true
 regex.workspace = true
 pulldown-cmark.workspace = true
 rquickjs = { workspace = true, optional = true }

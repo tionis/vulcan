@@ -7,6 +7,7 @@ use crate::editor::{open_in_editor, with_terminal_suspended};
 use crate::note_picker::{
     handle_picker_key, NotePickerState, PickerAction, Redraw, TerminalRestore, Viewport,
 };
+use crate::preview_images::{halfblock_lines, is_previewable_image, load_preview_image};
 use crate::terminal_markdown::{
     laid_out_links, render_styled_lines, to_ratatui_lines, LaidOutLink, SpanLink,
     TerminalMarkdownOptions,
@@ -22,10 +23,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, SystemTime};
@@ -323,6 +324,56 @@ fn prepare_browse_refresh(
             Ok(None)
         }
         AutoScanMode::Background => Ok(Some(BackgroundRefreshState::spawn(paths.clone()))),
+    }
+}
+
+/// Rows an image may take in the preview.
+const PREVIEW_IMAGE_ROWS: u16 = 16;
+
+/// `path` as a vault-relative path with `.` and `..` resolved; `None` when
+/// it would leave the vault.
+fn normalize_vault_relative(path: &Path) -> Option<String> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(part) => parts.push(part.to_str()?),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                parts.pop()?;
+            }
+            _ => return None,
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
+}
+
+/// Record image files under `root/relative` by lowercased name, skipping
+/// hidden folders such as `.git` and `.vulcan`. The first path in sorted
+/// order wins.
+fn collect_image_files(root: &Path, relative: &Path, files: &mut HashMap<String, String>) {
+    let Ok(entries) = fs::read_dir(root.join(relative)) else {
+        return;
+    };
+    let mut entries = entries.filter_map(Result::ok).collect::<Vec<_>>();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if name.starts_with('.') {
+            continue;
+        }
+        let path = relative.join(name);
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() => collect_image_files(root, &path, files),
+            Ok(kind) if kind.is_file() && is_previewable_image(name) => {
+                if let Some(path) = normalize_vault_relative(&path) {
+                    files.entry(name.to_lowercase()).or_insert(path);
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -887,6 +938,13 @@ struct BrowseState {
     rendered_preview: RenderedPreview,
     preview_worker: PreviewWorker,
     evaluated_previews: EvaluatedPreviewCache,
+    /// Decoded preview images by vault-relative path; `None` when decoding
+    /// failed.
+    preview_images: std::cell::RefCell<HashMap<String, Option<image::DynamicImage>>>,
+    /// Image files by lowercased name, for links that give only a name.
+    image_files: std::cell::RefCell<Option<HashMap<String, String>>>,
+    /// The vault's preferred attachment folder.
+    attachment_folder: PathBuf,
     /// The vault's Obsidian `strictLineBreaks` setting.
     strict_line_breaks: bool,
     status: String,
@@ -952,6 +1010,11 @@ impl BrowseState {
                 authority.profile().map(ToOwned::to_owned),
             ),
             evaluated_previews: EvaluatedPreviewCache::default(),
+            preview_images: std::cell::RefCell::new(HashMap::new()),
+            image_files: std::cell::RefCell::new(None),
+            attachment_folder: vulcan_core::load_vault_config(&paths)
+                .config
+                .attachment_folder,
             strict_line_breaks: vulcan_core::load_vault_config(&paths)
                 .config
                 .strict_line_breaks,
@@ -1632,6 +1695,8 @@ impl BrowseState {
     fn invalidate_rendered_preview(&mut self) {
         self.rendered_preview.stale = true;
         self.evaluated_previews.clear();
+        self.preview_images.borrow_mut().clear();
+        self.image_files.replace(None);
         self.preview_worker.reset();
     }
 
@@ -1734,15 +1799,102 @@ impl BrowseState {
                 preserve_line_breaks: !self.strict_line_breaks,
             },
         );
-        let links = laid_out_links(&styled)
+        let all_links = laid_out_links(&styled);
+        // Images go right below their `[image: ...]` line.
+        let mut images_by_line = HashMap::<usize, Vec<String>>::new();
+        for link in &all_links {
+            if let SpanLink::Image(source) = &link.target {
+                let line = link.segments.last().map_or(0, |segment| segment.0);
+                images_by_line.entry(line).or_default().push(source.clone());
+            }
+        }
+        let mut laid_out = Vec::with_capacity(styled.len());
+        let mut inserted_before = Vec::with_capacity(styled.len());
+        for (index, line) in to_ratatui_lines(&styled).into_iter().enumerate() {
+            inserted_before.push(laid_out.len() - index);
+            laid_out.push(line);
+            for source in images_by_line.get(&index).into_iter().flatten() {
+                laid_out.extend(self.preview_image_lines(source, width));
+            }
+        }
+        let followable = all_links
             .into_iter()
             .filter(|link| matches!(link.target, SpanLink::Link(_)))
+            .map(|mut link| {
+                for segment in &mut link.segments {
+                    segment.0 += inserted_before.get(segment.0).copied().unwrap_or(0);
+                }
+                link
+            })
             .collect();
         self.rendered_preview.layout.replace(Some(PreviewLayout {
             width,
-            lines: to_ratatui_lines(&styled),
-            links,
+            lines: laid_out,
+            links: followable,
         }));
+    }
+
+    /// An image embedded in the preview as half-block lines, or nothing when
+    /// it cannot be found, read, or decoded.
+    fn preview_image_lines(&self, source: &str, width: u16) -> Vec<Line<'static>> {
+        let Some(path) = self.resolve_preview_image(source) else {
+            return Vec::new();
+        };
+        let mut cache = self.preview_images.borrow_mut();
+        let image = cache
+            .entry(path.clone())
+            .or_insert_with(|| load_preview_image(&self.paths.vault_root().join(&path)));
+        image
+            .as_ref()
+            .map(|image| halfblock_lines(image, width, PREVIEW_IMAGE_ROWS))
+            .unwrap_or_default()
+    }
+
+    /// The vault-relative path of an image the preview links, found as
+    /// Obsidian does: next to the note, from the vault root, in the
+    /// attachment folder, then by file name anywhere in the vault. Only
+    /// files the session's profile can read are used.
+    fn resolve_preview_image(&self, source: &str) -> Option<String> {
+        if is_external_link(source) {
+            return None;
+        }
+        let source = decode_link_target(source);
+        if !is_previewable_image(&source) {
+            return None;
+        }
+        let note_dir = self
+            .rendered_preview
+            .path
+            .as_deref()
+            .and_then(|path| Path::new(path).parent())
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        let candidates = [
+            note_dir.join(&source),
+            PathBuf::from(&source),
+            self.attachment_folder.join(&source),
+        ];
+        let found = candidates
+            .iter()
+            .filter_map(|candidate| normalize_vault_relative(candidate))
+            .find(|candidate| self.paths.vault_root().join(candidate).is_file())
+            .or_else(|| {
+                let name = Path::new(&source).file_name()?.to_str()?.to_lowercase();
+                self.image_files_by_name().get(&name).cloned()
+            })?;
+        self.authority.can_read(&found).then_some(found)
+    }
+
+    /// Image files in the vault by lowercased file name, built on first use.
+    fn image_files_by_name(&self) -> std::cell::Ref<'_, HashMap<String, String>> {
+        if self.image_files.borrow().is_none() {
+            let mut files = HashMap::new();
+            collect_image_files(self.paths.vault_root(), Path::new(""), &mut files);
+            self.image_files.replace(Some(files));
+        }
+        std::cell::Ref::map(self.image_files.borrow(), |files| {
+            files.as_ref().expect("image files were just indexed")
+        })
     }
 
     fn rendered_preview_lines(&self, width: u16) -> Vec<Line<'static>> {
@@ -5563,6 +5715,93 @@ mod tests {
             state.status_line(),
             "No readable note matches `Private/Secret`."
         );
+    }
+
+    fn write_png(path: &Path) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([200, 30, 30, 255]))
+            .save(path)
+            .expect("png should be written");
+    }
+
+    fn halfblock_rows(lines: &[Line<'static>]) -> usize {
+        lines
+            .iter()
+            .filter(|line| line.spans.iter().any(|span| span.content == "▀"))
+            .count()
+    }
+
+    #[test]
+    fn images_render_below_their_line_and_links_stay_selectable() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let root = temp_dir.path();
+        let paths = VaultPaths::new(root);
+        write_note(
+            root,
+            "Home.md",
+            "Intro\n\n![[pic.png]]\n\nSee [[Target]].\n",
+        );
+        write_note(root, "Target.md", "# Target\n");
+        // Found by name, as Obsidian does, though it lives in a subfolder.
+        write_png(&root.join("assets/pic.png"));
+        scan_fixture(&paths);
+        let mut state = BrowseState::new(paths, vec![note("Home.md", &[]), note("Target.md", &[])])
+            .expect("state should build");
+        state.picker.select_path("Home.md");
+        state.refresh_rendered_preview_if_needed();
+        state.settle_rendered_preview();
+
+        let lines = state.preview_lines();
+        assert_eq!(halfblock_rows(&lines), 2, "{lines:?}");
+
+        state.handle_key(key(KeyCode::Tab));
+        let highlighted = state
+            .preview_lines()
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .filter(|span| span.style.add_modifier.contains(Modifier::REVERSED))
+            .map(|span| span.content.to_string())
+            .collect::<String>();
+        assert_eq!(highlighted, "Target");
+    }
+
+    #[test]
+    fn images_outside_the_profile_are_not_shown() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let root = temp_dir.path();
+        let paths = VaultPaths::new(root);
+        write_note(root, "Public/Home.md", "![[secret.png]]\n");
+        write_png(&root.join("Private/secret.png"));
+        scan_fixture(&paths);
+        fs::write(
+            paths.config_file(),
+            "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\"] }\nwrite = { allow = [] }\n",
+        )
+        .unwrap();
+        let selection = vulcan_core::resolve_permission_profile(&paths, Some("scoped")).unwrap();
+        let authority = BrowseAuthority::new(
+            vulcan_core::ProfilePermissionGuard::new(&paths, selection),
+            Some("scoped".to_string()),
+        )
+        .unwrap();
+        let notes = load_notes(&paths, &authority).unwrap();
+        let mut state =
+            BrowseState::new_with_authority(paths, notes, authority).expect("state should build");
+        state.picker.select_path("Public/Home.md");
+        state.refresh_rendered_preview_if_needed();
+        state.settle_rendered_preview();
+
+        assert_eq!(halfblock_rows(&state.preview_lines()), 0);
+    }
+
+    #[test]
+    fn image_paths_cannot_leave_the_vault() {
+        assert_eq!(
+            normalize_vault_relative(Path::new("Notes/../assets/./pic.png")).as_deref(),
+            Some("assets/pic.png")
+        );
+        assert_eq!(normalize_vault_relative(Path::new("../outside.png")), None);
+        assert_eq!(normalize_vault_relative(Path::new("/etc/passwd.png")), None);
     }
 
     #[test]

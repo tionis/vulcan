@@ -35,6 +35,7 @@ mod js_repl;
 mod mcp;
 mod note_picker;
 mod output;
+mod preview_images;
 mod resolve;
 mod serve;
 mod site_server;
