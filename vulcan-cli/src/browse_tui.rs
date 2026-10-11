@@ -7,7 +7,9 @@ use crate::editor::{open_in_editor, with_terminal_suspended};
 use crate::note_picker::{
     handle_picker_key, NotePickerState, PickerAction, Redraw, TerminalRestore, Viewport,
 };
-use crate::preview_images::{halfblock_lines, is_previewable_image, load_preview_image};
+use crate::preview_images::{
+    halfblock_lines, image_cells, is_previewable_image, load_preview_image,
+};
 use crate::terminal_markdown::{
     laid_out_links, render_styled_lines, to_ratatui_lines, LaidOutLink, SpanLink,
     TerminalMarkdownOptions,
@@ -333,10 +335,17 @@ fn prepare_browse_refresh(
     }
 }
 
-/// Rows a half-block image may take in the preview.
-const PREVIEW_IMAGE_ROWS: u16 = 16;
-/// Rows a graphics-protocol image may take in the preview.
-const GRAPHIC_IMAGE_ROWS: u16 = 24;
+/// The most rows an image takes in the preview.
+const MAX_IMAGE_ROWS: u16 = 30;
+/// Half-blocks show two pixels per cell, as a font twice as tall as wide.
+const HALFBLOCK_FONT_SIZE: (u16, u16) = (10, 20);
+
+/// Whether a laid-out line holds nothing but images (and blanks), so a shown
+/// image can take its place.
+fn holds_only_images(line: &[crate::terminal_markdown::StyledSpan]) -> bool {
+    line.iter()
+        .all(|span| matches!(span.link, Some(SpanLink::Image(_))) || span.text.trim().is_empty())
+}
 
 /// How browse draws preview images.
 #[derive(Debug)]
@@ -414,28 +423,11 @@ enum PreviewImage {
     /// Drawn as half-block text lines.
     Lines(Vec<Line<'static>>),
     /// Drawn by the terminal's graphics protocol over reserved lines.
-    Reserved { path: String, rows: u16 },
-}
-
-/// Rows a graphics-protocol image needs at `width` columns, keeping its
-/// aspect ratio and never enlarging it.
-fn graphic_image_rows(image: &image::DynamicImage, width: u16, font_size: (u16, u16)) -> u16 {
-    use image::GenericImageView as _;
-    let (pixel_width, pixel_height) = image.dimensions();
-    let (font_width, font_height) = (font_size.0.max(1), font_size.1.max(1));
-    if pixel_width == 0 || pixel_height == 0 {
-        return 1;
-    }
-    let max_pixel_width = u32::from(width.max(1)) * u32::from(font_width);
-    let shown_height = if pixel_width > max_pixel_width {
-        u64::from(pixel_height) * u64::from(max_pixel_width) / u64::from(pixel_width)
-    } else {
-        u64::from(pixel_height)
-    };
-    let rows = shown_height.div_ceil(u64::from(font_height));
-    u16::try_from(rows)
-        .unwrap_or(u16::MAX)
-        .clamp(1, GRAPHIC_IMAGE_ROWS)
+    Reserved {
+        path: String,
+        columns: u16,
+        rows: u16,
+    },
 }
 
 /// `path` as a vault-relative path with `.` and `..` resolved; `None` when
@@ -543,15 +535,21 @@ fn note_preview_widget(state: &BrowseState, area: Rect) -> Paragraph<'static> {
         .rendered_preview
         .visible_rows
         .set(area.height.saturating_sub(2));
-    Paragraph::new(state.preview_lines_for_width(area.width.saturating_sub(2)))
+    let paragraph = Paragraph::new(state.preview_lines_for_width(area.width.saturating_sub(2)))
         .block(
             Block::default()
                 .title(state.preview_title())
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Cyan)),
         )
-        .wrap(Wrap { trim: false })
-        .scroll((state.preview_scroll(), 0))
+        .scroll((state.preview_scroll(), 0));
+    // Rendered lines are laid out to the pane width already; wrapping them
+    // again would shift the rows images are drawn over.
+    if state.uses_rendered_preview() {
+        paragraph
+    } else {
+        paragraph.wrap(Wrap { trim: false })
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -940,6 +938,7 @@ struct PreviewLayout {
 struct PlacedImage {
     /// The first reserved line.
     first_line: usize,
+    columns: u16,
     rows: u16,
     /// Vault-relative image path.
     path: String,
@@ -1929,7 +1928,8 @@ impl BrowseState {
             },
         );
         let all_links = laid_out_links(&styled);
-        // Images go right below their `[image: ...]` line.
+        // A shown image replaces its `[image: ...]` line when the line holds
+        // nothing else, and goes right below it otherwise.
         let mut images_by_line = HashMap::<usize, Vec<String>>::new();
         for link in &all_links {
             if let SpanLink::Image(source) = &link.target {
@@ -1939,16 +1939,32 @@ impl BrowseState {
         }
         let mut laid_out = Vec::with_capacity(styled.len());
         let mut placed = Vec::new();
-        let mut inserted_before = Vec::with_capacity(styled.len());
+        let mut line_starts = Vec::with_capacity(styled.len());
         for (index, line) in to_ratatui_lines(&styled).into_iter().enumerate() {
-            inserted_before.push(laid_out.len() - index);
-            laid_out.push(line);
-            for source in images_by_line.get(&index).into_iter().flatten() {
-                match self.preview_image(source, width) {
+            let shown = images_by_line
+                .get(&index)
+                .into_iter()
+                .flatten()
+                .map(|source| self.preview_image(source, width))
+                .collect::<Vec<_>>();
+            let replaces_line = !shown.is_empty()
+                && shown.iter().all(Result::is_ok)
+                && holds_only_images(&styled[index]);
+            line_starts.push(laid_out.len());
+            if !replaces_line {
+                laid_out.push(line);
+            }
+            for image in shown {
+                match image {
                     Ok(PreviewImage::Lines(lines)) => laid_out.extend(lines),
-                    Ok(PreviewImage::Reserved { path, rows }) => {
+                    Ok(PreviewImage::Reserved {
+                        path,
+                        columns,
+                        rows,
+                    }) => {
                         placed.push(PlacedImage {
                             first_line: laid_out.len(),
+                            columns,
                             rows,
                             path,
                         });
@@ -1966,7 +1982,7 @@ impl BrowseState {
             .filter(|link| matches!(link.target, SpanLink::Link(_)))
             .map(|mut link| {
                 for segment in &mut link.segments {
-                    segment.0 += inserted_before.get(segment.0).copied().unwrap_or(0);
+                    segment.0 = line_starts.get(segment.0).copied().unwrap_or(segment.0);
                 }
                 link
             })
@@ -1993,13 +2009,25 @@ impl BrowseState {
             .or_insert_with(|| load_preview_image(&self.paths.vault_root().join(&path)))
             .as_ref()
             .ok_or("the file could not be decoded, or is over 32 MiB")?;
+        let visible = self.rendered_preview.visible_rows.get();
+        let max_rows = if visible > 0 {
+            visible.saturating_sub(1).clamp(8, MAX_IMAGE_ROWS)
+        } else {
+            MAX_IMAGE_ROWS
+        };
         Ok(match &self.image_mode {
-            ImageMode::Graphics { picker, .. } => PreviewImage::Reserved {
-                rows: graphic_image_rows(image, width, picker.font_size()),
-                path,
-            },
+            ImageMode::Graphics { picker, .. } => {
+                let (columns, rows) = image_cells(image, width, max_rows, picker.font_size());
+                PreviewImage::Reserved {
+                    path,
+                    columns,
+                    rows,
+                }
+            }
             ImageMode::HalfBlocks | ImageMode::Off => {
-                PreviewImage::Lines(halfblock_lines(image, width, PREVIEW_IMAGE_ROWS))
+                // Half-blocks show two pixels per cell, like a 1:2 font.
+                let (columns, rows) = image_cells(image, width, max_rows, HALFBLOCK_FONT_SIZE);
+                PreviewImage::Lines(halfblock_lines(image, columns, rows))
             }
         })
     }
@@ -2044,16 +2072,19 @@ impl BrowseState {
             let height = placed.rows.min(inner.height - row);
             let target = Rect {
                 y: inner.y + row,
+                width: placed.columns.min(inner.width),
                 height,
                 ..inner
             };
             let protocol = protocols
                 .entry(placed.path.clone())
                 .or_insert_with(|| picker.new_resize_protocol(image.clone()));
+            // The rows were sized to the image, so scaling fills them; an
+            // image cut off at the bottom is cropped instead of shrunk.
             let widget = if height < placed.rows {
                 StatefulImage::default().resize(Resize::Crop(None))
             } else {
-                StatefulImage::default()
+                StatefulImage::default().resize(Resize::Scale(None))
             };
             frame.render_stateful_widget(widget, target, protocol);
         }
@@ -5944,7 +5975,7 @@ mod tests {
 
     fn write_png(path: &Path) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        image::RgbaImage::from_pixel(4, 4, image::Rgba([200, 30, 30, 255]))
+        image::RgbaImage::from_pixel(100, 100, image::Rgba([200, 30, 30, 255]))
             .save(path)
             .expect("png should be written");
     }
@@ -5977,7 +6008,15 @@ mod tests {
         state.settle_rendered_preview();
 
         let lines = state.preview_lines();
-        assert_eq!(halfblock_rows(&lines), 2, "{lines:?}");
+        // 100x100 pixels, enlarged twice, at the half-block cell size of
+        // 10x20 pixels: 20 columns by 10 rows.
+        assert_eq!(halfblock_rows(&lines), 10, "{lines:?}");
+        assert!(lines
+            .iter()
+            .filter(|line| line.spans.iter().any(|span| span.content == "▀"))
+            .all(|line| line.spans.len() == 20));
+        // The image takes the place of its `[image: ...]` line.
+        assert!(!preview_text(&lines).contains("[image:"));
 
         state.handle_key(key(KeyCode::Tab));
         let highlighted = state
@@ -5997,7 +6036,7 @@ mod tests {
         let paths = VaultPaths::new(root);
         write_note(root, "Home.md", "![[pic.png]]\n\nSee [[Target]].\n");
         write_note(root, "Target.md", "# Target\n");
-        // 40x60 pixels at a 10x20 font is 3 rows.
+        // A 40x60 pixel image.
         let pic = root.join("pic.png");
         image::RgbaImage::from_pixel(40, 60, image::Rgba([10, 120, 200, 255]))
             .save(&pic)
@@ -6018,7 +6057,8 @@ mod tests {
             let layout = state.rendered_preview.layout.borrow();
             let placed = &layout.as_ref().expect("layout").images;
             assert_eq!(placed.len(), 1);
-            assert_eq!(placed[0].rows, 3);
+            // 40x60 pixels enlarged twice at a 10x20 font: 8 columns, 6 rows.
+            assert_eq!((placed[0].columns, placed[0].rows), (8, 6));
             assert_eq!(placed[0].path, "pic.png");
         }
         // Links after the image keep their place.
@@ -6031,6 +6071,21 @@ mod tests {
             .draw(|frame| draw(frame, &state))
             .expect("browse should draw");
         let buffer = terminal.backend().buffer();
+        // The image is drawn exactly on its reserved rows: its first line
+        // is the preview's first line, right under the border.
+        let title_row = (0..buffer.area.height)
+            .find(|&y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+                    .contains("Rendered: Home.md")
+            })
+            .expect("preview title should be drawn");
+        let image_row = (0..buffer.area.height)
+            .find(|&y| (0..buffer.area.width).any(|x| buffer[(x, y)].symbol().contains('\u{1b}')))
+            .expect("the kitty protocol should transmit the image");
+        assert_eq!(image_row, title_row + 1);
+        assert!(!preview_text(&state.preview_lines()).contains("[image:"));
         assert!(
             buffer
                 .content()
@@ -6038,15 +6093,6 @@ mod tests {
                 .any(|cell| cell.symbol().contains('\u{1b}')),
             "the kitty protocol should transmit the image"
         );
-    }
-
-    #[test]
-    fn graphic_image_rows_fit_the_width_and_cap_the_height() {
-        let wide = image::DynamicImage::ImageRgba8(image::RgbaImage::new(800, 400));
-        // 40 columns of a 10-pixel font fit 400 pixels: 200 pixels tall.
-        assert_eq!(graphic_image_rows(&wide, 40, (10, 20)), 10);
-        let tall = image::DynamicImage::ImageRgba8(image::RgbaImage::new(100, 4000));
-        assert_eq!(graphic_image_rows(&tall, 40, (10, 20)), GRAPHIC_IMAGE_ROWS);
     }
 
     #[test]

@@ -1085,10 +1085,15 @@ impl Renderer {
             return;
         }
         self.emit_blank_if_pending();
+        // Lines that are not word-wrapped (code, frontmatter, math) are cut
+        // at the width, so no line is ever wider than the target.
+        let width = self.available_width();
         for line in lines {
-            let mut prefixed = self.take_prefix();
-            prefixed.extend(line);
-            self.lines.push(prefixed);
+            for piece in hard_wrap(line, width) {
+                let mut prefixed = self.take_prefix();
+                prefixed.extend(piece);
+                self.lines.push(prefixed);
+            }
         }
     }
 
@@ -1328,6 +1333,52 @@ fn trim_spans(mut spans: Vec<StyledSpan>) -> Vec<StyledSpan> {
         last.text = last.text.trim_end().to_string();
     }
     spans
+}
+
+/// Cut `line` into pieces at most `width` columns wide, keeping styles and
+/// links; `None` keeps it whole.
+fn hard_wrap(line: StyledLine, width: Option<usize>) -> Vec<StyledLine> {
+    let Some(width) = width.filter(|width| *width > 0) else {
+        return vec![line];
+    };
+    if line_width(&line) <= width {
+        return vec![line];
+    }
+    let mut pieces = vec![Vec::new()];
+    let mut current = 0_usize;
+    for span in line {
+        let mut text = String::new();
+        for ch in span.text.chars() {
+            let ch_width = ch.width().unwrap_or(0);
+            if current + ch_width > width && current > 0 {
+                if !text.is_empty() {
+                    pieces
+                        .last_mut()
+                        .expect("at least one piece")
+                        .push(StyledSpan {
+                            text: std::mem::take(&mut text),
+                            style: span.style,
+                            link: span.link.clone(),
+                        });
+                }
+                pieces.push(Vec::new());
+                current = 0;
+            }
+            text.push(ch);
+            current += ch_width;
+        }
+        if !text.is_empty() {
+            pieces
+                .last_mut()
+                .expect("at least one piece")
+                .push(StyledSpan {
+                    text,
+                    style: span.style,
+                    link: span.link,
+                });
+        }
+    }
+    pieces
 }
 
 /// Greedy word wrap that keeps span styles and honours hard breaks.
@@ -1740,6 +1791,23 @@ mod tests {
         let laid_out = laid_out_links(&lines);
         assert_eq!(laid_out.len(), 1, "{lines:?}");
         assert!(laid_out[0].segments.len() > 1, "{laid_out:?}");
+    }
+
+    #[test]
+    fn no_line_is_wider_than_the_width() {
+        let rendered = plain_width(
+            "---\ntitle: a very long frontmatter value that runs on\n---\n\n```\nlet value = \"a long line of code that does not fit\";\n```\n",
+            20,
+        );
+        assert!(
+            rendered.lines().all(|line| text_width(line) <= 20),
+            "{rendered}"
+        );
+        // Cut lines keep all their text.
+        assert!(
+            rendered.replace('\n', "").contains("does not fit\";"),
+            "{rendered}"
+        );
     }
 
     #[test]
