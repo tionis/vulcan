@@ -335,6 +335,8 @@ fn prepare_browse_refresh(
     }
 }
 
+/// How much the full-screen viewer may enlarge a small image.
+const VIEWER_UPSCALE: f64 = 8.0;
 /// The most rows an image takes in the preview before the pane's height is
 /// known.
 const MAX_IMAGE_ROWS: u16 = 30;
@@ -556,6 +558,10 @@ fn note_preview_widget(state: &BrowseState, area: Rect) -> Paragraph<'static> {
 #[allow(clippy::too_many_lines)]
 fn draw(frame: &mut Frame<'_>, state: &BrowseState) {
     let area = frame.area();
+    if let Some(path) = state.image_viewer.as_deref() {
+        state.draw_image_viewer(frame, area, path);
+        return;
+    }
     if area.height < 7 || area.width < 32 {
         let compact = Paragraph::new(vec![
             Line::from(state.status_bar_line()),
@@ -1065,6 +1071,8 @@ struct BrowseState {
     preview_images: std::cell::RefCell<HashMap<String, Result<image::DynamicImage, &'static str>>>,
     /// How preview images are drawn.
     image_mode: ImageMode,
+    /// The vault-relative path of the image shown full screen, if any.
+    image_viewer: Option<String>,
     /// Encoded images for the graphics protocol, by vault-relative path.
     image_protocols: ImageProtocols,
     /// Image files by lowercased name, for links that give only a name.
@@ -1139,6 +1147,7 @@ impl BrowseState {
             preview_images: std::cell::RefCell::new(HashMap::new()),
             image_files: std::cell::RefCell::new(None),
             image_mode: ImageMode::HalfBlocks,
+            image_viewer: None,
             image_protocols: ImageProtocols::default(),
             attachment_folder: vulcan_core::load_vault_config(&paths)
                 .config
@@ -1173,6 +1182,23 @@ impl BrowseState {
 
     #[allow(clippy::too_many_lines)]
     fn handle_key(&mut self, key: KeyEvent) -> BrowseAction {
+        if let Some(path) = self.image_viewer.clone() {
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                    self.image_viewer = None;
+                    self.clear_status();
+                }
+                KeyCode::Char('o') => {
+                    let absolute = self.paths.vault_root().join(&path);
+                    match open_external_link(&absolute.to_string_lossy()) {
+                        Ok(()) => self.set_status(format!("Opened {path} in the system viewer.")),
+                        Err(error) => self.set_status(format!("Could not open {path}: {error}")),
+                    }
+                }
+                _ => {}
+            }
+            return BrowseAction::Continue;
+        }
         if self.new_note_prompt.is_some() {
             return self.handle_new_note_prompt_key(key.code);
         }
@@ -1306,12 +1332,20 @@ impl BrowseState {
                     self.select_preview_link(-1);
                     return BrowseAction::Continue;
                 }
-                KeyCode::Enter => {
-                    if let Some(SpanLink::Link(target)) = self.selected_preview_link() {
+                KeyCode::Enter => match self.selected_preview_link() {
+                    Some(SpanLink::Link(target)) => {
                         self.follow_preview_link(&target);
                         return BrowseAction::Continue;
                     }
-                }
+                    Some(SpanLink::Image(source)) => {
+                        match self.resolve_preview_image(&source) {
+                            Ok(path) => self.image_viewer = Some(path),
+                            Err(reason) => self.set_status(format!("Image not shown: {reason}.")),
+                        }
+                        return BrowseAction::Continue;
+                    }
+                    None => {}
+                },
                 KeyCode::Esc if self.rendered_preview.selected_link.is_some() => {
                     self.rendered_preview.selected_link = None;
                     self.clear_status();
@@ -1941,12 +1975,19 @@ impl BrowseState {
         let mut laid_out = Vec::with_capacity(styled.len());
         let mut placed = Vec::new();
         let mut line_starts = Vec::with_capacity(styled.len());
+        let mut shown_sources = BTreeSet::new();
         for (index, line) in to_ratatui_lines(&styled).into_iter().enumerate() {
             let shown = images_by_line
                 .get(&index)
                 .into_iter()
                 .flatten()
-                .map(|source| self.preview_image(source, width))
+                .map(|source| {
+                    let image = self.preview_image(source, width);
+                    if image.is_ok() {
+                        shown_sources.insert(source.clone());
+                    }
+                    image
+                })
                 .collect::<Vec<_>>();
             let replaces_line = !shown.is_empty()
                 && shown.iter().all(Result::is_ok)
@@ -1978,9 +2019,13 @@ impl BrowseState {
                 }
             }
         }
+        // Links and shown images can be selected.
         let followable = all_links
             .into_iter()
-            .filter(|link| matches!(link.target, SpanLink::Link(_)))
+            .filter(|link| match &link.target {
+                SpanLink::Link(_) => true,
+                SpanLink::Image(source) => shown_sources.contains(source),
+            })
             .map(|mut link| {
                 for segment in &mut link.segments {
                     segment.0 = line_starts.get(segment.0).copied().unwrap_or(segment.0);
@@ -2034,6 +2079,65 @@ impl BrowseState {
                 PreviewImage::Lines(halfblock_lines(image, columns, rows))
             }
         })
+    }
+
+    /// Draw `path` over the whole `area`, centered and as large as fits.
+    fn draw_image_viewer(&self, frame: &mut Frame<'_>, area: Rect, path: &str) {
+        let title = match &self.status {
+            status if status.starts_with("Opened ") || status.starts_with("Could not open ") => {
+                format!(" {path}: {status} ")
+            }
+            _ => format!(" {path}: Esc closes, o opens it in the system viewer "),
+        };
+        let block = Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let mut images = self.preview_images.borrow_mut();
+        let image = images
+            .entry(path.to_string())
+            .or_insert_with(|| load_preview_image(&self.paths.vault_root().join(path)));
+        let image = match image {
+            Ok(image) => image,
+            Err(reason) => {
+                frame.render_widget(Paragraph::new(format!("Image not shown: {reason}.")), inner);
+                return;
+            }
+        };
+        let font_size = match &self.image_mode {
+            ImageMode::Graphics { picker, .. } => picker.font_size(),
+            ImageMode::HalfBlocks | ImageMode::Off => HALFBLOCK_FONT_SIZE,
+        };
+        let (columns, rows) =
+            image_cells(image, inner.width, inner.height, font_size, VIEWER_UPSCALE);
+        let target = Rect {
+            x: inner.x + (inner.width.saturating_sub(columns)) / 2,
+            y: inner.y + (inner.height.saturating_sub(rows)) / 2,
+            width: columns.min(inner.width),
+            height: rows.min(inner.height),
+        };
+        match &self.image_mode {
+            ImageMode::Graphics { picker, .. } => {
+                let mut protocols = self.image_protocols.0.borrow_mut();
+                // A separate entry, so the preview's encoding is not resized.
+                let protocol = protocols
+                    .entry(format!("viewer:{path}"))
+                    .or_insert_with(|| picker.new_resize_protocol(image.clone()));
+                frame.render_stateful_widget(
+                    StatefulImage::default().resize(Resize::Scale(None)),
+                    target,
+                    protocol,
+                );
+            }
+            ImageMode::HalfBlocks | ImageMode::Off => {
+                frame.render_widget(
+                    Paragraph::new(halfblock_lines(image, target.width, target.height)),
+                    target,
+                );
+            }
+        }
     }
 
     /// Draw the layout's reserved images with the terminal graphics
@@ -2153,10 +2257,12 @@ impl BrowseState {
         let layout = self.rendered_preview.layout.borrow();
         let layout = layout.as_ref().expect("layout was just built");
         let mut lines = layout.lines.clone();
+        // Images cannot be highlighted; the status line names them instead.
         if let Some(link) = self
             .rendered_preview
             .selected_link
             .and_then(|index| layout.links.get(index))
+            .filter(|link| matches!(link.target, SpanLink::Link(_)))
         {
             for &(line, first, last) in &link.segments {
                 if let Some(spans) = lines.get_mut(line).map(|line| &mut line.spans) {
@@ -2172,7 +2278,8 @@ impl BrowseState {
     /// Select the next (`step` 1) or previous (`step` -1) link in the
     /// rendered preview and scroll it into view.
     fn select_preview_link(&mut self, step: isize) {
-        // Each link's first line, read before the selection changes.
+        // Each link's first line and target, read before the selection
+        // changes.
         let link_lines = self
             .rendered_preview
             .layout
@@ -2182,7 +2289,7 @@ impl BrowseState {
                 layout
                     .links
                     .iter()
-                    .map(|link| link.segments[0].0)
+                    .map(|link| (link.segments[0].0, link.target.clone()))
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
@@ -2198,7 +2305,8 @@ impl BrowseState {
         }
         .cast_unsigned();
         self.rendered_preview.selected_link = Some(next);
-        let line = u16::try_from(link_lines[next]).unwrap_or(u16::MAX);
+        let (line, target) = &link_lines[next];
+        let line = u16::try_from(*line).unwrap_or(u16::MAX);
         // Before the first draw the pane height is unknown; leave the scroll.
         let rows = self.rendered_preview.visible_rows.get();
         if rows > 0
@@ -2206,10 +2314,16 @@ impl BrowseState {
         {
             self.rendered_preview.scroll = line.saturating_sub(rows / 3);
         }
-        self.set_status(format!(
-            "Link {}/{count}: Enter follows it, Esc clears the selection.",
-            next + 1
-        ));
+        self.set_status(match target {
+            SpanLink::Link(_) => format!(
+                "Link {}/{count}: Enter follows it, Esc clears the selection.",
+                next + 1
+            ),
+            SpanLink::Image(source) => format!(
+                "Image {}/{count}: {source}. Enter shows it full screen, Esc clears the selection.",
+                next + 1
+            ),
+        });
     }
 
     fn selected_preview_link(&self) -> Option<SpanLink> {
@@ -2389,10 +2503,10 @@ impl BrowseState {
             "Keys: Enter move, Esc cancel, Backspace edit destination".to_string()
         } else {
             match self.mode {
-                BrowseMode::Fuzzy => "Keys: type to filter, Up/Down move, Enter/Ctrl-E edit, Ctrl-V source/rendered, PgUp/PgDn scroll preview, Tab/Shift-Tab select link, Enter follow link, o open Kanban board when query is empty, Ctrl-N new, Ctrl-R move, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, Ctrl-F full-text, Ctrl-T tags, Ctrl-P props, Ctrl-Y calendar, Esc quit".to_string(),
+                BrowseMode::Fuzzy => "Keys: type to filter, Up/Down move, Enter/Ctrl-E edit, Ctrl-V source/rendered, PgUp/PgDn scroll preview, Tab/Shift-Tab select link or image, Enter follow link or view image, o open Kanban board when query is empty, Ctrl-N new, Ctrl-R move, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, Ctrl-F full-text, Ctrl-T tags, Ctrl-P props, Ctrl-Y calendar, Esc quit".to_string(),
                 BrowseMode::FullText => "Keys: type to search, Backspace edit query, Up/Down move, Enter edit, Ctrl-V rendered note, Ctrl-E explain, Ctrl-S sort, Alt-C case, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, Ctrl-Y calendar, / fuzzy, Esc quit".to_string(),
-                BrowseMode::Tag => "Keys: type to filter tags, Backspace edit query, Up/Down move, Enter/Ctrl-E edit, Ctrl-V source/rendered, PgUp/PgDn scroll preview, Tab/Shift-Tab select link, Enter follow link, o open Kanban board when query is empty, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, Ctrl-Y calendar, / fuzzy, Esc quit".to_string(),
-                BrowseMode::Property => "Keys: type a predicate, Backspace edit query, Up/Down move, Enter/Ctrl-E edit, Ctrl-V source/rendered, PgUp/PgDn scroll preview, Tab/Shift-Tab select link, Enter follow link, o open Kanban board when query is empty, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, Ctrl-Y calendar, / fuzzy, Esc quit".to_string(),
+                BrowseMode::Tag => "Keys: type to filter tags, Backspace edit query, Up/Down move, Enter/Ctrl-E edit, Ctrl-V source/rendered, PgUp/PgDn scroll preview, Tab/Shift-Tab select link or image, Enter follow link or view image, o open Kanban board when query is empty, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, Ctrl-Y calendar, / fuzzy, Esc quit".to_string(),
+                BrowseMode::Property => "Keys: type a predicate, Backspace edit query, Up/Down move, Enter/Ctrl-E edit, Ctrl-V source/rendered, PgUp/PgDn scroll preview, Tab/Shift-Tab select link or image, Enter follow link or view image, o open Kanban board when query is empty, Ctrl-B backlinks, Ctrl-O links, Ctrl-D doctor, Ctrl-G git, Ctrl-Y calendar, / fuzzy, Esc quit".to_string(),
                 BrowseMode::Calendar => "Keys: arrows move day, PageUp/PageDown or [/] change month, Home/End jump month, t today, Enter edit or create daily note, type YYYY-MM or YYYY-MM-DD to jump, / fuzzy, Esc quit".to_string(),
             }
         }
@@ -6023,6 +6137,8 @@ mod tests {
         assert!(!preview_text(&lines).contains("[image:"));
 
         state.handle_key(key(KeyCode::Tab));
+        assert!(state.status_line().starts_with("Image 1/2: pic.png"));
+        state.handle_key(key(KeyCode::Tab));
         let highlighted = state
             .preview_lines()
             .iter()
@@ -6066,9 +6182,11 @@ mod tests {
             assert_eq!((placed[0].columns, placed[0].rows), (12, 9));
             assert_eq!(placed[0].path, "pic.png");
         }
-        // Links after the image keep their place.
+        // The image is the first stop; links after it keep their place.
         state.handle_key(key(KeyCode::Tab));
-        assert!(state.status_line().starts_with("Link 1/1"));
+        assert!(state.status_line().starts_with("Image 1/2: pic.png"));
+        state.handle_key(key(KeyCode::Tab));
+        assert!(state.status_line().starts_with("Link 2/2"));
 
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(120, 40))
             .expect("test terminal should build");
@@ -6098,6 +6216,56 @@ mod tests {
                 .any(|cell| cell.symbol().contains('\u{1b}')),
             "the kitty protocol should transmit the image"
         );
+    }
+
+    #[test]
+    fn enter_on_a_selected_image_shows_it_full_screen() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let root = temp_dir.path();
+        let paths = VaultPaths::new(root);
+        write_note(root, "Home.md", "![[pic.png]]\n");
+        write_png(&root.join("assets/pic.png"));
+        scan_fixture(&paths);
+        let mut state =
+            BrowseState::new(paths, vec![note("Home.md", &[])]).expect("state should build");
+        state.picker.select_path("Home.md");
+        state.refresh_rendered_preview_if_needed();
+        state.settle_rendered_preview();
+        let _ = state.preview_lines();
+
+        state.handle_key(key(KeyCode::Tab));
+        assert_eq!(
+            state.handle_key(key(KeyCode::Enter)),
+            BrowseAction::Continue
+        );
+        assert_eq!(state.image_viewer.as_deref(), Some("assets/pic.png"));
+
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 40))
+            .expect("test terminal should build");
+        terminal
+            .draw(|frame| draw(frame, &state))
+            .expect("viewer should draw");
+        let buffer = terminal.backend().buffer();
+        let top = (0..buffer.area.width)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect::<String>();
+        assert!(top.contains("assets/pic.png: Esc closes"), "{top}");
+        // The square image fills the screen's height, centered: 38 rows of
+        // half-blocks.
+        let rows = (0..buffer.area.height)
+            .filter(|&y| (0..buffer.area.width).any(|x| buffer[(x, y)].symbol() == "▀"))
+            .count();
+        assert_eq!(rows, 38);
+
+        // Keys go to the viewer, and Esc returns to browse without quitting.
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('q'))),
+            BrowseAction::Continue
+        );
+        assert_eq!(state.image_viewer, None);
+        state.handle_key(key(KeyCode::Enter));
+        assert_eq!(state.handle_key(key(KeyCode::Esc)), BrowseAction::Continue);
+        assert_eq!(state.image_viewer, None);
     }
 
     #[test]
