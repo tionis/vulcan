@@ -55,7 +55,7 @@ Follow the guides for [static sites](docs/guide/static-sites.md), [Outline publi
 
 Install a release using the [installation guide](docs/installation.md), which covers Linux, macOS, Windows, and Android/Termux, plus upgrades and optional daemon services. Place `vulcan` on your `PATH`. Git is a separate dependency for synchronization.
 
-To build from this checkout instead, use the toolchain selected by `rust-toolchain.toml` (Rust 1.88 minimum):
+To build from this checkout instead, use the toolchain selected by `rust-toolchain.toml` (Rust 1.90 minimum):
 
 ```sh
 cargo build --release --locked -p vulcan-cli --bin vulcan

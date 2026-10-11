@@ -216,7 +216,7 @@ fn load_average() -> Option<String> {
 fn write_once(paths: &VaultPaths, original: &str, round: usize) -> f64 {
     let start = Instant::now();
     let lock = vulcan_core::write_lock::acquire_write_lock(paths).expect("write lock");
-    let content = if round % 2 == 0 {
+    let content = if round.is_multiple_of(2) {
         format!("{original}\nBenchmark edit {round}.\n")
     } else {
         original.to_string()

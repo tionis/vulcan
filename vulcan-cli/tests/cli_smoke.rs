@@ -39283,6 +39283,6 @@ fn query_pages_load_only_the_notes_they_print() {
         "from notes where status = open order by rank limit 1",
     ]);
     let first_globbed = all.iter().find(|path| path.starts_with("a/n1")).unwrap();
-    assert_eq!(paths(&globbed), [first_globbed.clone()]);
+    assert_eq!(paths(&globbed), std::slice::from_ref(first_globbed));
     assert_eq!(globbed["plan"]["hydrated"], 12);
 }

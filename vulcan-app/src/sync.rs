@@ -3988,7 +3988,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         };
 
         let preview = archive(true);
-        assert_eq!(preview.archived, [conflict.clone()]);
+        assert_eq!(preview.archived, std::slice::from_ref(&conflict));
         assert_eq!(conflict_listing(&fixture).archived_count, 0);
         let applied = archive(false);
         assert_eq!((applied.archived.len(), applied.archived_total), (1, 1));

@@ -4921,13 +4921,12 @@ mod tests {
     #[cfg(feature = "web")]
     #[test]
     fn resolution_provider_rejects_credentials_over_remote_http() {
-        let error = match OpenAiCompatibleResolutionProvider::new(
+        let Err(error) = OpenAiCompatibleResolutionProvider::new(
             "http://api.example.com/v1",
             "fixture-model",
             Some("secret".to_string()),
-        ) {
-            Ok(_) => panic!("remote cleartext endpoint must fail"),
-            Err(error) => error,
+        ) else {
+            panic!("remote cleartext endpoint must fail");
         };
         assert!(error.to_string().contains("credentials require HTTPS"));
     }

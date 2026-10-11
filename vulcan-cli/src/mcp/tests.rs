@@ -3718,7 +3718,7 @@ fn mcp_http_broadcast_drops_a_lagging_subscriber_without_blocking_another() {
         serde_json::json!({"jsonrpc":"2.0","method":"notifications/tools/list_changed"});
     session.broadcast(&vec![notification.clone(); MAX_MCP_SSE_PENDING_EVENTS]);
     let healthy = session.register_subscriber();
-    session.broadcast(&[notification.clone()]);
+    session.broadcast(std::slice::from_ref(&notification));
     assert_eq!(
         healthy.try_recv().expect("healthy notification"),
         notification

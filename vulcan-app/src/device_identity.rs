@@ -401,53 +401,58 @@ impl DeviceIdentityStore {
             ));
         };
 
-        if adopted.is_none() {
-            let private = PrivateKey::random(&mut ssh_key::rand_core::OsRng, Algorithm::Ed25519)
-                .map_err(|_| AppError::operation("could not generate a device identity key"))?;
-            let mut public = private.public_key().clone();
-            public.set_comment("");
-            let public_text = public
-                .to_openssh()
-                .map_err(|_| AppError::operation("could not encode the device public key"))?;
-            let private_text = private
-                .to_openssh(LineEnding::LF)
-                .map_err(|_| AppError::operation("could not encode the device private key"))?;
-            let identity = build_identity(&public_text)?;
-            write_new_private(
-                &self.directory.join(PRIVATE_KEY_FILE),
-                private_text.as_bytes(),
-            )?;
-            if fail_if_requested(failpoint, InitializationFailpoint::Private) {
-                return Err(AppError::operation("simulated initialization interruption"));
+        match adopted {
+            None => {
+                let private =
+                    PrivateKey::random(&mut ssh_key::rand_core::OsRng, Algorithm::Ed25519)
+                        .map_err(|_| {
+                            AppError::operation("could not generate a device identity key")
+                        })?;
+                let mut public = private.public_key().clone();
+                public.set_comment("");
+                let public_text = public
+                    .to_openssh()
+                    .map_err(|_| AppError::operation("could not encode the device public key"))?;
+                let private_text = private
+                    .to_openssh(LineEnding::LF)
+                    .map_err(|_| AppError::operation("could not encode the device private key"))?;
+                let identity = build_identity(&public_text)?;
+                write_new_private(
+                    &self.directory.join(PRIVATE_KEY_FILE),
+                    private_text.as_bytes(),
+                )?;
+                if fail_if_requested(failpoint, InitializationFailpoint::Private) {
+                    return Err(AppError::operation("simulated initialization interruption"));
+                }
+                write_new_private(
+                    &self.directory.join(PUBLIC_KEY_FILE),
+                    identity.manifest.public_key.as_bytes(),
+                )?;
+                if fail_if_requested(failpoint, InitializationFailpoint::Public) {
+                    return Err(AppError::operation("simulated initialization interruption"));
+                }
+                self.verify_keypair_files(&identity)?;
+                self.publish_manifest(&identity)?;
+                if fail_if_requested(failpoint, InitializationFailpoint::Manifest) {
+                    return Err(AppError::operation("simulated initialization interruption"));
+                }
+                Ok(DeviceIdentityInitReport {
+                    identity: identity_report(&identity, DeviceIdentityStatus::Ready, true, None),
+                    dry_run: false,
+                    created: true,
+                    adopted_interrupted_initialization: false,
+                })
             }
-            write_new_private(
-                &self.directory.join(PUBLIC_KEY_FILE),
-                identity.manifest.public_key.as_bytes(),
-            )?;
-            if fail_if_requested(failpoint, InitializationFailpoint::Public) {
-                return Err(AppError::operation("simulated initialization interruption"));
+            Some(identity) => {
+                self.verify_keypair_files(&identity)?;
+                self.publish_manifest(&identity)?;
+                Ok(DeviceIdentityInitReport {
+                    identity: identity_report(&identity, DeviceIdentityStatus::Ready, true, None),
+                    dry_run: false,
+                    created: false,
+                    adopted_interrupted_initialization: true,
+                })
             }
-            self.verify_keypair_files(&identity)?;
-            self.publish_manifest(&identity)?;
-            if fail_if_requested(failpoint, InitializationFailpoint::Manifest) {
-                return Err(AppError::operation("simulated initialization interruption"));
-            }
-            Ok(DeviceIdentityInitReport {
-                identity: identity_report(&identity, DeviceIdentityStatus::Ready, true, None),
-                dry_run: false,
-                created: true,
-                adopted_interrupted_initialization: false,
-            })
-        } else {
-            let identity = adopted.expect("checked Some above");
-            self.verify_keypair_files(&identity)?;
-            self.publish_manifest(&identity)?;
-            Ok(DeviceIdentityInitReport {
-                identity: identity_report(&identity, DeviceIdentityStatus::Ready, true, None),
-                dry_run: false,
-                created: false,
-                adopted_interrupted_initialization: true,
-            })
         }
     }
 
