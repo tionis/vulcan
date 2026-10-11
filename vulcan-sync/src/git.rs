@@ -747,9 +747,12 @@ pub trait GitEngine: Send + Sync {
         repository: &GitRepository,
     ) -> Result<GitUnattendedRepositoryState, GitEngineError>;
 
+    /// `vault_root` locates the vault's `.vulcan/` state inside the work
+    /// tree, which need not be the repository root.
     fn repository_requirements(
         &self,
         repository: &GitRepository,
+        vault_root: &Path,
     ) -> Result<GitRepositoryRequirements, GitEngineError>;
 
     fn persist_repository_requirements_cache(
@@ -2687,6 +2690,29 @@ impl GitCliEngine {
         }
         Ok(values)
     }
+}
+
+/// The vault root's `/`-terminated path inside the work tree, or empty when
+/// the vault is the work tree root or cannot be placed inside it.
+fn vault_work_tree_prefix(repository: &GitRepository, vault_root: &Path) -> String {
+    let Some(work_tree) = repository.work_tree.as_deref() else {
+        return String::new();
+    };
+    let canonical =
+        |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let (work_tree, vault_root) = (canonical(work_tree), canonical(vault_root));
+    let Ok(relative) = vault_root.strip_prefix(&work_tree) else {
+        return String::new();
+    };
+    let mut prefix = String::new();
+    for component in relative.components() {
+        let Some(component) = component.as_os_str().to_str() else {
+            return String::new();
+        };
+        prefix.push_str(component);
+        prefix.push('/');
+    }
+    prefix
 }
 
 /// Git directory markers for an in-progress operation, shared by the safety
@@ -4863,6 +4889,7 @@ impl GitEngine for GitCliEngine {
     fn repository_requirements(
         &self,
         repository: &GitRepository,
+        vault_root: &Path,
     ) -> Result<GitRepositoryRequirements, GitEngineError> {
         repository.require_work_tree()?;
         let tracked = self.repository_output(
@@ -4931,7 +4958,7 @@ impl GitEngine for GitCliEngine {
             .find(|filter| filter.name == "lfs")
             .and_then(|filter| filter.executable_available);
 
-        let ignored_internal_paths = self.ignored_internal_paths(repository)?;
+        let ignored_internal_paths = self.ignored_internal_paths(repository, vault_root)?;
 
         Ok(GitRepositoryRequirements {
             tracked_paths: tracked_paths.len(),
@@ -5225,15 +5252,17 @@ impl GitCliEngine {
         Ok(())
     }
 
+    /// The vault's rebuildable cache files that Git ignores, as
+    /// work-tree-relative paths. Paths are anchored at the vault, so a vault
+    /// in a subdirectory is checked against its own `.vulcan/`.
     fn ignored_internal_paths(
         &self,
         repository: &GitRepository,
+        vault_root: &Path,
     ) -> Result<Vec<String>, GitEngineError> {
-        let internal_paths = [
-            ".vulcan/cache.db",
-            ".vulcan/cache.db-wal",
-            ".vulcan/cache.db-shm",
-        ];
+        let prefix = vault_work_tree_prefix(repository, vault_root);
+        let internal_paths = ["cache.db", "cache.db-wal", "cache.db-shm"]
+            .map(|name| format!("{prefix}.vulcan/{name}"));
         let mut input = internal_paths.join("\0").into_bytes();
         input.push(0);
         let mut command = self.repository_command(repository);
@@ -5245,7 +5274,10 @@ impl GitCliEngine {
         let ignored = nul_fields("inspect ignored Vulcan state", &output.stdout)?
             .into_iter()
             .collect::<BTreeSet<_>>();
-        if ignored.iter().any(|path| !internal_paths.contains(path)) {
+        if ignored
+            .iter()
+            .any(|path| !internal_paths.iter().any(|internal| internal == path))
+        {
             return Err(GitEngineError::InvalidOutput {
                 operation: "inspect ignored Vulcan state",
                 detail: "Git returned an unexpected ignored path".to_string(),
@@ -5253,8 +5285,7 @@ impl GitCliEngine {
         }
         Ok(internal_paths
             .into_iter()
-            .filter(|path| ignored.contains(path))
-            .map(str::to_string)
+            .filter(|path| ignored.contains(path.as_str()))
             .collect())
     }
 
@@ -10263,6 +10294,41 @@ mod tests {
     }
 
     #[test]
+    fn repository_requirements_check_cache_ignores_at_a_subdirectory_vault() {
+        // A vault below the work tree root ignores its cache through its own
+        // `.vulcan/.gitignore`; the repository root has no `.vulcan/` at all.
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        let vault = temporary.path().join("docs");
+        fs::create_dir_all(vault.join(".vulcan")).expect("vault state directory");
+        fs::write(vault.join(".vulcan/.gitignore"), "*\n!.gitignore\n").expect("ignore rules");
+        fs::write(vault.join("Home.md"), "home\n").expect("note");
+        commit_all(temporary.path(), "subdirectory vault");
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(&vault)
+            .expect("repository from the vault");
+
+        let requirements = engine
+            .repository_requirements(&repository, &vault)
+            .expect("requirements");
+
+        assert_eq!(
+            requirements.ignored_internal_paths,
+            [
+                "docs/.vulcan/cache.db",
+                "docs/.vulcan/cache.db-wal",
+                "docs/.vulcan/cache.db-shm"
+            ]
+        );
+        assert!(engine
+            .repository_requirements(&repository, temporary.path())
+            .expect("requirements at the root")
+            .ignored_internal_paths
+            .is_empty());
+    }
+
+    #[test]
     fn repository_requirements_report_ignored_state_and_filters() {
         let temporary = TempDir::new().expect("temporary directory");
         init_repo(temporary.path());
@@ -10281,7 +10347,7 @@ mod tests {
             .expect("repository");
 
         let requirements = engine
-            .repository_requirements(&repository)
+            .repository_requirements(&repository, temporary.path())
             .expect("requirements");
 
         assert_eq!(requirements.tracked_paths, 3);
@@ -10311,7 +10377,7 @@ mod tests {
         assert!(cache_path.is_file());
         assert_eq!(
             engine
-                .repository_requirements(&repository)
+                .repository_requirements(&repository, temporary.path())
                 .expect("cached requirements"),
             requirements
         );
@@ -10322,7 +10388,7 @@ mod tests {
         )
         .expect("changed attributes");
         let changed = engine
-            .repository_requirements(&repository)
+            .repository_requirements(&repository, temporary.path())
             .expect("changed requirements");
         assert_eq!(changed.required_filters.len(), 1);
         assert_eq!(changed.required_filters[0].name, "replacement");
@@ -10356,7 +10422,7 @@ mod tests {
             .expect("repository");
 
         let requirements = engine
-            .repository_requirements(&repository)
+            .repository_requirements(&repository, temporary.path())
             .expect("requirements should not deadlock");
 
         assert_eq!(requirements.tracked_paths, 4_000);
@@ -10389,7 +10455,7 @@ mod tests {
             .expect("repository");
 
         let requirements = engine
-            .repository_requirements(&repository)
+            .repository_requirements(&repository, temporary.path())
             .expect("requirements");
 
         let ready = requirements

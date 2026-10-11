@@ -428,7 +428,7 @@ fn doctor_git_vault_with_optional_state(
         }
     }
 
-    match engine.repository_requirements(&repository) {
+    match engine.repository_requirements(&repository, paths.vault_root()) {
         Ok(requirements) => {
             doctor_repository_requirements(&mut report, &requirements);
             report.requirements = Some(requirements);
@@ -5945,6 +5945,41 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             .checks
             .iter()
             .any(|check| check.code.starts_with("cache.")));
+    }
+
+    #[test]
+    fn sync_doctor_accepts_cache_ignores_of_a_subdirectory_vault() {
+        let temporary = tempdir().expect("temporary directory");
+        let repository = temporary.path().join("repository");
+        let vault = repository.join("docs");
+        fs::create_dir_all(vault.join(".vulcan")).expect("vault state directory");
+        git(
+            &repository,
+            &["-c", "init.defaultBranch=main", "init", "--quiet"],
+        );
+        git(&repository, &["config", "user.name", "Vulcan Test"]);
+        git(
+            &repository,
+            &["config", "user.email", "vulcan@example.invalid"],
+        );
+        fs::write(vault.join(".vulcan/.gitignore"), "*\n!.gitignore\n").expect("ignore file");
+        fs::write(vault.join("Home.md"), "home\n").expect("home note");
+        git(&repository, &["add", "--all"]);
+        git(&repository, &["commit", "--quiet", "-m", "initial"]);
+        let store = SyncStateStore::at(temporary.path().join("state"));
+
+        let report = doctor_git_vault_with_state_store(
+            &VaultPaths::new(&vault),
+            &GitSyncOptions::default(),
+            &store,
+        );
+
+        let check = report
+            .checks
+            .iter()
+            .find(|check| check.code == "git.internal-ignore")
+            .expect("cache ignore check");
+        assert_eq!(check.severity, SyncDoctorSeverity::Pass, "{check:?}");
     }
 
     #[test]

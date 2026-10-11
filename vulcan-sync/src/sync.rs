@@ -1085,7 +1085,7 @@ pub fn sync_git_once_with_control(
     let repository = engine.discover_repository(vault_path)?;
     let refs = GitSyncRefs::for_options(options)?;
     let safety = engine.safety_state(&repository)?;
-    let requirements = engine.repository_requirements(&repository)?;
+    let requirements = engine.repository_requirements(&repository, vault_path)?;
     let head_before = engine.head_commit(&repository)?;
     let head_ref_before = engine.head_reference(&repository)?;
     let local_before = engine.read_ref(&repository, &refs.local)?;
