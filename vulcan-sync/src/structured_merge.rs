@@ -336,6 +336,9 @@ fn merge_arrays(
     if arrays_have_stable_ids(base, local, remote) {
         return merge_keyed_arrays(base, local, remote, local_identity, remote_identity, depth);
     }
+    if let Some(merged) = merge_string_sets(base, local, remote, local_identity, remote_identity) {
+        return Ok(Some(merged));
+    }
     if !local.starts_with(base) || !remote.starts_with(base) {
         return Ok(None);
     }
@@ -351,6 +354,69 @@ fn merge_arrays(
         }
     }
     Ok(Some(merged))
+}
+
+/// Merges arrays of distinct strings, such as enabled plugins, tags, or
+/// column lists, as ordered sets: an entry either side removed is removed,
+/// entries either side added are appended in an order independent of the
+/// local and remote roles, and one side's reordering of the surviving entries
+/// is kept. Returns `None` for other arrays and for conflicting reorders.
+fn merge_string_sets<'a>(
+    base: &'a [Value],
+    local: &'a [Value],
+    remote: &'a [Value],
+    local_identity: &str,
+    remote_identity: &str,
+) -> Option<Vec<Value>> {
+    fn distinct_strings(values: &[Value]) -> Option<(Vec<&str>, BTreeSet<&str>)> {
+        let mut order = Vec::with_capacity(values.len());
+        let mut set = BTreeSet::new();
+        for value in values {
+            let entry = value.as_str()?;
+            if !set.insert(entry) {
+                return None;
+            }
+            order.push(entry);
+        }
+        Some((order, set))
+    }
+
+    let (base, base_set) = distinct_strings(base)?;
+    let (local, local_set) = distinct_strings(local)?;
+    let (remote, remote_set) = distinct_strings(remote)?;
+    let survivor_sets = [&base_set, &local_set, &remote_set];
+    let surviving = |order: &[&'a str]| -> Vec<&'a str> {
+        order
+            .iter()
+            .copied()
+            .filter(|entry| survivor_sets.iter().all(|set| set.contains(entry)))
+            .collect()
+    };
+    let (in_base, in_local, in_remote) = (surviving(&base), surviving(&local), surviving(&remote));
+    let mut merged = if in_local == in_base {
+        in_remote
+    } else if in_remote == in_base || in_remote == in_local {
+        in_local
+    } else {
+        return None;
+    };
+    let (first, second) = if local_identity <= remote_identity {
+        (&local, &remote)
+    } else {
+        (&remote, &local)
+    };
+    let mut added = BTreeSet::new();
+    for entry in first.iter().chain(second.iter()) {
+        if !base_set.contains(entry) && added.insert(*entry) {
+            merged.push(entry);
+        }
+    }
+    Some(
+        merged
+            .into_iter()
+            .map(|entry| Value::String(entry.to_string()))
+            .collect(),
+    )
 }
 
 fn arrays_have_stable_ids(base: &[Value], local: &[Value], remote: &[Value]) -> bool {
@@ -491,6 +557,81 @@ mod tests {
         assert_eq!(
             serde_json::from_slice::<Value>(&first.expect("content")).expect("JSON"),
             serde_json::json!({"items": [1, 3, 2]})
+        );
+    }
+
+    #[test]
+    fn string_arrays_merge_as_ordered_sets() {
+        let merge = |base: &str, local: &str, remote: &str, local_identity: &str| {
+            let remote_identity = if local_identity == "a" { "b" } else { "a" };
+            match merge_structured_path(
+                MergeFileKind::ObsidianState,
+                Some(base.as_bytes()),
+                Some(local.as_bytes()),
+                Some(remote.as_bytes()),
+                local_identity,
+                remote_identity,
+            )
+            .expect("merge")
+            {
+                StructuredMergeOutcome::Resolved(data) => {
+                    Some(serde_json::from_slice::<Value>(&data.expect("content")).expect("JSON"))
+                }
+                StructuredMergeOutcome::Unresolved => None,
+            }
+        };
+        // One device disables a plugin while another enables two.
+        let base = r#"["dataview","templater","kanban"]"#;
+        let local = r#"["dataview","kanban"]"#;
+        let remote = r#"["dataview","templater","kanban","tasks","calendar"]"#;
+        let expected = serde_json::json!(["dataview", "kanban", "tasks", "calendar"]);
+        assert_eq!(merge(base, local, remote, "a"), Some(expected.clone()));
+        // Swapping the roles gives the same bytes.
+        assert_eq!(merge(base, remote, local, "b"), Some(expected));
+        // Concurrent additions follow the identity order, once each.
+        assert_eq!(
+            merge(r#"["a"]"#, r#"["a","x","y"]"#, r#"["a","y","z"]"#, "b"),
+            Some(serde_json::json!(["a", "y", "z", "x"]))
+        );
+        // One side's reorder survives the other side's addition and removal.
+        assert_eq!(
+            merge(
+                r#"["a","b","c"]"#,
+                r#"["c","b","a"]"#,
+                r#"["a","c","d"]"#,
+                "a"
+            ),
+            Some(serde_json::json!(["c", "a", "d"]))
+        );
+        // Both sides reordering differently needs review.
+        assert_eq!(
+            merge(
+                r#"["a","b","c"]"#,
+                r#"["c","b","a"]"#,
+                r#"["b","a","c"]"#,
+                "a"
+            ),
+            None
+        );
+        // Arrays with duplicates or non-strings keep append-only semantics.
+        assert_eq!(
+            merge(r#"["a","a"]"#, r#"["a"]"#, r#"["a","a","b"]"#, "a"),
+            None
+        );
+        assert_eq!(merge("[1,2]", "[2]", "[1,2,3]", "a"), None);
+        // Frontmatter lists use the same rule.
+        let merged = resolved(merge_structured_path(
+            MergeFileKind::Markdown,
+            Some(b"---\ntags: [a, b]\n---\nbody\n"),
+            Some(b"---\ntags: [b]\n---\nbody\n"),
+            Some(b"---\ntags: [a, b, c]\n---\nbody\n"),
+            "a",
+            "b",
+        ))
+        .expect("content");
+        assert_eq!(
+            String::from_utf8(merged).expect("UTF-8"),
+            "---\ntags:\n- b\n- c\n---\nbody\n"
         );
     }
 

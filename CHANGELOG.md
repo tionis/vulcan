@@ -4,6 +4,12 @@
 
 ### Changed
 
+- Sync merges Obsidian's JSON configuration (`.obsidian/**/*.json`: settings, hotkeys, enabled
+  plugins, plugin data) key by key instead of requiring review, so devices that change different
+  settings or enable different plugins no longer conflict. Lists of distinct strings, such as
+  `community-plugins.json`, frontmatter `tags`, or Bases column lists, now merge as sets: removals
+  and additions from both sides combine, and one side's reordering is kept. The same setting
+  changed on both devices, and other `.obsidian` files such as snippets, still need review.
 - Sync conflicts no longer write a copy of each side's bytes beside the conflict record. Nothing
   read those copies; the bytes stay in Git behind the conflict's preserved refs and, later, in the
   conflict archive.

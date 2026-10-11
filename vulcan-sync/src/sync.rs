@@ -8252,7 +8252,7 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
             "{\n  \"active\": \"reader\"\n}\n"
         );
 
-        // Plugin data holds real settings, so it still needs review.
+        // Both devices changing the same plugin setting still needs review.
         fs::write(
             writer.join(".obsidian/plugins/example/data.json"),
             "{\n  \"setting\": \"writer\"\n}\n",
@@ -8272,6 +8272,74 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
             conflict.paths,
             vec![".obsidian/plugins/example/data.json".to_string()]
         );
+    }
+
+    #[test]
+    fn obsidian_settings_and_enabled_plugins_merge_key_by_key() {
+        let (temporary, remote, writer) = setup_remote_and_writer();
+        let engine = GitCliEngine::default();
+        fs::create_dir_all(writer.join(".obsidian/plugins/example")).expect("obsidian dir");
+        let plugins = ".obsidian/community-plugins.json";
+        let data = ".obsidian/plugins/example/data.json";
+        fs::write(
+            writer.join(plugins),
+            "[\n  \"dataview\",\n  \"templater\"\n]",
+        )
+        .expect("base plugins");
+        fs::write(writer.join(data), "{\n  \"a\": 1,\n  \"b\": 1\n}").expect("base data");
+        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap sync");
+        let reader = clone_reader(&temporary, &remote, &writer);
+        sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("reader baseline");
+
+        // The writer disables a plugin and changes one setting; the reader
+        // enables another plugin and changes a different setting.
+        fs::write(writer.join(plugins), "[\n  \"dataview\"\n]").expect("writer plugins");
+        fs::write(writer.join(data), "{\n  \"a\": 2,\n  \"b\": 1\n}").expect("writer data");
+        fs::write(
+            reader.join(plugins),
+            "[\n  \"dataview\",\n  \"templater\",\n  \"tasks\"\n]",
+        )
+        .expect("reader plugins");
+        fs::write(reader.join(data), "{\n  \"a\": 1,\n  \"b\": 3\n}").expect("reader data");
+        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("writer push");
+        let report =
+            sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("settings merge");
+
+        assert_eq!(report.outcome, GitSyncOutcome::Merged);
+        assert!(report.conflict.is_none());
+        let mut merged = report
+            .automatic_resolutions
+            .iter()
+            .map(|resolution| {
+                (
+                    resolution.path.as_str(),
+                    resolution.kind,
+                    resolution.rule_id.as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+        merged.sort_unstable_by_key(|(path, _, _)| *path);
+        assert_eq!(
+            merged,
+            [
+                (
+                    plugins,
+                    MergeFileKind::ObsidianState,
+                    "obsidian-json-structured"
+                ),
+                (
+                    data,
+                    MergeFileKind::ObsidianState,
+                    "obsidian-json-structured"
+                ),
+            ]
+        );
+        let read = |path: &str| -> serde_json::Value {
+            serde_json::from_str(&fs::read_to_string(reader.join(path)).expect("merged file"))
+                .expect("JSON")
+        };
+        assert_eq!(read(plugins), serde_json::json!(["dataview", "tasks"]));
+        assert_eq!(read(data), serde_json::json!({"a": 2, "b": 3}));
     }
 
     #[test]

@@ -134,6 +134,15 @@ impl Default for MergePolicy {
                     &[MergeFileKind::ObsidianState],
                     MergeResolution::PreferLocal,
                 ),
+                // Settings, hotkeys, enabled plugins, and plugin data merge
+                // key by key; other `.obsidian` files (snippets, plugin code)
+                // still need review.
+                rule(
+                    "obsidian-json-structured",
+                    ".obsidian/**/*.json",
+                    &[MergeFileKind::ObsidianState],
+                    MergeResolution::Structured,
+                ),
                 rule(
                     "obsidian-device-state-review",
                     ".obsidian/**",
@@ -331,22 +340,6 @@ mod tests {
                 .expect("ceiling"),
             MergeResolution::RequireReview
         );
-        for path in [
-            ".obsidian/app.json",
-            ".obsidian/plugins/example/data.json",
-            ".obsidian/plugins/example/workspace.json",
-        ] {
-            assert_eq!(
-                policy
-                    .resolution_for(
-                        path,
-                        MergeFileKind::ObsidianState,
-                        MergeAutomation::AllowPolicy,
-                    )
-                    .expect("resolution"),
-                MergeResolution::RequireReview
-            );
-        }
         let selected_state_policy = MergePolicy {
             version: MERGE_POLICY_SCHEMA_VERSION,
             rules: vec![
@@ -389,6 +382,46 @@ mod tests {
                 .expect("resolution"),
             MergeResolution::RequireReview
         );
+    }
+
+    #[test]
+    fn obsidian_json_merges_and_other_obsidian_state_needs_review() {
+        let policy = MergePolicy::default();
+        for path in [
+            ".obsidian/app.json",
+            ".obsidian/community-plugins.json",
+            ".obsidian/plugins/example/data.json",
+            ".obsidian/plugins/example/workspace.json",
+        ] {
+            assert_eq!(
+                policy
+                    .decision_for(
+                        path,
+                        MergeFileKind::ObsidianState,
+                        MergeAutomation::AllowPolicy,
+                    )
+                    .expect("resolution"),
+                MergePolicyDecision {
+                    rule_id: "obsidian-json-structured".to_string(),
+                    resolution: MergeResolution::Structured,
+                }
+            );
+        }
+        for path in [
+            ".obsidian/snippets/theme.css",
+            ".obsidian/plugins/example/main.js",
+        ] {
+            assert_eq!(
+                policy
+                    .resolution_for(
+                        path,
+                        MergeFileKind::ObsidianState,
+                        MergeAutomation::AllowPolicy,
+                    )
+                    .expect("resolution"),
+                MergeResolution::RequireReview
+            );
+        }
     }
 
     #[test]

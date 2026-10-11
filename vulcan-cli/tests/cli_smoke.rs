@@ -6578,7 +6578,8 @@ fn setup_cli_obsidian_sync_conflict() -> (TempDir, std::path::PathBuf, std::path
             remote.to_str().expect("remote path"),
         ],
     );
-    fs::write(writer.join(".obsidian/community-plugins.json"), "[]\n").expect("base state");
+    // The same setting changed on both devices still needs review.
+    fs::write(writer.join(".obsidian/app.json"), "{\"theme\":\"base\"}\n").expect("base state");
     commit_all(&writer, "Base");
     let run_sync = |vault: &std::path::Path| {
         Command::cargo_bin("vulcan")
@@ -6609,13 +6610,13 @@ fn setup_cli_obsidian_sync_conflict() -> (TempDir, std::path::PathBuf, std::path
     );
     run_sync(&reader);
     fs::write(
-        writer.join(".obsidian/community-plugins.json"),
-        "[\"writer\"]\n",
+        writer.join(".obsidian/app.json"),
+        "{\"theme\":\"writer\"}\n",
     )
     .expect("writer state");
     fs::write(
-        reader.join(".obsidian/community-plugins.json"),
-        "[\"reader\"]\n",
+        reader.join(".obsidian/app.json"),
+        "{\"theme\":\"reader\"}\n",
     )
     .expect("reader state");
     run_sync(&writer);
@@ -8796,9 +8797,9 @@ fn sync_resolve_cli_applies_reviewed_supplied_files_through_a_proposal() {
 #[test]
 fn sync_resolve_cli_accepts_reviewed_obsidian_state_without_exposing_it_to_an_agent() {
     let (temporary, state_home, reader, id) = setup_cli_obsidian_sync_conflict();
-    let source = temporary.path().join("reviewed-community-plugins.json");
-    fs::write(&source, "[\"reader\",\"writer\"]\n").expect("reviewed state");
-    let specification = format!(".obsidian/community-plugins.json={}", source.display());
+    let source = temporary.path().join("reviewed-app.json");
+    fs::write(&source, "{\"theme\":\"reviewed\"}\n").expect("reviewed state");
+    let specification = format!(".obsidian/app.json={}", source.display());
     let run = |dry_run: bool| {
         let mut command = Command::cargo_bin("vulcan").expect("binary should build");
         command
@@ -8815,18 +8816,14 @@ fn sync_resolve_cli_accepts_reviewed_obsidian_state_without_exposing_it_to_an_ag
 
     let preview = parse_stdout_json(&run(true));
     assert_eq!(preview["outcome"], "planned");
-    assert_eq!(
-        preview["paths"][0]["path"],
-        ".obsidian/community-plugins.json"
-    );
+    assert_eq!(preview["paths"][0]["path"], ".obsidian/app.json");
 
     let resolved = parse_stdout_json(&run(false));
     assert_eq!(resolved["outcome"], "applied");
     assert!(resolved["proposal_id"].is_string());
     assert_eq!(
-        fs::read_to_string(reader.join(".obsidian/community-plugins.json"))
-            .expect("resolved state"),
-        "[\"reader\",\"writer\"]\n"
+        fs::read_to_string(reader.join(".obsidian/app.json")).expect("resolved state"),
+        "{\"theme\":\"reviewed\"}\n"
     );
 }
 
