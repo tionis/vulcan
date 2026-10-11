@@ -281,6 +281,13 @@ that keeps both histories reachable.
   live, and any `contains_live` or `diverged` candidate whose tree is not already accepted.
   Applying the prune uses an exact lease and keeps the local recovery ref. It deletes only the
   remote backup ref; device, Git, and vault access are unchanged.
+- Sync also sweeps Vulcan's refs at most once a day. It deletes remote backups of devices that are
+  no longer registered when live already contains them (same exact-lease rule), releases local
+  device recovery refs once their remote backup is gone and live contains them, and drops
+  remote-tracking copies (`refs/remotes/<remote>/__vulcan-sync/...`) of refs the remote no longer
+  has. A `sync.device-backups` doctor warning lists unregistered devices whose backups hold content
+  live lacks; inspect those with `sync devices fetch` before pruning. Registered devices' backups
+  are never swept.
 - A safety-head publication failure stops canonical reconciliation. Do not delete the head or
   bypass this gate just to make sync green; restore remote write access or select the correct
   remote, then rerun.

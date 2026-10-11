@@ -549,6 +549,20 @@ pub trait GitEngine: Send + Sync {
         destination: &GitRefName,
     ) -> Result<GitOid, GitEngineError>;
 
+    /// Fetches several remote refs into local refs; the CLI engine does it in
+    /// one transfer.
+    fn fetch_refs(
+        &self,
+        repository: &GitRepository,
+        remote: &GitRemote,
+        mappings: &[(GitRefName, GitRefName)],
+    ) -> Result<(), GitEngineError> {
+        for (source, destination) in mappings {
+            self.fetch_ref(repository, remote, source, destination)?;
+        }
+        Ok(())
+    }
+
     fn is_ancestor(
         &self,
         repository: &GitRepository,
@@ -3998,6 +4012,23 @@ impl GitEngine for GitCliEngine {
                 operation: "fetch the live sync ref",
                 detail: format!("Git did not update `{destination}`"),
             })
+    }
+
+    fn fetch_refs(
+        &self,
+        repository: &GitRepository,
+        remote: &GitRemote,
+        mappings: &[(GitRefName, GitRefName)],
+    ) -> Result<(), GitEngineError> {
+        if mappings.is_empty() {
+            return Ok(());
+        }
+        let mut command = self.repository_command(repository);
+        command.args(["fetch", "--no-tags", "--force", "--", remote.as_str()]);
+        for (source, destination) in mappings {
+            command.arg(format!("+{}:{}", source.as_str(), destination.as_str()));
+        }
+        ensure_success("fetch refs", self.execute(command)?).map(drop)
     }
 
     fn is_ancestor(

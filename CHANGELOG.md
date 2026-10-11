@@ -4,6 +4,12 @@
 
 ### Changed
 
+- Sync sweeps Vulcan's own refs at most once a day per repository: remote backups of devices that
+  are no longer registered are deleted when live already contains them, local device recovery refs
+  are released once their backup is gone, and remote-tracking copies of Vulcan refs the remote no
+  longer has are pruned. Backups that hold content live lacks are kept and reported by
+  `vulcan sync doctor`.
+
 - **Stable signing-key rotation, final step.** The stable channel now trusts only the
   hardware-held `stable-2026-10` key, and stable releases are signed only with it. The retired
   `stable-2026-09` key is no longer accepted. Installations on 0.3.0 update normally. Older

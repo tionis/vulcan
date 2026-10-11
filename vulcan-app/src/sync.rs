@@ -351,6 +351,7 @@ fn doctor_git_vault_with_optional_state(
     );
     doctor_device_identity(state_store, &mut report);
     doctor_transport(paths, &options.remote, &mut report);
+    doctor_ref_sweep(paths, state_store, &mut report);
 
     match engine.installation() {
         Ok(installation) => {
@@ -589,6 +590,40 @@ fn doctor_device_identity(state_store: Option<&SyncStateStore>, report: &mut Syn
             SyncDoctorSeverity::Error,
             error.to_string(),
         ),
+    }
+}
+
+/// Reports device backups the last ref sweep kept because live lacks their
+/// content. Their devices are no longer registered, so nothing else will
+/// ever integrate or remove them.
+fn doctor_ref_sweep(
+    paths: &VaultPaths,
+    state_store: Option<&SyncStateStore>,
+    report: &mut SyncDoctorReport,
+) {
+    let Some(state_store) = state_store else {
+        return;
+    };
+    let Ok(work_tree) = crate::sync_state::sync_work_tree(paths.vault_root()) else {
+        return;
+    };
+    let state = state_store
+        .root()
+        .join(crate::sync_state::repository_state_key(&work_tree))
+        .join(crate::sync_ref_sweep::REF_SWEEP_STATE_FILE);
+    let Some(sweep) = crate::sync_ref_sweep::last_sweep(&state) else {
+        return;
+    };
+    if !sweep.retained_device_backups.is_empty() {
+        doctor_check(
+            report,
+            "sync.device-backups",
+            SyncDoctorSeverity::Warning,
+            format!(
+                "remote backups of unregistered devices hold content live does not have: {}; inspect each with `vulcan sync devices fetch <device-id>`, integrate what matters, then `vulcan sync devices prune-backup <device-id>`",
+                sweep.retained_device_backups.join(", ")
+            ),
+        );
     }
 }
 
@@ -1838,9 +1873,9 @@ fn supersede_obsolete_conflicts(
     ))
 }
 
-/// Carries overtaken conflicts forward, archives long-closed ones, and
-/// releases detached-HEAD rescue refs live already contains, under the vault
-/// and repository locks. Both are opportunistic: if the locks are
+/// Carries overtaken conflicts forward, archives long-closed ones, releases
+/// detached-HEAD rescue refs live already contains, and runs the daily
+/// Vulcan ref sweep, under the vault and repository locks. Both are opportunistic: if the locks are
 /// busy or a step fails, the conflicts stay as they are and the next sync
 /// tries again.
 fn carry_forward_overtaken_conflicts(
@@ -1883,6 +1918,18 @@ fn carry_forward_overtaken_conflicts(
     );
     let _ =
         crate::sync_retention::release_contained_rescue_refs(engine, &sync.repository, frontier);
+    let sweep_state = store
+        .repository_state_dir(&journal.repository_key)
+        .join(crate::sync_ref_sweep::REF_SWEEP_STATE_FILE);
+    if crate::sync_ref_sweep::sweep_due(&sweep_state) {
+        let _ = crate::sync_ref_sweep::sweep_vulcan_refs(
+            engine,
+            &sync.repository,
+            options,
+            frontier,
+            &sweep_state,
+        );
+    }
     carried
 }
 
@@ -4015,6 +4062,156 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         // Live holds the first rescue's whole history; the second is the
         // only copy of its commit and stays.
         assert_eq!(remaining.lines().collect::<Vec<_>>(), [rescued, device]);
+    }
+
+    #[test]
+    fn ref_sweep_prunes_only_backups_and_refs_that_protect_nothing() {
+        let fixture = structured_sync_fixture(&[("Home.md", "base\n")]);
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&fixture.reader)
+                .args(args)
+                .output()
+                .expect("git");
+            assert!(output.status.success(), "{args:?}");
+            String::from_utf8(output.stdout)
+                .expect("utf-8")
+                .trim()
+                .to_string()
+        };
+        let options = GitSyncOptions::default();
+        let profile = vulcan_sync::sync_profile_key(&options.remote, &options.live_ref);
+        let live = git(&["ls-remote", "origin", "refs/heads/__vulcan-sync/live"])
+            .split_whitespace()
+            .next()
+            .expect("live")
+            .to_string();
+        // A backup whose tree live lacks: a note that only that device has.
+        let unique_tree = {
+            let mut child = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&fixture.reader)
+                .args(["mktree"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("mktree");
+            let blob = git(&["hash-object", "-w", "Home.md"]);
+            std::io::Write::write_all(
+                child.stdin.as_mut().expect("stdin"),
+                format!("100644 blob {blob}\tOnly.md\n").as_bytes(),
+            )
+            .expect("tree entry");
+            let output = child.wait_with_output().expect("mktree output");
+            String::from_utf8(output.stdout)
+                .expect("utf-8")
+                .trim()
+                .to_string()
+        };
+        let unique = git(&["commit-tree", &unique_tree, "-m", "only on that device"]);
+        let device = |id: &str| format!("refs/heads/__vulcan-sync/devices/{profile}/{id}");
+        for (target, reference) in [
+            (&live, device("01oldcontained")),
+            (&unique, device("01oldunique")),
+            (&live, device("vdev1registered")),
+            (
+                &live,
+                "refs/heads/__vulcan-sync/registrations/vdev1registered".to_string(),
+            ),
+        ] {
+            git(&["push", "-q", "origin", &format!("{target}:{reference}")]);
+        }
+        let recovery = format!("refs/vulcan/recovery/devices/{profile}");
+        git(&["update-ref", &format!("{recovery}/01oldcontained"), &live]);
+        git(&["update-ref", &format!("{recovery}/live"), &live]);
+        let stale_tracking = "refs/remotes/origin/__vulcan-sync/conflicts/gone/record";
+        git(&["update-ref", stale_tracking, &live]);
+        git(&["fetch", "-q", "origin"]);
+
+        let engine = vulcan_sync::GitCliEngine::default();
+        let repository = engine
+            .discover_repository(&fixture.reader)
+            .expect("repository");
+        let state = fixture.reader.join("sweep-state");
+        assert!(crate::sync_ref_sweep::sweep_due(&state));
+        let report = crate::sync_ref_sweep::sweep_vulcan_refs(
+            &engine,
+            &repository,
+            &options,
+            &vulcan_sync::GitOid::parse(&live).expect("live"),
+            &state,
+        )
+        .expect("sweep");
+
+        assert_eq!(report.pruned_device_backups, ["01oldcontained"]);
+        assert_eq!(report.retained_device_backups, ["01oldunique"]);
+        assert_eq!(report.released_recovery_refs, 2);
+        let remote = git(&["ls-remote", "origin", "refs/heads/__vulcan-sync/devices/*"]);
+        assert!(!remote.contains("01oldcontained"));
+        assert!(remote.contains("01oldunique") && remote.contains("vdev1registered"));
+        assert!(git(&["for-each-ref", &recovery]).is_empty());
+        let tracking = git(&[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/remotes/origin/__vulcan-sync",
+        ]);
+        assert!(!tracking.contains("conflicts/gone"));
+        assert!(!tracking.contains("01oldcontained"));
+        assert!(tracking.contains("__vulcan-sync/live"));
+        assert!(git(&["for-each-ref", "refs/vulcan/sweep"]).is_empty());
+        // Recorded for diagnostics, and not due again for a day.
+        assert_eq!(
+            crate::sync_ref_sweep::last_sweep(&state)
+                .expect("recorded")
+                .retained_device_backups,
+            ["01oldunique"]
+        );
+        assert!(!crate::sync_ref_sweep::sweep_due(&state));
+
+        // An ordinary sync runs the sweep once it is due; the fixture's own
+        // first syncs already swept, so make it due again.
+        let key = sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("sync")
+        .state
+        .repository_key;
+        let stored = fixture
+            .store
+            .root()
+            .join(&key)
+            .join(crate::sync_ref_sweep::REF_SWEEP_STATE_FILE);
+        assert!(stored.is_file());
+        fs::remove_file(&stored).expect("make the sweep due");
+        let report = sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("sync");
+        assert!(fixture
+            .store
+            .root()
+            .join(&report.state.repository_key)
+            .join(crate::sync_ref_sweep::REF_SWEEP_STATE_FILE)
+            .is_file());
+        // The backup with content live lacks is reported by sync doctor.
+        let doctor = doctor_git_vault_with_profile_and_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &GitSyncOptions::default(),
+            vulcan_sync::GitPlatformProfile::native(),
+            &fixture.store,
+            SyncContentProfile::Knowledge,
+            false,
+        );
+        assert!(doctor
+            .checks
+            .iter()
+            .any(|check| check.code == "sync.device-backups"
+                && check.message.contains("01oldunique")));
     }
 
     #[test]

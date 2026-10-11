@@ -4019,6 +4019,11 @@ impl SyncConflictStore {
         Ok(())
     }
 
+    /// The device-local state directory of one repository.
+    pub(crate) fn repository_state_dir(&self, repository_key: &str) -> PathBuf {
+        self.root.join(repository_key)
+    }
+
     /// Whether the conflict's record is in the live store (not archived).
     pub fn is_live(&self, repository_key: &str, conflict_id: &str) -> Result<bool, AppError> {
         Ok(self
