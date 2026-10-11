@@ -7173,6 +7173,52 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
     }
 
     #[test]
+    fn devices_linking_different_branch_tips_merge_criss_crossed_live_history() {
+        // The branch moves between two devices' cycles, so each links a
+        // different branch tip into the same live snapshot. The accepted
+        // remote and the local candidate then share two best common
+        // ancestors: the shared live snapshot and the older branch tip.
+        let (temporary, remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        let options = GitSyncOptions::default();
+        sync_git_once(&engine, &writer, &options).expect("writer bootstrap");
+        let reader = clone_reader(&temporary, &remote, &writer);
+        run_git(&reader, &["fetch", "--quiet", "origin"]);
+        run_git(&reader, &["branch", "--quiet", "-u", "origin/main", "main"]);
+        sync_git_once(&engine, &reader, &options).expect("reader joins");
+        sync_git_once(&engine, &writer, &options).expect("writer converges");
+
+        advance_remote_branch(&temporary, &remote, "first branch edit\n");
+        fs::write(writer.join("Writer.md"), "writer\n").expect("writer note");
+        let writer_report = sync_git_once(&engine, &writer, &options).expect("writer links");
+        assert!(writer_report.pause.is_none());
+
+        advance_remote_branch(&temporary, &remote, "second branch edit\n");
+        fs::write(reader.join("Reader.md"), "reader\n").expect("reader note");
+        let report = sync_git_once(&engine, &reader, &options)
+            .expect("criss-crossed live history must merge");
+
+        assert!(report.pause.is_none(), "{report:?}");
+        assert_eq!(report.outcome, GitSyncOutcome::Merged, "{report:?}");
+        for (note, contents) in [
+            ("Home.md", "second branch edit\n"),
+            ("Writer.md", "writer\n"),
+            ("Reader.md", "reader\n"),
+        ] {
+            assert_eq!(
+                fs::read_to_string(reader.join(note)).expect("merged note"),
+                contents
+            );
+        }
+        let writer_report = sync_git_once(&engine, &writer, &options).expect("writer catches up");
+        assert!(writer_report.pause.is_none(), "{writer_report:?}");
+        assert_eq!(
+            fs::read_to_string(writer.join("Reader.md")).expect("reader note on writer"),
+            "reader\n"
+        );
+    }
+
+    #[test]
     fn branch_pull_merges_divergence_with_default_configuration() {
         let (temporary, remote, writer) = setup_tracked_branch();
         let engine = GitCliEngine::default();
