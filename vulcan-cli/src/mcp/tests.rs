@@ -22,6 +22,12 @@ use vulcan_daemon::mcp_http_codec::MAX_MCP_HTTP_BODY_BYTES;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_http_routes::classify_mcp_http_route;
 
+/// How long a test waits for a live listener's response. Mutating tools
+/// rescan the vault, which takes well under a second locally but can exceed
+/// several seconds on slow CI runners; the bound only has to catch a hang.
+#[cfg(feature = "oauth")]
+const LISTENER_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[cfg(feature = "oauth")]
 fn handle_test_mcp_http_post(
     context: &McpHttpServerContext,
@@ -1721,7 +1727,7 @@ fn named_listener_test_token(
 fn named_listener_initialize(address: SocketAddr, name: &str, token: &str) -> String {
     let mut stream = TcpStream::connect(address).expect("named listener active");
     stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(LISTENER_RESPONSE_TIMEOUT))
         .expect("response timeout");
     let body = serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -1768,7 +1774,7 @@ fn named_listener_method_with_params(
 ) -> String {
     let mut stream = TcpStream::connect(address).expect("named listener active");
     stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(LISTENER_RESPONSE_TIMEOUT))
         .expect("response timeout");
     let mut body = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": method});
     if let Some(params) = params {
@@ -1808,7 +1814,7 @@ fn assert_named_listener_rejects_foreign_credential(
     for method in ["GET", "DELETE"] {
         let mut stream = TcpStream::connect(address).expect("named listener active");
         stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(LISTENER_RESPONSE_TIMEOUT))
             .expect("session response timeout");
         write!(
             stream,
@@ -1889,7 +1895,7 @@ fn assert_named_listener_large_resources_are_session_scoped(address: SocketAddr,
 
     let mut stream = TcpStream::connect(address).expect("named listener active");
     stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(LISTENER_RESPONSE_TIMEOUT))
         .expect("response timeout");
     write!(
         stream,
@@ -1915,7 +1921,7 @@ fn open_named_listener_sse(
 ) -> io::BufReader<TcpStream> {
     let mut stream = TcpStream::connect(address).expect("named listener active");
     stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(LISTENER_RESPONSE_TIMEOUT))
         .expect("SSE read timeout");
     write!(
         stream,
@@ -1981,7 +1987,7 @@ fn assert_named_listener_prompt_change_notifications(
 
     let mut delete = TcpStream::connect(address).expect("named listener active");
     delete
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(LISTENER_RESPONSE_TIMEOUT))
         .expect("delete timeout");
     write!(
         delete,
@@ -2053,7 +2059,7 @@ fn assert_named_listener_scoped_prompt_notifications(
     );
     scoped_sse
         .get_mut()
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(LISTENER_RESPONSE_TIMEOUT))
         .expect("restore SSE timeout");
 
     let visible = paths.vault_root().join("AI/Prompts/summary.md");
@@ -2261,7 +2267,7 @@ fn named_listener_post_payload(
 ) -> String {
     let mut stream = TcpStream::connect(address).expect("named listener active");
     stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(LISTENER_RESPONSE_TIMEOUT))
         .expect("response timeout");
     let body = payload.to_string();
     write!(
@@ -2376,7 +2382,7 @@ fn named_listener_call_tool(
 ) -> String {
     let mut stream = TcpStream::connect(address).expect("named listener active");
     stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(LISTENER_RESPONSE_TIMEOUT))
         .expect("response timeout");
     let body = serde_json::json!({
         "jsonrpc": "2.0", "id": 3, "method": "tools/call",
@@ -2408,7 +2414,7 @@ fn named_listener_operation_status(
 ) -> String {
     let mut stream = TcpStream::connect(address).expect("named listener active");
     stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(LISTENER_RESPONSE_TIMEOUT))
         .expect("response timeout");
     write!(
         stream,
@@ -2470,7 +2476,7 @@ fn named_listener_json_get(address: SocketAddr, path: &str) -> Value {
 fn named_listener_get(address: SocketAddr, path: &str) -> String {
     let mut stream = TcpStream::connect(address).expect("named listener active");
     stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(LISTENER_RESPONSE_TIMEOUT))
         .expect("response timeout");
     write!(
         stream,
@@ -2488,7 +2494,7 @@ fn named_listener_get(address: SocketAddr, path: &str) -> String {
 fn named_listener_post(address: SocketAddr, path: &str, content_type: &str, body: &str) -> String {
     let mut stream = TcpStream::connect(address).expect("named listener active");
     stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(LISTENER_RESPONSE_TIMEOUT))
         .expect("response timeout");
     write!(
         stream,
@@ -2720,7 +2726,7 @@ fn assert_named_listener_auth_challenge(address: SocketAddr, name: &str) {
 fn named_listener_auth_challenge(address: SocketAddr, name: &str) -> String {
     let mut stream = TcpStream::connect(address).expect("named listener active");
     stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(LISTENER_RESPONSE_TIMEOUT))
         .expect("response timeout");
     write!(
         stream,
@@ -3519,7 +3525,7 @@ fn shutting_down_http_sessions_closes_live_sse_streams() {
     });
     let stream = TcpStream::connect(address).expect("SSE client");
     stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(LISTENER_RESPONSE_TIMEOUT))
         .expect("read timeout");
     let mut client = io::BufReader::new(stream);
     let mut header = String::new();
