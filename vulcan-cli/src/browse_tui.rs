@@ -86,11 +86,8 @@ pub(crate) fn run_browse_tui(
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     terminal.hide_cursor()?;
-    // Ask the terminal for a graphics protocol once, before reading events.
-    // Without one, images keep their half-block rendering.
-    state.image_picker = Picker::from_query_stdio()
-        .ok()
-        .filter(|picker| picker.protocol_type() != ProtocolType::Halfblocks);
+    // Pick how images are drawn once, before reading events.
+    state.image_mode = detect_image_mode();
     state.rendered_preview.layout.replace(None);
 
     let result = run_event_loop(&mut terminal, &mut state, &auto_commit);
@@ -340,6 +337,65 @@ fn prepare_browse_refresh(
 const PREVIEW_IMAGE_ROWS: u16 = 16;
 /// Rows a graphics-protocol image may take in the preview.
 const GRAPHIC_IMAGE_ROWS: u16 = 24;
+
+/// How browse draws preview images.
+#[derive(Debug)]
+enum ImageMode {
+    /// A terminal graphics protocol, at full resolution.
+    Graphics { picker: Picker, label: &'static str },
+    /// Half-block characters, in any true-color terminal.
+    HalfBlocks,
+    /// Not at all; placeholders only.
+    Off,
+}
+
+impl ImageMode {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Graphics { label, .. } => label,
+            Self::HalfBlocks => "half-blocks",
+            Self::Off => "off",
+        }
+    }
+
+    fn graphics(picker: Picker) -> Self {
+        let label = match picker.protocol_type() {
+            ProtocolType::Kitty => "kitty",
+            ProtocolType::Sixel => "sixel",
+            ProtocolType::Iterm2 => "iterm2",
+            ProtocolType::Halfblocks => return Self::HalfBlocks,
+        };
+        Self::Graphics { picker, label }
+    }
+}
+
+/// Choose how to draw preview images. `VULCAN_IMAGE_PROTOCOL` (`kitty`,
+/// `sixel`, `iterm2`, `halfblocks`, or `off`) forces a mode. Otherwise the
+/// terminal is asked for a graphics protocol, except inside tmux, which
+/// usually does not pass graphics through and may not answer the query: a
+/// query left waiting would swallow the next keystroke.
+fn detect_image_mode() -> ImageMode {
+    let forced = std::env::var("VULCAN_IMAGE_PROTOCOL")
+        .ok()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty());
+    let forced_protocol = match forced.as_deref() {
+        Some("off" | "none") => return ImageMode::Off,
+        Some("halfblocks" | "half-blocks") => return ImageMode::HalfBlocks,
+        Some("kitty") => Some(ProtocolType::Kitty),
+        Some("sixel") => Some(ProtocolType::Sixel),
+        Some("iterm2" | "iterm") => Some(ProtocolType::Iterm2),
+        _ => None,
+    };
+    if forced_protocol.is_none() && std::env::var_os("TMUX").is_some() {
+        return ImageMode::HalfBlocks;
+    }
+    let mut picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
+    if let Some(protocol) = forced_protocol {
+        picker.set_protocol_type(protocol);
+    }
+    ImageMode::graphics(picker)
+}
 
 /// Encoded images for the graphics protocol, by vault-relative path.
 #[derive(Default)]
@@ -1007,9 +1063,8 @@ struct BrowseState {
     /// Decoded preview images by vault-relative path; `None` when decoding
     /// failed.
     preview_images: std::cell::RefCell<HashMap<String, Option<image::DynamicImage>>>,
-    /// The terminal's graphics protocol for preview images; `None` draws
-    /// them with half-block characters.
-    image_picker: Option<Picker>,
+    /// How preview images are drawn.
+    image_mode: ImageMode,
     /// Encoded images for the graphics protocol, by vault-relative path.
     image_protocols: ImageProtocols,
     /// Image files by lowercased name, for links that give only a name.
@@ -1083,7 +1138,7 @@ impl BrowseState {
             evaluated_previews: EvaluatedPreviewCache::default(),
             preview_images: std::cell::RefCell::new(HashMap::new()),
             image_files: std::cell::RefCell::new(None),
-            image_picker: None,
+            image_mode: ImageMode::HalfBlocks,
             image_protocols: ImageProtocols::default(),
             attachment_folder: vulcan_core::load_vault_config(&paths)
                 .config
@@ -1890,8 +1945,8 @@ impl BrowseState {
             laid_out.push(line);
             for source in images_by_line.get(&index).into_iter().flatten() {
                 match self.preview_image(source, width) {
-                    Some(PreviewImage::Lines(lines)) => laid_out.extend(lines),
-                    Some(PreviewImage::Reserved { path, rows }) => {
+                    Ok(PreviewImage::Lines(lines)) => laid_out.extend(lines),
+                    Ok(PreviewImage::Reserved { path, rows }) => {
                         placed.push(PlacedImage {
                             first_line: laid_out.len(),
                             rows,
@@ -1899,7 +1954,10 @@ impl BrowseState {
                         });
                         laid_out.extend((0..rows).map(|_| Line::default()));
                     }
-                    None => {}
+                    Err(reason) => laid_out.push(Line::styled(
+                        format!("  image not shown: {reason}"),
+                        Style::default().fg(Color::DarkGray),
+                    )),
                 }
             }
         }
@@ -1924,19 +1982,25 @@ impl BrowseState {
     /// How an image embedded in the preview is shown: rows reserved for a
     /// terminal graphics protocol when the terminal has one, half-block lines
     /// otherwise, or nothing when it cannot be found, read, or decoded.
-    fn preview_image(&self, source: &str, width: u16) -> Option<PreviewImage> {
+    fn preview_image(&self, source: &str, width: u16) -> Result<PreviewImage, &'static str> {
+        if matches!(self.image_mode, ImageMode::Off) {
+            return Err("images are turned off by VULCAN_IMAGE_PROTOCOL=off");
+        }
         let path = self.resolve_preview_image(source)?;
         let mut cache = self.preview_images.borrow_mut();
         let image = cache
             .entry(path.clone())
             .or_insert_with(|| load_preview_image(&self.paths.vault_root().join(&path)))
-            .as_ref()?;
-        Some(match &self.image_picker {
-            Some(picker) => PreviewImage::Reserved {
+            .as_ref()
+            .ok_or("the file could not be decoded, or is over 32 MiB")?;
+        Ok(match &self.image_mode {
+            ImageMode::Graphics { picker, .. } => PreviewImage::Reserved {
                 rows: graphic_image_rows(image, width, picker.font_size()),
                 path,
             },
-            None => PreviewImage::Lines(halfblock_lines(image, width, PREVIEW_IMAGE_ROWS)),
+            ImageMode::HalfBlocks | ImageMode::Off => {
+                PreviewImage::Lines(halfblock_lines(image, width, PREVIEW_IMAGE_ROWS))
+            }
         })
     }
 
@@ -1945,7 +2009,7 @@ impl BrowseState {
     /// cut off at the bottom is cropped; one scrolled past the top is left
     /// out until it comes back into view.
     fn draw_preview_images(&self, frame: &mut Frame<'_>, area: Rect) {
-        let Some(picker) = self.image_picker.as_ref() else {
+        let ImageMode::Graphics { picker, .. } = &self.image_mode else {
             return;
         };
         if !self.uses_rendered_preview() {
@@ -1999,13 +2063,13 @@ impl BrowseState {
     /// Obsidian does: next to the note, from the vault root, in the
     /// attachment folder, then by file name anywhere in the vault. Only
     /// files the session's profile can read are used.
-    fn resolve_preview_image(&self, source: &str) -> Option<String> {
+    fn resolve_preview_image(&self, source: &str) -> Result<String, &'static str> {
         if is_external_link(source) {
-            return None;
+            return Err("remote images are not loaded");
         }
         let source = decode_link_target(source);
         if !is_previewable_image(&source) {
-            return None;
+            return Err("only PNG, JPEG, GIF, WebP, and BMP images are shown");
         }
         let note_dir = self
             .rendered_preview
@@ -2026,8 +2090,15 @@ impl BrowseState {
             .or_else(|| {
                 let name = Path::new(&source).file_name()?.to_str()?.to_lowercase();
                 self.image_files_by_name().get(&name).cloned()
-            })?;
-        self.authority.can_read(&found).then_some(found)
+            })
+            .ok_or("no such image in the vault")?;
+        // An image the profile cannot read looks missing, so its existence
+        // does not leak.
+        if self.authority.can_read(&found) {
+            Ok(found)
+        } else {
+            Err("no such image in the vault")
+        }
     }
 
     /// Image files in the vault by lowercased file name, built on first use.
@@ -2532,8 +2603,14 @@ impl BrowseState {
     }
 
     fn status_bar_line(&self) -> String {
-        let preview_meta = (self.uses_note_preview() && self.mode != BrowseMode::Calendar)
-            .then(|| format!(" | Preview: {}", self.preview_label()));
+        let preview_meta =
+            (self.uses_note_preview() && self.mode != BrowseMode::Calendar).then(|| {
+                format!(
+                    " | Preview: {} | Images: {}",
+                    self.preview_label(),
+                    self.image_mode.label()
+                )
+            });
         let full_text_meta = (self.mode == BrowseMode::FullText
             && self.kanban_view.is_none()
             && self.git_view.is_none()
@@ -5930,7 +6007,7 @@ mod tests {
             .expect("state should build");
         let mut picker = Picker::halfblocks();
         picker.set_protocol_type(ProtocolType::Kitty);
-        state.image_picker = Some(picker);
+        state.image_mode = ImageMode::graphics(picker);
         state.picker.select_path("Home.md");
         state.refresh_rendered_preview_if_needed();
         state.settle_rendered_preview();
@@ -5998,7 +6075,40 @@ mod tests {
         state.refresh_rendered_preview_if_needed();
         state.settle_rendered_preview();
 
+        let preview = preview_text(&state.preview_lines());
         assert_eq!(halfblock_rows(&state.preview_lines()), 0);
+        assert!(
+            preview.contains("image not shown: no such image in the vault"),
+            "{preview}"
+        );
+    }
+
+    #[test]
+    fn images_that_cannot_be_shown_say_why() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let root = temp_dir.path();
+        let paths = VaultPaths::new(root);
+        write_note(
+            root,
+            "Home.md",
+            "![](https://example.test/pic.png)\n\n![[missing.png]]\n\n![[clip.mp4]]\n",
+        );
+        scan_fixture(&paths);
+        let mut state =
+            BrowseState::new(paths, vec![note("Home.md", &[])]).expect("state should build");
+        state.picker.select_path("Home.md");
+        state.refresh_rendered_preview_if_needed();
+        state.settle_rendered_preview();
+
+        let preview = preview_text(&state.preview_lines());
+        for reason in [
+            "image not shown: remote images are not loaded",
+            "image not shown: no such image in the vault",
+            "image not shown: only PNG, JPEG, GIF, WebP, and BMP images are shown",
+        ] {
+            assert!(preview.contains(reason), "{reason}: {preview}");
+        }
+        assert!(state.status_bar_line().contains("Images: half-blocks"));
     }
 
     #[test]
