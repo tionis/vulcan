@@ -2502,6 +2502,84 @@ impl GitCliEngine {
         Ok(())
     }
 
+    /// All best common ancestors of `left` and `right`, in Git's order.
+    fn merge_bases(
+        &self,
+        repository: &GitRepository,
+        left: &GitOid,
+        right: &GitOid,
+    ) -> Result<Vec<GitOid>, GitEngineError> {
+        let mut command = self.repository_command(repository);
+        command
+            .args(["merge-base", "--all"])
+            .arg(left.as_str())
+            .arg(right.as_str());
+        let output = self.execute(command)?;
+        match output.status.code() {
+            Some(0) => decode_stdout("find the merge base", output.stdout)?
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(GitOid::parse)
+                .collect(),
+            Some(1) => Ok(Vec::new()),
+            _ => Err(command_failed("find the merge base", &output)),
+        }
+    }
+
+    /// The single base a three-way merge of `left` and `right` is measured
+    /// against. Criss-crossed history has several best common ancestors;
+    /// like Git's own recursive strategy, they are folded into one virtual
+    /// base commit whose tree merges them, keeping any conflict markers.
+    /// Bases are folded in sorted order into reproducible commits, so the
+    /// virtual base, and every conflict identity derived from it, is the same
+    /// on every device and for either merge direction.
+    fn virtual_merge_base(
+        &self,
+        repository: &GitRepository,
+        left: &GitOid,
+        right: &GitOid,
+    ) -> Result<Option<GitOid>, GitEngineError> {
+        let mut bases = self.merge_bases(repository, left, right)?;
+        bases.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        let mut bases = bases.into_iter();
+        let Some(mut virtual_base) = bases.next() else {
+            return Ok(None);
+        };
+        for base in bases {
+            let mut command = self.repository_command(repository);
+            command
+                .args([
+                    "merge-tree",
+                    "--write-tree",
+                    "--no-messages",
+                    "--allow-unrelated-histories",
+                ])
+                .arg(virtual_base.as_str())
+                .arg(base.as_str());
+            let output = self.execute(command)?;
+            if !output.status.success() && output.status.code() != Some(1) {
+                return Err(command_failed("merge criss-crossed merge bases", &output));
+            }
+            let stdout = decode_stdout("merge criss-crossed merge bases", output.stdout)?;
+            let tree = stdout
+                .lines()
+                .next()
+                .ok_or_else(|| GitEngineError::InvalidOutput {
+                    operation: "merge criss-crossed merge bases",
+                    detail: "Git did not report a merged tree".to_string(),
+                })
+                .and_then(|line| GitOid::parse(line.trim()))?;
+            virtual_base = self.commit_tree_with_reproducible_identity(
+                repository,
+                &tree,
+                &[virtual_base.clone(), base],
+                "vulcan virtual merge base\n",
+                true,
+            )?;
+        }
+        Ok(Some(virtual_base))
+    }
+
     fn commit_tree_with_reproducible_identity(
         &self,
         repository: &GitRepository,
@@ -3880,28 +3958,14 @@ impl GitEngine for GitCliEngine {
         left: &GitOid,
         right: &GitOid,
     ) -> Result<Option<GitOid>, GitEngineError> {
-        let mut command = self.repository_command(repository);
-        command
-            .args(["merge-base", "--all"])
-            .arg(left.as_str())
-            .arg(right.as_str());
-        let output = self.execute(command)?;
-        match output.status.code() {
-            Some(0) => {
-                let stdout = decode_stdout("find the merge base", output.stdout)?;
-                let mut bases = stdout.lines().filter(|line| !line.trim().is_empty());
-                let base = bases.next().map(GitOid::parse).transpose()?;
-                if bases.next().is_some() {
-                    return Err(GitEngineError::UnsupportedRepository {
-                        detail: "sync conflict identity does not yet support multiple merge bases"
-                            .to_string(),
-                    });
-                }
-                Ok(base)
-            }
-            Some(1) => Ok(None),
-            _ => Err(command_failed("find the merge base", &output)),
-        }
+        // Criss-crossed history has several best common ancestors. Every one
+        // is a real ancestor of both sides, so callers that only need shared
+        // ancestry take the first Git reports; merges synthesize a virtual
+        // base instead (see `merge_commits`).
+        Ok(self
+            .merge_bases(repository, left, right)?
+            .into_iter()
+            .next())
     }
 
     fn merge_commits(
@@ -3929,7 +3993,7 @@ impl GitEngine for GitCliEngine {
             }
             diagnostics.push_str(&stderr);
         }
-        let base = self.merge_base(repository, accepted_remote, local_candidate)?;
+        let base = self.virtual_merge_base(repository, accepted_remote, local_candidate)?;
         Ok(GitMerge {
             clean,
             tree,
@@ -8597,6 +8661,114 @@ mod tests {
         assert!(engine
             .worktree_matches_tree(&repository, &local)
             .expect("comparison after resolution"));
+    }
+
+    #[test]
+    fn criss_crossed_live_history_merges_against_a_reproducible_virtual_base() {
+        // Two devices each linked the branch into the live chain, so the
+        // accepted remote and the local candidate share two best common
+        // ancestors: the old live snapshot and the branch commit.
+        let temporary = TempDir::new().expect("temporary directory");
+        let path = temporary.path();
+        init_repo(path);
+        fs::write(path.join("Home.md"), "base\n").expect("base note");
+        commit_all(path, "base");
+        run_git(path, &["checkout", "--quiet", "-b", "live"]);
+        fs::write(path.join("Live.md"), "live\n").expect("live note");
+        let live = commit_all(path, "live snapshot");
+        run_git(path, &["checkout", "--quiet", "main"]);
+        fs::write(path.join("Recipe.md"), "recipe\n").expect("branch note");
+        let branch = commit_all(path, "branch");
+        run_git(
+            path,
+            &["checkout", "--quiet", "-b", "remote", live.as_str()],
+        );
+        run_git(path, &["merge", "--quiet", "--no-edit", branch.as_str()]);
+        fs::write(path.join("Home.md"), "remote\n").expect("remote edit");
+        let remote = commit_all(path, "remote live snapshot");
+        run_git(path, &["checkout", "--quiet", "main"]);
+        fs::write(path.join("Later.md"), "later\n").expect("later branch note");
+        let later = commit_all(path, "later branch");
+        run_git(path, &["checkout", "--quiet", "-b", "local", live.as_str()]);
+        fs::write(path.join("Home.md"), "local\n").expect("local edit");
+        commit_all(path, "local live snapshot");
+        run_git(path, &["merge", "--quiet", "--no-edit", later.as_str()]);
+        let local = GitOid::parse(run_git_capture(path, &["rev-parse", "HEAD"])).expect("local");
+        let all_bases = run_git_capture(
+            path,
+            &["merge-base", "--all", remote.as_str(), local.as_str()],
+        );
+        assert_eq!(all_bases.lines().count(), 2, "fixture must criss-cross");
+
+        let engine = GitCliEngine::default();
+        let repository = engine.discover_repository(path).expect("repository");
+        let shared = engine
+            .merge_base(&repository, &remote, &local)
+            .expect("shared ancestry")
+            .expect("a common ancestor");
+        assert!(all_bases.lines().any(|line| line == shared.as_str()));
+
+        let merge = engine
+            .merge_commits(&repository, &remote, &local)
+            .expect("criss-crossed merge");
+        assert!(!merge.clean);
+        assert_eq!(merge.conflict_paths, vec!["Home.md".to_string()]);
+        let base = merge.base.clone().expect("virtual base");
+        let mut parents = run_git_capture(path, &["rev-list", "--parents", "-n1", base.as_str()])
+            .split_whitespace()
+            .skip(1)
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        parents.sort();
+        let mut expected = all_bases.lines().map(str::to_string).collect::<Vec<_>>();
+        expected.sort();
+        assert_eq!(parents, expected);
+        assert_eq!(
+            engine
+                .path_object(&repository, &base, "Recipe.md")
+                .expect("virtual base path")
+                .expect("branch note in the virtual base")
+                .data,
+            Some(b"recipe\n".to_vec())
+        );
+        let reversed = engine
+            .merge_commits(&repository, &local, &remote)
+            .expect("reversed merge");
+        assert_eq!(
+            reversed.base,
+            Some(base.clone()),
+            "base must not depend on roles"
+        );
+
+        let tree = engine
+            .resolve_merge_tree(
+                &repository,
+                &GitMergeResolutionRequest {
+                    base,
+                    accepted_remote: remote,
+                    local_candidate: local,
+                    paths: vec!["Home.md".to_string()],
+                    side: GitConflictSide::Local,
+                },
+            )
+            .expect("resolution against the virtual base");
+        let resolved = engine
+            .create_commit(&repository, &tree, &[], "resolved\n")
+            .expect("resolved commit");
+        for (note, data) in [
+            ("Home.md", "local\n"),
+            ("Recipe.md", "recipe\n"),
+            ("Later.md", "later\n"),
+        ] {
+            assert_eq!(
+                engine
+                    .path_object(&repository, &resolved, note)
+                    .expect("resolved path")
+                    .expect("resolved note")
+                    .data,
+                Some(data.as_bytes().to_vec())
+            );
+        }
     }
 
     #[test]
