@@ -35,6 +35,7 @@ proptest = "1.9.0"
 pulldown-cmark = "0.13.0"
 crossterm = "0.28.1"
 image = { version = "0.25.6", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
+ratatui-image = { version = "10.0.8", default-features = false }
 ratatui = { version = "0.30.0", default-features = false, features = ["crossterm_0_28", "underline-color", "all-widgets", "macros", "layout-cache"] }
 reqwest = { version = "0.12.24", default-features = false, features = ["blocking", "http2", "json", "multipart", "rustls-tls"] }
 rquickjs = "0.11.0"

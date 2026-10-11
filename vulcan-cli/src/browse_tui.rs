@@ -22,6 +22,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
+use ratatui_image::picker::{Picker, ProtocolType};
+use ratatui_image::protocol::StatefulProtocol;
+use ratatui_image::{Resize, StatefulImage};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
@@ -83,6 +86,12 @@ pub(crate) fn run_browse_tui(
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     terminal.hide_cursor()?;
+    // Ask the terminal for a graphics protocol once, before reading events.
+    // Without one, images keep their half-block rendering.
+    state.image_picker = Picker::from_query_stdio()
+        .ok()
+        .filter(|picker| picker.protocol_type() != ProtocolType::Halfblocks);
+    state.rendered_preview.layout.replace(None);
 
     let result = run_event_loop(&mut terminal, &mut state, &auto_commit);
 
@@ -327,8 +336,51 @@ fn prepare_browse_refresh(
     }
 }
 
-/// Rows an image may take in the preview.
+/// Rows a half-block image may take in the preview.
 const PREVIEW_IMAGE_ROWS: u16 = 16;
+/// Rows a graphics-protocol image may take in the preview.
+const GRAPHIC_IMAGE_ROWS: u16 = 24;
+
+/// Encoded images for the graphics protocol, by vault-relative path.
+#[derive(Default)]
+struct ImageProtocols(std::cell::RefCell<HashMap<String, StatefulProtocol>>);
+
+impl std::fmt::Debug for ImageProtocols {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ImageProtocols")
+            .field("images", &self.0.borrow().len())
+            .finish()
+    }
+}
+
+enum PreviewImage {
+    /// Drawn as half-block text lines.
+    Lines(Vec<Line<'static>>),
+    /// Drawn by the terminal's graphics protocol over reserved lines.
+    Reserved { path: String, rows: u16 },
+}
+
+/// Rows a graphics-protocol image needs at `width` columns, keeping its
+/// aspect ratio and never enlarging it.
+fn graphic_image_rows(image: &image::DynamicImage, width: u16, font_size: (u16, u16)) -> u16 {
+    use image::GenericImageView as _;
+    let (pixel_width, pixel_height) = image.dimensions();
+    let (font_width, font_height) = (font_size.0.max(1), font_size.1.max(1));
+    if pixel_width == 0 || pixel_height == 0 {
+        return 1;
+    }
+    let max_pixel_width = u32::from(width.max(1)) * u32::from(font_width);
+    let shown_height = if pixel_width > max_pixel_width {
+        u64::from(pixel_height) * u64::from(max_pixel_width) / u64::from(pixel_width)
+    } else {
+        u64::from(pixel_height)
+    };
+    let rows = shown_height.div_ceil(u64::from(font_height));
+    u16::try_from(rows)
+        .unwrap_or(u16::MAX)
+        .clamp(1, GRAPHIC_IMAGE_ROWS)
+}
 
 /// `path` as a vault-relative path with `.` and `..` resolved; `None` when
 /// it would leave the vault.
@@ -423,6 +475,11 @@ fn open_external_link(url: &str) -> io::Result<()> {
         .stderr(std::process::Stdio::null())
         .spawn()
         .map(|_| ())
+}
+
+fn draw_note_preview(frame: &mut Frame<'_>, state: &BrowseState, area: Rect) {
+    frame.render_widget(note_preview_widget(state, area), area);
+    state.draw_preview_images(frame, area);
 }
 
 fn note_preview_widget(state: &BrowseState, area: Rect) -> Paragraph<'static> {
@@ -528,7 +585,7 @@ fn draw(frame: &mut Frame<'_>, state: &BrowseState) {
         && state.move_prompt.is_none()
     {
         draw_calendar_view(frame, body[0], &state.calendar);
-        frame.render_widget(note_preview_widget(state, body[1]), body[1]);
+        draw_note_preview(frame, state, body[1]);
 
         let footer_lines = if footer_height >= 5 {
             vec![
@@ -595,10 +652,7 @@ fn draw(frame: &mut Frame<'_>, state: &BrowseState) {
             .direction(Direction::Vertical)
             .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
             .split(body[1]);
-        frame.render_widget(
-            note_preview_widget(state, preview_layout[0]),
-            preview_layout[0],
-        );
+        draw_note_preview(frame, state, preview_layout[0]);
 
         let explain = Paragraph::new(state.full_text.explain_preview_lines())
             .block(
@@ -610,7 +664,7 @@ fn draw(frame: &mut Frame<'_>, state: &BrowseState) {
             .wrap(Wrap { trim: false });
         frame.render_widget(explain, preview_layout[1]);
     } else {
-        frame.render_widget(note_preview_widget(state, body[1]), body[1]);
+        draw_note_preview(frame, state, body[1]);
     }
 
     let footer_lines = if footer_height >= 5 {
@@ -821,6 +875,18 @@ struct PreviewLayout {
     lines: Vec<Line<'static>>,
     /// Followable links (not images), in reading order.
     links: Vec<LaidOutLink>,
+    /// Images drawn over reserved blank lines by a terminal graphics
+    /// protocol.
+    images: Vec<PlacedImage>,
+}
+
+#[derive(Debug)]
+struct PlacedImage {
+    /// The first reserved line.
+    first_line: usize,
+    rows: u16,
+    /// Vault-relative image path.
+    path: String,
 }
 
 /// Evaluated previews of recently viewed notes, so moving back to a note
@@ -941,6 +1007,11 @@ struct BrowseState {
     /// Decoded preview images by vault-relative path; `None` when decoding
     /// failed.
     preview_images: std::cell::RefCell<HashMap<String, Option<image::DynamicImage>>>,
+    /// The terminal's graphics protocol for preview images; `None` draws
+    /// them with half-block characters.
+    image_picker: Option<Picker>,
+    /// Encoded images for the graphics protocol, by vault-relative path.
+    image_protocols: ImageProtocols,
     /// Image files by lowercased name, for links that give only a name.
     image_files: std::cell::RefCell<Option<HashMap<String, String>>>,
     /// The vault's preferred attachment folder.
@@ -1012,6 +1083,8 @@ impl BrowseState {
             evaluated_previews: EvaluatedPreviewCache::default(),
             preview_images: std::cell::RefCell::new(HashMap::new()),
             image_files: std::cell::RefCell::new(None),
+            image_picker: None,
+            image_protocols: ImageProtocols::default(),
             attachment_folder: vulcan_core::load_vault_config(&paths)
                 .config
                 .attachment_folder,
@@ -1696,6 +1769,7 @@ impl BrowseState {
         self.rendered_preview.stale = true;
         self.evaluated_previews.clear();
         self.preview_images.borrow_mut().clear();
+        self.image_protocols.0.borrow_mut().clear();
         self.image_files.replace(None);
         self.preview_worker.reset();
     }
@@ -1809,12 +1883,24 @@ impl BrowseState {
             }
         }
         let mut laid_out = Vec::with_capacity(styled.len());
+        let mut placed = Vec::new();
         let mut inserted_before = Vec::with_capacity(styled.len());
         for (index, line) in to_ratatui_lines(&styled).into_iter().enumerate() {
             inserted_before.push(laid_out.len() - index);
             laid_out.push(line);
             for source in images_by_line.get(&index).into_iter().flatten() {
-                laid_out.extend(self.preview_image_lines(source, width));
+                match self.preview_image(source, width) {
+                    Some(PreviewImage::Lines(lines)) => laid_out.extend(lines),
+                    Some(PreviewImage::Reserved { path, rows }) => {
+                        placed.push(PlacedImage {
+                            first_line: laid_out.len(),
+                            rows,
+                            path,
+                        });
+                        laid_out.extend((0..rows).map(|_| Line::default()));
+                    }
+                    None => {}
+                }
             }
         }
         let followable = all_links
@@ -1831,23 +1917,82 @@ impl BrowseState {
             width,
             lines: laid_out,
             links: followable,
+            images: placed,
         }));
     }
 
-    /// An image embedded in the preview as half-block lines, or nothing when
-    /// it cannot be found, read, or decoded.
-    fn preview_image_lines(&self, source: &str, width: u16) -> Vec<Line<'static>> {
-        let Some(path) = self.resolve_preview_image(source) else {
-            return Vec::new();
-        };
+    /// How an image embedded in the preview is shown: rows reserved for a
+    /// terminal graphics protocol when the terminal has one, half-block lines
+    /// otherwise, or nothing when it cannot be found, read, or decoded.
+    fn preview_image(&self, source: &str, width: u16) -> Option<PreviewImage> {
+        let path = self.resolve_preview_image(source)?;
         let mut cache = self.preview_images.borrow_mut();
         let image = cache
             .entry(path.clone())
-            .or_insert_with(|| load_preview_image(&self.paths.vault_root().join(&path)));
-        image
-            .as_ref()
-            .map(|image| halfblock_lines(image, width, PREVIEW_IMAGE_ROWS))
-            .unwrap_or_default()
+            .or_insert_with(|| load_preview_image(&self.paths.vault_root().join(&path)))
+            .as_ref()?;
+        Some(match &self.image_picker {
+            Some(picker) => PreviewImage::Reserved {
+                rows: graphic_image_rows(image, width, picker.font_size()),
+                path,
+            },
+            None => PreviewImage::Lines(halfblock_lines(image, width, PREVIEW_IMAGE_ROWS)),
+        })
+    }
+
+    /// Draw the layout's reserved images with the terminal graphics
+    /// protocol, over the preview `area` (including its border). An image
+    /// cut off at the bottom is cropped; one scrolled past the top is left
+    /// out until it comes back into view.
+    fn draw_preview_images(&self, frame: &mut Frame<'_>, area: Rect) {
+        let Some(picker) = self.image_picker.as_ref() else {
+            return;
+        };
+        if !self.uses_rendered_preview() {
+            return;
+        }
+        let layout = self.rendered_preview.layout.borrow();
+        let Some(layout) = layout.as_ref() else {
+            return;
+        };
+        let inner = Rect {
+            x: area.x.saturating_add(1),
+            y: area.y.saturating_add(1),
+            width: area.width.saturating_sub(2),
+            height: area.height.saturating_sub(2),
+        };
+        let scroll = usize::from(self.preview_scroll());
+        let images = self.preview_images.borrow();
+        let mut protocols = self.image_protocols.0.borrow_mut();
+        for placed in &layout.images {
+            let Some(row) = placed.first_line.checked_sub(scroll) else {
+                continue;
+            };
+            let Ok(row) = u16::try_from(row) else {
+                continue;
+            };
+            if row >= inner.height {
+                continue;
+            }
+            let Some(Some(image)) = images.get(&placed.path) else {
+                continue;
+            };
+            let height = placed.rows.min(inner.height - row);
+            let target = Rect {
+                y: inner.y + row,
+                height,
+                ..inner
+            };
+            let protocol = protocols
+                .entry(placed.path.clone())
+                .or_insert_with(|| picker.new_resize_protocol(image.clone()));
+            let widget = if height < placed.rows {
+                StatefulImage::default().resize(Resize::Crop(None))
+            } else {
+                StatefulImage::default()
+            };
+            frame.render_stateful_widget(widget, target, protocol);
+        }
     }
 
     /// The vault-relative path of an image the preview links, found as
@@ -1948,8 +2093,11 @@ impl BrowseState {
         .cast_unsigned();
         self.rendered_preview.selected_link = Some(next);
         let line = u16::try_from(link_lines[next]).unwrap_or(u16::MAX);
-        let rows = self.rendered_preview.visible_rows.get().max(1);
-        if line < self.rendered_preview.scroll || line >= self.rendered_preview.scroll + rows {
+        // Before the first draw the pane height is unknown; leave the scroll.
+        let rows = self.rendered_preview.visible_rows.get();
+        if rows > 0
+            && (line < self.rendered_preview.scroll || line >= self.rendered_preview.scroll + rows)
+        {
             self.rendered_preview.scroll = line.saturating_sub(rows / 3);
         }
         self.set_status(format!(
@@ -5763,6 +5911,65 @@ mod tests {
             .map(|span| span.content.to_string())
             .collect::<String>();
         assert_eq!(highlighted, "Target");
+    }
+
+    #[test]
+    fn graphics_protocol_images_reserve_rows_and_draw_over_them() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let root = temp_dir.path();
+        let paths = VaultPaths::new(root);
+        write_note(root, "Home.md", "![[pic.png]]\n\nSee [[Target]].\n");
+        write_note(root, "Target.md", "# Target\n");
+        // 40x60 pixels at a 10x20 font is 3 rows.
+        let pic = root.join("pic.png");
+        image::RgbaImage::from_pixel(40, 60, image::Rgba([10, 120, 200, 255]))
+            .save(&pic)
+            .expect("png should be written");
+        scan_fixture(&paths);
+        let mut state = BrowseState::new(paths, vec![note("Home.md", &[]), note("Target.md", &[])])
+            .expect("state should build");
+        let mut picker = Picker::halfblocks();
+        picker.set_protocol_type(ProtocolType::Kitty);
+        state.image_picker = Some(picker);
+        state.picker.select_path("Home.md");
+        state.refresh_rendered_preview_if_needed();
+        state.settle_rendered_preview();
+
+        let lines = state.preview_lines();
+        assert_eq!(halfblock_rows(&lines), 0);
+        {
+            let layout = state.rendered_preview.layout.borrow();
+            let placed = &layout.as_ref().expect("layout").images;
+            assert_eq!(placed.len(), 1);
+            assert_eq!(placed[0].rows, 3);
+            assert_eq!(placed[0].path, "pic.png");
+        }
+        // Links after the image keep their place.
+        state.handle_key(key(KeyCode::Tab));
+        assert!(state.status_line().starts_with("Link 1/1"));
+
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(120, 40))
+            .expect("test terminal should build");
+        terminal
+            .draw(|frame| draw(frame, &state))
+            .expect("browse should draw");
+        let buffer = terminal.backend().buffer();
+        assert!(
+            buffer
+                .content()
+                .iter()
+                .any(|cell| cell.symbol().contains('\u{1b}')),
+            "the kitty protocol should transmit the image"
+        );
+    }
+
+    #[test]
+    fn graphic_image_rows_fit_the_width_and_cap_the_height() {
+        let wide = image::DynamicImage::ImageRgba8(image::RgbaImage::new(800, 400));
+        // 40 columns of a 10-pixel font fit 400 pixels: 200 pixels tall.
+        assert_eq!(graphic_image_rows(&wide, 40, (10, 20)), 10);
+        let tall = image::DynamicImage::ImageRgba8(image::RgbaImage::new(100, 4000));
+        assert_eq!(graphic_image_rows(&tall, 40, (10, 20)), GRAPHIC_IMAGE_ROWS);
     }
 
     #[test]
