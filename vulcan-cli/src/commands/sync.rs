@@ -3206,6 +3206,12 @@ fn run_sync_conflicts_archive(
     for id in &report.archived {
         println!("  {id}");
     }
+    if report.remote_refs_released > 0 {
+        println!(
+            "Deleted {} remote conflict ref(s) of the archived conflicts.",
+            report.remote_refs_released
+        );
+    }
     Ok(())
 }
 

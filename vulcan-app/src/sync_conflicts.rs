@@ -17,6 +17,7 @@ use vulcan_sync::{
     GitConflictSide, GitContentMergeResolutionRequest, GitEngine, GitMergeResolutionRequest,
     GitOid, GitPushResult, GitRefName, GitRemote, GitRepository, GitResolvedPath, GitSyncConflict,
     GitSyncOptions, GitSyncRefs, GitTreeEntry, SyncCancellationToken, LOCAL_VULCAN_REF_ROOT,
+    REMOTE_CONFLICT_BRANCH_ROOT,
 };
 
 pub const SYNC_CONFLICT_RECORD_VERSION: u32 = 4;
@@ -717,11 +718,14 @@ pub fn archive_sync_conflicts_with_state_store(
     let _repository_lock = (!dry_run)
         .then(|| vulcan_sync::RepositoryLock::acquire(&repository.git_dir))
         .transpose()?;
+    let remote =
+        crate::sync::configured_git_sync_options(paths, &GitSyncOptions::default())?.remote;
     SyncConflictStore::from_state_store(state_store).archive_closed(
         &engine,
         &repository,
         &repository_key,
         older_than,
+        Some(&remote),
         dry_run,
     )
 }
@@ -2251,6 +2255,9 @@ pub struct ConflictArchiveReport {
     pub archived: Vec<String>,
     /// Conflicts in the archive after this run.
     pub archived_total: usize,
+    /// Remote conflict refs (records and published resolutions) of the
+    /// archived conflicts deleted from the remote.
+    pub remote_refs_released: usize,
 }
 
 /// Where one conflict lives inside the archive tree: sharded by its first
@@ -2417,6 +2424,47 @@ fn set_carried_mode(path: &Path, mode: Option<&str>) -> Result<(), AppError> {
 #[allow(clippy::unnecessary_wraps)] // One fallible contract across platforms.
 fn set_carried_mode(_path: &Path, _mode: Option<&str>) -> Result<(), AppError> {
     Ok(())
+}
+
+/// Deletes the remote conflict refs (`.../conflicts/<id>/record` and
+/// published resolution refs) of `conflict_ids` with one listing and one
+/// leased push. Nothing reads them back, and the commits they name are in
+/// live history. Returns how many were deleted.
+fn release_remote_conflict_refs(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    remote: &GitRemote,
+    conflict_ids: &[String],
+) -> Result<usize, AppError> {
+    if conflict_ids.is_empty() {
+        return Ok(0);
+    }
+    let root = GitRefName::parse(REMOTE_CONFLICT_BRANCH_ROOT).map_err(AppError::operation)?;
+    let archived = conflict_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let deletions = engine
+        .list_remote_refs(repository, remote, &root)
+        .map_err(AppError::operation)?
+        .into_iter()
+        .filter(|reference| {
+            reference
+                .name
+                .as_str()
+                .strip_prefix(REMOTE_CONFLICT_BRANCH_ROOT)
+                .and_then(|rest| rest.strip_prefix('/'))
+                .and_then(|rest| rest.split('/').next())
+                .is_some_and(|id| archived.contains(id))
+        })
+        .map(|reference| (reference.name, reference.target))
+        .collect::<Vec<_>>();
+    Ok(engine
+        .delete_remote_refs(repository, remote, &deletions)
+        .map_err(AppError::operation)?
+        .into_iter()
+        .filter(|result| *result == vulcan_sync::GitRefDeleteResult::Deleted)
+        .count())
 }
 
 /// The conflict count recorded in an archive commit's tree.
@@ -3768,6 +3816,7 @@ impl SyncConflictStore {
         repository: &GitRepository,
         repository_key: &str,
         older_than: std::time::Duration,
+        remote: Option<&GitRemote>,
         dry_run: bool,
     ) -> Result<ConflictArchiveReport, AppError> {
         validate_hex_id("repository key", repository_key)?;
@@ -3785,6 +3834,7 @@ impl SyncConflictStore {
                 dry_run,
                 archived_total: previous_total + if dry_run { candidates.len() } else { 0 },
                 archived: candidates,
+                remote_refs_released: 0,
             });
         }
         let (mut files, sides) = self.archive_entries(repository_key, &candidates)?;
@@ -3842,10 +3892,18 @@ impl SyncConflictStore {
         for id in &candidates {
             self.remove_archived(engine, repository, repository_key, id)?;
         }
+        // Best effort: the archive is complete locally, and an offline remote
+        // keeps its refs until a later run archives more conflicts.
+        let remote_refs_released = remote
+            .and_then(|remote| {
+                release_remote_conflict_refs(engine, repository, remote, &candidates).ok()
+            })
+            .unwrap_or(0);
         Ok(ConflictArchiveReport {
             dry_run,
             archived: candidates,
             archived_total: total,
+            remote_refs_released,
         })
     }
 

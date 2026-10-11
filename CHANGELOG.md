@@ -145,7 +145,7 @@ one query planner. Vulcan is still pre-alpha: keep independent backups and revie
 - Sync conflicts closed for 30 days move into a compact per-repository archive
   (`refs/vulcan/conflict-archive`) during sync. Their records, decisions, and conflicted file
   versions stay readable with `vulcan sync conflicts <id>`, while their directories and per-conflict
-  Git refs no longer accumulate. `vulcan sync conflicts` reports the archived count, and
+  Git refs no longer accumulate, locally or on the remote. `vulcan sync conflicts` reports the archived count, and
   `vulcan sync conflicts-archive --older-than-days <n>` archives sooner on demand.
 - Every sync used to read every conflict record ever preserved for the repository to decide
   which unresolved ones to supersede or carry forward. A device-local index of open conflicts

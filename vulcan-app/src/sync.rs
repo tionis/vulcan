@@ -1878,6 +1878,7 @@ fn carry_forward_overtaken_conflicts(
         &sync.repository,
         &journal.repository_key,
         crate::sync_conflicts::CONFLICT_ARCHIVE_AFTER,
+        Some(&options.remote),
         false,
     );
     let _ =
@@ -3852,6 +3853,22 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             .join(&conflict.id)
             .is_dir());
 
+        let remote_conflict_refs = || {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&fixture.reader)
+                .args(["ls-remote", "origin"])
+                .output()
+                .expect("ls-remote");
+            String::from_utf8(output.stdout)
+                .expect("utf-8")
+                .lines()
+                .filter(|line| line.contains(&format!("/conflicts/{}/", conflict.id)))
+                .count()
+        };
+        // The conflict record and its published resolution are on the remote.
+        assert!(remote_conflict_refs() >= 2);
+
         // Thirty-one days later it moves to the archive.
         fs::File::options()
             .write(true)
@@ -3877,6 +3894,8 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             String::from_utf8(output.stdout).expect("utf-8")
         };
         assert!(git(&["for-each-ref", "refs/vulcan/conflicts"]).is_empty());
+        // Archiving also deletes the conflict's remote refs.
+        assert_eq!(remote_conflict_refs(), 0);
         assert!(!git(&["rev-parse", "--verify", "refs/vulcan/conflict-archive"]).is_empty());
         // The conflicted versions stay reachable as the original blobs.
         let sides = git(&[

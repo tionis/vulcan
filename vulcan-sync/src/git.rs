@@ -666,6 +666,23 @@ pub trait GitEngine: Send + Sync {
         updates: &[GitRefPush<'_>],
     ) -> Result<Vec<GitPushResult>, GitEngineError>;
 
+    /// Deletes several remote refs, each only while it still names its
+    /// expected commit. The CLI engine sends one push; the outcomes follow
+    /// the input order, and a ref already gone may be reported as `Stale`.
+    fn delete_remote_refs(
+        &self,
+        repository: &GitRepository,
+        remote: &GitRemote,
+        deletions: &[(GitRefName, GitOid)],
+    ) -> Result<Vec<GitRefDeleteResult>, GitEngineError> {
+        deletions
+            .iter()
+            .map(|(reference, expected)| {
+                self.delete_remote_ref(repository, remote, reference, expected)
+            })
+            .collect()
+    }
+
     fn delete_remote_ref(
         &self,
         repository: &GitRepository,
@@ -4419,6 +4436,64 @@ impl GitEngine for GitCliEngine {
                 }
             })
             .collect()
+    }
+
+    fn delete_remote_refs(
+        &self,
+        repository: &GitRepository,
+        remote: &GitRemote,
+        deletions: &[(GitRefName, GitOid)],
+    ) -> Result<Vec<GitRefDeleteResult>, GitEngineError> {
+        if deletions.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut command = self.repository_command(repository);
+        command.args(["push", "--porcelain"]);
+        for (reference, expected) in deletions {
+            command.arg(format!(
+                "--force-with-lease={}:{}",
+                reference.as_str(),
+                expected.as_str()
+            ));
+        }
+        command.arg("--").arg(remote.as_str());
+        for (reference, _) in deletions {
+            command.arg(format!(":{}", reference.as_str()));
+        }
+        let output = self.execute(command)?;
+        // Porcelain reports one `<flag>\t<from>:<to>\t<summary>` line per ref:
+        // `-` deleted, `!` rejected. Git reports a failed lease and an
+        // already-missing ref alike as stale, so both map to `Stale`.
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let outcomes = stdout
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split('\t');
+                let flag = fields.next()?.chars().next()?;
+                let target = fields.next()?.rsplit_once(':')?.1;
+                let outcome = match flag {
+                    '-' => GitRefDeleteResult::Deleted,
+                    '!' => GitRefDeleteResult::Stale,
+                    _ => return None,
+                };
+                Some((target.to_string(), outcome))
+            })
+            .collect::<BTreeMap<_, _>>();
+        if !output.status.success() && outcomes.is_empty() {
+            return Err(command_failed(
+                "delete remote Git refs with leases",
+                &output,
+            ));
+        }
+        Ok(deletions
+            .iter()
+            .map(|(reference, _)| {
+                outcomes
+                    .get(reference.as_str())
+                    .copied()
+                    .unwrap_or(GitRefDeleteResult::Missing)
+            })
+            .collect())
     }
 
     fn delete_remote_ref(
@@ -8992,6 +9067,84 @@ mod tests {
         assert_eq!(
             run_git_capture(temporary.path(), &["write-tree"]),
             normal_index
+        );
+    }
+
+    #[test]
+    fn batched_remote_deletion_honors_each_lease_in_one_push() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let remote_path = temporary.path().join("remote.git");
+        run_git(
+            temporary.path(),
+            &[
+                "init",
+                "--quiet",
+                "--bare",
+                remote_path.to_str().expect("remote path"),
+            ],
+        );
+        let worktree = temporary.path().join("wiki");
+        fs::create_dir(&worktree).expect("worktree");
+        init_repo(&worktree);
+        run_git(
+            &worktree,
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote_path.to_str().expect("remote path"),
+            ],
+        );
+        fs::write(worktree.join("Home.md"), "home\n").expect("note");
+        let first = commit_all(&worktree, "first");
+        fs::write(worktree.join("Home.md"), "changed\n").expect("change");
+        let second = commit_all(&worktree, "second");
+        let engine = GitCliEngine::default();
+        let repository = engine.discover_repository(&worktree).expect("repository");
+        let remote = GitRemote::parse("origin").expect("remote");
+        let reference = |name: &str| {
+            GitRefName::parse(format!("refs/heads/__vulcan-sync/conflicts/{name}")).expect("ref")
+        };
+        for (name, commit) in [("a/record", &first), ("b/record", &second)] {
+            engine
+                .push_ref(&repository, &remote, commit, &reference(name), None)
+                .expect("push");
+        }
+
+        let before = engine.subprocess_count().unwrap_or_default();
+        let results = engine
+            .delete_remote_refs(
+                &repository,
+                &remote,
+                &[
+                    (reference("a/record"), first.clone()),
+                    // The lease names the wrong commit, so this ref stays.
+                    (reference("b/record"), first.clone()),
+                    (reference("c/record"), first.clone()),
+                ],
+            )
+            .expect("batched deletion");
+        assert_eq!(engine.subprocess_count().unwrap_or_default() - before, 1);
+        assert_eq!(
+            results,
+            [
+                GitRefDeleteResult::Deleted,
+                GitRefDeleteResult::Stale,
+                // Git cannot tell a missing ref from a failed lease.
+                GitRefDeleteResult::Stale,
+            ]
+        );
+        assert_eq!(
+            engine
+                .remote_ref(&repository, &remote, &reference("b/record"))
+                .expect("remote b"),
+            Some(second)
+        );
+        assert_eq!(
+            engine
+                .remote_ref(&repository, &remote, &reference("a/record"))
+                .expect("remote a"),
+            None
         );
     }
 
