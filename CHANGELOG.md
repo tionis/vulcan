@@ -4,6 +4,10 @@
 
 ### Changed
 
+- Sync conflicts no longer write a copy of each side's bytes beside the conflict record. Nothing
+  read those copies; the bytes stay in Git behind the conflict's preserved refs and, later, in the
+  conflict archive.
+
 - Sync sweeps Vulcan's own refs at most once a day per repository: remote backups of devices that
   are no longer registered are deleted when live already contains them, local device recovery refs
   are released once their backup is gone, and remote-tracking copies of Vulcan refs the remote no

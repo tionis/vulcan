@@ -2887,7 +2887,7 @@ impl SyncConflictStore {
         let work_tree = repository.work_tree.clone().ok_or_else(|| {
             AppError::operation("cannot preserve a sync conflict for a bare repository")
         })?;
-        fs::create_dir_all(directory.join("artifacts")).map_err(AppError::operation)?;
+        fs::create_dir_all(&directory).map_err(AppError::operation)?;
         // Indexed before the record exists, so a crash never hides it.
         self.mark_open(repository_key, &conflict.id)?;
         let base_objects = conflict
@@ -2909,7 +2909,7 @@ impl SyncConflictStore {
             .map(|classification| (classification.path.as_str(), classification))
             .collect::<BTreeMap<_, _>>();
         let mut paths = Vec::with_capacity(conflict.paths.len());
-        for (index, path) in conflict.paths.iter().enumerate() {
+        for path in &conflict.paths {
             paths.push(SyncConflictPathRecord {
                 path: path.clone(),
                 group_id: String::new(),
@@ -2917,27 +2917,9 @@ impl SyncConflictStore {
                 classification: classifications
                     .get(path.as_str())
                     .map(|value| (*value).clone()),
-                base: preserve_side(
-                    &directory,
-                    index,
-                    "base",
-                    conflict.base.as_ref(),
-                    base_objects.get(path),
-                )?,
-                local: preserve_side(
-                    &directory,
-                    index,
-                    "local",
-                    Some(&conflict.local),
-                    local_objects.get(path),
-                )?,
-                remote: preserve_side(
-                    &directory,
-                    index,
-                    "remote",
-                    Some(&conflict.remote),
-                    remote_objects.get(path),
-                )?,
+                base: preserve_side(conflict.base.as_ref(), base_objects.get(path)),
+                local: preserve_side(Some(&conflict.local), local_objects.get(path)),
+                remote: preserve_side(Some(&conflict.remote), remote_objects.get(path)),
             });
         }
         assign_conflict_groups(conflict.scope, &mut paths);
@@ -4339,15 +4321,15 @@ fn summarize_group_progress(groups: Vec<SyncConflictGroupProgress>) -> SyncConfl
     progress
 }
 
+/// Describes one preserved side. Its bytes stay in Git: the conflict's
+/// preserved refs keep the commits reachable, and the archive keeps the
+/// blobs, so no second copy is written beside the record.
 fn preserve_side(
-    conflict_directory: &Path,
-    index: usize,
-    side: &str,
     revision: Option<&GitOid>,
     object: Option<&vulcan_sync::GitPathObject>,
-) -> Result<SyncConflictSideRecord, AppError> {
+) -> SyncConflictSideRecord {
     let Some(revision) = revision else {
-        return Ok(SyncConflictSideRecord {
+        return SyncConflictSideRecord {
             revision: "absent".to_string(),
             object_id: None,
             mode: None,
@@ -4355,40 +4337,18 @@ fn preserve_side(
             artifact: None,
             content_hash: None,
             bytes: None,
-        });
+        };
     };
-    let Some(object) = object else {
-        return Ok(SyncConflictSideRecord {
-            revision: revision.to_string(),
-            object_id: None,
-            mode: None,
-            kind: None,
-            artifact: None,
-            content_hash: None,
-            bytes: None,
-        });
-    };
-    let (artifact, content_hash, bytes) = if let Some(data) = object.data.as_deref() {
-        let relative = PathBuf::from(format!("artifacts/{index:04}-{side}.bin"));
-        let path = conflict_directory.join(&relative);
-        write_bytes_noclobber(&path, data)?;
-        (
-            Some(relative),
-            Some(blake3::hash(data).to_hex().to_string()),
-            Some(data.len() as u64),
-        )
-    } else {
-        (None, None, None)
-    };
-    Ok(SyncConflictSideRecord {
+    let data = object.and_then(|object| object.data.as_deref());
+    SyncConflictSideRecord {
         revision: revision.to_string(),
-        object_id: Some(object.oid.to_string()),
-        mode: Some(object.mode.clone()),
-        kind: Some(object.kind.clone()),
-        artifact,
-        content_hash,
-        bytes,
-    })
+        object_id: object.map(|object| object.oid.to_string()),
+        mode: object.map(|object| object.mode.clone()),
+        kind: object.map(|object| object.kind.clone()),
+        artifact: None,
+        content_hash: data.map(|data| blake3::hash(data).to_hex().to_string()),
+        bytes: data.map(|data| data.len() as u64),
+    }
 }
 
 #[cfg(test)]

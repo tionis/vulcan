@@ -3404,17 +3404,28 @@ mod tests {
     }
 
     fn assert_conflict_artifacts(store: &SyncStateStore, record: &SyncConflictRecord) {
-        let root = store
+        // The sides live in Git, not as copies beside the record.
+        let directory = store
             .root()
             .join(&record.repository_key)
             .join("conflicts")
             .join(&record.id);
-        let read = |artifact: &Option<std::path::PathBuf>| {
-            fs::read(root.join(artifact.as_ref().expect("artifact path"))).expect("artifact bytes")
+        assert!(!directory.join("artifacts").exists());
+        let read = |side: &crate::sync_conflicts::SyncConflictSideRecord| {
+            assert!(side.artifact.is_none());
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&record.work_tree)
+                .args(["cat-file", "blob"])
+                .arg(side.object_id.as_ref().expect("side object"))
+                .output()
+                .expect("git cat-file");
+            assert_eq!(side.bytes, Some(output.stdout.len() as u64));
+            output.stdout
         };
-        assert_eq!(read(&record.paths[0].base.artifact), b"base\n");
-        assert_eq!(read(&record.paths[0].local.artifact), b"reader\n");
-        assert_eq!(read(&record.paths[0].remote.artifact), b"writer\n");
+        assert_eq!(read(&record.paths[0].base), b"base\n");
+        assert_eq!(read(&record.paths[0].local), b"reader\n");
+        assert_eq!(read(&record.paths[0].remote), b"writer\n");
     }
 
     fn assert_conflict_operational_stats(report: &VaultSyncReport) {
