@@ -404,6 +404,31 @@ pub trait GitEngine: Send + Sync {
         entries: &[GitTreeEntry],
     ) -> Result<GitOid, GitEngineError>;
 
+    /// Lists the direct children of a commit's or tree's root, with trees as
+    /// `tree` entries, without recursing.
+    fn tree_children(
+        &self,
+        repository: &GitRepository,
+        revision: &GitOid,
+    ) -> Result<Vec<GitTreeEntry>, GitEngineError>;
+
+    /// Writes a tree whose direct children are exactly `entries`, whose
+    /// paths are single names and whose objects already exist.
+    fn make_tree(
+        &self,
+        repository: &GitRepository,
+        entries: &[GitTreeEntry],
+    ) -> Result<GitOid, GitEngineError>;
+
+    /// Resolves each `<revision>:<path>` to its object, `None` when absent, in
+    /// one Git process.
+    fn resolve_paths(
+        &self,
+        repository: &GitRepository,
+        revision: &GitOid,
+        paths: &[String],
+    ) -> Result<Vec<Option<GitOid>>, GitEngineError>;
+
     /// Lists every leaf entry beneath the directory `prefix` in a commit or
     /// tree, without listing the rest of the tree or loading contents.
     fn tree_entries_under(
@@ -3467,6 +3492,86 @@ impl GitEngine for GitCliEngine {
             self.index_capture(repository, &index_path, "write a tree", ["write-tree"])?
                 .trim(),
         )
+    }
+
+    fn tree_children(
+        &self,
+        repository: &GitRepository,
+        revision: &GitOid,
+    ) -> Result<Vec<GitTreeEntry>, GitEngineError> {
+        let output = self.repository_output(
+            repository,
+            "list a Git tree's children",
+            ["ls-tree", "-z", "--full-tree", revision.as_str()],
+        )?;
+        parse_tree_entries(&output.stdout)
+    }
+
+    fn make_tree(
+        &self,
+        repository: &GitRepository,
+        entries: &[GitTreeEntry],
+    ) -> Result<GitOid, GitEngineError> {
+        let mut input = Vec::new();
+        for entry in entries {
+            if entry.path.is_empty() || entry.path.contains('/') || entry.path.contains('\0') {
+                return Err(GitEngineError::UnsupportedRepository {
+                    detail: format!("`{}` is not a single tree entry name", entry.path),
+                });
+            }
+            input.extend_from_slice(
+                format!("{} {} {}\t", entry.mode, entry.kind, entry.oid.as_str()).as_bytes(),
+            );
+            input.extend_from_slice(entry.path.as_bytes());
+            input.push(0);
+        }
+        let mut command = self.repository_command(repository);
+        command.args(["mktree", "-z"]);
+        let output = ensure_success(
+            "write a tree",
+            self.execute_with_input(command, "write a tree", &input)?,
+        )?;
+        GitOid::parse(decode_stdout("write a tree", output.stdout)?.trim())
+    }
+
+    fn resolve_paths(
+        &self,
+        repository: &GitRepository,
+        revision: &GitOid,
+        paths: &[String],
+    ) -> Result<Vec<Option<GitOid>>, GitEngineError> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut input = Vec::new();
+        for path in paths {
+            validate_repository_path(path)?;
+            input.extend_from_slice(format!("{}:{path}\n", revision.as_str()).as_bytes());
+        }
+        let mut command = self.repository_command(repository);
+        command.args(["cat-file", "--batch-check=%(objectname)"]);
+        let output = ensure_success(
+            "resolve tree paths",
+            self.execute_with_input(command, "resolve tree paths", &input)?,
+        )?;
+        let text = decode_stdout("resolve tree paths", output.stdout)?;
+        let resolved = text
+            .lines()
+            .map(|line| {
+                if line.ends_with(" missing") {
+                    Ok(None)
+                } else {
+                    GitOid::parse(line.trim()).map(Some)
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if resolved.len() != paths.len() {
+            return Err(GitEngineError::InvalidOutput {
+                operation: "resolve tree paths",
+                detail: "Git answered a different number of paths".to_string(),
+            });
+        }
+        Ok(resolved)
     }
 
     fn tree_entries_under(

@@ -54,6 +54,8 @@ const CLOSED_CONFLICTS_DIR: &str = "closed-conflicts";
 /// resolved or superseded.
 pub const CONFLICT_ARCHIVE_AFTER: std::time::Duration =
     std::time::Duration::from_secs(30 * 24 * 60 * 60);
+/// Automatic archive runs happen at most this often per repository.
+const ARCHIVE_RUN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 /// At most this many conflicts move per archive run, bounding each run.
 const MAX_ARCHIVED_PER_RUN: usize = 256;
 /// Device-local mirror of the archive's conflict count, so listings report
@@ -2334,7 +2336,27 @@ fn archived_conflict_store(
     else {
         return Ok(None);
     };
-    let prefix = archive_prefix(conflict_id);
+    let segments = archive_segments(&engine, &repository, &archive)?;
+    let prefixes = segments
+        .iter()
+        .map(|(_, location)| match location {
+            Some(segment) => format!("{segment}/{}", archive_prefix(conflict_id)),
+            None => archive_prefix(conflict_id),
+        })
+        .collect::<Vec<_>>();
+    let records = prefixes
+        .iter()
+        .map(|prefix| format!("{prefix}/record.json"))
+        .collect::<Vec<_>>();
+    let Some(prefix) = engine
+        .resolve_paths(&repository, &archive, &records)
+        .map_err(AppError::operation)?
+        .iter()
+        .position(Option::is_some)
+        .map(|index| prefixes[index].clone())
+    else {
+        return Ok(None);
+    };
     let entries = engine
         .tree_entries_under(&repository, &archive, &prefix)
         .map_err(AppError::operation)?
@@ -2465,6 +2487,86 @@ fn release_remote_conflict_refs(
         .into_iter()
         .filter(|result| *result == vulcan_sync::GitRefDeleteResult::Deleted)
         .count())
+}
+
+/// The archive root after adding `segment`: the existing segments as they
+/// are, the new one under the next name, and the updated `count`.
+fn archive_root(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    current: Option<&GitOid>,
+    segment: GitOid,
+    total: usize,
+) -> Result<GitOid, AppError> {
+    let mut root = match current {
+        Some(commit) => archive_segments(engine, repository, commit)?
+            .into_iter()
+            .map(|(entry, _)| entry)
+            .collect(),
+        None => Vec::new(),
+    };
+    let next = root
+        .iter()
+        .filter_map(|entry| entry.path.strip_prefix('s')?.parse::<u64>().ok())
+        .max()
+        .map_or(1, |last| last + 1);
+    root.push(GitTreeEntry {
+        path: format!("s{next:06}"),
+        oid: segment,
+        mode: "040000".to_string(),
+        kind: "tree".to_string(),
+    });
+    root.push(GitTreeEntry {
+        path: ARCHIVE_COUNT_PATH.to_string(),
+        oid: engine
+            .write_blob(repository, total.to_string().as_bytes())
+            .map_err(AppError::operation)?,
+        mode: "100644".to_string(),
+        kind: "blob".to_string(),
+    });
+    engine
+        .make_tree(repository, &root)
+        .map_err(AppError::operation)
+}
+
+/// The archive's segments, each as its root entry and where it is read from:
+/// `Some(name)` for a segment subtree, `None` for an archive written before
+/// segments, whose whole root is one segment. Building wraps such a root
+/// unchanged as segment `s000000`.
+fn archive_segments(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    archive: &GitOid,
+) -> Result<Vec<(GitTreeEntry, Option<String>)>, AppError> {
+    let children = engine
+        .tree_children(repository, archive)
+        .map_err(AppError::operation)?;
+    let legacy = children.iter().any(|entry| {
+        entry.kind == "tree"
+            && entry.path.len() == 2
+            && entry.path.bytes().all(|byte| byte.is_ascii_hexdigit())
+    });
+    if legacy {
+        return Ok(vec![(
+            GitTreeEntry {
+                path: "s000000".to_string(),
+                oid: engine
+                    .tree_oid(repository, archive)
+                    .map_err(AppError::operation)?,
+                mode: "040000".to_string(),
+                kind: "tree".to_string(),
+            },
+            None,
+        )]);
+    }
+    Ok(children
+        .into_iter()
+        .filter(|entry| entry.kind == "tree" && entry.path.starts_with('s'))
+        .map(|entry| {
+            let name = entry.path.clone();
+            (entry, Some(name))
+        })
+        .collect())
 }
 
 /// The conflict count recorded in an archive commit's tree.
@@ -3803,6 +3905,15 @@ impl SyncConflictStore {
     ) -> Result<ConflictArchiveReport, AppError> {
         validate_hex_id("repository key", repository_key)?;
         let candidates = self.archive_candidates(repository_key, older_than)?;
+        if candidates.is_empty() && !dry_run {
+            // Nothing to move: answer without reading Git.
+            return Ok(ConflictArchiveReport {
+                dry_run,
+                archived: candidates,
+                archived_total: self.archived_count(repository_key),
+                remote_refs_released: 0,
+            });
+        }
         let reference = conflict_archive_ref().map_err(AppError::operation)?;
         let current = engine
             .read_ref(repository, &reference)
@@ -3819,12 +3930,8 @@ impl SyncConflictStore {
                 remote_refs_released: 0,
             });
         }
-        let (mut files, sides) = self.archive_entries(repository_key, &candidates)?;
+        let (files, sides) = self.archive_entries(repository_key, &candidates)?;
         let total = previous_total + candidates.len();
-        files.push((
-            ARCHIVE_COUNT_PATH.to_string(),
-            total.to_string().into_bytes(),
-        ));
         let blobs = engine
             .write_blobs(
                 repository,
@@ -3845,16 +3952,15 @@ impl SyncConflictStore {
             })
             .collect::<Vec<_>>();
         entries.extend(sides);
-        let base = current
-            .as_ref()
-            .map(|commit| engine.tree_oid(repository, commit))
-            .transpose()
+        // This run's conflicts become one new, immutable segment; earlier
+        // segments are reused as they are, so a run costs its batch plus the
+        // number of segments, never the size of the archive.
+        let segment = engine
+            .tree_with_entries(repository, None, &entries)
             .map_err(AppError::operation)?;
-        let tree = engine
-            .tree_with_entries(repository, base.as_ref(), &entries)
-            .map_err(AppError::operation)?;
-        // Parentless: the newest tree holds everything, so earlier archive
-        // versions are garbage-collected instead of accumulating.
+        let tree = archive_root(engine, repository, current.as_ref(), segment, total)?;
+        // Parentless: the newest root names every segment, so earlier archive
+        // roots are garbage-collected instead of accumulating.
         let commit = engine
             .create_commit(repository, &tree, &[], "vulcan conflict archive\n")
             .map_err(AppError::operation)?;
@@ -4012,6 +4118,18 @@ impl SyncConflictStore {
             .conflict_directory(repository_key, conflict_id)?
             .join("record.json")
             .is_file())
+    }
+
+    /// Whether automatic archiving may run: at most once a day, so conflicts
+    /// that close one by one become one archive segment per day rather than
+    /// one per sync. The last run is the mirror count file's write time.
+    #[must_use]
+    pub fn archive_due(&self, repository_key: &str) -> bool {
+        fs::metadata(self.root.join(repository_key).join(ARCHIVED_COUNT_FILE))
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| std::time::SystemTime::now().duration_since(modified).ok())
+            .is_none_or(|age| age >= ARCHIVE_RUN_INTERVAL)
     }
 
     /// Conflicts in the archive, from the device-local mirror of its count.

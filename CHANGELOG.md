@@ -153,7 +153,8 @@ one query planner. Vulcan is still pre-alpha: keep independent backups and revie
 - Creating a periodic note for another day renders template built-ins such as `{{date}}` as that
   note's date instead of the current date. `tp.date.now()` is unchanged.
 - Sync conflicts closed for 30 days move into a compact per-repository archive
-  (`refs/vulcan/conflict-archive`) during sync. Their records, decisions, and conflicted file
+  (`refs/vulcan/conflict-archive`) during sync, at most once a day. Each run adds one immutable
+  segment, so archiving stays fast however much history accumulates. Their records, decisions, and conflicted file
   versions stay readable with `vulcan sync conflicts <id>`, while their directories and per-conflict
   Git refs no longer accumulate, locally or on the remote. `vulcan sync conflicts` reports the archived count, and
   `vulcan sync conflicts-archive --older-than-days <n>` archives sooner on demand.

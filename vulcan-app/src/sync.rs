@@ -1908,14 +1908,16 @@ fn carry_forward_overtaken_conflicts(
             options,
         )
         .is_ok_and(|summary| !summary.written_paths.is_empty());
-    let _ = store.archive_closed(
-        engine,
-        &sync.repository,
-        &journal.repository_key,
-        crate::sync_conflicts::CONFLICT_ARCHIVE_AFTER,
-        Some(&options.remote),
-        false,
-    );
+    if store.archive_due(&journal.repository_key) {
+        let _ = store.archive_closed(
+            engine,
+            &sync.repository,
+            &journal.repository_key,
+            crate::sync_conflicts::CONFLICT_ARCHIVE_AFTER,
+            Some(&options.remote),
+            false,
+        );
+    }
     let _ =
         crate::sync_retention::release_contained_rescue_refs(engine, &sync.repository, frontier);
     let sweep_state = store
@@ -3962,13 +3964,14 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             "--name-only",
             "refs/vulcan/conflict-archive",
             "--",
-            &format!("{}/{}/sides", &conflict.id[..2], conflict.id),
+            // Each archive run adds one segment; this is the first.
+            &format!("s000001/{}/{}/sides", &conflict.id[..2], conflict.id),
         ]);
         assert_eq!(sides.lines().count(), 3, "{sides}");
         let local = git(&[
             "show",
             &format!(
-                "refs/vulcan/conflict-archive:{}/{}/sides/000000-local",
+                "refs/vulcan/conflict-archive:s000001/{}/{}/sides/000000-local",
                 &conflict.id[..2],
                 conflict.id
             ),
@@ -4016,6 +4019,16 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
                 std::time::SystemTime::now() - std::time::Duration::from_secs(31 * 24 * 60 * 60),
             )
             .expect("backdate second");
+        // Automatic archiving runs at most once a day; the last run was a
+        // day ago.
+        fs::File::options()
+            .write(true)
+            .open(repository_root.join("archived-conflicts"))
+            .expect("archive run record")
+            .set_modified(
+                std::time::SystemTime::now() - std::time::Duration::from_secs(25 * 60 * 60),
+            )
+            .expect("backdate the last run");
         sync(&fixture.reader);
         assert_eq!(conflict_listing(&fixture).archived_count, 2);
         for id in [&conflict.id, &second.id] {
@@ -4326,6 +4339,116 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         assert_eq!(conflict_listing(&fixture).archived_count, 1);
         assert_eq!(historical_conflict(&fixture, &conflict).record.id, conflict);
         assert!(archive(false).archived.is_empty());
+    }
+
+    /// Records a conflict on `Home.md`, resolves it with the reader's side,
+    /// and lets a sync notice it closed. Returns its ID.
+    fn closed_conflict(fixture: &StructuredSyncFixture, writer: &str, reader: &str) -> String {
+        let sync = |root: &std::path::Path| {
+            sync_git_vault_with_state_store(
+                &VaultPaths::new(root),
+                &GitSyncOptions::default(),
+                &fixture.store,
+            )
+            .expect("sync")
+        };
+        sync(&fixture.writer);
+        fs::write(fixture.writer.join("Home.md"), writer).expect("writer edit");
+        fs::write(fixture.reader.join("Home.md"), reader).expect("reader edit");
+        sync(&fixture.writer);
+        let id = sync(&fixture.reader).conflict_record.expect("conflict").id;
+        crate::sync_conflicts::resolve_sync_conflict_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &id,
+            &crate::sync_conflicts::ResolveSyncConflictOptions {
+                side: crate::sync_conflicts::SyncConflictResolutionSide::Local,
+                group_ids: Vec::new(),
+                remote: vulcan_sync::GitRemote::parse("origin").expect("remote"),
+                live_ref: vulcan_sync::GitRefName::parse("refs/heads/__vulcan-sync/live")
+                    .expect("live ref"),
+                dry_run: false,
+            },
+            &fixture.store,
+        )
+        .expect("resolve");
+        sync(&fixture.reader);
+        id
+    }
+
+    #[test]
+    fn archive_written_before_segments_stays_readable_as_the_first_segment() {
+        let fixture = structured_sync_fixture(&[("Home.md", "base\n")]);
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&fixture.reader)
+                .args(args)
+                .output()
+                .expect("git");
+            assert!(output.status.success(), "{args:?}");
+            String::from_utf8(output.stdout)
+                .expect("utf-8")
+                .trim()
+                .to_string()
+        };
+        let archive = |fixture: &StructuredSyncFixture| {
+            crate::sync_conflicts::archive_sync_conflicts_with_state_store(
+                &VaultPaths::new(&fixture.reader),
+                std::time::Duration::ZERO,
+                false,
+                &fixture.store,
+            )
+            .expect("archive")
+        };
+        let first = closed_conflict(&fixture, "writer one\n", "reader one\n");
+        assert_eq!(archive(&fixture).archived, std::slice::from_ref(&first));
+
+        // Rewrite the archive in the pre-segment layout: shards and the count
+        // directly at the root.
+        let segment = git(&["rev-parse", "refs/vulcan/conflict-archive:s000001"]);
+        let count = git(&["rev-parse", "refs/vulcan/conflict-archive:count"]);
+        let entries = format!(
+            "{}\n100644 blob {count}\tcount\n",
+            git(&["ls-tree", &segment])
+        );
+        let legacy_tree = {
+            let mut child = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&fixture.reader)
+                .arg("mktree")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("mktree");
+            std::io::Write::write_all(child.stdin.as_mut().expect("stdin"), entries.as_bytes())
+                .expect("entries");
+            let output = child.wait_with_output().expect("mktree output");
+            String::from_utf8(output.stdout)
+                .expect("utf-8")
+                .trim()
+                .to_string()
+        };
+        let legacy = git(&["commit-tree", &legacy_tree, "-m", "vulcan conflict archive"]);
+        git(&["update-ref", "refs/vulcan/conflict-archive", &legacy]);
+        assert_eq!(historical_conflict(&fixture, &first).record.id, first);
+
+        let second = closed_conflict(&fixture, "writer two\n", "reader two\n");
+        let report = archive(&fixture);
+        assert_eq!((report.archived.len(), report.archived_total), (1, 2));
+        // The old root is wrapped unchanged; the new run is its own segment.
+        let root = git(&["ls-tree", "--name-only", "refs/vulcan/conflict-archive"]);
+        assert_eq!(
+            root.lines().collect::<Vec<_>>(),
+            ["count", "s000000", "s000001"]
+        );
+        assert_eq!(
+            git(&["rev-parse", "refs/vulcan/conflict-archive:s000000"]),
+            legacy_tree
+        );
+        for id in [&first, &second] {
+            assert_eq!(historical_conflict(&fixture, id).record.id, *id);
+        }
+        assert_eq!(conflict_listing(&fixture).archived_count, 2);
     }
 
     #[test]
