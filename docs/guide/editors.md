@@ -112,5 +112,5 @@ editor's file watching instead, or `"off"` to index only saved files.
 - `dataviewjs` blocks run in the strict sandbox (computation and index reads;
   no file access, network, or writes) in every vault. Vaults you trust with
   `vulcan trust` get full evaluation, which still never writes.
-- `vulcan --permissions <profile> lsp` checks every planned change against the
-  profile.
+- `vulcan --permissions <profile> lsp` hides notes the profile cannot read and
+  checks every planned change against the profile.

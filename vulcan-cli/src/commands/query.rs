@@ -15,10 +15,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use vulcan_app::properties::apply_bulk_property_mutation;
 use vulcan_core::Verbosity;
 use vulcan_core::{
-    list_properties, list_query_fields, load_vault_config, query_backlinks_with_filter,
-    query_links_with_filter, query_notes_with_filter, search_vault_with_filter, NamedCount,
-    NoteQuery, PermissionGuard, PropertyCatalogEntry, QueryAst, QueryReport, SearchQuery,
-    VaultPaths,
+    list_query_fields, load_vault_config, query_backlinks_with_filter, query_links_with_filter,
+    query_notes_with_filter, search_vault_with_filter, NamedCount, NoteQuery, PermissionGuard,
+    PropertyCatalogEntry, QueryAst, QueryReport, SearchQuery, VaultPaths,
 };
 
 fn consistent_read_guard(
@@ -379,7 +378,9 @@ pub(crate) fn handle_properties_command(
     list_controls: &ListOutputControls,
 ) -> Result<(), CliError> {
     let _read_guard = consistent_read_guard(paths)?;
-    let mut properties = list_properties(paths).map_err(CliError::operation)?;
+    let filter = crate::selected_read_permission_filter(cli, paths)?;
+    let mut properties = vulcan_core::list_properties_with_filter(paths, filter.as_ref())
+        .map_err(CliError::operation)?;
     sort_property_catalog(&mut properties, sort);
     print_property_catalog(
         cli.output,

@@ -49,4 +49,5 @@ Common pitfalls:
 - Skills teach workflows and can declare callable commands. Tools are the exposed command registry. Plugins react to events.
 - Search JSON hits include `section_id` and `line_spans`; use them to follow a search hit with `note get` or `note patch` instead of reopening the full note.
 - Property typing is lenient and may need validation through `doctor`.
+- The user may have notes open in an editor running `vulcan lsp`. Unsaved buffer text is neither on disk nor in the index, so ask the user to save before relying on, or rewriting, a note they are editing. Vulcan writes stay safe (vault lock, content checks) and the editor reloads changed files.
 - Some runtime-oriented JS APIs are still rolling out; prefer stable CLI commands when available.

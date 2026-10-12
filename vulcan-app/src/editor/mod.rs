@@ -159,6 +159,24 @@ impl EditorSession {
         self.permissions.as_deref()
     }
 
+    /// Whether the permission profile (if any) lets this session read
+    /// `path`. Documents the editor itself has open are always readable to
+    /// it.
+    pub(crate) fn readable(&self, path: &str) -> bool {
+        use vulcan_core::PermissionGuard as _;
+        self.documents.contains_key(path)
+            || self
+                .guard()
+                .is_none_or(|guard| guard.check_read_path(path).is_ok())
+    }
+
+    /// The profile's read filter for cache queries, if a profile is set.
+    pub(crate) fn read_filter(&self) -> Option<vulcan_core::PermissionFilter> {
+        use vulcan_core::PermissionGuard as _;
+        self.guard()
+            .map(vulcan_core::ProfilePermissionGuard::read_filter)
+    }
+
     pub(crate) fn permission_profile(&self) -> Option<&str> {
         self.permissions
             .as_deref()
@@ -391,7 +409,18 @@ impl EditorSession {
                 aliases: document.parsed.aliases.clone(),
             })
             .collect::<Vec<_>>();
-        let resolver = Arc::new(EditorResolver::new(&identities.documents, &overlays));
+        // Under a permission profile, unreadable notes neither resolve nor
+        // complete: links to them look unresolved, as for a missing note.
+        let readable = match self.guard() {
+            Some(_) => identities
+                .documents
+                .iter()
+                .filter(|document| self.readable(&document.path))
+                .cloned()
+                .collect::<Vec<_>>(),
+            None => identities.documents.clone(),
+        };
+        let resolver = Arc::new(EditorResolver::new(&readable, &overlays));
         // An older snapshot must not replace a newer snapshot's resolver.
         if state
             .as_ref()
@@ -415,7 +444,7 @@ impl EditorSession {
                 line_index: document.line_index.clone(),
             });
         }
-        if !is_markdown_path(path) {
+        if !is_markdown_path(path) || !self.readable(path) {
             return None;
         }
         let text = std::fs::read_to_string(self.paths.vault_root().join(path)).ok()?;
@@ -668,14 +697,82 @@ mod tests {
         let error = session.authorize_plan(&denied).unwrap_err();
         assert_eq!(error.code(), Some("permission_denied"));
 
-        let error = session
-            .render(
+        // An unreadable note renders like a missing one.
+        assert_eq!(
+            session
+                .render(
+                    "Private/Diary.md",
+                    None,
+                    Some(vulcan_core::DataviewJsRenderPolicy::Off),
+                )
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn permission_profiles_hide_unreadable_notes_from_navigation() {
+        let (dir, mut session) = vault(&[
+            (
+                "Projects/Plan.md",
+                "---\nowner: me\n---\n#visible [[Diary]] [[Home]]\n",
+            ),
+            ("Home.md", "# Home\n"),
+            (
                 "Private/Diary.md",
-                None,
-                Some(vulcan_core::DataviewJsRenderPolicy::Off),
-            )
-            .unwrap_err();
-        assert_eq!(error.code(), Some("permission_denied"));
+                "---\nmood: secret\n---\n# Diary #hidden\n[[Home]]\n",
+            ),
+        ]);
+        std::fs::write(
+            dir.path().join(".vulcan/config.toml"),
+            "[permissions.profiles.projects]\nread = { allow = [\"folder:Projects/**\", \"note:Home.md\"] }\n",
+        )
+        .unwrap();
+        session.set_permission_profile("projects").unwrap();
+        let text = "---\nowner: me\n---\n#visible [[Diary]] [[Home]]\n";
+        session.open("Projects/Plan.md", 1, text.into());
+
+        // A link to an unreadable note looks like a link to a missing one.
+        let diagnostics = session
+            .diagnostics("Projects/Plan.md", None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, "unresolved-link");
+        assert_eq!(
+            session
+                .definition("Projects/Plan.md", position_of(text, "Diary", 0))
+                .unwrap(),
+            None
+        );
+        assert!(session.workspace_symbols("diary", 10).unwrap().is_empty());
+        // Backlinks from unreadable notes are not listed.
+        let locations = session
+            .references("Projects/Plan.md", position_of(text, "Home]]", 0))
+            .unwrap();
+        assert!(locations
+            .iter()
+            .all(|location| location.path != "Private/Diary.md"));
+        assert!(!locations.is_empty());
+
+        session.open("Draft.md", 1, "[[Di".into());
+        let completion = session
+            .completion("Draft.md", TextPosition { line: 0, column: 4 })
+            .unwrap()
+            .unwrap();
+        assert!(completion.items.is_empty(), "{:?}", completion.items);
+        session.open("Tags.md", 1, "#hid".into());
+        let completion = session
+            .completion("Tags.md", TextPosition { line: 0, column: 4 })
+            .unwrap()
+            .unwrap();
+        assert!(completion.items.is_empty(), "{:?}", completion.items);
+        session.open("Props.md", 1, "---\nmoo\n---\n".into());
+        let completion = session
+            .completion("Props.md", TextPosition { line: 1, column: 3 })
+            .unwrap()
+            .unwrap();
+        assert!(completion.items.is_empty(), "{:?}", completion.items);
     }
 
     #[test]

@@ -223,7 +223,8 @@ impl EditorSession {
 
     fn tag_items(&self, path: &str, query: &str) -> Vec<EditorCompletionItem> {
         let mut counts = BTreeMap::<String, usize>::new();
-        if let Ok(tags) = vulcan_core::list_tags(self.paths()) {
+        let filter = self.read_filter();
+        if let Ok(tags) = vulcan_core::list_tags_with_filter(self.paths(), filter.as_ref()) {
             for tag in tags {
                 counts.insert(tag.name, tag.count);
             }
@@ -253,7 +254,8 @@ impl EditorSession {
     }
 
     fn property_items(&self, query: &str) -> Vec<EditorCompletionItem> {
-        vulcan_core::list_properties(self.paths())
+        let filter = self.read_filter();
+        vulcan_core::list_properties_with_filter(self.paths(), filter.as_ref())
             .unwrap_or_default()
             .into_iter()
             .filter(|entry| matches_query(query, &entry.key))

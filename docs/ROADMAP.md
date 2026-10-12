@@ -8372,7 +8372,8 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Create the `vulcan-lsp` crate (`lsp-server` + `lsp-types`, pinned and MSRV-checked) and the `vulcan lsp [--vault] [--permissions]` subcommand with `describe`/`help` entries
 - [x] Threading: main loop with inline overlay updates, a three-thread reader pool answering from cheap `EditorSession` snapshots (shared identities and resolver keyed by the store clock), a single writer thread for every scan under the write lock, and cancellation (`RequestCanceled` between stages, `ContentModified` when a real index change lands mid-request)
 - [x] Position-encoding negotiation (prefer UTF-8, fall back to UTF-16)
-- [~] Freshness: startup refresh with `$/progress`, scan on `didSave`, `watcher = own|client|off`, advisory `.vulcan/editor-watch.lock` lease (excluded from sync) with store-clock polling for non-holders, rename hints from `didRenameFiles`, and `vulcan/indexChanged` — all done except skipping the lease when a daemon owns the vault, which waits for a daemon index-ownership probe (today's daemon watchers only trigger sync)
+- [x] Freshness: startup refresh with `$/progress`, scan on `didSave`, `watcher = own|client|off`, advisory `.vulcan/editor-watch.lock` lease (excluded from sync) with store-clock polling for non-holders, rename hints from `didRenameFiles`, and `vulcan/indexChanged`
+- [ ] **Blocked on a daemon index-ownership probe (Phase 10):** skip the watch lease when a daemon keeps the vault's index fresh; today's daemon watchers only trigger sync, so there is nothing to defer to yet
 - [x] Definition, references (backlinks plus overlay deltas), hover, document and workspace symbols
 - [~] Completion after `[[` (notes, aliases, `#heading`, `^block`), tags, property keys, and inline-field keys — inline-field keys remain
 - [x] Debounced diagnostics for open buffers (200 ms after the last edit; the link being typed is skipped): parse diagnostics and unresolved/ambiguous/outside-vault links using `doctor` categories
@@ -8381,7 +8382,7 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Code actions: create note from unresolved link, disambiguate, convert link style, toggle task (computed eagerly; they are cheap, so `codeAction/resolve` is unnecessary); `dryRun` on every `vulcan.*` command
 - [x] `executeCommand`: `vulcan.scan`, `vulcan.note.create`, `vulcan.note.move`, `vulcan.task.toggle`, `vulcan.periodic.open` (creates the note from its template when missing and shows it), and `vulcan.template.insert` (append, prepend, or at a position; template mutations disabled)
 - [~] Custom protocol v1: `experimental.vulcan` advertisement, `vulcan/render` (inline expressions, Dataview/Tasks blocks, and `.base` embeds as regions), `vulcan/status`, and `vulcan/indexChanged` done; `vulcan/outline` and `vulcan/backlinks` remain
-- [~] Safety defaults: DataviewJS renders in the strict sandbox for every vault and with full evaluation for vaults trusted with `vulcan trust` (the CLI, MCP `note_get`, browse previews, and evaluated exports share this policy through `vulcan_core::vault_dataview_js_policy`); `--permissions` checks every planned read and write, guards render, and gates `vulcan.scan` on `index`; the LSP never auto-commits. Read filtering for navigation, completion, and diagnostics remains
+- [x] Safety defaults: DataviewJS renders in the strict sandbox for every vault and with full evaluation for vaults trusted with `vulcan trust` (shared with the CLI, MCP, browse previews, and evaluated exports through `vulcan_core::vault_dataview_js_policy`); `--permissions` checks every planned read and write, gates `vulcan.scan` on `index`, and hides unreadable notes from navigation, completion, diagnostics, and render (the CLI `properties` command now honors the read grant too); the LSP never auto-commits
 - [ ] `[editor]` config section with default and override tests (DataviewJS rendering follows `vulcan trust` instead)
 - [ ] Protocol-level tests against fixture vaults: snapshots, CLI JSON parity, move roundtrip, open/closed split, failure paths, overlay leaves `cache.db` unchanged, encoding, concurrent processes, DataviewJS not executed by default
 - [ ] Add a `vulcan lsp` row to the unified-hosting inventory as a client-owned stdio transport
@@ -8399,17 +8400,17 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 ### 9.40.4 Agent skills and documentation
 
 - [x] New bundled `editor-integration` skill registered in `BUNDLED_SKILL_FILES` with installed-payload and discovery tests
-- [ ] Update `diagnostics-and-repair`, `note-operations`, and `refactoring` skills and `AGENTS.template.md` for LSP-open vaults
+- [x] Update `diagnostics-and-repair`, `note-operations`, and `refactoring` skills and `AGENTS.template.md` for LSP-open vaults
 - [x] Document `vulcan lsp` in `docs/cli.md`
 
 ### 9.40.5 Later capabilities
 
-- [ ] Heading and block subpath diagnostics once OBS.2 lands in core
-- [ ] mdbase schema-enum value completion once the MDB items land
+- [ ] **Blocked on OBS.2:** heading and block subpath diagnostics, once OBS.2 reports them in core; the LSP only maps what the parser and resolver report
+- [ ] **Blocked on the MDB items:** mdbase schema-enum value completion
 - [ ] Inlay hints and code lens (backlink counts, due dates)
 - [ ] Extract-section code action over the note split refactor
 - [ ] Minimal-diff `TextEdit`s, semantic tokens, multi-root workspaces
-- [ ] Daemon-backed note store through 10.5 client routing
+- [ ] **Blocked on 10.5:** daemon-backed note store through client routing
 - [ ] Pull-model `workspace/diagnostic`, only if requested
 
 ---

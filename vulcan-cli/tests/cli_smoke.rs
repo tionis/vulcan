@@ -2876,6 +2876,45 @@ fn tags_command_lists_and_filters_indexed_tags() {
 }
 
 #[test]
+fn properties_command_respects_the_permission_profile() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("mixed-properties", &vault_root);
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[permissions.profiles.done]\nread = { allow = [\"note:Done.md\"] }\n",
+    )
+    .expect("config should be written");
+    run_scan(&vault_root);
+
+    let output = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--permissions",
+            "done",
+            "--output",
+            "json",
+            "properties",
+            "--count",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let rows = String::from_utf8(output)
+        .expect("utf-8")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("json line"))
+        .collect::<Vec<_>>();
+    assert!(!rows.is_empty());
+    // Only Done.md is readable, so no key is counted more than once.
+    assert!(rows.iter().all(|row| row["count"] == 1), "{rows:?}");
+}
+
+#[test]
 fn properties_command_lists_counts_and_types() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -18612,9 +18651,10 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         .exists());
     assert!(vault_root.join("AI/Prompts/summarize-note.md").exists());
     assert!(vault_root.join("AI/Prompts/daily-review.md").exists());
-    assert!(fs::read_to_string(vault_root.join("AGENTS.md"))
-        .expect("agents template should be readable")
-        .contains("Use Vulcan as the primary automation surface"));
+    let agents = fs::read_to_string(vault_root.join("AGENTS.md"))
+        .expect("agents template should be readable");
+    assert!(agents.contains("Use Vulcan as the primary automation surface"));
+    assert!(agents.contains("an editor running `vulcan lsp`"));
     let note_operations =
         fs::read_to_string(vault_root.join(".agents/skills/note-operations/SKILL.md"))
             .expect("bundled skill should be readable");
@@ -18624,6 +18664,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     );
     assert!(note_operations.contains("managed: true"));
     assert!(note_operations.contains("- note_info"));
+    assert!(note_operations.contains("Do not edit a note the user is actively editing"));
     assert!(note_operations.contains("- note_delete"));
     assert!(note_operations.contains("MCP `note_append.text` is literal"));
     assert!(note_operations.contains("only readable source notes"));
@@ -18913,6 +18954,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         fs::read_to_string(vault_root.join(".agents/skills/diagnostics-and-repair/SKILL.md"))
             .expect("diagnostics skill should be readable");
     assert!(diagnostics_skill.contains("`possibly_lost_hidden_ref_namespaces`"));
+    assert!(diagnostics_skill.contains("Editor diagnostics from `vulcan lsp`"));
     assert!(diagnostics_skill.contains("vulcan --output json repair mdbase-write status"));
     Command::cargo_bin("vulcan")
         .expect("binary")
@@ -19491,6 +19533,7 @@ fn skill_list_and_get_surface_bundled_skills() {
     let refactoring = fs::read_to_string(installed_skills.join("refactoring/SKILL.md"))
         .expect("refactoring skill should be installed");
     assert!(refactoring.contains("vulcan refactor folder-notes --dry-run"));
+    assert!(refactoring.contains("renames from the editor"));
     assert!(refactoring.contains("vulcan refactor split-note <source>"));
     assert!(refactoring.contains("preserves asset files in place"));
     assert!(refactoring.contains("--preserve-missing-fragments"));

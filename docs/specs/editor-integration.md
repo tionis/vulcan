@@ -244,8 +244,11 @@ permission profile. Every planned rename, move, toggle, creation, and template i
 before it is shown or applied: each path it reads or writes must be readable and writable, because
 dry-run reports quote what they read. `vulcan/render` reads only what the profile grants
 (`EvaluatedMarkdownOptions.guard`), `vulcan.scan` needs the `index` grant, and periodic and
-template rendering use the profile. Navigation, completion, and diagnostics do not yet filter by
-the profile's read grant; that remains open work. The startup and on-save index refresh keeps the
+template rendering use the profile. Navigation, completion, and diagnostics treat unreadable notes
+as nonexistent: they neither resolve nor complete (a link to one is reported as unresolved, like a
+link to a missing note), hover and definition do not read them, references omit backlinks from
+them, and tag and property completion count only readable notes. Documents the editor itself has
+open stay readable to it. The startup and on-save index refresh keeps the
 cache usable regardless of `index`, as the CLI's automatic refresh does.
 
 **DataviewJS and code execution.** The strict `static` sandbox (computation and cache-backed

@@ -2342,6 +2342,53 @@ fn insert_configured_property_types(
     Ok(())
 }
 
+/// [`list_properties`] restricted to notes `filter` allows: keys, types,
+/// and counts come only from readable notes, so a hidden note's properties
+/// neither appear nor change a count.
+pub fn list_properties_with_filter(
+    paths: &VaultPaths,
+    filter: Option<&crate::PermissionFilter>,
+) -> Result<Vec<PropertyCatalogEntry>, PropertyError> {
+    let Some(filter) = filter.filter(|filter| !filter.path_permission().is_unrestricted()) else {
+        return list_properties(paths);
+    };
+    let database = open_existing_cache(paths)?;
+    let connection = database.connection();
+    let mut statement = connection.prepare(
+        "
+        SELECT documents.path, property_values.key, property_values.value_type
+        FROM property_values
+        JOIN documents ON documents.id = property_values.document_id
+        ",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut aggregated = BTreeMap::<String, (usize, Vec<String>)>::new();
+    for row in rows {
+        let (path, key, observed_type) = row?;
+        if !filter.is_allowed(&path) {
+            continue;
+        }
+        let entry = aggregated.entry(key).or_insert_with(|| (0, Vec::new()));
+        entry.0 = entry.0.saturating_add(1);
+        if !entry.1.iter().any(|value| value == &observed_type) {
+            entry.1.push(observed_type);
+        }
+    }
+    Ok(aggregated
+        .into_iter()
+        .map(|(key, (count, mut types))| {
+            types.sort();
+            PropertyCatalogEntry { key, count, types }
+        })
+        .collect())
+}
+
 pub fn list_properties(paths: &VaultPaths) -> Result<Vec<PropertyCatalogEntry>, PropertyError> {
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
@@ -4689,6 +4736,46 @@ completed = ["x", "v"]
         assert_eq!(
             tasks[0]["path"],
             Value::String("TaskNotes/Tasks/Write Docs.md".to_string())
+        );
+    }
+
+    #[test]
+    fn filtered_property_catalog_counts_only_readable_notes() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        copy_fixture_vault("mixed-properties", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let filter = |config: &str| {
+            let config: crate::config::PathPermissionConfig =
+                toml::from_str::<
+                    std::collections::BTreeMap<String, crate::config::PathPermissionConfig>,
+                >(&format!("read = {config}"))
+                .expect("permission config should parse")
+                .remove("read")
+                .expect("read key");
+            crate::PermissionFilter::new(crate::PathPermission::from_config(&config))
+        };
+        let everything = list_properties(&paths).expect("listing");
+        assert_eq!(
+            list_properties_with_filter(&paths, Some(&filter("\"all\""))).expect("listing"),
+            everything
+        );
+        let done_only =
+            list_properties_with_filter(&paths, Some(&filter("{ allow = [\"note:Done.md\"] }")))
+                .expect("listing");
+        assert!(!done_only.is_empty());
+        assert!(
+            done_only.iter().all(|entry| entry.count == 1),
+            "{done_only:?}"
+        );
+        assert!(everything.iter().any(|entry| entry.count > 1));
+        assert!(
+            list_properties_with_filter(&paths, Some(&filter("\"none\"")))
+                .expect("listing")
+                .is_empty()
         );
     }
 

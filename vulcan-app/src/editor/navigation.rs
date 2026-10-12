@@ -115,7 +115,13 @@ impl EditorSession {
     ) -> Result<Vec<EditorLocation>, AppError> {
         let resolver = self.resolver()?;
         let mut sources = BTreeSet::new();
-        if let Ok(report) = vulcan_core::query_backlinks(self.paths(), target) {
+        if !self.readable(target) {
+            return Ok(Vec::new());
+        }
+        let filter = self.read_filter();
+        if let Ok(report) =
+            vulcan_core::query_backlinks_with_filter(self.paths(), target, filter.as_ref())
+        {
             sources.extend(report.backlinks.into_iter().map(|link| link.source_path));
         }
         sources.extend(self.open_paths().map(ToString::to_string));
@@ -171,7 +177,8 @@ impl EditorSession {
         let markdown = match element {
             EditorElement::Link { link, .. } => self.link_hover(path, link)?,
             EditorElement::Tag { tag, .. } => {
-                let count = vulcan_core::list_tags(self.paths())
+                let filter = self.read_filter();
+                let count = vulcan_core::list_tags_with_filter(self.paths(), filter.as_ref())
                     .ok()
                     .and_then(|tags| {
                         tags.into_iter()
@@ -373,7 +380,7 @@ impl EditorSession {
 
 /// Whether a link's heading subpath names `heading`. Nested subpaths
 /// (`[[note#Parent#Child]]`) match on their last segment.
-fn same_heading(subpath: &str, heading: &str) -> bool {
+pub(super) fn same_heading(subpath: &str, heading: &str) -> bool {
     let last = subpath.rsplit('#').next().unwrap_or(subpath);
     last.trim().eq_ignore_ascii_case(heading.trim())
 }

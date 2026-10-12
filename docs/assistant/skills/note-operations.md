@@ -1,7 +1,7 @@
 ---
 name: note-operations
 description: Read, create, append, and patch notes safely through Vulcan instead of raw filesystem edits.
-version: 6
+version: 7
 tools:
   - note_outline
   - note_get
@@ -49,6 +49,7 @@ Use this skill when the task is centered on one note or a small set of notes and
 - If a managed write reports `concurrent_modification`, reread the current note and rebuild the intended edit from its new revision. Never replay a stale whole-note replacement blindly.
 - If an ordinary `note set`, `note append`, `note patch`, or `note delete` reports that the note changed during editing, reread it and rebuild the edit; Vulcan leaves the newer content untouched. A create or periodic append also refuses to replace a file created concurrently.
 - If `note get`, `note outline`, or `note info` reports a pending ordinary-write journal through the CLI or MCP, stop reading that vault until `vulcan repair ordinary-write status` shows the transaction has recovered or been explicitly reconciled. These reads are blocked to avoid showing only one side of an interrupted task conversion or archive move.
+- The vault may be open in an editor running `vulcan lsp`. A note's file reflects its last save, not unsaved buffer text. Vulcan note writes stay safe (vault lock, content checks) and the editor reloads the file, but an editor holding unsaved changes to the same note will conflict when the user saves. Do not edit a note the user is actively editing; ask them to save first.
 - Ordinary note create, replacement, append, patch, and delete also refuse a pending ordinary-write journal, even for an unrelated note. Repair the journal before retrying the edit; do not bypass the guard with a raw file write.
 
 ## Example Moves
