@@ -1,7 +1,7 @@
 ---
 name: editor-integration
 description: Set up and troubleshoot Vulcan's language server for Neovim, Vim, Helix, Emacs, Zed, or another LSP client. Use when the user wants link navigation, backlinks, completion, or diagnostics in a terminal editor, or asks why their editor reports an unresolved or ambiguous link.
-version: 2
+version: 3
 tools:
   - describe
   - help
@@ -40,7 +40,9 @@ and wants vault-aware features, or when editor diagnostics need explaining.
    folder is not inside the vault; otherwise the server discovers it like any other command.
 3. Explain what the server offers: go-to-definition on links, embeds, `#heading`, and `#^block`
    subpaths; references (backlinks); hover previews; completion after `[[`, `#`, and in
-   frontmatter keys; document and workspace symbols; diagnostics for open buffers.
+   frontmatter keys; document and workspace symbols; diagnostics for open buffers; and renames
+   that rewrite every link (rename a link's note target to move the note, or a heading or block
+   id). The `vulcan.note.move` command moves any note, with `dryRun` to preview.
 4. For a whole-vault view of broken links, run `vulcan doctor`. Editor diagnostics use the same
    categories (`unresolved-link`, `ambiguous-link`, `outside-vault-link`, `malformed-frontmatter`)
    but only cover open buffers.
@@ -64,4 +66,6 @@ exits.
 - Agent edits made with `vulcan note`, `move`, or `refactor` while the vault is open in an editor
   stay safe: they take the vault write lock and check file contents first. The editor reloads the
   changed files. Prefer `move` and `refactor` over ad hoc edits so link rewrites stay journaled.
+- A rename in the editor refuses while an affected buffer has unsaved changes; save or discard
+  them first rather than editing files behind the editor.
 - Do not start `vulcan lsp` interactively; it speaks JSON-RPC on stdout and waits for a client.

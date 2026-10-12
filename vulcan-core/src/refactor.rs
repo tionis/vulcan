@@ -571,6 +571,71 @@ pub fn rename_heading(
 ) -> Result<RefactorReport, RefactorError> {
     let _lock = acquire_write_lock(paths)?;
     ensure_no_pending_ordinary_write_batch(paths)?;
+    let plans = prepare_rename_heading(paths, note_identifier, old_heading, new_heading)?;
+    finalize_refactor(paths, dry_run, "rename_heading", plans)
+}
+
+/// A refactor's planned file changes, for callers that publish them in their
+/// own ordinary-write batch (or hand them to an editor) instead of writing
+/// directly. Planning neither writes files nor touches the cache.
+#[derive(Debug, Clone)]
+pub struct RefactorWritePlan {
+    /// The report a dry run of the refactor prints.
+    pub report: RefactorReport,
+    /// One change per rewritten file, with its current contents as preimage.
+    pub changes: Vec<crate::ordinary_write::OrdinaryWriteChange>,
+}
+
+/// Plan [`rename_heading`] without applying it.
+pub fn plan_rename_heading(
+    paths: &VaultPaths,
+    note_identifier: &str,
+    old_heading: &str,
+    new_heading: &str,
+) -> Result<RefactorWritePlan, RefactorError> {
+    let _lock = acquire_write_lock(paths)?;
+    ensure_no_pending_ordinary_write_batch(paths)?;
+    let plans = prepare_rename_heading(paths, note_identifier, old_heading, new_heading)?;
+    write_plan(paths, "rename_heading", plans)
+}
+
+/// Plan [`rename_block_ref`] without applying it.
+pub fn plan_rename_block_ref(
+    paths: &VaultPaths,
+    note_identifier: &str,
+    old_block_ref: &str,
+    new_block_ref: &str,
+) -> Result<RefactorWritePlan, RefactorError> {
+    let _lock = acquire_write_lock(paths)?;
+    ensure_no_pending_ordinary_write_batch(paths)?;
+    let plans = prepare_rename_block_ref(paths, note_identifier, old_block_ref, new_block_ref)?;
+    write_plan(paths, "rename_block_ref", plans)
+}
+
+fn write_plan(
+    paths: &VaultPaths,
+    action: &str,
+    plans: Vec<FilePlan>,
+) -> Result<RefactorWritePlan, RefactorError> {
+    let mut changes = Vec::with_capacity(plans.len());
+    for plan in &plans {
+        let before = fs::read_to_string(paths.vault_root().join(&plan.path))?;
+        changes.push(crate::ordinary_write::OrdinaryWriteChange {
+            path: plan.path.clone(),
+            before: Some(before),
+            after: Some(plan.updated_contents.clone()),
+        });
+    }
+    let report = finalize_refactor(paths, true, action, plans)?;
+    Ok(RefactorWritePlan { report, changes })
+}
+
+fn prepare_rename_heading(
+    paths: &VaultPaths,
+    note_identifier: &str,
+    old_heading: &str,
+    new_heading: &str,
+) -> Result<Vec<FilePlan>, RefactorError> {
     let config = load_vault_config(paths).config;
     let note = resolve_note_reference(paths, note_identifier)?;
     let note_source = fs::read_to_string(paths.vault_root().join(&note.path))?;
@@ -601,8 +666,7 @@ pub fn rename_heading(
         &mut changes_by_file,
     )?;
 
-    let plans = build_plans_from_edits(paths, edits_by_file, changes_by_file)?;
-    finalize_refactor(paths, dry_run, "rename_heading", plans)
+    build_plans_from_edits(paths, edits_by_file, changes_by_file)
 }
 
 pub fn rename_block_ref(
@@ -614,6 +678,16 @@ pub fn rename_block_ref(
 ) -> Result<RefactorReport, RefactorError> {
     let _lock = acquire_write_lock(paths)?;
     ensure_no_pending_ordinary_write_batch(paths)?;
+    let plans = prepare_rename_block_ref(paths, note_identifier, old_block_ref, new_block_ref)?;
+    finalize_refactor(paths, dry_run, "rename_block_ref", plans)
+}
+
+fn prepare_rename_block_ref(
+    paths: &VaultPaths,
+    note_identifier: &str,
+    old_block_ref: &str,
+    new_block_ref: &str,
+) -> Result<Vec<FilePlan>, RefactorError> {
     let config = load_vault_config(paths).config;
     let note = resolve_note_reference(paths, note_identifier)?;
     let note_source = fs::read_to_string(paths.vault_root().join(&note.path))?;
@@ -644,8 +718,7 @@ pub fn rename_block_ref(
         &mut changes_by_file,
     )?;
 
-    let plans = build_plans_from_edits(paths, edits_by_file, changes_by_file)?;
-    finalize_refactor(paths, dry_run, "rename_block_ref", plans)
+    build_plans_from_edits(paths, edits_by_file, changes_by_file)
 }
 
 fn finalize_refactor(
@@ -1958,6 +2031,55 @@ mod tests {
                 .unresolved_links,
             0
         );
+    }
+
+    #[test]
+    fn heading_and_block_rename_plans_match_applied_renames_without_writing() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        copy_fixture_vault("refactors", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let home = fs::read_to_string(vault_root.join("Home.md")).expect("home should read");
+
+        let plan = plan_rename_heading(&paths, "Projects/Alpha.md", "Status", "Progress")
+            .expect("heading plan should succeed");
+        assert!(plan.report.dry_run);
+        assert_eq!(plan.report.action, "rename_heading");
+        let planned_home = plan
+            .changes
+            .iter()
+            .find(|change| change.path == "Home.md")
+            .expect("home is rewritten");
+        assert_eq!(planned_home.before.as_deref(), Some(home.as_str()));
+        assert!(planned_home
+            .after
+            .as_deref()
+            .is_some_and(|after| after.contains("[[Projects/Alpha#Progress]]")));
+        assert_eq!(
+            fs::read_to_string(vault_root.join("Home.md")).expect("home should read"),
+            home
+        );
+        let paths_in_report = plan
+            .report
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>();
+        let paths_in_changes = plan
+            .changes
+            .iter()
+            .map(|change| change.path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(paths_in_report, paths_in_changes);
+
+        let plan = plan_rename_block_ref(&paths, "Projects/Alpha.md", "alpha-status", "alpha-x")
+            .expect("block plan should succeed");
+        assert!(plan.changes.iter().any(|change| change
+            .after
+            .as_deref()
+            .is_some_and(|after| after.contains("[[Projects/Alpha#^alpha-x]]"))));
     }
 
     #[test]

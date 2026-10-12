@@ -46,6 +46,9 @@ pub(crate) fn handle(session: &EditorSession, request: Request) -> Response {
         request::WorkspaceSymbolRequest::METHOD => {
             params(request).and_then(|p| workspace_symbols(session, &p))
         }
+        request::PrepareRenameRequest::METHOD => {
+            params(request).and_then(|p| prepare_rename(session, &p))
+        }
         method => Err(ResponseFailure::method_not_found(method)),
     };
     respond(id, result)
@@ -133,6 +136,19 @@ fn completion(session: &EditorSession, params: &lsp::CompletionParams) -> Answer
             items,
         },
     )))
+}
+
+fn prepare_rename(session: &EditorSession, params: &lsp::TextDocumentPositionParams) -> Answer {
+    let Some(path) = vault_path(session, &params.text_document.uri) else {
+        return Ok(Value::Null);
+    };
+    let target = session.prepare_rename(&path, convert::position(params.position))?;
+    Ok(target.map_or(Value::Null, |target| {
+        to_value(lsp::PrepareRenameResponse::RangeWithPlaceholder {
+            range: convert::lsp_range(target.range),
+            placeholder: target.placeholder,
+        })
+    }))
 }
 
 fn document_symbols(session: &EditorSession, params: &lsp::DocumentSymbolParams) -> Value {

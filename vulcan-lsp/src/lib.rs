@@ -12,6 +12,7 @@
 
 mod convert;
 mod handlers;
+mod mutations;
 mod server;
 
 pub use server::{run, run_stdio, LspError, LspOptions};

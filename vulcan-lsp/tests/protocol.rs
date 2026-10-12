@@ -17,8 +17,10 @@ struct Client {
     next_id: i32,
     /// Notifications received while waiting for responses.
     notifications: Vec<Notification>,
-    /// Requests the server sent; each is answered with `null`.
+    /// Requests the server sent; each is answered with `null`, except
+    /// `workspace/applyEdit`, which is answered with `accept_edits`.
     server_requests: Vec<Request>,
+    accept_edits: bool,
     root: std::path::PathBuf,
 }
 
@@ -38,6 +40,7 @@ impl Client {
             next_id: 0,
             notifications: Vec::new(),
             server_requests: Vec::new(),
+            accept_edits: true,
             root: root.to_path_buf(),
         };
         let result = client.request(
@@ -90,11 +93,35 @@ impl Client {
                 None
             }
             Message::Request(request) => {
+                let result = if request.method == "workspace/applyEdit" {
+                    if self.accept_edits {
+                        // Like an editor, perform file renames on disk.
+                        for change in request.params["edit"]["documentChanges"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter(|change| change["kind"] == "rename")
+                        {
+                            let path = |key: &str| {
+                                url::Url::parse(change[key].as_str().unwrap())
+                                    .unwrap()
+                                    .to_file_path()
+                                    .unwrap()
+                            };
+                            let target = path("newUri");
+                            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+                            std::fs::rename(path("oldUri"), target).unwrap();
+                        }
+                    }
+                    json!({ "applied": self.accept_edits })
+                } else {
+                    Value::Null
+                };
                 self.connection
                     .sender
                     .send(Message::Response(lsp_server::Response::new_ok(
                         request.id.clone(),
-                        Value::Null,
+                        result,
                     )))
                     .unwrap();
                 self.server_requests.push(request);
@@ -197,7 +224,9 @@ fn uri(path: &Path) -> String {
 fn vault(files: &[(&str, &str)]) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     for (path, text) in files {
-        std::fs::write(dir.path().join(path), text).unwrap();
+        let target = dir.path().join(path);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(target, text).unwrap();
     }
     let paths = VaultPaths::new(dir.path());
     vulcan_core::paths::initialize_vulcan_dir(&paths).unwrap();
@@ -525,4 +554,230 @@ fn a_held_vault_write_lock_does_not_stall_requests() {
     assert_eq!(completion[0]["name"], "Alpha");
     assert!(started.elapsed() < Duration::from_secs(5));
     drop(lock);
+}
+
+/// Client capabilities of an editor that applies versioned edits and
+/// renames files.
+fn editing_client() -> Value {
+    json!({ "workspace": {
+        "applyEdit": true,
+        "workspaceEdit": { "documentChanges": true, "resourceOperations": ["rename"] },
+    }})
+}
+
+fn applied_edits(client: &Client) -> Vec<Value> {
+    client
+        .server_requests
+        .iter()
+        .filter(|request| request.method == "workspace/applyEdit")
+        .map(|request| request.params["edit"]["documentChanges"].clone())
+        .collect()
+}
+
+const LINKER: &str = "# Home\n\nSee [[Alpha]] and [[Alpha#Status]].\n";
+
+fn rename_vault() -> tempfile::TempDir {
+    vault(&[
+        ("Home.md", LINKER),
+        ("notes/Alpha.md", "# Alpha\n\n## Status\n\nGreen.\n"),
+        ("Other.md", "Also [[Alpha]].\n"),
+    ])
+}
+
+fn rename_at(client: &mut Client, line: u32, character: u32, new_name: &str) -> Value {
+    let mut params = client.at("Home.md", line, character);
+    params["newName"] = json!(new_name);
+    client.request("textDocument/rename", params)
+}
+
+#[test]
+fn renaming_a_linked_note_moves_it_and_rewrites_every_link() {
+    let dir = rename_vault();
+    let (mut client, result) = Client::start(dir.path(), &editing_client());
+    assert_eq!(
+        result["capabilities"]["renameProvider"]["prepareProvider"],
+        true
+    );
+    client.open("Home.md", LINKER);
+    let _ = client.diagnostics("Home.md");
+
+    let prepared = client.request("textDocument/prepareRename", client.at("Home.md", 2, 7));
+    assert_eq!(prepared["placeholder"], "Alpha");
+    assert_eq!(
+        prepared["range"]["start"],
+        json!({ "line": 2, "character": 6 })
+    );
+
+    let response = rename_at(&mut client, 2, 7, "Beta");
+    assert_eq!(response, json!({ "documentChanges": [] }));
+    // The closed note moved and the closed linker was rewritten on disk...
+    assert!(!dir.path().join("notes/Alpha.md").exists());
+    assert!(dir.path().join("notes/Beta.md").exists());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Other.md")).unwrap(),
+        "Also [[Beta]].\n"
+    );
+    // ...while the open buffer got a versioned edit and its file is untouched.
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Home.md")).unwrap(),
+        LINKER
+    );
+    let edits = applied_edits(&client);
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0][0]["textDocument"]["uri"], client.uri("Home.md"));
+    assert_eq!(edits[0][0]["textDocument"]["version"], 1);
+    // Applying the edits (ASCII, so columns are byte offsets) gives the
+    // rewritten note.
+    let mut lines = LINKER.lines().map(ToString::to_string).collect::<Vec<_>>();
+    let mut edits = edits[0][0]["edits"].as_array().unwrap().clone();
+    edits.sort_by_key(|edit| std::cmp::Reverse(edit["range"]["start"]["character"].as_u64()));
+    for edit in edits {
+        let range = &edit["range"];
+        assert_eq!(range["start"]["line"], range["end"]["line"]);
+        let line = &mut lines[usize::try_from(range["start"]["line"].as_u64().unwrap()).unwrap()];
+        let column =
+            |key: &str| usize::try_from(range[key]["character"].as_u64().unwrap()).unwrap();
+        line.replace_range(
+            column("start")..column("end"),
+            edit["newText"].as_str().unwrap(),
+        );
+    }
+    assert_eq!(lines[2], "See [[Beta]] and [[Beta#Status]].");
+}
+
+#[test]
+fn a_rejected_edit_restores_the_vault() {
+    let dir = rename_vault();
+    let (mut client, _) = Client::start(dir.path(), &editing_client());
+    client.accept_edits = false;
+    client.open("Home.md", LINKER);
+    let _ = client.diagnostics("Home.md");
+
+    let response = rename_at(&mut client, 2, 7, "Beta");
+    assert_eq!(response["data"]["kind"], "conflict");
+    assert!(response["data"]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("vault was restored"));
+    assert!(dir.path().join("notes/Alpha.md").exists());
+    assert!(!dir.path().join("notes/Beta.md").exists());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Other.md")).unwrap(),
+        "Also [[Alpha]].\n"
+    );
+}
+
+#[test]
+fn moving_an_open_note_asks_the_editor_to_rename_it() {
+    let dir = rename_vault();
+    let (mut client, _) = Client::start(dir.path(), &editing_client());
+    client.open("Home.md", LINKER);
+    client.open("notes/Alpha.md", "# Alpha\n\n## Status\n\nGreen.\n");
+    let _ = client.diagnostics("notes/Alpha.md");
+
+    let result = client.request(
+        "workspace/executeCommand",
+        json!({ "command": "vulcan.note.move", "arguments": [{
+            "from": client.uri("notes/Alpha.md"), "to": "archive/Alpha.md",
+        }]}),
+    );
+    assert_eq!(
+        result["moved"],
+        json!({ "from": "notes/Alpha.md", "to": "archive/Alpha.md" })
+    );
+    assert!(result["editor"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("notes/Alpha.md")));
+    let edits = applied_edits(&client);
+    let rename = edits[0]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|change| change["kind"] == "rename")
+        .expect("the editor renames the open note");
+    assert_eq!(rename["oldUri"], client.uri("notes/Alpha.md"));
+    assert_eq!(rename["newUri"], client.uri("archive/Alpha.md"));
+    // The editor moved the file; the index follows it.
+    let found = client.request("workspace/symbol", json!({ "query": "archive" }));
+    assert_eq!(found[0]["location"]["uri"], client.uri("archive/Alpha.md"));
+}
+
+#[test]
+fn move_commands_support_dry_runs_and_refuse_unsaved_buffers() {
+    let dir = rename_vault();
+    let (mut client, _) = Client::start(dir.path(), &editing_client());
+    let dry_run = client.request(
+        "workspace/executeCommand",
+        json!({ "command": "vulcan.note.move", "arguments": [{
+            "from": "notes/Alpha.md", "to": "Beta.md", "dryRun": true,
+        }]}),
+    );
+    assert_eq!(dry_run["dryRun"], true);
+    assert_eq!(dry_run["report"]["destination_path"], "Beta.md");
+    assert!(dir.path().join("notes/Alpha.md").exists());
+
+    client.open("Other.md", "Also [[Alpha]] (edited).\n");
+    let refused = client.request(
+        "workspace/executeCommand",
+        json!({ "command": "vulcan.note.move", "arguments": [{
+            "from": "notes/Alpha.md", "to": "Beta.md",
+        }]}),
+    );
+    assert_eq!(refused["data"]["kind"], "conflict");
+    assert!(refused["data"]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("Other.md"));
+    assert!(dir.path().join("notes/Alpha.md").exists());
+}
+
+#[test]
+fn editors_without_workspace_edits_cannot_rewrite_open_buffers() {
+    let dir = rename_vault();
+    let (mut client, _) = Client::start(dir.path(), &json!({}));
+    client.open("Home.md", LINKER);
+    let _ = client.diagnostics("Home.md");
+    let response = rename_at(&mut client, 2, 7, "Beta");
+    assert_eq!(response["data"]["kind"], "conflict");
+    assert!(dir.path().join("notes/Alpha.md").exists());
+}
+
+#[test]
+fn client_renames_rewrite_open_and_closed_links() {
+    let dir = rename_vault();
+    let (mut client, result) = Client::start(dir.path(), &editing_client());
+    assert!(result["capabilities"]["workspace"]["fileOperations"]["willRename"].is_object());
+    client.open("Home.md", LINKER);
+    let _ = client.diagnostics("Home.md");
+    let renamed = json!({ "files": [{
+        "oldUri": client.uri("notes/Alpha.md"), "newUri": client.uri("notes/Beta.md"),
+    }]});
+
+    // The client asks first and applies the returned edit to its buffers...
+    let edit = client.request("workspace/willRenameFiles", renamed.clone());
+    assert_eq!(
+        edit["documentChanges"][0]["textDocument"]["uri"],
+        client.uri("Home.md")
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Other.md")).unwrap(),
+        "Also [[Alpha]].\n",
+        "closed files wait for the rename to happen"
+    );
+    // ...renames the file, and reports it; closed links are then rewritten.
+    std::fs::rename(
+        dir.path().join("notes/Alpha.md"),
+        dir.path().join("notes/Beta.md"),
+    )
+    .unwrap();
+    client.notify("workspace/didRenameFiles", renamed);
+    client.wait_for(|notification| {
+        notification.method == "vulcan/indexChanged"
+            && notification.params["paths"] == json!(["notes/Beta.md"])
+    });
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Other.md")).unwrap(),
+        "Also [[Beta]].\n"
+    );
 }

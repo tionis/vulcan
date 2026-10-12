@@ -160,9 +160,12 @@ Each file in a planned change is handled by whether it is **open** in the client
 never by operation type:
 
 - **Open file.** A versioned `TextDocumentEdit` inside a `workspace/applyEdit`. The version check
-  provides the stale-input guarantee that preimage checks provide on disk. The first version uses
-  one full-document `TextEdit` per file (`OrdinaryWriteChange { path, before, after }` maps 1:1);
-  minimal line diffs can come later.
+  provides the stale-input guarantee that preimage checks provide on disk. Edits are minimal: one
+  per changed line when the line count is unchanged (the usual case for link rewrites), otherwise
+  one edit spanning the changed region.
+- **Unsaved buffers are refused.** Plans are computed from files on disk, so an affected open
+  buffer whose text differs from its file answers `conflict` ("save or discard unsaved changes
+  first") and nothing changes. Re-planning against buffer text is a later refinement.
 - **Closed file.** A journaled on-disk batch through
   `apply_ordinary_write_batch_with_renames_and_preflight`, preimage-checked, on the writer thread.
 
@@ -172,31 +175,48 @@ server-reversible once versions move.
 
 1. The writer applies the closed-file batch (preimage-checked, journaled).
 2. On success, the server sends `workspace/applyEdit` with the open-file edits.
-3. If the client answers `applied: false` or rejects the request, the server applies the inverse
-   batch through the same API, using the planned bytes as preimages. Untouched files are restored.
-   A file edited by someone else in the gap is left alone, following the rule that later edits
-   always win. The move journal's interruption recovery is not used for this deliberate undo.
+3. If the client answers `applied: false`, rejects the request, or does not answer within two
+   minutes, the server applies the inverse batch through the same API, using the planned bytes as
+   preimages. The batch is all-or-nothing: when every file still holds the planned bytes the vault
+   is restored, and when any was edited in the gap nothing is touched, following the rule that
+   later edits always win, and the error names the affected files. The move journal's interruption
+   recovery is not used for this deliberate undo.
 
 Failure reporting (LSP `ResponseError.data = { kind, detail, ... }`):
 
 | Outcome | Result |
 | --- | --- |
 | Disk step fails (preimage mismatch or lock) | `conflict` or `internal`; `detail` names the file; nothing changed |
-| Editor rejects, inverse succeeds | `conflict`, "editor rejected edit; vault restored", `restored: [paths]` |
-| Editor rejects, inverse hits a preimage mismatch | `conflict`, `left_changed: [paths]`, pointer to `vulcan doctor` |
-| Success | `{ disk: [paths], editor: [uris], moved?: { from, to } }` |
+| Editor rejects, inverse succeeds | `conflict`, "the editor rejected the edit; the vault was restored (paths)" |
+| Editor rejects, inverse hits a preimage mismatch | `conflict`, names the changed paths and points to `vulcan doctor` |
+| Client cannot apply versioned edits (or rename files, for an open moved note) | `conflict`; nothing changed |
+| Success of `textDocument/rename` | an empty `WorkspaceEdit`: everything was applied through `workspace/applyEdit` |
+| Success of `vulcan.note.move` | `{ dryRun, action, report, disk: [paths], editor: [paths], moved }` |
 
-**Moves are always performed by the server.** Server-initiated edits never contain `RenameFile`
-resource operations. Vulcan renames the moved file under the write lock with its move journal and a
-rename-aware scan, and the result carries `moved: { from, to }`. The client (or `vulcan.nvim`)
-re-points and reloads the buffer. A dirty open buffer for the moved file is refused with
-`conflict` ("save or discard first"). Client-initiated renames through `workspace/willRenameFiles`
-are still supported: the client renames regardless, so the server returns the link-rewrite edit
-and treats `didRenameFiles` as a rename hint.
+**Who moves the file depends on whether it is open.** A closed note is moved by Vulcan: its delete
+and create are part of the journaled batch, with a rename hint so the document keeps its
+identity. A note open in the editor is moved by the editor through a `RenameFile` operation at the
+end of the same `workspace/applyEdit` (after any edits to it, addressed by its old URI), because
+that is the only standard way for an LSP client to re-point its buffer; the server then indexes
+the rename with a hint. (An earlier draft had the server always move the file and rely on a plugin
+to re-point buffers; generic clients would keep editing, and could re-save, the old path.)
+
+**Client-initiated renames** (`workspace/willRenameFiles`, sent by file explorers before they
+rename): the server plans the move and answers with the edits for open documents, which the
+client applies itself. Rewrites of closed files are held until `workspace/didRenameFiles` reports
+that the rename happened; the server then indexes the rename with a hint first, and publishes the
+held rewrites as a preimage-checked batch, the moved note's own rewrite addressed by its new
+path.
 
 Rename entry points:
 
-- `textDocument/rename` on a wikilink target or the note's own filename → note move.
+- `textDocument/prepareRename` reports the renamed span and current name.
+- `textDocument/rename` on a link's note target → note move: the new name renames it within its
+  folder, a name containing `/` is a vault path, and a leading `/` names the vault root.
+- `textDocument/rename` on a link's `#heading` or `#^block` part renames that heading or block in
+  the target note.
+- `workspace/executeCommand` `vulcan.note.move` with `{ from, to, dryRun? }` (`from` is a vault path
+  or file URI) moves any note, including the one being edited.
 - `textDocument/rename` on a heading → plan-only `rename_heading`.
 - `textDocument/rename` on a `^block` id → plan-only `rename_block_ref`.
 

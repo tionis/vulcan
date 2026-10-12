@@ -13,6 +13,7 @@
 
 use crate::convert;
 use crate::handlers;
+use crate::mutations::{self, ClientChannel, EditSupport, MutationContext, PendingRenames};
 use crossbeam_channel::{after, never, select, unbounded, Receiver, Sender};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::Notification as _;
@@ -197,10 +198,22 @@ fn capabilities(
         }),
         document_symbol_provider: Some(lsp::OneOf::Left(true)),
         workspace_symbol_provider: Some(lsp::OneOf::Left(true)),
+        rename_provider: Some(lsp::OneOf::Right(lsp::RenameOptions {
+            prepare_provider: Some(true),
+            work_done_progress_options: lsp::WorkDoneProgressOptions::default(),
+        })),
+        execute_command_provider: Some(lsp::ExecuteCommandOptions {
+            commands: mutations::COMMANDS
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            work_done_progress_options: lsp::WorkDoneProgressOptions::default(),
+        }),
         workspace: Some(lsp::WorkspaceServerCapabilities {
             workspace_folders: None,
             file_operations: Some(lsp::WorkspaceFileOperationsServerCapabilities {
-                did_rename: Some(any_file),
+                did_rename: Some(any_file.clone()),
+                will_rename: Some(any_file),
                 ..lsp::WorkspaceFileOperationsServerCapabilities::default()
             }),
         }),
@@ -211,7 +224,7 @@ fn capabilities(
                     "root": session.paths().vault_root(),
                     "cacheFresh": session.has_cache(),
                 },
-                "commands": Vec::<String>::new(),
+                "commands": mutations::COMMANDS,
             }
         })),
         ..lsp::ServerCapabilities::default()
@@ -223,6 +236,7 @@ fn capabilities(
 struct ClientFeatures {
     work_done_progress: bool,
     dynamic_file_watching: bool,
+    edits: EditSupport,
 }
 
 impl From<&lsp::ClientCapabilities> for ClientFeatures {
@@ -239,6 +253,7 @@ impl From<&lsp::ClientCapabilities> for ClientFeatures {
                 .and_then(|workspace| workspace.did_change_watched_files.as_ref())
                 .and_then(|watched| watched.dynamic_registration)
                 .unwrap_or(false),
+            edits: EditSupport::from(capabilities),
         }
     }
 }
@@ -252,6 +267,13 @@ enum WriteJob {
         paths: Vec<String>,
         renames: HashMap<String, String>,
     },
+    /// Answer a rename, move, or command from a snapshot of the session.
+    Mutate {
+        session: Box<EditorSession>,
+        request: Request,
+    },
+    /// Publish the link rewrites planned for a client rename that happened.
+    ApplyPending { from: String, to: String },
 }
 
 /// An index change (or failure) reported to the main loop by the writer
@@ -318,7 +340,7 @@ struct Server<'c> {
     progress: Progress,
     stop_watching: Arc<AtomicBool>,
     _lease: Option<EditorWatchLease>,
-    next_request_id: i32,
+    channel: Arc<ClientChannel>,
 }
 
 impl<'c> Server<'c> {
@@ -346,13 +368,21 @@ impl<'c> Server<'c> {
             );
         }
 
+        let channel = Arc::new(ClientChannel::new(connection.sender.clone()));
         let (writes, write_receiver) = unbounded::<WriteJob>();
         let writer_session = session.clone();
         let writer_events = indexed_sender.clone();
+        let context = MutationContext {
+            client: Arc::clone(&channel),
+            support: client.edits,
+            pending: PendingRenames::default(),
+        };
         threads.push(
             std::thread::Builder::new()
                 .name("vulcan-lsp-writer".to_string())
-                .spawn(move || run_writer(&writer_session, &write_receiver, &writer_events))
+                .spawn(move || {
+                    run_writer(&writer_session, &context, &write_receiver, &writer_events);
+                })
                 .expect("writer thread should spawn"),
         );
 
@@ -395,7 +425,7 @@ impl<'c> Server<'c> {
             progress: Progress::None,
             stop_watching,
             _lease: lease,
-            next_request_id: 0,
+            channel,
         };
         server.begin_startup();
         server
@@ -478,7 +508,11 @@ impl<'c> Server<'c> {
                 self.dispatch(request);
             }
             Message::Notification(notification) => self.handle_notification(notification),
-            Message::Response(response) => self.handle_response(&response),
+            Message::Response(response) => {
+                if let Some(response) = self.channel.deliver(response) {
+                    self.handle_response(&response);
+                }
+            }
         }
         Ok(false)
     }
@@ -503,6 +537,17 @@ impl<'c> Server<'c> {
     }
 
     fn dispatch(&mut self, request: Request) {
+        if matches!(
+            request.method.as_str(),
+            "textDocument/rename" | "workspace/willRenameFiles" | "workspace/executeCommand"
+        ) {
+            // Mutations run one at a time on the writer thread.
+            self.write(WriteJob::Mutate {
+                session: Box::new(self.session.clone()),
+                request,
+            });
+            return;
+        }
         let id = request.id.clone();
         if request.method == "vulcan/status" {
             let status = json!({
@@ -677,11 +722,21 @@ impl<'c> Server<'c> {
                 Some((new, old))
             })
             .collect::<HashMap<_, _>>();
-        if !renames.is_empty() {
-            self.write(WriteJob::Scan {
-                paths: Vec::new(),
-                renames,
-            });
+        if renames.is_empty() {
+            return;
+        }
+        // Index the rename first so documents keep their identity, then
+        // publish the link rewrites planned when the client announced it.
+        let pairs = renames
+            .iter()
+            .map(|(to, from)| (from.clone(), to.clone()))
+            .collect::<Vec<_>>();
+        self.write(WriteJob::Scan {
+            paths: Vec::new(),
+            renames,
+        });
+        for (from, to) in pairs {
+            self.write(WriteJob::ApplyPending { from, to });
         }
     }
 
@@ -833,15 +888,8 @@ impl<'c> Server<'c> {
         )));
     }
 
-    fn send_request(&mut self, method: &str, params: Value) -> RequestId {
-        self.next_request_id += 1;
-        let id = RequestId::from(format!("vulcan/{}", self.next_request_id));
-        self.send(Message::Request(Request::new(
-            id.clone(),
-            method.to_string(),
-            params,
-        )));
-        id
+    fn send_request(&self, method: &str, params: Value) -> RequestId {
+        self.channel.send_request(method, params)
     }
 
     fn send_notification<N: notification::Notification>(&self, params: N::Params) {
@@ -861,7 +909,12 @@ impl<'c> Server<'c> {
     }
 }
 
-fn run_writer(session: &EditorSession, jobs: &Receiver<WriteJob>, events: &Sender<Indexed>) {
+fn run_writer(
+    session: &EditorSession,
+    context: &MutationContext,
+    jobs: &Receiver<WriteJob>,
+    events: &Sender<Indexed>,
+) {
     for job in jobs {
         let (startup, paths, result) = match job {
             WriteJob::Refresh => (true, Vec::new(), session.refresh_index()),
@@ -869,6 +922,18 @@ fn run_writer(session: &EditorSession, jobs: &Receiver<WriteJob>, events: &Sende
                 let mut changed = paths.clone();
                 changed.extend(renames.keys().cloned());
                 (false, changed, session.scan_changed(&paths, &renames))
+            }
+            WriteJob::Mutate { session, request } => {
+                mutations::handle(context, &session, request);
+                // Whatever the mutation changed, the main loop sees through
+                // the store clock.
+                (false, Vec::new(), Ok(None))
+            }
+            WriteJob::ApplyPending { from, to } => {
+                match mutations::apply_pending(context, session, &from, &to) {
+                    Some(error) => (false, Vec::new(), Err(AppError::operation(error))),
+                    None => (false, vec![to], Ok(None)),
+                }
             }
         };
         let (summary, error) = match result {

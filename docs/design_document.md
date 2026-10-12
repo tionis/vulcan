@@ -558,8 +558,10 @@ that would have to reimplement link resolution.
 - **Mutations.** Each file in a plan is handled by whether it is open in the editor: open files get
   versioned `TextDocumentEdit`s, closed files get the journaled preimage-checked batch. The disk side
   runs first, then the editor edit, and an editor rejection triggers a compensating inverse batch
-  that leaves later external edits alone. Moves are always performed by Vulcan under its move
-  journal, never delegated to an editor `RenameFile`.
+  that leaves later external edits alone. Affected open buffers with unsaved changes are refused,
+  since plans come from disk. Vulcan moves closed notes itself in the journaled batch; a moved note
+  that is open is renamed by the editor (`RenameFile` in the same edit, the only standard way to
+  re-point its buffer) and indexed with a rename hint.
 - **Freshness.** Saves trigger targeted scans. One LSP process per vault holds an advisory watch
   lease and runs the watcher; other processes poll the store clock, and no process watches when a
   daemon owns the vault.

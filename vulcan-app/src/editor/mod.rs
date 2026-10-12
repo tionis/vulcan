@@ -10,10 +10,15 @@
 
 mod completion;
 mod diagnostics;
+mod edits;
 mod navigation;
 
 pub use completion::{EditorCompletion, EditorCompletionItem, EditorCompletionKind};
 pub use diagnostics::{EditorDiagnostic, EditorDiagnosticSeverity};
+pub use edits::{
+    inverse_changes, EditorDocumentEdit, EditorEditPlan, EditorMove, EditorRenameTarget,
+    EditorTextEdit,
+};
 pub use navigation::{EditorHover, EditorSymbol, EditorWorkspaceSymbol};
 
 use crate::AppError;
