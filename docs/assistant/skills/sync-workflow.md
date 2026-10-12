@@ -215,8 +215,11 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
    implying zero.
 2. Run `vulcan sync doctor [<wiki>]` when installation, detached storage, hidden refs, filters/LFS,
    platform compatibility, locks, journals, apply markers, or cache coherence may be involved.
-   A `sync.device-files` warning means Obsidian's per-device layout files are synced; preview
-   `vulcan sync ignore-device-files --dry-run`, then apply it. Adding a tracked path to a committed
+   A `sync.device-files` warning (or the matching `hint:` from `sync run`/`sync status`) means
+   Obsidian's per-device layout files are synced; preview `vulcan sync doctor [<wiki>] --fix
+   --dry-run`, then apply it with `--fix`. Sync never edits `.gitignore` on its own; setting a
+   vault up with `vault add`/`vault clone`/`sync clone` adds the entries unless
+   `--keep-device-files` is passed. Adding a tracked path to a committed
    `.gitignore` makes the next sync stop tracking it while every device keeps its copy. Do not
    reach for `git rm --cached`: sync captures the worktree through its own index, so the normal
    index has no effect on what it tracks.

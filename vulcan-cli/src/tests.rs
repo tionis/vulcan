@@ -2421,6 +2421,7 @@ fn parses_sync_clone_command() {
                 platform: Some(ClonePlatformArg::AndroidShared),
                 permissions_profile: None,
                 no_device_key: false,
+                keep_device_files: false,
                 login: false,
                 dry_run: true,
             },
@@ -3091,9 +3092,25 @@ fn parses_sync_doctor_command() {
                     live_ref: "refs/heads/__vulcan-sync/live".to_string(),
                 },
                 profile: None,
+                fix: false,
+                dry_run: false,
             },
         }
     );
+    let fix = Cli::try_parse_from(["vulcan", "sync", "doctor", "--fix", "--dry-run"])
+        .expect("sync doctor --fix should parse");
+    assert!(matches!(
+        fix.command,
+        Command::Sync {
+            command: SyncCommand::Doctor {
+                fix: true,
+                dry_run: true,
+                ..
+            },
+        }
+    ));
+    // A dry run only makes sense for the repairs.
+    assert!(Cli::try_parse_from(["vulcan", "sync", "doctor", "--dry-run"]).is_err());
 }
 
 #[test]
@@ -3665,6 +3682,7 @@ fn parses_vault_registry_commands() {
                 platform: ClonePlatformArg::AndroidShared,
                 permissions_profile: None,
                 no_device_key: false,
+                keep_device_files: false,
                 login: false,
                 dry_run: true,
             },
@@ -3701,6 +3719,7 @@ fn parses_vault_registry_commands() {
         "daily",
         "--git-dir",
         "/data/git/personal",
+        "--keep-device-files",
         "--dry-run",
     ])
     .expect("vault add should parse");
@@ -3717,6 +3736,7 @@ fn parses_vault_registry_commands() {
                 sync_backend: None,
                 no_sync: false,
                 no_device_key: false,
+                keep_device_files: true,
                 login: false,
                 dry_run: true,
             },

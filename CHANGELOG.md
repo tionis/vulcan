@@ -4,6 +4,14 @@
 
 ### Changed
 
+- Per-device Obsidian layout files no longer need a separate step. Setting a vault up for Git sync
+  (`vulcan vault add`, `vulcan vault clone`, `vulcan sync clone`) adds their `.gitignore` entries
+  when the vault has a `.obsidian` directory; `--keep-device-files` skips it. Sync itself still
+  never edits `.gitignore`: while a vault shares the files, `vulcan sync run` and
+  `vulcan sync status` print a hint and the report lists them in `device_files`, and
+  `vulcan sync doctor --fix [--dry-run]` adds the entries. The doctor reports `sync.device-files`
+  as info once the work tree ignores the files and only the next sync remains. The `.gitignore`
+  is now written with ordinary permissions instead of owner-only.
 - Sync reports and daemon wiki status now include this installation's `device_id`, and
   `vulcan sync status` prints it. When a sync has to bridge this device's remote backup because it
   holds history this checkout did not write, Vulcan now warns (CLI stderr, daemon log

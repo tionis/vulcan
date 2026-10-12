@@ -130,19 +130,27 @@ Do not place the detached Git directory in shared storage. Uninstalling Termux c
 
 Obsidian stores each device's open panes in `.obsidian/workspace.json` and
 `.obsidian/workspace-mobile.json`. Syncing them turns every pane change into a commit and spreads
-one device's layout to the others. Stop syncing them with:
+one device's layout to the others.
+
+Setting a vault up for Git sync with `vulcan vault add`, `vulcan vault clone`, or
+`vulcan sync clone` adds `.gitignore` entries for these files when the vault has a `.obsidian`
+directory, and says so in its output. Pass `--keep-device-files` to go on syncing them. Sync itself
+never edits the `.gitignore`: while a vault still shares the files, `vulcan sync run` and
+`vulcan sync status` print a hint, and `vulcan sync doctor` warns (`sync.device-files`). Repair an
+existing vault with:
 
 ```sh
-vulcan sync ignore-device-files --dry-run
-vulcan sync ignore-device-files
+vulcan sync doctor --fix --dry-run
+vulcan sync doctor --fix
 ```
 
-The command adds `.gitignore` entries for the files no shared `.gitignore` covers yet. The next sync
+`vulcan sync ignore-device-files [--dry-run]` does the same as a single step. Either adds entries
+only for the files no shared `.gitignore` covers yet, and running it on one device is enough: the
+`.gitignore` syncs to the others. The next sync
 publishes the change and stops tracking them, and every device keeps its own copy, including
 devices that were still editing the file. The same applies to any tracked path you add to a
 `.gitignore` yourself; only rules in committed `.gitignore` files count, not `info/exclude` or a
-global excludes file. Files added with `git add --force` despite an existing rule stay tracked.
-`vulcan sync doctor` warns (`sync.device-files`) while per-device files are synced. Devices still
+global excludes file. Files added with `git add --force` despite an existing rule stay tracked. Devices still
 on an older Vulcan version delete their copy instead; Obsidian recreates the layout.
 
 ## Conflicts and recovery

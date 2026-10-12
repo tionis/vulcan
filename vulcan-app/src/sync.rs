@@ -97,6 +97,10 @@ pub struct VaultSyncReport {
     pub conflict_record: Option<SyncConflictRecord>,
     pub operational_stats: SyncOperationalStats,
     pub state: VaultSyncStateReport,
+    /// Per-device Obsidian files this sync still shares because no
+    /// `.gitignore` ignores them; `vulcan sync doctor --fix` adds the entries.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub device_files: Vec<String>,
 }
 
 /// Explains a device backup that had to be bridged: the remote backup for
@@ -255,6 +259,50 @@ pub struct SyncDoctorReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub apply_marker: Option<SyncApplyMarker>,
     pub checks: Vec<SyncDoctorCheck>,
+    /// Repairs `vulcan sync doctor --fix` applied, or would apply in a dry run.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fixes: Vec<SyncDoctorFix>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SyncDoctorFix {
+    /// The check the repair addresses.
+    pub code: String,
+    pub dry_run: bool,
+    pub message: String,
+}
+
+/// The code of the check that `apply_sync_doctor_fixes` can repair.
+pub const SYNC_DOCTOR_DEVICE_FILES: &str = "sync.device-files";
+
+/// Applies the deterministic repairs for the warnings in `report` and records
+/// them in `report.fixes`. Today that is one: ignoring per-device Obsidian
+/// files, which edits the vault's `.gitignore` exactly as
+/// `vulcan sync ignore-device-files` does. Nothing else changes.
+pub fn apply_sync_doctor_fixes(
+    paths: &VaultPaths,
+    report: &mut SyncDoctorReport,
+    dry_run: bool,
+) -> Result<(), AppError> {
+    let needs_device_files = report.checks.iter().any(|check| {
+        check.code == SYNC_DOCTOR_DEVICE_FILES && check.severity == SyncDoctorSeverity::Warning
+    });
+    if needs_device_files {
+        let ignored = crate::sync_device_files::ignore_device_files(paths, dry_run)?;
+        if !ignored.added.is_empty() {
+            let verb = if dry_run { "would add" } else { "added" };
+            report.fixes.push(SyncDoctorFix {
+                code: SYNC_DOCTOR_DEVICE_FILES.to_string(),
+                dry_run,
+                message: format!(
+                    "{verb} {} to {}; the next sync stops sharing these files and every device keeps its own copy",
+                    ignored.added.join(", "),
+                    ignored.gitignore
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Inspects a Git-backed vault and its device-local recovery state without mutation.
@@ -567,6 +615,7 @@ fn initial_doctor_report(
         journal: None,
         apply_marker: None,
         checks: Vec::new(),
+        fixes: Vec::new(),
     }
 }
 
@@ -943,25 +992,34 @@ fn doctor_device_files(
     let Some(revision) = revision else {
         return;
     };
-    match crate::sync_device_files::tracked_device_files(
+    match crate::sync_device_files::shared_device_files(
         engine,
         repository,
         paths.vault_root(),
         &revision,
     ) {
-        Ok(tracked) if tracked.is_empty() => {}
-        Ok(tracked) => doctor_check(
+        Ok(shared) if !shared.unignored.is_empty() => doctor_check(
             report,
-            "sync.device-files",
+            SYNC_DOCTOR_DEVICE_FILES,
             SyncDoctorSeverity::Warning,
             format!(
-                "per-device Obsidian files are synced: {}; run `vulcan sync ignore-device-files` so each device keeps its own copy",
-                tracked.join(", ")
+                "per-device Obsidian files are synced: {}; run `vulcan sync doctor --fix` so each device keeps its own copy",
+                shared.unignored.join(", ")
             ),
         ),
+        Ok(shared) if !shared.pending.is_empty() => doctor_check(
+            report,
+            SYNC_DOCTOR_DEVICE_FILES,
+            SyncDoctorSeverity::Info,
+            format!(
+                "the .gitignore now ignores {}; the next sync stops sharing them",
+                shared.pending.join(", ")
+            ),
+        ),
+        Ok(_) => {}
         Err(error) => doctor_check(
             report,
-            "sync.device-files",
+            SYNC_DOCTOR_DEVICE_FILES,
             SyncDoctorSeverity::Info,
             format!("cannot inspect per-device files: {error}"),
         ),
@@ -1631,6 +1689,11 @@ fn sync_git_vault_cycle(
     );
     let operational_stats =
         sync_operational_stats(engine, &timings, &sync, conflict_record.as_ref());
+    let device_files = if profile == SyncContentProfile::Knowledge {
+        unignored_device_files(engine, paths, &sync)
+    } else {
+        Vec::new()
+    };
     Ok((
         VaultSyncReport {
             sync,
@@ -1645,9 +1708,41 @@ fn sync_git_vault_cycle(
                 recovered_from,
                 retained,
             },
+            device_files,
         },
         carried,
     ))
+}
+
+/// The per-device files this sync's capture still shares. Best effort: the
+/// answer only drives a hint, so an inspection error means no hint, and a
+/// vault without a `.obsidian` directory costs nothing.
+fn unignored_device_files(
+    engine: &dyn GitEngine,
+    paths: &VaultPaths,
+    sync: &vulcan_sync::GitSyncReport,
+) -> Vec<String> {
+    if !paths.vault_root().join(".obsidian").is_dir() {
+        return Vec::new();
+    }
+    // A preview captures nothing, so it reads what the remote shares; files
+    // the work tree already ignores leave with the next capture either way.
+    let Some(revision) = sync
+        .accepted
+        .as_ref()
+        .or(sync.local_snapshot.as_ref())
+        .or(sync.remote_before.as_ref())
+    else {
+        return Vec::new();
+    };
+    crate::sync_device_files::shared_device_files(
+        engine,
+        &sync.repository,
+        paths.vault_root(),
+        revision,
+    )
+    .map(|shared| shared.unignored)
+    .unwrap_or_default()
 }
 
 fn run_sync_backend_with_vault_lock(
@@ -6609,12 +6704,68 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         let check = device_files().expect("device-file warning");
         assert_eq!(check.severity, SyncDoctorSeverity::Warning);
         assert!(check.message.contains(".obsidian/workspace.json"));
-        assert!(check.message.contains("vulcan sync ignore-device-files"));
+        assert!(check.message.contains("vulcan sync doctor --fix"));
 
-        crate::sync_device_files::ignore_device_files(&paths, false).expect("ignore");
+        // A dry run of the repair names it and writes nothing.
+        let mut report =
+            doctor_git_vault_with_state_store(&paths, &GitSyncOptions::default(), &store);
+        apply_sync_doctor_fixes(&paths, &mut report, true).expect("dry-run fix");
+        assert_eq!(report.fixes.len(), 1);
+        assert!(report.fixes[0].dry_run);
+        assert!(report.fixes[0]
+            .message
+            .contains("/.obsidian/workspace.json"));
+        assert!(!vault.join(".gitignore").exists());
+
+        apply_sync_doctor_fixes(&paths, &mut report, false).expect("fix");
+        assert!(fs::read_to_string(vault.join(".gitignore"))
+            .expect("gitignore")
+            .contains("/.obsidian/workspace.json"));
+        // Until the next sync the file is still shared, and the doctor says
+        // so without asking for the repair again.
+        let pending = device_files().expect("pending note");
+        assert_eq!(pending.severity, SyncDoctorSeverity::Info);
+        assert!(pending.message.contains("next sync"));
+        let mut again =
+            doctor_git_vault_with_state_store(&paths, &GitSyncOptions::default(), &store);
+        apply_sync_doctor_fixes(&paths, &mut again, false).expect("nothing to fix");
+        assert!(again.fixes.is_empty());
+
         git(&repository, &["add", "--all"]);
         git(&repository, &["commit", "--quiet", "-m", "ignore"]);
+        git(
+            &repository,
+            &["rm", "--cached", "--quiet", "docs/.obsidian/workspace.json"],
+        );
+        git(&repository, &["commit", "--quiet", "-m", "untrack"]);
         assert_eq!(device_files(), None);
+    }
+
+    #[test]
+    fn sync_reports_shared_device_files_until_the_gitignore_covers_them() {
+        let fixture =
+            structured_sync_fixture(&[(".obsidian/workspace.json", "{}\n"), ("Home.md", "home\n")]);
+        let paths = VaultPaths::new(&fixture.writer);
+        let sync = || {
+            sync_git_vault_with_state_store(&paths, &GitSyncOptions::default(), &fixture.store)
+                .expect("sync")
+        };
+        assert_eq!(sync().device_files, [".obsidian/workspace.json"]);
+        // Sync only reports the files; it never edits the `.gitignore` itself.
+        assert!(!fixture.writer.join(".gitignore").exists());
+
+        crate::sync_device_files::ignore_device_files(&paths, false).expect("ignore");
+        assert!(sync().device_files.is_empty());
+        assert!(fixture.writer.join(".obsidian/workspace.json").is_file());
+        let reader = VaultPaths::new(&fixture.reader);
+        assert!(sync_git_vault_with_state_store(
+            &reader,
+            &GitSyncOptions::default(),
+            &fixture.store
+        )
+        .expect("reader sync")
+        .device_files
+        .is_empty());
     }
 
     #[test]

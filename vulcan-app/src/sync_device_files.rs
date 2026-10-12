@@ -75,7 +75,14 @@ pub fn ignore_device_files(
             contents.push_str(entry);
             contents.push('\n');
         }
-        crate::durable_file::replace(&gitignore, contents.as_bytes())?;
+        // A vault file, written like one: confined to the vault and with
+        // ordinary permissions, not the owner-only mode of private state.
+        vulcan_core::paths::secure_write_atomic(
+            paths.vault_root(),
+            std::path::Path::new(".gitignore"),
+            contents.as_bytes(),
+        )
+        .map_err(AppError::operation)?;
     }
     Ok(IgnoreDeviceFilesReport {
         gitignore: ".gitignore".to_string(),
@@ -83,6 +90,59 @@ pub fn ignore_device_files(
         already_ignored,
         dry_run,
     })
+}
+
+/// The setup step for a vault that is about to sync: adds the entries only
+/// to an Obsidian vault, that is one with a `.obsidian` directory. Returns
+/// `None` for any other vault.
+pub fn ignore_device_files_at_setup(
+    paths: &VaultPaths,
+    dry_run: bool,
+) -> Result<Option<IgnoreDeviceFilesReport>, AppError> {
+    if !paths.vault_root().join(".obsidian").is_dir() {
+        return Ok(None);
+    }
+    ignore_device_files(paths, dry_run).map(Some)
+}
+
+/// Per-device files a revision still shares, split by whether the work
+/// tree's `.gitignore` files already ignore them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SharedDeviceFiles {
+    /// Nothing ignores these yet; `vulcan sync doctor --fix` would.
+    pub(crate) unignored: Vec<String>,
+    /// The work tree already ignores these, so the next sync stops sharing them.
+    pub(crate) pending: Vec<String>,
+}
+
+pub(crate) fn shared_device_files(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    vault_root: &std::path::Path,
+    revision: &GitOid,
+) -> Result<SharedDeviceFiles, AppError> {
+    let tracked = tracked_device_files(engine, repository, vault_root, revision)?;
+    let Some(work_tree) = repository.work_tree.as_deref() else {
+        return Ok(SharedDeviceFiles {
+            unignored: tracked,
+            pending: Vec::new(),
+        });
+    };
+    let prefix = vault_path_prefix(repository, vault_root);
+    let candidates = tracked
+        .iter()
+        .map(|file| format!("{prefix}{file}"))
+        .collect::<Vec<_>>();
+    let ignored = worktree_ignores(work_tree, &candidates);
+    let mut shared = SharedDeviceFiles::default();
+    for (file, ignored) in tracked.into_iter().zip(ignored) {
+        if ignored {
+            shared.pending.push(file);
+        } else {
+            shared.unignored.push(file);
+        }
+    }
+    Ok(shared)
 }
 
 /// The per-device files `revision` tracks although its `.gitignore` files do
@@ -128,6 +188,40 @@ mod tests {
             .expect("UTF-8")
             .trim()
             .to_string()
+    }
+
+    #[test]
+    fn setup_ignores_device_files_only_in_an_obsidian_vault() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let root = temporary.path();
+        git(root, &["init", "--quiet"]);
+        let paths = VaultPaths::new(root);
+        assert_eq!(
+            ignore_device_files_at_setup(&paths, false).expect("plain vault"),
+            None
+        );
+        assert!(!root.join(".gitignore").exists());
+
+        fs::create_dir(root.join(".obsidian")).expect("obsidian dir");
+        let preview = ignore_device_files_at_setup(&paths, true)
+            .expect("preview")
+            .expect("obsidian vault");
+        assert_eq!(preview.added.len(), OBSIDIAN_DEVICE_FILES.len());
+        assert!(!root.join(".gitignore").exists());
+        ignore_device_files_at_setup(&paths, false).expect("apply");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(root.join(".gitignore"))
+                .expect("metadata")
+                .permissions()
+                .mode();
+            assert_ne!(mode & 0o044, 0, "a vault file stays readable: {mode:o}");
+        }
+        let contents = fs::read_to_string(root.join(".gitignore")).expect("gitignore");
+        for file in OBSIDIAN_DEVICE_FILES {
+            assert!(contents.contains(&format!("/{file}")));
+        }
     }
 
     #[test]

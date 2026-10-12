@@ -219,6 +219,7 @@ fn handle_sync_clone(cli: &Cli, command: &SyncCommand) -> Result<(), CliError> {
         platform,
         permissions_profile,
         no_device_key,
+        keep_device_files,
         login,
         dry_run,
     } = command
@@ -265,6 +266,7 @@ fn handle_sync_clone(cli: &Cli, command: &SyncCommand) -> Result<(), CliError> {
             platform,
             permissions_profile: permissions_profile.as_deref(),
             no_device_key: *no_device_key,
+            keep_device_files: *keep_device_files,
             login: *login,
             dry_run: *dry_run,
         },
@@ -511,7 +513,16 @@ fn handle_non_cycle_sync_command(
             wiki,
             target,
             profile,
-        } => run_sync_doctor(cli, paths, wiki.as_deref(), target, *profile),
+            fix,
+            dry_run,
+        } => run_sync_doctor(
+            cli,
+            paths,
+            wiki.as_deref(),
+            target,
+            *profile,
+            fix.then_some(*dry_run),
+        ),
         command @ SyncCommand::Conflicts { .. } => {
             handle_sync_conflicts_command(cli, paths, command)
         }
@@ -2703,6 +2714,7 @@ fn run_sync_doctor(
     wiki: Option<&str>,
     target: &crate::SyncTargetArgs,
     profile: Option<ManagedDirectoryProfileArg>,
+    fix_dry_run: Option<bool>,
 ) -> Result<(), CliError> {
     if wiki.is_some() && profile.is_some() {
         return Err(CliError::operation(
@@ -2747,13 +2759,17 @@ fn run_sync_doctor(
         .transpose()
         .map_err(CliError::operation)?
         .unwrap_or_else(GitPlatformProfile::native);
-    let report = doctor_git_vault_for_profile(
+    let mut report = doctor_git_vault_for_profile(
         &paths,
         &options,
         platform,
         profile,
         profile == SyncContentProfile::FilesOnly,
     );
+    if let Some(dry_run) = fix_dry_run {
+        vulcan_app::sync::apply_sync_doctor_fixes(&paths, &mut report, dry_run)
+            .map_err(CliError::operation)?;
+    }
     print_sync_doctor_report(cli.output, &report)
 }
 
@@ -3458,6 +3474,10 @@ fn print_sync_doctor_report(
         };
         println!("{severity}\t{}\t{}", check.code, check.message);
     }
+    for fix in &report.fixes {
+        let label = if fix.dry_run { "would fix" } else { "fixed" };
+        println!("{label}\t{}\t{}", fix.code, fix.message);
+    }
     Ok(())
 }
 
@@ -3605,6 +3625,9 @@ fn print_registered_sync_report(
             {
                 eprintln!("warning: {}: {warning}", item.wiki_id);
             }
+            if let Some(hint) = device_files_hint(&sync.device_files, Some(item.wiki_id.as_str())) {
+                eprintln!("hint: {}: {hint}", item.wiki_id);
+            }
         } else if let Some(error) = &item.error {
             println!("{}\terror\t{}: {error}", item.wiki_id, item.path.display());
         }
@@ -3637,7 +3660,7 @@ fn print_sync_report(
                     println!("{line}");
                 }
             }
-            print_device_lines(verbosity, &report.sync);
+            print_device_lines(verbosity, report);
             if verbosity.is_verbose() {
                 println!("Remote ref: {}", report.sync.refs.live);
                 if let Some(accepted) = &report.sync.accepted {
@@ -3798,9 +3821,11 @@ fn branch_preview_message(branch: Option<&GitBranchSync>) -> String {
     )
 }
 
-/// The device backup line, the device ID for previews and verbose runs, and
-/// a warning when this device's backup had to be bridged.
-fn print_device_lines(verbosity: Verbosity, sync: &vulcan_app::sync::GitSyncReport) {
+/// The device backup line, the device ID for previews and verbose runs, a
+/// warning when this device's backup had to be bridged, and a hint while
+/// per-device Obsidian files are still shared.
+fn print_device_lines(verbosity: Verbosity, report: &VaultSyncReport) {
+    let sync = &report.sync;
     if let Some(backup) = &sync.device_backup {
         println!(
             "Device backup: snapshot {} is reachable from {} at {} ({}).",
@@ -3816,6 +3841,23 @@ fn print_device_lines(verbosity: Verbosity, sync: &vulcan_app::sync::GitSyncRepo
     if let Some(warning) = vulcan_app::sync::device_backup_warning(sync.device_backup.as_ref()) {
         eprintln!("warning: {warning}");
     }
+    if let Some(hint) = device_files_hint(&report.device_files, None) {
+        eprintln!("hint: {hint}");
+    }
+}
+
+/// Names the per-device files a sync still shares and the command that
+/// stops it. Sync itself never edits `.gitignore`.
+fn device_files_hint(files: &[String], wiki: Option<&str>) -> Option<String> {
+    if files.is_empty() {
+        return None;
+    }
+    let target = wiki.map_or_else(String::new, |wiki| format!(" {wiki}"));
+    Some(format!(
+        "{} {} per-device and synced; run `vulcan sync doctor{target} --fix` so each device keeps its own copy",
+        files.join(", "),
+        if files.len() == 1 { "is" } else { "are" }
+    ))
 }
 
 const fn device_backup_outcome_label(outcome: GitDeviceBackupOutcome) -> &'static str {

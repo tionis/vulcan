@@ -552,6 +552,7 @@ Examples:
   vulcan sync conflicts
   vulcan sync conflicts <conflict-id>
   vulcan sync conflicts-archive --older-than-days 7 --dry-run
+  vulcan sync doctor --fix --dry-run
   vulcan sync ignore-device-files --dry-run
   vulcan sync devices list --wiki personal
   vulcan sync devices fetch <device-id> --wiki personal --dry-run
@@ -4785,6 +4786,11 @@ pub enum SyncCommand {
         no_device_key: bool,
         #[arg(
             long,
+            help = "Keep syncing Obsidian's per-device workspace files instead of adding them to the vault's .gitignore"
+        )]
+        keep_device_files: bool,
+        #[arg(
+            long,
             help = "Permit an interactive forge login when enrolling (otherwise only on a terminal when the forge allows it)"
         )]
         login: bool,
@@ -5306,6 +5312,13 @@ pub enum SyncCommand {
             help = "Managed-directory capability profile for direct paths"
         )]
         profile: Option<ManagedDirectoryProfileArg>,
+        #[arg(
+            long,
+            help = "Apply the deterministic repairs for the reported warnings (today: ignore per-device Obsidian files)"
+        )]
+        fix: bool,
+        #[arg(long, requires = "fix", help = "Report the repairs --fix would apply")]
+        dry_run: bool,
     },
     #[command(about = "Pause automatic sync for a registered wiki")]
     Pause {
@@ -5733,6 +5746,11 @@ pub enum VaultCommand {
         no_device_key: bool,
         #[arg(
             long,
+            help = "Keep syncing Obsidian's per-device workspace files instead of adding them to the vault's .gitignore"
+        )]
+        keep_device_files: bool,
+        #[arg(
+            long,
             help = "Permit an interactive forge login when enrolling (otherwise only on a terminal when the forge allows it)"
         )]
         login: bool,
@@ -5785,6 +5803,11 @@ pub enum VaultCommand {
             help = "Skip device-key enrollment (treat the transport policy as ambient) for this run"
         )]
         no_device_key: bool,
+        #[arg(
+            long,
+            help = "Keep syncing Obsidian's per-device workspace files instead of adding them to the vault's .gitignore"
+        )]
+        keep_device_files: bool,
         #[arg(
             long,
             help = "Permit an interactive forge login when enrolling (otherwise only on a terminal when the forge allows it)"

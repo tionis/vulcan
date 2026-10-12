@@ -4,7 +4,9 @@ use crate::{Cli, CliError, ClonePlatformArg, OutputFormat, VaultCommand};
 use serde::Serialize;
 use std::path::Path;
 use vulcan_app::sync::GitPlatformProfile;
+use vulcan_app::sync_device_files::{ignore_device_files_at_setup, IgnoreDeviceFilesReport};
 use vulcan_core::vault_discovery::VAULT_POINTER_FILE_NAME;
+use vulcan_core::VaultPaths;
 use vulcan_daemon::clone::{
     clone_registered_wiki_with_ssh_command, recover_registered_wiki_git, CloneWikiReport,
     CloneWikiRequest, RecoverWikiGitReport, RecoverWikiGitRequest,
@@ -22,10 +24,54 @@ struct VaultMutationReport<'a> {
     wiki: &'a WikiRegistration,
     #[serde(skip_serializing_if = "Option::is_none")]
     capabilities: Option<vulcan_daemon::registry::ManagedDirectoryCapabilities>,
+    #[serde(flatten)]
+    setup: &'a SetupSteps,
+}
+
+/// The steps that follow registering a vault for sync. None of them fails
+/// the add or clone; an error is reported next to the registration.
+#[derive(Debug, Default, Serialize)]
+struct SetupSteps {
     #[serde(skip_serializing_if = "Option::is_none")]
-    enroll: Option<&'a vulcan_app::vault_enroll::EnrollReport>,
+    enroll: Option<vulcan_app::vault_enroll::EnrollReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    enroll_error: Option<&'a str>,
+    enroll_error: Option<String>,
+    /// `.gitignore` entries for Obsidian's per-device files.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_files: Option<IgnoreDeviceFilesReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_files_error: Option<String>,
+}
+
+impl SetupSteps {
+    /// Ignores Obsidian's per-device files in a vault that is set up for Git
+    /// sync, unless `keep` asks to go on syncing them. Setting up sync is the
+    /// explicit moment for this; later syncs never edit the `.gitignore`.
+    fn ignore_device_files(&mut self, wiki: &WikiRegistration, keep: bool, dry_run: bool) {
+        if keep || wiki.sync_backend.as_deref() != Some("git") {
+            return;
+        }
+        match ignore_device_files_at_setup(&VaultPaths::new(&wiki.path), dry_run) {
+            Ok(report) => self.device_files = report,
+            Err(error) => self.device_files_error = Some(error.to_string()),
+        }
+    }
+
+    fn print(&self, wiki: &str) {
+        print_enrollment(self.enroll.as_ref(), self.enroll_error.as_deref(), wiki);
+        if let Some(report) = self.device_files.as_ref().filter(|r| !r.added.is_empty()) {
+            println!(
+                "{} {} to {} so each device keeps its own Obsidian layout (--keep-device-files skips this).",
+                if report.dry_run { "Would add" } else { "Added" },
+                report.added.join(", "),
+                report.gitignore
+            );
+        }
+        if let Some(error) = &self.device_files_error {
+            println!("Could not ignore per-device Obsidian files: {error}");
+            println!("Run `vulcan sync doctor {wiki} --fix` to retry.");
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -96,13 +142,27 @@ pub(crate) fn handle_vault_command(cli: &Cli, command: &VaultCommand) -> Result<
                     *dry_run,
                 )
                 .map_err(CliError::operation)?;
-            print_mutation(cli.output, "set", *dry_run, &registry, &wiki, None, None)
+            print_mutation(
+                cli.output,
+                "set",
+                *dry_run,
+                &registry,
+                &wiki,
+                &SetupSteps::default(),
+            )
         }
         VaultCommand::Remove { id, dry_run } => {
             let wiki = registry
                 .remove(&parse_id(id)?, *dry_run)
                 .map_err(CliError::operation)?;
-            print_mutation(cli.output, "remove", *dry_run, &registry, &wiki, None, None)
+            print_mutation(
+                cli.output,
+                "remove",
+                *dry_run,
+                &registry,
+                &wiki,
+                &SetupSteps::default(),
+            )
         }
     }
 }
@@ -138,6 +198,7 @@ fn handle_add(cli: &Cli, registry: &WikiRegistry, command: &VaultCommand) -> Res
         sync_backend,
         no_sync,
         no_device_key,
+        keep_device_files,
         login,
         dry_run,
     } = command
@@ -163,35 +224,26 @@ fn handle_add(cli: &Cli, registry: &WikiRegistry, command: &VaultCommand) -> Res
         .map_err(CliError::operation)?;
     // A registered Git vault is enrolled with the device key when policy
     // says so; this never fails the add.
-    let (enroll, enroll_error) =
-        if *dry_run || *no_device_key || wiki.sync_backend.as_deref() != Some("git") {
-            (None, None)
-        } else {
-            match crate::commands::enroll::enroll_registered(
-                cli,
-                &wiki,
-                &vulcan_app::vault_enroll::EnrollRequest {
-                    wiki: wiki.id.to_string(),
-                    remote: vulcan_app::sync::GitRemote::parse("origin")
-                        .map_err(CliError::operation)?,
-                    no_device_key: false,
-                    login: crate::commands::enroll::login_policy(*login),
-                    dry_run: false,
-                },
-            ) {
-                Ok(report) => (Some(report), None),
-                Err(error) => (None, Some(error.to_string())),
-            }
-        };
-    print_mutation(
-        cli.output,
-        "add",
-        *dry_run,
-        registry,
-        &wiki,
-        enroll.as_ref(),
-        enroll_error.as_deref(),
-    )
+    let mut setup = SetupSteps::default();
+    if !(*dry_run || *no_device_key || wiki.sync_backend.as_deref() != Some("git")) {
+        match crate::commands::enroll::enroll_registered(
+            cli,
+            &wiki,
+            &vulcan_app::vault_enroll::EnrollRequest {
+                wiki: wiki.id.to_string(),
+                remote: vulcan_app::sync::GitRemote::parse("origin")
+                    .map_err(CliError::operation)?,
+                no_device_key: false,
+                login: crate::commands::enroll::login_policy(*login),
+                dry_run: false,
+            },
+        ) {
+            Ok(report) => setup.enroll = Some(report),
+            Err(error) => setup.enroll_error = Some(error.to_string()),
+        }
+    }
+    setup.ignore_device_files(&wiki, *keep_device_files, *dry_run);
+    print_mutation(cli.output, "add", *dry_run, registry, &wiki, &setup)
 }
 
 fn handle_clone(
@@ -209,6 +261,7 @@ fn handle_clone(
         platform,
         permissions_profile,
         no_device_key,
+        keep_device_files,
         login,
         dry_run,
     } = command
@@ -242,12 +295,14 @@ fn handle_clone(
             },
             permissions_profile: permissions_profile.as_deref(),
             no_device_key: *no_device_key,
+            keep_device_files: *keep_device_files,
             login: *login,
             dry_run: *dry_run,
         },
     )
 }
 
+#[allow(clippy::struct_excessive_bools)] // Mirrors the clone command's flags.
 pub(crate) struct CloneCliRequest<'a> {
     pub(crate) id: WikiId,
     pub(crate) profile: ManagedDirectoryProfile,
@@ -259,6 +314,8 @@ pub(crate) struct CloneCliRequest<'a> {
     pub(crate) permissions_profile: Option<&'a str>,
     /// Treat the transport policy as ambient for this clone.
     pub(crate) no_device_key: bool,
+    /// Go on syncing Obsidian's per-device files.
+    pub(crate) keep_device_files: bool,
     pub(crate) login: bool,
     pub(crate) dry_run: bool,
 }
@@ -323,7 +380,7 @@ pub(crate) fn clone_wiki(
 
     // 3. Finish enrollment (bind, register) or report what is pending. A failure
     //    here never undoes the clone.
-    let (mut enroll, mut enroll_error) = (None, None);
+    let mut setup = SetupSteps::default();
     if !request.dry_run && !request.no_device_key {
         if let Some(wiki) = &report.wiki {
             match enroll_registered(
@@ -338,18 +395,16 @@ pub(crate) fn clone_wiki(
                     dry_run: false,
                 },
             ) {
-                Ok(done) => enroll = Some(done),
-                Err(error) => enroll_error = Some(error.to_string()),
+                Ok(done) => setup.enroll = Some(done),
+                Err(error) => setup.enroll_error = Some(error.to_string()),
             }
         }
     }
-    print_clone(
-        cli.output,
-        &report,
-        transport.as_ref(),
-        enroll.as_ref(),
-        enroll_error.as_deref(),
-    )
+    // 4. Ignore Obsidian's per-device files. A dry run has no checkout to inspect.
+    if let Some(wiki) = report.wiki.as_ref().filter(|_| !request.dry_run) {
+        setup.ignore_device_files(wiki, request.keep_device_files, false);
+    }
+    print_clone(cli.output, &report, transport.as_ref(), &setup)
 }
 
 #[derive(Serialize)]
@@ -358,10 +413,8 @@ struct CloneOutput<'a> {
     clone: &'a CloneWikiReport,
     #[serde(skip_serializing_if = "Option::is_none")]
     transport: Option<&'a vulcan_app::vault_enroll::CloneTransportReport>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    enroll: Option<&'a vulcan_app::vault_enroll::EnrollReport>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    enroll_error: Option<&'a str>,
+    #[serde(flatten)]
+    setup: &'a SetupSteps,
 }
 
 /// Human output for an enrollment that ran after a clone or add: quiet when
@@ -385,15 +438,13 @@ fn print_clone(
     output: OutputFormat,
     report: &CloneWikiReport,
     transport: Option<&vulcan_app::vault_enroll::CloneTransportReport>,
-    enroll: Option<&vulcan_app::vault_enroll::EnrollReport>,
-    enroll_error: Option<&str>,
+    setup: &SetupSteps,
 ) -> Result<(), CliError> {
     if output == OutputFormat::Json {
         return print_json(&CloneOutput {
             clone: report,
             transport,
-            enroll,
-            enroll_error,
+            setup,
         });
     }
     let verb = if report.dry_run {
@@ -435,11 +486,7 @@ fn print_clone(
             println!("  next: {next}");
         }
     }
-    print_enrollment(
-        enroll,
-        enroll_error,
-        &report.proposed_registration.id.to_string(),
-    );
+    setup.print(&report.proposed_registration.id.to_string());
     Ok(())
 }
 
@@ -526,8 +573,7 @@ fn print_mutation(
     dry_run: bool,
     registry: &WikiRegistry,
     wiki: &WikiRegistration,
-    enroll: Option<&vulcan_app::vault_enroll::EnrollReport>,
-    enroll_error: Option<&str>,
+    setup: &SetupSteps,
 ) -> Result<(), CliError> {
     match output {
         OutputFormat::Json => print_json(&VaultMutationReport {
@@ -537,14 +583,13 @@ fn print_mutation(
             wiki,
             capabilities: (wiki.profile == ManagedDirectoryProfile::FilesOnly)
                 .then(|| wiki.capabilities()),
-            enroll,
-            enroll_error,
+            setup,
         }),
         OutputFormat::Human | OutputFormat::Markdown => {
             let qualifier = if dry_run { "Would update" } else { "Updated" };
             println!("{qualifier} wiki `{}`: {}", wiki.id, wiki.path.display());
             print_work_tree(wiki);
-            print_enrollment(enroll, enroll_error, &wiki.id.to_string());
+            setup.print(&wiki.id.to_string());
             Ok(())
         }
     }
