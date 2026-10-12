@@ -720,7 +720,7 @@ fn moving_an_open_note_asks_the_editor_to_rename_it() {
 }
 
 #[test]
-fn move_commands_support_dry_runs_and_refuse_unsaved_buffers() {
+fn move_commands_support_dry_runs_and_rewrite_unsaved_buffers() {
     let dir = rename_vault();
     let (mut client, _) = Client::start(dir.path(), &editing_client());
     let dry_run = client.request(
@@ -733,19 +733,25 @@ fn move_commands_support_dry_runs_and_refuse_unsaved_buffers() {
     assert_eq!(dry_run["report"]["destination_path"], "Beta.md");
     assert!(dir.path().join("notes/Alpha.md").exists());
 
+    // An unsaved buffer is edited from its own text, not refused.
     client.open("Other.md", "Also [[Alpha]] (edited).\n");
-    let refused = client.request(
+    let moved = client.request(
         "workspace/executeCommand",
         json!({ "command": "vulcan.note.move", "arguments": [{
             "from": "notes/Alpha.md", "to": "Beta.md",
         }]}),
     );
-    assert_eq!(refused["data"]["kind"], "conflict");
-    assert!(refused["data"]["detail"]
-        .as_str()
-        .unwrap()
-        .contains("Other.md"));
-    assert!(dir.path().join("notes/Alpha.md").exists());
+    assert_eq!(moved["editor"], json!(["Other.md"]), "{moved}");
+    assert!(dir.path().join("Beta.md").exists());
+    let edits = applied_edits(&client);
+    let change = &edits[0][0];
+    assert_eq!(change["textDocument"]["uri"], client.uri("Other.md"));
+    assert_eq!(change["edits"][0]["newText"], "[[Beta]]");
+    // The file keeps its saved text until the editor saves the buffer.
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Other.md")).unwrap(),
+        "Also [[Alpha]].\n"
+    );
 }
 
 #[test]

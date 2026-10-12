@@ -19534,6 +19534,7 @@ fn skill_list_and_get_surface_bundled_skills() {
         .expect("refactoring skill should be installed");
     assert!(refactoring.contains("vulcan refactor folder-notes --dry-run"));
     assert!(refactoring.contains("renames from the editor"));
+    assert!(refactoring.contains("including unsaved text"));
     assert!(refactoring.contains("vulcan refactor split-note <source>"));
     assert!(refactoring.contains("preserves asset files in place"));
     assert!(refactoring.contains("--preserve-missing-fragments"));

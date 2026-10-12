@@ -1,7 +1,7 @@
 ---
 name: editor-integration
 description: Set up and troubleshoot Vulcan's language server for Neovim, Vim, Helix, Emacs, Zed, or another LSP client. Use when the user wants link navigation, backlinks, completion, or diagnostics in a terminal editor, or asks why their editor reports an unresolved or ambiguous link.
-version: 7
+version: 8
 tools:
   - describe
   - help
@@ -77,6 +77,6 @@ exits.
 - Editors render `dataviewjs` blocks in the strict sandbox for every vault; full evaluation
   follows `vulcan trust`. Only suggest `vulcan trust` for a vault the user knows, since trust also
   enables its startup scripts and plugins.
-- A rename in the editor refuses while an affected buffer has unsaved changes; save or discard
-  them first rather than editing files behind the editor.
+- Editor renames work with unsaved buffers: each one is rewritten from its own text. Only moving a
+  note that itself has unsaved changes is refused; save it first.
 - Do not start `vulcan lsp` interactively; it speaks JSON-RPC on stdout and waits for a client.

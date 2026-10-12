@@ -1,7 +1,7 @@
 ---
 name: refactoring
 description: Safely rename aliases, headings, block refs, properties, and tags, move notes, split large heading-structured documents into wiki trees, and convert configured folder-note layouts across the vault. Use when a structural change must preserve resolved links, assets, or shared folder-note configuration.
-version: 2
+version: 3
 tools:
   - refactor_rename_alias
   - refactor_rename_heading
@@ -47,7 +47,7 @@ Use this skill for coordinated vault-wide rewrites where link safety matters.
 - Alias, heading, block-ref, property, and tag refactors likewise refuse a pending ordinary-write journal before planning or changing files, including dry runs. Recover or explicitly reconcile the interrupted batch before retrying the structural edit.
 - `split-note` preview and apply also refuse a pending ordinary-write journal before reading source spans or publishing generated notes. Resolve that journal first; the split's own multi-file publication is not yet crash-atomic.
 - Folder-note conversion checks for a pending ordinary-write journal before planning paths or shared config changes; each move rechecks through the core move workflow. Recover or explicitly reconcile the batch before previewing or applying a conversion.
-- When the user works in an editor with `vulcan lsp`, renames from the editor (rename on a link, a heading, or a block id, or the `vulcan.note.move` command) edit open buffers through the editor and refuse while affected buffers have unsaved changes. A CLI `move` or `refactor` rewrites files on disk instead, which an editor holding unsaved changes to an affected note will then conflict with. Ask the user to save first, or suggest the editor rename.
+- When the user works in an editor with `vulcan lsp`, renames from the editor (rename on a link, a heading, or a block id, or the `vulcan.note.move` command) edit open buffers through the editor, including unsaved text. A CLI `move` or `refactor` rewrites files on disk instead, which an editor holding unsaved changes to an affected note will then conflict with. Suggest the editor rename, or ask the user to save first.
 - Large refactors should be reviewed before commit, especially when many backlinks change.
 - If the task is really metadata cleanup, use `update`, `unset`, or `merge-tags` instead of forcing it through a rewrite.
 

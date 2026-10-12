@@ -108,7 +108,7 @@ editor's file watching instead, or `"off"` to index only saved files.
 - Unsaved buffer text never reaches the cache; other Vulcan commands see a
   note's changes once it is saved.
 - Renames and moves write closed files as one journaled batch and edit open
-  buffers through the editor; a buffer with unsaved changes blocks them.
+  buffers, including unsaved text, through the editor.
 - `dataviewjs` blocks run in the strict sandbox (computation and index reads;
   no file access, network, or writes) in every vault. Vaults you trust with
   `vulcan trust` get full evaluation, which still never writes.

@@ -163,9 +163,13 @@ never by operation type:
   provides the stale-input guarantee that preimage checks provide on disk. Edits are minimal: one
   per changed line when the line count is unchanged (the usual case for link rewrites), otherwise
   one edit spanning the changed region.
-- **Unsaved buffers are refused.** Plans are computed from files on disk, so an affected open
-  buffer whose text differs from its file answers `conflict` ("save or discard unsaved changes
-  first") and nothing changes. Re-planning against buffer text is a later refinement.
+- **Unsaved buffers are rewritten from their own text.** Plans are computed from files on disk.
+  An open buffer whose text matches its file gets the planned edits; one with unsaved changes gets
+  edits recomputed from its text (links to the moved note get their new target with the same link
+  formatter as the CLI move; links to a renamed heading or block get the new subpath; the heading
+  or block label itself is renamed in its own note), which also covers links that exist only in
+  unsaved text. Its file is left to the editor's next save. Only a moved note with unsaved changes
+  is refused with `conflict`, since the editor must rename its file.
 - **Closed file.** A journaled on-disk batch through
   `apply_ordinary_write_batch_with_renames_and_preflight`, preimage-checked, on the writer thread.
 

@@ -67,6 +67,30 @@ pub struct EditorRenameTarget {
     pub placeholder: String,
 }
 
+/// What a plan rewrites, to recompute edits for unsaved buffers.
+enum Rewrite {
+    Move {
+        from: String,
+        to: String,
+    },
+    Heading {
+        note: String,
+        old: String,
+        new: String,
+    },
+    Block {
+        note: String,
+        old: String,
+        new: String,
+    },
+}
+
+/// `text` with the last occurrence of `old` replaced by `new`.
+fn replace_last(text: &str, old: &str, new: &str) -> Option<String> {
+    let at = text.rfind(old)?;
+    Some(format!("{}{new}{}", &text[..at], &text[at + old.len()..]))
+}
+
 /// The thing a cursor renames.
 enum Renamable {
     Note { path: String, name: String },
@@ -121,7 +145,18 @@ impl EditorSession {
                     new_name,
                 )
                 .map_err(refactor_error)?;
-                self.split_plan("rename_heading", to_json(&plan.report), plan.changes, None)
+                let rewrite = Rewrite::Heading {
+                    note: path,
+                    old: heading,
+                    new: new_name.to_string(),
+                };
+                self.split_plan(
+                    "rename_heading",
+                    to_json(&plan.report),
+                    plan.changes,
+                    None,
+                    &rewrite,
+                )
             }
             Renamable::Block { path, block } => {
                 let plan = vulcan_core::refactor::plan_rename_block_ref(
@@ -131,11 +166,17 @@ impl EditorSession {
                     new_name,
                 )
                 .map_err(refactor_error)?;
+                let rewrite = Rewrite::Block {
+                    note: path,
+                    old: block,
+                    new: new_name.to_string(),
+                };
                 self.split_plan(
                     "rename_block_ref",
                     to_json(&plan.report),
                     plan.changes,
                     None,
+                    &rewrite,
                 )
             }
         }
@@ -163,7 +204,11 @@ impl EditorSession {
                 format!("{} already exists", moved.to),
             ));
         }
-        self.split_plan("move", report, plan.changes, Some(moved))
+        let rewrite = Rewrite::Move {
+            from: moved.from.clone(),
+            to: moved.to.clone(),
+        };
+        self.split_plan("move", report, plan.changes, Some(moved), &rewrite)
     }
 
     /// Plan the link rewrites for files the editor is about to rename
@@ -288,12 +333,19 @@ impl EditorSession {
     }
 
     /// Route planned changes to the editor or the disk.
+    ///
+    /// Plans come from disk. An open buffer whose text matches its file gets
+    /// the planned edits; one with unsaved changes gets edits recomputed from
+    /// its own text by `rewrite`, which also catches links that exist only in
+    /// unsaved text. Only a moved note with unsaved changes is refused, since
+    /// the editor must rename its file.
     fn split_plan(
         &self,
         action: &'static str,
         report: serde_json::Value,
         changes: Vec<OrdinaryWriteChange>,
         moved: Option<EditorMove>,
+        rewrite: &Rewrite,
     ) -> Result<EditorEditPlan, AppError> {
         let mut plan = EditorEditPlan {
             action,
@@ -330,27 +382,30 @@ impl EditorSession {
             }
             match self.document(&change.path) {
                 Some(document) => {
-                    if Some(&document.text) != change.before.as_ref() {
-                        dirty.push(change.path.clone());
-                        continue;
+                    let edits = if Some(&document.text) == change.before.as_ref() {
+                        text_edits(self, &document.text, &change.after.unwrap_or_default())
+                    } else {
+                        self.buffer_rewrite(&change.path, document, rewrite)?
+                    };
+                    if !edits.is_empty() {
+                        plan.open.push(EditorDocumentEdit {
+                            edits,
+                            path: change.path,
+                            version: document.version,
+                        });
                     }
-                    let after = change.after.unwrap_or_default();
-                    plan.open.push(EditorDocumentEdit {
-                        edits: text_edits(self, &document.text, &after),
-                        path: change.path,
-                        version: document.version,
-                    });
                 }
                 None => plan.disk.push(change),
             }
         }
+        self.rewrite_untouched_unsaved(&mut plan, moved.as_ref(), rewrite)?;
         if !dirty.is_empty() {
             dirty.sort();
             dirty.dedup();
             return Err(AppError::operation_with_code(
                 "conflict",
                 format!(
-                    "save or discard unsaved changes first: {}",
+                    "save or discard unsaved changes to the moved note first: {}",
                     dirty.join(", ")
                 ),
             ));
@@ -372,6 +427,144 @@ impl EditorSession {
             }
         }
         Ok(plan)
+    }
+
+    /// Rewrite unsaved buffers the disk plan did not touch: they may link
+    /// to the target in text that is not saved yet.
+    fn rewrite_untouched_unsaved(
+        &self,
+        plan: &mut EditorEditPlan,
+        moved: Option<&EditorMove>,
+        rewrite: &Rewrite,
+    ) -> Result<(), AppError> {
+        let planned = plan
+            .open
+            .iter()
+            .map(|document| document.path.clone())
+            .chain(moved.map(|moved| moved.from.clone()))
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut unsaved = self
+            .open_paths()
+            .filter(|path| !planned.contains(*path))
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        unsaved.sort();
+        for path in unsaved {
+            let document = self.document(&path).expect("listed as open");
+            let on_disk = std::fs::read_to_string(self.paths().vault_root().join(&path)).ok();
+            if on_disk.as_deref() == Some(document.text.as_str()) {
+                continue;
+            }
+            let edits = self.buffer_rewrite(&path, document, rewrite)?;
+            if !edits.is_empty() {
+                plan.open.push(EditorDocumentEdit {
+                    path,
+                    version: document.version,
+                    edits,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Edits for an unsaved buffer, computed from its own text: links to the
+    /// moved note get their new target, links to the renamed heading or block
+    /// their new subpath, and the renamed heading or block label itself is
+    /// renamed when this is its note.
+    fn buffer_rewrite(
+        &self,
+        path: &str,
+        document: &super::OpenDocument,
+        rewrite: &Rewrite,
+    ) -> Result<Vec<EditorTextEdit>, AppError> {
+        let resolver = self.resolver()?;
+        let mode = self.config().link_resolution;
+        let text = &document.text;
+        let mut replacements = Vec::<(std::ops::Range<usize>, String)>::new();
+        let documents_after = match rewrite {
+            Rewrite::Move { from, to } => resolver
+                .documents()
+                .iter()
+                .map(|document| {
+                    if &document.path == from {
+                        to.clone()
+                    } else {
+                        document.path.clone()
+                    }
+                })
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        for link in &document.parsed.links {
+            if matches!(link.link_kind, LinkKind::External) {
+                continue;
+            }
+            let Some(target) = resolver.resolve(path, link, mode).resolved_target_id else {
+                continue;
+            };
+            let range = vulcan_core::editor::link_range(link);
+            let replacement = match rewrite {
+                Rewrite::Move { from, to } if &target == from => {
+                    Some(vulcan_core::move_rewrite::rewrite_link_destination(
+                        link,
+                        path,
+                        Some(to),
+                        link.target_heading.as_deref(),
+                        link.target_block.as_deref(),
+                        &documents_after,
+                        mode,
+                        self.config().link_style,
+                    ))
+                }
+                Rewrite::Heading { note, old, new } if &target == note => link
+                    .target_heading
+                    .as_deref()
+                    .filter(|heading| super::navigation::same_heading(heading, old))
+                    .and_then(|_| {
+                        replace_last(&link.raw_text, &format!("#{old}"), &format!("#{new}"))
+                    }),
+                Rewrite::Block { note, old, new } if &target == note => link
+                    .target_block
+                    .as_deref()
+                    .filter(|block| block.eq_ignore_ascii_case(old))
+                    .and_then(|_| {
+                        replace_last(&link.raw_text, &format!("#^{old}"), &format!("#^{new}"))
+                    }),
+                _ => None,
+            };
+            if let Some(replacement) = replacement.filter(|new| new != &link.raw_text) {
+                replacements.push((range, replacement));
+            }
+        }
+        match rewrite {
+            Rewrite::Heading { note, old, new } if note == path => {
+                for heading in &document.parsed.headings {
+                    if super::navigation::same_heading(&heading.text, old) {
+                        let line = vulcan_core::editor::heading_range(text, heading);
+                        if let Some(at) = text[line.clone()].rfind(&heading.text) {
+                            let start = line.start + at;
+                            replacements.push((start..start + heading.text.len(), new.clone()));
+                        }
+                    }
+                }
+            }
+            Rewrite::Block { note, old, new } if note == path => {
+                for block in &document.parsed.block_refs {
+                    if block.block_id_text.eq_ignore_ascii_case(old) {
+                        let label = vulcan_core::editor::block_id_range(text, block);
+                        replacements.push((label, format!("^{new}")));
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(replacements
+            .into_iter()
+            .map(|(range, new_text)| EditorTextEdit {
+                range: self.range(text, &document.line_index, range),
+                new_text,
+            })
+            .collect())
     }
 
     /// Publish the plan's closed-file changes as one journaled batch and
@@ -653,14 +846,75 @@ mod tests {
     }
 
     #[test]
-    fn unsaved_buffers_refuse_the_plan() {
-        let (_dir, mut session) = session();
-        session.open("Other.md", 2, "Also [[Alpha]] (unsaved).\n".into());
-        let error = session
+    fn unsaved_buffers_are_rewritten_from_their_own_text() {
+        let (dir, mut session) = session();
+        // Other.md has an unsaved extra link; Draft.md exists only in the
+        // editor and links the note too.
+        session.open(
+            "Other.md",
+            2,
+            "Also [[Alpha]] and [[Alpha#Status]] (unsaved).\n".into(),
+        );
+        session.open("Draft.md", 1, "Draft about [[Alpha]].\n".into());
+        let plan = session
             .plan_rename("Home.md", position_of(HOME, "[[Alpha]]", 3), "Beta")
+            .unwrap();
+        let edited = |path: &str, text: &str| {
+            let document = plan
+                .open
+                .iter()
+                .find(|document| document.path == path)
+                .unwrap_or_else(|| panic!("{path} is edited"));
+            apply(text, &document.edits)
+        };
+        assert_eq!(
+            edited(
+                "Other.md",
+                "Also [[Alpha]] and [[Alpha#Status]] (unsaved).\n"
+            ),
+            "Also [[Beta]] and [[Beta#Status]] (unsaved).\n"
+        );
+        assert_eq!(
+            edited("Draft.md", "Draft about [[Alpha]].\n"),
+            "Draft about [[Beta]].\n"
+        );
+        // The unsaved buffer's file is not part of the disk batch.
+        assert!(plan.disk.iter().all(|change| change.path != "Other.md"));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("Other.md")).unwrap(),
+            "Also [[Alpha]].\n"
+        );
+    }
+
+    #[test]
+    fn unsaved_heading_renames_rename_the_heading_in_its_buffer() {
+        let (_dir, mut session) = session();
+        let unsaved = "# Alpha\n\n## Status\n\nGreen, edited ^blk\n\nSee [[#Status]].\n";
+        session.open("notes/Alpha.md", 3, unsaved.into());
+        let plan = session
+            .plan_rename("Home.md", position_of(HOME, "Status]]", 1), "Progress")
+            .unwrap();
+        let alpha = plan
+            .open
+            .iter()
+            .find(|document| document.path == "notes/Alpha.md")
+            .expect("the heading's note is edited");
+        assert_eq!(alpha.version, 3);
+        assert_eq!(
+            apply(unsaved, &alpha.edits),
+            "# Alpha\n\n## Progress\n\nGreen, edited ^blk\n\nSee [[#Progress]].\n"
+        );
+    }
+
+    #[test]
+    fn a_moved_note_with_unsaved_changes_is_refused() {
+        let (_dir, mut session) = session();
+        session.open("notes/Alpha.md", 2, "# Alpha (unsaved)\n".into());
+        let error = session
+            .plan_note_move("notes/Alpha.md", "Alpha.md")
             .unwrap_err();
         assert_eq!(error.code(), Some("conflict"));
-        assert!(error.to_string().contains("Other.md"));
+        assert!(error.to_string().contains("notes/Alpha.md"));
     }
 
     #[test]
