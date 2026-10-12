@@ -179,7 +179,9 @@ const fn is_false(value: &bool) -> bool {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonConfig {
-    pub device_id: Ulid,
+    // Configs written before key-derived device identities carry an unused
+    // `device_id` ULID; unknown fields are ignored and dropped on save. The
+    // device is named by its key (`vulcan device show`).
     #[serde(default = "default_bind")]
     pub bind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -205,7 +207,6 @@ fn default_bind() -> String {
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
-            device_id: Ulid::new(),
             bind: default_bind(),
             resolution_agent: None,
             semantic_agent: None,
@@ -2473,6 +2474,8 @@ profile = "files_only"
         assert_eq!(config.notifications.network_failure_minutes, 15);
         let serialized = toml::to_string(&config).expect("serialize default config");
         assert!(!serialized.contains("notifications"));
+        // The unused legacy device ULID is dropped on the next save.
+        assert!(!serialized.contains("device_id"));
     }
 
     #[test]
