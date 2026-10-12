@@ -257,6 +257,13 @@ fn initialize_negotiates_encoding_and_advertises_the_vulcan_protocol() {
         &json!({ "general": { "positionEncodings": ["utf-8", "utf-16"] } }),
     );
     assert_eq!(result["capabilities"]["positionEncoding"], "utf-8");
+
+    // Neovim sends an empty Lua table as `[]`.
+    let (_client, result) = Client::start_with(dir.path(), &json!({}), &json!([]));
+    assert_eq!(
+        result["capabilities"]["experimental"]["vulcan"]["protocolVersion"],
+        1
+    );
 }
 
 #[test]
@@ -739,6 +746,26 @@ fn move_commands_support_dry_runs_and_refuse_unsaved_buffers() {
         .unwrap()
         .contains("Other.md"));
     assert!(dir.path().join("notes/Alpha.md").exists());
+}
+
+#[test]
+fn neovim_capabilities_count_as_versioned_edit_support() {
+    // Neovim lists resource operations but not `documentChanges`.
+    let dir = rename_vault();
+    let (mut client, _) = Client::start(
+        dir.path(),
+        &json!({ "workspace": {
+            "applyEdit": true,
+            "workspaceEdit": { "resourceOperations": ["rename", "create", "delete"] },
+        }}),
+    );
+    client.open("Home.md", LINKER);
+    let _ = client.diagnostics("Home.md");
+    assert_eq!(
+        rename_at(&mut client, 2, 7, "Beta"),
+        json!({ "documentChanges": [] })
+    );
+    assert!(dir.path().join("notes/Beta.md").exists());
 }
 
 #[test]

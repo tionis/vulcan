@@ -112,8 +112,17 @@ impl From<&lsp::ClientCapabilities> for EditSupport {
         let workspace = capabilities.workspace.as_ref();
         let edit = workspace.and_then(|workspace| workspace.workspace_edit.as_ref());
         Self {
+            // Resource operations only exist inside `documentChanges`, so a
+            // client listing them supports it even without saying so
+            // (Neovim does this).
             versioned_edits: workspace.and_then(|workspace| workspace.apply_edit) == Some(true)
-                && edit.and_then(|edit| edit.document_changes) == Some(true),
+                && edit.is_some_and(|edit| {
+                    edit.document_changes == Some(true)
+                        || edit
+                            .resource_operations
+                            .as_ref()
+                            .is_some_and(|operations| !operations.is_empty())
+                }),
             rename_files: edit
                 .and_then(|edit| edit.resource_operations.as_ref())
                 .is_some_and(|operations| operations.contains(&lsp::ResourceOperationKind::Rename)),

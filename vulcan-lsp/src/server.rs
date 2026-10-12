@@ -114,9 +114,12 @@ pub fn run_stdio(options: &LspOptions) -> Result<(), LspError> {
 pub fn run(connection: &Connection, options: &LspOptions) -> Result<(), LspError> {
     let (id, params) = connection.initialize_start()?;
     let params: lsp::InitializeParams = serde_json::from_value(params)?;
+    // Clients encode "no options" variously: absent, `null`, or an empty
+    // array (Neovim's empty Lua table).
     let initialization = params
         .initialization_options
         .clone()
+        .filter(Value::is_object)
         .map(serde_json::from_value::<InitializationOptions>)
         .transpose()?
         .unwrap_or_default();
