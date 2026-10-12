@@ -6377,7 +6377,16 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
     let tree = run_git_stdout(&reader, &["rev-parse", "HEAD^{tree}"]);
     let foreign = run_git_stdout(
         &reader,
-        &["commit-tree", tree.trim(), "-m", "another installation"],
+        &[
+            "-c",
+            "user.name=Vulcan Test",
+            "-c",
+            "user.email=vulcan@example.invalid",
+            "commit-tree",
+            tree.trim(),
+            "-m",
+            "another installation",
+        ],
     );
     run_git_ok(
         &reader,

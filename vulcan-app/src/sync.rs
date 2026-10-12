@@ -3858,6 +3858,12 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
                 .arg("-C")
                 .arg(&fixture.reader)
                 .args([
+                    "-c",
+                    "user.name=Vulcan Test",
+                    "-c",
+                    "user.email=vulcan@example.invalid",
+                ])
+                .args([
                     "for-each-ref",
                     "--format=%(refname)",
                     "refs/vulcan/conflicts",
@@ -3974,6 +3980,12 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             let output = std::process::Command::new("git")
                 .arg("-C")
                 .arg(&fixture.reader)
+                .args([
+                    "-c",
+                    "user.name=Vulcan Test",
+                    "-c",
+                    "user.email=vulcan@example.invalid",
+                ])
                 .args(["ls-remote", "origin"])
                 .output()
                 .expect("ls-remote");
@@ -4005,6 +4017,12 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             let output = std::process::Command::new("git")
                 .arg("-C")
                 .arg(&fixture.reader)
+                .args([
+                    "-c",
+                    "user.name=Vulcan Test",
+                    "-c",
+                    "user.email=vulcan@example.invalid",
+                ])
                 .args(args)
                 .output()
                 .expect("git");
@@ -4100,6 +4118,12 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             let output = std::process::Command::new("git")
                 .arg("-C")
                 .arg(&fixture.reader)
+                .args([
+                    "-c",
+                    "user.name=Vulcan Test",
+                    "-c",
+                    "user.email=vulcan@example.invalid",
+                ])
                 .args(args)
                 .output()
                 .expect("git");
@@ -4152,6 +4176,12 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             let output = std::process::Command::new("git")
                 .arg("-C")
                 .arg(&fixture.reader)
+                .args([
+                    "-c",
+                    "user.name=Vulcan Test",
+                    "-c",
+                    "user.email=vulcan@example.invalid",
+                ])
                 .args(args)
                 .output()
                 .expect("git");
@@ -4173,6 +4203,12 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             let mut child = std::process::Command::new("git")
                 .arg("-C")
                 .arg(&fixture.reader)
+                .args([
+                    "-c",
+                    "user.name=Vulcan Test",
+                    "-c",
+                    "user.email=vulcan@example.invalid",
+                ])
                 .args(["mktree"])
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
@@ -4451,6 +4487,12 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             let output = std::process::Command::new("git")
                 .arg("-C")
                 .arg(&fixture.reader)
+                .args([
+                    "-c",
+                    "user.name=Vulcan Test",
+                    "-c",
+                    "user.email=vulcan@example.invalid",
+                ])
                 .args(args)
                 .output()
                 .expect("git");
@@ -4484,6 +4526,12 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             let mut child = std::process::Command::new("git")
                 .arg("-C")
                 .arg(&fixture.reader)
+                .args([
+                    "-c",
+                    "user.name=Vulcan Test",
+                    "-c",
+                    "user.email=vulcan@example.invalid",
+                ])
                 .arg("mktree")
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
