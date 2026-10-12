@@ -35,7 +35,11 @@ impl ResponseFailure {
 type Answer = Result<Value, ResponseFailure>;
 
 /// Answer one request from `session`.
-pub(crate) fn handle(session: &EditorSession, request: Request) -> Response {
+pub(crate) fn handle(
+    session: &EditorSession,
+    request: Request,
+    dataview_js: vulcan_core::DataviewJsRenderPolicy,
+) -> Response {
     let id = request.id.clone();
     let result = match request.method.as_str() {
         request::GotoDefinition::METHOD => params(request).and_then(|p| definition(session, &p)),
@@ -54,6 +58,7 @@ pub(crate) fn handle(session: &EditorSession, request: Request) -> Response {
         request::CodeActionRequest::METHOD => {
             params(request).and_then(|p| code_actions(session, &p))
         }
+        "vulcan/render" => params(request).and_then(|p| render(session, &p, dataview_js)),
         method => Err(ResponseFailure::method_not_found(method)),
     };
     respond(id, result)
@@ -153,6 +158,47 @@ fn prepare_rename(session: &EditorSession, params: &lsp::TextDocumentPositionPar
             range: convert::lsp_range(target.range),
             placeholder: target.placeholder,
         })
+    }))
+}
+
+/// Parameters of `vulcan/render`.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RenderParams {
+    text_document: lsp::TextDocumentIdentifier,
+    range: Option<lsp::Range>,
+    dataview_js: Option<vulcan_core::DataviewJsRenderPolicy>,
+}
+
+fn render(
+    session: &EditorSession,
+    params: &RenderParams,
+    default_dataview_js: vulcan_core::DataviewJsRenderPolicy,
+) -> Answer {
+    let Some(path) = vault_path(session, &params.text_document.uri) else {
+        return Ok(Value::Null);
+    };
+    let Some(rendered) = session.render(
+        &path,
+        params.range.map(convert::range),
+        params.dataview_js.unwrap_or(default_dataview_js),
+    )?
+    else {
+        return Ok(Value::Null);
+    };
+    Ok(serde_json::json!({
+        "regions": rendered
+            .regions
+            .into_iter()
+            .map(|region| serde_json::json!({
+                "range": convert::lsp_range(region.range),
+                "kind": region.kind,
+                "source": region.source,
+                "markdown": region.markdown,
+            }))
+            .collect::<Vec<_>>(),
+        "diagnostics": rendered.diagnostics,
+        "dataviewJs": rendered.dataview_js,
     }))
 }
 

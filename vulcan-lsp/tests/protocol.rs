@@ -30,9 +30,18 @@ impl Client {
     }
 
     fn start_with(root: &Path, capabilities: &Value, options: &Value) -> (Self, Value) {
+        Self::start_full(root, capabilities, options, LspOptions::default())
+    }
+
+    fn start_full(
+        root: &Path,
+        capabilities: &Value,
+        options: &Value,
+        lsp_options: LspOptions,
+    ) -> (Self, Value) {
         let (server, client) = Connection::memory();
         let handle = std::thread::spawn(move || {
-            vulcan_lsp::run(&server, &LspOptions::default()).unwrap();
+            vulcan_lsp::run(&server, &lsp_options).unwrap();
         });
         let mut client = Self {
             connection: client,
@@ -884,4 +893,141 @@ fn toggling_a_task_edits_the_open_buffer_and_inserts_the_next_occurrence() {
         }]}),
     );
     assert_eq!(closed["data"]["kind"], "not_found");
+}
+
+const DASHBOARD: &str = "---\nstatus: draft\n---\nStatus: `= this.status`\n\n```dataviewjs\ndv.paragraph(\"ran\")\n```\n\n```tasks\nnot done\n```\n";
+
+#[test]
+fn render_returns_evaluated_regions_with_dataview_js_clamped() {
+    let dir = vault(&[
+        ("Dashboard.md", DASHBOARD),
+        ("Todo.md", "- [ ] Open item\n"),
+    ]);
+    let (mut client, _) = Client::start(dir.path(), &json!({}));
+    client.open("Dashboard.md", DASHBOARD);
+    let _ = client.diagnostics("Dashboard.md");
+    let document = json!({ "uri": client.uri("Dashboard.md") });
+
+    let rendered = client.request("vulcan/render", json!({ "textDocument": document }));
+    assert_eq!(rendered["dataviewJs"], "off");
+    let regions = rendered["regions"].as_array().unwrap();
+    let sources = regions
+        .iter()
+        .map(|region| region["source"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(sources, vec!["inline", "notice", "tasks"]);
+    assert_eq!(regions[0]["markdown"], "draft");
+    assert_eq!(regions[0]["kind"], "inline");
+    assert_eq!(
+        regions[0]["range"]["start"],
+        json!({ "line": 3, "character": 8 })
+    );
+    assert!(regions[2]["markdown"]
+        .as_str()
+        .unwrap()
+        .contains("Open item"));
+
+    // `on` needs device-local consent; without it the strict sandbox runs.
+    let rendered = client.request(
+        "vulcan/render",
+        json!({ "textDocument": document, "dataviewJs": "on" }),
+    );
+    assert_eq!(rendered["dataviewJs"], "static");
+}
+
+#[test]
+fn scan_periodic_and_template_commands() {
+    let dir = vault(&[("Note.md", "# Note\n\nbody\n")]);
+    std::fs::create_dir_all(dir.path().join(".vulcan/templates")).unwrap();
+    std::fs::write(dir.path().join(".vulcan/templates/Sig.md"), "-- {{title}}").unwrap();
+    std::fs::write(
+        dir.path().join(".vulcan/config.toml"),
+        "[periodic.daily]\nfolder = \"Journal\"\nformat = \"YYYY-MM-DD\"\n",
+    )
+    .unwrap();
+    let mut capabilities = editing_client();
+    capabilities["window"] = json!({ "showDocument": { "support": true } });
+    let (mut client, _) = Client::start(dir.path(), &capabilities);
+
+    let scanned = client.request(
+        "workspace/executeCommand",
+        json!({ "command": "vulcan.scan", "arguments": [{ "full": true }] }),
+    );
+    assert_eq!(scanned["summary"]["mode"], "full");
+
+    let opened = client.request(
+        "workspace/executeCommand",
+        json!({ "command": "vulcan.periodic.open", "arguments": [{ "date": "2026-10-13" }] }),
+    );
+    assert_eq!(opened["report"]["path"], "Journal/2026-10-13.md");
+    assert_eq!(opened["report"]["created"], true);
+    assert!(dir.path().join("Journal/2026-10-13.md").is_file());
+    assert!(client.server_requests.iter().any(|request| {
+        request.method == "window/showDocument"
+            && request.params["uri"] == client.uri("Journal/2026-10-13.md")
+    }));
+
+    client.open("Note.md", "# Note\n\nbody\n");
+    let _ = client.diagnostics("Note.md");
+    let inserted = client.request(
+        "workspace/executeCommand",
+        json!({ "command": "vulcan.template.insert", "arguments": [{
+            "path": client.uri("Note.md"),
+            "template": "Sig",
+            "position": { "line": 2, "character": 4 },
+        }]}),
+    );
+    assert_eq!(inserted["action"], "template_insert");
+    let edits = applied_edits(&client);
+    let new_text = edits[0][0]["edits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|edit| edit["newText"].as_str().unwrap())
+        .collect::<String>();
+    assert!(new_text.contains("-- Note"), "{new_text}");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Note.md")).unwrap(),
+        "# Note\n\nbody\n"
+    );
+}
+
+#[test]
+fn permission_profiles_limit_what_the_editor_can_change() {
+    let dir = vault(&[
+        ("Projects/Plan.md", "- [ ] Ship\n"),
+        ("Private/Diary.md", "- [ ] Secret\n"),
+    ]);
+    std::fs::write(
+        dir.path().join(".vulcan/config.toml"),
+        "[permissions.profiles.projects]\nread = \"all\"\nwrite = { allow = [\"folder:Projects/**\"] }\nindex = \"deny\"\n",
+    )
+    .unwrap();
+    let (mut client, _) = Client::start_full(
+        dir.path(),
+        &editing_client(),
+        &Value::Null,
+        LspOptions {
+            vault: None,
+            permissions: Some("projects".to_string()),
+        },
+    );
+    let toggle = |client: &mut Client, path: &str| {
+        client.request(
+            "workspace/executeCommand",
+            json!({ "command": "vulcan.task.toggle", "arguments": [{
+                "path": path, "line": 0, "dryRun": true,
+            }]}),
+        )
+    };
+    assert_eq!(toggle(&mut client, "Projects/Plan.md")["dryRun"], true);
+    assert_eq!(
+        toggle(&mut client, "Private/Diary.md")["data"]["kind"],
+        "permission_denied"
+    );
+    let scan = client.request(
+        "workspace/executeCommand",
+        json!({ "command": "vulcan.scan", "arguments": [{}] }),
+    );
+    assert_eq!(scan["data"]["kind"], "permission_denied");
 }

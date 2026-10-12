@@ -239,16 +239,23 @@ on disk and in the editor.
 batches follow `[git]` config, but the LSP defaults `autoCommit` to `false` (the `--no-commit`
 analog). Users can opt in through `initializationOptions.autoCommit`.
 
-**Permissions.** `vulcan lsp --permissions <profile>` resolves a permission profile, and the
-resulting guard is passed through every workflow, including `EvaluatedMarkdownOptions.guard`.
-`executeCommand` uses the same app workflows as CLI and MCP, so profile path grants are enforced
-there rather than in the LSP.
+**Permissions.** `vulcan lsp --permissions <profile>` (the global flag) runs the session under a
+permission profile. Every planned rename, move, toggle, creation, and template insertion is checked
+before it is shown or applied: each path it reads or writes must be readable and writable, because
+dry-run reports quote what they read. `vulcan/render` reads only what the profile grants
+(`EvaluatedMarkdownOptions.guard`), `vulcan.scan` needs the `index` grant, and periodic and
+template rendering use the profile. Navigation, completion, and diagnostics do not yet filter by
+the profile's read grant; that remains open work. The startup and on-save index refresh keeps the
+cache usable regardless of `index`, as the CLI's automatic refresh does.
 
-**DataviewJS and code execution.** `vulcan/render` defaults to `DataviewJsRenderPolicy::Off`.
-`Static` requires `initializationOptions.dataviewJs = "static"`. `On` is honored only when the
-device-local `.vulcan/config.local.toml` enables it, because opening an untrusted vault in an
-editor must not run `dataviewjs`. The configured `JsRuntimeSandbox` tier still applies underneath.
-Template insertion follows the existing template trust rules.
+**DataviewJS and code execution.** `vulcan/render` uses `initializationOptions.dataviewJs`, or a
+request's `dataviewJs`, defaulting to `off`. A client may ask for `static` (the strict, deterministic
+sandbox). `on` is honored only when the device-local `.vulcan/config.local.toml` sets
+`[editor] dataview_js = "on"`, and otherwise falls back to `static`; a local `"off"` disables it
+entirely. The shared `dataview.render_dataview_js` setting is deliberately ignored here: it syncs
+with the vault, so it is not this device's consent. The configured `JsRuntimeSandbox` tier still
+applies underneath. Template insertion renders with template mutations disabled and follows the
+existing template trust rules.
 
 ## Capabilities
 
@@ -309,7 +316,7 @@ fields do not.
 
 | Method | Params | Result |
 | --- | --- | --- |
-| `vulcan/render` | `{ textDocument, range?, dataviewJs? }` | `{ markdown, evaluated, diagnostics, regions: [{ range, markdown }] }`. Top-level fields mirror `vulcan render --output json`; `regions` is new. MVP renders Dataview and Tasks blocks only. |
+| `vulcan/render` | `{ textDocument, range?, dataviewJs? }` | `{ regions: [{ range, kind, source, markdown }], diagnostics, dataviewJs }`: every inline expression, `dataview`/`dataviewjs`/`tasks` block, and `.base` embed intersecting `range` (or the whole document), evaluated against the open buffer. `kind` is `inline` or `block`; `source` is `inline`, `dataview`, `dataviewjs`, `tasks`, `base`, or `notice` (disabled or failed regions); `markdown` is the result as `vulcan render` would splice it in; `dataviewJs` is the policy actually used. Clients choose which regions to show. |
 | `vulcan/outline` | `{ textDocument }` | `NoteOutline`, exactly as `vulcan note outline --output json` |
 | `vulcan/backlinks` | `{ textDocument }` | `BacklinksReport`, exactly as `vulcan note backlinks --output json` (keeps `context`, `matched_by`) |
 | `vulcan/status` | `{}` | `{ cache: "fresh" \| "stale" \| "indexing", lastScan, backlinkCount?, daemon: "attached" \| "absent", watcher: "lease" \| "polling" \| "client" \| "off" }` |
@@ -324,9 +331,9 @@ Errors use LSP `ResponseError` with `data: { kind, detail }`, reusing the compan
   `permissions` profile, `dataviewJs` ceiling, `autoCommit`, `watcher` (`own` | `client` | `off`),
   `diagnostics` (`onChange` | `onSave`), `completion.linkStyle`.
 - **Vault semantics** stay in `.vulcan/config.toml` and the device-local `.vulcan/config.local.toml`
-  (higher precedence). A new `[editor]` section holds defaults the LSP reads, such as
-  `dataview_js` and `diagnose_unsupported_syntax`. Settings that enable execution follow the
-  existing trust rule: untrusted shared executable configuration is ignored.
+  (higher precedence). The device-local `[editor] dataview_js` setting is the consent for `on`
+  `DataviewJS` rendering and is read only from `config.local.toml`. Further `[editor]` defaults
+  (such as `diagnose_unsupported_syntax`) are not implemented yet.
 - **Vault discovery.** The MVP runs one process per vault; Neovim already starts one client per
   `root_dir`. Root markers are `.vulcan/`, `.vulcan.toml`, and `.obsidian/`. The server resolves the
   folder with `discover_vault_root`, so 9.39 repository pointers and MkDocs layouts work unchanged.

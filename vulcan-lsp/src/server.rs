@@ -46,6 +46,8 @@ pub struct LspOptions {
     /// An explicitly named vault, overriding discovery from the client's
     /// workspace.
     pub vault: Option<PathBuf>,
+    /// The permission profile every read and write runs under.
+    pub permissions: Option<String>,
 }
 
 /// A failure that ends the server.
@@ -92,6 +94,10 @@ struct InitializationOptions {
     vault: Option<PathBuf>,
     #[serde(default)]
     watcher: WatcherMode,
+    /// The `DataviewJS` policy `vulcan/render` uses unless a request asks
+    /// for another; `on` still needs device-local consent.
+    #[serde(default)]
+    dataview_js: vulcan_core::DataviewJsRenderPolicy,
 }
 
 /// Serve LSP over stdin and stdout until the client exits.
@@ -116,7 +122,12 @@ pub fn run(connection: &Connection, options: &LspOptions) -> Result<(), LspError
         .unwrap_or_default();
     let (encoding, encoding_kind) = convert::negotiate_encoding(&params.capabilities);
     let vault_root = vault_root(options, initialization.vault.clone(), &params)?;
-    let session = EditorSession::new(VaultPaths::new(&vault_root), encoding);
+    let mut session = EditorSession::new(VaultPaths::new(&vault_root), encoding);
+    if let Some(profile) = options.permissions.as_deref() {
+        session
+            .set_permission_profile(profile)
+            .map_err(|error| LspError(error.to_string()))?;
+    }
 
     let result = lsp::InitializeResult {
         capabilities: capabilities(encoding_kind, &session),
@@ -129,6 +140,7 @@ pub fn run(connection: &Connection, options: &LspOptions) -> Result<(), LspError
 
     let client = ClientFeatures::from(&params.capabilities);
     let mut server = Server::start(connection, session, initialization.watcher, client);
+    server.dataview_js = initialization.dataview_js;
     let outcome = server.serve();
     server.stop();
     outcome
@@ -350,6 +362,8 @@ struct Server<'c> {
     stop_watching: Arc<AtomicBool>,
     _lease: Option<EditorWatchLease>,
     channel: Arc<ClientChannel>,
+    /// Default `DataviewJS` policy for `vulcan/render`.
+    dataview_js: vulcan_core::DataviewJsRenderPolicy,
 }
 
 impl<'c> Server<'c> {
@@ -435,6 +449,7 @@ impl<'c> Server<'c> {
             stop_watching,
             _lease: lease,
             channel,
+            dataview_js: vulcan_core::DataviewJsRenderPolicy::Off,
         };
         server.begin_startup();
         server
@@ -578,6 +593,7 @@ impl<'c> Server<'c> {
         let cancelled = Arc::new(AtomicBool::new(false));
         lock(&self.in_flight).insert(id.clone(), Arc::clone(&cancelled));
         let session = self.session.clone();
+        let dataview_js = self.dataview_js;
         let sender = self.connection.sender.clone();
         let in_flight = Arc::clone(&self.in_flight);
         let index_epoch = Arc::clone(&self.index_epoch);
@@ -586,7 +602,7 @@ impl<'c> Server<'c> {
             let response = if cancelled.load(Ordering::SeqCst) {
                 cancelled_response(id.clone())
             } else {
-                let response = handlers::handle(&session, request);
+                let response = handlers::handle(&session, request, dataview_js);
                 if cancelled.load(Ordering::SeqCst) {
                     cancelled_response(id.clone())
                 } else if index_epoch.load(Ordering::SeqCst) != epoch {

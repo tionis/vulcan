@@ -9,12 +9,15 @@
 //! these typed results into their own wire format.
 
 mod actions;
+mod commands;
 mod completion;
 mod diagnostics;
 mod edits;
 mod navigation;
+mod render;
 
 pub use actions::{EditorAction, EditorActionKind, EditorCodeAction};
+pub use commands::EditorTemplatePlacement;
 pub use completion::{EditorCompletion, EditorCompletionItem, EditorCompletionKind};
 pub use diagnostics::{EditorDiagnostic, EditorDiagnosticSeverity};
 pub use edits::{
@@ -22,6 +25,7 @@ pub use edits::{
     EditorTextEdit,
 };
 pub use navigation::{EditorHover, EditorSymbol, EditorWorkspaceSymbol};
+pub use render::{effective_dataview_js, local_dataview_js, EditorRender, EditorRenderRegion};
 
 use crate::AppError;
 use std::collections::HashMap;
@@ -105,6 +109,8 @@ pub struct EditorSession {
     /// Advances whenever an open document's identity may have changed.
     overlay_generation: u64,
     resolver: Arc<Mutex<Option<ResolverState>>>,
+    /// The permission profile reads and writes run under, if one was chosen.
+    permissions: Option<Arc<vulcan_core::ProfilePermissionGuard>>,
 }
 
 impl EditorSession {
@@ -118,6 +124,7 @@ impl EditorSession {
             documents: HashMap::new(),
             overlay_generation: 0,
             resolver: Arc::new(Mutex::new(None)),
+            permissions: None,
         }
     }
 
@@ -134,6 +141,55 @@ impl EditorSession {
     #[must_use]
     pub fn encoding(&self) -> PositionEncoding {
         self.encoding
+    }
+
+    /// Run under the named permission profile: rendering reads only what it
+    /// grants, and every planned write is checked against it.
+    pub fn set_permission_profile(&mut self, profile: &str) -> Result<(), AppError> {
+        let selection = vulcan_core::resolve_permission_profile(&self.paths, Some(profile))
+            .map_err(|error| AppError::operation_with_code("permission_denied", error))?;
+        self.permissions = Some(Arc::new(vulcan_core::ProfilePermissionGuard::new(
+            &self.paths,
+            selection,
+        )));
+        Ok(())
+    }
+
+    pub(crate) fn guard(&self) -> Option<&vulcan_core::ProfilePermissionGuard> {
+        self.permissions.as_deref()
+    }
+
+    pub(crate) fn permission_profile(&self) -> Option<&str> {
+        self.permissions
+            .as_deref()
+            .map(|guard| guard.selection().name.as_str())
+    }
+
+    /// Refuse a plan that reads or writes a path the permission profile
+    /// does not grant. Call it before showing or applying the plan.
+    pub fn authorize_plan(&self, plan: &EditorEditPlan) -> Result<(), AppError> {
+        use vulcan_core::PermissionGuard as _;
+        let Some(guard) = self.guard() else {
+            return Ok(());
+        };
+        let renamed = plan
+            .editor_rename
+            .iter()
+            .flat_map(|rename| [&rename.from, &rename.to]);
+        for path in plan
+            .disk
+            .iter()
+            .map(|change| &change.path)
+            .chain(plan.open.iter().map(|document| &document.path))
+            .chain(renamed)
+        {
+            // A plan's reports quote what it read, so reading counts too.
+            guard
+                .check_read_path(path)
+                .and_then(|()| guard.check_write_path(path))
+                .map_err(|error| AppError::operation_with_code("permission_denied", error))?;
+        }
+        Ok(())
     }
 
     /// Reload the vault configuration and re-parse open documents.
@@ -238,6 +294,27 @@ impl EditorSession {
             return Ok(None);
         }
         let summary = crate::scan::refresh_cache_incrementally(&self.paths)?;
+        self.invalidate_cache();
+        Ok(Some(summary))
+    }
+
+    /// Rescan the vault on request (`full` rebuilds every document),
+    /// subject to the permission profile's `index` grant.
+    pub fn rescan(&self, full: bool) -> Result<Option<vulcan_core::ScanSummary>, AppError> {
+        use vulcan_core::PermissionGuard as _;
+        if let Some(guard) = self.guard() {
+            guard
+                .check_index()
+                .map_err(|error| AppError::operation_with_code("permission_denied", error))?;
+        }
+        if !full {
+            return self.refresh_index();
+        }
+        if !self.paths.vulcan_dir().is_dir() {
+            return Ok(None);
+        }
+        let summary = vulcan_core::scan_vault(&self.paths, vulcan_core::ScanMode::Full)
+            .map_err(AppError::operation)?;
         self.invalidate_cache();
         Ok(Some(summary))
     }
@@ -565,6 +642,40 @@ mod tests {
         assert_eq!(summary.deleted, 0, "{summary:?}");
         assert!(vulcan_core::query_backlinks(session.paths(), "Old.md").is_err());
         assert!(vulcan_core::query_backlinks(session.paths(), "New.md").is_ok());
+    }
+
+    #[test]
+    fn permission_profiles_limit_writes_and_reads() {
+        let (dir, mut session) = vault(&[
+            ("Projects/Plan.md", "- [ ] Ship\n"),
+            ("Private/Diary.md", "- [ ] Secret\n"),
+        ]);
+        std::fs::write(
+            dir.path().join(".vulcan/config.toml"),
+            "[permissions.profiles.projects]\nread = { allow = [\"folder:Projects/**\"] }\nwrite = { allow = [\"folder:Projects/**\"] }\n",
+        )
+        .unwrap();
+        assert!(session.set_permission_profile("missing").is_err());
+        session.set_permission_profile("projects").unwrap();
+
+        let allowed = session
+            .plan_task_toggle("Projects/Plan.md", 0, "2026-10-13")
+            .unwrap();
+        session.authorize_plan(&allowed).unwrap();
+        let denied = session
+            .plan_task_toggle("Private/Diary.md", 0, "2026-10-13")
+            .unwrap();
+        let error = session.authorize_plan(&denied).unwrap_err();
+        assert_eq!(error.code(), Some("permission_denied"));
+
+        let error = session
+            .render(
+                "Private/Diary.md",
+                None,
+                vulcan_core::DataviewJsRenderPolicy::Off,
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), Some("permission_denied"));
     }
 
     #[test]

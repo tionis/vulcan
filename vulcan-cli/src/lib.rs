@@ -4886,8 +4886,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
     // workspace unless one is named, so it skips the shared auto-refresh.
     if let Command::Lsp = cli.command {
         let vault = cli.vault.as_deref().map(resolve_vault_root).transpose()?;
-        return vulcan_lsp::run_stdio(&vulcan_lsp::LspOptions { vault })
-            .map_err(CliError::operation);
+        return vulcan_lsp::run_stdio(&vulcan_lsp::LspOptions {
+            vault,
+            permissions: cli.permissions.clone(),
+        })
+        .map_err(CliError::operation);
     }
 
     let paths = VaultPaths::new(vault_discovery.root.clone());

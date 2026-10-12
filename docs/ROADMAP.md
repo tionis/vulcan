@@ -8360,8 +8360,8 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Add `LineIndex` to `vulcan-core` with byte ↔ line/column conversion for UTF-8, UTF-16, and UTF-32, plus a CJK/emoji test fixture
 - [x] Add "semantic element at byte offset" lookup over `ParsedDocument` (links, embeds, tags, headings, block ids, inline fields, property keys); verify frontmatter-origin link offsets are document-absolute
 - [x] Add overlay-aware link resolution: cache identities with open-buffer overlays replacing them, plus `overlay:<uri>` documents for unsaved new buffers
-- [ ] Expose dynamic-region evaluation with byte ranges as a public core API
-- [~] Add `vulcan-app::editor` (`EditorSession`, `completion`, `diagnostics`, `navigation`, `edits`, `render`) with no LSP types — session overlay, navigation (definition, references, hover, symbols), completion, diagnostics, and `edits` (rename and move planning) landed; `render` remains
+- [x] Expose dynamic-region evaluation with byte ranges as a public core API (`EvaluatedMarkdownRenderer::render_regions`)
+- [x] Add `vulcan-app::editor` (`EditorSession`, `completion`, `diagnostics`, `navigation`, `edits`, `render`) with no LSP types — session overlay, navigation, completion, diagnostics, `edits`, and `render` landed
 - [~] Move checkbox and task toggling out of `vulcan-cli/src/commands/note.rs` into a plan-only `vulcan-app` workflow (text in, replacement and report out), including recurrence; rebuild `tasks complete` on it — Tasks-style toggling with next-occurrence insertion lives in `vulcan_core::tasks` and `EditorSession::plan_task_toggle`, and inline `tasks complete` is rebuilt on it; the generic `note checkbox` state command still lives in the CLI
 - [x] Add plan-only variants of `rename_heading` and `rename_block_ref` that return `OrdinaryWriteChange` batches
 - [ ] Rebuild shell completion candidates (`collect_complete_candidates`) on `editor::completion`
@@ -8379,10 +8379,10 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Mutation contract: open files as versioned `TextDocumentEdit`s (minimal per-line edits), closed files as a journaled preimage-checked batch; disk first, then `workspace/applyEdit`, with a compensating inverse batch on rejection and the specified failure reports; affected unsaved buffers are refused
 - [x] Moves with `moved: { from, to }` results (closed notes moved by Vulcan in the batch, open notes renamed by the editor via `RenameFile` and indexed with a hint); `prepareRename` and `rename` on link targets, headings, and block ids (through links or in place); `vulcan.note.move` with `dryRun`; `willRenameFiles` with closed-file rewrites published after `didRenameFiles`
 - [x] Code actions: create note from unresolved link, disambiguate, convert link style, toggle task (computed eagerly; they are cheap, so `codeAction/resolve` is unnecessary); `dryRun` on every `vulcan.*` command
-- [~] `executeCommand`: `vulcan.note.create`, `vulcan.note.move`, and `vulcan.task.toggle` done; `vulcan.scan`, `vulcan.periodic.open`, and `vulcan.template.insert` remain
-- [ ] Custom protocol v1: `experimental.vulcan` advertisement, `vulcan/render` (Dataview and Tasks blocks), `vulcan/outline`, `vulcan/backlinks`, `vulcan/status`, `vulcan/indexChanged`
-- [ ] Safety defaults: DataviewJS off unless enabled in `config.local.toml`; permission profile guard on every workflow; `autoCommit` defaults to false
-- [ ] `[editor]` config section with default and override tests
+- [x] `executeCommand`: `vulcan.scan`, `vulcan.note.create`, `vulcan.note.move`, `vulcan.task.toggle`, `vulcan.periodic.open` (creates the note from its template when missing and shows it), and `vulcan.template.insert` (append, prepend, or at a position; template mutations disabled)
+- [~] Custom protocol v1: `experimental.vulcan` advertisement, `vulcan/render` (inline expressions, Dataview/Tasks blocks, and `.base` embeds as regions), `vulcan/status`, and `vulcan/indexChanged` done; `vulcan/outline` and `vulcan/backlinks` remain
+- [~] Safety defaults: DataviewJS off by default, `on` only with device-local `[editor] dataview_js = "on"`; `--permissions` checks every planned read and write, guards render, and gates `vulcan.scan` on `index`; the LSP never auto-commits. Read filtering for navigation, completion, and diagnostics remains
+- [~] `[editor]` config section with default and override tests — device-local `dataview_js` consent done; other defaults remain
 - [ ] Protocol-level tests against fixture vaults: snapshots, CLI JSON parity, move roundtrip, open/closed split, failure paths, overlay leaves `cache.db` unchanged, encoding, concurrent processes, DataviewJS not executed by default
 - [ ] Add a `vulcan lsp` row to the unified-hosting inventory as a client-owned stdio transport
 

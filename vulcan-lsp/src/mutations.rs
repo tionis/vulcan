@@ -17,16 +17,21 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use vulcan_app::editor::{inverse_changes, EditorEditPlan, EditorMove, EditorSession};
+use vulcan_app::editor::{
+    inverse_changes, EditorEditPlan, EditorMove, EditorSession, EditorTemplatePlacement,
+};
 
 /// How long the server waits for the client to apply an edit.
 const APPLY_EDIT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Commands served through `workspace/executeCommand`.
 pub(crate) const COMMANDS: &[&str] = &[
+    "vulcan.scan",
     "vulcan.note.move",
     "vulcan.note.create",
     "vulcan.task.toggle",
+    "vulcan.periodic.open",
+    "vulcan.template.insert",
 ];
 
 /// Server-to-client requests whose responses someone awaits.
@@ -182,6 +187,7 @@ fn rename(
         convert::position(position.position),
         &params.new_name,
     )?;
+    session.authorize_plan(&plan)?;
     execute(context, session, &plan)?;
     // Everything was applied through `workspace/applyEdit`; the client has
     // nothing left to apply.
@@ -204,6 +210,9 @@ fn will_rename(
         })
         .collect::<Vec<_>>();
     let plans = session.plan_client_renames(&renames)?;
+    for plan in &plans {
+        session.authorize_plan(plan)?;
+    }
     let mut changes = Vec::new();
     for (rename, plan) in renames.iter().zip(plans) {
         changes.extend(document_changes(session, &plan)?);
@@ -236,8 +245,30 @@ fn execute_command(
                 .unwrap_or(value)
         })
     };
+    if command == "vulcan.scan" {
+        let full = argument["full"].as_bool() == Some(true);
+        let summary = session.rescan(full)?;
+        return Ok(json!({ "action": "scan", "full": full, "summary": summary }));
+    }
     let plan = match command {
         "vulcan.note.move" => session.plan_note_move(&document("from")?, &text("to")?)?,
+        "vulcan.periodic.open" => session.plan_periodic_open(
+            argument["period"].as_str().unwrap_or("daily"),
+            argument["date"].as_str(),
+        )?,
+        "vulcan.template.insert" => {
+            let placement = match (&argument["position"], argument["mode"].as_str()) {
+                (position, _) if position.is_object() => {
+                    let position = serde_json::from_value::<lsp::Position>(position.clone())
+                        .map_err(|error| invalid(error.to_string()))?;
+                    EditorTemplatePlacement::At(convert::position(position))
+                }
+                (_, Some("prepend")) => EditorTemplatePlacement::Prepend,
+                (_, None | Some("append")) => EditorTemplatePlacement::Append,
+                (_, Some(mode)) => return Err(invalid(format!("unknown insert mode {mode}"))),
+            };
+            session.plan_template_insert(&document("path")?, &text("template")?, placement)?
+        }
         "vulcan.note.create" => session.plan_note_create(&text("path")?)?,
         "vulcan.task.toggle" => {
             let line = argument["line"]
@@ -252,16 +283,18 @@ fn execute_command(
         }
         command => return Err(invalid(format!("unknown command {command}"))),
     };
+    session.authorize_plan(&plan)?;
     if argument["dryRun"].as_bool() == Some(true) {
         return Ok(report(&plan, true));
     }
     execute(context, session, &plan)?;
-    if command == "vulcan.note.create" && context.support.show_document {
-        if let Some(uri) = plan
-            .disk
-            .first()
-            .and_then(|change| handlers::uri(session, &change.path))
-        {
+    let shown = match command {
+        "vulcan.note.create" => plan.disk.first().map(|change| change.path.clone()),
+        "vulcan.periodic.open" => plan.report["path"].as_str().map(str::to_string),
+        _ => None,
+    };
+    if context.support.show_document {
+        if let Some(uri) = shown.and_then(|path| handlers::uri(session, &path)) {
             context.client.send_request(
                 "window/showDocument",
                 json!({ "uri": uri.to_string(), "takeFocus": true }),
@@ -406,6 +439,8 @@ fn label(plan: &EditorEditPlan) -> String {
             "rename_block_ref" => "Rename block id".to_string(),
             "toggle_task" => "Toggle task".to_string(),
             "create_note" => "Create note".to_string(),
+            "periodic_open" => "Create periodic note".to_string(),
+            "template_insert" => "Insert template".to_string(),
             action => action.to_string(),
         },
     }

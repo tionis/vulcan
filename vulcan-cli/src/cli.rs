@@ -1216,7 +1216,8 @@ Vault:
 Features:
   definition, references (backlinks), hover previews, completion of links, headings, block ids,
   tags, and frontmatter keys, diagnostics for open buffers, document and workspace symbols, and
-  link-safe renames of notes, headings, and block ids (plus the vulcan.note.move command).
+  link-safe renames of notes, headings, and block ids, code actions, task toggling, periodic
+  notes, template insertion, and evaluated query regions through vulcan/render.
   Unsaved buffers are an in-memory overlay; the cache is only refreshed from saved files.
 
 Spec: docs/specs/editor-integration.md

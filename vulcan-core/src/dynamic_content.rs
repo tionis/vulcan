@@ -663,6 +663,30 @@ pub struct EvaluatedMarkdown {
     pub diagnostics: Vec<RenderDiagnostic>,
 }
 
+/// One evaluated dynamic region of a note, for editors that show results
+/// next to the source instead of replacing it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EvaluatedRegion {
+    /// Byte range of the region in the note source.
+    pub start: usize,
+    pub end: usize,
+    /// `inline` for inline expressions, `block` for query blocks and embeds.
+    pub kind: &'static str,
+    /// What the region is: `inline`, `dataview`, `dataviewjs`, `tasks`,
+    /// `base`, or `notice` for disabled and failed regions.
+    pub source: &'static str,
+    /// The evaluated result as Markdown.
+    pub markdown: String,
+}
+
+/// Every evaluated region of one note, in source order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EvaluatedRegions {
+    pub regions: Vec<EvaluatedRegion>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<RenderDiagnostic>,
+}
+
 /// Holds the vault context so several notes can be rendered cheaply. The
 /// note index loads on the first note that has dynamic content, so notes
 /// without any never pay for it.
@@ -711,6 +735,84 @@ impl EvaluatedMarkdownRenderer {
             "a render must use the guard the renderer was loaded with"
         );
         self.render_nested(source, options.source_path, options, &mut Vec::new())
+    }
+
+    /// Evaluate `source`'s inline expressions, query blocks, and `.base`
+    /// embeds without splicing them in: each region keeps its source range.
+    /// Note embeds and inline fields, which an editor already shows, are not
+    /// regions.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `options.guard` disagrees with the guard the renderer was
+    /// loaded with.
+    #[must_use]
+    pub fn render_regions(
+        &self,
+        source: &str,
+        options: &EvaluatedMarkdownOptions<'_>,
+    ) -> EvaluatedRegions {
+        assert!(
+            options.guard.is_some() == self.guarded,
+            "a render must use the guard the renderer was loaded with"
+        );
+        let parsed = parse_document(source, &self.config);
+        if !has_dynamic_content(&parsed) {
+            return EvaluatedRegions {
+                regions: Vec::new(),
+                diagnostics: Vec::new(),
+            };
+        }
+        let note_index = self.note_index.get_or_init(|| match options.guard {
+            Some(guard) => load_note_index_with_guard(&self.paths, guard).ok(),
+            None => load_note_index(&self.paths).ok(),
+        });
+        let ctx = DynamicContentContext {
+            paths: &self.paths,
+            config: &self.config,
+            note_index: note_index.as_ref(),
+            guard: options.guard,
+            permission_profile: options.permission_profile,
+            dataview_js: options.dataview_js,
+        };
+        let mut diagnostics = Vec::new();
+        let mut regions =
+            evaluate_dynamic_regions(&ctx, options.source_path, &parsed, &mut diagnostics)
+                .into_iter()
+                .filter_map(|region| {
+                    let source = match &region.outcome {
+                        DynamicOutcome::Hidden | DynamicOutcome::Unevaluated(_) => return None,
+                        DynamicOutcome::InlineValue(_)
+                        | DynamicOutcome::InlineError(_)
+                        | DynamicOutcome::InlineJs(_)
+                        | DynamicOutcome::InlineJsDisabled => "inline",
+                        DynamicOutcome::Dql(_) => "dataview",
+                        DynamicOutcome::DataviewJs(_) => "dataviewjs",
+                        DynamicOutcome::Tasks(_) => "tasks",
+                        DynamicOutcome::Base(_) => "base",
+                        DynamicOutcome::Disabled { .. } | DynamicOutcome::Error { .. } => "notice",
+                    };
+                    let (kind, markdown) = match outcome_markdown(
+                        &region.outcome,
+                        self.config.dataview.display_result_count,
+                    )? {
+                        MarkdownReplacement::Inline(text) => ("inline", text),
+                        MarkdownReplacement::Block(body) => ("block", body),
+                    };
+                    Some(EvaluatedRegion {
+                        start: region.start,
+                        end: region.end,
+                        kind,
+                        source,
+                        markdown,
+                    })
+                })
+                .collect::<Vec<_>>();
+        regions.sort_by_key(|region| region.start);
+        EvaluatedRegions {
+            regions,
+            diagnostics,
+        }
     }
 
     fn render_nested(
@@ -1591,6 +1693,39 @@ mod tests {
             rendered,
             "**[[Dashboard]]**\n\n- [ ] Write docs\n  - [x] Ship\n"
         );
+    }
+
+    #[test]
+    fn regions_keep_their_source_ranges() {
+        let (_dir, paths, home) = build_vault();
+        let renderer = EvaluatedMarkdownRenderer::load(&paths, None);
+        let evaluated = renderer.render_regions(
+            &home,
+            &EvaluatedMarkdownOptions {
+                source_path: Some("Home.md"),
+                ..EvaluatedMarkdownOptions::default()
+            },
+        );
+        let summary = evaluated
+            .regions
+            .iter()
+            .map(|region| (region.kind, region.source, &home[region.start..region.end]))
+            .collect::<Vec<_>>();
+        assert_eq!(summary.len(), 4, "{summary:?}");
+        assert_eq!(summary[0], ("inline", "inline", "`= this.status`"));
+        assert_eq!(evaluated.regions[0].markdown, "draft");
+        assert_eq!(summary[1].0, "block");
+        assert_eq!(summary[1].1, "dataview");
+        assert!(summary[1].2.starts_with("```dataview\n"));
+        assert!(evaluated.regions[1].markdown.contains("active"));
+        // DataviewJS stays off by default and renders a notice.
+        assert_eq!(summary[2].1, "notice");
+        assert_eq!(summary[3].1, "tasks");
+        assert!(evaluated.regions[3].markdown.contains("Alpha task"));
+
+        let plain =
+            renderer.render_regions("No dynamic content.", &EvaluatedMarkdownOptions::default());
+        assert!(plain.regions.is_empty());
     }
 
     fn build_vault() -> (tempfile::TempDir, VaultPaths, String) {
