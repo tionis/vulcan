@@ -3417,6 +3417,28 @@ fn parses_sync_conflicts_archive() {
 }
 
 #[test]
+fn parses_sync_ignore_device_files() {
+    let parsed = Cli::try_parse_from([
+        "vulcan",
+        "sync",
+        "ignore-device-files",
+        "--wiki",
+        "personal",
+        "--dry-run",
+    ])
+    .expect("ignore-device-files should parse");
+    assert!(matches!(
+        parsed.command,
+        Command::Sync {
+            command: SyncCommand::IgnoreDeviceFiles {
+                wiki: Some(ref wiki),
+                dry_run: true,
+            }
+        } if wiki == "personal"
+    ));
+}
+
+#[test]
 fn parses_sync_semantic_agent_defaults() {
     // The configured daemon semantic agent supplies the omitted provider values.
     let configured =

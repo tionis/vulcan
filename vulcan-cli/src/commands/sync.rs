@@ -520,6 +520,9 @@ fn handle_non_cycle_sync_command(
             older_than_days,
             dry_run,
         } => run_sync_conflicts_archive(cli, paths, wiki.as_deref(), *older_than_days, *dry_run),
+        SyncCommand::IgnoreDeviceFiles { wiki, dry_run } => {
+            run_sync_ignore_device_files(cli, paths, wiki.as_deref(), *dry_run)
+        }
         SyncCommand::Propose {
             conflict_id,
             wiki,
@@ -3211,6 +3214,37 @@ fn run_sync_conflicts_archive(
             "Deleted {} remote conflict ref(s) of the archived conflicts.",
             report.remote_refs_released
         );
+    }
+    Ok(())
+}
+
+fn run_sync_ignore_device_files(
+    cli: &Cli,
+    selected_paths: &VaultPaths,
+    wiki: Option<&str>,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
+    check_sync_permission(cli, &paths, registration_profile.as_deref())?;
+    let report = vulcan_app::sync_device_files::ignore_device_files(&paths, dry_run)
+        .map_err(CliError::operation)?;
+    if cli.output == OutputFormat::Json {
+        return print_json(&report);
+    }
+    for file in &report.already_ignored {
+        println!("Already ignored: {file}");
+    }
+    if report.added.is_empty() {
+        println!("Per-device files are already ignored; nothing to change.");
+        return Ok(());
+    }
+    let verb = if dry_run { "Would add" } else { "Added" };
+    println!("{verb} to {}:", report.gitignore);
+    for entry in &report.added {
+        println!("  {entry}");
+    }
+    if !dry_run {
+        println!("The next sync stops tracking these files; every device keeps its own copy.");
     }
     Ok(())
 }

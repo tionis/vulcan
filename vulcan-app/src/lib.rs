@@ -89,6 +89,7 @@ pub mod site;
 pub mod sync;
 pub mod sync_checkpoints;
 pub mod sync_conflicts;
+pub mod sync_device_files;
 pub mod sync_devices;
 pub mod sync_forge;
 pub mod sync_notifications;

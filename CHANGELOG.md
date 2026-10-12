@@ -4,6 +4,13 @@
 
 ### Changed
 
+- Adding a tracked path to a committed `.gitignore` now stops syncing it while every device keeps
+  its own copy: the next capture drops it, a device still editing it no longer conflicts, and
+  devices applying the change leave their file in place. Files added with `git add --force`
+  despite an existing rule stay tracked. `vulcan sync ignore-device-files [--dry-run]` adds entries
+  for Obsidian's per-device layout files (`.obsidian/workspace.json`,
+  `.obsidian/workspace-mobile.json`), and `vulcan sync doctor` warns (`sync.device-files`) while
+  they are synced.
 - Sync merges Obsidian's JSON configuration (`.obsidian/**/*.json`: settings, hotkeys, enabled
   plugins, plugin data) key by key instead of requiring review, so devices that change different
   settings or enable different plugins no longer conflict. Lists of distinct strings, such as

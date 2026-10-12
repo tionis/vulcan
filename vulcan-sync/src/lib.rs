@@ -20,6 +20,7 @@ mod racy_index;
 mod refs;
 mod structured_merge;
 mod sync;
+mod tree_ignore;
 
 pub use contracts::{
     IgnoreSyncProgress, SyncAction, SyncBackend, SyncCapabilities, SyncCapability, SyncConflict,
@@ -29,19 +30,19 @@ pub use contracts::{
 };
 
 pub use git::{
-    BranchAdvanceOutcome, BranchPullConfig, CommitSigning, FastForwardOutcome, GitBranchUpstream,
-    GitCapture, GitCaptureRequest, GitCaseRenamePolicy, GitChange, GitChangeKind, GitCliEngine,
-    GitCloneRequest, GitCommitMetadata, GitConflictSide, GitContentMergeResolutionRequest,
-    GitDetachedRecoveryReport, GitDetachedRecoveryRequest, GitEngine, GitEngineError,
-    GitEngineKind, GitExecutableBitsPolicy, GitFilterRequirement, GitInstallation, GitMerge,
-    GitMergeResolutionRequest, GitObjectFormat, GitOid, GitPathLengthPolicy, GitPathObject,
-    GitPlatformPolicy, GitPlatformProfile, GitPushResult, GitRefCreateResult, GitRefDeleteResult,
-    GitRefMirror, GitRefName, GitRefPush, GitRefUpdateResult, GitReference, GitRemote,
-    GitRemoteRefs, GitRepository, GitRepositoryLayout, GitRepositoryRequirements,
-    GitReservedNamesPolicy, GitResolvedPath, GitSafetyState, GitSymlinkPolicy, GitTimestampPolicy,
-    GitTreeApplyAction, GitTreeApplyPath, GitTreeApplyPlan, GitTreeEntry,
-    GitUnattendedRepositoryState, GitVersion, MergeBranchOutcome, PullFastForward, PullRebase,
-    RebaseOutcome,
+    vault_path_prefix, BranchAdvanceOutcome, BranchPullConfig, CommitSigning, FastForwardOutcome,
+    GitBranchUpstream, GitCapture, GitCaptureRequest, GitCaseRenamePolicy, GitChange,
+    GitChangeKind, GitCliEngine, GitCloneRequest, GitCommitMetadata, GitConflictSide,
+    GitContentMergeResolutionRequest, GitDetachedRecoveryReport, GitDetachedRecoveryRequest,
+    GitEngine, GitEngineError, GitEngineKind, GitExecutableBitsPolicy, GitFilterRequirement,
+    GitInstallation, GitMerge, GitMergeResolutionRequest, GitObjectFormat, GitOid,
+    GitPathLengthPolicy, GitPathObject, GitPlatformPolicy, GitPlatformProfile, GitPushResult,
+    GitRefCreateResult, GitRefDeleteResult, GitRefMirror, GitRefName, GitRefPush,
+    GitRefUpdateResult, GitReference, GitRemote, GitRemoteRefs, GitRepository, GitRepositoryLayout,
+    GitRepositoryRequirements, GitReservedNamesPolicy, GitResolvedPath, GitSafetyState,
+    GitSymlinkPolicy, GitTimestampPolicy, GitTreeApplyAction, GitTreeApplyPath, GitTreeApplyPlan,
+    GitTreeEntry, GitUnattendedRepositoryState, GitVersion, MergeBranchOutcome, PullFastForward,
+    PullRebase, RebaseOutcome,
 };
 pub use lock::{RepositoryLock, RepositoryLockError};
 pub use merge_policy::{
@@ -83,3 +84,4 @@ pub use sync::{
     GitSyncPause, GitSyncPauseReason, GitSyncPhase, GitSyncPreview, GitSyncPreviewFileState,
     GitSyncProgress, GitSyncRefs, GitSyncReport, IgnoreGitSyncProgress, SyncCancellationToken,
 };
+pub use tree_ignore::{tree_ignores, worktree_ignores, OBSIDIAN_DEVICE_FILES};

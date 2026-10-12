@@ -10,6 +10,7 @@ aho-corasick = "1"
 blake3.workspace = true
 fs2.workspace = true
 globset.workspace = true
+ignore.workspace = true
 libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -552,6 +552,7 @@ Examples:
   vulcan sync conflicts
   vulcan sync conflicts <conflict-id>
   vulcan sync conflicts-archive --older-than-days 7 --dry-run
+  vulcan sync ignore-device-files --dry-run
   vulcan sync devices list --wiki personal
   vulcan sync devices fetch <device-id> --wiki personal --dry-run
   vulcan sync devices prune-backup <device-id> --wiki personal --dry-run
@@ -4923,6 +4924,16 @@ pub enum SyncCommand {
             long,
             help = "List the conflicts that would move without changing anything"
         )]
+        dry_run: bool,
+    },
+    #[command(
+        about = "Stop syncing Obsidian's per-device layout files",
+        long_about = "Add `.gitignore` entries for files Obsidian keeps per device (`.obsidian/workspace.json`, `.obsidian/workspace-mobile.json`) unless a shared `.gitignore` already ignores them. The next sync publishes the change and stops tracking the files; every device keeps its own copy, including devices that sync later. `vulcan sync doctor` warns while such files are synced."
+    )]
+    IgnoreDeviceFiles {
+        #[arg(long, help = "Optional registered wiki ID")]
+        wiki: Option<String>,
+        #[arg(long, help = "Report the entries that would be added without writing")]
         dry_run: bool,
     },
     #[command(about = "Create a review-only conflict proposal with an LLM provider")]

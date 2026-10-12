@@ -5126,6 +5126,7 @@ dependencies = [
  "blake3",
  "fs2",
  "globset",
+ "ignore",
  "libc",
  "serde",
  "serde_json",

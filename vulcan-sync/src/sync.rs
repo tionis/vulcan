@@ -14,7 +14,7 @@ use crate::{
     REMOTE_REGISTRATION_BRANCH_ROOT, SYNC_CONTRACT_VERSION, VULCAN_REF_NAMESPACE_VERSION,
 };
 use serde::{Deserialize, Serialize, Serializer};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter, Write as _};
 use std::fs::{self};
@@ -457,6 +457,8 @@ pub enum GitAutomaticValidationCheck {
     NoFileDeletion,
     WholeTreeLinksValid,
     MassDeletionPolicy,
+    /// The deleting side's `.gitignore` newly ignores the path.
+    NewlyIgnored,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -4373,6 +4375,14 @@ fn try_structured_merge(
     let remote_objects = engine
         .path_objects(repository, remote, paths)
         .map_err(|error| error.to_string())?;
+    let untracked = untracked_by_deleting_side(
+        engine,
+        repository,
+        base,
+        (local, &local_objects),
+        (remote, &remote_objects),
+        paths.iter().filter(|path| base_objects.contains_key(*path)),
+    )?;
     let mut resolved_paths = Vec::with_capacity(paths.len());
     let mut automatically_resolved = Vec::with_capacity(paths.len());
     let mut resolutions = Vec::with_capacity(paths.len());
@@ -4387,6 +4397,15 @@ fn try_structured_merge(
             .any(|object| object.kind != "blob")
         {
             return Ok(None);
+        }
+        if untracked.contains(path) {
+            resolved_paths.push(resolved_path(path.clone(), None));
+            automatically_resolved.push(resolved_path(path.clone(), None));
+            resolutions.push(untracked_resolution(
+                path,
+                [base_object, local_object, remote_object],
+            ));
+            continue;
         }
         let input = StructuredPathInput {
             path,
@@ -4420,7 +4439,13 @@ fn try_structured_merge(
     let tree = engine
         .resolve_merge_tree_with_paths(repository, &request)
         .map_err(|error| error.to_string())?;
-    validate_resolved_tree(engine, repository, &tree, &automatically_resolved)?;
+    validate_resolved_tree(
+        engine,
+        repository,
+        &tree,
+        &automatically_resolved,
+        &untracked,
+    )?;
     for resolution in &mut resolutions {
         resolution
             .validation
@@ -4432,6 +4457,56 @@ fn try_structured_merge(
         resolutions,
         unresolved_paths,
     }))
+}
+
+fn untracked_resolution(
+    path: &str,
+    objects: [Option<&GitPathObject>; 3],
+) -> GitAutomaticResolution {
+    GitAutomaticResolution {
+        path: path.to_string(),
+        kind: MergeFileKind::classify(path, &objects.map(object_data)),
+        rule_id: GITIGNORE_UNTRACK_RULE_ID.to_string(),
+        validation: GitAutomaticResolutionValidation {
+            checks: vec![
+                GitAutomaticValidationCheck::PathSafe,
+                GitAutomaticValidationCheck::NewlyIgnored,
+            ],
+        },
+    }
+}
+
+/// The rule reported for a delete/modify conflict resolved as untracking.
+const GITIGNORE_UNTRACK_RULE_ID: &str = "gitignore-untracked";
+
+/// Conflicted paths that one side deleted while its `.gitignore` newly
+/// ignores them: that side untracked the path, so the merge drops it, and
+/// applying the result keeps each device's copy. Deciding from the deleting
+/// side's tree makes the result independent of which device merges.
+fn untracked_by_deleting_side<'a>(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    base: &GitOid,
+    local: (&GitOid, &BTreeMap<String, GitPathObject>),
+    remote: (&GitOid, &BTreeMap<String, GitPathObject>),
+    tracked_in_base: impl Iterator<Item = &'a String>,
+) -> Result<BTreeSet<String>, String> {
+    let (mut deleted_locally, mut deleted_remotely) = (Vec::new(), Vec::new());
+    for path in tracked_in_base {
+        match (local.1.contains_key(path), remote.1.contains_key(path)) {
+            (false, true) => deleted_locally.push(path.clone()),
+            (true, false) => deleted_remotely.push(path.clone()),
+            _ => {}
+        }
+    }
+    let mut untracked = BTreeSet::new();
+    for (side, deleted) in [(local.0, deleted_locally), (remote.0, deleted_remotely)] {
+        untracked.extend(
+            crate::tree_ignore::newly_ignored(engine, repository, base, side, &deleted)
+                .map_err(|error| error.to_string())?,
+        );
+    }
+    Ok(untracked)
 }
 
 fn automatic_validation(kind: MergeFileKind) -> GitAutomaticResolutionValidation {
@@ -4456,6 +4531,7 @@ fn validate_resolved_tree(
     repository: &GitRepository,
     tree: &GitOid,
     resolved_paths: &[GitResolvedPath],
+    untracked: &BTreeSet<String>,
 ) -> Result<(), String> {
     let selected = resolved_paths
         .iter()
@@ -4466,6 +4542,15 @@ fn validate_resolved_tree(
         .map_err(|error| error.to_string())?;
     for resolved in resolved_paths {
         let Some(expected_data) = resolved.data.as_ref() else {
+            if untracked.contains(&resolved.path) {
+                if actual_objects.contains_key(&resolved.path) {
+                    return Err(format!(
+                        "resolved tree still tracks untracked path `{}`",
+                        resolved.path
+                    ));
+                }
+                continue;
+            }
             return Err(format!(
                 "automatic resolution may not delete conflicted path `{}`",
                 resolved.path
@@ -8340,6 +8425,58 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         };
         assert_eq!(read(plugins), serde_json::json!(["dataview", "tasks"]));
         assert_eq!(read(data), serde_json::json!({"a": 2, "b": 3}));
+    }
+
+    #[test]
+    fn ignoring_a_tracked_file_untracks_it_and_keeps_every_device_copy() {
+        let (temporary, remote, writer) = setup_remote_and_writer();
+        let engine = GitCliEngine::default();
+        let workspace = ".obsidian/workspace.json";
+        fs::create_dir_all(writer.join(".obsidian")).expect("obsidian dir");
+        fs::write(writer.join(workspace), "{\"active\":\"base\"}\n").expect("base layout");
+        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap sync");
+        let reader = clone_reader(&temporary, &remote, &writer);
+        sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("reader baseline");
+        let live_paths = || {
+            git_stdout(
+                &remote,
+                &[
+                    "ls-tree",
+                    "-r",
+                    "--name-only",
+                    "refs/heads/__vulcan-sync/live",
+                ],
+            )
+        };
+        assert!(live_paths().contains(workspace));
+
+        // The writer ignores its layout while the reader keeps changing its own.
+        fs::write(writer.join(".gitignore"), "/.obsidian/workspace.json\n").expect("ignore");
+        fs::write(writer.join(workspace), "{\"active\":\"writer\"}\n").expect("writer layout");
+        fs::write(reader.join(workspace), "{\"active\":\"reader\"}\n").expect("reader layout");
+        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("untracking sync");
+        assert!(!live_paths().contains(workspace));
+        assert!(live_paths().contains(".gitignore"));
+
+        // The reader's edit meets the remote deletion: the untracking wins the
+        // merge, and the reader keeps its own layout.
+        let report =
+            sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("reader sync");
+        assert!(report.conflict.is_none(), "{:?}", report.conflict);
+        assert!(report
+            .automatic_resolutions
+            .iter()
+            .any(|resolution| resolution.path == workspace
+                && resolution.rule_id == GITIGNORE_UNTRACK_RULE_ID));
+        assert!(!live_paths().contains(workspace));
+        for (device, layout) in [(&reader, "reader"), (&writer, "writer")] {
+            sync_git_once(&engine, device, &GitSyncOptions::default()).expect("settle");
+            assert_eq!(
+                fs::read_to_string(device.join(workspace)).expect("kept layout"),
+                format!("{{\"active\":\"{layout}\"}}\n")
+            );
+        }
+        assert!(!live_paths().contains(workspace));
     }
 
     #[test]

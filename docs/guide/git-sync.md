@@ -126,6 +126,25 @@ The `android-shared` profile records the filesystem limitations instead of prete
 
 Do not place the detached Git directory in shared storage. Uninstalling Termux can remove its private objects and refs while leaving the visible vault behind. If that happens, preserve the vault and use `vulcan vault recover-git personal <remote> --dry-run` before applying recovery. Vulcan captures the surviving worktree first, but unpushed objects that existed only in the lost private directory cannot be reconstructed.
 
+## Per-device files
+
+Obsidian stores each device's open panes in `.obsidian/workspace.json` and
+`.obsidian/workspace-mobile.json`. Syncing them turns every pane change into a commit and spreads
+one device's layout to the others. Stop syncing them with:
+
+```sh
+vulcan sync ignore-device-files --dry-run
+vulcan sync ignore-device-files
+```
+
+The command adds `.gitignore` entries for the files no shared `.gitignore` covers yet. The next sync
+publishes the change and stops tracking them, and every device keeps its own copy, including
+devices that were still editing the file. The same applies to any tracked path you add to a
+`.gitignore` yourself; only rules in committed `.gitignore` files count, not `info/exclude` or a
+global excludes file. Files added with `git add --force` despite an existing rule stay tracked.
+`vulcan sync doctor` warns (`sync.device-files`) while per-device files are synced. Devices still
+on an older Vulcan version delete their copy instead; Obsidian recreates the layout.
+
 ## Conflicts and recovery
 
 A conflicting sync preserves the immutable candidates and may publish a safe projection. The accepted remote bytes remain provisionally at the original path, clean paths continue synchronizing, and no conflict artifacts are written into the vault. The immutable conflict-record ref is also published to the remote so the record and both candidate histories remain Git-reachable.

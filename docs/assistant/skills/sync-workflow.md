@@ -215,6 +215,11 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
    implying zero.
 2. Run `vulcan sync doctor [<wiki>]` when installation, detached storage, hidden refs, filters/LFS,
    platform compatibility, locks, journals, apply markers, or cache coherence may be involved.
+   A `sync.device-files` warning means Obsidian's per-device layout files are synced; preview
+   `vulcan sync ignore-device-files --dry-run`, then apply it. Adding a tracked path to a committed
+   `.gitignore` makes the next sync stop tracking it while every device keeps its copy. Do not
+   reach for `git rm --cached`: sync captures the worktree through its own index, so the normal
+   index has no effect on what it tracks.
 3. Preview a finite transaction with `vulcan sync run [<wiki>] --dry-run`; apply it by omitting
    `--dry-run` only after the target remote/live ref and diagnostics are understood.
 4. Every Git and Git LFS subprocess is bounded to 300 seconds by default. For a known slower

@@ -444,6 +444,7 @@ fn doctor_git_vault_with_optional_state(
 
     doctor_refs(&engine, &repository, options, &mut report);
     doctor_platform_tree(&engine, &repository, options, &mut report);
+    doctor_device_files(&engine, &repository, paths, options, &mut report);
     doctor_repository_lock(&repository, &mut report);
     doctor_journal(paths, state_store, &mut report);
     doctor_apply_marker(state_store, &repository, &mut report);
@@ -907,6 +908,48 @@ fn doctor_refs(
             "git.remote",
             SyncDoctorSeverity::Warning,
             format!("remote could not be inspected: {error}"),
+        ),
+    }
+}
+
+/// Warns when the latest capture tracks per-device Obsidian files that no
+/// shared `.gitignore` ignores: every pane change then becomes a sync commit
+/// and one device's layout spreads to the others.
+fn doctor_device_files(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    paths: &VaultPaths,
+    options: &GitSyncOptions,
+    report: &mut SyncDoctorReport,
+) {
+    let revision = GitSyncRefs::for_options(options)
+        .ok()
+        .and_then(|refs| engine.read_ref(repository, &refs.local).ok().flatten())
+        .or_else(|| engine.head_commit(repository).ok().flatten());
+    let Some(revision) = revision else {
+        return;
+    };
+    match crate::sync_device_files::tracked_device_files(
+        engine,
+        repository,
+        paths.vault_root(),
+        &revision,
+    ) {
+        Ok(tracked) if tracked.is_empty() => {}
+        Ok(tracked) => doctor_check(
+            report,
+            "sync.device-files",
+            SyncDoctorSeverity::Warning,
+            format!(
+                "per-device Obsidian files are synced: {}; run `vulcan sync ignore-device-files` so each device keeps its own copy",
+                tracked.join(", ")
+            ),
+        ),
+        Err(error) => doctor_check(
+            report,
+            "sync.device-files",
+            SyncDoctorSeverity::Info,
+            format!("cannot inspect per-device files: {error}"),
         ),
     }
 }
@@ -6446,6 +6489,45 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             .find(|check| check.code == "git.internal-ignore")
             .expect("cache ignore check");
         assert_eq!(check.severity, SyncDoctorSeverity::Pass, "{check:?}");
+    }
+
+    #[test]
+    fn sync_doctor_warns_about_tracked_per_device_files_in_a_subdirectory_vault() {
+        let temporary = tempdir().expect("temporary directory");
+        let repository = temporary.path().join("repository");
+        let vault = repository.join("docs");
+        fs::create_dir_all(vault.join(".obsidian")).expect("obsidian directory");
+        git(
+            &repository,
+            &["-c", "init.defaultBranch=main", "init", "--quiet"],
+        );
+        git(&repository, &["config", "user.name", "Vulcan Test"]);
+        git(
+            &repository,
+            &["config", "user.email", "vulcan@example.invalid"],
+        );
+        fs::write(vault.join(".obsidian/workspace.json"), "{}\n").expect("layout");
+        fs::write(vault.join("Home.md"), "home\n").expect("home note");
+        git(&repository, &["add", "--all"]);
+        git(&repository, &["commit", "--quiet", "-m", "initial"]);
+        let store = SyncStateStore::at(temporary.path().join("state"));
+        let paths = VaultPaths::new(&vault);
+        let device_files = || {
+            doctor_git_vault_with_state_store(&paths, &GitSyncOptions::default(), &store)
+                .checks
+                .into_iter()
+                .find(|check| check.code == "sync.device-files")
+        };
+
+        let check = device_files().expect("device-file warning");
+        assert_eq!(check.severity, SyncDoctorSeverity::Warning);
+        assert!(check.message.contains(".obsidian/workspace.json"));
+        assert!(check.message.contains("vulcan sync ignore-device-files"));
+
+        crate::sync_device_files::ignore_device_files(&paths, false).expect("ignore");
+        git(&repository, &["add", "--all"]);
+        git(&repository, &["commit", "--quiet", "-m", "ignore"]);
+        assert_eq!(device_files(), None);
     }
 
     #[test]

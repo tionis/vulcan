@@ -2318,6 +2318,92 @@ impl GitCliEngine {
         Ok(())
     }
 
+    /// Tracked paths of the captured `tree` that a `.gitignore` changed since
+    /// `base` newly ignores. The capture stops tracking them; every device
+    /// keeps its copy (see [`crate::tree_ignore`]).
+    fn newly_ignored_in_capture(
+        &self,
+        repository: &GitRepository,
+        base: &GitOid,
+        tree: &GitOid,
+    ) -> Result<Vec<String>, GitEngineError> {
+        let mut command = self.repository_command(repository);
+        command.args([
+            "diff-tree",
+            "-r",
+            "-z",
+            "--name-only",
+            "--no-renames",
+            "--diff-filter=AM",
+            base.as_str(),
+            tree.as_str(),
+            "--",
+            ":(glob)**/.gitignore",
+        ]);
+        let output = ensure_success("compare .gitignore files", self.execute(command)?)?;
+        let directories = nul_fields("compare .gitignore files", &output.stdout)?
+            .into_iter()
+            .filter_map(|path| crate::tree_ignore::ignore_file_directory(path).map(str::to_string))
+            .collect::<BTreeSet<_>>();
+        if directories.is_empty() {
+            return Ok(Vec::new());
+        }
+        let entries = if directories.contains("") {
+            self.tree_entries(repository, tree)?
+        } else {
+            let mut entries = Vec::new();
+            for directory in &directories {
+                entries.extend(self.tree_entries_under(repository, tree, directory)?);
+            }
+            entries
+        };
+        let paths = entries
+            .into_iter()
+            .filter(|entry| entry.kind == "blob")
+            .map(|entry| entry.path)
+            .filter(|path| crate::tree_ignore::ignore_file_directory(path).is_none())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        crate::tree_ignore::newly_ignored(self, repository, base, tree, &paths)
+    }
+
+    /// One capture pass: stage the worktree, stop tracking newly ignored
+    /// paths, and write the tree. `untracked` is computed on the first pass
+    /// and reused, so verification passes agree.
+    fn capture_pass(
+        &self,
+        repository: &GitRepository,
+        index_path: &Path,
+        base: Option<&GitOid>,
+        untracked: &mut Option<Vec<String>>,
+        operation: &'static str,
+    ) -> Result<GitOid, GitEngineError> {
+        self.add_worktree_to_index(repository, index_path, operation)?;
+        let write_tree = || -> Result<GitOid, GitEngineError> {
+            GitOid::parse(
+                self.index_capture(repository, index_path, operation, ["write-tree"])?
+                    .trim(),
+            )
+        };
+        let tree = write_tree()?;
+        let Some(base) = base else {
+            return Ok(tree);
+        };
+        if untracked.is_none() {
+            *untracked = Some(self.newly_ignored_in_capture(repository, base, &tree)?);
+        }
+        let paths = untracked.as_deref().unwrap_or_default();
+        if paths.is_empty() {
+            return Ok(tree);
+        }
+        let mut command = self.index_command(repository, index_path)?;
+        command.args(["update-index", "--force-remove", "--"]);
+        command.args(paths);
+        ensure_success(operation, self.execute(command)?)?;
+        write_tree()
+    }
+
     fn prepare_sync_index(
         &self,
         repository: &GitRepository,
@@ -2498,26 +2584,21 @@ impl GitCliEngine {
                 reused_base: true,
             });
         }
+        let mut untracked = None;
         for _ in 0..3 {
-            self.add_worktree_to_index(repository, &index_path, "capture the working tree")?;
-            let first = GitOid::parse(
-                self.index_capture(
-                    repository,
-                    &index_path,
-                    "write the captured tree",
-                    ["write-tree"],
-                )?
-                .trim(),
+            let first = self.capture_pass(
+                repository,
+                &index_path,
+                base,
+                &mut untracked,
+                "capture the working tree",
             )?;
-            self.add_worktree_to_index(repository, &index_path, "verify the working-tree capture")?;
-            let second = GitOid::parse(
-                self.index_capture(
-                    repository,
-                    &index_path,
-                    "verify the captured tree",
-                    ["write-tree"],
-                )?
-                .trim(),
+            let second = self.capture_pass(
+                repository,
+                &index_path,
+                base,
+                &mut untracked,
+                "verify the working-tree capture",
             )?;
             if first == second {
                 return Ok(GitWorktreeTreeCapture {
@@ -2769,6 +2850,13 @@ impl GitCliEngine {
 
 /// The vault root's `/`-terminated path inside the work tree, or empty when
 /// the vault is the work tree root or cannot be placed inside it.
+/// The vault root's `/`-terminated path inside the repository work tree,
+/// or empty when the vault is the work tree root.
+#[must_use]
+pub fn vault_path_prefix(repository: &GitRepository, vault_root: &Path) -> String {
+    vault_work_tree_prefix(repository, vault_root)
+}
+
 fn vault_work_tree_prefix(repository: &GitRepository, vault_root: &Path) -> String {
     let Some(work_tree) = repository.work_tree.as_deref() else {
         return String::new();
@@ -5087,6 +5175,27 @@ impl GitEngine for GitCliEngine {
             return Err(GitEngineError::WorktreeChanged);
         }
         self.reject_ignored_collisions(repository, &index_path, &plan)?;
+        // A deletion the target's `.gitignore` explains is an untracking:
+        // dropping the path from the index first leaves this device's copy.
+        let deleted = plan
+            .paths
+            .iter()
+            .filter(|path| path.action == GitTreeApplyAction::Delete)
+            .map(|path| path.path.clone())
+            .collect::<Vec<_>>();
+        let kept = crate::tree_ignore::newly_ignored(
+            self,
+            repository,
+            expected_worktree,
+            target,
+            &deleted,
+        )?;
+        if !kept.is_empty() {
+            let mut command = self.index_command(repository, &index_path)?;
+            command.args(["update-index", "--force-remove", "--"]);
+            command.args(&kept);
+            ensure_success("keep untracked files", self.execute(command)?)?;
+        }
         // The verified index already holds `expected_worktree` with fresh stat
         // data. Keeping it lets `read-tree -u` touch only the changed paths;
         // rebuilding it from the tree would rewrite every file in the vault.
@@ -10589,6 +10698,86 @@ mod tests {
             fs::read_to_string(temporary.path().join("Removed.md")).expect("removed"),
             "remove me\n"
         );
+    }
+
+    #[test]
+    fn newly_ignored_paths_leave_the_capture_but_force_added_ones_stay() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let root = temporary.path();
+        init_repo(root);
+        fs::create_dir_all(root.join(".obsidian")).expect("obsidian dir");
+        fs::write(root.join(".gitignore"), "forced.md\n").expect("ignore file");
+        fs::write(root.join(".obsidian/workspace.json"), "{}\n").expect("workspace");
+        fs::write(root.join("forced.md"), "forced\n").expect("forced file");
+        fs::write(root.join("Home.md"), "home\n").expect("note");
+        run_git(root, &["add", "--all", "--force", "--", "."]);
+        run_git(root, &["commit", "--quiet", "-m", "base"]);
+        let base = GitOid::parse(run_git_capture(root, &["rev-parse", "HEAD"])).expect("base");
+        let engine = GitCliEngine::default();
+        let repository = engine.discover_repository(root).expect("repository");
+        let tracked = |tree: &GitOid| {
+            engine
+                .tree_entries(&repository, tree)
+                .expect("entries")
+                .into_iter()
+                .map(|entry| entry.path)
+                .collect::<Vec<_>>()
+        };
+
+        // A force-added file stays tracked when it changes.
+        fs::write(root.join("forced.md"), "changed\n").expect("forced edit");
+        let tree = engine
+            .snapshot_worktree_tree(&repository, Some(&base))
+            .expect("capture");
+        assert!(tracked(&tree).contains(&"forced.md".to_string()));
+
+        // A newly ignored path leaves the capture, in nested rules too, and
+        // the file stays on disk.
+        fs::write(root.join(".obsidian/.gitignore"), "workspace.json\n").expect("nested");
+        fs::write(root.join(".obsidian/workspace.json"), "{\"a\":1}\n").expect("edit");
+        let tree = engine
+            .snapshot_worktree_tree(&repository, Some(&base))
+            .expect("capture");
+        let paths = tracked(&tree);
+        assert!(!paths.contains(&".obsidian/workspace.json".to_string()));
+        assert!(paths.contains(&".obsidian/.gitignore".to_string()));
+        assert!(paths.contains(&"forced.md".to_string()));
+        assert!(root.join(".obsidian/workspace.json").is_file());
+    }
+
+    #[test]
+    fn applying_an_untracking_keeps_the_file_but_a_plain_deletion_removes_it() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let root = temporary.path();
+        init_repo(root);
+        fs::write(root.join(".gitignore"), "forced.md\n").expect("ignore file");
+        fs::write(root.join("device.json"), "{}\n").expect("device file");
+        fs::write(root.join("forced.md"), "forced\n").expect("forced file");
+        run_git(root, &["add", "--all", "--force", "--", "."]);
+        run_git(root, &["commit", "--quiet", "-m", "base"]);
+        let base = GitOid::parse(run_git_capture(root, &["rev-parse", "HEAD"])).expect("base");
+        // The accepted tree untracks `device.json` and deletes `forced.md`,
+        // which was ignored all along.
+        fs::write(root.join(".gitignore"), "forced.md\ndevice.json\n").expect("ignore");
+        run_git(root, &["rm", "--cached", "--quiet", "device.json"]);
+        run_git(root, &["rm", "--quiet", "forced.md"]);
+        run_git(root, &["commit", "--quiet", "--all", "-m", "untrack"]);
+        let target = GitOid::parse(run_git_capture(root, &["rev-parse", "HEAD"])).expect("target");
+        run_git(root, &["reset", "--quiet", "--hard", base.as_str()]);
+        let engine = GitCliEngine::default();
+        let repository = engine.discover_repository(root).expect("repository");
+
+        engine
+            .apply_tree(&repository, &base, &target)
+            .expect("apply");
+        assert_eq!(
+            fs::read_to_string(root.join("device.json")).expect("kept copy"),
+            "{}\n"
+        );
+        assert!(!root.join("forced.md").exists());
+        assert!(engine
+            .worktree_matches_tree(&repository, &target)
+            .expect("compare"));
     }
 
     #[test]
