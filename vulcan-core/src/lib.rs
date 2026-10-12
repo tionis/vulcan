@@ -61,6 +61,7 @@ pub mod doctor;
 pub mod dql;
 pub mod durable;
 pub mod dynamic_content;
+pub mod editor;
 pub mod exchange;
 pub mod expression;
 mod extraction;

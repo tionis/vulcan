@@ -8357,9 +8357,9 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 
 ### 9.40.1 Editor services in core and app
 
-- [ ] Add `LineIndex` to `vulcan-core` with byte ↔ line/column conversion for UTF-8, UTF-16, and UTF-32, plus a CJK/emoji test fixture
-- [ ] Add "semantic element at byte offset" lookup over `ParsedDocument` (links, embeds, tags, headings, block ids, inline fields, property keys); verify frontmatter-origin link offsets are document-absolute
-- [ ] Add overlay-aware link resolution: cache identities with open-buffer overlays replacing them, plus `overlay:<uri>` documents for unsaved new buffers
+- [x] Add `LineIndex` to `vulcan-core` with byte ↔ line/column conversion for UTF-8, UTF-16, and UTF-32, plus a CJK/emoji test fixture
+- [x] Add "semantic element at byte offset" lookup over `ParsedDocument` (links, embeds, tags, headings, block ids, inline fields, property keys); verify frontmatter-origin link offsets are document-absolute
+- [x] Add overlay-aware link resolution: cache identities with open-buffer overlays replacing them, plus `overlay:<uri>` documents for unsaved new buffers
 - [ ] Expose dynamic-region evaluation with byte ranges as a public core API
 - [ ] Add `vulcan-app::editor` (`EditorSession`, `completion`, `diagnostics`, `navigation`, `edits`, `render`) with no LSP types
 - [ ] Move checkbox and task toggling out of `vulcan-cli/src/commands/note.rs` into a plan-only `vulcan-app` workflow (text in, replacement and report out), including recurrence; rebuild `tasks complete` on it
