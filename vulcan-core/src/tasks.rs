@@ -2,6 +2,7 @@ mod ast;
 mod eval;
 mod parse;
 mod recurrence;
+mod toggle;
 
 use std::fmt::{Display, Formatter};
 
@@ -25,6 +26,10 @@ pub(crate) use recurrence::{inject_task_recurrence_fields, task_recurrence_prope
 pub use recurrence::{
     parse_recurrence_text, parse_task_recurrence, task_recurrence_anchor,
     task_upcoming_occurrences, TaskRecurrence,
+};
+pub use toggle::{
+    apply_inline_task_toggle, complete_inline_task_line, toggle_inline_task_line, InlineTaskToggle,
+    RecurrencePlacement,
 };
 
 #[derive(Debug)]

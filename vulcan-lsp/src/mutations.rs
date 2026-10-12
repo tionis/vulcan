@@ -23,7 +23,11 @@ use vulcan_app::editor::{inverse_changes, EditorEditPlan, EditorMove, EditorSess
 const APPLY_EDIT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Commands served through `workspace/executeCommand`.
-pub(crate) const COMMANDS: &[&str] = &["vulcan.note.move"];
+pub(crate) const COMMANDS: &[&str] = &[
+    "vulcan.note.move",
+    "vulcan.note.create",
+    "vulcan.task.toggle",
+];
 
 /// Server-to-client requests whose responses someone awaits.
 pub(crate) struct ClientChannel {
@@ -92,9 +96,10 @@ impl ClientChannel {
 /// What the client can do with a workspace edit.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct EditSupport {
-    pub(crate) apply_edit: bool,
-    pub(crate) document_changes: bool,
+    /// `workspace/applyEdit` with versioned `documentChanges`.
+    pub(crate) versioned_edits: bool,
     pub(crate) rename_files: bool,
+    pub(crate) show_document: bool,
 }
 
 impl From<&lsp::ClientCapabilities> for EditSupport {
@@ -102,11 +107,16 @@ impl From<&lsp::ClientCapabilities> for EditSupport {
         let workspace = capabilities.workspace.as_ref();
         let edit = workspace.and_then(|workspace| workspace.workspace_edit.as_ref());
         Self {
-            apply_edit: workspace.and_then(|workspace| workspace.apply_edit) == Some(true),
-            document_changes: edit.and_then(|edit| edit.document_changes) == Some(true),
+            versioned_edits: workspace.and_then(|workspace| workspace.apply_edit) == Some(true)
+                && edit.and_then(|edit| edit.document_changes) == Some(true),
             rename_files: edit
                 .and_then(|edit| edit.resource_operations.as_ref())
                 .is_some_and(|operations| operations.contains(&lsp::ResourceOperationKind::Rename)),
+            show_document: capabilities
+                .window
+                .as_ref()
+                .and_then(|window| window.show_document.as_ref())
+                .is_some_and(|show| show.support),
         }
     }
 }
@@ -209,29 +219,56 @@ fn execute_command(
     params: &lsp::ExecuteCommandParams,
 ) -> Result<Value, ResponseFailure> {
     let argument = params.arguments.first().cloned().unwrap_or(Value::Null);
-    match params.command.as_str() {
-        "vulcan.note.move" => {
-            let field = |name: &str| {
-                argument[name].as_str().map(str::to_string).ok_or_else(|| {
-                    invalid(format!("vulcan.note.move needs a `{name}` string argument"))
-                })
-            };
-            let from = field("from")?;
-            let from = from
+    let command = params.command.as_str();
+    let text = |name: &str| {
+        argument[name]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| invalid(format!("{command} needs a `{name}` string argument")))
+    };
+    // A document is named by a vault path or a file URI.
+    let document = |name: &str| {
+        text(name).map(|value| {
+            value
                 .parse::<lsp::Uri>()
                 .ok()
                 .and_then(|uri| handlers::vault_path(session, &uri))
-                .unwrap_or(from);
-            let to = field("to")?;
-            let plan = session.plan_note_move(&from, &to)?;
-            if argument["dryRun"].as_bool() == Some(true) {
-                return Ok(report(&plan, true));
-            }
-            execute(context, session, &plan)?;
-            Ok(report(&plan, false))
+                .unwrap_or(value)
+        })
+    };
+    let plan = match command {
+        "vulcan.note.move" => session.plan_note_move(&document("from")?, &text("to")?)?,
+        "vulcan.note.create" => session.plan_note_create(&text("path")?)?,
+        "vulcan.task.toggle" => {
+            let line = argument["line"]
+                .as_u64()
+                .and_then(|line| u32::try_from(line).ok())
+                .ok_or_else(|| invalid(format!("{command} needs a `line` number argument")))?;
+            let today = argument["today"].as_str().map_or_else(
+                vulcan_app::periodic::current_local_date_string,
+                str::to_string,
+            );
+            session.plan_task_toggle(&document("path")?, line, &today)?
         }
-        command => Err(invalid(format!("unknown command {command}"))),
+        command => return Err(invalid(format!("unknown command {command}"))),
+    };
+    if argument["dryRun"].as_bool() == Some(true) {
+        return Ok(report(&plan, true));
     }
+    execute(context, session, &plan)?;
+    if command == "vulcan.note.create" && context.support.show_document {
+        if let Some(uri) = plan
+            .disk
+            .first()
+            .and_then(|change| handlers::uri(session, &change.path))
+        {
+            context.client.send_request(
+                "window/showDocument",
+                json!({ "uri": uri.to_string(), "takeFocus": true }),
+            );
+        }
+    }
+    Ok(report(&plan, false))
 }
 
 /// Apply a plan: the disk batch, then the editor's part, undoing the disk
@@ -242,7 +279,7 @@ fn execute(
     plan: &EditorEditPlan,
 ) -> Result<(), ResponseFailure> {
     let needs_editor = !plan.open.is_empty() || plan.editor_rename.is_some();
-    if needs_editor && !(context.support.apply_edit && context.support.document_changes) {
+    if needs_editor && !context.support.versioned_edits {
         return Err(conflict(
             "the editor cannot apply versioned workspace edits; close the affected notes first"
                 .to_string(),
@@ -367,6 +404,8 @@ fn label(plan: &EditorEditPlan) -> String {
         None => match plan.action {
             "rename_heading" => "Rename heading".to_string(),
             "rename_block_ref" => "Rename block id".to_string(),
+            "toggle_task" => "Toggle task".to_string(),
+            "create_note" => "Create note".to_string(),
             action => action.to_string(),
         },
     }

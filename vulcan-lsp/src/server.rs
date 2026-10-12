@@ -202,6 +202,15 @@ fn capabilities(
             prepare_provider: Some(true),
             work_done_progress_options: lsp::WorkDoneProgressOptions::default(),
         })),
+        code_action_provider: Some(lsp::CodeActionProviderCapability::Options(
+            lsp::CodeActionOptions {
+                code_action_kinds: Some(vec![
+                    lsp::CodeActionKind::QUICKFIX,
+                    lsp::CodeActionKind::REFACTOR_REWRITE,
+                ]),
+                ..lsp::CodeActionOptions::default()
+            },
+        )),
         execute_command_provider: Some(lsp::ExecuteCommandOptions {
             commands: mutations::COMMANDS
                 .iter()

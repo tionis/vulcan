@@ -8362,7 +8362,7 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Add overlay-aware link resolution: cache identities with open-buffer overlays replacing them, plus `overlay:<uri>` documents for unsaved new buffers
 - [ ] Expose dynamic-region evaluation with byte ranges as a public core API
 - [~] Add `vulcan-app::editor` (`EditorSession`, `completion`, `diagnostics`, `navigation`, `edits`, `render`) with no LSP types — session overlay, navigation (definition, references, hover, symbols), completion, diagnostics, and `edits` (rename and move planning) landed; `render` remains
-- [ ] Move checkbox and task toggling out of `vulcan-cli/src/commands/note.rs` into a plan-only `vulcan-app` workflow (text in, replacement and report out), including recurrence; rebuild `tasks complete` on it
+- [~] Move checkbox and task toggling out of `vulcan-cli/src/commands/note.rs` into a plan-only `vulcan-app` workflow (text in, replacement and report out), including recurrence; rebuild `tasks complete` on it — Tasks-style toggling with next-occurrence insertion lives in `vulcan_core::tasks` and `EditorSession::plan_task_toggle`, and inline `tasks complete` is rebuilt on it; the generic `note checkbox` state command still lives in the CLI
 - [x] Add plan-only variants of `rename_heading` and `rename_block_ref` that return `OrdinaryWriteChange` batches
 - [ ] Rebuild shell completion candidates (`collect_complete_candidates`) on `editor::completion`
 - [x] Add `boundary_guard.rs` rules: `vulcan-app`/`vulcan-core` never depend on `lsp-types`; `vulcan-lsp` never depends on `vulcan-cli` or `vulcan-daemon`
@@ -8378,8 +8378,8 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Debounced diagnostics for open buffers (200 ms after the last edit; the link being typed is skipped): parse diagnostics and unresolved/ambiguous/outside-vault links using `doctor` categories
 - [x] Mutation contract: open files as versioned `TextDocumentEdit`s (minimal per-line edits), closed files as a journaled preimage-checked batch; disk first, then `workspace/applyEdit`, with a compensating inverse batch on rejection and the specified failure reports; affected unsaved buffers are refused
 - [x] Moves with `moved: { from, to }` results (closed notes moved by Vulcan in the batch, open notes renamed by the editor via `RenameFile` and indexed with a hint); `prepareRename` and `rename` on link targets, headings, and block ids (through links or in place); `vulcan.note.move` with `dryRun`; `willRenameFiles` with closed-file rewrites published after `didRenameFiles`
-- [ ] Code actions with lazy `resolve`: create note from unresolved link, disambiguate, convert link style, toggle task; `dryRun` on every `vulcan.*` command
-- [ ] `executeCommand`: `vulcan.scan`, `vulcan.note.create`, `vulcan.note.move`, `vulcan.task.toggle`, `vulcan.periodic.open`, `vulcan.template.insert`
+- [x] Code actions: create note from unresolved link, disambiguate, convert link style, toggle task (computed eagerly; they are cheap, so `codeAction/resolve` is unnecessary); `dryRun` on every `vulcan.*` command
+- [~] `executeCommand`: `vulcan.note.create`, `vulcan.note.move`, and `vulcan.task.toggle` done; `vulcan.scan`, `vulcan.periodic.open`, and `vulcan.template.insert` remain
 - [ ] Custom protocol v1: `experimental.vulcan` advertisement, `vulcan/render` (Dataview and Tasks blocks), `vulcan/outline`, `vulcan/backlinks`, `vulcan/status`, `vulcan/indexChanged`
 - [ ] Safety defaults: DataviewJS off unless enabled in `config.local.toml`; permission profile guard on every workflow; `autoCommit` defaults to false
 - [ ] `[editor]` config section with default and override tests

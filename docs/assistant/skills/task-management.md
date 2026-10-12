@@ -1,7 +1,7 @@
 ---
 name: task-management
 description: Query task state across notes and periodic workflows.
-version: 11
+version: 12
 tools:
   - tasks_query
   - query
@@ -53,6 +53,7 @@ Use this skill when the task depends on extracting, filtering, reviewing, or upd
 - Ordinary TaskNotes archive moves reject a changed source or occupied archive path. A crash can temporarily leave both files present. Inspect both paths and use `vulcan repair ordinary-write status` to review the journal; after manual reconciliation, `accept-current` requires its exact transaction ID and review token. Never delete either file or the journal blindly.
 - Direct CLI and MCP task show, query, list, view, due, reminder, dependency, and time-tracking reports refuse a pending ordinary-write journal. Inspect it with `vulcan repair ordinary-write status` before using those reports; a task conversion or archive move may otherwise be only partly published.
 - Ordinary task edits that use the shared note-write boundary also refuse a pending journal, including writes to unrelated notes. Repair the interrupted batch before retrying those edits.
+- Completing a recurring inline task (`🔁 every week` with a due, scheduled, or start date) also inserts its next occurrence, an open copy whose dates move by the interval (counted from the completion date for `when done` rules), above the completed task, or below it with `tasks.recurrence_on_completion = "next-line"`. The copy drops the block id. Check the source note after completing a recurring task rather than adding the next occurrence by hand.
 - Ordinary inline task create, complete, and reschedule writes are serialized with other Vulcan vault writes and reject a note changed after planning. On a changed-note error, reread the task and its source note before deciding whether to retry; never overwrite the newer edit.
 - Converting an existing ordinary note into a TaskNotes task also rejects a source note changed after planning. Reread the note and rerun conversion only if it is still appropriate.
 - Ordinary TaskNotes add refuses a new task path that another writer created after planning. Inspect that task before choosing a new title or retrying.

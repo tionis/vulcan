@@ -6485,16 +6485,10 @@ fn apply_inline_task_complete(
             .map_err(AppError::operation)?;
     }
     let config = load_vault_config(paths).config;
-    let completed_symbol = first_completed_inline_status_symbol(&config);
     let completed_date = normalize_date_argument(request.date.as_deref())?;
     let source = read_task_source(paths, &resolved.path).map_err(AppError::operation)?;
-    let (rendered, change) = complete_inline_task_source(
-        &source,
-        resolved.line_number,
-        &completed_symbol,
-        &completed_date,
-    )?;
-    let changes = change.into_iter().collect::<Vec<_>>();
+    let (rendered, changes) =
+        complete_inline_task_source(&source, resolved.line_number, &config, &completed_date)?;
     let mut changed_paths = if changes.is_empty() {
         Vec::new()
     } else {
@@ -6537,29 +6531,51 @@ fn apply_inline_task_complete(
     })
 }
 
+/// Complete the inline task on 1-based `line_number` with the shared Tasks
+/// semantics, inserting the next occurrence of a recurring task.
 fn complete_inline_task_source(
     source: &str,
     line_number: i64,
-    completed_symbol: &str,
+    config: &VaultConfig,
     completed_date: &str,
-) -> Result<(String, Option<RefactorChange>), AppError> {
-    let mut lines = source
-        .split('\n')
-        .map(ToOwned::to_owned)
-        .collect::<Vec<_>>();
+) -> Result<(String, Vec<RefactorChange>), AppError> {
     let index = usize::try_from(line_number.saturating_sub(1))
         .map_err(|_| AppError::operation(format!("invalid task line number: {line_number}")))?;
-    let current = lines
-        .get(index)
-        .cloned()
+    let current = source
+        .split('\n')
+        .nth(index)
         .ok_or_else(|| AppError::operation(format!("task line {line_number} not found")))?;
-    let updated = update_inline_task_line(&current, completed_symbol, completed_date)?;
-    let change = (updated != current).then(|| RefactorChange {
-        before: current.clone(),
-        after: updated.clone(),
-    });
-    lines[index] = updated;
-    Ok((lines.join("\n"), change))
+    let placement = vulcan_core::tasks::RecurrencePlacement::from_config(
+        config.tasks.recurrence_on_completion.as_deref(),
+    );
+    let (rendered, toggle) = vulcan_core::tasks::apply_inline_task_toggle(source, index, |line| {
+        vulcan_core::tasks::complete_inline_task_line(
+            line,
+            &config.tasks.statuses,
+            completed_date,
+            placement,
+        )
+    })
+    .ok_or_else(|| {
+        AppError::operation(format!(
+            "line is not an inline task and cannot be completed: {current}"
+        ))
+    })?;
+    let current = current.trim_end_matches('\r');
+    let mut changes = Vec::new();
+    if toggle.line != current {
+        changes.push(RefactorChange {
+            before: current.to_string(),
+            after: toggle.line,
+        });
+    }
+    if let Some(next) = toggle.next_occurrence {
+        changes.push(RefactorChange {
+            before: String::new(),
+            after: next,
+        });
+    }
+    Ok((rendered, changes))
 }
 
 fn reschedule_inline_task_source(
@@ -6586,46 +6602,6 @@ fn reschedule_inline_task_source(
     Ok((lines.join("\n"), change))
 }
 
-fn update_inline_task_line(
-    line: &str,
-    completed_symbol: &str,
-    completed_date: &str,
-) -> Result<String, AppError> {
-    let completed_char = completed_symbol
-        .chars()
-        .next()
-        .ok_or_else(|| AppError::operation("completed task status cannot be empty"))?;
-    let checkbox =
-        Regex::new(r"^(\s*(?:[-*+]|\d+[.)])\s+\[)(.)(\])").expect("regex should compile");
-    let captures = checkbox.captures(line).ok_or_else(|| {
-        AppError::operation(format!(
-            "line is not an inline task and cannot be completed: {line}"
-        ))
-    })?;
-    let full = captures
-        .get(0)
-        .ok_or_else(|| AppError::operation("failed to locate task checkbox"))?;
-    let prefix = captures.get(1).map_or("", |capture| capture.as_str());
-    let suffix = captures.get(3).map_or("", |capture| capture.as_str());
-    let replaced = format!(
-        "{}{}{}{}{}",
-        &line[..full.start()],
-        prefix,
-        completed_char,
-        suffix,
-        &line[full.end()..]
-    );
-    let completion_marker = Regex::new(r"✅\s+\S+").expect("regex should compile");
-    let replaced = if completion_marker.is_match(&replaced) {
-        completion_marker
-            .replace(&replaced, format!("✅ {completed_date}"))
-            .into_owned()
-    } else {
-        format!("{} ✅ {completed_date}", replaced.trim_end())
-    };
-    Ok(replaced)
-}
-
 fn update_inline_task_due_marker(line: &str, due: &str) -> Result<String, AppError> {
     let checkbox = Regex::new(r"^\s*(?:[-*+]|\d+[.)])\s+\[[^\]]\]").expect("regex should compile");
     if !checkbox.is_match(line) {
@@ -6641,16 +6617,6 @@ fn update_inline_task_due_marker(line: &str, due: &str) -> Result<String, AppErr
     } else {
         Ok(format!("{} 📅 {due}", line.trim_end()))
     }
-}
-
-fn first_completed_inline_status_symbol(config: &VaultConfig) -> String {
-    config
-        .tasks
-        .statuses
-        .completed
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "x".to_string())
 }
 
 fn tasknote_frontmatter_key(config: &VaultConfig, property: &str) -> String {

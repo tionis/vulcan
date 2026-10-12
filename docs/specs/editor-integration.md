@@ -224,12 +224,16 @@ Rename entry points:
 `TextDocumentEdit` computed on the overlay text with the shared Tasks completion semantics: status
 change, done date, and insertion of the next occurrence for recurring tasks according to
 `TasksConfig`. It never writes to disk while the file is open. On a closed file it uses the
-journaled note write.
+journaled note write. Completing sets the first completed status and a `✅` date; reopening sets
+the first todo status and drops it. The next occurrence of a `🔁` task moves its reference date
+(due, else scheduled, else start) to the rule's next date after it, or after the completion date
+for `when done` rules, and moves the other dates by the same number of days; it drops any block id
+and goes above the completed task unless `tasks.recurrence_on_completion = "next-line"`. A task
+with no dates completes without a new occurrence.
 
-**Dry run.** Code actions are the LSP-native dry run: the edit is computed lazily in
-`codeAction/resolve`, and the plan summary (`MoveSummary`, `RefactorReport`) is carried in `data`.
-Every `vulcan.*` command also accepts `{ "dryRun": true }` and returns the same report JSON as the
-CLI's `--dry-run`.
+**Dry run.** Every `vulcan.*` command accepts `{ "dryRun": true }` and returns its plan without
+changing anything: the equivalent CLI dry-run report under `report`, plus the paths it would change
+on disk and in the editor.
 
 **Auto-commit.** Edits applied by the editor are ordinary saves; the LSP never commits them. Disk
 batches follow `[git]` config, but the LSP defaults `autoCommit` to `false` (the `--no-commit`
@@ -265,8 +269,10 @@ Template insertion follows the existing template trust rules.
 - `textDocument/documentSymbol` (outline sections, with the section id in `detail`) and
   `workspace/symbol` (note paths and aliases).
 - `textDocument/rename`, `workspace/willRenameFiles`, `workspace/didRenameFiles`.
-- `textDocument/codeAction` with `codeAction/resolve`: create a note from an unresolved link, pick a
-  disambiguation candidate, convert link style (`LinkStylePreference`), toggle a task.
+- `textDocument/codeAction`: create a note from an unresolved link, pick a disambiguation
+  candidate, convert link style, toggle a task. Actions are computed eagerly, so no
+  `codeAction/resolve` is needed: buffer-only actions carry a versioned edit, and actions that
+  create files or toggle tasks are `vulcan.*` commands run on the writer thread.
 - `workspace/executeCommand`: `vulcan.scan`, `vulcan.note.create`, `vulcan.note.move`,
   `vulcan.task.toggle`, `vulcan.periodic.open`, `vulcan.template.insert`.
 

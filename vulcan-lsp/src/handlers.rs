@@ -8,7 +8,9 @@ use lsp_types::{self as lsp, request};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::path::Path;
-use vulcan_app::editor::{EditorLocation, EditorSession};
+use vulcan_app::editor::{
+    EditorAction, EditorActionKind, EditorCodeAction, EditorLocation, EditorSession,
+};
 
 /// Most workspace symbols returned for one query.
 const WORKSPACE_SYMBOL_LIMIT: usize = 500;
@@ -48,6 +50,9 @@ pub(crate) fn handle(session: &EditorSession, request: Request) -> Response {
         }
         request::PrepareRenameRequest::METHOD => {
             params(request).and_then(|p| prepare_rename(session, &p))
+        }
+        request::CodeActionRequest::METHOD => {
+            params(request).and_then(|p| code_actions(session, &p))
         }
         method => Err(ResponseFailure::method_not_found(method)),
     };
@@ -148,6 +153,104 @@ fn prepare_rename(session: &EditorSession, params: &lsp::TextDocumentPositionPar
             range: convert::lsp_range(target.range),
             placeholder: target.placeholder,
         })
+    }))
+}
+
+fn code_actions(session: &EditorSession, params: &lsp::CodeActionParams) -> Answer {
+    let Some(path) = vault_path(session, &params.text_document.uri) else {
+        return Ok(Value::Null);
+    };
+    let actions = session
+        .code_actions(&path, convert::position(params.range.start))?
+        .into_iter()
+        .filter_map(|action| code_action(session, params, action))
+        .collect::<Vec<_>>();
+    Ok(to_value(actions))
+}
+
+fn code_action(
+    session: &EditorSession,
+    params: &lsp::CodeActionParams,
+    action: EditorCodeAction,
+) -> Option<lsp::CodeActionOrCommand> {
+    let kind = match action.kind {
+        EditorActionKind::QuickFix => lsp::CodeActionKind::QUICKFIX,
+        EditorActionKind::Refactor => lsp::CodeActionKind::REFACTOR_REWRITE,
+    };
+    if let Some(only) = &params.context.only {
+        if !only
+            .iter()
+            .any(|wanted| kind.as_str().starts_with(wanted.as_str()))
+        {
+            return None;
+        }
+    }
+    // The client's diagnostics this action fixes.
+    let diagnostics = action.fixes.map(|code| {
+        params
+            .context
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.code == Some(lsp::NumberOrString::String(code.to_string()))
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    });
+    let (edit, command) = match action.action {
+        EditorAction::Edit(document) => {
+            let edit = lsp::TextDocumentEdit {
+                text_document: lsp::OptionalVersionedTextDocumentIdentifier {
+                    uri: uri(session, &document.path)?,
+                    version: Some(document.version),
+                },
+                edits: document
+                    .edits
+                    .into_iter()
+                    .map(|edit| {
+                        lsp::OneOf::Left(lsp::TextEdit {
+                            range: convert::lsp_range(edit.range),
+                            new_text: edit.new_text,
+                        })
+                    })
+                    .collect(),
+            };
+            (
+                Some(lsp::WorkspaceEdit {
+                    document_changes: Some(lsp::DocumentChanges::Edits(vec![edit])),
+                    ..lsp::WorkspaceEdit::default()
+                }),
+                None,
+            )
+        }
+        EditorAction::CreateNote { path } => (
+            None,
+            Some(lsp::Command {
+                title: action.title.clone(),
+                command: "vulcan.note.create".to_string(),
+                arguments: Some(vec![serde_json::json!({ "path": path })]),
+            }),
+        ),
+        EditorAction::ToggleTask { path, line } => (
+            None,
+            Some(lsp::Command {
+                title: action.title.clone(),
+                command: "vulcan.task.toggle".to_string(),
+                arguments: Some(vec![serde_json::json!({
+                    "path": uri(session, &path)?.to_string(),
+                    "line": line,
+                })]),
+            }),
+        ),
+    };
+    Some(lsp::CodeActionOrCommand::CodeAction(lsp::CodeAction {
+        title: action.title,
+        kind: Some(kind),
+        diagnostics,
+        edit,
+        command,
+        is_preferred: action.preferred.then_some(true),
+        ..lsp::CodeAction::default()
     }))
 }
 

@@ -13396,6 +13396,7 @@ fn bases_evaluation_applies_read_and_policy_scope() {
     let task_skill =
         fs::read_to_string(root.join(".agents/skills/task-management/SKILL.md")).unwrap();
     assert!(task_skill.contains("`tasks view list`"));
+    assert!(task_skill.contains("also inserts its next occurrence"));
     assert!(task_skill.contains("`tasks pomodoro status` shows only sessions"));
 }
 
@@ -18920,6 +18921,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(editor_skill.contains("vulcan doctor"));
     assert!(editor_skill.contains("editor-watch.lock"));
     assert!(editor_skill.contains("vulcan.note.move"));
+    assert!(editor_skill.contains("vulcan.task.toggle"));
     assert!(editor_skill.contains("watcher = \"client\""));
     let mcp_skill = fs::read_to_string(vault_root.join(".agents/skills/mcp-setup/SKILL.md"))
         .expect("MCP skill should be readable");

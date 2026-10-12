@@ -1838,6 +1838,36 @@ fn apply_task_complete_updates_inline_task_checkbox_and_date() {
 }
 
 #[test]
+fn apply_task_complete_inserts_the_next_occurrence_of_a_recurring_inline_task() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    initialize_vulcan_dir(&paths).expect("init should succeed");
+    fs::write(
+        temp_dir.path().join("Inbox.md"),
+        "- [ ] Water plants 🔁 every week 📅 2026-04-17\n",
+    )
+    .expect("seed note");
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).expect("scan");
+
+    let report = apply_task_complete(
+        &paths,
+        &TaskCompleteRequest {
+            task: "Inbox.md:1".to_string(),
+            date: Some("2026-04-20".to_string()),
+            dry_run: false,
+        },
+    )
+    .expect("complete report");
+
+    assert_eq!(report.changes.len(), 2);
+    assert_eq!(
+        fs::read_to_string(temp_dir.path().join("Inbox.md")).expect("updated note"),
+        "- [ ] Water plants 🔁 every week 📅 2026-04-24\n\
+         - [x] Water plants 🔁 every week 📅 2026-04-17 ✅ 2026-04-20\n"
+    );
+}
+
+#[test]
 fn inline_task_updates_wait_for_the_vault_write_lock() {
     for action in ["complete", "reschedule"] {
         let temp_dir = tempdir().expect("temp dir");

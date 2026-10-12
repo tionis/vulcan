@@ -818,6 +818,75 @@ fn rewrite_link(
     )
 }
 
+/// `link` rewritten in the other style: a wikilink as a Markdown link and a
+/// Markdown link as a wikilink, pointing at `target_path` with the vault's
+/// path style and keeping its heading, block, and display text. Embeds are
+/// not converted and return `None`.
+#[must_use]
+pub fn convert_link_style(
+    link: &RawLink,
+    source_path: &str,
+    target_path: &str,
+    document_paths: &[String],
+    resolution_mode: LinkResolutionMode,
+) -> Option<String> {
+    if link.raw_text.starts_with('!') || matches!(link.link_kind, crate::LinkKind::External) {
+        return None;
+    }
+    let to_markdown = link.raw_text.starts_with("[[");
+    let mut plain = link.clone();
+    plain.display_text = None;
+    let preferred = if to_markdown {
+        LinkStylePreference::Markdown
+    } else {
+        LinkStylePreference::Wikilink
+    };
+    let converted = rewrite_link_destination(
+        &plain,
+        source_path,
+        Some(target_path),
+        link.target_heading.as_deref(),
+        link.target_block.as_deref(),
+        document_paths,
+        resolution_mode,
+        preferred,
+    );
+    // Wikilinks name notes without their `.md` extension.
+    let converted = if to_markdown {
+        converted
+    } else {
+        let inner = converted.trim_start_matches("[[").trim_end_matches("]]");
+        let (path, fragment) = inner
+            .find('#')
+            .map_or((inner, ""), |at| (&inner[..at], &inner[at..]));
+        let path = path
+            .strip_suffix(".md")
+            .or_else(|| path.strip_suffix(".MD"))
+            .unwrap_or(path);
+        format!("[[{path}{fragment}]]")
+    };
+    let label = link
+        .display_text
+        .as_deref()
+        .filter(|label| !label.is_empty());
+    Some(match (to_markdown, label) {
+        (true, Some(label)) => {
+            let destination = converted.find("](").map_or("", |at| &converted[at..]);
+            format!("[{label}{destination}")
+        }
+        (false, Some(label)) => {
+            let target = converted.trim_start_matches("[[").trim_end_matches("]]");
+            let name = target.rsplit('/').next().unwrap_or(target);
+            if label == name || label == target {
+                converted
+            } else {
+                format!("[[{target}|{label}]]")
+            }
+        }
+        (_, None) => converted,
+    })
+}
+
 /// Rewrites one parsed link to a resolved destination while preserving its authored form.
 ///
 /// `destination_path` is vault-relative. Pass `None` for a fragment that remains local to
@@ -1227,6 +1296,31 @@ mod tests {
             ),
             "[damage](#Damage)"
         );
+    }
+
+    #[test]
+    fn converts_links_between_styles() {
+        let config = crate::VaultConfig::default();
+        let parsed = parse_document(
+            "[[Rules/Combat#Damage|hits]] [[Combat]] [rules](Rules/Combat.md#^b1) [Combat](Rules/Combat.md) ![[img.png]]",
+            &config,
+        );
+        let documents = vec!["Rules/Combat.md".to_string(), "img.png".to_string()];
+        let convert = |index: usize| {
+            convert_link_style(
+                &parsed.links[index],
+                "Index.md",
+                "Rules/Combat.md",
+                &documents,
+                LinkResolutionMode::Shortest,
+            )
+        };
+        // Shortest mode writes the shortest unique path, in either style.
+        assert_eq!(convert(0).as_deref(), Some("[hits](Combat.md#Damage)"));
+        assert_eq!(convert(1).as_deref(), Some("[Combat](Combat.md)"));
+        assert_eq!(convert(2).as_deref(), Some("[[Combat#^b1|rules]]"));
+        assert_eq!(convert(3).as_deref(), Some("[[Combat]]"));
+        assert_eq!(convert(4), None);
     }
 
     #[cfg(unix)]

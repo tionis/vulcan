@@ -8,11 +8,13 @@
 //! the cache or to disk; protocol adapters such as `vulcan lsp` translate
 //! these typed results into their own wire format.
 
+mod actions;
 mod completion;
 mod diagnostics;
 mod edits;
 mod navigation;
 
+pub use actions::{EditorAction, EditorActionKind, EditorCodeAction};
 pub use completion::{EditorCompletion, EditorCompletionItem, EditorCompletionKind};
 pub use diagnostics::{EditorDiagnostic, EditorDiagnosticSeverity};
 pub use edits::{

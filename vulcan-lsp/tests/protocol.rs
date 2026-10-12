@@ -781,3 +781,107 @@ fn client_renames_rewrite_open_and_closed_links() {
         "Also [[Beta]].\n"
     );
 }
+
+fn code_actions(
+    client: &mut Client,
+    path: &str,
+    line: u32,
+    character: u32,
+    only: Option<&str>,
+) -> Vec<Value> {
+    let mut params = client.at(path, line, character);
+    let position = params["position"].clone();
+    params["range"] = json!({ "start": position, "end": position });
+    params["context"] = match only {
+        Some(kind) => json!({ "diagnostics": [], "only": [kind] }),
+        None => json!({ "diagnostics": [] }),
+    };
+    client
+        .request("textDocument/codeAction", params)
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+}
+
+#[test]
+fn code_actions_create_missing_notes_and_disambiguate_links() {
+    let text = "[[Missing]] [[Same]]\n";
+    let dir = vault(&[("a/Same.md", "x"), ("b/Same.md", "x"), ("Home.md", text)]);
+    let (mut client, result) = Client::start(dir.path(), &editing_client());
+    assert!(result["capabilities"]["codeActionProvider"].is_object());
+    client.open("Home.md", text);
+    assert_eq!(client.diagnostics("Home.md").len(), 2);
+
+    let actions = code_actions(&mut client, "Home.md", 0, 3, None);
+    assert_eq!(actions[0]["title"], "Create note Missing.md");
+    assert_eq!(actions[0]["kind"], "quickfix");
+    assert_eq!(actions[0]["isPreferred"], true);
+    let command = actions[0]["command"].clone();
+    assert_eq!(command["command"], "vulcan.note.create");
+    let created = client.request(
+        "workspace/executeCommand",
+        json!({ "command": command["command"], "arguments": command["arguments"] }),
+    );
+    assert_eq!(created["action"], "create_note");
+    assert!(dir.path().join("Missing.md").is_file());
+    // The new note resolves once the server notices the index changed.
+    loop {
+        let diagnostics = client.diagnostics("Home.md");
+        if diagnostics.len() == 1 {
+            assert_eq!(diagnostics[0]["code"], "ambiguous-link");
+            break;
+        }
+    }
+
+    let actions = code_actions(&mut client, "Home.md", 0, 14, None);
+    assert_eq!(actions.len(), 2);
+    let change = &actions[1]["edit"]["documentChanges"][0];
+    assert_eq!(change["textDocument"]["version"], 1);
+    assert_eq!(change["edits"][0]["newText"], "b/Same");
+    assert!(code_actions(&mut client, "Home.md", 0, 14, Some("refactor")).is_empty());
+}
+
+#[test]
+fn toggling_a_task_edits_the_open_buffer_and_inserts_the_next_occurrence() {
+    let text = "# Chores\n- [ ] Water plants 🔁 every week 📅 2026-10-12\n";
+    let dir = vault(&[("Chores.md", text)]);
+    let (mut client, _) = Client::start(dir.path(), &editing_client());
+    client.open("Chores.md", text);
+    let _ = client.diagnostics("Chores.md");
+
+    let actions = code_actions(&mut client, "Chores.md", 1, 4, None);
+    let toggle = actions
+        .iter()
+        .find(|action| action["title"] == "Complete task")
+        .expect("a task line offers a toggle");
+    let mut arguments = toggle["command"]["arguments"].clone();
+    arguments[0]["today"] = json!("2026-10-13");
+    let result = client.request(
+        "workspace/executeCommand",
+        json!({ "command": "vulcan.task.toggle", "arguments": arguments }),
+    );
+    assert_eq!(result["action"], "toggle_task");
+    assert_eq!(result["report"]["completed"], true);
+    assert_eq!(
+        result["report"]["next_occurrence"],
+        "- [ ] Water plants 🔁 every week 📅 2026-10-19"
+    );
+    assert_eq!(result["editor"], json!(["Chores.md"]));
+    // The open buffer got the edit; the file on disk is untouched.
+    let edits = applied_edits(&client);
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0][0]["textDocument"]["version"], 1);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Chores.md")).unwrap(),
+        text
+    );
+
+    // Toggling in a file that does not exist reports it.
+    let closed = client.request(
+        "workspace/executeCommand",
+        json!({ "command": "vulcan.task.toggle", "arguments": [{
+            "path": "Other.md", "line": 0,
+        }]}),
+    );
+    assert_eq!(closed["data"]["kind"], "not_found");
+}

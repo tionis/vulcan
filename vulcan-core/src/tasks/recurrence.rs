@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use crate::expression::functions::{date_components, date_field_value, parse_date_like_string};
 
-const DAY_MS: i64 = 86_400_000;
+pub(crate) const DAY_MS: i64 = 86_400_000;
 const MAX_OCCURRENCE_DAYS: i64 = 366 * 50;
 
 #[derive(Debug, Clone, Default)]
@@ -491,6 +491,26 @@ fn task_recurrence_dates(value: &Value) -> Vec<String> {
     }
 }
 
+/// The first occurrence of `recurrence` strictly after `date`
+/// (`YYYY-MM-DD`), counting from `date` as the series anchor.
+pub(crate) fn next_occurrence_after(recurrence: &TaskRecurrence, date: &str) -> Option<String> {
+    let anchor = normalized_date_ms(date)?;
+    recurrence_occurrences(
+        recurrence,
+        anchor,
+        anchor.saturating_add(DAY_MS),
+        1,
+        &BTreeSet::new(),
+    )
+    .into_iter()
+    .next()
+}
+
+/// Midnight UTC of a date string, in milliseconds.
+pub(crate) fn date_ms(text: &str) -> Option<i64> {
+    normalized_date_ms(text)
+}
+
 fn normalized_date_ms(text: &str) -> Option<i64> {
     parse_date_like_string(text).map(day_start)
 }
@@ -609,7 +629,7 @@ fn day_start(ms: i64) -> i64 {
     ms.div_euclid(DAY_MS) * DAY_MS
 }
 
-fn format_day(ms: i64) -> String {
+pub(crate) fn format_day(ms: i64) -> String {
     let (year, month, day, _, _, _, _) = date_components(ms);
     format!("{year:04}-{month:02}-{day:02}")
 }

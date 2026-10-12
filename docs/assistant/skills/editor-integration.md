@@ -1,7 +1,7 @@
 ---
 name: editor-integration
 description: Set up and troubleshoot Vulcan's language server for Neovim, Vim, Helix, Emacs, Zed, or another LSP client. Use when the user wants link navigation, backlinks, completion, or diagnostics in a terminal editor, or asks why their editor reports an unresolved or ambiguous link.
-version: 3
+version: 4
 tools:
   - describe
   - help
@@ -42,7 +42,10 @@ and wants vault-aware features, or when editor diagnostics need explaining.
    subpaths; references (backlinks); hover previews; completion after `[[`, `#`, and in
    frontmatter keys; document and workspace symbols; diagnostics for open buffers; and renames
    that rewrite every link (rename a link's note target to move the note, or a heading or block
-   id). The `vulcan.note.move` command moves any note, with `dryRun` to preview.
+   id). The `vulcan.note.move` command moves any note, with `dryRun` to preview. Code actions
+   create a missing note from an unresolved link, pick the target of an ambiguous link, convert
+   between wikilink and Markdown style, and toggle the task on the cursor line
+   (`vulcan.task.toggle`; completing a recurring task inserts its next occurrence).
 4. For a whole-vault view of broken links, run `vulcan doctor`. Editor diagnostics use the same
    categories (`unresolved-link`, `ambiguous-link`, `outside-vault-link`, `malformed-frontmatter`)
    but only cover open buffers.

@@ -447,7 +447,11 @@ fn move_destination(from: &str, new_name: &str) -> String {
 /// Small edits turning `before` into `after`: per changed line when the line
 /// count is unchanged (the usual case for link rewrites), otherwise one edit
 /// spanning the changed region.
-fn text_edits(session: &EditorSession, before: &str, after: &str) -> Vec<EditorTextEdit> {
+pub(super) fn text_edits(
+    session: &EditorSession,
+    before: &str,
+    after: &str,
+) -> Vec<EditorTextEdit> {
     let index = LineIndex::new(before);
     let edit = |range: std::ops::Range<usize>, new_text: &str| EditorTextEdit {
         range: session.range(before, &index, range),
