@@ -1,7 +1,7 @@
 ---
 name: editor-integration
 description: Set up and troubleshoot Vulcan's language server for Neovim, Vim, Helix, Emacs, Zed, or another LSP client. Use when the user wants link navigation, backlinks, completion, or diagnostics in a terminal editor, or asks why their editor reports an unresolved or ambiguous link.
-version: 5
+version: 6
 tools:
   - describe
   - help
@@ -36,7 +36,9 @@ and wants vault-aware features, or when editor diagnostics need explaining.
    vim.lsp.enable("vulcan")
    ```
 
-   Other clients take the same command. Pass `--vault <dir>` only when the editor's workspace
+   For Neovim, prefer the bundled `integrations/vulcan.nvim` plugin (pickers, `:Vulcan` commands,
+   query results as virtual text, `:checkhealth vulcan`); `docs/guide/editors.md` covers Vim,
+   Helix, and Emacs. Other clients take the same command. Pass `--vault <dir>` only when the editor's workspace
    folder is not inside the vault; otherwise the server discovers it like any other command.
 3. Explain what the server offers: go-to-definition on links, embeds, `#heading`, and `#^block`
    subpaths; references (backlinks); hover previews; completion after `[[`, `#`, and in

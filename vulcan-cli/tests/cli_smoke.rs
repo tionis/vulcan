@@ -18923,6 +18923,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(editor_skill.contains("vulcan.note.move"));
     assert!(editor_skill.contains("vulcan.task.toggle"));
     assert!(editor_skill.contains("dataview_js = \"on\""));
+    assert!(editor_skill.contains("integrations/vulcan.nvim"));
     assert!(editor_skill.contains("watcher = \"client\""));
     let mcp_skill = fs::read_to_string(vault_root.join(".agents/skills/mcp-setup/SKILL.md"))
         .expect("MCP skill should be readable");

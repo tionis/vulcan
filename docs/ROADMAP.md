@@ -8388,12 +8388,12 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 
 ### 9.40.3 `vulcan.nvim`
 
-- [ ] Create `integrations/vulcan.nvim/` with LSP registration (root markers `.vulcan/`, `.vulcan.toml`, `.obsidian/`) and `:checkhealth vulcan`
-- [ ] Pickers (telescope, fzf-lua, or snacks) over notes, search, tags, backlinks, and periodic notes
-- [ ] `:Vulcan daily|weekly|template|capture` commands; floating-terminal launchers for `browse`, `bases`, and `kanban`
-- [ ] Virtual-line rendering of `vulcan/render` results; buffer re-pointing after moves; `doctor` results in quickfix
-- [ ] Headless `nvim` smoke tests
-- [ ] `docs/guide/editors.md`: Neovim setup, recommended companions (render-markdown.nvim or markview.nvim, image.nvim or snacks.image), and plain Vim recipes (`yegappan/lsp` or `vim-lsp` plus fzf.vim)
+- [x] Create `integrations/vulcan.nvim/` with LSP registration (root markers `.vulcan/`, `.vulcan.toml`, `.obsidian/`) and `:checkhealth vulcan`
+- [x] Pickers (through `vim.ui.select`, so telescope, fzf-lua, or snacks present them) over notes, search, tags, and templates; backlinks through references
+- [~] `:Vulcan daily|weekly|template|capture` commands; floating-terminal launchers for `browse`, `bases`, and `kanban` — all but `capture`
+- [x] Virtual-line rendering of `vulcan/render` results; buffer re-pointing after moves (editor-side `RenameFile`); `doctor` results in quickfix
+- [x] Headless `nvim` smoke tests (`test/smoke.lua`, run by `cargo test -p vulcan-cli --test nvim_plugin` when Neovim 0.10+ is installed)
+- [x] `docs/guide/editors.md`: Neovim setup, recommended companions (render-markdown.nvim or markview.nvim, image.nvim or snacks.image), plain Vim recipes (`yegappan/lsp` or `vim-lsp` plus fzf.vim), Helix, and Emacs
 - [ ] Return a cursor offset from template insertion so `tp.file.cursor()` can place the cursor
 
 ### 9.40.4 Agent skills and documentation

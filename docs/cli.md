@@ -854,7 +854,7 @@ This is for quickly handing off from CLI inspection to the Obsidian desktop app.
 
 ### `lsp`
 
-`vulcan lsp` serves the Language Server Protocol over stdin/stdout so Neovim, Vim, Helix, Emacs, Zed, and other LSP clients get live vault semantics. Start it from the editor, not interactively. A minimal Neovim setup:
+`vulcan lsp` serves the Language Server Protocol over stdin/stdout so Neovim, Vim, Helix, Emacs, Zed, and other LSP clients get live vault semantics. Start it from the editor, not interactively. Neovim users can install the bundled [vulcan.nvim](../integrations/vulcan.nvim/README.md) plugin; [the editors guide](guide/editors.md) covers Vim, Helix, and Emacs. A minimal Neovim setup without the plugin:
 
 ```lua
 vim.lsp.config("vulcan", {

@@ -1,0 +1,94 @@
+*vulcan.txt*  Vulcan vaults in Neovim
+
+==============================================================================
+CONTENTS                                                      *vulcan-contents*
+
+  1. Introduction ......................................... |vulcan-intro|
+  2. Setup ................................................ |vulcan-setup|
+  3. Commands ............................................. |vulcan-commands|
+  4. Query results ........................................ |vulcan-render|
+  5. Lua API .............................................. |vulcan-api|
+
+==============================================================================
+1. INTRODUCTION                                                 *vulcan-intro*
+
+vulcan.nvim connects Neovim to the `vulcan lsp` language server and the
+`vulcan` command line. Vulcan owns every vault semantic; the plugin registers
+the server, adds |:Vulcan| commands and pickers, and draws evaluated query
+results. Navigation, completion, diagnostics, renames, and code actions come
+from the language server through Neovim's built-in LSP client.
+
+Requires Neovim 0.10+ and `vulcan` on `PATH`. Run |:checkhealth| vulcan to
+verify the setup.
+
+==============================================================================
+2. SETUP                                                        *vulcan-setup*
+
+>lua
+  require('vulcan').setup({
+    binary = 'vulcan',
+    root_markers = { '.vulcan', '.vulcan.toml', '.obsidian' },
+    init_options = {},
+    render = { enabled = true, max_lines = 30,
+      sources = { 'inline', 'dataview', 'dataviewjs', 'tasks', 'base', 'notice' } },
+    keymaps = { notes = '<leader>vn', search = '<leader>vs', tags = '<leader>vt',
+      daily = '<leader>vd', template = '<leader>vi', toggle_task = '<leader>vx',
+      render = '<leader>vr' },
+  })
+<
+`init_options` are sent to the server: `watcher` ("own", "client", "off")
+and `dataviewJs` ("off", "static", "on"). "on" also needs
+`[editor] dataview_js = "on"` in the vault's `.vulcan/config.local.toml`.
+
+==============================================================================
+3. COMMANDS                                                   *vulcan-commands*
+
+                                                                     *:Vulcan*
+:Vulcan notes             Pick a note.
+:Vulcan search [query]    Search note content.
+:Vulcan tags              Pick a tag, then a note carrying it.
+:Vulcan backlinks         List references to the current note.
+:Vulcan daily [date]      Open the daily note, creating it from its template.
+:Vulcan weekly [date]     Same for weekly notes; also `monthly`.
+:Vulcan periodic {type} [date]
+                          Same for any configured periodic type.
+:Vulcan template [name]   Insert a template at the cursor; picks one without
+                          a name.
+:Vulcan task              Complete or reopen the task on the cursor line.
+                          Completing a recurring task inserts its next
+                          occurrence.
+:Vulcan move [path]       Move the current note, rewriting every link.
+:Vulcan scan[!]           Rescan the vault; with ! rebuild every document.
+:Vulcan render            Toggle query results for the current buffer.
+:Vulcan doctor            Load `vulcan doctor` problems into the quickfix list.
+:Vulcan status            Show cache and watcher state.
+:Vulcan browse            Open the note browser in a floating terminal.
+:Vulcan bases [file]      Open the Bases TUI for a `.base` file.
+:Vulcan kanban [file]     Show a Kanban board.
+
+Pickers use |vim.ui.select()|, so a telescope, fzf-lua, or snacks `ui.select`
+provider presents them.
+
+==============================================================================
+4. QUERY RESULTS                                                *vulcan-render*
+
+Inline Dataview expressions, `dataview`, `dataviewjs`, and `tasks` blocks,
+and `.base` embeds are evaluated by the server (`vulcan/render`). Block
+results appear as virtual lines below their block, inline values at the end
+of their line. They refresh on |BufEnter|, |BufWritePost|, |InsertLeave|, and
+whenever the server reports an index change. Choose which kinds appear with
+`render.sources`.
+
+==============================================================================
+5. LUA API                                                        *vulcan-api*
+
+require('vulcan').client({bufnr})       The attached server client, if any.
+require('vulcan').vault_root({bufnr})   The vault root for a buffer.
+require('vulcan').execute({command}, {argument}, {callback})
+                                        Run a `vulcan.*` server command.
+require('vulcan.cli').json({args}, {callback})
+                                        Run `vulcan --output json {args}`.
+require('vulcan.render').refresh({bufnr})
+                                        Redraw query results.
+
+ vim:tw=78:ts=8:ft=help:norl:

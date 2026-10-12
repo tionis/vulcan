@@ -349,22 +349,38 @@ Scope:
 
 - LSP registration through `vim.lsp.config`/`vim.lsp.start` with the root markers above.
 - `:checkhealth vulcan`: binary version, `protocolVersion`, watcher mode, cache status.
-- Pickers (telescope, fzf-lua, or snacks; whichever is installed) over `vulcan ls`, `search`,
-  `tags`, backlinks (`vulcan/backlinks`), and `periodic list` JSON output.
-- `:Vulcan daily|weekly|template|capture` commands wrapping the periodic, template insertion, and
-  capture CLI or `executeCommand`.
-- Floating-terminal launchers for `vulcan browse`, `bases`, and `kanban`.
-- `vulcan/render` results shown as virtual lines under Dataview and Tasks fences.
-- Buffer re-pointing on `moved: { from, to }` results.
-- `vulcan doctor --output json` into the quickfix list.
+- Pickers over `vim.ui.select`, so whichever `ui.select` provider is configured (telescope,
+  fzf-lua, snacks) presents them, over `vulcan ls`, `search`, `tags`, and `template list` JSON
+  output. Backlinks use the standard `textDocument/references`.
+- `:Vulcan` subcommands wrapping server commands: `daily`/`weekly`/`monthly`/`periodic`,
+  `template`, `task`, `move`, `scan`, plus `render`, `doctor`, and `status`. QuickAdd-style capture
+  is not wrapped yet.
+- Floating-terminal launchers for `vulcan browse`, `bases tui`, and `kanban show`.
+- `vulcan/render` results drawn as virtual text: block results as virtual lines below the block,
+  inline values at the end of the line, refreshed on `BufEnter`, `BufWritePost`, `InsertLeave`, and
+  `vulcan/indexChanged`.
+- Buffer re-pointing after moves needs no plugin code: a moved open note is renamed by the editor
+  (`RenameFile`), which Neovim applies to the buffer.
+- `vulcan doctor --output json` into the quickfix list (at line 1 of each file, since doctor
+  reports files, not positions).
+- Interop notes found in testing: Neovim sends an empty `initializationOptions` table as `[]`, so
+  the server treats any non-object as absent; and Neovim lists `resourceOperations` without
+  `documentChanges`, so the server treats listed resource operations as `documentChanges`
+  support.
 - Recommended companions instead of reimplementation: render-markdown.nvim or markview.nvim for live
   preview, image.nvim or snacks.image for images.
 
 Must not contain: link parsing, path or alias resolution, frontmatter editing, task-state logic,
 template rendering, periodic date math, or direct `cache.db` access.
 
-Plain Vim gets a guide (`docs/guide/editors.md`) with `yegappan/lsp` or `vim-lsp` plus fzf.vim
-recipes over `--output json`.
+Plain Vim, Helix, and Emacs get a guide (`docs/guide/editors.md`): `yegappan/lsp` or `vim-lsp` plus
+fzf.vim recipes, a Helix `languages.toml` entry, and an Eglot entry.
+
+The plugin's headless smoke test (`integrations/vulcan.nvim/test/smoke.lua`) drives a real
+Neovim against the built binary: attaching, rendering, the CLI wrapper, doctor, task toggling with
+recurrence, link rename, moving the open note, periodic notes, and `:checkhealth`.
+`cargo test -p vulcan-cli --test nvim_plugin` runs it when Neovim 0.10+ is installed (set
+`VULCAN_REQUIRE_NVIM` to fail instead of skipping).
 
 Open item: `tp.file.cursor()` placement needs the template insertion report to return a cursor
 offset, which the template API does not report today.
