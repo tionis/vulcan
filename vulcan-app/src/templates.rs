@@ -3042,10 +3042,7 @@ fn js_web_request_string(
     json_path: Option<&str>,
 ) -> Result<String, String> {
     ensure_allowlisted_url(&state.vault_config.templates, url)?;
-    let response = reqwest::blocking::get(url)
-        .map_err(|error| error.to_string())?
-        .text()
-        .map_err(|error| error.to_string())?;
+    let response = http_get_text(url)?;
     extract_web_response(response, json_path)
 }
 
@@ -4510,10 +4507,7 @@ fn js_daily_quote(state: &JsTemplateState) -> Result<String, String> {
         "https://raw.githubusercontent.com/Zachatoo/quotes-database/refs/heads/main/quotes.json";
 
     ensure_allowlisted_url(&state.vault_config.templates, DAILY_QUOTE_URL)?;
-    let body = reqwest::blocking::get(DAILY_QUOTE_URL)
-        .map_err(|error| error.to_string())?
-        .text()
-        .map_err(|error| error.to_string())?;
+    let body = http_get_text(DAILY_QUOTE_URL)?;
     let quotes: Vec<DailyQuote> = serde_json::from_str(&body).map_err(|error| error.to_string())?;
     let Some(quote_count) = i64::try_from(quotes.len()).ok().filter(|count| *count > 0) else {
         return Err("templater daily quote source returned no quotes".to_string());
@@ -4577,7 +4571,30 @@ fn resolve_vault_path_from_state(state: &JsTemplateState, identifier: &str) -> O
         .then_some(normalized)
 }
 
-#[cfg(feature = "js_runtime")]
+/// Why template web requests fail in a build without the `web` feature.
+#[cfg(all(feature = "js_runtime", not(feature = "web")))]
+const TEMPLATE_WEB_UNAVAILABLE: &str =
+    "templater web requests need a Vulcan build with the `web` feature";
+
+#[cfg(all(feature = "js_runtime", feature = "web"))]
+fn http_get_text(url: &str) -> Result<String, String> {
+    reqwest::blocking::get(url)
+        .map_err(|error| error.to_string())?
+        .text()
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(all(feature = "js_runtime", not(feature = "web")))]
+fn http_get_text(_url: &str) -> Result<String, String> {
+    Err(TEMPLATE_WEB_UNAVAILABLE.to_string())
+}
+
+#[cfg(all(feature = "js_runtime", not(feature = "web")))]
+fn ensure_allowlisted_url(_config: &TemplatesConfig, _url: &str) -> Result<(), String> {
+    Err(TEMPLATE_WEB_UNAVAILABLE.to_string())
+}
+
+#[cfg(all(feature = "js_runtime", feature = "web"))]
 fn ensure_allowlisted_url(config: &TemplatesConfig, url: &str) -> Result<(), String> {
     let parsed = reqwest::Url::parse(url).map_err(|error| error.to_string())?;
     let Some(host) = parsed.host_str() else {

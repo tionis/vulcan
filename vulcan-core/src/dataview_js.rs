@@ -305,9 +305,16 @@ mod runtime {
     };
     use crate::resolve_note_reference;
     use crate::search::{search_vault_with_filter, SearchQuery};
+    #[cfg(feature = "web")]
     use crate::web::{
         fetch_web, prepare_search_backend, search_web, WebFetchReport, WebSearchReport,
     };
+    // Without the `web` feature the bridge still exists, so scripts get a
+    // clear error instead of a missing function.
+    #[cfg(not(feature = "web"))]
+    type WebSearchReport = serde_json::Value;
+    #[cfg(not(feature = "web"))]
+    type WebFetchReport = serde_json::Value;
     use crate::VaultPaths;
     use crate::{
         move_note, parse_document, query_backlinks_with_filter, query_links_with_filter,
@@ -325,6 +332,7 @@ mod runtime {
         retired_note_indexes: Mutex<Vec<JsNoteIndex>>,
         periodic_config: crate::PeriodicConfig,
         inbox_config: crate::InboxConfig,
+        #[cfg_attr(not(feature = "web"), allow(dead_code))]
         web_config: WebConfig,
         shell_path: Option<PathBuf>,
         sandbox: JsRuntimeSandbox,
@@ -6162,6 +6170,31 @@ globalThis.Function = undefined;
         (year, month, day)
     }
 
+    #[cfg(not(feature = "web"))]
+    fn run_js_web_search(
+        state: &JsEvalState,
+        _query: &str,
+        _limit: usize,
+    ) -> Result<WebSearchReport, DataviewJsError> {
+        ensure_network_access(state, "web.search()")?;
+        Err(DataviewJsError::Message(
+            "web.search() needs a Vulcan build with the `web` feature".to_string(),
+        ))
+    }
+
+    #[cfg(not(feature = "web"))]
+    fn run_js_web_fetch(
+        state: &JsEvalState,
+        _url: &str,
+        _mode: &str,
+    ) -> Result<WebFetchReport, DataviewJsError> {
+        ensure_network_access(state, "web.fetch()")?;
+        Err(DataviewJsError::Message(
+            "web.fetch() needs a Vulcan build with the `web` feature".to_string(),
+        ))
+    }
+
+    #[cfg(feature = "web")]
     fn run_js_web_search(
         state: &JsEvalState,
         query: &str,
@@ -6179,6 +6212,7 @@ globalThis.Function = undefined;
             .map_err(DataviewJsError::Message)
     }
 
+    #[cfg(feature = "web")]
     fn run_js_web_fetch(
         state: &JsEvalState,
         url: &str,
