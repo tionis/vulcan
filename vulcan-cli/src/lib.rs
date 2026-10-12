@@ -9763,12 +9763,8 @@ fn run_export_profile(
         transforms: profile.content_transform_rules.as_deref(),
         evaluation: evaluation_guard.as_ref().map(|guard| ExportEvaluation {
             guard: Some(guard),
-            dataview_js: profile.dataview_js.unwrap_or_else(|| {
-                vulcan_core::load_vault_config(paths)
-                    .config
-                    .dataview
-                    .render_dataview_js
-            }),
+            // A profile's policy is vault content, so its `on` needs trust.
+            dataview_js: vulcan_core::vault_dataview_js_policy(paths, profile.dataview_js),
         }),
     };
 

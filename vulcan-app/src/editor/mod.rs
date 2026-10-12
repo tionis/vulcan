@@ -25,7 +25,7 @@ pub use edits::{
     EditorTextEdit,
 };
 pub use navigation::{EditorHover, EditorSymbol, EditorWorkspaceSymbol};
-pub use render::{effective_dataview_js, EditorRender, EditorRenderRegion};
+pub use render::{EditorRender, EditorRenderRegion};
 
 use crate::AppError;
 use std::collections::HashMap;

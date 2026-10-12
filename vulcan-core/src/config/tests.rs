@@ -952,7 +952,7 @@ fn assert_override_dataview_and_templates(config: &VaultConfig) {
     assert!(!config.dataview.display_result_count);
     assert_eq!(
         config.dataview.render_dataview_js,
-        crate::DataviewJsRenderPolicy::On
+        Some(crate::DataviewJsRenderPolicy::On)
     );
     assert_eq!(config.dataview.default_date_format, "yyyy-MM-dd");
     assert_eq!(config.dataview.default_datetime_format, "yyyy-MM-dd HH:mm");

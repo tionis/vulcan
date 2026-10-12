@@ -1644,10 +1644,12 @@ pub struct DataviewConfig {
     pub recursive_subtask_completion: bool,
     #[serde(default = "default_dataview_display_result_count")]
     pub display_result_count: bool,
-    /// The `--dataviewjs` policy `render`, `note get`, and `daily show` use
-    /// when none is given. Browse previews always use `on`.
-    #[serde(default)]
-    pub render_dataview_js: crate::DataviewJsRenderPolicy,
+    /// The vault's `DataviewJS` rendering policy for `render`, `note get`,
+    /// `daily show`, browse previews, MCP `note_get`, editors, and evaluated
+    /// exports. Unset follows `vulcan trust`; `on` only applies to a trusted
+    /// vault (see [`crate::vault_dataview_js_policy`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub render_dataview_js: Option<crate::DataviewJsRenderPolicy>,
     #[serde(default = "default_dataview_default_date_format")]
     pub default_date_format: String,
     #[serde(default = "default_dataview_default_datetime_format")]
@@ -1680,7 +1682,7 @@ impl Default for DataviewConfig {
             task_completion_text: default_dataview_task_completion_text(),
             recursive_subtask_completion: default_dataview_recursive_subtask_completion(),
             display_result_count: default_dataview_display_result_count(),
-            render_dataview_js: crate::DataviewJsRenderPolicy::default(),
+            render_dataview_js: None,
             default_date_format: default_dataview_default_date_format(),
             default_datetime_format: default_dataview_default_datetime_format(),
             timezone: None,
@@ -4709,7 +4711,7 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
             config.dataview.display_result_count = display_result_count;
         }
         if let Some(policy) = dataview.render_dataview_js {
-            config.dataview.render_dataview_js = policy;
+            config.dataview.render_dataview_js = Some(policy);
         }
         if let Some(format) = dataview.default_date_format {
             config.dataview.default_date_format = format;

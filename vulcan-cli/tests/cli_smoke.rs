@@ -4586,7 +4586,17 @@ fn note_get_evaluate_replaces_dynamic_content() {
     assert!(raw["content"].as_str().unwrap().contains("```dataview"));
     assert_eq!(raw["metadata"]["evaluated"], false);
 
-    let json = vulcan_json(&vault_root, &["note", "get", "Dashboard", "--evaluate"]);
+    let json = vulcan_json(
+        &vault_root,
+        &[
+            "note",
+            "get",
+            "Dashboard",
+            "--evaluate",
+            "--dataviewjs",
+            "off",
+        ],
+    );
     let content = json["content"].as_str().unwrap();
     assert_eq!(json["metadata"]["evaluated"], true);
     assert_eq!(json["metadata"]["dataview_js"], "off");
@@ -4600,6 +4610,29 @@ fn note_get_evaluate_replaces_dynamic_content() {
         "{content}"
     );
     assert_eq!(json["diagnostics"][0]["kind"], "dataviewjs_disabled");
+}
+
+#[cfg(feature = "js_runtime")]
+#[test]
+fn note_get_evaluate_runs_dataviewjs_in_the_sandbox_by_default() {
+    // A temporary vault is never trusted, so the default is the strict
+    // sandbox, and the vault's own `on` cannot lift it.
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    write_dynamic_content_vault(&vault_root);
+    let json = vulcan_json(&vault_root, &["note", "get", "Dashboard", "--evaluate"]);
+    assert_eq!(json["metadata"]["dataview_js"], "static");
+    assert!(json["content"]
+        .as_str()
+        .unwrap()
+        .contains("from the js block"));
+
+    let config = vault_root.join(".vulcan/config.toml");
+    let mut contents = fs::read_to_string(&config).unwrap_or_default();
+    contents.push_str("\n[dataview]\nrender_dataview_js = \"on\"\n");
+    fs::write(&config, contents).expect("config should be written");
+    let json = vulcan_json(&vault_root, &["note", "get", "Dashboard", "--evaluate"]);
+    assert_eq!(json["metadata"]["dataview_js"], "static");
 }
 
 #[cfg(feature = "js_runtime")]
@@ -13393,6 +13426,7 @@ fn bases_evaluation_applies_read_and_policy_scope() {
     assert!(bases_skill.contains("--permissions"));
     assert!(bases_skill.contains("write access to the derived note path"));
     assert!(bases_skill.contains("`dataview inline` use the same scope"));
+    assert!(bases_skill.contains("full evaluation (the configured sandbox tier, still read-only) in a vault trusted with `vulcan trust`"));
     let task_skill =
         fs::read_to_string(root.join(".agents/skills/task-management/SKILL.md")).unwrap();
     assert!(task_skill.contains("`tasks view list`"));
@@ -36019,7 +36053,10 @@ fn note_get_html_uses_shared_html_renderer() {
     assert!(html.contains("<h2 id=\"lists\">Lists</h2>"));
     assert!(html.contains("class=\"dataview-inline-field\""));
     assert!(html.contains("class=\"dql-table\""));
-    assert!(html.contains("DataviewJS disabled"));
+    // DataviewJS runs in the strict sandbox by default.
+    if cfg!(feature = "js_runtime") {
+        assert!(!html.contains("DataviewJS disabled"));
+    }
 }
 
 #[test]
@@ -36048,7 +36085,10 @@ fn render_html_uses_shared_html_renderer_for_vault_files() {
 
     assert!(html.contains("<h2 id=\"lists\">Lists</h2>"));
     assert!(html.contains("class=\"dql-table\""));
-    assert!(html.contains("DataviewJS disabled"));
+    // DataviewJS runs in the strict sandbox by default.
+    if cfg!(feature = "js_runtime") {
+        assert!(!html.contains("DataviewJS disabled"));
+    }
 }
 
 #[test]

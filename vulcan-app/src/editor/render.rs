@@ -53,10 +53,7 @@ impl EditorSession {
                 .check_read_path(path)
                 .map_err(|error| AppError::operation_with_code("permission_denied", error))?;
         }
-        let dataview_js = effective_dataview_js(
-            requested,
-            crate::trust::is_trusted(self.paths().vault_root()),
-        );
+        let dataview_js = vulcan_core::vault_dataview_js_policy(self.paths(), requested);
         let guard = self.guard().map(|guard| guard as &dyn PermissionGuard);
         let renderer = EvaluatedMarkdownRenderer::load(self.paths(), guard);
         let evaluated = renderer.render_regions(
@@ -96,24 +93,6 @@ impl EditorSession {
     }
 }
 
-/// The policy an editor gets. Without a request, a trusted vault renders
-/// with full evaluation and any other vault in the strict sandbox. A request
-/// is honored, except that `on` falls back to `static` for an untrusted
-/// vault; `off` always turns `DataviewJS` off.
-#[must_use]
-pub fn effective_dataview_js(
-    requested: Option<DataviewJsRenderPolicy>,
-    trusted: bool,
-) -> DataviewJsRenderPolicy {
-    match requested {
-        Some(DataviewJsRenderPolicy::Off) => DataviewJsRenderPolicy::Off,
-        None | Some(DataviewJsRenderPolicy::On) if trusted => DataviewJsRenderPolicy::On,
-        None | Some(DataviewJsRenderPolicy::Static | DataviewJsRenderPolicy::On) => {
-            DataviewJsRenderPolicy::Static
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::test_support::*;
@@ -122,16 +101,6 @@ mod tests {
     use DataviewJsRenderPolicy::{Off, On, Static};
 
     const HOME: &str = "---\nstatus: draft\n---\nStatus: `= this.status`\n\n```dataviewjs\ndv.paragraph(\"js ran\")\n```\n\n```tasks\nnot done\n```\n";
-
-    #[test]
-    fn dataview_js_follows_vault_trust() {
-        assert_eq!(effective_dataview_js(None, false), Static);
-        assert_eq!(effective_dataview_js(None, true), On);
-        assert_eq!(effective_dataview_js(Some(On), false), Static);
-        assert_eq!(effective_dataview_js(Some(On), true), On);
-        assert_eq!(effective_dataview_js(Some(Static), true), Static);
-        assert_eq!(effective_dataview_js(Some(Off), true), Off);
-    }
 
     #[test]
     fn renders_dataview_js_by_default_and_fully_once_trusted() {

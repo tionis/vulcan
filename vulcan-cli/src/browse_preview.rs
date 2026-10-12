@@ -111,7 +111,7 @@ fn run_worker(
     results: &Sender<RenderedNote>,
 ) {
     let guard = guard.map(|guard| guard as &dyn PermissionGuard);
-    let mut renderer = None::<EvaluatedMarkdownRenderer>;
+    let mut renderer = None::<(EvaluatedMarkdownRenderer, DataviewJsRenderPolicy)>;
     while let Ok(first) = requests.recv() {
         // Coalesce everything queued while the last note rendered.
         let mut latest = None;
@@ -124,9 +124,13 @@ fn run_worker(
         let Some((generation, path)) = latest else {
             continue;
         };
-        let renderer =
-            renderer.get_or_insert_with(|| EvaluatedMarkdownRenderer::load(paths, guard));
-        let markdown = render_note(paths, renderer, guard, profile, &path);
+        let (renderer, dataview_js) = renderer.get_or_insert_with(|| {
+            (
+                EvaluatedMarkdownRenderer::load(paths, guard),
+                vulcan_core::vault_dataview_js_policy(paths, None),
+            )
+        });
+        let markdown = render_note(paths, renderer, *dataview_js, guard, profile, &path);
         if results
             .send(RenderedNote {
                 generation,
@@ -141,11 +145,13 @@ fn run_worker(
 }
 
 /// The note's Markdown with Dataview, Tasks, Bases, and note embeds
-/// evaluated under the session's read authority. `DataviewJS` runs with the
-/// configured sandbox tier, read-only.
+/// evaluated under the session's read authority. `DataviewJS` follows the
+/// vault's policy: the strict sandbox, or full evaluation (read-only) in a
+/// trusted vault.
 fn render_note(
     paths: &VaultPaths,
     renderer: &EvaluatedMarkdownRenderer,
+    dataview_js: DataviewJsRenderPolicy,
     guard: Option<&dyn PermissionGuard>,
     profile: Option<&str>,
     path: &str,
@@ -159,7 +165,7 @@ fn render_note(
             &source,
             &EvaluatedMarkdownOptions {
                 source_path: Some(path),
-                dataview_js: DataviewJsRenderPolicy::On,
+                dataview_js,
                 guard,
                 permission_profile: profile,
             },

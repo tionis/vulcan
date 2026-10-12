@@ -48,6 +48,22 @@ pub enum DataviewJsRenderPolicy {
 }
 
 impl DataviewJsRenderPolicy {
+    /// The policy an evaluation gets from a vault-side or remote preference.
+    ///
+    /// The strict `static` sandbox cannot harm the vault or the device, so
+    /// it is the floor. Full evaluation needs `vulcan trust`: without a
+    /// preference a trusted vault gets `on`, and `on` from vault content,
+    /// editors, or agents falls back to `static` for an untrusted vault.
+    /// `off` and `static` are honored as given.
+    #[must_use]
+    pub fn clamped(preference: Option<Self>, trusted: bool) -> Self {
+        match preference {
+            Some(Self::Off) => Self::Off,
+            None | Some(Self::On) if trusted => Self::On,
+            None | Some(Self::Static | Self::On) => Self::Static,
+        }
+    }
+
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -56,6 +72,23 @@ impl DataviewJsRenderPolicy {
             Self::On => "on",
         }
     }
+}
+
+/// The vault's `DataviewJS` policy for a preference that is not an explicit
+/// per-command choice: `preference` (an editor's or agent's request, or an
+/// export profile's setting), else `dataview.render_dataview_js`, else the
+/// trust default, with `on` clamped by [`DataviewJsRenderPolicy::clamped`].
+#[must_use]
+pub fn vault_dataview_js_policy(
+    paths: &VaultPaths,
+    preference: Option<DataviewJsRenderPolicy>,
+) -> DataviewJsRenderPolicy {
+    let preference =
+        preference.or_else(|| load_vault_config(paths).config.dataview.render_dataview_js);
+    DataviewJsRenderPolicy::clamped(
+        preference,
+        crate::paths::is_trusted_vault(paths.vault_root()),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1693,6 +1726,34 @@ mod tests {
             rendered,
             "**[[Dashboard]]**\n\n- [ ] Write docs\n  - [x] Ship\n"
         );
+    }
+
+    #[test]
+    fn dataview_js_policy_follows_trust() {
+        use DataviewJsRenderPolicy::{Off, On, Static};
+        assert_eq!(DataviewJsRenderPolicy::clamped(None, false), Static);
+        assert_eq!(DataviewJsRenderPolicy::clamped(None, true), On);
+        assert_eq!(DataviewJsRenderPolicy::clamped(Some(On), false), Static);
+        assert_eq!(DataviewJsRenderPolicy::clamped(Some(On), true), On);
+        assert_eq!(DataviewJsRenderPolicy::clamped(Some(Static), true), Static);
+        assert_eq!(DataviewJsRenderPolicy::clamped(Some(Off), true), Off);
+
+        // A temporary vault is never on the trust list.
+        let (dir, paths, _) = build_vault();
+        assert_eq!(vault_dataview_js_policy(&paths, None), Static);
+        std::fs::write(
+            dir.path().join("vault/.vulcan/config.toml"),
+            "[dataview]\nrender_dataview_js = \"on\"\n",
+        )
+        .unwrap();
+        assert_eq!(vault_dataview_js_policy(&paths, None), Static);
+        assert_eq!(vault_dataview_js_policy(&paths, Some(Off)), Off);
+        std::fs::write(
+            dir.path().join("vault/.vulcan/config.toml"),
+            "[dataview]\nrender_dataview_js = \"off\"\n",
+        )
+        .unwrap();
+        assert_eq!(vault_dataview_js_policy(&paths, None), Off);
     }
 
     #[test]

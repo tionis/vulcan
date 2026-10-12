@@ -946,10 +946,7 @@ fn print_periodic_note(
         content,
         &vulcan_core::EvaluatedMarkdownOptions {
             source_path: path,
-            dataview_js: vulcan_core::load_vault_config(paths)
-                .config
-                .dataview
-                .render_dataview_js,
+            dataview_js: vulcan_core::vault_dataview_js_policy(paths, None),
             guard: Some(&guard),
             permission_profile: Some(guard.profile_name()),
         },

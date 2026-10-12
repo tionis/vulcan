@@ -253,10 +253,13 @@ reads; no raw file reads, network, writes, or host execution; deterministic) can
 or the device, so it is the floor for every vault. Full evaluation (`on`: the vault's configured
 `JsRuntimeSandbox` tier and permission profile, still never writing) follows `vulcan trust`, the
 same per-user trust list that gates startup scripts and plugins. Without a client preference
-(`initializationOptions.dataviewJs`, or a request's `dataviewJs`), a trusted vault renders with
-`on` and any other vault with `static`. A preference is honored, except that `on` falls back to
-`static` for an untrusted vault, and `off` turns `DataviewJS` off. The synced
-`dataview.render_dataview_js` setting is not consulted: vault content cannot grant itself trust.
+(`initializationOptions.dataviewJs`, or a request's `dataviewJs`), the vault's
+`dataview.render_dataview_js` applies, and without that a trusted vault renders with `on` and any
+other vault with `static`. A preference or setting is honored, except that `on` falls back to
+`static` for an untrusted vault (vault content and editors cannot grant trust), and `off` turns
+`DataviewJS` off. The CLI, MCP `note_get`, browse previews, and evaluated exports follow the same
+rule (`vulcan_core::vault_dataview_js_policy`); only an explicit CLI `--dataviewjs` flag is taken
+as given, since the person at the terminal chose it for that command.
 Builds without the `js_runtime` feature render the block as a notice. Template insertion renders
 with template mutations disabled and follows the existing template trust rules.
 

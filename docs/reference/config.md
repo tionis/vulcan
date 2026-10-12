@@ -841,7 +841,7 @@ Dataview compatibility flags, rendering behavior, and JS limits.
   Dataview rendering compatibility, inline query prefixes, and JS execution limits.
   Example: `vulcan config set dataview.recursive_subtask_completion <value>`
 - `dataview.render_dataview_js` — type: `string`; target: `shared|local`; default: `off`
-  Default `--dataviewjs` policy for `render`, `note get`, `daily show`, and MCP `note_get`: `off` leaves a notice, `static` runs blocks deterministically in the strict sandbox, `on` uses the configured sandbox tier. Rendering never writes.
+  DataviewJS policy for `render`, `note get`, `daily show`, browse previews, editors, MCP `note_get`, and evaluated exports when no explicit `--dataviewjs` is given: `off` leaves a notice, `static` runs blocks deterministically in the strict sandbox, `on` uses the configured sandbox tier but only in a vault trusted with `vulcan trust` (else `static`). Unset: `on` in trusted vaults, `static` elsewhere. Rendering never writes.
   Example: `vulcan config set dataview.render_dataview_js <value>`
 - `dataview.task_completion_text` — type: `string`; target: `shared|local`; default: `completion`
   Dataview rendering compatibility, inline query prefixes, and JS execution limits.
@@ -1023,7 +1023,7 @@ Named export profiles stored in config and managed by dedicated export commands.
   Preferred command: `vulcan export profile rule add`
   Example: `vulcan export profile create team-book --format epub 'from notes' -o exports/team.epub`
 - `export.profiles.<name>.dataview_js` — type: `enum`; target: `shared`; values: `off`, `static`, `on`
-  DataviewJS policy when `evaluate` is set: `off`, `static`, or `on`; defaults to `dataview.render_dataview_js`.
+  DataviewJS policy when `evaluate` is set: `off`, `static`, or `on`; defaults to `dataview.render_dataview_js`. `on` needs the vault to be trusted (`vulcan trust`).
   Preferred command: `vulcan export profile set`
   Example: `vulcan export profile create team-book --format epub 'from notes' -o exports/team.epub`
 - `export.profiles.<name>.evaluate` — type: `boolean`; target: `shared`
