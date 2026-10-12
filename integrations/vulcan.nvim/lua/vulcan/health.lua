@@ -25,13 +25,15 @@ function M.check()
     return
   end
 
-  local client = vulcan.client()
+  -- `:checkhealth` runs in its own buffer, so look for any running client.
+  local client = vulcan.client() or vim.lsp.get_clients({ name = vulcan.client_name })[1]
   if not client then
-    vim.health.warn('No Vulcan language server attached to the current buffer', {
+    vim.health.warn('No Vulcan language server is running', {
       'Open a Markdown note inside a vault (a folder with .vulcan/, .vulcan.toml, or .obsidian/)',
     })
     return
   end
+  local bufnr = next(client.attached_buffers) or 0
   vim.health.ok(('Language server attached (root %s, positions %s)'):format(
     client.config.root_dir,
     client.offset_encoding
@@ -49,10 +51,10 @@ function M.check()
 
   local response
   if vim.fn.has('nvim-0.11') == 1 then
-    response = client:request_sync('vulcan/status', {}, 2000, 0)
+    response = client:request_sync('vulcan/status', {}, 2000, bufnr)
   else
     ---@diagnostic disable-next-line: param-type-mismatch
-    response = client.request_sync('vulcan/status', {}, 2000, 0)
+    response = client.request_sync('vulcan/status', {}, 2000, bufnr)
   end
   local status = response and response.result
   if not status then

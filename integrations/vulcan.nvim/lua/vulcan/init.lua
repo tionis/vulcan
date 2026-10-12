@@ -172,6 +172,14 @@ function M.setup(opts)
       require('vulcan.render').attach(args.buf)
     end,
   })
+  -- A distribution (or a lazy-loaded setup) may have attached the server
+  -- before this ran; adopt those buffers too.
+  for _, client in ipairs(vim.lsp.get_clients({ name = M.client_name })) do
+    for bufnr in pairs(client.attached_buffers) do
+      set_keymaps(bufnr)
+      require('vulcan.render').attach(bufnr)
+    end
+  end
 end
 
 return M

@@ -129,8 +129,10 @@ local daily = vim.fs.joinpath(vault, 'Journal/2026-10-13.md')
 check(wait(function() return vim.uv.fs_stat(daily) ~= nil end), 'periodic note is created')
 check(wait(function() return vim.fs.normalize(vim.api.nvim_buf_get_name(0)) == vim.fs.normalize(daily) end), 'periodic note is opened')
 
-local health_ok = pcall(require('vulcan.health').check)
-check(health_ok, 'checkhealth runs')
+vim.cmd('checkhealth vulcan')
+local report = table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), '\n')
+check(report:find('Custom protocol version 1', 1, true) ~= nil, 'checkhealth finds the running server')
+check(report:find('ERROR', 1, true) == nil, 'checkhealth reports no errors')
 
 for _, client in ipairs(vim.lsp.get_clients({ name = 'vulcan' })) do
   client:stop()
