@@ -193,7 +193,12 @@ unauthenticated claim: another remote writer can spell that ID. User interfaces 
 Copying the private key copies the device identity. Two installations using the same private key are
 the same logical device, not related devices. This is unsupported as an ordinary topology; Vulcan should
 diagnose divergent use prominently. The existing same-device bridge remains a loss-prevention fallback
-and must not be presented as identity continuity or proof of legitimate cloning.
+and must not be presented as identity continuity or proof of legitimate cloning. A cycle that has to
+bridge (`device_backup.outcome = bridged`) reports a warning naming the device ID: the CLI prints it to
+stderr and the daemon logs `event=device_backup_bridged`. One bridge is expected after a re-clone or a
+Git directory recovery; repeated bridges mean two checkouts or two installations publish under the
+same ID, which the warning resolves by removing the extra checkout or running `vulcan device replace`
+on the other installation. Sync reports and daemon wiki status carry `device_id`.
 
 If the manifest exists but its configured private-key provider is locked, missing, unsafe, or
 unreadable, Vulcan does not generate a replacement. The public manifest remains sufficient for ordinary

@@ -4,6 +4,12 @@
 
 ### Changed
 
+- Sync reports and daemon wiki status now include this installation's `device_id`, and
+  `vulcan sync status` prints it. When a sync has to bridge this device's remote backup because it
+  holds history this checkout did not write, Vulcan now warns (CLI stderr, daemon log
+  `event=device_backup_bridged`): repeated bridges mean two checkouts or a copied device key share
+  one ID. `daemon.toml` no longer carries an unused `device_id` ULID; existing files still load and
+  drop it on the next save.
 - Adding a tracked path to a committed `.gitignore` now stops syncing it while every device keeps
   its own copy: the next capture drops it, a device still editing it no longer conflicts, and
   devices applying the change leave their file in place. Files added with `git add --force`

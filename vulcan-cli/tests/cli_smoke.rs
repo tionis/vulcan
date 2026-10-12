@@ -6340,6 +6340,14 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
     assert_eq!(status_json["preview"]["file_state"], "up_to_date");
     assert_eq!(status_json["preview"]["worktree_matches_local"], true);
     assert!(status_json["state"].get("recovered_from").is_none());
+    let device_id = status_json["device_id"]
+        .as_str()
+        .expect("status names the device")
+        .to_string();
+    assert!(device_id.starts_with("vdev1_"), "{device_id}");
+    assert!(status_json["refs"]["device"]
+        .as_str()
+        .is_some_and(|reference| reference.ends_with(&device_id)));
 
     Command::cargo_bin("vulcan")
         .expect("binary should build")
@@ -6356,7 +6364,46 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
             predicate::str::contains("Sync preview:")
                 .and(predicate::str::contains("file lane appears up to date"))
                 .and(predicate::str::contains("no changes applied"))
+                .and(predicate::str::contains(format!("Device: {device_id}")))
                 .and(predicate::str::contains("Sync: planned").not()),
+        );
+
+    // History this checkout did not write on its backup ref (another
+    // checkout or a copied key) is kept and reported.
+    let device_ref = status_json["refs"]["device"]
+        .as_str()
+        .expect("device ref")
+        .to_string();
+    let tree = run_git_stdout(&reader, &["rev-parse", "HEAD^{tree}"]);
+    let foreign = run_git_stdout(
+        &reader,
+        &["commit-tree", tree.trim(), "-m", "another installation"],
+    );
+    run_git_ok(
+        &reader,
+        &[
+            "push",
+            "--quiet",
+            "--force",
+            remote.to_str().expect("remote path should be utf-8"),
+            &format!("{}:{device_ref}", foreign.trim()),
+        ],
+    );
+    fs::write(reader.join("Local.md"), "local edit\n").expect("local edit");
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("XDG_STATE_HOME", &state_home)
+        .args([
+            "--vault",
+            reader.to_str().expect("reader path should be utf-8"),
+            "sync",
+            "run",
+        ])
+        .assert()
+        .success()
+        .stderr(
+            predicate::str::contains("held history this checkout did not write")
+                .and(predicate::str::contains(device_id.as_str())),
         );
 
     let doctor = Command::cargo_bin("vulcan")

@@ -99,6 +99,20 @@ pub struct VaultSyncReport {
     pub state: VaultSyncStateReport,
 }
 
+/// Explains a device backup that had to be bridged: the remote backup for
+/// this device ID held history this checkout did not write. Once after a
+/// re-clone or a Git directory recovery that is expected; repeatedly it means
+/// two checkouts on this device, or two installations sharing a copy of the
+/// device key, publish under the same ID. Both histories are always kept.
+#[must_use]
+pub fn device_backup_warning(backup: Option<&GitDeviceBackup>) -> Option<String> {
+    let backup = backup.filter(|backup| backup.outcome == GitDeviceBackupOutcome::Bridged)?;
+    Some(format!(
+        "the remote backup of device `{}` held history this checkout did not write; both were kept. If this repeats, another checkout of this vault on this device or another installation with a copy of this device key is syncing under the same ID: remove the extra checkout, or run `vulcan device replace` on the other installation so it gets its own identity",
+        backup.device_id.as_str()
+    ))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SyncOperationalStats {
     pub version: u32,
@@ -6489,6 +6503,31 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             .find(|check| check.code == "git.internal-ignore")
             .expect("cache ignore check");
         assert_eq!(check.severity, SyncDoctorSeverity::Pass, "{check:?}");
+    }
+
+    #[test]
+    fn only_a_bridged_device_backup_warns() {
+        let oid = vulcan_sync::GitOid::parse("1".repeat(40)).expect("oid");
+        let backup = |outcome| GitDeviceBackup {
+            device_id: vulcan_sync::GitSyncDeviceId::parse(format!("vdev1_{}", "a".repeat(52)))
+                .expect("device ID"),
+            reference: vulcan_sync::GitRefName::parse("refs/heads/__vulcan-sync/devices/p/d")
+                .expect("ref"),
+            snapshot_revision: oid.clone(),
+            published_revision: oid.clone(),
+            outcome,
+        };
+        assert_eq!(device_backup_warning(None), None);
+        for outcome in [
+            GitDeviceBackupOutcome::Current,
+            GitDeviceBackupOutcome::Published,
+        ] {
+            assert_eq!(device_backup_warning(Some(&backup(outcome))), None);
+        }
+        let warning = device_backup_warning(Some(&backup(GitDeviceBackupOutcome::Bridged)))
+            .expect("bridged warning");
+        assert!(warning.contains(&format!("vdev1_{}", "a".repeat(52))));
+        assert!(warning.contains("vulcan device replace"));
     }
 
     #[test]

@@ -256,7 +256,11 @@ Every non-dry-run cycle captures the complete worktree and publishes it to a lea
 safety head before pulling, merging, rebasing, or changing canonical live. This protects local
 bytes even when later reconciliation conflicts. The moving head retains earlier device history;
 if restored checkouts accidentally reuse one device ID and diverge, Vulcan publishes a bridge
-that keeps both histories reachable.
+that keeps both histories reachable and warns. A single bridge after a re-clone or Git directory
+recovery is expected; if the warning repeats, two checkouts on one device or two installations with
+a copied device key share the ID. Do not delete either history: remove the extra checkout, or run
+`vulcan device replace` on the other installation. Sync JSON (`device_id`) and daemon wiki status
+name the device.
 
 - Run `vulcan sync devices list [--wiki <id>]` to inventory remote safety heads, whether their
   local recovery copies are missing, current, or stale, retained local copies without remote heads,

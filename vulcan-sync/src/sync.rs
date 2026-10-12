@@ -546,6 +546,8 @@ pub struct GitSyncReport {
     pub installation: GitInstallation,
     pub repository: GitRepository,
     pub remote: GitRemote,
+    /// This installation's device ID, which names its backup ref.
+    pub device_id: GitSyncDeviceId,
     pub refs: GitSyncRefs,
     pub safety: GitSafetyState,
     pub requirements: GitRepositoryRequirements,
@@ -713,6 +715,7 @@ impl GitSyncReport {
             installation,
             repository,
             remote: options.remote.clone(),
+            device_id: options.device_id.clone(),
             refs,
             safety: repository_preflight.0,
             requirements: repository_preflight.1,
@@ -5867,6 +5870,7 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
 
         let report = sync_git_once(&engine, &writer, &options).expect("steady sync");
 
+        assert_eq!(report.device_id, options.device_id);
         let backup = report.device_backup.expect("device backup");
         assert_eq!(backup.outcome, GitDeviceBackupOutcome::Bridged);
         let repository = engine.discover_repository(&writer).expect("repository");

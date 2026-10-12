@@ -3600,6 +3600,11 @@ fn print_registered_sync_report(
                 backup,
                 item.path.display()
             );
+            if let Some(warning) =
+                vulcan_app::sync::device_backup_warning(sync.sync.device_backup.as_ref())
+            {
+                eprintln!("warning: {}: {warning}", item.wiki_id);
+            }
         } else if let Some(error) = &item.error {
             println!("{}\terror\t{}: {error}", item.wiki_id, item.path.display());
         }
@@ -3632,15 +3637,7 @@ fn print_sync_report(
                     println!("{line}");
                 }
             }
-            if let Some(backup) = &report.sync.device_backup {
-                println!(
-                    "Device backup: snapshot {} is reachable from {} at {} ({}).",
-                    backup.snapshot_revision,
-                    report.sync.remote,
-                    backup.reference,
-                    device_backup_outcome_label(backup.outcome)
-                );
-            }
+            print_device_lines(verbosity, &report.sync);
             if verbosity.is_verbose() {
                 println!("Remote ref: {}", report.sync.refs.live);
                 if let Some(accepted) = &report.sync.accepted {
@@ -3799,6 +3796,26 @@ fn branch_preview_message(branch: Option<&GitBranchSync>) -> String {
             }
         },
     )
+}
+
+/// The device backup line, the device ID for previews and verbose runs, and
+/// a warning when this device's backup had to be bridged.
+fn print_device_lines(verbosity: Verbosity, sync: &vulcan_app::sync::GitSyncReport) {
+    if let Some(backup) = &sync.device_backup {
+        println!(
+            "Device backup: snapshot {} is reachable from {} at {} ({}).",
+            backup.snapshot_revision,
+            sync.remote,
+            backup.reference,
+            device_backup_outcome_label(backup.outcome)
+        );
+    }
+    if sync.dry_run || verbosity.is_verbose() {
+        println!("Device: {}", sync.device_id.as_str());
+    }
+    if let Some(warning) = vulcan_app::sync::device_backup_warning(sync.device_backup.as_ref()) {
+        eprintln!("warning: {warning}");
+    }
 }
 
 const fn device_backup_outcome_label(outcome: GitDeviceBackupOutcome) -> &'static str {

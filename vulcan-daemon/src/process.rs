@@ -896,6 +896,19 @@ fn run_job_worker(
                 ) {
                     eprintln!("{line}");
                 }
+                if let Some(warning) = execution.report.as_ref().and_then(|report| {
+                    vulcan_app::sync::device_backup_warning(report.sync.device_backup.as_ref())
+                }) {
+                    eprintln!(
+                        "level=warning event=device_backup_bridged wiki={}; {warning}",
+                        execution
+                            .job
+                            .job
+                            .wiki_id
+                            .as_deref()
+                            .unwrap_or("<unregistered>")
+                    );
+                }
             }
             None => supervisor.wait_for_work(stop)?,
         }

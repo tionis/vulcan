@@ -29,6 +29,10 @@ pub enum DaemonSyncStatusSource {
 pub struct DaemonWikiSyncStatus {
     pub version: u32,
     pub wiki_id: String,
+    /// This installation's device ID, which names its backup ref; absent
+    /// before the first mutating sync creates the identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
     pub paused: bool,
     pub source: DaemonSyncStatusSource,
     pub recovery_required: bool,
@@ -123,6 +127,11 @@ impl<'a> SyncStatusInputs<'a> {
             .get(registration.id.as_str())
             .map_or(&[][..], Vec::as_slice);
         let mut report = reconstruct_sync_status(registration, jobs, state_store)?;
+        report.device_id = state_store
+            .load_or_create_device_id(false)
+            .ok()
+            .flatten()
+            .map(|id| id.as_str().to_string());
         report.last_attempt_unix_ms = jobs
             .last()
             .and_then(|job| ulid::Ulid::from_string(&job.job.id).ok())
@@ -215,6 +224,7 @@ fn report_from_active_job(
         }),
     });
     DaemonWikiSyncStatus {
+        device_id: None,
         version: DAEMON_SYNC_STATUS_VERSION,
         wiki_id: registration.id.as_str().to_string(),
         paused: registration.sync_paused,
@@ -235,6 +245,7 @@ fn report_from_apply_marker(
     let git_dir = journal.git_dir.as_deref()?;
     match state_store.load_apply_marker(git_dir) {
         Ok(Some(marker)) => Some(DaemonWikiSyncStatus {
+            device_id: None,
             version: DAEMON_SYNC_STATUS_VERSION,
             wiki_id: registration.id.as_str().to_string(),
             paused: registration.sync_paused,
@@ -256,6 +267,7 @@ fn report_from_apply_marker(
         }),
         Ok(None) => None,
         Err(error) => Some(DaemonWikiSyncStatus {
+            device_id: None,
             version: DAEMON_SYNC_STATUS_VERSION,
             wiki_id: registration.id.as_str().to_string(),
             paused: registration.sync_paused,
@@ -300,6 +312,7 @@ fn report_from_journal(
         }
     };
     DaemonWikiSyncStatus {
+        device_id: None,
         version: DAEMON_SYNC_STATUS_VERSION,
         wiki_id: registration.id.as_str().to_string(),
         paused: registration.sync_paused,
@@ -348,6 +361,7 @@ fn report_from_terminal_job(
     });
     status.state = state;
     DaemonWikiSyncStatus {
+        device_id: None,
         version: DAEMON_SYNC_STATUS_VERSION,
         wiki_id: registration.id.as_str().to_string(),
         paused: registration.sync_paused,
@@ -368,6 +382,7 @@ fn base_report(
     detail: Option<String>,
 ) -> DaemonWikiSyncStatus {
     DaemonWikiSyncStatus {
+        device_id: None,
         version: DAEMON_SYNC_STATUS_VERSION,
         wiki_id: registration.id.as_str().to_string(),
         paused: registration.sync_paused,
@@ -449,6 +464,35 @@ mod tests {
         );
         assert_eq!(batched.source, expected);
         batched
+    }
+
+    #[test]
+    fn wiki_status_names_the_device_once_an_identity_exists() {
+        let (_temporary, registry, supervisor, state_store, id) = setup();
+        let status = assert_batched_matches(
+            &registry,
+            &supervisor,
+            &state_store,
+            &id,
+            DaemonSyncStatusSource::Idle,
+        );
+        // Reading status never creates an identity.
+        assert_eq!(status.device_id, None);
+        assert_eq!(state_store.load_or_create_device_id(false).unwrap(), None);
+
+        let device = state_store
+            .load_or_create_device_id(true)
+            .unwrap()
+            .expect("device identity");
+        let status = assert_batched_matches(
+            &registry,
+            &supervisor,
+            &state_store,
+            &id,
+            DaemonSyncStatusSource::Idle,
+        );
+        assert_eq!(status.device_id.as_deref(), Some(device.as_str()));
+        assert!(device.as_str().starts_with("vdev1_"));
     }
 
     #[test]
