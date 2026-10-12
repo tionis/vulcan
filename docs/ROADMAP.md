@@ -8365,17 +8365,17 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [ ] Move checkbox and task toggling out of `vulcan-cli/src/commands/note.rs` into a plan-only `vulcan-app` workflow (text in, replacement and report out), including recurrence; rebuild `tasks complete` on it
 - [ ] Add plan-only variants of `rename_heading` and `rename_block_ref` that return `OrdinaryWriteChange` batches
 - [ ] Rebuild shell completion candidates (`collect_complete_candidates`) on `editor::completion`
-- [ ] Add `boundary_guard.rs` rules: `vulcan-app`/`vulcan-core` never depend on `lsp-types`; `vulcan-lsp` never depends on `vulcan-cli` or `vulcan-daemon`
+- [x] Add `boundary_guard.rs` rules: `vulcan-app`/`vulcan-core` never depend on `lsp-types`; `vulcan-lsp` never depends on `vulcan-cli` or `vulcan-daemon`
 
 ### 9.40.2 `vulcan lsp` MVP
 
-- [ ] Create the `vulcan-lsp` crate (`lsp-server` + `lsp-types`, pinned and MSRV-checked) and the `vulcan lsp [--vault] [--permissions]` subcommand with `describe`/`help` entries
-- [ ] Threading: main loop with inline overlay updates, reader pool over one shared `NoteStoreSession`, single writer thread for the write lock, cancellation (`RequestCanceled`, `ContentModified`)
-- [ ] Position-encoding negotiation (prefer UTF-8, fall back to UTF-16)
-- [ ] Freshness: startup refresh with `$/progress`, scan on `didSave`, `watcher = own|client|off`, advisory `.vulcan/editor-watch.lock` lease with store-clock polling for non-holders, no lease when a daemon owns the vault, rename hints from `didRenameFiles`
-- [ ] Definition, references (backlinks plus overlay deltas), hover, document and workspace symbols
-- [ ] Completion after `[[` (notes, aliases, `#heading`, `^block`), tags, property keys, and inline-field keys
-- [ ] Debounced diagnostics for open buffers: parse diagnostics and unresolved/ambiguous/outside-vault links using `doctor` categories
+- [x] Create the `vulcan-lsp` crate (`lsp-server` + `lsp-types`, pinned and MSRV-checked) and the `vulcan lsp [--vault] [--permissions]` subcommand with `describe`/`help` entries
+- [ ] Threading: main loop with inline overlay updates, reader pool over one shared `NoteStoreSession`, single writer thread for the write lock, cancellation (`RequestCanceled`, `ContentModified`) — the MVP serves every request and save scan on the main loop
+- [x] Position-encoding negotiation (prefer UTF-8, fall back to UTF-16)
+- [~] Freshness (startup refresh and scan on `didSave` done; `$/progress`, watcher modes, lease, and rename hints remain): startup refresh with `$/progress`, scan on `didSave`, `watcher = own|client|off`, advisory `.vulcan/editor-watch.lock` lease with store-clock polling for non-holders, no lease when a daemon owns the vault, rename hints from `didRenameFiles`
+- [x] Definition, references (backlinks plus overlay deltas), hover, document and workspace symbols
+- [~] Completion after `[[` (notes, aliases, `#heading`, `^block`), tags, property keys, and inline-field keys — inline-field keys remain
+- [~] Debounced diagnostics for open buffers (the link being typed is skipped; debouncing remains): parse diagnostics and unresolved/ambiguous/outside-vault links using `doctor` categories
 - [ ] Mutation contract: open files as versioned `TextDocumentEdit`s, closed files as a journaled preimage-checked batch; disk first, then `workspace/applyEdit`, with a compensating inverse batch on rejection and the specified failure reports
 - [ ] Server-performed moves with `moved: { from, to }` results and refusal of dirty moved buffers; `rename` on links, filenames, headings, and block ids; `willRenameFiles`
 - [ ] Code actions with lazy `resolve`: create note from unresolved link, disambiguate, convert link style, toggle task; `dryRun` on every `vulcan.*` command
@@ -8398,9 +8398,9 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 
 ### 9.40.4 Agent skills and documentation
 
-- [ ] New bundled `editor-integration` skill registered in `BUNDLED_SKILL_FILES` with installed-payload and discovery tests
+- [x] New bundled `editor-integration` skill registered in `BUNDLED_SKILL_FILES` with installed-payload and discovery tests
 - [ ] Update `diagnostics-and-repair`, `note-operations`, and `refactoring` skills and `AGENTS.template.md` for LSP-open vaults
-- [ ] Document `vulcan lsp` in `docs/cli.md`
+- [x] Document `vulcan lsp` in `docs/cli.md`
 
 ### 9.40.5 Later capabilities
 

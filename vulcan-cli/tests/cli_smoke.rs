@@ -18910,6 +18910,14 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(diagnostics_skill.contains("repair ordinary-write roll-forward --dry-run"));
     assert!(diagnostics_skill.contains("repair ordinary-write accept-current"));
     assert!(diagnostics_skill.contains("scan recovers an ordinary-write batch before indexing"));
+    let editor_skill =
+        fs::read_to_string(vault_root.join(".agents/skills/editor-integration/SKILL.md"))
+            .expect("editor integration skill should be readable");
+    assert!(editor_skill.contains("managed: true"));
+    assert!(editor_skill.contains("cmd = { \"vulcan\", \"lsp\" }"));
+    assert!(editor_skill.contains("never initializes a vault"));
+    assert!(editor_skill.contains("never writes unsaved buffer text to the cache"));
+    assert!(editor_skill.contains("vulcan doctor"));
     let mcp_skill = fs::read_to_string(vault_root.join(".agents/skills/mcp-setup/SKILL.md"))
         .expect("MCP skill should be readable");
     assert!(mcp_skill.contains("vulcan help mcp-remotes"));
@@ -19110,6 +19118,9 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
             .any(|item| item["path"] == ".agents/skills/mcp-setup/SKILL.md")
         && items
             .iter()
+            .any(|item| item["path"] == ".agents/skills/editor-integration/SKILL.md")
+        && items
+            .iter()
             .any(|item| item["path"] == "AI/Prompts/summarize-note.md")));
 }
 
@@ -19263,6 +19274,7 @@ fn skill_list_and_get_surface_bundled_skills() {
     for expected in [
         "configuration-and-permissions",
         "mcp-setup",
+        "editor-integration",
         "index-maintenance",
         "dataview-and-bases",
         "templates-and-capture",

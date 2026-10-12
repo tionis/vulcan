@@ -4882,6 +4882,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         return commands::devices::handle_devices_command(cli, command);
     }
 
+    // The language server owns stdout and finds its vault from the client's
+    // workspace unless one is named, so it skips the shared auto-refresh.
+    if let Command::Lsp = cli.command {
+        let vault = cli.vault.as_deref().map(resolve_vault_root).transpose()?;
+        return vulcan_lsp::run_stdio(&vulcan_lsp::LspOptions { vault })
+            .map_err(CliError::operation);
+    }
+
     let paths = VaultPaths::new(vault_discovery.root.clone());
     let list_controls = ListOutputControls::from_cli(cli);
     let stdout_is_tty = io::stdout().is_terminal();
@@ -4894,6 +4902,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
     match cli.command {
         Command::Render(_) => unreachable!("render handled before vault resolution"),
         Command::SelfUpdate { .. } => unreachable!("self-update handled before vault resolution"),
+        Command::Lsp => unreachable!("lsp handled before vault resolution"),
         Command::Index { ref command } => commands::index::handle_index_command(
             cli,
             &paths,

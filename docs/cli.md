@@ -852,6 +852,25 @@ Additional browse notes:
 
 This is for quickly handing off from CLI inspection to the Obsidian desktop app.
 
+### `lsp`
+
+`vulcan lsp` serves the Language Server Protocol over stdin/stdout so Neovim, Vim, Helix, Emacs, Zed, and other LSP clients get live vault semantics. Start it from the editor, not interactively. A minimal Neovim setup:
+
+```lua
+vim.lsp.config("vulcan", {
+  cmd = { "vulcan", "lsp" },
+  filetypes = { "markdown" },
+  root_markers = { ".vulcan", ".vulcan.toml", ".obsidian" },
+})
+vim.lsp.enable("vulcan")
+```
+
+- The vault is `--vault` when given, otherwise discovered from the client's workspace folder exactly as other commands discover it from the current directory. The server never initializes a vault; without `.vulcan/` it serves buffer-local features and warns once.
+- Supported today: go-to-definition on links, embeds, `#heading` and `#^block` subpaths; references (backlinks, or links to a heading when the cursor is on one); hover previews of link targets and tag counts; completion after `[[` (notes, aliases, attachments, headings, block ids), `#tags`, and frontmatter keys and `tags:` values; diagnostics for open buffers (unresolved, ambiguous, and outside-vault links plus parse problems, using `doctor` categories); document symbols with `note outline` section ids; workspace symbols over paths and aliases.
+- Unsaved buffers are an in-memory overlay. A link to a note that exists only as an unsaved buffer resolves, and the cache is only refreshed from saved files (on `didSave`). The link being typed is not reported as unresolved.
+- `vulcan/status` reports the custom protocol version and cache state; clients check `capabilities.experimental.vulcan.protocolVersion` before using `vulcan/` methods.
+- Renames, code actions, task toggling, and rendered query blocks are planned; see Roadmap 9.40 and [the editor integration contract](specs/editor-integration.md).
+
 ### `bases tui`
 
 `vulcan bases tui <file.base>` opens the interactive Bases TUI. It is the main interactive surface for inspecting a `.base` result set and editing view definitions through validated mutation paths instead of manual YAML editing.

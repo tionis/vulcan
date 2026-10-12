@@ -135,7 +135,7 @@ impl EditorSession {
     /// The vault-relative path of an absolute file path inside the vault.
     #[must_use]
     pub fn relative_path(&self, path: &std::path::Path) -> Option<String> {
-        self.paths.relative_to_vault(path).map(|relative| {
+        self.paths.resolve_relative_to_vault(path).map(|relative| {
             relative
                 .components()
                 .map(|component| component.as_os_str().to_string_lossy().into_owned())
@@ -162,31 +162,77 @@ impl EditorSession {
     }
 
     /// Apply editor changes in order and re-parse the document.
+    ///
+    /// Returns where the last change's inserted text ends, which is the
+    /// cursor position while the user types.
     pub fn change(
         &mut self,
         path: &str,
         version: i32,
         changes: Vec<EditorTextChange>,
-    ) -> Result<(), AppError> {
+    ) -> Result<Option<TextPosition>, AppError> {
         let encoding = self.encoding;
         let document = self.documents.get_mut(path).ok_or_else(|| {
             AppError::operation_with_code("not_found", format!("{path} is not open"))
         })?;
         let mut text = std::mem::take(&mut document.text);
+        let mut cursor = None;
         for change in changes {
             match change.range {
-                None => text = change.text,
+                None => {
+                    text = change.text;
+                    cursor = None;
+                }
                 Some(range) => {
                     let index = LineIndex::new(&text);
                     let start = index.offset(&text, range.start, encoding);
                     let end = index.offset(&text, range.end, encoding).max(start);
                     text.replace_range(start..end, &change.text);
+                    cursor = Some(start + change.text.len());
                 }
             }
         }
         *document = OpenDocument::new(version, text, &self.config);
         self.overlay_generation += 1;
-        Ok(())
+        Ok(cursor.map(|offset| {
+            document
+                .line_index
+                .position(&document.text, offset, encoding)
+        }))
+    }
+
+    /// Whether the vault has a cache to resolve links against.
+    #[must_use]
+    pub fn has_cache(&self) -> bool {
+        self.paths.cache_db().exists()
+    }
+
+    /// Bring the cache up to date with disk. Returns `None` for a vault
+    /// that was never initialized; the session never initializes one.
+    pub fn refresh_index(&self) -> Result<Option<vulcan_core::ScanSummary>, AppError> {
+        if !self.paths.vulcan_dir().is_dir() {
+            return Ok(None);
+        }
+        let summary = crate::scan::refresh_cache_incrementally(&self.paths)?;
+        self.invalidate_cache();
+        Ok(Some(summary))
+    }
+
+    /// Index files the editor just saved, under the vault write lock.
+    pub fn scan_saved(
+        &self,
+        saved: &[String],
+    ) -> Result<Option<vulcan_core::ScanSummary>, AppError> {
+        if !self.has_cache() {
+            return Ok(None);
+        }
+        let changed = saved.iter().cloned().collect();
+        let _lock = vulcan_core::write_lock::acquire_write_lock(&self.paths)
+            .map_err(AppError::operation)?;
+        let summary = vulcan_core::scan::scan_vault_paths_unlocked(&self.paths, &changed)
+            .map_err(AppError::operation)?;
+        self.invalidate_cache();
+        Ok(Some(summary))
     }
 
     pub fn close(&mut self, path: &str) {
@@ -319,7 +365,7 @@ mod tests {
         let (_dir, mut session) = vault(&[("Alpha.md", "# Alpha\n")]);
         let cache = std::fs::read(session.paths().cache_db()).unwrap();
         session.open("Alpha.md", 1, "# Alpha\nbody\n".into());
-        session
+        let cursor = session
             .change(
                 "Alpha.md",
                 2,
@@ -332,6 +378,7 @@ mod tests {
                 }],
             )
             .unwrap();
+        assert_eq!(cursor, Some(TextPosition { line: 1, column: 8 }));
         let document = session.document("Alpha.md").unwrap();
         assert_eq!(document.text, "# Alpha\n[[Beta]]\n");
         assert_eq!(document.version, 2);
@@ -361,7 +408,21 @@ mod tests {
         assert_eq!(resolve(&session), None);
 
         std::fs::write(dir.path().join("Draft.md"), "x").unwrap();
-        vulcan_core::scan_vault(session.paths(), vulcan_core::ScanMode::Incremental).unwrap();
+        let summary = session
+            .scan_saved(&["Draft.md".to_string()])
+            .unwrap()
+            .unwrap();
+        assert_eq!(summary.added, 1);
         assert_eq!(resolve(&session).as_deref(), Some("Draft.md"));
+    }
+
+    #[test]
+    fn never_initializes_a_vault() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = EditorSession::new(VaultPaths::new(dir.path()), PositionEncoding::Utf8);
+        assert!(!session.has_cache());
+        assert_eq!(session.refresh_index().unwrap(), None);
+        assert_eq!(session.scan_saved(&["a.md".into()]).unwrap(), None);
+        assert!(!dir.path().join(".vulcan").exists());
     }
 }

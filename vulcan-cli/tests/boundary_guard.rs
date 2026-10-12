@@ -564,3 +564,59 @@ fn collect_mcp_terminal_dependency_violations(
         }
     }
 }
+
+#[test]
+fn language_server_protocol_stays_in_the_lsp_crate() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("cli crate should have workspace parent");
+    let dependency_names = |crate_name: &str| {
+        let manifest = fs::read_to_string(workspace_root.join(crate_name).join("Cargo.toml"))
+            .expect("manifest should read");
+        manifest
+            .lines()
+            .filter_map(|line| {
+                line.split_once('=')
+                    .map(|(name, _)| name.trim().to_string())
+            })
+            .collect::<Vec<_>>()
+    };
+
+    for crate_name in ["vulcan-core", "vulcan-app"] {
+        let names = dependency_names(crate_name);
+        for banned in ["lsp-types", "lsp-server"] {
+            assert!(
+                !names.iter().any(|name| name == banned),
+                "{crate_name} must not depend on {banned}; LSP types belong in vulcan-lsp"
+            );
+        }
+        visit_rs_files(&workspace_root.join(crate_name).join("src"), &mut |path| {
+            let source = fs::read_to_string(path).expect("source file should read");
+            assert!(
+                !source.contains("lsp_types::") && !source.contains("lsp_server::"),
+                "{} uses LSP types; keep editor services transport-neutral",
+                path.display()
+            );
+        });
+    }
+
+    let lsp_names = dependency_names("vulcan-lsp");
+    for banned in ["vulcan-cli", "vulcan-daemon", "tokio", "axum"] {
+        assert!(
+            !lsp_names.iter().any(|name| name == banned),
+            "vulcan-lsp must not depend on {banned}: it is a synchronous, daemon-independent transport"
+        );
+    }
+    let lsp_manifest = fs::read_to_string(workspace_root.join("vulcan-lsp/Cargo.toml"))
+        .expect("lsp manifest should read");
+    for dependency in ["vulcan-app", "vulcan-core"] {
+        let line = lsp_manifest
+            .lines()
+            .find(|line| line.trim_start().starts_with(&format!("{dependency} = {{")))
+            .unwrap_or_else(|| panic!("{dependency} dependency should be declared explicitly"));
+        assert!(
+            line.contains("default-features = false") && !line.contains("features = ["),
+            "vulcan-lsp must not force optional backend features: {line}"
+        );
+    }
+}

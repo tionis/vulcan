@@ -1,0 +1,22 @@
+[package]
+name = "vulcan-lsp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Synchronous Language Server Protocol transport for Vulcan vaults"
+
+[dependencies]
+lsp-server.workspace = true
+lsp-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+url.workspace = true
+vulcan-app = { path = "../vulcan-app", version = "0.3.0", default-features = false }
+vulcan-core = { path = "../vulcan-core", version = "0.3.0", default-features = false }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

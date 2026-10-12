@@ -83,6 +83,11 @@ impl EditorSession {
             });
         }
 
+        if !self.has_cache() {
+            // Without an index every link would look unresolved.
+            diagnostics.sort_by_key(|diagnostic| diagnostic.range.start);
+            return Ok(Some(diagnostics));
+        }
         let resolver = self.resolver()?;
         for link in &document.parsed.links {
             if matches!(link.link_kind, LinkKind::External) {

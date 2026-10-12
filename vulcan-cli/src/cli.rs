@@ -1203,6 +1203,24 @@ Examples:
   vulcan status
   vulcan status --output json";
 
+const LSP_COMMAND_AFTER_HELP: &str = "\
+Protocol:
+  Language Server Protocol over stdin/stdout, for Neovim, Vim, Helix, Emacs, Zed, and other
+  LSP clients. Start it from your editor, not interactively.
+
+Vault:
+  --vault wins; otherwise the server discovers the vault from the client's workspace folder,
+  like other commands do from the current directory. It never initializes a vault: without
+  .vulcan/ it serves buffer-local features and warns once.
+
+Features:
+  definition, references (backlinks), hover previews, completion of links, headings, block ids,
+  tags, and frontmatter keys, diagnostics for open buffers, document and workspace symbols.
+  Unsaved buffers are an in-memory overlay; the cache is only refreshed from saved files.
+
+Spec: docs/specs/editor-integration.md
+";
+
 const MCP_COMMAND_AFTER_HELP: &str = "\
 Protocols:
   stdio reads JSON-RPC 2.0 messages from stdin and writes them to stdout.
@@ -8647,6 +8665,11 @@ Examples:
         after_help = STATUS_COMMAND_AFTER_HELP
     )]
     Status,
+    #[command(
+        about = "Serve the Language Server Protocol over stdio for editors",
+        after_help = LSP_COMMAND_AFTER_HELP
+    )]
+    Lsp,
     #[command(
         about = "Serve MCP over stdio or Streamable HTTP, or manage named remotes and connections",
         after_help = MCP_COMMAND_AFTER_HELP
