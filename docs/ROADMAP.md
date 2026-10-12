@@ -8361,7 +8361,7 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Add "semantic element at byte offset" lookup over `ParsedDocument` (links, embeds, tags, headings, block ids, inline fields, property keys); verify frontmatter-origin link offsets are document-absolute
 - [x] Add overlay-aware link resolution: cache identities with open-buffer overlays replacing them, plus `overlay:<uri>` documents for unsaved new buffers
 - [ ] Expose dynamic-region evaluation with byte ranges as a public core API
-- [ ] Add `vulcan-app::editor` (`EditorSession`, `completion`, `diagnostics`, `navigation`, `edits`, `render`) with no LSP types
+- [~] Add `vulcan-app::editor` (`EditorSession`, `completion`, `diagnostics`, `navigation`, `edits`, `render`) with no LSP types — session overlay, navigation (definition, references, hover, symbols), completion, and diagnostics landed; `edits` and `render` remain
 - [ ] Move checkbox and task toggling out of `vulcan-cli/src/commands/note.rs` into a plan-only `vulcan-app` workflow (text in, replacement and report out), including recurrence; rebuild `tasks complete` on it
 - [ ] Add plan-only variants of `rename_heading` and `rename_block_ref` that return `OrdinaryWriteChange` batches
 - [ ] Rebuild shell completion candidates (`collect_complete_candidates`) on `editor::completion`

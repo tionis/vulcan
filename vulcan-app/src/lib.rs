@@ -48,6 +48,7 @@ pub mod device_config;
 pub mod device_identity;
 pub mod device_replace;
 pub mod device_revoke;
+pub mod editor;
 pub mod execution;
 pub mod export;
 pub mod folder_notes;
