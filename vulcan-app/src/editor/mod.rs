@@ -19,7 +19,7 @@ pub use navigation::{EditorHover, EditorSymbol, EditorWorkspaceSymbol};
 use crate::AppError;
 use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use vulcan_core::editor::{
     load_vault_identities, store_clock_version, EditorResolver, LineIndex, OverlayIdentity,
     PositionEncoding, TextPosition, VaultIdentities,
@@ -77,34 +77,40 @@ pub(crate) struct DocumentView {
 
 /// Cached identities and the resolver built over them and the overlay.
 struct ResolverState {
-    identities: VaultIdentities,
+    identities: Arc<VaultIdentities>,
     /// Overlay generation the resolver was built for.
     overlay_generation: u64,
-    resolver: std::sync::Arc<EditorResolver>,
+    resolver: Arc<EditorResolver>,
 }
 
 /// One vault's open documents and the cache they overlay.
+///
+/// Cloning is cheap and yields a snapshot: open documents are shared until
+/// the next change, and clones share the cached identities and resolver, so
+/// a transport can answer requests from worker threads while its own
+/// session keeps receiving edits.
+#[derive(Clone)]
 pub struct EditorSession {
     paths: VaultPaths,
-    config: VaultConfig,
+    config: Arc<VaultConfig>,
     encoding: PositionEncoding,
-    documents: HashMap<String, OpenDocument>,
+    documents: HashMap<String, Arc<OpenDocument>>,
     /// Advances whenever an open document's identity may have changed.
     overlay_generation: u64,
-    resolver: Mutex<Option<ResolverState>>,
+    resolver: Arc<Mutex<Option<ResolverState>>>,
 }
 
 impl EditorSession {
     #[must_use]
     pub fn new(paths: VaultPaths, encoding: PositionEncoding) -> Self {
-        let config = load_vault_config(&paths).config;
+        let config = Arc::new(load_vault_config(&paths).config);
         Self {
             paths,
             config,
             encoding,
             documents: HashMap::new(),
             overlay_generation: 0,
-            resolver: Mutex::new(None),
+            resolver: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -125,9 +131,13 @@ impl EditorSession {
 
     /// Reload the vault configuration and re-parse open documents.
     pub fn reload_config(&mut self) {
-        self.config = load_vault_config(&self.paths).config;
+        self.config = Arc::new(load_vault_config(&self.paths).config);
         for document in self.documents.values_mut() {
-            document.parsed = parse_document(&document.text, &self.config);
+            *document = Arc::new(OpenDocument::new(
+                document.version,
+                document.text.clone(),
+                &self.config,
+            ));
         }
         self.overlay_generation += 1;
     }
@@ -146,7 +156,7 @@ impl EditorSession {
 
     #[must_use]
     pub fn document(&self, path: &str) -> Option<&OpenDocument> {
-        self.documents.get(path)
+        self.documents.get(path).map(AsRef::as_ref)
     }
 
     pub fn open_paths(&self) -> impl Iterator<Item = &str> {
@@ -156,7 +166,7 @@ impl EditorSession {
     pub fn open(&mut self, path: &str, version: i32, text: String) {
         self.documents.insert(
             path.to_string(),
-            OpenDocument::new(version, text, &self.config),
+            Arc::new(OpenDocument::new(version, text, &self.config)),
         );
         self.overlay_generation += 1;
     }
@@ -175,7 +185,7 @@ impl EditorSession {
         let document = self.documents.get_mut(path).ok_or_else(|| {
             AppError::operation_with_code("not_found", format!("{path} is not open"))
         })?;
-        let mut text = std::mem::take(&mut document.text);
+        let mut text = document.text.clone();
         let mut cursor = None;
         for change in changes {
             match change.range {
@@ -192,13 +202,20 @@ impl EditorSession {
                 }
             }
         }
-        *document = OpenDocument::new(version, text, &self.config);
+        *document = Arc::new(OpenDocument::new(version, text, &self.config));
         self.overlay_generation += 1;
         Ok(cursor.map(|offset| {
             document
                 .line_index
                 .position(&document.text, offset, encoding)
         }))
+    }
+
+    /// The cache's store clock, which advances with every committed scan;
+    /// `None` without a cache.
+    #[must_use]
+    pub fn store_clock(&self) -> Option<i64> {
+        store_clock_version(&self.paths).ok().flatten()
     }
 
     /// Whether the vault has a cache to resolve links against.
@@ -223,14 +240,33 @@ impl EditorSession {
         &self,
         saved: &[String],
     ) -> Result<Option<vulcan_core::ScanSummary>, AppError> {
+        self.scan_changed(saved, &HashMap::new())
+    }
+
+    /// Index changed vault-relative paths under the vault write lock.
+    /// `renames` maps destinations to sources, so a file renamed outside
+    /// Vulcan keeps its identity and incoming links.
+    pub fn scan_changed(
+        &self,
+        changed: &[String],
+        renames: &HashMap<String, String>,
+    ) -> Result<Option<vulcan_core::ScanSummary>, AppError> {
         if !self.has_cache() {
             return Ok(None);
         }
-        let changed = saved.iter().cloned().collect();
+        let mut paths = changed
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        for (destination, source) in renames {
+            paths.insert(destination.clone());
+            paths.insert(source.clone());
+        }
         let _lock = vulcan_core::write_lock::acquire_write_lock(&self.paths)
             .map_err(AppError::operation)?;
-        let summary = vulcan_core::scan::scan_vault_paths_unlocked(&self.paths, &changed)
-            .map_err(AppError::operation)?;
+        let summary =
+            vulcan_core::scan::scan_vault_paths_unlocked_with_renames(&self.paths, &paths, renames)
+                .map_err(AppError::operation)?;
         self.invalidate_cache();
         Ok(Some(summary))
     }
@@ -247,21 +283,21 @@ impl EditorSession {
     }
 
     /// A resolver over the current cache with open buffers substituted.
-    pub(crate) fn resolver(&self) -> Result<std::sync::Arc<EditorResolver>, AppError> {
+    pub(crate) fn resolver(&self) -> Result<Arc<EditorResolver>, AppError> {
         let clock = store_clock_version(&self.paths).map_err(AppError::operation)?;
         let mut state = lock(&self.resolver);
         if let Some(current) = state.as_ref() {
             if Some(current.identities.clock_version) == clock
                 && current.overlay_generation == self.overlay_generation
             {
-                return Ok(std::sync::Arc::clone(&current.resolver));
+                return Ok(Arc::clone(&current.resolver));
             }
         }
-        let identities = match state.take() {
+        let identities = match state.as_ref() {
             Some(previous) if Some(previous.identities.clock_version) == clock => {
-                previous.identities
+                Arc::clone(&previous.identities)
             }
-            _ => load_vault_identities(&self.paths).map_err(AppError::operation)?,
+            _ => Arc::new(load_vault_identities(&self.paths).map_err(AppError::operation)?),
         };
         let overlays = self
             .documents
@@ -271,12 +307,18 @@ impl EditorSession {
                 aliases: document.parsed.aliases.clone(),
             })
             .collect::<Vec<_>>();
-        let resolver = std::sync::Arc::new(EditorResolver::new(&identities.documents, &overlays));
-        *state = Some(ResolverState {
-            identities,
-            overlay_generation: self.overlay_generation,
-            resolver: std::sync::Arc::clone(&resolver),
-        });
+        let resolver = Arc::new(EditorResolver::new(&identities.documents, &overlays));
+        // An older snapshot must not replace a newer snapshot's resolver.
+        if state
+            .as_ref()
+            .is_none_or(|current| current.overlay_generation <= self.overlay_generation)
+        {
+            *state = Some(ResolverState {
+                identities,
+                overlay_generation: self.overlay_generation,
+                resolver: Arc::clone(&resolver),
+            });
+        }
         Ok(resolver)
     }
 
@@ -314,6 +356,43 @@ impl EditorSession {
                 .line_index
                 .offset(&document.text, position, self.encoding),
         )
+    }
+}
+
+/// File name of the per-vault editor watch lease inside `.vulcan/`.
+pub const EDITOR_WATCH_LOCK_FILE: &str = "editor-watch.lock";
+
+/// The per-vault right to watch the file system for editors.
+///
+/// Several editor processes may serve one vault; only the holder of this
+/// advisory OS lock runs a watcher and scans for external changes, and the
+/// others follow the store clock. The lock is released when the lease is
+/// dropped or the process exits, so a crashed holder never leaves it stale.
+#[derive(Debug)]
+pub struct EditorWatchLease {
+    _file: std::fs::File,
+}
+
+impl EditorWatchLease {
+    /// Take the lease if no other process holds it. Returns `None` while
+    /// another process holds it or the vault is not initialized.
+    pub fn try_acquire(paths: &VaultPaths) -> Result<Option<Self>, AppError> {
+        use fs2::FileExt;
+        if !paths.vulcan_dir().is_dir() {
+            return Ok(None);
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(paths.vulcan_dir().join(EDITOR_WATCH_LOCK_FILE))
+            .map_err(AppError::operation)?;
+        match file.try_lock_exclusive() {
+            Ok(()) => Ok(Some(Self { _file: file })),
+            Err(error) if error.kind() == fs2::lock_contended_error().kind() => Ok(None),
+            Err(error) => Err(AppError::operation(error)),
+        }
     }
 }
 
@@ -417,12 +496,80 @@ mod tests {
     }
 
     #[test]
+    fn clones_are_snapshots_of_open_documents() {
+        let (_dir, mut session) = vault(&[("Alpha.md", "# Alpha\n")]);
+        session.open("Draft.md", 1, "one".into());
+        let snapshot = session.clone();
+        session
+            .change(
+                "Draft.md",
+                2,
+                vec![EditorTextChange {
+                    range: None,
+                    text: "two".into(),
+                }],
+            )
+            .unwrap();
+        session.close("Alpha.md");
+        assert_eq!(snapshot.document("Draft.md").unwrap().text, "one");
+        assert_eq!(session.document("Draft.md").unwrap().text, "two");
+        // Clones share the cached identities but resolve their own overlay.
+        let link = parse_document("[[Draft]]", session.config())
+            .links
+            .remove(0);
+        let mode = session.config().link_resolution;
+        for view in [&session, &snapshot] {
+            assert_eq!(
+                view.resolver()
+                    .unwrap()
+                    .resolve("Alpha.md", &link, mode)
+                    .resolved_target_id
+                    .as_deref(),
+                Some("Draft.md")
+            );
+        }
+        assert!(session.store_clock().is_some());
+    }
+
+    #[test]
+    fn only_one_process_holds_the_watch_lease() {
+        let (_dir, session) = vault(&[("Alpha.md", "x")]);
+        let first = EditorWatchLease::try_acquire(session.paths()).unwrap();
+        assert!(first.is_some());
+        // fs2 locks are per open file description, so a second open in the
+        // same process contends exactly like another process would.
+        assert!(EditorWatchLease::try_acquire(session.paths())
+            .unwrap()
+            .is_none());
+        drop(first);
+        assert!(EditorWatchLease::try_acquire(session.paths())
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn rename_hints_keep_document_identity() {
+        let (dir, session) = vault(&[("Old.md", "# Note\n"), ("Home.md", "[[Old]]\n")]);
+        let before = vulcan_core::query_backlinks(session.paths(), "Old.md").unwrap();
+        assert_eq!(before.backlinks.len(), 1);
+        std::fs::rename(dir.path().join("Old.md"), dir.path().join("New.md")).unwrap();
+        let renames = HashMap::from([("New.md".to_string(), "Old.md".to_string())]);
+        let summary = session.scan_changed(&[], &renames).unwrap().unwrap();
+        assert_eq!(summary.deleted, 0, "{summary:?}");
+        assert!(vulcan_core::query_backlinks(session.paths(), "Old.md").is_err());
+        assert!(vulcan_core::query_backlinks(session.paths(), "New.md").is_ok());
+    }
+
+    #[test]
     fn never_initializes_a_vault() {
         let dir = tempfile::tempdir().unwrap();
         let session = EditorSession::new(VaultPaths::new(dir.path()), PositionEncoding::Utf8);
         assert!(!session.has_cache());
         assert_eq!(session.refresh_index().unwrap(), None);
         assert_eq!(session.scan_saved(&["a.md".into()]).unwrap(), None);
+        assert!(EditorWatchLease::try_acquire(session.paths())
+            .unwrap()
+            .is_none());
         assert!(!dir.path().join(".vulcan").exists());
     }
 }

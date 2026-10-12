@@ -1,7 +1,7 @@
 ---
 name: editor-integration
 description: Set up and troubleshoot Vulcan's language server for Neovim, Vim, Helix, Emacs, Zed, or another LSP client. Use when the user wants link navigation, backlinks, completion, or diagnostics in a terminal editor, or asks why their editor reports an unresolved or ambiguous link.
-version: 1
+version: 2
 tools:
   - describe
   - help
@@ -46,6 +46,15 @@ and wants vault-aware features, or when editor diagnostics need explaining.
    but only cover open buffers.
 5. Point to `vulcan lsp --help` and `docs/specs/editor-integration.md` for supported methods and
    the custom `vulcan/` protocol (`vulcan/status`, versioned by `protocolVersion`).
+
+## Several Editors on One Vault
+
+Each editor process runs its own `vulcan lsp`. One of them holds `.vulcan/editor-watch.lock` and
+watches the file system; the others follow the cache. `vulcan/status` shows which (`watcher`:
+`lease` or `polling`). If the editor already reports file changes, `initializationOptions =
+{ watcher = "client" }` uses those instead; `"off"` indexes saved files only. Never delete the
+lease file to change which process watches: it is an OS lock that is released when the process
+exits.
 
 ## Guardrails
 

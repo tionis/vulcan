@@ -18918,6 +18918,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(editor_skill.contains("never initializes a vault"));
     assert!(editor_skill.contains("never writes unsaved buffer text to the cache"));
     assert!(editor_skill.contains("vulcan doctor"));
+    assert!(editor_skill.contains("editor-watch.lock"));
+    assert!(editor_skill.contains("watcher = \"client\""));
     let mcp_skill = fs::read_to_string(vault_root.join(".agents/skills/mcp-setup/SKILL.md"))
         .expect("MCP skill should be readable");
     assert!(mcp_skill.contains("vulcan help mcp-remotes"));

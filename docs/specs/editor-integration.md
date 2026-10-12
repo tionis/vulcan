@@ -70,19 +70,22 @@ Threads:
 
 1. **Main loop.** Receives messages. Handles `didOpen`, `didChange`, and `didClose` inline, since
    overlay updates are cheap. Routes requests to the reader pool or the writer.
-2. **Reader pool (2–4 threads).** Each request takes a `NoteStoreSnapshot` from one shared
-   `NoteStoreSession` (`vulcan-core/src/note_session.rs`). Readers never take the vault write lock.
-   Identity facts and resolver documents are reused while the store clock is unchanged and rebuilt
-   when it advances.
+2. **Reader pool (three threads).** Each request is answered from a snapshot of the
+   `EditorSession`: cloning shares open documents until their next change and shares the cached
+   vault identities and resolver, which are reused while the store clock is unchanged and rebuilt
+   when it advances. Readers never take the vault write lock. (Routing note queries through a
+   retained `NoteStoreSession` is a later optimization; the editor requests read identities,
+   backlinks, and catalogs, not hydrated note records.)
 3. **Single writer thread.** The only caller of `acquire_write_lock`. Runs targeted scans and disk
    mutations serially, so a CLI `move` holding the lock never stalls completion or hover.
 4. **Watcher thread** (only while holding the watch lease, see Freshness). Uses
    `watch_vault_until`, which already coalesces events and scans.
 
-Cancellation: `$/cancelRequest` sets a per-request flag checked between stages (resolve, hydrate,
-format). Cancelled requests answer `RequestCanceled` (-32800). Completion is latest-wins. If a scan
-commits while a request is in flight, the request answers `ContentModified` (-32801) rather than
-mixing two store clocks.
+Cancellation: `$/cancelRequest` sets a per-request flag checked before a request starts and before
+its answer is sent. Cancelled requests answer `RequestCanceled` (-32800). If a scan that changed
+files commits while a request is in flight, the request answers `ContentModified` (-32801) rather
+than mixing two store clocks. Scans that change nothing, such as the watcher's first pass and its
+periodic safety rescans, do not invalidate requests.
 
 Lock and read ordering follow `mutation-coordination.md`: canonicalize the vault root before
 building `VaultPaths`; gate reads through `ordinary_write::acquire_consistent_ordinary_read`; gate
@@ -107,11 +110,17 @@ short. WAL readers keep seeing the previous complete snapshot during a scan.
     leaves a stale lease.
   - `client`: rely on `workspace/didChangeWatchedFiles` registration, then scan the reported paths.
   - `off`: never scan for external changes.
-  - If a live daemon has the vault registered, no LSP process takes the lease, and every process
-    behaves like a non-holder (clock polling).
+  - Planned: if a live daemon keeps the vault's index fresh, no LSP process takes the lease, and
+    every process behaves like a non-holder (clock polling). This waits for a daemon
+    index-ownership probe; today's daemon watchers only trigger sync.
 - **Client-initiated renames** (file explorers such as oil.nvim or neo-tree): `didRenameFiles` is
   passed as a rename hint to `scan_vault_paths_unlocked_with_renames`, so document identity
-  survives.
+  survives. The server registers for file (not folder) renames; a folder rename falls back to
+  ordinary discovery.
+- **Diagnostics** are published at once for an opened document, 200 ms after the last edit for a
+  changed one, and for every open document after an index change.
+- **Progress.** When the client supports `window.workDoneProgress`, the startup refresh is
+  reported as `$/progress` under the token `vulcan/index`, once the client has acknowledged it.
 
 ## Overlay semantics
 

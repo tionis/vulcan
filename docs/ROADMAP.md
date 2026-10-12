@@ -8370,12 +8370,12 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 ### 9.40.2 `vulcan lsp` MVP
 
 - [x] Create the `vulcan-lsp` crate (`lsp-server` + `lsp-types`, pinned and MSRV-checked) and the `vulcan lsp [--vault] [--permissions]` subcommand with `describe`/`help` entries
-- [ ] Threading: main loop with inline overlay updates, reader pool over one shared `NoteStoreSession`, single writer thread for the write lock, cancellation (`RequestCanceled`, `ContentModified`) — the MVP serves every request and save scan on the main loop
+- [x] Threading: main loop with inline overlay updates, a three-thread reader pool answering from cheap `EditorSession` snapshots (shared identities and resolver keyed by the store clock), a single writer thread for every scan under the write lock, and cancellation (`RequestCanceled` between stages, `ContentModified` when a real index change lands mid-request)
 - [x] Position-encoding negotiation (prefer UTF-8, fall back to UTF-16)
-- [~] Freshness (startup refresh and scan on `didSave` done; `$/progress`, watcher modes, lease, and rename hints remain): startup refresh with `$/progress`, scan on `didSave`, `watcher = own|client|off`, advisory `.vulcan/editor-watch.lock` lease with store-clock polling for non-holders, no lease when a daemon owns the vault, rename hints from `didRenameFiles`
+- [~] Freshness: startup refresh with `$/progress`, scan on `didSave`, `watcher = own|client|off`, advisory `.vulcan/editor-watch.lock` lease (excluded from sync) with store-clock polling for non-holders, rename hints from `didRenameFiles`, and `vulcan/indexChanged` — all done except skipping the lease when a daemon owns the vault, which waits for a daemon index-ownership probe (today's daemon watchers only trigger sync)
 - [x] Definition, references (backlinks plus overlay deltas), hover, document and workspace symbols
 - [~] Completion after `[[` (notes, aliases, `#heading`, `^block`), tags, property keys, and inline-field keys — inline-field keys remain
-- [~] Debounced diagnostics for open buffers (the link being typed is skipped; debouncing remains): parse diagnostics and unresolved/ambiguous/outside-vault links using `doctor` categories
+- [x] Debounced diagnostics for open buffers (200 ms after the last edit; the link being typed is skipped): parse diagnostics and unresolved/ambiguous/outside-vault links using `doctor` categories
 - [ ] Mutation contract: open files as versioned `TextDocumentEdit`s, closed files as a journaled preimage-checked batch; disk first, then `workspace/applyEdit`, with a compensating inverse batch on rejection and the specified failure reports
 - [ ] Server-performed moves with `moved: { from, to }` results and refusal of dirty moved buffers; `rename` on links, filenames, headings, and block ids; `willRenameFiles`
 - [ ] Code actions with lazy `resolve`: create note from unresolved link, disambiguate, convert link style, toggle task; `dryRun` on every `vulcan.*` command

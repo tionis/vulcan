@@ -5164,6 +5164,7 @@ dependencies = [
 name = "vulcan-lsp"
 version = "0.3.0"
 dependencies = [
+ "crossbeam-channel",
  "lsp-server",
  "lsp-types",
  "serde",

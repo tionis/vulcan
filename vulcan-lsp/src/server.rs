@@ -1,22 +1,43 @@
-//! The message loop and request routing.
+//! The message loop: protocol state, routing, and background work.
+//!
+//! Threads (`docs/specs/editor-integration.md`, "Process and threading
+//! model"):
+//!
+//! - the main loop applies buffer changes inline, debounces diagnostics,
+//!   and hands every request a snapshot of the session;
+//! - a small reader pool answers requests from those snapshots;
+//! - one writer thread runs every scan this process starts, so a vault
+//!   write lock held elsewhere never stalls requests;
+//! - a watcher thread runs only while this process holds the vault's
+//!   editor watch lease; other processes follow the store clock.
 
 use crate::convert;
+use crate::handlers;
+use crossbeam_channel::{after, never, select, unbounded, Receiver, Sender};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::Notification as _;
-use lsp_types::request::Request as _;
-use lsp_types::{self as lsp, notification, request};
-use serde::de::DeserializeOwned;
+use lsp_types::{self as lsp, notification};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
-use std::path::{Path, PathBuf};
-use vulcan_app::editor::{EditorSession, EditorTextChange};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use vulcan_app::editor::{EditorSession, EditorTextChange, EditorWatchLease};
 use vulcan_app::AppError;
 use vulcan_core::editor::TextPosition;
-use vulcan_core::VaultPaths;
+use vulcan_core::{ScanSummary, VaultPaths};
 
-/// Most workspace symbols returned for one query.
-const WORKSPACE_SYMBOL_LIMIT: usize = 500;
+/// Threads answering requests.
+const READER_THREADS: usize = 3;
+/// Quiet time after an edit before its diagnostics are recomputed.
+const DIAGNOSTIC_DELAY: Duration = Duration::from_millis(200);
+/// How often a process without the watch lease checks the store clock.
+const CLOCK_POLL_INTERVAL: Duration = Duration::from_secs(2);
+/// Token of the startup indexing progress report.
+const INDEX_PROGRESS_TOKEN: &str = "vulcan/index";
+const WATCHER_THREAD: &str = "vulcan-lsp-watcher";
 
 /// Process-level options, from the command line.
 #[derive(Debug, Clone, Default)]
@@ -50,11 +71,26 @@ impl From<serde_json::Error> for LspError {
     }
 }
 
+/// How the server learns about files changed outside the editor.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum WatcherMode {
+    /// One process per vault watches (the lease holder); others poll.
+    #[default]
+    Own,
+    /// Rely on the client's `workspace/didChangeWatchedFiles`.
+    Client,
+    /// Only index saved files.
+    Off,
+}
+
 /// `initializationOptions` the server understands.
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct InitializationOptions {
     vault: Option<PathBuf>,
+    #[serde(default)]
+    watcher: WatcherMode,
 }
 
 /// Serve LSP over stdin and stdout until the client exits.
@@ -71,8 +107,14 @@ pub fn run_stdio(options: &LspOptions) -> Result<(), LspError> {
 pub fn run(connection: &Connection, options: &LspOptions) -> Result<(), LspError> {
     let (id, params) = connection.initialize_start()?;
     let params: lsp::InitializeParams = serde_json::from_value(params)?;
+    let initialization = params
+        .initialization_options
+        .clone()
+        .map(serde_json::from_value::<InitializationOptions>)
+        .transpose()?
+        .unwrap_or_default();
     let (encoding, encoding_kind) = convert::negotiate_encoding(&params.capabilities);
-    let vault_root = vault_root(options, &params)?;
+    let vault_root = vault_root(options, initialization.vault.clone(), &params)?;
     let session = EditorSession::new(VaultPaths::new(&vault_root), encoding);
 
     let result = lsp::InitializeResult {
@@ -84,24 +126,19 @@ pub fn run(connection: &Connection, options: &LspOptions) -> Result<(), LspError
     };
     connection.initialize_finish(id, serde_json::to_value(result)?)?;
 
-    let mut server = Server {
-        connection,
-        session,
-        cursors: HashMap::new(),
-    };
-    server.start();
-    server.serve()
+    let client = ClientFeatures::from(&params.capabilities);
+    let mut server = Server::start(connection, session, initialization.watcher, client);
+    let outcome = server.serve();
+    server.stop();
+    outcome
 }
 
-fn vault_root(options: &LspOptions, params: &lsp::InitializeParams) -> Result<PathBuf, LspError> {
-    let initialization = params
-        .initialization_options
-        .clone()
-        .map(serde_json::from_value::<InitializationOptions>)
-        .transpose()?
-        .unwrap_or_default();
-    let named = options.vault.clone().or(initialization.vault);
-    if let Some(named) = named {
+fn vault_root(
+    options: &LspOptions,
+    initialization_vault: Option<PathBuf>,
+    params: &lsp::InitializeParams,
+) -> Result<PathBuf, LspError> {
+    if let Some(named) = options.vault.clone().or(initialization_vault) {
         return vulcan_core::vault_discovery::resolve_named_vault(&named)
             .map(|discovery| discovery.root)
             .map_err(|error| LspError(error.to_string()));
@@ -127,6 +164,16 @@ fn capabilities(
     encoding: lsp::PositionEncodingKind,
     session: &EditorSession,
 ) -> lsp::ServerCapabilities {
+    let any_file = lsp::FileOperationRegistrationOptions {
+        filters: vec![lsp::FileOperationFilter {
+            scheme: Some("file".to_string()),
+            pattern: lsp::FileOperationPattern {
+                glob: "**/*".to_string(),
+                matches: Some(lsp::FileOperationPatternKind::File),
+                options: None,
+            },
+        }],
+    };
     lsp::ServerCapabilities {
         position_encoding: Some(encoding),
         text_document_sync: Some(lsp::TextDocumentSyncCapability::Options(
@@ -150,6 +197,13 @@ fn capabilities(
         }),
         document_symbol_provider: Some(lsp::OneOf::Left(true)),
         workspace_symbol_provider: Some(lsp::OneOf::Left(true)),
+        workspace: Some(lsp::WorkspaceServerCapabilities {
+            workspace_folders: None,
+            file_operations: Some(lsp::WorkspaceFileOperationsServerCapabilities {
+                did_rename: Some(any_file),
+                ..lsp::WorkspaceFileOperationsServerCapabilities::default()
+            }),
+        }),
         experimental: Some(json!({
             "vulcan": {
                 "protocolVersion": crate::PROTOCOL_VERSION,
@@ -164,306 +218,572 @@ fn capabilities(
     }
 }
 
+/// Optional client features the server adapts to.
+#[derive(Debug, Clone, Copy)]
+struct ClientFeatures {
+    work_done_progress: bool,
+    dynamic_file_watching: bool,
+}
+
+impl From<&lsp::ClientCapabilities> for ClientFeatures {
+    fn from(capabilities: &lsp::ClientCapabilities) -> Self {
+        Self {
+            work_done_progress: capabilities
+                .window
+                .as_ref()
+                .and_then(|window| window.work_done_progress)
+                .unwrap_or(false),
+            dynamic_file_watching: capabilities
+                .workspace
+                .as_ref()
+                .and_then(|workspace| workspace.did_change_watched_files.as_ref())
+                .and_then(|watched| watched.dynamic_registration)
+                .unwrap_or(false),
+        }
+    }
+}
+
+/// Work for the writer thread.
+enum WriteJob {
+    /// Bring the cache up to date with disk at startup.
+    Refresh,
+    /// Index changed paths, with rename hints (destination to source).
+    Scan {
+        paths: Vec<String>,
+        renames: HashMap<String, String>,
+    },
+}
+
+/// An index change (or failure) reported to the main loop by the writer
+/// or the watcher.
+struct Indexed {
+    startup: bool,
+    paths: Vec<String>,
+    summary: Option<ScanSummary>,
+    error: Option<String>,
+}
+
+/// How this process keeps up with external changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Freshness {
+    Lease,
+    Polling,
+    Client,
+    Off,
+}
+
+impl Freshness {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Lease => "lease",
+            Self::Polling => "polling",
+            Self::Client => "client",
+            Self::Off => "off",
+        }
+    }
+}
+
+/// Startup indexing progress, which needs a client-acknowledged token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Progress {
+    None,
+    /// `window/workDoneProgress/create` sent with this id.
+    Requested(RequestId),
+    Begun,
+}
+
+type Job = Box<dyn FnOnce() + Send>;
+
 struct Server<'c> {
     connection: &'c Connection,
     session: EditorSession,
+    client: ClientFeatures,
+    freshness: Freshness,
     /// The last edit position per open document, treated as the cursor.
     cursors: HashMap<String, TextPosition>,
+    /// Documents with diagnostics due, and when.
+    pending_diagnostics: HashMap<String, Instant>,
+    jobs: Option<Sender<Job>>,
+    writes: Option<Sender<WriteJob>>,
+    indexed: Receiver<Indexed>,
+    threads: Vec<std::thread::JoinHandle<()>>,
+    /// Cancellation flags of requests in flight.
+    in_flight: Arc<Mutex<HashMap<RequestId, Arc<AtomicBool>>>>,
+    /// Advances whenever the index changes; a request that spans a change
+    /// answers `ContentModified`.
+    index_epoch: Arc<AtomicU64>,
+    last_clock: Option<i64>,
+    next_clock_poll: Instant,
+    indexing: bool,
+    progress: Progress,
+    stop_watching: Arc<AtomicBool>,
+    _lease: Option<EditorWatchLease>,
+    next_request_id: i32,
 }
 
-impl Server<'_> {
-    fn start(&mut self) {
-        match self.session.refresh_index() {
-            Ok(Some(_)) => {}
-            Ok(None) => self.show_message(
+impl<'c> Server<'c> {
+    fn start(
+        connection: &'c Connection,
+        session: EditorSession,
+        watcher: WatcherMode,
+        client: ClientFeatures,
+    ) -> Self {
+        let (indexed_sender, indexed) = unbounded();
+        let mut threads = Vec::new();
+
+        let (jobs, job_receiver) = unbounded::<Job>();
+        for index in 0..READER_THREADS {
+            let receiver = job_receiver.clone();
+            threads.push(
+                std::thread::Builder::new()
+                    .name(format!("vulcan-lsp-reader-{index}"))
+                    .spawn(move || {
+                        for job in receiver {
+                            job();
+                        }
+                    })
+                    .expect("reader thread should spawn"),
+            );
+        }
+
+        let (writes, write_receiver) = unbounded::<WriteJob>();
+        let writer_session = session.clone();
+        let writer_events = indexed_sender.clone();
+        threads.push(
+            std::thread::Builder::new()
+                .name("vulcan-lsp-writer".to_string())
+                .spawn(move || run_writer(&writer_session, &write_receiver, &writer_events))
+                .expect("writer thread should spawn"),
+        );
+
+        let stop_watching = Arc::new(AtomicBool::new(false));
+        let mut lease = None;
+        let freshness = match watcher {
+            WatcherMode::Off => Freshness::Off,
+            WatcherMode::Client => Freshness::Client,
+            WatcherMode::Own => match EditorWatchLease::try_acquire(session.paths()) {
+                Ok(Some(acquired)) => {
+                    lease = Some(acquired);
+                    threads.push(spawn_watcher(
+                        session.paths().clone(),
+                        Arc::clone(&stop_watching),
+                        indexed_sender,
+                    ));
+                    Freshness::Lease
+                }
+                // Another editor process watches; follow the store clock.
+                Ok(None) | Err(_) => Freshness::Polling,
+            },
+        };
+
+        let mut server = Self {
+            connection,
+            last_clock: session.store_clock(),
+            session,
+            client,
+            freshness,
+            cursors: HashMap::new(),
+            pending_diagnostics: HashMap::new(),
+            jobs: Some(jobs),
+            writes: Some(writes),
+            indexed,
+            threads,
+            in_flight: Arc::new(Mutex::new(HashMap::new())),
+            index_epoch: Arc::new(AtomicU64::new(0)),
+            next_clock_poll: Instant::now() + CLOCK_POLL_INTERVAL,
+            indexing: false,
+            progress: Progress::None,
+            stop_watching,
+            _lease: lease,
+            next_request_id: 0,
+        };
+        server.begin_startup();
+        server
+    }
+
+    fn begin_startup(&mut self) {
+        if !self.session.paths().vulcan_dir().is_dir() {
+            self.show_message(
                 lsp::MessageType::WARNING,
                 format!(
                     "{} is not a Vulcan vault; run `vulcan init` there for link features",
                     self.session.paths().vault_root().display()
                 ),
-            ),
-            Err(error) => self.show_message(
-                lsp::MessageType::ERROR,
-                format!("Indexing the vault failed: {error}"),
-            ),
+            );
+            return;
+        }
+        self.indexing = true;
+        if self.client.work_done_progress {
+            let id = self.send_request(
+                "window/workDoneProgress/create",
+                json!({ "token": INDEX_PROGRESS_TOKEN }),
+            );
+            self.progress = Progress::Requested(id);
+        }
+        self.write(WriteJob::Refresh);
+        if self.freshness == Freshness::Client && self.client.dynamic_file_watching {
+            self.send_request(
+                "client/registerCapability",
+                json!({ "registrations": [{
+                    "id": "vulcan/watched-files",
+                    "method": "workspace/didChangeWatchedFiles",
+                    "registerOptions": { "watchers": [{ "globPattern": "**/*" }] },
+                }]}),
+            );
         }
     }
 
     fn serve(&mut self) -> Result<(), LspError> {
-        while let Ok(message) = self.connection.receiver.recv() {
-            match message {
-                Message::Request(request) => {
-                    if self.connection.handle_shutdown(&request)? {
+        let receiver = self.connection.receiver.clone();
+        let indexed = self.indexed.clone();
+        loop {
+            let wait = self.next_wakeup().map_or_else(never, |deadline| {
+                after(deadline.saturating_duration_since(Instant::now()))
+            });
+            select! {
+                recv(receiver) -> message => {
+                    let Ok(message) = message else { return Ok(()) };
+                    if self.handle_message(message)? {
                         return Ok(());
                     }
-                    let response = self.handle_request(request);
-                    self.send(Message::Response(response));
                 }
-                Message::Notification(notification) => self.handle_notification(notification),
-                Message::Response(_) => {}
+                recv(indexed) -> event => {
+                    if let Ok(event) = event {
+                        self.handle_indexed(event);
+                    }
+                }
+                recv(wait) -> _ => {}
             }
+            self.flush_diagnostics();
+            self.poll_clock();
         }
-        Ok(())
     }
 
-    fn handle_request(&mut self, request: Request) -> Response {
+    fn next_wakeup(&self) -> Option<Instant> {
+        let diagnostics = self.pending_diagnostics.values().min().copied();
+        let poll = (self.freshness == Freshness::Polling).then_some(self.next_clock_poll);
+        match (diagnostics, poll) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (left, right) => left.or(right),
+        }
+    }
+
+    /// Handle one client message; `true` ends the loop.
+    fn handle_message(&mut self, message: Message) -> Result<bool, LspError> {
+        match message {
+            Message::Request(request) => {
+                if self.connection.handle_shutdown(&request)? {
+                    return Ok(true);
+                }
+                self.dispatch(request);
+            }
+            Message::Notification(notification) => self.handle_notification(notification),
+            Message::Response(response) => self.handle_response(&response),
+        }
+        Ok(false)
+    }
+
+    fn handle_response(&mut self, response: &Response) {
+        let Progress::Requested(id) = &self.progress else {
+            return;
+        };
+        if &response.id != id {
+            return;
+        }
+        if response.response_result.is_ok() && self.indexing {
+            self.progress = Progress::Begun;
+            self.send_progress(&json!({
+                "kind": "begin",
+                "title": "Indexing vault",
+                "cancellable": false,
+            }));
+        } else {
+            self.progress = Progress::None;
+        }
+    }
+
+    fn dispatch(&mut self, request: Request) {
         let id = request.id.clone();
-        let result = match request.method.as_str() {
-            request::GotoDefinition::METHOD => {
-                params(request).and_then(|params| self.definition(&params))
-            }
-            request::References::METHOD => {
-                params(request).and_then(|params| self.references(&params))
-            }
-            request::HoverRequest::METHOD => params(request).and_then(|params| self.hover(&params)),
-            request::Completion::METHOD => {
-                params(request).and_then(|params| self.completion(&params))
-            }
-            request::DocumentSymbolRequest::METHOD => {
-                params(request).map(|params| self.document_symbols(&params))
-            }
-            request::WorkspaceSymbolRequest::METHOD => {
-                params(request).and_then(|params| self.workspace_symbols(&params))
-            }
-            "vulcan/status" => Ok(json!({
+        if request.method == "vulcan/status" {
+            let status = json!({
                 "protocolVersion": crate::PROTOCOL_VERSION,
                 "vault": self.session.paths().vault_root(),
-                "cache": if self.session.has_cache() { "fresh" } else { "missing" },
+                "cache": if self.indexing {
+                    "indexing"
+                } else if self.session.has_cache() {
+                    "fresh"
+                } else {
+                    "missing"
+                },
                 "daemon": "absent",
-                "watcher": "off",
-            })),
-            method => Err(ResponseFailure::method_not_found(method)),
-        };
-        match result {
-            Ok(value) => Response::new_ok(id, value),
-            Err(failure) => failure.into_response(id),
+                "watcher": self.freshness.name(),
+            });
+            self.send(Message::Response(Response::new_ok(id, status)));
+            return;
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        lock(&self.in_flight).insert(id.clone(), Arc::clone(&cancelled));
+        let session = self.session.clone();
+        let sender = self.connection.sender.clone();
+        let in_flight = Arc::clone(&self.in_flight);
+        let index_epoch = Arc::clone(&self.index_epoch);
+        let job: Job = Box::new(move || {
+            let epoch = index_epoch.load(Ordering::SeqCst);
+            let response = if cancelled.load(Ordering::SeqCst) {
+                cancelled_response(id.clone())
+            } else {
+                let response = handlers::handle(&session, request);
+                if cancelled.load(Ordering::SeqCst) {
+                    cancelled_response(id.clone())
+                } else if index_epoch.load(Ordering::SeqCst) != epoch {
+                    failure_response(
+                        id.clone(),
+                        ErrorCode::ContentModified as i32,
+                        "the index changed while the request ran".to_string(),
+                        "conflict",
+                    )
+                } else {
+                    response
+                }
+            };
+            lock(&in_flight).remove(&id);
+            let _ = sender.send(Message::Response(response));
+        });
+        if let Some(jobs) = &self.jobs {
+            let _ = jobs.send(job);
         }
     }
 
     fn handle_notification(&mut self, notification: Notification) {
+        let params = notification.params;
         match notification.method.as_str() {
-            notification::DidOpenTextDocument::METHOD => {
-                if let Ok(params) =
-                    serde_json::from_value::<lsp::DidOpenTextDocumentParams>(notification.params)
-                {
-                    let Some(path) = self.vault_path(&params.text_document.uri) else {
-                        return;
+            "$/cancelRequest" => {
+                if let Ok(params) = serde_json::from_value::<lsp::CancelParams>(params) {
+                    let id = match params.id {
+                        lsp::NumberOrString::Number(id) => RequestId::from(id),
+                        lsp::NumberOrString::String(id) => RequestId::from(id),
                     };
-                    self.session.open(
-                        &path,
-                        params.text_document.version,
-                        params.text_document.text,
-                    );
-                    self.publish_diagnostics(&path);
+                    if let Some(flag) = lock(&self.in_flight).get(&id) {
+                        flag.store(true, Ordering::SeqCst);
+                    }
+                }
+            }
+            notification::DidOpenTextDocument::METHOD => {
+                if let Ok(params) = serde_json::from_value(params) {
+                    self.did_open(params);
                 }
             }
             notification::DidChangeTextDocument::METHOD => {
-                if let Ok(params) =
-                    serde_json::from_value::<lsp::DidChangeTextDocumentParams>(notification.params)
-                {
-                    let Some(path) = self.vault_path(&params.text_document.uri) else {
-                        return;
-                    };
-                    let changes = params
-                        .content_changes
-                        .into_iter()
-                        .map(|change| EditorTextChange {
-                            range: change.range.map(convert::range),
-                            text: change.text,
-                        })
-                        .collect();
-                    match self
-                        .session
-                        .change(&path, params.text_document.version, changes)
-                    {
-                        Ok(Some(cursor)) => {
-                            self.cursors.insert(path.clone(), cursor);
-                        }
-                        Ok(None) => {
-                            self.cursors.remove(&path);
-                        }
-                        Err(_) => return,
-                    }
-                    self.publish_diagnostics(&path);
+                if let Ok(params) = serde_json::from_value(params) {
+                    self.did_change(params);
                 }
             }
             notification::DidSaveTextDocument::METHOD => {
-                if let Ok(params) =
-                    serde_json::from_value::<lsp::DidSaveTextDocumentParams>(notification.params)
+                if let Ok(params) = serde_json::from_value::<lsp::DidSaveTextDocumentParams>(params)
                 {
-                    let Some(path) = self.vault_path(&params.text_document.uri) else {
-                        return;
-                    };
-                    self.cursors.remove(&path);
-                    if let Err(error) = self.session.scan_saved(&[path]) {
-                        self.show_message(
-                            lsp::MessageType::WARNING,
-                            format!("Indexing the saved file failed: {error}"),
-                        );
-                    }
-                    // Backlink-derived state of every open document may change.
-                    let open = self
-                        .session
-                        .open_paths()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>();
-                    for path in open {
-                        self.publish_diagnostics(&path);
+                    if let Some(path) = self.vault_path(&params.text_document.uri) {
+                        self.cursors.remove(&path);
+                        self.write(WriteJob::Scan {
+                            paths: vec![path],
+                            renames: HashMap::new(),
+                        });
                     }
                 }
             }
             notification::DidCloseTextDocument::METHOD => {
-                if let Ok(params) =
-                    serde_json::from_value::<lsp::DidCloseTextDocumentParams>(notification.params)
-                {
-                    let Some(path) = self.vault_path(&params.text_document.uri) else {
-                        return;
-                    };
-                    self.session.close(&path);
-                    self.cursors.remove(&path);
-                    // Clear what was published for the closed buffer.
-                    self.send_notification::<notification::PublishDiagnostics>(
-                        lsp::PublishDiagnosticsParams {
-                            uri: params.text_document.uri,
-                            diagnostics: Vec::new(),
-                            version: None,
-                        },
-                    );
+                if let Ok(params) = serde_json::from_value(params) {
+                    self.did_close(params);
+                }
+            }
+            notification::DidRenameFiles::METHOD => {
+                if let Ok(params) = serde_json::from_value(params) {
+                    self.did_rename(&params);
+                }
+            }
+            notification::DidChangeWatchedFiles::METHOD => {
+                if let Ok(params) = serde_json::from_value(params) {
+                    self.did_change_watched_files(&params);
                 }
             }
             _ => {}
         }
     }
 
-    fn definition(&self, params: &lsp::GotoDefinitionParams) -> Result<Value, ResponseFailure> {
-        let position = &params.text_document_position_params;
-        let Some(path) = self.vault_path(&position.text_document.uri) else {
-            return Ok(Value::Null);
-        };
-        let location = self
-            .session
-            .definition(&path, convert::position(position.position))?;
-        Ok(location
-            .and_then(|location| self.location(&location))
-            .map_or(Value::Null, |location| {
-                serde_json::to_value(lsp::GotoDefinitionResponse::Scalar(location))
-                    .unwrap_or(Value::Null)
-            }))
-    }
-
-    fn references(&self, params: &lsp::ReferenceParams) -> Result<Value, ResponseFailure> {
-        let position = &params.text_document_position;
-        let Some(path) = self.vault_path(&position.text_document.uri) else {
-            return Ok(Value::Null);
-        };
-        let locations = self
-            .session
-            .references(&path, convert::position(position.position))?
-            .iter()
-            .filter_map(|location| self.location(location))
-            .collect::<Vec<_>>();
-        Ok(serde_json::to_value(locations).unwrap_or(Value::Null))
-    }
-
-    fn hover(&self, params: &lsp::HoverParams) -> Result<Value, ResponseFailure> {
-        let position = &params.text_document_position_params;
-        let Some(path) = self.vault_path(&position.text_document.uri) else {
-            return Ok(Value::Null);
-        };
-        let hover = self
-            .session
-            .hover(&path, convert::position(position.position))?;
-        Ok(hover.map_or(Value::Null, |hover| {
-            serde_json::to_value(lsp::Hover {
-                contents: lsp::HoverContents::Markup(lsp::MarkupContent {
-                    kind: lsp::MarkupKind::Markdown,
-                    value: hover.markdown,
-                }),
-                range: Some(convert::lsp_range(hover.range)),
-            })
-            .unwrap_or(Value::Null)
-        }))
-    }
-
-    fn completion(&self, params: &lsp::CompletionParams) -> Result<Value, ResponseFailure> {
-        let position = &params.text_document_position;
-        let Some(path) = self.vault_path(&position.text_document.uri) else {
-            return Ok(Value::Null);
-        };
-        let Some(completion) = self
-            .session
-            .completion(&path, convert::position(position.position))?
-        else {
-            return Ok(Value::Null);
-        };
-        let range = convert::lsp_range(completion.range);
-        let items = completion
-            .items
-            .into_iter()
-            .map(|item| lsp::CompletionItem {
-                label: item.label,
-                kind: Some(convert::completion_kind(item.kind)),
-                detail: item.detail,
-                filter_text: item.filter_text,
-                text_edit: Some(lsp::CompletionTextEdit::Edit(lsp::TextEdit {
-                    range,
-                    new_text: item.insert_text,
-                })),
-                ..lsp::CompletionItem::default()
-            })
-            .collect();
-        Ok(
-            serde_json::to_value(lsp::CompletionResponse::List(lsp::CompletionList {
-                is_incomplete: completion.incomplete,
-                items,
-            }))
-            .unwrap_or(Value::Null),
-        )
-    }
-
-    fn document_symbols(&self, params: &lsp::DocumentSymbolParams) -> Value {
+    fn did_open(&mut self, params: lsp::DidOpenTextDocumentParams) {
         let Some(path) = self.vault_path(&params.text_document.uri) else {
-            return Value::Null;
+            return;
         };
-        let symbols = self.session.document_symbols(&path).map(|symbols| {
-            lsp::DocumentSymbolResponse::Nested(
-                symbols.into_iter().map(convert::document_symbol).collect(),
-            )
-        });
-        serde_json::to_value(symbols).unwrap_or(Value::Null)
+        self.session.open(
+            &path,
+            params.text_document.version,
+            params.text_document.text,
+        );
+        // An opened document is diagnosed at once.
+        self.pending_diagnostics.insert(path, Instant::now());
     }
 
-    fn workspace_symbols(
-        &self,
-        params: &lsp::WorkspaceSymbolParams,
-    ) -> Result<Value, ResponseFailure> {
-        let symbols = self
-            .session
-            .workspace_symbols(&params.query, WORKSPACE_SYMBOL_LIMIT)?
+    fn did_change(&mut self, params: lsp::DidChangeTextDocumentParams) {
+        let Some(path) = self.vault_path(&params.text_document.uri) else {
+            return;
+        };
+        let changes = params
+            .content_changes
             .into_iter()
-            .filter_map(|symbol| {
-                let uri = self.uri(&symbol.path)?;
-                Some(lsp::WorkspaceSymbol {
-                    name: symbol.name,
-                    kind: lsp::SymbolKind::FILE,
-                    tags: None,
-                    container_name: symbol.alias_of.map(|name| format!("alias of {name}")),
-                    location: lsp::OneOf::Left(lsp::Location {
-                        uri,
-                        range: lsp::Range::default(),
-                    }),
-                    data: None,
-                })
+            .map(|change| EditorTextChange {
+                range: change.range.map(convert::range),
+                text: change.text,
             })
             .collect();
-        Ok(
-            serde_json::to_value(lsp::WorkspaceSymbolResponse::Nested(symbols))
-                .unwrap_or(Value::Null),
-        )
+        match self
+            .session
+            .change(&path, params.text_document.version, changes)
+        {
+            Ok(Some(cursor)) => {
+                self.cursors.insert(path.clone(), cursor);
+            }
+            Ok(None) => {
+                self.cursors.remove(&path);
+            }
+            Err(_) => return,
+        }
+        self.pending_diagnostics
+            .insert(path, Instant::now() + DIAGNOSTIC_DELAY);
+    }
+
+    fn did_close(&mut self, params: lsp::DidCloseTextDocumentParams) {
+        let Some(path) = self.vault_path(&params.text_document.uri) else {
+            return;
+        };
+        self.session.close(&path);
+        self.cursors.remove(&path);
+        self.pending_diagnostics.remove(&path);
+        // Clear what was published for the closed buffer.
+        self.send_notification::<notification::PublishDiagnostics>(lsp::PublishDiagnosticsParams {
+            uri: params.text_document.uri,
+            diagnostics: Vec::new(),
+            version: None,
+        });
+    }
+
+    /// Files renamed by the client keep their identity through rename
+    /// hints to the scan.
+    fn did_rename(&self, params: &lsp::RenameFilesParams) {
+        let renames = params
+            .files
+            .iter()
+            .filter_map(|rename| {
+                let old = self.vault_path(&rename.old_uri.parse().ok()?)?;
+                let new = self.vault_path(&rename.new_uri.parse().ok()?)?;
+                Some((new, old))
+            })
+            .collect::<HashMap<_, _>>();
+        if !renames.is_empty() {
+            self.write(WriteJob::Scan {
+                paths: Vec::new(),
+                renames,
+            });
+        }
+    }
+
+    fn did_change_watched_files(&self, params: &lsp::DidChangeWatchedFilesParams) {
+        if self.freshness != Freshness::Client {
+            return;
+        }
+        let paths = params
+            .changes
+            .iter()
+            .filter_map(|change| self.vault_path(&change.uri))
+            .filter(|path| path != ".vulcan" && !path.starts_with(".vulcan/"))
+            .collect::<BTreeSet<_>>();
+        if !paths.is_empty() {
+            self.write(WriteJob::Scan {
+                paths: paths.into_iter().collect(),
+                renames: HashMap::new(),
+            });
+        }
+    }
+
+    fn handle_indexed(&mut self, event: Indexed) {
+        if event.startup {
+            self.indexing = false;
+            match std::mem::replace(&mut self.progress, Progress::None) {
+                Progress::Begun => self.send_progress(&json!({ "kind": "end" })),
+                // A late token acknowledgement must not begin a report.
+                Progress::Requested(_) | Progress::None => {}
+            }
+        }
+        if let Some(error) = event.error {
+            self.show_message(
+                lsp::MessageType::WARNING,
+                format!("Indexing the vault failed: {error}"),
+            );
+        }
+        let clock = self.session.store_clock();
+        // A scan that found nothing to change (such as the watcher's first
+        // pass) must not invalidate requests in flight.
+        let changed = match &event.summary {
+            Some(summary) => summary.added + summary.updated + summary.deleted > 0,
+            None => clock != self.last_clock,
+        };
+        if changed {
+            self.index_changed(&event.paths, event.summary.as_ref(), clock);
+        } else {
+            self.last_clock = clock;
+        }
+    }
+
+    /// Republish diagnostics after the index changed, and tell the client.
+    fn index_changed(
+        &mut self,
+        paths: &[String],
+        summary: Option<&ScanSummary>,
+        clock: Option<i64>,
+    ) {
+        self.last_clock = clock;
+        self.index_epoch.fetch_add(1, Ordering::SeqCst);
+        // Backlink-derived state of every open document may have changed.
+        let now = Instant::now();
+        let open = self
+            .session
+            .open_paths()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        for path in open {
+            self.pending_diagnostics.entry(path).or_insert(now);
+        }
+        self.send(Message::Notification(Notification::new(
+            "vulcan/indexChanged".to_string(),
+            json!({ "paths": paths, "summary": summary }),
+        )));
+    }
+
+    fn flush_diagnostics(&mut self) {
+        let now = Instant::now();
+        let due = self
+            .pending_diagnostics
+            .iter()
+            .filter(|(_, deadline)| **deadline <= now)
+            .map(|(path, _)| path.clone())
+            .collect::<Vec<_>>();
+        for path in due {
+            self.pending_diagnostics.remove(&path);
+            self.publish_diagnostics(&path);
+        }
+    }
+
+    fn poll_clock(&mut self) {
+        if self.freshness != Freshness::Polling || Instant::now() < self.next_clock_poll {
+            return;
+        }
+        self.next_clock_poll = Instant::now() + CLOCK_POLL_INTERVAL;
+        let clock = self.session.store_clock();
+        if clock != self.last_clock {
+            self.index_changed(&[], None, clock);
+        }
     }
 
     fn publish_diagnostics(&self, path: &str) {
-        let Some(uri) = self.uri(path) else {
+        let Some(uri) = handlers::uri(&self.session, path) else {
             return;
         };
         let version = self.session.document(path).map(|document| document.version);
@@ -479,11 +799,49 @@ impl Server<'_> {
         });
     }
 
+    fn write(&self, job: WriteJob) {
+        if let Some(writes) = &self.writes {
+            let _ = writes.send(job);
+        }
+    }
+
+    fn stop(&mut self) {
+        self.stop_watching.store(true, Ordering::SeqCst);
+        // Closing the queues ends the reader and writer threads once their
+        // current job finishes. The watcher stops at its next stop check;
+        // it holds no client state, so it is not awaited.
+        self.jobs.take();
+        self.writes.take();
+        for thread in self.threads.drain(..) {
+            if thread.thread().name() != Some(WATCHER_THREAD) {
+                let _ = thread.join();
+            }
+        }
+    }
+
     fn show_message(&self, typ: lsp::MessageType, message: String) {
         self.send_notification::<notification::ShowMessage>(lsp::ShowMessageParams {
             typ,
             message,
         });
+    }
+
+    fn send_progress(&self, value: &Value) {
+        self.send(Message::Notification(Notification::new(
+            "$/progress".to_string(),
+            json!({ "token": INDEX_PROGRESS_TOKEN, "value": value }),
+        )));
+    }
+
+    fn send_request(&mut self, method: &str, params: Value) -> RequestId {
+        self.next_request_id += 1;
+        let id = RequestId::from(format!("vulcan/{}", self.next_request_id));
+        self.send(Message::Request(Request::new(
+            id.clone(),
+            method.to_string(),
+            params,
+        )));
+        id
     }
 
     fn send_notification<N: notification::Notification>(&self, params: N::Params) {
@@ -499,51 +857,89 @@ impl Server<'_> {
     }
 
     fn vault_path(&self, uri: &lsp::Uri) -> Option<String> {
-        let path = convert::file_path(uri)?;
-        self.session.relative_path(&path)
+        handlers::vault_path(&self.session, uri)
     }
+}
 
-    fn uri(&self, path: &str) -> Option<lsp::Uri> {
-        convert::file_uri(&self.session.paths().vault_root().join(Path::new(path)))
+fn run_writer(session: &EditorSession, jobs: &Receiver<WriteJob>, events: &Sender<Indexed>) {
+    for job in jobs {
+        let (startup, paths, result) = match job {
+            WriteJob::Refresh => (true, Vec::new(), session.refresh_index()),
+            WriteJob::Scan { paths, renames } => {
+                let mut changed = paths.clone();
+                changed.extend(renames.keys().cloned());
+                (false, changed, session.scan_changed(&paths, &renames))
+            }
+        };
+        let (summary, error) = match result {
+            Ok(summary) => (summary, None),
+            Err(error) => (None, Some(error.to_string())),
+        };
+        let _ = events.send(Indexed {
+            startup,
+            paths,
+            summary,
+            error,
+        });
     }
+}
 
-    fn location(&self, location: &vulcan_app::editor::EditorLocation) -> Option<lsp::Location> {
-        Some(lsp::Location {
-            uri: self.uri(&location.path)?,
-            range: convert::lsp_range(location.range),
+fn spawn_watcher(
+    paths: VaultPaths,
+    stop: Arc<AtomicBool>,
+    events: Sender<Indexed>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::Builder::new()
+        .name(WATCHER_THREAD.to_string())
+        .spawn(move || {
+            let result = vulcan_core::watch::watch_vault_until(
+                &paths,
+                &vulcan_core::watch::WatchOptions::default(),
+                || stop.load(Ordering::SeqCst),
+                |report| {
+                    events
+                        .send(Indexed {
+                            startup: false,
+                            paths: report.paths,
+                            summary: Some(report.summary),
+                            error: None,
+                        })
+                        .map_err(|_| "editor session ended")
+                },
+            );
+            if let Err(error) = result {
+                let _ = events.send(Indexed {
+                    startup: false,
+                    paths: Vec::new(),
+                    summary: None,
+                    error: Some(format!("the file watcher stopped: {error}")),
+                });
+            }
         })
+        .expect("watcher thread should spawn")
+}
+
+fn cancelled_response(id: RequestId) -> Response {
+    failure_response(
+        id,
+        ErrorCode::RequestCanceled as i32,
+        "the request was cancelled".to_string(),
+        "cancelled",
+    )
+}
+
+pub(crate) fn failure_response(id: RequestId, code: i32, message: String, kind: &str) -> Response {
+    Response {
+        id,
+        response_result: Err(lsp_server::ResponseError {
+            code,
+            data: Some(json!({ "kind": kind, "detail": message })),
+            message,
+        }),
     }
 }
 
-/// A request that cannot be answered, as an LSP error response.
-struct ResponseFailure {
-    code: i32,
-    message: String,
-    kind: String,
-}
-
-impl ResponseFailure {
-    fn method_not_found(method: &str) -> Self {
-        Self {
-            code: ErrorCode::MethodNotFound as i32,
-            message: format!("unsupported method {method}"),
-            kind: "invalid_request".to_string(),
-        }
-    }
-
-    fn into_response(self, id: RequestId) -> Response {
-        Response {
-            id,
-            response_result: Err(lsp_server::ResponseError {
-                code: self.code,
-                data: Some(json!({ "kind": self.kind, "detail": self.message })),
-                message: self.message,
-            }),
-        }
-    }
-}
-
-impl From<AppError> for ResponseFailure {
+impl From<AppError> for handlers::ResponseFailure {
     fn from(error: AppError) -> Self {
         Self {
             code: ErrorCode::InternalError as i32,
@@ -553,10 +949,8 @@ impl From<AppError> for ResponseFailure {
     }
 }
 
-fn params<P: DeserializeOwned>(request: Request) -> Result<P, ResponseFailure> {
-    serde_json::from_value(request.params).map_err(|error| ResponseFailure {
-        code: ErrorCode::InvalidParams as i32,
-        message: error.to_string(),
-        kind: "invalid_request".to_string(),
-    })
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }

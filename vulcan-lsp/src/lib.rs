@@ -11,6 +11,7 @@
 //! text to the cache.
 
 mod convert;
+mod handlers;
 mod server;
 
 pub use server::{run, run_stdio, LspError, LspOptions};

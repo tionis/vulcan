@@ -7,6 +7,7 @@ license.workspace = true
 description = "Synchronous Language Server Protocol transport for Vulcan vaults"
 
 [dependencies]
+crossbeam-channel.workspace = true
 lsp-server.workspace = true
 lsp-types.workspace = true
 serde.workspace = true

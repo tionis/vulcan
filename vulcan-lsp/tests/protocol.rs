@@ -17,11 +17,17 @@ struct Client {
     next_id: i32,
     /// Notifications received while waiting for responses.
     notifications: Vec<Notification>,
+    /// Requests the server sent; each is answered with `null`.
+    server_requests: Vec<Request>,
     root: std::path::PathBuf,
 }
 
 impl Client {
     fn start(root: &Path, capabilities: &Value) -> (Self, Value) {
+        Self::start_with(root, capabilities, &Value::Null)
+    }
+
+    fn start_with(root: &Path, capabilities: &Value, options: &Value) -> (Self, Value) {
         let (server, client) = Connection::memory();
         let handle = std::thread::spawn(move || {
             vulcan_lsp::run(&server, &LspOptions::default()).unwrap();
@@ -31,6 +37,7 @@ impl Client {
             server: Some(handle),
             next_id: 0,
             notifications: Vec::new(),
+            server_requests: Vec::new(),
             root: root.to_path_buf(),
         };
         let result = client.request(
@@ -39,6 +46,7 @@ impl Client {
                 "processId": null,
                 "rootUri": uri(root),
                 "capabilities": capabilities,
+                "initializationOptions": options,
             }),
         );
         client.notify("initialized", json!({}));
@@ -61,16 +69,47 @@ impl Client {
             )))
             .unwrap();
         loop {
-            match self.receive() {
-                Message::Response(response) if response.id == id => {
+            if let Some(response) = self.pump() {
+                if response.id == id {
                     return match response.response_result {
                         Ok(value) => value,
                         Err(error) => json!({ "error": error.code, "data": error.data }),
                     };
                 }
-                Message::Notification(notification) => self.notifications.push(notification),
-                _ => {}
             }
+        }
+    }
+
+    /// Receive one message: record notifications, answer server requests,
+    /// and return responses.
+    fn pump(&mut self) -> Option<lsp_server::Response> {
+        match self.receive() {
+            Message::Response(response) => Some(response),
+            Message::Notification(notification) => {
+                self.notifications.push(notification);
+                None
+            }
+            Message::Request(request) => {
+                self.connection
+                    .sender
+                    .send(Message::Response(lsp_server::Response::new_ok(
+                        request.id.clone(),
+                        Value::Null,
+                    )))
+                    .unwrap();
+                self.server_requests.push(request);
+                None
+            }
+        }
+    }
+
+    /// Wait for (and remove) the first notification matching `wanted`.
+    fn wait_for(&mut self, wanted: impl Fn(&Notification) -> bool) -> Notification {
+        loop {
+            if let Some(index) = self.notifications.iter().position(&wanted) {
+                return self.notifications.remove(index);
+            }
+            self.pump();
         }
     }
 
@@ -111,10 +150,13 @@ impl Client {
             if let Some(diagnostics) = take(&mut self.notifications) {
                 return diagnostics;
             }
-            if let Message::Notification(notification) = self.receive() {
-                self.notifications.push(notification);
-            }
+            self.pump();
         }
+    }
+
+    /// Wait until the server reports an index change.
+    fn index_changed(&mut self) -> Notification {
+        self.wait_for(|notification| notification.method == "vulcan/indexChanged")
     }
 
     fn open(&mut self, path: &str, text: &str) {
@@ -342,4 +384,145 @@ fn warns_about_uninitialized_vaults_without_creating_one() {
         .any(|notification| notification.method == "window/showMessage"));
     drop(client);
     assert!(!dir.path().join(".vulcan").exists());
+}
+
+#[test]
+fn the_lease_holder_watches_and_other_processes_follow_the_store_clock() {
+    let dir = vault(&[("Home.md", "[[Later]]\n")]);
+    let (mut watching, _) = Client::start(dir.path(), &json!({}));
+    let (mut polling, _) = Client::start(dir.path(), &json!({}));
+    assert_eq!(
+        watching.request("vulcan/status", json!({}))["watcher"],
+        "lease"
+    );
+    assert_eq!(
+        polling.request("vulcan/status", json!({}))["watcher"],
+        "polling"
+    );
+    for client in [&mut watching, &mut polling] {
+        client.open("Home.md", "[[Later]]\n");
+        assert_eq!(client.diagnostics("Home.md").len(), 1);
+    }
+
+    // A file created outside any editor is indexed by the lease holder,
+    // and the other process notices through the store clock.
+    std::fs::write(dir.path().join("Later.md"), "# Later\n").unwrap();
+    for client in [&mut watching, &mut polling] {
+        let changed = client.index_changed();
+        assert!(changed.params.is_object());
+        assert!(client.diagnostics("Home.md").is_empty());
+    }
+}
+
+#[test]
+fn client_watching_and_renames_index_reported_paths() {
+    let dir = vault(&[("Home.md", "[[Later]] [[Old]]\n"), ("Old.md", "# Old\n")]);
+    let (mut client, _) = Client::start_with(
+        dir.path(),
+        &json!({ "workspace": { "didChangeWatchedFiles": { "dynamicRegistration": true } } }),
+        &json!({ "watcher": "client" }),
+    );
+    assert_eq!(
+        client.request("vulcan/status", json!({}))["watcher"],
+        "client"
+    );
+    assert!(client
+        .server_requests
+        .iter()
+        .any(|request| request.method == "client/registerCapability"
+            && request.params["registrations"][0]["method"] == "workspace/didChangeWatchedFiles"));
+    client.open("Home.md", "[[Later]] [[Old]]\n");
+    assert_eq!(client.diagnostics("Home.md").len(), 1);
+
+    std::fs::write(dir.path().join("Later.md"), "# Later\n").unwrap();
+    client.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({ "changes": [{ "uri": client.uri("Later.md"), "type": 1 }] }),
+    );
+    let changed = client.index_changed();
+    assert_eq!(changed.params["paths"], json!(["Later.md"]));
+    assert!(client.diagnostics("Home.md").is_empty());
+
+    // A rename reported by the client is indexed with a rename hint, so the
+    // note keeps its identity instead of being deleted and re-added.
+    std::fs::rename(dir.path().join("Old.md"), dir.path().join("New.md")).unwrap();
+    client.notify(
+        "workspace/didRenameFiles",
+        json!({ "files": [{ "oldUri": client.uri("Old.md"), "newUri": client.uri("New.md") }] }),
+    );
+    let changed = client.index_changed();
+    assert_eq!(changed.params["summary"]["deleted"], 0);
+    assert_eq!(changed.params["summary"]["added"], 0);
+    assert_eq!(client.diagnostics("Home.md").len(), 1);
+}
+
+#[test]
+fn startup_indexing_reports_progress_when_the_client_supports_it() {
+    let dir = vault(&[("Home.md", HOME)]);
+    let (mut client, _) = Client::start(
+        dir.path(),
+        &json!({ "window": { "workDoneProgress": true } }),
+    );
+    // Requests are answered in order, so the token request has been seen
+    // by the time this status reply arrives.
+    let _ = client.request("vulcan/status", json!({}));
+    assert!(client
+        .server_requests
+        .iter()
+        .any(|request| request.method == "window/workDoneProgress/create"));
+    // Whether indexing outlives the token handshake is a race; when a report
+    // begins, it must end.
+    let began = client.notifications.iter().any(|notification| {
+        notification.method == "$/progress" && notification.params["value"]["kind"] == "begin"
+    });
+    if began {
+        client.wait_for(|notification| {
+            notification.method == "$/progress" && notification.params["value"]["kind"] == "end"
+        });
+    }
+}
+
+#[test]
+fn cancelling_a_finished_or_unknown_request_is_harmless() {
+    let dir = vault(&[("Home.md", HOME)]);
+    let (mut client, _) = Client::start(dir.path(), &json!({}));
+    client.open("Home.md", HOME);
+    let _ = client.diagnostics("Home.md");
+    client.notify("$/cancelRequest", json!({ "id": 999 }));
+    let symbols = client.request(
+        "textDocument/documentSymbol",
+        json!({ "textDocument": { "uri": client.uri("Home.md") } }),
+    );
+    client.notify("$/cancelRequest", json!({ "id": client.next_id }));
+    assert_eq!(symbols[0]["name"], "Home");
+    assert_eq!(
+        client.request("vulcan/status", json!({}))["protocolVersion"],
+        1
+    );
+}
+
+#[test]
+fn a_held_vault_write_lock_does_not_stall_requests() {
+    let dir = vault(&[("Home.md", HOME), ("Alpha.md", ALPHA)]);
+    let (mut client, _) = Client::start(dir.path(), &json!({}));
+    // Let the startup refresh finish before another writer takes the lock.
+    let _ = client.request("vulcan/status", json!({}));
+    client.open("Home.md", HOME);
+    let _ = client.diagnostics("Home.md");
+    let paths = VaultPaths::new(dir.path());
+    let lock = vulcan_core::write_lock::acquire_write_lock(&paths).unwrap();
+
+    // The save scan now waits for the lock on the writer thread...
+    client.notify(
+        "textDocument/didSave",
+        json!({ "textDocument": { "uri": client.uri("Home.md") } }),
+    );
+    // ...while requests are still answered.
+    let started = std::time::Instant::now();
+    let definition = client.request("textDocument/definition", client.at("Home.md", 2, 8));
+    assert_eq!(definition["uri"], client.uri("Alpha.md"));
+    let completion = client.request("workspace/symbol", json!({ "query": "alp" }));
+    assert_eq!(completion[0]["name"], "Alpha");
+    assert!(started.elapsed() < Duration::from_secs(5));
+    drop(lock);
 }
