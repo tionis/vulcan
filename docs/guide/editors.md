@@ -109,8 +109,8 @@ editor's file watching instead, or `"off"` to index only saved files.
   note's changes once it is saved.
 - Renames and moves write closed files as one journaled batch and edit open
   buffers through the editor; a buffer with unsaved changes blocks them.
-- DataviewJS results are not computed unless the editor asks for `static` (the
-  strict sandbox) or the device-local `.vulcan/config.local.toml` sets
-  `[editor] dataview_js = "on"`.
+- `dataviewjs` blocks run in the strict sandbox (computation and index reads;
+  no file access, network, or writes) in every vault. Vaults you trust with
+  `vulcan trust` get full evaluation, which still never writes.
 - `vulcan --permissions <profile> lsp` checks every planned change against the
   profile.

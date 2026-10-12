@@ -75,7 +75,7 @@ require('vulcan').setup({
   root_markers = { '.vulcan', '.vulcan.toml', '.obsidian' },
   init_options = {             -- sent to the server
     -- watcher = 'own',        -- 'own' | 'client' | 'off'
-    -- dataviewJs = 'off',     -- 'off' | 'static' | 'on' (needs local consent)
+    -- dataviewJs = nil,       -- 'off' | 'static' | 'on'; unset follows `vulcan trust`
   },
   render = {
     enabled = true,
@@ -90,10 +90,11 @@ require('vulcan').setup({
 })
 ```
 
-DataviewJS blocks are not run unless you ask: `dataviewJs = 'static'` runs
-them in the strict sandbox, and `'on'` additionally needs
-`[editor] dataview_js = "on"` in the vault's device-local
-`.vulcan/config.local.toml`.
+`dataviewjs` blocks always render in the strict sandbox (computation and index
+reads; no file access, network, or writes). Vaults you trust with
+`vulcan trust` get full evaluation, which still never writes. Set
+`dataviewJs = 'off'` to turn them off, or `'static'` to keep even trusted
+vaults sandboxed.
 
 Recommended companions: render-markdown.nvim or markview.nvim for live
 Markdown rendering, and image.nvim or snacks.image for images.

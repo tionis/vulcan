@@ -1,7 +1,7 @@
 ---
 name: editor-integration
 description: Set up and troubleshoot Vulcan's language server for Neovim, Vim, Helix, Emacs, Zed, or another LSP client. Use when the user wants link navigation, backlinks, completion, or diagnostics in a terminal editor, or asks why their editor reports an unresolved or ambiguous link.
-version: 6
+version: 7
 tools:
   - describe
   - help
@@ -74,9 +74,9 @@ exits.
 - Agent edits made with `vulcan note`, `move`, or `refactor` while the vault is open in an editor
   stay safe: they take the vault write lock and check file contents first. The editor reloads the
   changed files. Prefer `move` and `refactor` over ad hoc edits so link rewrites stay journaled.
-- Do not enable `on` DataviewJS rendering for a vault you do not trust. It needs
-  `[editor] dataview_js = "on"` in `.vulcan/config.local.toml`, which is device-local and never
-  synced; the shared config cannot turn it on.
+- Editors render `dataviewjs` blocks in the strict sandbox for every vault; full evaluation
+  follows `vulcan trust`. Only suggest `vulcan trust` for a vault the user knows, since trust also
+  enables its startup scripts and plugins.
 - A rename in the editor refuses while an affected buffer has unsaved changes; save or discard
   them first rather than editing files behind the editor.
 - Do not start `vulcan lsp` interactively; it speaks JSON-RPC on stdout and waits for a client.

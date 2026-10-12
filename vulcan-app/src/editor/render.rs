@@ -2,17 +2,19 @@
 //!
 //! Editors show the results of inline expressions, Dataview and Tasks
 //! blocks, and `.base` embeds as virtual text beside the source rather than
-//! replacing it. `DataviewJS` is the one region kind that runs code, so its
-//! policy is clamped: an editor may ask for the strict `static` sandbox, but
-//! `on` needs the device-local `[editor] dataview_js = "on"`, because opening
-//! an untrusted vault must not run its scripts.
+//! replacing it. `DataviewJS` is the one region kind that runs code. Its
+//! strict `static` sandbox (computation and cache reads; no file access,
+//! network, writes, or host execution) is safe for any vault, so it is the
+//! floor. Full evaluation (`on`, with the vault's configured sandbox tier and
+//! still never writing) follows `vulcan trust`: a trusted vault gets it by
+//! default, and an untrusted one never does.
 
 use super::{EditorRange, EditorSession};
 use crate::AppError;
 use vulcan_core::editor::LineIndex;
 use vulcan_core::{
     DataviewJsRenderPolicy, EvaluatedMarkdownOptions, EvaluatedMarkdownRenderer, PermissionGuard,
-    RenderDiagnostic, VaultPaths,
+    RenderDiagnostic,
 };
 
 /// One evaluated region of a document.
@@ -41,7 +43,7 @@ impl EditorSession {
         &self,
         path: &str,
         range: Option<EditorRange>,
-        requested: DataviewJsRenderPolicy,
+        requested: Option<DataviewJsRenderPolicy>,
     ) -> Result<Option<EditorRender>, AppError> {
         let Some(view) = self.view(path) else {
             return Ok(None);
@@ -51,7 +53,10 @@ impl EditorSession {
                 .check_read_path(path)
                 .map_err(|error| AppError::operation_with_code("permission_denied", error))?;
         }
-        let dataview_js = effective_dataview_js(requested, local_dataview_js(self.paths()));
+        let dataview_js = effective_dataview_js(
+            requested,
+            crate::trust::is_trusted(self.paths().vault_root()),
+        );
         let guard = self.guard().map(|guard| guard as &dyn PermissionGuard);
         let renderer = EvaluatedMarkdownRenderer::load(self.paths(), guard);
         let evaluated = renderer.render_regions(
@@ -91,37 +96,21 @@ impl EditorSession {
     }
 }
 
-/// The device-local `[editor] dataview_js` setting from
-/// `.vulcan/config.local.toml`. The shared config is deliberately not
-/// consulted: it syncs with the vault and is not the user's consent.
-#[must_use]
-pub fn local_dataview_js(paths: &VaultPaths) -> Option<DataviewJsRenderPolicy> {
-    let text = std::fs::read_to_string(paths.local_config_file()).ok()?;
-    let value = text.parse::<toml::Table>().ok()?;
-    match value.get("editor")?.get("dataview_js")?.as_str()? {
-        "off" => Some(DataviewJsRenderPolicy::Off),
-        "static" => Some(DataviewJsRenderPolicy::Static),
-        "on" => Some(DataviewJsRenderPolicy::On),
-        _ => None,
-    }
-}
-
-/// The policy an editor gets: what it asked for, except that `on` needs the
-/// device-local setting (falling back to `static`), and a local `off`
-/// disables `DataviewJS` entirely.
+/// The policy an editor gets. Without a request, a trusted vault renders
+/// with full evaluation and any other vault in the strict sandbox. A request
+/// is honored, except that `on` falls back to `static` for an untrusted
+/// vault; `off` always turns `DataviewJS` off.
 #[must_use]
 pub fn effective_dataview_js(
-    requested: DataviewJsRenderPolicy,
-    local: Option<DataviewJsRenderPolicy>,
+    requested: Option<DataviewJsRenderPolicy>,
+    trusted: bool,
 ) -> DataviewJsRenderPolicy {
-    match (requested, local) {
-        (_, Some(DataviewJsRenderPolicy::Off)) | (DataviewJsRenderPolicy::Off, _) => {
-            DataviewJsRenderPolicy::Off
+    match requested {
+        Some(DataviewJsRenderPolicy::Off) => DataviewJsRenderPolicy::Off,
+        None | Some(DataviewJsRenderPolicy::On) if trusted => DataviewJsRenderPolicy::On,
+        None | Some(DataviewJsRenderPolicy::Static | DataviewJsRenderPolicy::On) => {
+            DataviewJsRenderPolicy::Static
         }
-        (DataviewJsRenderPolicy::On, Some(DataviewJsRenderPolicy::On)) => {
-            DataviewJsRenderPolicy::On
-        }
-        _ => DataviewJsRenderPolicy::Static,
     }
 }
 
@@ -135,29 +124,51 @@ mod tests {
     const HOME: &str = "---\nstatus: draft\n---\nStatus: `= this.status`\n\n```dataviewjs\ndv.paragraph(\"js ran\")\n```\n\n```tasks\nnot done\n```\n";
 
     #[test]
-    fn clamps_dataview_js_to_local_consent() {
-        assert_eq!(effective_dataview_js(Off, Some(On)), Off);
-        assert_eq!(effective_dataview_js(Static, None), Static);
-        assert_eq!(effective_dataview_js(On, None), Static);
-        assert_eq!(effective_dataview_js(On, Some(Static)), Static);
-        assert_eq!(effective_dataview_js(On, Some(On)), On);
-        assert_eq!(effective_dataview_js(Static, Some(Off)), Off);
+    fn dataview_js_follows_vault_trust() {
+        assert_eq!(effective_dataview_js(None, false), Static);
+        assert_eq!(effective_dataview_js(None, true), On);
+        assert_eq!(effective_dataview_js(Some(On), false), Static);
+        assert_eq!(effective_dataview_js(Some(On), true), On);
+        assert_eq!(effective_dataview_js(Some(Static), true), Static);
+        assert_eq!(effective_dataview_js(Some(Off), true), Off);
+    }
 
-        let (dir, session) = vault(&[("Home.md", "x")]);
-        assert_eq!(local_dataview_js(session.paths()), None);
-        std::fs::write(
-            dir.path().join(".vulcan/config.local.toml"),
-            "[editor]\ndataview_js = \"on\"\n",
-        )
-        .unwrap();
-        assert_eq!(local_dataview_js(session.paths()), Some(On));
+    #[test]
+    fn renders_dataview_js_by_default_and_fully_once_trusted() {
+        let _lock = crate::trust::test_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let config_home = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", config_home.path());
+
+        let (_dir, mut session) = vault(&[("Home.md", HOME), ("Todo.md", "- [ ] Open item\n")]);
+        session.open("Home.md", 1, HOME.to_string());
+        let untrusted = session.render("Home.md", None, None).unwrap().unwrap();
+        assert_eq!(untrusted.dataview_js, Static);
+        crate::trust::add_trust(session.paths().vault_root()).unwrap();
+        let trusted = session.render("Home.md", None, None).unwrap().unwrap();
+        assert_eq!(trusted.dataview_js, On);
+
+        match previous {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        for render in [untrusted, trusted] {
+            let js = render
+                .regions
+                .iter()
+                .find(|region| region.source == "dataviewjs")
+                .expect("the dataviewjs block is evaluated");
+            assert!(js.markdown.contains("js ran"), "{}", js.markdown);
+        }
     }
 
     #[test]
     fn renders_regions_of_open_buffers_within_a_range() {
         let (_dir, mut session) = vault(&[("Home.md", HOME), ("Todo.md", "- [ ] Open item\n")]);
         session.open("Home.md", 1, HOME.to_string());
-        let render = session.render("Home.md", None, Off).unwrap().unwrap();
+        let render = session.render("Home.md", None, Some(Off)).unwrap().unwrap();
         assert_eq!(render.dataview_js, Off);
         let sources = render
             .regions
@@ -183,12 +194,12 @@ mod tests {
                         column: 3,
                     },
                 }),
-                Off,
+                Some(Off),
             )
             .unwrap()
             .unwrap();
         assert_eq!(only_tasks.regions.len(), 1);
         assert_eq!(only_tasks.regions[0].source, "tasks");
-        assert_eq!(session.render("Missing.md", None, Off).unwrap(), None);
+        assert_eq!(session.render("Missing.md", None, Some(Off)).unwrap(), None);
     }
 }

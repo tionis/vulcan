@@ -37,8 +37,9 @@ verify the setup.
   })
 <
 `init_options` are sent to the server: `watcher` ("own", "client", "off")
-and `dataviewJs` ("off", "static", "on"). "on" also needs
-`[editor] dataview_js = "on"` in the vault's `.vulcan/config.local.toml`.
+and `dataviewJs` ("off", "static", "on"). Unset, `dataviewjs` blocks run in
+the strict sandbox, with full evaluation for vaults trusted with
+`vulcan trust`; "on" falls back to the sandbox in untrusted vaults.
 
 ==============================================================================
 3. COMMANDS                                                   *vulcan-commands*

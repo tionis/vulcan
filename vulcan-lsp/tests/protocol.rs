@@ -925,7 +925,7 @@ fn toggling_a_task_edits_the_open_buffer_and_inserts_the_next_occurrence() {
 const DASHBOARD: &str = "---\nstatus: draft\n---\nStatus: `= this.status`\n\n```dataviewjs\ndv.paragraph(\"ran\")\n```\n\n```tasks\nnot done\n```\n";
 
 #[test]
-fn render_returns_evaluated_regions_with_dataview_js_clamped() {
+fn render_returns_evaluated_regions_with_sandboxed_dataview_js() {
     let dir = vault(&[
         ("Dashboard.md", DASHBOARD),
         ("Todo.md", "- [ ] Open item\n"),
@@ -935,14 +935,26 @@ fn render_returns_evaluated_regions_with_dataview_js_clamped() {
     let _ = client.diagnostics("Dashboard.md");
     let document = json!({ "uri": client.uri("Dashboard.md") });
 
+    // A temporary vault is never trusted, so DataviewJS runs in the strict
+    // sandbox by default.
     let rendered = client.request("vulcan/render", json!({ "textDocument": document }));
-    assert_eq!(rendered["dataviewJs"], "off");
+    assert_eq!(rendered["dataviewJs"], "static");
     let regions = rendered["regions"].as_array().unwrap();
     let sources = regions
         .iter()
         .map(|region| region["source"].as_str().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(sources, vec!["inline", "notice", "tasks"]);
+    if cfg!(feature = "js_runtime") {
+        assert_eq!(
+            sources,
+            vec!["inline", "dataviewjs", "tasks"],
+            "{regions:?}"
+        );
+        assert_eq!(regions[1]["markdown"], "ran");
+    } else {
+        // Without a JavaScript engine the block renders as a notice.
+        assert_eq!(sources, vec!["inline", "notice", "tasks"], "{regions:?}");
+    }
     assert_eq!(regions[0]["markdown"], "draft");
     assert_eq!(regions[0]["kind"], "inline");
     assert_eq!(
@@ -954,12 +966,21 @@ fn render_returns_evaluated_regions_with_dataview_js_clamped() {
         .unwrap()
         .contains("Open item"));
 
-    // `on` needs device-local consent; without it the strict sandbox runs.
+    // Full evaluation needs `vulcan trust`; an untrusted vault stays in the
+    // strict sandbox.
     let rendered = client.request(
         "vulcan/render",
         json!({ "textDocument": document, "dataviewJs": "on" }),
     );
     assert_eq!(rendered["dataviewJs"], "static");
+
+    // A client can still turn DataviewJS off.
+    let rendered = client.request(
+        "vulcan/render",
+        json!({ "textDocument": document, "dataviewJs": "off" }),
+    );
+    assert_eq!(rendered["dataviewJs"], "off");
+    assert_eq!(rendered["regions"][1]["source"], "notice");
 }
 
 #[test]

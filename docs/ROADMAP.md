@@ -8381,8 +8381,8 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Code actions: create note from unresolved link, disambiguate, convert link style, toggle task (computed eagerly; they are cheap, so `codeAction/resolve` is unnecessary); `dryRun` on every `vulcan.*` command
 - [x] `executeCommand`: `vulcan.scan`, `vulcan.note.create`, `vulcan.note.move`, `vulcan.task.toggle`, `vulcan.periodic.open` (creates the note from its template when missing and shows it), and `vulcan.template.insert` (append, prepend, or at a position; template mutations disabled)
 - [~] Custom protocol v1: `experimental.vulcan` advertisement, `vulcan/render` (inline expressions, Dataview/Tasks blocks, and `.base` embeds as regions), `vulcan/status`, and `vulcan/indexChanged` done; `vulcan/outline` and `vulcan/backlinks` remain
-- [~] Safety defaults: DataviewJS off by default, `on` only with device-local `[editor] dataview_js = "on"`; `--permissions` checks every planned read and write, guards render, and gates `vulcan.scan` on `index`; the LSP never auto-commits. Read filtering for navigation, completion, and diagnostics remains
-- [~] `[editor]` config section with default and override tests — device-local `dataview_js` consent done; other defaults remain
+- [~] Safety defaults: DataviewJS renders in the strict sandbox for every vault and with full evaluation for vaults trusted with `vulcan trust`; `--permissions` checks every planned read and write, guards render, and gates `vulcan.scan` on `index`; the LSP never auto-commits. Read filtering for navigation, completion, and diagnostics remains
+- [ ] `[editor]` config section with default and override tests (DataviewJS rendering follows `vulcan trust` instead)
 - [ ] Protocol-level tests against fixture vaults: snapshots, CLI JSON parity, move roundtrip, open/closed split, failure paths, overlay leaves `cache.db` unchanged, encoding, concurrent processes, DataviewJS not executed by default
 - [ ] Add a `vulcan lsp` row to the unified-hosting inventory as a client-owned stdio transport
 

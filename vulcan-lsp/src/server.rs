@@ -95,9 +95,10 @@ struct InitializationOptions {
     #[serde(default)]
     watcher: WatcherMode,
     /// The `DataviewJS` policy `vulcan/render` uses unless a request asks
-    /// for another; `on` still needs device-local consent.
+    /// for another. Unset, trusted vaults get `on` and others `static`;
+    /// `on` always falls back to `static` for an untrusted vault.
     #[serde(default)]
-    dataview_js: vulcan_core::DataviewJsRenderPolicy,
+    dataview_js: Option<vulcan_core::DataviewJsRenderPolicy>,
 }
 
 /// Serve LSP over stdin and stdout until the client exits.
@@ -365,8 +366,8 @@ struct Server<'c> {
     stop_watching: Arc<AtomicBool>,
     _lease: Option<EditorWatchLease>,
     channel: Arc<ClientChannel>,
-    /// Default `DataviewJS` policy for `vulcan/render`.
-    dataview_js: vulcan_core::DataviewJsRenderPolicy,
+    /// The client's `DataviewJS` preference for `vulcan/render`, if any.
+    dataview_js: Option<vulcan_core::DataviewJsRenderPolicy>,
 }
 
 impl<'c> Server<'c> {
@@ -452,7 +453,7 @@ impl<'c> Server<'c> {
             stop_watching,
             _lease: lease,
             channel,
-            dataview_js: vulcan_core::DataviewJsRenderPolicy::Off,
+            dataview_js: None,
         };
         server.begin_startup();
         server

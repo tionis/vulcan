@@ -38,7 +38,7 @@ type Answer = Result<Value, ResponseFailure>;
 pub(crate) fn handle(
     session: &EditorSession,
     request: Request,
-    dataview_js: vulcan_core::DataviewJsRenderPolicy,
+    dataview_js: Option<vulcan_core::DataviewJsRenderPolicy>,
 ) -> Response {
     let id = request.id.clone();
     let result = match request.method.as_str() {
@@ -173,7 +173,7 @@ struct RenderParams {
 fn render(
     session: &EditorSession,
     params: &RenderParams,
-    default_dataview_js: vulcan_core::DataviewJsRenderPolicy,
+    default_dataview_js: Option<vulcan_core::DataviewJsRenderPolicy>,
 ) -> Answer {
     let Some(path) = vault_path(session, &params.text_document.uri) else {
         return Ok(Value::Null);
@@ -181,7 +181,7 @@ fn render(
     let Some(rendered) = session.render(
         &path,
         params.range.map(convert::range),
-        params.dataview_js.unwrap_or(default_dataview_js),
+        params.dataview_js.or(default_dataview_js),
     )?
     else {
         return Ok(Value::Null);

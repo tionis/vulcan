@@ -25,7 +25,7 @@ pub use edits::{
     EditorTextEdit,
 };
 pub use navigation::{EditorHover, EditorSymbol, EditorWorkspaceSymbol};
-pub use render::{effective_dataview_js, local_dataview_js, EditorRender, EditorRenderRegion};
+pub use render::{effective_dataview_js, EditorRender, EditorRenderRegion};
 
 use crate::AppError;
 use std::collections::HashMap;
@@ -672,7 +672,7 @@ mod tests {
             .render(
                 "Private/Diary.md",
                 None,
-                vulcan_core::DataviewJsRenderPolicy::Off,
+                Some(vulcan_core::DataviewJsRenderPolicy::Off),
             )
             .unwrap_err();
         assert_eq!(error.code(), Some("permission_denied"));

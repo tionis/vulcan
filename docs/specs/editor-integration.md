@@ -248,14 +248,17 @@ template rendering use the profile. Navigation, completion, and diagnostics do n
 the profile's read grant; that remains open work. The startup and on-save index refresh keeps the
 cache usable regardless of `index`, as the CLI's automatic refresh does.
 
-**DataviewJS and code execution.** `vulcan/render` uses `initializationOptions.dataviewJs`, or a
-request's `dataviewJs`, defaulting to `off`. A client may ask for `static` (the strict, deterministic
-sandbox). `on` is honored only when the device-local `.vulcan/config.local.toml` sets
-`[editor] dataview_js = "on"`, and otherwise falls back to `static`; a local `"off"` disables it
-entirely. The shared `dataview.render_dataview_js` setting is deliberately ignored here: it syncs
-with the vault, so it is not this device's consent. The configured `JsRuntimeSandbox` tier still
-applies underneath. Template insertion renders with template mutations disabled and follows the
-existing template trust rules.
+**DataviewJS and code execution.** The strict `static` sandbox (computation and cache-backed
+reads; no raw file reads, network, writes, or host execution; deterministic) cannot harm the vault
+or the device, so it is the floor for every vault. Full evaluation (`on`: the vault's configured
+`JsRuntimeSandbox` tier and permission profile, still never writing) follows `vulcan trust`, the
+same per-user trust list that gates startup scripts and plugins. Without a client preference
+(`initializationOptions.dataviewJs`, or a request's `dataviewJs`), a trusted vault renders with
+`on` and any other vault with `static`. A preference is honored, except that `on` falls back to
+`static` for an untrusted vault, and `off` turns `DataviewJS` off. The synced
+`dataview.render_dataview_js` setting is not consulted: vault content cannot grant itself trust.
+Builds without the `js_runtime` feature render the block as a notice. Template insertion renders
+with template mutations disabled and follows the existing template trust rules.
 
 ## Capabilities
 
@@ -328,12 +331,11 @@ Errors use LSP `ResponseError` with `data: { kind, detail }`, reusing the compan
 ## Configuration
 
 - **`initializationOptions`** (client and transport concerns only): `vault` override,
-  `permissions` profile, `dataviewJs` ceiling, `autoCommit`, `watcher` (`own` | `client` | `off`),
+  `permissions` profile, `dataviewJs` preference, `autoCommit`, `watcher` (`own` | `client` | `off`),
   `diagnostics` (`onChange` | `onSave`), `completion.linkStyle`.
 - **Vault semantics** stay in `.vulcan/config.toml` and the device-local `.vulcan/config.local.toml`
-  (higher precedence). The device-local `[editor] dataview_js` setting is the consent for `on`
-  `DataviewJS` rendering and is read only from `config.local.toml`. Further `[editor]` defaults
-  (such as `diagnose_unsupported_syntax`) are not implemented yet.
+  (higher precedence). An `[editor]` section for defaults such as `diagnose_unsupported_syntax`
+  is not implemented yet; `DataviewJS` rendering follows `vulcan trust` instead of configuration.
 - **Vault discovery.** The MVP runs one process per vault; Neovim already starts one client per
   `root_dir`. Root markers are `.vulcan/`, `.vulcan.toml`, and `.obsidian/`. The server resolves the
   folder with `discover_vault_root`, so 9.39 repository pointers and MkDocs layouts work unchanged.

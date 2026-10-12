@@ -17,7 +17,7 @@ path = "src/main.rs"
 
 [features]
 default = ["js_runtime", "oauth", "vectors", "web"]
-js_runtime = ["dep:rquickjs", "vulcan-app/js_runtime", "vulcan-core/js_runtime", "vulcan-daemon/js_runtime"]
+js_runtime = ["dep:rquickjs", "vulcan-app/js_runtime", "vulcan-core/js_runtime", "vulcan-daemon/js_runtime", "vulcan-lsp/js_runtime"]
 oauth = ["vulcan-app/oauth", "vulcan-core/oauth", "vulcan-daemon/oauth"]
 vectors = ["vulcan-app/vectors", "vulcan-core/vectors", "vulcan-daemon/vectors"]
 web = ["vulcan-app/web", "vulcan-core/web", "vulcan-daemon/web"]
@@ -46,7 +46,7 @@ unicode-width.workspace = true
 vulcan-app = { path = "../vulcan-app", version = "0.3.0", default-features = false }
 vulcan-core = { path = "../vulcan-core", version = "0.3.0", default-features = false }
 vulcan-daemon = { path = "../vulcan-daemon", version = "0.3.0" }
-vulcan-lsp = { path = "../vulcan-lsp", version = "0.3.0" }
+vulcan-lsp = { path = "../vulcan-lsp", version = "0.3.0", default-features = false }
 zip.workspace = true
 
 [dev-dependencies]

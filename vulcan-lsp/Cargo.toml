@@ -6,6 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 description = "Synchronous Language Server Protocol transport for Vulcan vaults"
 
+[features]
+default = ["js_runtime"]
+# Evaluate `dataviewjs` blocks in `vulcan/render`; without it they render as a notice.
+js_runtime = ["vulcan-app/js_runtime", "vulcan-core/js_runtime"]
+
 [dependencies]
 crossbeam-channel.workspace = true
 lsp-server.workspace = true
