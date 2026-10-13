@@ -10,7 +10,7 @@ rust-version = "1.90"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-ammonia = "4.1.4"
+ammonia = "4.2.3"
 assert_cmd = "2.1.1"
 axum = { version = "0.8.9", features = ["json", "ws"] }
 base64 = "0.22.1"
