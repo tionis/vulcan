@@ -197,7 +197,7 @@ Failure reporting (LSP `ResponseError.data = { kind, detail, ... }`):
 | Editor rejects, inverse succeeds | `conflict`, "the editor rejected the edit; the vault was restored (paths)" |
 | Editor rejects, inverse hits a preimage mismatch | `conflict`, names the changed paths and points to `vulcan doctor` |
 | Client cannot apply versioned edits (or rename files, for an open moved note) | `conflict`; nothing changed |
-| Success of `textDocument/rename` | an empty `WorkspaceEdit`: everything was applied through `workspace/applyEdit` |
+| Success of `textDocument/rename` | an empty `WorkspaceEdit`, sent once the plan is checked and before the `workspace/applyEdit` that carries the change: some clients (Helix) wait for the rename's answer without handling requests. A failure after that (the editor rejects the edit) is a `window/showMessage` error, with the vault restored as usual |
 | Success of `vulcan.note.move` | `{ dryRun, action, report, disk: [paths], editor: [paths], moved }` |
 
 **Who moves the file depends on whether it is open.** A closed note is moved by Vulcan: its delete

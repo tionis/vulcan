@@ -98,6 +98,15 @@ impl ClientChannel {
     fn respond(&self, response: Response) {
         let _ = self.sender.send(Message::Response(response));
     }
+
+    fn show_error(&self, message: &str) {
+        let _ = self
+            .sender
+            .send(Message::Notification(lsp_server::Notification::new(
+                "window/showMessage".to_string(),
+                json!({ "type": 1, "message": message }),
+            )));
+    }
 }
 
 /// What the client can do with a workspace edit.
@@ -161,8 +170,29 @@ pub(crate) struct MutationContext {
 pub(crate) fn handle(context: &MutationContext, session: &EditorSession, request: Request) {
     let id = request.id.clone();
     let result = match request.method.as_str() {
-        "textDocument/rename" => params::<lsp::RenameParams>(request)
-            .and_then(|params| rename(context, session, &params)),
+        "textDocument/rename" => {
+            match params::<lsp::RenameParams>(request)
+                .and_then(|params| plan_rename(session, &params))
+                .and_then(|plan| check_support(context, &plan).map(|()| plan))
+            {
+                Ok(plan) => {
+                    // Answer before editing: some clients (Helix) wait for the
+                    // rename's answer without handling other requests, so the
+                    // `workspace/applyEdit` must come after it. Everything is
+                    // applied through that edit; the answer carries nothing.
+                    context
+                        .client
+                        .respond(Response::new_ok(id, json!({ "documentChanges": [] })));
+                    if let Err(failure) = execute(context, session, &plan) {
+                        context
+                            .client
+                            .show_error(&format!("Rename failed: {}", failure.message));
+                    }
+                    return;
+                }
+                Err(failure) => Err(failure),
+            }
+        }
         "workspace/willRenameFiles" => params::<lsp::RenameFilesParams>(request)
             .and_then(|params| will_rename(context, session, &params)),
         "workspace/executeCommand" => params::<lsp::ExecuteCommandParams>(request)
@@ -196,11 +226,28 @@ pub(crate) fn apply_pending(
         .map(|error| format!("Rewriting links after renaming {from} failed: {error}"))
 }
 
-fn rename(
-    context: &MutationContext,
+/// Refuse a plan the editor cannot carry out.
+fn check_support(context: &MutationContext, plan: &EditorEditPlan) -> Result<(), ResponseFailure> {
+    let needs_editor = !plan.open.is_empty() || plan.editor_rename.is_some();
+    if needs_editor && !context.support.versioned_edits {
+        return Err(conflict(
+            "the editor cannot apply versioned workspace edits; close the affected notes first"
+                .to_string(),
+        ));
+    }
+    if plan.editor_rename.is_some() && !context.support.rename_files {
+        return Err(conflict(
+            "the editor cannot rename files; close the note before moving it".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Plan a `textDocument/rename` and check it against the permissions.
+fn plan_rename(
     session: &EditorSession,
     params: &lsp::RenameParams,
-) -> Result<Value, ResponseFailure> {
+) -> Result<EditorEditPlan, ResponseFailure> {
     let position = &params.text_document_position;
     let path = vault_path(session, &position.text_document.uri)?;
     let plan = session.plan_rename(
@@ -209,10 +256,7 @@ fn rename(
         &params.new_name,
     )?;
     session.authorize_plan(&plan)?;
-    execute(context, session, &plan)?;
-    // Everything was applied through `workspace/applyEdit`; the client has
-    // nothing left to apply.
-    Ok(json!({ "documentChanges": [] }))
+    Ok(plan)
 }
 
 fn will_rename(
@@ -356,18 +400,8 @@ fn execute(
     session: &EditorSession,
     plan: &EditorEditPlan,
 ) -> Result<(), ResponseFailure> {
+    check_support(context, plan)?;
     let needs_editor = !plan.open.is_empty() || plan.editor_rename.is_some();
-    if needs_editor && !context.support.versioned_edits {
-        return Err(conflict(
-            "the editor cannot apply versioned workspace edits; close the affected notes first"
-                .to_string(),
-        ));
-    }
-    if plan.editor_rename.is_some() && !context.support.rename_files {
-        return Err(conflict(
-            "the editor cannot rename files; close the note before moving it".to_string(),
-        ));
-    }
     session.apply_disk_changes(&plan.disk, &plan.disk_renames)?;
     let record_move = || {
         if let Some(moved) = &plan.moved {

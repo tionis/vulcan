@@ -11,6 +11,8 @@ use vulcan_lsp::LspOptions;
 const HOME: &str = "# Home\n\nSee [[Alpha#Status]] and #proj.\n";
 const ALPHA: &str = "---\naliases: [First]\n---\n# Alpha\n\n## Status\n\nGreen 😀 [[Home]]\n";
 
+// Each bool switches one editor behaviour the tests imitate.
+#[allow(clippy::struct_excessive_bools)]
 struct Client {
     connection: Connection,
     server: Option<JoinHandle<()>>,
@@ -29,6 +31,11 @@ struct Client {
     announce_renames: bool,
     /// Answers to those announcements.
     announcement_answers: Vec<Value>,
+    /// Like Helix's rename, handle no server request while waiting for the
+    /// answer to `textDocument/rename`.
+    block_on_rename: bool,
+    /// Server requests held back meanwhile.
+    held: Vec<Message>,
     root: std::path::PathBuf,
 }
 
@@ -74,6 +81,8 @@ impl Client {
             skip_renames: false,
             announce_renames: false,
             announcement_answers: Vec::new(),
+            block_on_rename: false,
+            held: Vec::new(),
             root: root.to_path_buf(),
         };
         let result = client.request("initialize", initialize);
@@ -96,9 +105,23 @@ impl Client {
                 params,
             )))
             .unwrap();
+        let blocking = self.block_on_rename && method == "textDocument/rename";
         loop {
+            if blocking {
+                let message = self.receive();
+                if matches!(message, Message::Request(_)) {
+                    self.held.push(message);
+                    continue;
+                }
+                self.held.insert(0, message);
+            }
             if let Some(response) = self.pump() {
                 if response.id == id {
+                    // Handle what arrived meanwhile, as the editor would once
+                    // the wait is over.
+                    while !self.held.is_empty() {
+                        let _ = self.pump();
+                    }
                     return match response.response_result {
                         Ok(value) => value,
                         Err(error) => json!({ "error": error.code, "data": error.data }),
@@ -186,7 +209,10 @@ impl Client {
             .unwrap();
     }
 
-    fn receive(&self) -> Message {
+    fn receive(&mut self) -> Message {
+        if !self.held.is_empty() {
+            return self.held.remove(0);
+        }
         self.connection
             .receiver
             .recv_timeout(Duration::from_secs(30))
@@ -627,10 +653,20 @@ fn rename_vault() -> tempfile::TempDir {
     ])
 }
 
+/// Rename at a position in `Home.md`. The server answers before applying
+/// the edit, so wait for the writer to finish: it handles mutations in
+/// order, so a dry-run command sent after the rename returns once it did.
 fn rename_at(client: &mut Client, line: u32, character: u32, new_name: &str) -> Value {
     let mut params = client.at("Home.md", line, character);
     params["newName"] = json!(new_name);
-    client.request("textDocument/rename", params)
+    let response = client.request("textDocument/rename", params);
+    client.request(
+        "workspace/executeCommand",
+        json!({ "command": "vulcan.note.create", "arguments": [{
+            "path": "writer-barrier.md", "dryRun": true,
+        }]}),
+    );
+    response
 }
 
 #[test]
@@ -696,9 +732,12 @@ fn a_rejected_edit_restores_the_vault() {
     client.open("Home.md", LINKER);
     let _ = client.diagnostics("Home.md");
 
+    // The rename is answered before its edit, so the editor's refusal is
+    // reported as a message.
     let response = rename_at(&mut client, 2, 7, "Beta");
-    assert_eq!(response["data"]["kind"], "conflict");
-    assert!(response["data"]["detail"]
+    assert_eq!(response["documentChanges"], json!([]), "{response}");
+    let message = client.wait_for(|notification| notification.method == "window/showMessage");
+    assert!(message.params["message"]
         .as_str()
         .unwrap()
         .contains("vault was restored"));
@@ -1620,4 +1659,24 @@ fn clients_can_opt_into_show_document() {
         .iter()
         .any(|request| request.method == "window/showDocument"
             && request.params["uri"] == json!(client.uri("Ideas.md"))));
+}
+
+#[test]
+fn renames_work_for_clients_that_block_on_the_answer() {
+    let dir = rename_vault();
+    let (mut client, _) = Client::start(dir.path(), &editing_client());
+    client.block_on_rename = true;
+    client.open("Home.md", LINKER);
+    let _ = client.diagnostics("Home.md");
+    let started = Instant::now();
+    let response = rename_at(&mut client, 2, 7, "Beta");
+    assert_eq!(response["documentChanges"], json!([]), "{response}");
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(dir.path().join("notes/Beta.md").exists());
+    let edits = applied_edits(&client);
+    assert_eq!(edits.len(), 1, "{edits:?}");
+    assert_eq!(
+        edits[0][0]["textDocument"]["uri"],
+        json!(client.uri("Home.md"))
+    );
 }
