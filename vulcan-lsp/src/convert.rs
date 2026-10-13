@@ -52,15 +52,25 @@ pub(crate) fn lsp_range(range: EditorRange) -> lsp::Range {
 pub(crate) fn negotiate_encoding(
     capabilities: &lsp::ClientCapabilities,
 ) -> (PositionEncoding, lsp::PositionEncodingKind) {
-    let offered = capabilities
+    // Clients list encodings by preference, and some only handle their
+    // first choice everywhere (yegappan/lsp applies workspace edits as
+    // UTF-32 whatever was negotiated), so take the first one supported.
+    capabilities
         .general
         .as_ref()
-        .and_then(|general| general.position_encodings.as_ref());
-    if offered.is_some_and(|kinds| kinds.contains(&lsp::PositionEncodingKind::UTF8)) {
-        (PositionEncoding::Utf8, lsp::PositionEncodingKind::UTF8)
-    } else {
-        (PositionEncoding::Utf16, lsp::PositionEncodingKind::UTF16)
-    }
+        .and_then(|general| general.position_encodings.as_ref())
+        .into_iter()
+        .flatten()
+        .find_map(|kind| {
+            let encoding = match kind.as_str() {
+                "utf-8" => PositionEncoding::Utf8,
+                "utf-16" => PositionEncoding::Utf16,
+                "utf-32" => PositionEncoding::Utf32,
+                _ => return None,
+            };
+            Some((encoding, kind.clone()))
+        })
+        .unwrap_or((PositionEncoding::Utf16, lsp::PositionEncodingKind::UTF16))
 }
 
 pub(crate) fn diagnostic(diagnostic: EditorDiagnostic) -> lsp::Diagnostic {
@@ -129,16 +139,31 @@ mod tests {
     }
 
     #[test]
-    fn prefers_utf8_when_offered() {
+    fn takes_the_clients_first_supported_encoding() {
         let mut capabilities = lsp::ClientCapabilities::default();
         assert_eq!(negotiate_encoding(&capabilities).0, PositionEncoding::Utf16);
-        capabilities.general = Some(lsp::GeneralClientCapabilities {
-            position_encodings: Some(vec![
-                lsp::PositionEncodingKind::UTF16,
-                lsp::PositionEncodingKind::UTF8,
-            ]),
+        let offer = |kinds: &[&str]| lsp::GeneralClientCapabilities {
+            position_encodings: Some(
+                kinds
+                    .iter()
+                    .map(|kind| lsp::PositionEncodingKind::from((*kind).to_string()))
+                    .collect(),
+            ),
             ..lsp::GeneralClientCapabilities::default()
-        });
-        assert_eq!(negotiate_encoding(&capabilities).0, PositionEncoding::Utf8);
+        };
+        for (kinds, expected) in [
+            (&["utf-8", "utf-16", "utf-32"][..], PositionEncoding::Utf8),
+            (&["utf-32", "utf-16", "utf-8"][..], PositionEncoding::Utf32),
+            (&["utf-16", "utf-8"][..], PositionEncoding::Utf16),
+            (&["latin-1", "utf-8"][..], PositionEncoding::Utf8),
+        ] {
+            capabilities.general = Some(offer(kinds));
+            let (encoding, kind) = negotiate_encoding(&capabilities);
+            assert_eq!(encoding, expected, "{kinds:?}");
+            assert_eq!(
+                kind.as_str(),
+                *kinds.iter().find(|kind| kind.starts_with("utf")).unwrap()
+            );
+        }
     }
 }

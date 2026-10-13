@@ -144,8 +144,10 @@ Merged resolution:
 - A buffer outside every vault (`relative_to_vault` returns `None`) gets no diagnostics and only
   generic completion.
 
-**Position encoding.** The server picks from the client's `general.positionEncodings`, preferring
-`utf-8` and falling back to the mandatory `utf-16`. `LineIndex` stores line starts plus per-line
+**Position encoding.** The server takes the first of the client's `general.positionEncodings` it
+supports (`utf-8`, `utf-16`, or `utf-32`), since clients list them by preference and some only
+handle their first choice everywhere (yegappan/lsp applies workspace edits as UTF-32), falling back
+to the mandatory `utf-16`. `LineIndex` stores line starts plus per-line
 UTF-16 lengths. CLI JSON columns (for example `LineContext.column`) are 1-based Unicode scalar
 counts, which match neither encoding. LSP positions are always converted from byte offsets, never
 from CLI JSON columns.
