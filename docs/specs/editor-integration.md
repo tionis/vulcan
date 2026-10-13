@@ -368,7 +368,7 @@ fields do not.
 | `vulcan/outline` | `{ textDocument }` | `NoteOutline`, exactly as `vulcan note outline --output json` |
 | `vulcan/backlinks` | `{ textDocument }` | `BacklinksReport`, exactly as `vulcan note backlinks --output json` (keeps `context`, `matched_by`) |
 | `vulcan/status` | `{}` | `{ cache: "fresh" \| "stale" \| "indexing", lastScan, backlinkCount?, daemon: "attached" \| "absent", watcher: "lease" \| "polling" \| "client" \| "off" }` |
-| notification `vulcan/indexChanged` | `{ paths, summary }` (`ScanSummary`) | Sent after every scan the server observes |
+| notification `vulcan/indexChanged` | `{ paths, summary, renames? }` (`ScanSummary`; `renames` lists `{ from, to }` vault paths of moves the server planned) | Sent after every scan the server observes |
 
 Errors use LSP `ResponseError` with `data: { kind, detail }`, reusing the companion protocol kinds:
 `invalid_request`, `not_found`, `permission_denied`, `conflict`, `internal`.
@@ -459,6 +459,74 @@ recurrence, link rename, moving the open note, periodic notes, and `:checkhealth
 `tp.file.cursor()` places the cursor: editor template insertion sets a reserved template variable
 so the call emits a marker, removes it from the inserted text, and reports its position as
 `report.cursor`; the plugin moves the cursor there. Outside editors the call stays a no-op.
+
+## `vulcan.vim`
+
+Vim 9 has no built-in LSP client, so `integrations/vulcan.vim/` is a Vim9script plugin over
+[yegappan/lsp](https://github.com/yegappan/lsp) (Vim 9.0+), the most complete Vim client, with the
+same shape and rules as `vulcan.nvim`: vault semantics stay in the server, and the plugin only
+registers it, maps commands, and draws results. `vim-lsp` and other clients keep working through the
+recipes in `docs/guide/editors.md`, without the plugin layer.
+
+What yegappan/lsp provides (checked against its source, commit `58eac06`, 2026-09-05):
+
+- `workspace.applyEdit` with `documentChanges` and `resourceOperations` (`rename`, `create`,
+  `delete`), so versioned edits, renames, and moves are offered as for Neovim.
+- Code lenses, inlay hints, code actions running `workspace/executeCommand` for unregistered
+  commands, rename (without `prepareRename`), work-done progress, and UTF-8/16/32 positions.
+- Pull diagnostics stored apart from pushed ones and merged per buffer, so the empty
+  `textDocument/diagnostic` answer for open buffers does not hide pushed diagnostics.
+- Hooks for the plugin layer: `lsp.Server().rpc_a(method, params, callback)` and
+  `g:LspRequestCustom()` for `vulcan/*` requests, `customNotificationHandlers` (for
+  `vulcan/indexChanged`), and `g:LspRegisterCmdHandler()` for client-side commands such as the
+  backlink lens's `vulcan.showBacklinks`.
+- No `window/showDocument`, `workspace/didChangeWatchedFiles`, or file-operation notifications; the
+  server already works without them (it watches the vault itself and indexes editor-performed
+  renames from its own rename hints).
+
+Gaps the plugin or server closes:
+
+- **Buffer re-pointing after moves.** yegappan applies a `RenameFile` by renaming the file on disk
+  only; the buffer keeps the old name, so saving it would recreate the old file. The server adds
+  `renames: [{ from, to }]` (vault paths) to `vulcan/indexChanged` for moves it planned, and the
+  plugin re-points a buffer still named `from` (`:file` to the new path, then writes it: a moved open
+  note never has unsaved changes, so its buffer holds only the server's link rewrites). This is
+  additive to protocol v1.
+- **Semantic tokens.** yegappan maps only standard token types to highlight groups, so Vulcan's
+  custom types are not drawn. A follow-up can let a client ask for a legend of standard types
+  through `initializationOptions`; until then links still get pushed diagnostics.
+
+Scope, mirroring `vulcan.nvim`: `:Vulcan` subcommands (`notes`, `search`, `tags`, `backlinks`,
+periodic notes, `template`, `task`, `capture`, `move`, `extract`, `scan`, `render`, `doctor`,
+`problems` where the client supports it, `status`, and TUI launchers in a `:terminal` popup);
+pickers through `popup_menu()`, or fzf.vim when installed; `vulcan/render` results drawn with text
+properties (`text_align: 'after'` for inline values, `'below'` for block results, Vim 9.0.0067+);
+`:Vulcan health` in place of `:checkhealth`; Vim help in `doc/vulcan.txt`.
+
+Distribution: the installer generalizes from one Neovim bundle to a table of editor bundles that
+share the marker, hash, `--force`, `self-update`, and health-check logic. `vulcan editor vim
+install` writes `~/.vim/pack/vulcan/start/vulcan.vim` (or `$XDG_CONFIG_HOME/vim/...` when Vim uses
+that directory, and `vimfiles` on Windows). yegappan/lsp itself stays the user's install; the plugin
+reports its absence.
+
+Testing: a headless smoke test (`vim -Nu NONE -es`) against the built binary with a pinned
+yegappan/lsp commit, run by a `cargo test` wrapper that skips without Vim 9 and yegappan/lsp unless
+`VULCAN_REQUIRE_VIM` is set; CI installs both.
+
+## Other editors
+
+Each editor gets the least layer its extension model allows; none of them adds vault semantics.
+
+| Editor | Layer | Distribution |
+| --- | --- | --- |
+| Helix | Language server only (no plugin system yet). Code actions and `workspace/executeCommand` reach the `vulcan.*` commands; query results are not drawn. | `docs/guide/editors.md` snippet; optionally `vulcan editor helix print-config` |
+| Emacs | Eglot configuration plus a small Elisp package for `:Vulcan`-style commands and drawing `vulcan/render` results as overlays. | File-based, so the same installer (`vulcan editor emacs install`) |
+| Zed | An extension registering `vulcan lsp` for Markdown. | Zed's extension registry (needs publishing) |
+| VS Code | An extension for commands and drawing `vulcan/render` results; the rest comes from the server. | Marketplace or Open VSX (needs publishing) |
+
+File-based plugins join the installer's bundle table; registry-published extensions are separate
+tracks, since publishing needs accounts and their copies can drift from the binary (the
+`protocolVersion` check catches mismatches).
 
 ## Testing
 
