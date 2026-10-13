@@ -84,7 +84,8 @@ Threads:
 Cancellation: `$/cancelRequest` sets a per-request flag checked before a request starts and before
 its answer is sent. Cancelled requests answer `RequestCanceled` (-32800). If a scan that changed
 files commits while a request is in flight, the request answers `ContentModified` (-32801) rather
-than mixing two store clocks. Scans that change nothing, such as the watcher's first pass and its
+than mixing two store clocks; Vulcan's own `vulcan/*` requests answer anyway, since clients redraw
+on `vulcan/indexChanged` and some (yegappan/lsp) show every error to the user. Scans that change nothing, such as the watcher's first pass and its
 periodic safety rescans, do not invalidate requests.
 
 Lock and read ordering follow `mutation-coordination.md`: canonicalize the vault root before

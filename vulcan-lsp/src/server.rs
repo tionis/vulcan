@@ -693,6 +693,7 @@ impl<'c> Server<'c> {
         let sender = self.connection.sender.clone();
         let in_flight = Arc::clone(&self.in_flight);
         let index_epoch = Arc::clone(&self.index_epoch);
+        let stale_is_an_error = answers_content_modified(&request.method);
         let job: Job = Box::new(move || {
             let epoch = index_epoch.load(Ordering::SeqCst);
             let response = if cancelled.load(Ordering::SeqCst) {
@@ -701,7 +702,7 @@ impl<'c> Server<'c> {
                 let response = handlers::handle(&session, request, dataview_js);
                 if cancelled.load(Ordering::SeqCst) {
                     cancelled_response(id.clone())
-                } else if index_epoch.load(Ordering::SeqCst) != epoch {
+                } else if stale_is_an_error && index_epoch.load(Ordering::SeqCst) != epoch {
                     failure_response(
                         id.clone(),
                         ErrorCode::ContentModified as i32,
@@ -1146,6 +1147,14 @@ fn spawn_watcher(
         .expect("watcher thread should spawn")
 }
 
+/// Whether a request whose answer may predate an index change gets
+/// `ContentModified`. Vulcan's own requests do not: clients redraw on
+/// `vulcan/indexChanged` anyway, and some clients (yegappan/lsp) show every
+/// error to the user.
+fn answers_content_modified(method: &str) -> bool {
+    !method.starts_with("vulcan/")
+}
+
 fn cancelled_response(id: RequestId) -> Response {
     failure_response(
         id,
@@ -1180,4 +1189,15 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::answers_content_modified;
+
+    #[test]
+    fn only_standard_requests_answer_content_modified() {
+        assert!(answers_content_modified("textDocument/hover"));
+        assert!(!answers_content_modified("vulcan/render"));
+    }
 }
