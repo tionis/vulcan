@@ -19,9 +19,15 @@ registers the server and adds pickers, `:Vulcan` commands (daily notes,
 templates, task toggling, moves, doctor), query results as virtual text, and
 `:checkhealth vulcan`.
 
+```sh
+vulcan editor nvim install   # into Neovim's package directory; re-run after updates
+```
+
+Then call `require('vulcan').setup()`, or with lazy.nvim (which does not load
+the package directory) point a spec at the installed copy:
+
 ```lua
--- lazy.nvim
-{ dir = '/path/to/vulcan/integrations/vulcan.nvim', ft = 'markdown', cmd = 'Vulcan', opts = {} }
+{ dir = vim.fn.stdpath('data') .. '/site/pack/vulcan/start/vulcan.nvim', ft = 'markdown', cmd = 'Vulcan', opts = {} }
 ```
 
 Without the plugin, Neovim 0.11+ needs only:

@@ -92,6 +92,9 @@ pub(crate) fn handle_update_command(
                 let executable = std::env::current_exe().map_err(CliError::operation)?;
                 let applied = apply_prepared_update(&prepared, &executable, *dry_run)?;
                 if cli.output == OutputFormat::Json {
+                    if !applied.dry_run {
+                        let _ = refresh_nvim_plugin(&executable);
+                    }
                     print_json(&applied)
                 } else {
                     println!(
@@ -115,6 +118,9 @@ pub(crate) fn handle_update_command(
                         );
                     }
                     if !applied.dry_run {
+                        if let Some(outcome) = refresh_nvim_plugin(&executable) {
+                            println!("{outcome}");
+                        }
                         println!("Restart any running Vulcan daemon to use the new binary.");
                     }
                     Ok(())
@@ -414,6 +420,7 @@ fn run_unattended_update(
         || apply_prepared_update(&prepared, &executable, false).map_err(Into::into),
         || restore_daemon(&executable, service_installed, inherited_args),
     )?;
+    let _ = refresh_nvim_plugin(&executable);
     Ok(UnattendedUpdateReport {
         action: "scheduled_update",
         update_available: true,
@@ -424,6 +431,42 @@ fn run_unattended_update(
         conditions: Some(conditions),
         applied: Some(applied),
     })
+}
+
+/// Bring a vulcan.nvim copy this installation wrote (in Neovim's default
+/// package directory, unedited) to the bundle of the binary now at
+/// `executable`, by running its own installer. Returns what happened, or
+/// `None` when there is nothing to refresh.
+#[cfg(feature = "web")]
+fn refresh_nvim_plugin(executable: &std::path::Path) -> Option<String> {
+    let dir = vulcan_app::nvim_plugin::default_install_dir()?;
+    let state = vulcan_app::nvim_plugin::plugin_status(&dir).ok()?.state;
+    if !nvim_plugin_follows_updates(state) {
+        return None;
+    }
+    let refreshed = std::process::Command::new(executable)
+        .args(["editor", "nvim", "install", "--dir"])
+        .arg(&dir)
+        .output()
+        .is_ok_and(|output| output.status.success());
+    Some(if refreshed {
+        format!(
+            "Refreshed vulcan.nvim at {}; restart Neovim to load it.",
+            dir.display()
+        )
+    } else {
+        format!(
+            "Could not refresh vulcan.nvim at {}; run `vulcan editor nvim install`.",
+            dir.display()
+        )
+    })
+}
+
+/// Only copies Vulcan installed and nobody edited follow binary updates.
+#[cfg(any(feature = "web", test))]
+fn nvim_plugin_follows_updates(state: vulcan_app::nvim_plugin::NvimPluginState) -> bool {
+    use vulcan_app::nvim_plugin::NvimPluginState;
+    matches!(state, NvimPluginState::Current | NvimPluginState::Outdated)
 }
 
 #[cfg(feature = "web")]
@@ -806,7 +849,17 @@ fn trusted_update_keys() -> Result<Vec<TrustedUpdateKey>, CliError> {
 
 #[cfg(test)]
 mod coordination_tests {
-    use super::coordinate_daemon_replacement;
+    use super::{coordinate_daemon_replacement, nvim_plugin_follows_updates};
+
+    #[test]
+    fn only_unedited_vulcan_installed_plugins_follow_updates() {
+        use vulcan_app::nvim_plugin::NvimPluginState;
+        assert!(nvim_plugin_follows_updates(NvimPluginState::Current));
+        assert!(nvim_plugin_follows_updates(NvimPluginState::Outdated));
+        assert!(!nvim_plugin_follows_updates(NvimPluginState::Modified));
+        assert!(!nvim_plugin_follows_updates(NvimPluginState::Unmanaged));
+        assert!(!nvim_plugin_follows_updates(NvimPluginState::Missing));
+    }
     use std::cell::RefCell;
 
     #[test]

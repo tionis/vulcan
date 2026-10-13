@@ -10,19 +10,34 @@ Requires Neovim 0.10 or newer (0.11+ recommended) and a `vulcan` binary on
 
 ## Install
 
-With lazy.nvim, from a checkout of the Vulcan repository:
+The `vulcan` binary carries this plugin, so the installed copy always matches
+the server it talks to:
+
+```sh
+vulcan editor nvim install
+```
+
+This writes it into Neovim's package directory
+(`stdpath('data')/site/pack/vulcan/start/vulcan.nvim`), where Neovim loads it
+without a plugin manager; then call `require('vulcan').setup()` from your
+config. `vulcan editor nvim status` tells you whether the copy is current,
+`self-update` refreshes it, and `:checkhealth vulcan` warns when it is stale.
+Edited copies are left alone unless you pass `--force`.
+
+With lazy.nvim, which does not load Neovim's package directory, point a spec
+at the installed copy (`vulcan editor nvim path` prints it) or at a checkout:
 
 ```lua
 {
-  dir = '/path/to/vulcan/integrations/vulcan.nvim',
+  dir = vim.fn.stdpath('data') .. '/site/pack/vulcan/start/vulcan.nvim',
+  -- or: dir = '/path/to/vulcan/integrations/vulcan.nvim',
   ft = 'markdown',
   cmd = 'Vulcan',
   opts = {},
 }
 ```
 
-Or call `require('vulcan').setup()` from your config after adding the folder
-to `runtimepath`.
+`vulcan editor nvim install --dir <path>` installs anywhere else.
 
 ## What you get
 

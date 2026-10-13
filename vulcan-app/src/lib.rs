@@ -79,6 +79,7 @@ pub mod mcp_web;
 pub mod mdbase;
 pub mod mdbase_conformance;
 pub mod notes;
+pub mod nvim_plugin;
 pub mod obsidian_companion;
 pub mod outline_markdown;
 pub mod periodic;

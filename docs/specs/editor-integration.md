@@ -399,8 +399,22 @@ Errors use LSP `ResponseError` with `data: { kind, detail }`, reusing the compan
 ## `vulcan.nvim`
 
 Location: in-repo `integrations/vulcan.nvim/`, next to `integrations/obsidian-vulcan/`, so the
-plugin and `protocolVersion` move in lockstep. A mirror repository for plugin managers can be a CI
-export later.
+plugin and `protocolVersion` move in lockstep.
+
+Distribution: the binary carries the plugin (`vulcan_app::nvim_plugin`, every file except
+`test/`, checked against the directory by a test) and installs it with `vulcan editor nvim
+install`. The default target is Neovim's package directory, `stdpath('data')` (honoring
+`NVIM_APPNAME`, `XDG_DATA_HOME`, and `LOCALAPPDATA` on Windows) plus
+`site/pack/vulcan/start/vulcan.nvim`, which Neovim loads without a plugin manager; `--dir` installs
+anywhere, for example where a lazy.nvim `dir =` spec points (lazy resets `packpath`, so it needs the
+`dir` spec). The install generates `doc/tags`, since Neovim's package loading does not run
+`:helptags`. A `.vulcan-managed.json` marker records the version and each file's BLAKE3 hash, so
+`status` reports `missing`, `current`, `outdated` (another version or build), `modified` (edited or
+deleted files), or `unmanaged` (a checkout or a plugin manager's copy). `install` refreshes
+`missing`, `current`, and `outdated` copies and removes files the bundle dropped; `modified` and
+`unmanaged` copies, and `uninstall` of them, need `--force`. `self-update` runs the new binary's
+installer for an unedited managed copy in the default directory, and `:checkhealth vulcan` compares
+the loaded copy with the binary. A mirror repository for git-based plugin managers is future work.
 
 Scope:
 

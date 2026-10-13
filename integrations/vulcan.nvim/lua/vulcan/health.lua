@@ -4,6 +4,37 @@ local M = {}
 
 local PROTOCOL_VERSION = 1
 
+--- Whether this copy of the plugin is the one the binary bundles. Copies
+--- from `vulcan editor nvim install` carry a marker; a checkout or a plugin
+--- manager's copy does not, and is reported as such.
+--- @param binary string
+function M.check_install(binary)
+  local source = debug.getinfo(1, 'S').source:sub(2)
+  local root = vim.fs.dirname(vim.fs.dirname(vim.fs.dirname(source)))
+  local result = vim.system({ binary, '--output', 'json', 'editor', 'nvim', 'status', '--dir', root }, { text = true })
+    :wait()
+  local ok, status = pcall(vim.json.decode, result.stdout or '')
+  if result.code ~= 0 or not ok or type(status) ~= 'table' then
+    vim.health.info('Could not compare this plugin with the binary (`vulcan editor nvim status` failed)')
+    return
+  end
+  if status.state == 'current' then
+    vim.health.ok('Plugin matches the binary (' .. status.version .. ')')
+  elseif status.state == 'outdated' then
+    vim.health.warn(
+      ('Plugin was installed from Vulcan %s; the binary bundles %s'):format(status.installed_version, status.version),
+      { 'Run `vulcan editor nvim install` and restart Neovim' }
+    )
+  elseif status.state == 'modified' then
+    vim.health.warn(
+      'Plugin files changed since install: ' .. table.concat(status.modified_files, ', '),
+      { 'Run `vulcan editor nvim install --force` to restore them' }
+    )
+  else
+    vim.health.info('Plugin loaded from ' .. root .. ' (not installed by `vulcan editor nvim install`)')
+  end
+end
+
 function M.check()
   local vulcan = require('vulcan')
   vim.health.start('vulcan.nvim')
@@ -24,6 +55,7 @@ function M.check()
     })
     return
   end
+  M.check_install(binary)
 
   -- `:checkhealth` runs in its own buffer, so look for any running client.
   local client = vulcan.client() or vim.lsp.get_clients({ name = vulcan.client_name })[1]

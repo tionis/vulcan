@@ -37,7 +37,10 @@ and wants vault-aware features, or when editor diagnostics need explaining.
    ```
 
    For Neovim, prefer the bundled `integrations/vulcan.nvim` plugin (pickers, `:Vulcan` commands,
-   query results as virtual text, `:checkhealth vulcan`); `docs/guide/editors.md` covers Vim,
+   query results as virtual text, `:checkhealth vulcan`). `vulcan editor nvim install` (with
+   `--dry-run` to preview) installs the copy matching the binary into Neovim's package directory;
+   `vulcan editor nvim status --output json` reports whether it is current, and copies with local
+   changes need the user's `--force`; `docs/guide/editors.md` covers Vim,
    Helix, and Emacs. Other clients take the same command. Pass `--vault <dir>` only when the editor's workspace
    folder is not inside the vault; otherwise the server discovers it like any other command.
 3. Explain what the server offers: go-to-definition on links, embeds, `#heading`, and `#^block`

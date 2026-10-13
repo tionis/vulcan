@@ -4864,6 +4864,10 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         return commands::update::handle_update_command(cli, command.as_ref());
     }
 
+    if let Command::Editor { ref command } = cli.command {
+        return commands::editor::handle_editor_command(cli, command);
+    }
+
     if let Command::Device { ref command } = cli.command {
         return commands::device::handle_device_command(cli, command);
     }
@@ -6572,6 +6576,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         ),
         Command::Git { ref command } => commands::runtime::handle_git_command(cli, &paths, command),
         Command::Sync { ref command } => commands::sync::handle_sync_command(cli, &paths, command),
+        Command::Editor { .. } => unreachable!("editor handled before vault resolution"),
         Command::Device { .. } => unreachable!("device handled before vault resolution"),
         Command::Devices { .. } => unreachable!("devices handled before vault resolution"),
         Command::Daemon { ref command } => commands::daemon::handle_daemon_command(cli, command),
@@ -6961,6 +6966,7 @@ fn require_registered_knowledge_profile(vault: &Path, command: &Command) -> Resu
             | Command::Daemon { .. }
             | Command::Device { .. }
             | Command::Devices { .. }
+            | Command::Editor { .. }
             | Command::SelfUpdate { .. }
             | Command::Help { .. }
             | Command::Describe { .. }

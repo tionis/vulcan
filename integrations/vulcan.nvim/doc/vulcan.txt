@@ -24,6 +24,14 @@ verify the setup.
 ==============================================================================
 2. SETUP                                                        *vulcan-setup*
 
+Install the copy bundled with your `vulcan` binary: >sh
+  vulcan editor nvim install
+<
+It lands in `stdpath('data')/site/pack/vulcan/start/vulcan.nvim`, which Neovim
+loads at startup (lazy.nvim users point a `dir` spec there instead). Re-run it
+after updating Vulcan, or let `vulcan self-update` do it; |:checkhealth|
+vulcan reports a stale copy. Then call setup:
+
 >lua
   require('vulcan').setup({
     binary = 'vulcan',

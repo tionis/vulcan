@@ -1206,6 +1206,21 @@ Examples:
   vulcan status
   vulcan status --output json";
 
+const EDITOR_COMMAND_AFTER_HELP: &str = "\
+Neovim:
+  vulcan editor nvim install writes the vulcan.nvim plugin bundled with this binary into
+  Neovim's package directory (stdpath('data')/site/pack/vulcan/start/vulcan.nvim), where Neovim
+  loads it without a plugin manager. Call require('vulcan').setup() from your config, or point a
+  plugin manager at it: { dir = '<vulcan editor nvim path>', opts = {} } for lazy.nvim.
+  Re-run install after updating Vulcan; :checkhealth vulcan reports a stale copy. Copies Vulcan
+  did not write, or ones edited since, are left alone unless --force.
+
+Examples:
+  vulcan editor nvim install
+  vulcan editor nvim install --dir ~/.config/nvim/pack/vulcan/start/vulcan.nvim
+  vulcan editor nvim status --output json
+";
+
 const LSP_COMMAND_AFTER_HELP: &str = "\
 Protocol:
   Language Server Protocol over stdin/stdout, for Neovim, Vim, Helix, Emacs, Zed, and other
@@ -4474,6 +4489,50 @@ pub enum SyncScheduleCommand {
         )]
         network_failure_minutes: Option<u32>,
         #[arg(long, help = "Preview the updated settings without rescheduling")]
+        dry_run: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum EditorCommand {
+    #[command(about = "Install, refresh, or inspect the bundled vulcan.nvim plugin")]
+    Nvim {
+        #[command(subcommand)]
+        command: NvimCommand,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum NvimCommand {
+    #[command(about = "Install or refresh vulcan.nvim (Neovim's package directory by default)")]
+    Install {
+        #[arg(long, value_name = "DIR", help = "Install into DIR instead")]
+        dir: Option<std::path::PathBuf>,
+        #[arg(
+            long,
+            help = "Replace a copy Vulcan did not install or one with local changes"
+        )]
+        force: bool,
+        #[arg(long, help = "Show what would change without writing")]
+        dry_run: bool,
+    },
+    #[command(about = "Show whether the installed copy matches this binary")]
+    Status {
+        #[arg(long, value_name = "DIR", help = "Inspect DIR instead")]
+        dir: Option<std::path::PathBuf>,
+    },
+    #[command(about = "Print the default install directory")]
+    Path,
+    #[command(about = "Remove a copy Vulcan installed")]
+    Uninstall {
+        #[arg(long, value_name = "DIR", help = "Remove from DIR instead")]
+        dir: Option<std::path::PathBuf>,
+        #[arg(
+            long,
+            help = "Also remove a copy Vulcan did not install or one with local changes"
+        )]
+        force: bool,
+        #[arg(long, help = "Show what would be removed without removing it")]
         dry_run: bool,
     },
 }
@@ -8038,6 +8097,14 @@ pub enum Command {
     Sync {
         #[command(subcommand)]
         command: SyncCommand,
+    },
+    #[command(
+        about = "Install and manage editor integrations bundled with this binary",
+        after_help = EDITOR_COMMAND_AFTER_HELP
+    )]
+    Editor {
+        #[command(subcommand)]
+        command: EditorCommand,
     },
     #[command(about = "Inspect or initialize this installation's device identity")]
     Device {

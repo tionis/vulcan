@@ -18999,6 +18999,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(editor_skill.contains("vulcan.note.move"));
     assert!(editor_skill.contains("vulcan.task.toggle"));
     assert!(editor_skill.contains("vulcan.section.extract"));
+    assert!(editor_skill.contains("vulcan editor nvim install"));
     assert!(editor_skill.contains("workspace/diagnostic"));
     assert!(editor_skill.contains("full evaluation\n  follows `vulcan trust`"));
     assert!(editor_skill.contains("integrations/vulcan.nvim"));
@@ -39463,4 +39464,57 @@ fn query_pages_load_only_the_notes_they_print() {
     let first_globbed = all.iter().find(|path| path.starts_with("a/n1")).unwrap();
     assert_eq!(paths(&globbed), std::slice::from_ref(first_globbed));
     assert_eq!(globbed["plan"]["hydrated"], 12);
+}
+
+#[test]
+fn editor_nvim_installs_and_removes_the_bundled_plugin_outside_a_vault() {
+    let dir = TempDir::new().unwrap();
+    let data = dir.path().join("data");
+    let run = |args: &[&str]| -> Value {
+        let output = Command::cargo_bin("vulcan")
+            .unwrap()
+            .current_dir(dir.path())
+            .env("XDG_DATA_HOME", &data)
+            .env_remove("NVIM_APPNAME")
+            .args(["--output", "json", "editor", "nvim"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+    let path = run(&["path"]);
+    let expected = data.join("nvim/site/pack/vulcan/start/vulcan.nvim");
+    if !cfg!(windows) {
+        assert_eq!(path["path"], serde_json::json!(expected));
+    }
+    let target = std::path::PathBuf::from(path["path"].as_str().unwrap());
+    assert_eq!(run(&["status"])["state"], "missing");
+    let installed = run(&["install"]);
+    assert_eq!(installed["previous"], "missing");
+    assert!(target.join("plugin/vulcan.lua").is_file());
+    assert!(target.join("doc/tags").is_file());
+    assert_eq!(run(&["status"])["state"], "current");
+
+    fs::write(target.join("lua/vulcan/cli.lua"), "-- edited").unwrap();
+    Command::cargo_bin("vulcan")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("XDG_DATA_HOME", &data)
+        .env_remove("NVIM_APPNAME")
+        .args(["editor", "nvim", "install"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("local changes"));
+    assert_eq!(run(&["install", "--force"])["previous"], "modified");
+    let removed = run(&["uninstall"]);
+    assert!(removed["removed"]
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::json!("plugin/vulcan.lua")));
+    assert!(!target.exists());
 }
