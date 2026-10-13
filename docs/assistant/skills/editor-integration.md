@@ -1,7 +1,7 @@
 ---
 name: editor-integration
 description: Set up and troubleshoot Vulcan's language server for Neovim, Vim, Helix, Emacs, Zed, or another LSP client. Use when the user wants link navigation, backlinks, completion, or diagnostics in a terminal editor, or asks why their editor reports an unresolved or ambiguous link.
-version: 9
+version: 10
 tools:
   - describe
   - help
@@ -40,7 +40,10 @@ and wants vault-aware features, or when editor diagnostics need explaining.
    query results as virtual text, `:checkhealth vulcan`). `vulcan editor nvim install` (with
    `--dry-run` to preview) installs the copy matching the binary into Neovim's package directory;
    `vulcan editor nvim status --output json` reports whether it is current, and copies with local
-   changes need the user's `--force`. For Vim 9 with yegappan/lsp, `vulcan editor vim install`
+   changes need the user's `--force`. With lazy.nvim, point a `dir` spec at
+   `vulcan editor nvim path`; on AstroNvim add `dependencies = { "AstroNvim/astrolsp" }` so
+   AstroLSP's keymaps attach to the plugin's client, and do not also list `vulcan` in AstroLSP's
+   `servers`. For Vim 9 with yegappan/lsp, `vulcan editor vim install`
    installs the matching `vulcan.vim` the same way (it registers the server itself; one vault per
    Vim session); for Helix, `vulcan editor helix install` merges the `languages.toml` entries
    and `space v` keybindings into `~/.config/helix/` without overwriting the user's settings (run

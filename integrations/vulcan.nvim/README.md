@@ -39,6 +39,25 @@ at the installed copy (`vulcan editor nvim path` prints it) or at a checkout:
 
 `vulcan editor nvim install --dir <path>` installs anywhere else.
 
+Distributions that set up LSP keymaps from their own `LspAttach` handler
+(AstroNvim's AstroLSP, for example) must load before this plugin starts the
+client, or `gd` and the distribution's other LSP mappings never attach. List
+the distribution's LSP plugin as a dependency; for AstroNvim:
+
+```lua
+{
+  dir = vim.fn.stdpath('data') .. '/site/pack/vulcan/start/vulcan.nvim',
+  name = 'vulcan.nvim',
+  dependencies = { 'AstroNvim/astrolsp' },
+  ft = 'markdown',
+  cmd = 'Vulcan',
+  opts = {},
+}
+```
+
+Do not also list `vulcan` in AstroLSP's `servers`: the plugin registers and
+enables the server itself.
+
 ## What you get
 
 From the language server, in any Markdown buffer inside a vault (a folder with

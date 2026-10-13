@@ -30,6 +30,10 @@ the package directory) point a spec at the installed copy:
 { dir = vim.fn.stdpath('data') .. '/site/pack/vulcan/start/vulcan.nvim', ft = 'markdown', cmd = 'Vulcan', opts = {} }
 ```
 
+On AstroNvim, add `dependencies = { 'AstroNvim/astrolsp' }` to that spec so
+AstroLSP's keymaps attach to the client the plugin starts, and do not list
+`vulcan` in AstroLSP's `servers`; the plugin README has the full spec.
+
 Without the plugin, Neovim 0.11+ needs only:
 
 ```lua
