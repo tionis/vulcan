@@ -127,6 +127,23 @@ jobs:
           echo "VULCAN_VIM_LSP=$RUNNER_TEMP/yegappan-lsp" >> "$GITHUB_ENV"
           echo "VULCAN_REQUIRE_VIM=1" >> "$GITHUB_ENV"
 
+      # The Helix end-to-end test (vulcan-cli/tests/helix_editor.rs) drives
+      # a real Helix through tmux; install a checksum-pinned release.
+      - name: Install Helix and tmux for the editor end-to-end test
+        if: matrix.os == 'ubuntu-latest' && matrix.suite == 'cli'
+        env:
+          HELIX_VERSION: 25.07.1
+          HELIX_SHA256: 3f08e63ecd388fff657ad39722f88bb03dcf326f1f2da2700d99e1dc40ab2e8b
+        run: |
+          sudo apt-get install -y -q tmux
+          curl -fsSLo "$RUNNER_TEMP/helix.tar.xz" \
+            "https://github.com/helix-editor/helix/releases/download/${HELIX_VERSION}/helix-${HELIX_VERSION}-x86_64-linux.tar.xz"
+          echo "${HELIX_SHA256}  $RUNNER_TEMP/helix.tar.xz" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/helix.tar.xz" -C "$RUNNER_TEMP"
+          echo "VULCAN_HELIX=$RUNNER_TEMP/helix-${HELIX_VERSION}-x86_64-linux/hx" >> "$GITHUB_ENV"
+          echo "HELIX_RUNTIME=$RUNNER_TEMP/helix-${HELIX_VERSION}-x86_64-linux/runtime" >> "$GITHUB_ENV"
+          echo "VULCAN_REQUIRE_HELIX=1" >> "$GITHUB_ENV"
+
       - name: Test CLI
         if: matrix.suite == 'cli'
         run: cargo test -p vulcan-cli --no-fail-fast

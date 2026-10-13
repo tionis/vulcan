@@ -98,18 +98,19 @@ command! VulcanDaily execute 'edit' trim(system('vulcan --output json periodic d
 
 ## Helix
 
-In `languages.toml`:
+Helix has no plugins, so its integration,
+[`integrations/helix`](../../integrations/helix/README.md), is configuration
+the binary prints for you to merge into `~/.config/helix/`:
 
-```toml
-[language-server.vulcan]
-command = "vulcan"
-args = ["lsp"]
-
-[[language]]
-name = "markdown"
-language-servers = ["vulcan"]
-roots = [".vulcan", ".vulcan.toml", ".obsidian"]
+```sh
+vulcan editor helix print-config
 ```
+
+Its `languages.toml` registers the server for Markdown and starts it only in
+vaults; its `config.toml` adds keybindings under `space v` for daily notes,
+task toggling, section extraction, capture, and rescans, through
+`:lsp-workspace-command`. Start Helix in the vault. Query results are not
+drawn, since Helix has no virtual text for servers.
 
 ## Emacs
 

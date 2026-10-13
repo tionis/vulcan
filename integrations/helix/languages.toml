@@ -1,0 +1,22 @@
+# Vulcan for Helix: `vulcan lsp` for Markdown notes in a vault.
+# Merge into ~/.config/helix/languages.toml (`vulcan editor helix print-config`).
+
+[language-server.vulcan]
+command = "vulcan"
+args = ["lsp"]
+# Only start in a vault (a folder with .vulcan/, .vulcan.toml, or .obsidian/).
+required-root-patterns = [".vulcan", ".vulcan.toml", ".obsidian"]
+
+# Sent as initializationOptions. Helix opens documents the server asks it to
+# show (such as a new daily note) without advertising that it can.
+[language-server.vulcan.config]
+showDocument = true
+# watcher = "own"      # "own", "client", or "off"
+# dataviewJs = "on"    # "off", "static", or "on"; unset follows `vulcan trust`
+
+[[language]]
+name = "markdown"
+# A note's workspace is its vault.
+roots = [".vulcan", ".vulcan.toml", ".obsidian"]
+# To keep another Markdown server, list it too: ["vulcan", "marksman"].
+language-servers = ["vulcan"]

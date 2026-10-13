@@ -8428,7 +8428,7 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 - [x] Headless Vim smoke test (pinned yegappan/lsp commit) behind a `cargo test` wrapper with `VULCAN_REQUIRE_VIM`, and a CI job installing both
 - [x] Docs and skill: `docs/guide/editors.md`, `docs/cli.md`, `editor-integration` skill
 - [ ] Optional standard-type semantic-token legend selectable through `initializationOptions`, for clients like yegappan/lsp that only draw standard types
-- [ ] Helix: configuration helper or documented snippet only (no plugin system yet)
+- [x] Helix: `integrations/helix/` (`languages.toml` limited to vaults, `space v` keybindings over `:lsp-workspace-command` with buffer and cursor expansions, capture through `:pipe-to vulcan inbox -`) printed by `vulcan editor helix print-config`; server fixes for Helix (rename answered before its edit, its rename announcements answered at once, `showDocument` opt-in, filesystem paths and 1-based positions in command arguments); a tmux-driven end-to-end test against Helix 25.07.1, run in CI
 - [ ] Emacs: Eglot configuration plus a small Elisp package for commands and `vulcan/render` overlays, installed through the same bundle table
 - [ ] **Future (needs publishing):** Zed extension registering `vulcan lsp` for Markdown, and a VS Code extension for commands and query-result rendering
 

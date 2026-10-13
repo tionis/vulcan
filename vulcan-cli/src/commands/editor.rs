@@ -1,4 +1,4 @@
-use crate::cli::{EditorCommand, EditorPluginCommand};
+use crate::cli::{EditorCommand, EditorPluginCommand, HelixCommand, HelixConfigFileArg};
 use crate::output::print_json;
 use crate::{Cli, CliError, OutputFormat};
 use std::path::{Path, PathBuf};
@@ -10,6 +10,7 @@ pub(crate) fn handle_editor_command(cli: &Cli, command: &EditorCommand) -> Resul
     let (plugin, command) = match command {
         EditorCommand::Nvim { command } => (NVIM, command),
         EditorCommand::Vim { command } => (VIM, command),
+        EditorCommand::Helix { command } => return handle_helix_command(cli, command),
     };
     match command {
         EditorPluginCommand::Install {
@@ -45,6 +46,29 @@ pub(crate) fn handle_editor_command(cli: &Cli, command: &EditorCommand) -> Resul
             }
         }
     }
+}
+
+fn handle_helix_command(cli: &Cli, command: &HelixCommand) -> Result<(), CliError> {
+    let HelixCommand::PrintConfig { only } = command;
+    let config = vulcan_app::editor_plugins::helix_config();
+    if cli.output == OutputFormat::Json {
+        return print_json(&config);
+    }
+    let directory = config.config_dir.as_ref().map_or_else(
+        || "Helix's config directory".to_string(),
+        |dir| dir.display().to_string(),
+    );
+    match only {
+        Some(HelixConfigFileArg::Languages) => print!("{}", config.languages_toml),
+        Some(HelixConfigFileArg::Keys) => print!("{}", config.config_toml),
+        None => {
+            println!("# ---- {directory}/languages.toml ----\n");
+            print!("{}", config.languages_toml);
+            println!("\n# ---- {directory}/config.toml ----\n");
+            print!("{}", config.config_toml);
+        }
+    }
+    Ok(())
 }
 
 fn install_dir(plugin: EditorPlugin, dir: Option<&Path>) -> Result<PathBuf, CliError> {

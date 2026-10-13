@@ -664,3 +664,26 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::COMMANDS;
+
+    #[test]
+    fn helix_keybindings_run_advertised_commands() {
+        let config = include_str!("../../integrations/helix/config.toml");
+        let used = config
+            .split(":lsp-workspace-command ")
+            .skip(1)
+            .filter_map(|rest| rest.split_whitespace().next())
+            .map(|command| command.trim_end_matches(['\'', '"']))
+            .collect::<Vec<_>>();
+        assert!(used.len() >= 5, "{used:?}");
+        for command in used {
+            assert!(
+                COMMANDS.contains(&command),
+                "{command} is not a server command"
+            );
+        }
+    }
+}

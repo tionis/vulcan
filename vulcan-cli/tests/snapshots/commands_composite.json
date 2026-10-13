@@ -12793,7 +12793,7 @@
       },
       {
         "about": "Install and manage editor integrations bundled with this binary",
-        "after_help": "Neovim:\n  vulcan editor nvim install writes the vulcan.nvim plugin bundled with this binary into\n  Neovim's package directory (stdpath('data')/site/pack/vulcan/start/vulcan.nvim), where Neovim\n  loads it without a plugin manager. Call require('vulcan').setup() from your config, or point a\n  plugin manager at it: { dir = '<vulcan editor nvim path>', opts = {} } for lazy.nvim.\n\nVim:\n  vulcan editor vim install writes vulcan.vim into ~/.vim/pack/vulcan/start/vulcan.vim (or under\n  ~/.config/vim when Vim uses it). It needs Vim 9 and yegappan/lsp, and registers the server\n  itself.\n\nBoth:\n  Re-run install after updating Vulcan (self-update does it for unedited copies); :checkhealth\n  vulcan and :Vulcan health report a stale copy. Copies Vulcan did not write, or ones edited\n  since, are left alone unless --force.\n\nExamples:\n  vulcan editor nvim install\n  vulcan editor vim install --dry-run\n  vulcan editor nvim install --dir ~/.config/nvim/pack/vulcan/start/vulcan.nvim\n  vulcan editor vim status --output json\n",
+        "after_help": "Neovim:\n  vulcan editor nvim install writes the vulcan.nvim plugin bundled with this binary into\n  Neovim's package directory (stdpath('data')/site/pack/vulcan/start/vulcan.nvim), where Neovim\n  loads it without a plugin manager. Call require('vulcan').setup() from your config, or point a\n  plugin manager at it: { dir = '<vulcan editor nvim path>', opts = {} } for lazy.nvim.\n\nVim:\n  vulcan editor vim install writes vulcan.vim into ~/.vim/pack/vulcan/start/vulcan.vim (or under\n  ~/.config/vim when Vim uses it). It needs Vim 9 and yegappan/lsp, and registers the server\n  itself.\n\nHelix:\n  Helix has no plugin system, so vulcan editor helix print-config prints what to merge into\n  ~/.config/helix: languages.toml registers vulcan lsp for Markdown in vaults, and config.toml\n  adds keybindings under `space v` that run the server's commands with :lsp-workspace-command.\n\nPlugins:\n  Re-run install after updating Vulcan (self-update does it for unedited copies); :checkhealth\n  vulcan and :Vulcan health report a stale copy. Copies Vulcan did not write, or ones edited\n  since, are left alone unless --force.\n\nExamples:\n  vulcan editor nvim install\n  vulcan editor vim install --dry-run\n  vulcan editor nvim install --dir ~/.config/nvim/pack/vulcan/start/vulcan.nvim\n  vulcan editor vim status --output json\n  vulcan editor helix print-config --only keys\n",
         "name": "editor",
         "options": [],
         "subcommands": [
@@ -13036,6 +13036,34 @@
                     "short": null,
                     "value_names": [
                       "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              }
+            ]
+          },
+          {
+            "about": "Print the Helix configuration for vulcan lsp and its keybindings",
+            "name": "helix",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "Print languages.toml and config.toml entries to merge into Helix's configuration",
+                "name": "print-config",
+                "options": [
+                  {
+                    "help": "Print only one file (both by default, each under a heading comment)",
+                    "id": "only",
+                    "long": "only",
+                    "possible_values": [
+                      "languages",
+                      "keys"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "ONLY"
                     ]
                   }
                 ],

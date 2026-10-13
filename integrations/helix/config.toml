@@ -1,0 +1,18 @@
+# Vulcan keybindings for Helix, under `space v`.
+# Merge into ~/.config/helix/config.toml (`vulcan editor helix print-config`).
+#
+# They run the server's commands with `:lsp-workspace-command`, filling in
+# the current note and cursor. Paths are relative to the directory Helix was
+# started in, so start it in the vault.
+
+[keys.normal.space.v]
+d = ":lsp-workspace-command vulcan.periodic.open"
+w = ':lsp-workspace-command vulcan.periodic.open {"period": "weekly"}'
+m = ':lsp-workspace-command vulcan.periodic.open {"period": "monthly"}'
+x = ':lsp-workspace-command vulcan.task.toggle {"path": "%{buffer_name}", "lineNumber": %{cursor_line}}'
+e = ':lsp-workspace-command vulcan.section.extract {"path": "%{buffer_name}", "lineNumber": %{cursor_line}}'
+# Capture the selection to the inbox note (through stdin, so any text is safe).
+c = ":pipe-to vulcan inbox -"
+s = ":lsp-workspace-command vulcan.scan"
+# Insert a template at the cursor (set its name):
+# t = ':lsp-workspace-command vulcan.template.insert {"path": "%{buffer_name}", "template": "Meeting", "lineNumber": %{cursor_line}, "columnNumber": %{cursor_column}}'

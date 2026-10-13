@@ -98,7 +98,7 @@ See `docs/ROADMAP.md` for the full dependency graph and detailed task lists.
 
 **Phase 15 — external knowledge hub:** Add typed external-document bindings, explicit pull/push routes, durable reconciliation state, scheduling, and first-party connectors for Outline, HedgeDoc/HedgeSync, simple Git-backed wikis, and SilverBullet. All remote-to-remote flow passes through the canonical local vault.
 
-**Phase 9.40 — terminal editor integration (implemented):** `vulcan lsp` (the `vulcan-lsp` crate over transport-neutral `vulcan-app::editor` services) and the in-repo `integrations/vulcan.nvim/` and `integrations/vulcan.vim/` (Vim 9 over yegappan/lsp) plugins, which the binary ships and installs with `vulcan editor nvim|vim install`. Remaining 9.40.5 items are blocked on OBS.2, the MDB items, and 10.5; a standalone plugin mirror repository is optional future work. See `docs/specs/editor-integration.md`.
+**Phase 9.40 — terminal editor integration (implemented):** `vulcan lsp` (the `vulcan-lsp` crate over transport-neutral `vulcan-app::editor` services) and the in-repo `integrations/vulcan.nvim/` and `integrations/vulcan.vim/` (Vim 9 over yegappan/lsp) plugins, which the binary ships and installs with `vulcan editor nvim|vim install`, and Helix configuration from `vulcan editor helix print-config` (`integrations/helix/`). Remaining 9.40.5 items are blocked on OBS.2, the MDB items, and 10.5; a standalone plugin mirror repository is optional future work. See `docs/specs/editor-integration.md`.
 
 **Candidate capability tracks:** Continue bounded mdbase and remaining Obsidian-plugin compatibility slices without making them serial blockers for the daemon.
 

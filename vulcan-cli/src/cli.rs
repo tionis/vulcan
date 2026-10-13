@@ -1218,7 +1218,12 @@ Vim:
   ~/.config/vim when Vim uses it). It needs Vim 9 and yegappan/lsp, and registers the server
   itself.
 
-Both:
+Helix:
+  Helix has no plugin system, so vulcan editor helix print-config prints what to merge into
+  ~/.config/helix: languages.toml registers vulcan lsp for Markdown in vaults, and config.toml
+  adds keybindings under `space v` that run the server's commands with :lsp-workspace-command.
+
+Plugins:
   Re-run install after updating Vulcan (self-update does it for unedited copies); :checkhealth
   vulcan and :Vulcan health report a stale copy. Copies Vulcan did not write, or ones edited
   since, are left alone unless --force.
@@ -1228,6 +1233,7 @@ Examples:
   vulcan editor vim install --dry-run
   vulcan editor nvim install --dir ~/.config/nvim/pack/vulcan/start/vulcan.nvim
   vulcan editor vim status --output json
+  vulcan editor helix print-config --only keys
 ";
 
 const LSP_COMMAND_AFTER_HELP: &str = "\
@@ -4522,6 +4528,34 @@ pub enum EditorCommand {
         #[command(subcommand)]
         command: EditorPluginCommand,
     },
+    #[command(about = "Print the Helix configuration for vulcan lsp and its keybindings")]
+    Helix {
+        #[command(subcommand)]
+        command: HelixCommand,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum HelixCommand {
+    #[command(
+        about = "Print languages.toml and config.toml entries to merge into Helix's configuration"
+    )]
+    PrintConfig {
+        #[arg(
+            long,
+            value_enum,
+            help = "Print only one file (both by default, each under a heading comment)"
+        )]
+        only: Option<HelixConfigFileArg>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum HelixConfigFileArg {
+    #[value(name = "languages")]
+    Languages,
+    #[value(name = "keys")]
+    Keys,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]

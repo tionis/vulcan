@@ -540,7 +540,7 @@ Each editor gets the least layer its extension model allows; none of them adds v
 
 | Editor | Layer | Distribution |
 | --- | --- | --- |
-| Helix | Language server only (no plugin system yet). Code actions and `workspace/executeCommand` reach the `vulcan.*` commands; query results are not drawn. | `docs/guide/editors.md` snippet; optionally `vulcan editor helix print-config` |
+| Helix | Language server plus configuration (no plugin system yet): `languages.toml` and `space v` keybindings running `vulcan.*` commands; query results are not drawn. See "Helix" below. | `vulcan editor helix print-config` (`integrations/helix/`) |
 | Emacs | Eglot configuration plus a small Elisp package for `:Vulcan`-style commands and drawing `vulcan/render` results as overlays. | File-based, so the same installer (`vulcan editor emacs install`) |
 | Zed | An extension registering `vulcan lsp` for Markdown. | Zed's extension registry (needs publishing) |
 | VS Code | An extension for commands and drawing `vulcan/render` results; the rest comes from the server. | Marketplace or Open VSX (needs publishing) |
@@ -548,6 +548,34 @@ Each editor gets the least layer its extension model allows; none of them adds v
 File-based plugins join the installer's bundle table; registry-published extensions are separate
 tracks, since publishing needs accounts and their copies can drift from the binary (the
 `protocolVersion` check catches mismatches).
+
+### Helix
+
+Checked against Helix 25.07.1, its source and a real session (the end-to-end test drives it through
+tmux). Its client advertises versioned `documentChanges` with create, rename, and delete,
+`willRenameFiles`/`didRenameFiles`, dynamic watched-file registration, inlay hints, workspace
+folders, and UTF-8 positions first; no code lenses, semantic tokens, pull diagnostics, or
+`window/showDocument` (which it handles anyway). Findings and what closes them:
+
+- **Renames block.** Helix waits for `textDocument/rename` with `block_on`, so the server answers it
+  before sending the `workspace/applyEdit` that carries the change (see "Mutation contract").
+- **It announces renames back.** Applying a `RenameFile`, Helix's `move_path` sends
+  `willRenameFiles` and waits up to five seconds; the server answers the renames it asked for at
+  once and ignores their `didRenameFiles`. Helix re-points the buffer itself.
+- **`window/showDocument` is handled but not advertised**, so `languages.toml` sets the
+  `showDocument` initialization option and new periodic notes open.
+- **Commands from keybindings.** `:lsp-workspace-command <command> <json>` expands `%{buffer_name}`,
+  `%{cursor_line}`, and `%{cursor_column}` inside the JSON, so bindings pass the note and cursor;
+  the server accepts filesystem paths and 1-based `lineNumber`/`columnNumber` for that.
+  `%{buffer_name}` is relative to Helix's working directory, so Helix should start in the vault.
+- **Selections cannot go into JSON** (Helix has no escaping expansion; a line selection ends in a
+  newline), so capture uses `:pipe-to vulcan inbox -`, which sends the selection on stdin rather
+  than splicing it into a shell command.
+- **Starting only in vaults.** `required-root-patterns = [".vulcan", ".vulcan.toml", ".obsidian"]`
+  matches entry names in the root, and the Markdown language's `roots` make the vault the root.
+  Helix searches for roots only up to its workspace (the Git repository or its working directory).
+  When a server does not accept workspace-folder changes, Helix starts another instance for another
+  root, so each vault gets its own server.
 
 ## Testing
 
