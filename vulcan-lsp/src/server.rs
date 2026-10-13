@@ -33,7 +33,6 @@ use vulcan_core::{ScanSummary, VaultPaths};
 /// Threads answering requests.
 const READER_THREADS: usize = 3;
 /// Quiet time after an edit before its diagnostics are recomputed.
-const DIAGNOSTIC_DELAY: Duration = Duration::from_millis(200);
 /// How often a process without the watch lease checks the store clock.
 const CLOCK_POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// Token of the startup indexing progress report.
@@ -214,6 +213,18 @@ fn capabilities(
         }),
         document_symbol_provider: Some(lsp::OneOf::Left(true)),
         workspace_symbol_provider: Some(lsp::OneOf::Left(true)),
+        code_lens_provider: session
+            .config()
+            .editor
+            .code_lens
+            .then_some(lsp::CodeLensOptions {
+                resolve_provider: Some(false),
+            }),
+        inlay_hint_provider: session
+            .config()
+            .editor
+            .inlay_hints
+            .then_some(lsp::OneOf::Left(true)),
         rename_provider: Some(lsp::OneOf::Right(lsp::RenameOptions {
             prepare_provider: Some(true),
             work_done_progress_options: lsp::WorkDoneProgressOptions::default(),
@@ -262,6 +273,9 @@ struct ClientFeatures {
     work_done_progress: bool,
     dynamic_file_watching: bool,
     edits: EditSupport,
+    /// The client accepts `workspace/codeLens/refresh` and
+    /// `workspace/inlayHint/refresh` after index changes.
+    refresh_lenses_and_hints: (bool, bool),
 }
 
 impl From<&lsp::ClientCapabilities> for ClientFeatures {
@@ -279,6 +293,20 @@ impl From<&lsp::ClientCapabilities> for ClientFeatures {
                 .and_then(|watched| watched.dynamic_registration)
                 .unwrap_or(false),
             edits: EditSupport::from(capabilities),
+            refresh_lenses_and_hints: (
+                capabilities
+                    .workspace
+                    .as_ref()
+                    .and_then(|workspace| workspace.code_lens.as_ref())
+                    .and_then(|lens| lens.refresh_support)
+                    .unwrap_or(false),
+                capabilities
+                    .workspace
+                    .as_ref()
+                    .and_then(|workspace| workspace.inlay_hint.as_ref())
+                    .and_then(|hint| hint.refresh_support)
+                    .unwrap_or(false),
+            ),
         }
     }
 }
@@ -720,8 +748,9 @@ impl<'c> Server<'c> {
             }
             Err(_) => return,
         }
+        let delay = Duration::from_millis(self.session.config().editor.diagnostic_delay_ms);
         self.pending_diagnostics
-            .insert(path, Instant::now() + DIAGNOSTIC_DELAY);
+            .insert(path, Instant::now() + delay);
     }
 
     fn did_close(&mut self, params: lsp::DidCloseTextDocumentParams) {
@@ -839,6 +868,14 @@ impl<'c> Server<'c> {
             "vulcan/indexChanged".to_string(),
             json!({ "paths": paths, "summary": summary }),
         )));
+        // Backlink counts and due dates may have changed.
+        let (lenses, hints) = self.client.refresh_lenses_and_hints;
+        if lenses && self.session.config().editor.code_lens {
+            self.send_request("workspace/codeLens/refresh", Value::Null);
+        }
+        if hints && self.session.config().editor.inlay_hints {
+            self.send_request("workspace/inlayHint/refresh", Value::Null);
+        }
     }
 
     fn flush_diagnostics(&mut self) {

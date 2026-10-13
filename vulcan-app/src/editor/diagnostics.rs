@@ -54,7 +54,11 @@ impl EditorSession {
             });
 
         let mut diagnostics = Vec::new();
+        let report_unsupported = self.config().editor.diagnose_unsupported_syntax;
         for diagnostic in &document.parsed.diagnostics {
+            if diagnostic.kind == ParseDiagnosticKind::UnsupportedSyntax && !report_unsupported {
+                continue;
+            }
             let (severity, code) = match diagnostic.kind {
                 ParseDiagnosticKind::MalformedFrontmatter => {
                     (EditorDiagnosticSeverity::Error, "malformed-frontmatter")

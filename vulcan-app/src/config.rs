@@ -1818,6 +1818,14 @@ fn display_key_to_storage_key(key: &str) -> String {
     segments.join(".")
 }
 
+fn editor_category_descriptor() -> CategoryDescriptor {
+    CategoryDescriptor {
+        key: "editor",
+        title: "Editor",
+        description: "Defaults for editors connected through `vulcan lsp`.",
+    }
+}
+
 fn category_descriptor(display_segments: &[String]) -> CategoryDescriptor {
     match display_segments.first().map(String::as_str) {
         Some("link_resolution" | "link_style" | "attachment_folder" | "strict_line_breaks") => {
@@ -1906,6 +1914,7 @@ fn category_descriptor(display_segments: &[String]) -> CategoryDescriptor {
             description: "One-way remote publication profiles and reconciliation settings.",
         },
         Some("integrations") => integration_routes_category_descriptor(),
+        Some("editor") => editor_category_descriptor(),
         Some("site") => CategoryDescriptor {
             key: "site",
             title: "Static Site",
@@ -1945,6 +1954,11 @@ fn config_path_description(path: &str) -> String {
         "strict_line_breaks" => "Mirror Obsidian's strict line break behavior when rendering Markdown.".to_string(),
         "export.profiles.<name>.evaluate" => "Evaluate Dataview, Tasks, Bases, and note embeds in markdown, json, zip, and sqlite exports, after content transforms, under the selected profile.".to_string(),
         "export.profiles.<name>.dataview_js" => "DataviewJS policy when `evaluate` is set: `off`, `static`, or `on`; defaults to `dataview.render_dataview_js`. `on` needs the vault to be trusted (`vulcan trust`).".to_string(),
+        "editor.diagnose_unsupported_syntax" => "Report syntax Vulcan cannot interpret (for example DataviewJS in a build without JavaScript) as editor diagnostics.".to_string(),
+        "editor.diagnostic_delay_ms" => "Milliseconds of quiet after an edit before `vulcan lsp` recomputes the buffer's diagnostics.".to_string(),
+        "editor.code_lens" => "Show a backlink-count code lens at the top of each note in editors.".to_string(),
+        "editor.inlay_hints" => "Show editor inlay hints, such as how far off an open task's due date is.".to_string(),
+        "editor.semantic_tokens" => "Provide editor semantic tokens for links, embeds, tags, inline fields, and block ids (unresolved links are marked).".to_string(),
         "dataview.render_dataview_js" => "DataviewJS policy for `render`, `note get`, `daily show`, browse previews, editors, MCP `note_get`, and evaluated exports when no explicit `--dataviewjs` is given: `off` leaves a notice, `static` runs blocks deterministically in the strict sandbox, `on` uses the configured sandbox tier but only in a vault trusted with `vulcan trust` (else `static`). Unset: `on` in trusted vaults, `static` elsewhere. Rendering never writes.".to_string(),
         "folder_notes.placement" => "Choose whether a folder note lives inside its folder or beside it in the parent folder.".to_string(),
         "folder_notes.name" => "Set the exact folder-note stem/template; `{{folder_name}}` expands to the folder's basename.".to_string(),

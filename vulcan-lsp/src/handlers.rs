@@ -60,6 +60,8 @@ pub(crate) fn handle(
         }
         "vulcan/render" => params(request).and_then(|p| render(session, &p, dataview_js)),
         "vulcan/outline" => params(request).map(|p| outline(session, &p)),
+        request::CodeLensRequest::METHOD => params(request).and_then(|p| code_lenses(session, &p)),
+        request::InlayHintRequest::METHOD => params(request).map(|p| inlay_hints(session, &p)),
         "vulcan/backlinks" => params(request).and_then(|p| backlinks(session, &p)),
         method => Err(ResponseFailure::method_not_found(method)),
     };
@@ -161,6 +163,52 @@ fn prepare_rename(session: &EditorSession, params: &lsp::TextDocumentPositionPar
             placeholder: target.placeholder,
         })
     }))
+}
+
+fn code_lenses(session: &EditorSession, params: &lsp::CodeLensParams) -> Answer {
+    let Some(path) = vault_path(session, &params.text_document.uri) else {
+        return Ok(Value::Null);
+    };
+    let lenses = session
+        .code_lenses(&path)?
+        .into_iter()
+        .map(|lens| lsp::CodeLens {
+            range: convert::lsp_range(lens.range),
+            command: Some(lsp::Command {
+                title: lens.title,
+                // Clients map this to their references view (vulcan.nvim
+                // registers it); others show the lens as plain text.
+                command: "vulcan.showBacklinks".to_string(),
+                arguments: Some(vec![serde_json::json!(params.text_document.uri.as_str())]),
+            }),
+            data: None,
+        })
+        .collect::<Vec<_>>();
+    Ok(to_value(lenses))
+}
+
+fn inlay_hints(session: &EditorSession, params: &lsp::InlayHintParams) -> Value {
+    let Some(path) = vault_path(session, &params.text_document.uri) else {
+        return Value::Null;
+    };
+    let today = vulcan_app::periodic::current_local_date_string();
+    let range = convert::range(params.range);
+    let hints = session
+        .inlay_hints(&path, &today)
+        .into_iter()
+        .filter(|hint| range.start <= hint.position && hint.position <= range.end)
+        .map(|hint| lsp::InlayHint {
+            position: convert::lsp_position(hint.position),
+            label: lsp::InlayHintLabel::String(hint.label),
+            kind: None,
+            text_edits: None,
+            tooltip: None,
+            padding_left: Some(true),
+            padding_right: None,
+            data: None,
+        })
+        .collect::<Vec<_>>();
+    to_value(hints)
 }
 
 /// Parameters naming one document.

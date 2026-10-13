@@ -1176,3 +1176,54 @@ fn diagnostics_on_fixture_vaults_use_doctor_categories() {
         issue.line.map(|line| line as u64)
     );
 }
+
+#[test]
+fn code_lenses_count_backlinks_and_inlay_hints_show_due_dates() {
+    let dir = vault(&[
+        (
+            "Home.md",
+            "# Home\n- [ ] due 📅 2000-01-01\n- [x] done 📅 2000-01-01\n",
+        ),
+        ("A.md", "[[Home]]\n"),
+    ]);
+    let (mut client, result) = Client::start(dir.path(), &json!({}));
+    assert!(result["capabilities"]["codeLensProvider"].is_object());
+    assert_eq!(result["capabilities"]["inlayHintProvider"], true);
+    client.open(
+        "Home.md",
+        "# Home\n- [ ] due 📅 2000-01-01\n- [x] done 📅 2000-01-01\n",
+    );
+    let _ = client.diagnostics("Home.md");
+    let document = json!({ "uri": client.uri("Home.md") });
+
+    let lenses = client.request("textDocument/codeLens", json!({ "textDocument": document }));
+    assert_eq!(lenses[0]["command"]["title"], "1 backlink");
+    assert_eq!(lenses[0]["command"]["command"], "vulcan.showBacklinks");
+
+    let hints = client.request(
+        "textDocument/inlayHint",
+        json!({ "textDocument": document, "range": {
+            "start": { "line": 0, "character": 0 }, "end": { "line": 10, "character": 0 },
+        }}),
+    );
+    let hints = hints.as_array().unwrap();
+    assert_eq!(hints.len(), 1, "{hints:?}");
+    assert!(hints[0]["label"]
+        .as_str()
+        .unwrap()
+        .starts_with("overdue by "));
+    assert_eq!(hints[0]["position"]["line"], 1);
+}
+
+#[test]
+fn editor_config_turns_features_off() {
+    let dir = vault(&[("Home.md", "# Home\n")]);
+    std::fs::write(
+        dir.path().join(".vulcan/config.toml"),
+        "[editor]\ncode_lens = false\ninlay_hints = false\n",
+    )
+    .unwrap();
+    let (_client, result) = Client::start(dir.path(), &json!({}));
+    assert!(result["capabilities"]["codeLensProvider"].is_null());
+    assert!(result["capabilities"]["inlayHintProvider"].is_null());
+}

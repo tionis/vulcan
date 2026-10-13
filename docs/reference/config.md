@@ -1067,6 +1067,26 @@ Named export profiles stored in config and managed by dedicated export commands.
   Preferred command: `vulcan export profile set`
   Example: `vulcan export profile create team-book --format epub 'from notes' -o exports/team.epub`
 
+### Editor
+
+Defaults for editors connected through `vulcan lsp`.
+
+- `editor.code_lens` — type: `boolean`; target: `shared|local`; default: `true`
+  Show a backlink-count code lens at the top of each note in editors.
+  Example: `vulcan config set editor.code_lens <value>`
+- `editor.diagnose_unsupported_syntax` — type: `boolean`; target: `shared|local`; default: `true`
+  Report syntax Vulcan cannot interpret (for example DataviewJS in a build without JavaScript) as editor diagnostics.
+  Example: `vulcan config set editor.diagnose_unsupported_syntax <value>`
+- `editor.diagnostic_delay_ms` — type: `integer`; target: `shared|local`; default: `200`
+  Milliseconds of quiet after an edit before `vulcan lsp` recomputes the buffer's diagnostics.
+  Example: `vulcan config set editor.diagnostic_delay_ms <value>`
+- `editor.inlay_hints` — type: `boolean`; target: `shared|local`; default: `true`
+  Show editor inlay hints, such as how far off an open task's due date is.
+  Example: `vulcan config set editor.inlay_hints <value>`
+- `editor.semantic_tokens` — type: `boolean`; target: `shared|local`; default: `true`
+  Provide editor semantic tokens for links, embeds, tags, inline fields, and block ids (unresolved links are marked).
+  Example: `vulcan config set editor.semantic_tokens <value>`
+
 ### Folder Notes
 
 Explicit folder-note placement and filename convention used across Vulcan.

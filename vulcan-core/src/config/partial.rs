@@ -13,6 +13,7 @@ pub(super) struct PartialVulcanConfig {
     pub(super) git: Option<PartialGitConfig>,
     pub(super) sync: Option<PartialSyncConfig>,
     pub(super) inbox: Option<PartialInboxConfig>,
+    pub(super) editor: Option<PartialEditorConfig>,
     pub(super) tasks: Option<PartialTasksConfig>,
     pub(super) tasknotes: Option<PartialTaskNotesConfig>,
     pub(super) kanban: Option<PartialKanbanConfig>,
@@ -119,6 +120,15 @@ pub(super) struct PartialSyncConfig {
     pub(super) merge_automation: Option<MergeAutomation>,
     pub(super) agent_auto_accept: Option<bool>,
     pub(super) tree_validation: Option<SyncTreeValidationConfig>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct PartialEditorConfig {
+    pub(super) diagnose_unsupported_syntax: Option<bool>,
+    pub(super) diagnostic_delay_ms: Option<u64>,
+    pub(super) code_lens: Option<bool>,
+    pub(super) inlay_hints: Option<bool>,
+    pub(super) semantic_tokens: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]

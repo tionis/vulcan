@@ -85,6 +85,13 @@ end
 check(inline, 'inline expression value appears at the end of its line')
 check(block, 'tasks block results appear as virtual lines')
 
+local lens = vulcan.client():request_sync('textDocument/codeLens', { textDocument = { uri = vim.uri_from_bufnr(0) } }, 5000, 0)
+check(lens and lens.result and lens.result[1] and lens.result[1].command.title == '0 backlinks', 'the backlink code lens is served')
+if vim.lsp.codelens.is_enabled then
+  check(vim.lsp.codelens.is_enabled({ bufnr = 0 }), 'code lenses are enabled')
+end
+check(vim.lsp.inlay_hint.is_enabled({ bufnr = 0 }), 'inlay hints are enabled')
+
 local listed
 require('vulcan.cli').json({ 'ls' }, function(values) listed = values end)
 check(wait(function() return listed ~= nil end) and vim.tbl_contains(listed, 'Home.md'), 'CLI wrapper lists notes')

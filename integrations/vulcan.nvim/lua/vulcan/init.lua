@@ -28,6 +28,10 @@ M.defaults = {
     max_lines = 30,
   },
   float = { width = 0.9, height = 0.85, border = 'rounded' },
+  -- Show the server's backlink-count lenses and due-date inlay hints (each
+  -- can also be turned off per vault with `[editor]` in `.vulcan/config.toml`).
+  codelens = true,
+  inlay_hints = true,
   keymaps = {
     notes = '<leader>vn',
     search = '<leader>vs',
@@ -176,6 +180,32 @@ function M.setup(opts)
   M.config = vim.tbl_deep_extend('force', vim.deepcopy(M.defaults), opts or {})
   register_lsp()
   local group = vim.api.nvim_create_augroup('vulcan', { clear = true })
+  -- The backlink lens runs this client-side command.
+  vim.lsp.commands['vulcan.showBacklinks'] = function()
+    vim.lsp.buf.references({ includeDeclaration = false })
+  end
+  local function adopt(bufnr, client)
+    set_keymaps(bufnr)
+    require('vulcan.render').attach(bufnr)
+    if M.config.inlay_hints and client.server_capabilities.inlayHintProvider then
+      vim.lsp.inlay_hint.enable(true, { bufnr = bufnr })
+    end
+    if M.config.codelens and client.server_capabilities.codeLensProvider then
+      if vim.lsp.codelens.enable then
+        -- Neovim 0.12+ keeps lenses current itself.
+        vim.lsp.codelens.enable(true, { bufnr = bufnr })
+      else
+        vim.api.nvim_create_autocmd({ 'BufEnter', 'BufWritePost', 'InsertLeave' }, {
+          group = group,
+          buffer = bufnr,
+          callback = function()
+            vim.lsp.codelens.refresh({ bufnr = bufnr })
+          end,
+        })
+        vim.lsp.codelens.refresh({ bufnr = bufnr })
+      end
+    end
+  end
   vim.api.nvim_create_autocmd('LspAttach', {
     group = group,
     callback = function(args)
@@ -183,16 +213,14 @@ function M.setup(opts)
       if not client or client.name ~= M.client_name then
         return
       end
-      set_keymaps(args.buf)
-      require('vulcan.render').attach(args.buf)
+      adopt(args.buf, client)
     end,
   })
   -- A distribution (or a lazy-loaded setup) may have attached the server
   -- before this ran; adopt those buffers too.
   for _, client in ipairs(vim.lsp.get_clients({ name = M.client_name })) do
     for bufnr in pairs(client.attached_buffers) do
-      set_keymaps(bufnr)
-      require('vulcan.render').attach(bufnr)
+      adopt(bufnr, client)
     end
   end
 end

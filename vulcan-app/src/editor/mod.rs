@@ -13,6 +13,7 @@ mod commands;
 mod completion;
 mod diagnostics;
 mod edits;
+mod hints;
 mod navigation;
 mod render;
 
@@ -24,6 +25,7 @@ pub use edits::{
     inverse_changes, EditorDocumentEdit, EditorEditPlan, EditorMove, EditorRenameTarget,
     EditorTextEdit,
 };
+pub use hints::{EditorCodeLens, EditorInlayHint};
 pub use navigation::{EditorHover, EditorSymbol, EditorWorkspaceSymbol};
 pub use render::{EditorRender, EditorRenderRegion};
 

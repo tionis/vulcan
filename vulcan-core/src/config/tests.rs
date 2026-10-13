@@ -5109,3 +5109,35 @@ fn sync_tree_validation_defaults_and_rejects_invalid_percentages() {
     )
     .is_err());
 }
+
+#[test]
+fn editor_config_defaults_and_layered_overrides() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path();
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+    let defaults = load_vault_config(&VaultPaths::new(vault_root))
+        .config
+        .editor;
+    assert_eq!(defaults, crate::config::EditorConfig::default());
+    assert!(defaults.code_lens && defaults.inlay_hints && defaults.semantic_tokens);
+    assert!(defaults.diagnose_unsupported_syntax);
+    assert_eq!(defaults.diagnostic_delay_ms, 200);
+
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[editor]\ncode_lens = false\ndiagnostic_delay_ms = 500\n",
+    )
+    .expect("shared config should be written");
+    fs::write(
+        vault_root.join(".vulcan/config.local.toml"),
+        "[editor]\ndiagnostic_delay_ms = 50\ninlay_hints = false\n",
+    )
+    .expect("local config should be written");
+    let editor = load_vault_config(&VaultPaths::new(vault_root))
+        .config
+        .editor;
+    assert!(!editor.code_lens);
+    assert!(!editor.inlay_hints);
+    assert_eq!(editor.diagnostic_delay_ms, 50, "the local file wins");
+    assert!(editor.semantic_tokens);
+}

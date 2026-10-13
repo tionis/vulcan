@@ -78,6 +78,8 @@ require('vulcan').setup({
     -- watcher = 'own',        -- 'own' | 'client' | 'off'
     -- dataviewJs = nil,       -- 'off' | 'static' | 'on'; unset follows `vulcan trust`
   },
+  codelens = true,             -- backlink-count lens on each note
+  inlay_hints = true,          -- due-date hints on open tasks
   render = {
     enabled = true,
     sources = { 'inline', 'dataview', 'dataviewjs', 'tasks', 'base', 'notice' },

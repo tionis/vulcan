@@ -8383,7 +8383,7 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] `executeCommand`: `vulcan.scan`, `vulcan.note.create`, `vulcan.note.move`, `vulcan.task.toggle`, `vulcan.periodic.open` (creates the note from its template when missing and shows it), and `vulcan.template.insert` (append, prepend, or at a position; template mutations disabled)
 - [x] Custom protocol v1: `experimental.vulcan` advertisement, `vulcan/render` (inline expressions, Dataview/Tasks blocks, and `.base` embeds as regions), `vulcan/outline` and `vulcan/backlinks` (the `note outline` and `note backlinks` JSON reports), `vulcan/status`, and `vulcan/indexChanged`
 - [x] Safety defaults: DataviewJS renders in the strict sandbox for every vault and with full evaluation for vaults trusted with `vulcan trust` (shared with the CLI, MCP, browse previews, and evaluated exports through `vulcan_core::vault_dataview_js_policy`); `--permissions` checks every planned read and write, gates `vulcan.scan` on `index`, and hides unreadable notes from navigation, completion, diagnostics, and render (the CLI `properties` command now honors the read grant too); the LSP never auto-commits
-- [ ] `[editor]` config section with default and override tests (DataviewJS rendering follows `vulcan trust` instead)
+- [x] `[editor]` config section with default and override tests: `diagnose_unsupported_syntax`, `diagnostic_delay_ms`, `code_lens`, `inlay_hints`, `semantic_tokens` (DataviewJS rendering follows `vulcan trust` instead)
 - [x] Protocol-level tests: purpose-built vaults cover snapshots of every request, the open/closed split, failure paths, overlay leaving `cache.db` unchanged, encodings, concurrent processes, and DataviewJS policy; the shared `basic` and `ambiguous-links` fixture vaults check `vulcan/outline` and `vulcan/backlinks` parity with the CLI reports and diagnostics parity with `doctor`
 - [x] Add a `vulcan lsp` row to the unified-hosting inventory as a client-owned stdio transport
 
@@ -8407,9 +8407,11 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 
 - [ ] **Blocked on OBS.2:** heading and block subpath diagnostics, once OBS.2 reports them in core; the LSP only maps what the parser and resolver report
 - [ ] **Blocked on the MDB items:** mdbase schema-enum value completion
-- [ ] Inlay hints and code lens (backlink counts, due dates)
+- [x] Inlay hints and code lens: a backlink-count lens per note (refreshed after index changes) and due-date hints on open tasks
 - [ ] Extract-section code action over the note split refactor
-- [ ] Minimal-diff `TextEdit`s, semantic tokens, multi-root workspaces
+- [x] Minimal-diff `TextEdit`s (one edit per changed line)
+- [ ] Semantic tokens
+- [ ] Multi-root workspaces
 - [ ] **Blocked on 10.5:** daemon-backed note store through client routing
 - [ ] Pull-model `workspace/diagnostic`, only if requested
 

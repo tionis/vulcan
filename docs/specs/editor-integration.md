@@ -297,13 +297,24 @@ with template mutations disabled and follows the existing template trust rules.
 - `workspace/executeCommand`: `vulcan.scan`, `vulcan.note.create`, `vulcan.note.move`,
   `vulcan.task.toggle`, `vulcan.periodic.open`, `vulcan.template.insert`, `vulcan.capture`.
 
+### Beyond the MVP
+
+- `textDocument/codeLens`: a lens on the first line counting the notes that link here, running the
+  client-side command `vulcan.showBacklinks` (vulcan.nvim maps it to references). The server asks
+  clients that support it to refresh lenses and inlay hints after every index change.
+- `textDocument/inlayHint`: how far off each open task's due date is (`due today`, `due in 3 days`,
+  `overdue by 2 days`), from a Tasks `📅` marker or a `due::` field, using the local date.
+- `[editor]` in `.vulcan/config.toml` (or the device-local `config.local.toml`, which wins):
+  `diagnose_unsupported_syntax`, `diagnostic_delay_ms` (200), `code_lens`, `inlay_hints`, and
+  `semantic_tokens`, all on by default; a feature that is off is not advertised.
+- Minimal-diff `TextEdit`s (one per changed line).
+
 ### Later
 
-Inlay hints and code lens (backlink counts, due dates); mdbase schema-enum value completion (after
-the MDB items land); heading and block subpath diagnostics (owned by OBS.2 in `vulcan-core`; the
-LSP only maps what the parser and resolver report); extract-section (reusing the note split
-refactor); semantic tokens; minimal-diff `TextEdit`s; multi-root workspaces; daemon-backed store;
-pull-model `workspace/diagnostic`, only if users ask for it.
+mdbase schema-enum value completion (after the MDB items land); heading and block subpath
+diagnostics (owned by OBS.2 in `vulcan-core`; the LSP only maps what the parser and resolver
+report); extract-section (reusing the note split refactor); semantic tokens; multi-root
+workspaces; daemon-backed store; pull-model `workspace/diagnostic`.
 
 ### Explicitly not exposed over LSP
 
@@ -345,8 +356,8 @@ Errors use LSP `ResponseError` with `data: { kind, detail }`, reusing the compan
   `permissions` profile, `dataviewJs` preference, `autoCommit`, `watcher` (`own` | `client` | `off`),
   `diagnostics` (`onChange` | `onSave`), `completion.linkStyle`.
 - **Vault semantics** stay in `.vulcan/config.toml` and the device-local `.vulcan/config.local.toml`
-  (higher precedence). An `[editor]` section for defaults such as `diagnose_unsupported_syntax`
-  is not implemented yet; `DataviewJS` rendering follows `vulcan trust` instead of configuration.
+  (higher precedence). Their `[editor]` section holds editor defaults (see "Beyond the MVP");
+  `DataviewJS` rendering follows `vulcan trust` instead of configuration.
 - **Vault discovery.** The MVP runs one process per vault; Neovim already starts one client per
   `root_dir`. Root markers are `.vulcan/`, `.vulcan.toml`, and `.obsidian/`. The server resolves the
   folder with `discover_vault_root`, so 9.39 repository pointers and MkDocs layouts work unchanged.

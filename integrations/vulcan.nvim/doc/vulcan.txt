@@ -29,6 +29,8 @@ verify the setup.
     binary = 'vulcan',
     root_markers = { '.vulcan', '.vulcan.toml', '.obsidian' },
     init_options = {},
+    codelens = true,
+    inlay_hints = true,
     render = { enabled = true, max_lines = 30,
       sources = { 'inline', 'dataview', 'dataviewjs', 'tasks', 'base', 'notice' } },
     keymaps = { notes = '<leader>vn', search = '<leader>vs', tags = '<leader>vt',
@@ -40,6 +42,10 @@ verify the setup.
 and `dataviewJs` ("off", "static", "on"). Unset, `dataviewjs` blocks run in
 the strict sandbox, with full evaluation for vaults trusted with
 `vulcan trust`; "on" falls back to the sandbox in untrusted vaults.
+
+`codelens` shows a backlink count above each note (select it to list the
+references); `inlay_hints` shows how far off each open task's due date is.
+The vault's `[editor]` config can turn either off on the server side.
 
 ==============================================================================
 3. COMMANDS                                                   *vulcan-commands*

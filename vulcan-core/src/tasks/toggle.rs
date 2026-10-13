@@ -193,6 +193,30 @@ fn next_occurrence_line(
     Some(next_line)
 }
 
+/// The due date (`YYYY-MM-DD`) written on a task line, from a Tasks `📅`
+/// marker or a Dataview `[due:: ...]` / `(due:: ...)` field.
+#[must_use]
+pub fn task_line_due_date(line: &str) -> Option<String> {
+    if let Some((_, _, date)) = marker_date(line, &["📅", "📆", "🗓️", "🗓"]) {
+        return Some(date);
+    }
+    let lower = line.to_ascii_lowercase();
+    let at = lower.find("due::")?;
+    let value = line[at + "due::".len()..]
+        .trim_start()
+        .split(|c: char| c.is_whitespace() || c == ']' || c == ')')
+        .next()?;
+    date_ms(value)?;
+    Some(value.to_string())
+}
+
+/// Whole days from `today` to `date` (both `YYYY-MM-DD`): negative when
+/// `date` is past.
+#[must_use]
+pub fn days_between(today: &str, date: &str) -> Option<i64> {
+    Some((date_ms(date)? - date_ms(today)?) / DAY_MS)
+}
+
 /// The byte range, marker, and value of the first date after any marker.
 fn marker_date(line: &str, markers: &[&str]) -> Option<(std::ops::Range<usize>, String, String)> {
     markers.iter().find_map(|marker| {
@@ -373,6 +397,25 @@ mod tests {
             complete_inline_task_line(line, &statuses, "2026-10-12", RecurrencePlacement::Above)
         })
         .is_none());
+    }
+
+    #[test]
+    fn reads_due_dates_from_markers_and_fields() {
+        assert_eq!(
+            task_line_due_date("- [ ] a 📅 2026-10-14").as_deref(),
+            Some("2026-10-14")
+        );
+        assert_eq!(
+            task_line_due_date("- [ ] a [due:: 2026-10-15]").as_deref(),
+            Some("2026-10-15")
+        );
+        assert_eq!(
+            task_line_due_date("- [ ] a (due:: 2026-10-16) x").as_deref(),
+            Some("2026-10-16")
+        );
+        assert_eq!(task_line_due_date("- [ ] a ⏳ 2026-10-14"), None);
+        assert_eq!(days_between("2026-10-13", "2026-10-16"), Some(3));
+        assert_eq!(days_between("2026-10-13", "2026-10-11"), Some(-2));
     }
 
     #[test]

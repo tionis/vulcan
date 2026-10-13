@@ -28,8 +28,8 @@ pub use recurrence::{
     task_upcoming_occurrences, TaskRecurrence,
 };
 pub use toggle::{
-    apply_inline_task_toggle, complete_inline_task_line, toggle_inline_task_line, InlineTaskToggle,
-    RecurrencePlacement,
+    apply_inline_task_toggle, complete_inline_task_line, days_between, task_line_due_date,
+    toggle_inline_task_line, InlineTaskToggle, RecurrencePlacement,
 };
 
 #[derive(Debug)]

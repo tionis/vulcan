@@ -305,6 +305,36 @@ impl Default for GitConfig {
     }
 }
 
+/// Defaults for editors connected through `vulcan lsp`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)] // independent on/off switches, as in the TOML
+pub struct EditorConfig {
+    /// Report syntax Vulcan cannot interpret (for example `DataviewJS` in a
+    /// build without JavaScript) as editor diagnostics.
+    pub diagnose_unsupported_syntax: bool,
+    /// Quiet time after an edit before its diagnostics are recomputed.
+    pub diagnostic_delay_ms: u64,
+    /// Show a backlink-count code lens at the top of each note.
+    pub code_lens: bool,
+    /// Show inlay hints, such as how far off an open task's due date is.
+    pub inlay_hints: bool,
+    /// Provide semantic tokens for links, embeds, tags, inline fields, and
+    /// block ids.
+    pub semantic_tokens: bool,
+}
+
+impl Default for EditorConfig {
+    fn default() -> Self {
+        Self {
+            diagnose_unsupported_syntax: true,
+            diagnostic_delay_ms: 200,
+            code_lens: true,
+            inlay_hints: true,
+            semantic_tokens: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InboxConfig {
     pub path: String,
@@ -2530,6 +2560,8 @@ pub struct VaultConfig {
     #[serde(default, skip_serializing_if = "SyncConfig::is_default")]
     pub sync: SyncConfig,
     pub inbox: InboxConfig,
+    #[serde(default)]
+    pub editor: EditorConfig,
     pub tasks: TasksConfig,
     pub tasknotes: TaskNotesConfig,
     pub kanban: KanbanConfig,
@@ -2570,6 +2602,7 @@ impl Default for VaultConfig {
             git: GitConfig::default(),
             sync: SyncConfig::default(),
             inbox: InboxConfig::default(),
+            editor: EditorConfig::default(),
             tasks: TasksConfig::default(),
             tasknotes: TaskNotesConfig::default(),
             kanban: KanbanConfig::default(),
@@ -4412,6 +4445,23 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
         if let Some(tree_validation) = sync.tree_validation {
             config.sync.tree_validation = tree_validation;
+        }
+    }
+    if let Some(editor) = overrides.editor {
+        if let Some(value) = editor.diagnose_unsupported_syntax {
+            config.editor.diagnose_unsupported_syntax = value;
+        }
+        if let Some(value) = editor.diagnostic_delay_ms {
+            config.editor.diagnostic_delay_ms = value;
+        }
+        if let Some(value) = editor.code_lens {
+            config.editor.code_lens = value;
+        }
+        if let Some(value) = editor.inlay_hints {
+            config.editor.inlay_hints = value;
+        }
+        if let Some(value) = editor.semantic_tokens {
+            config.editor.semantic_tokens = value;
         }
     }
     if let Some(inbox) = overrides.inbox {
