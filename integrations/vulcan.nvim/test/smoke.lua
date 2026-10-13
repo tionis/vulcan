@@ -87,7 +87,8 @@ end
 check(inline, 'inline expression value appears at the end of its line')
 check(block, 'tasks block results appear as virtual lines')
 
-local lens = vulcan.client():request_sync('textDocument/codeLens', { textDocument = { uri = vim.uri_from_bufnr(0) } }, 5000, 0)
+local lenses = vim.lsp.buf_request_sync(0, 'textDocument/codeLens', { textDocument = { uri = vim.uri_from_bufnr(0) } }, 5000) or {}
+local lens = lenses[vulcan.client().id]
 check(lens and lens.result and lens.result[1] and lens.result[1].command.title == '0 backlinks', 'the backlink code lens is served')
 if vim.lsp.codelens.is_enabled then
   check(vim.lsp.codelens.is_enabled({ bufnr = 0 }), 'code lenses are enabled')
@@ -103,7 +104,16 @@ local function token_types()
   end
   return types
 end
-check(wait(function() return token_types()['@lsp.typemod.wikiLink.unresolved.markdown'] end), 'an unresolved link gets a semantic token')
+local served = vim.lsp.buf_request_sync(0, 'textDocument/semanticTokens/full', { textDocument = { uri = vim.uri_from_bufnr(0) } }, 5000) or {}
+local data = (served[vulcan.client().id] or {}).result
+data = data and data.data or {}
+-- The first token is `[[Missing]]`: a wikiLink (type 0) marked unresolved (bit 1).
+check(data[1] == see - 1 and data[4] == 0 and data[5] == 1, 'an unresolved link gets a semantic token')
+-- Neovim 0.10 draws tokens only on redraw, which a headless run lacks; 0.12
+-- applies them without one.
+if vim.fn.has('nvim-0.12') == 1 then
+  check(wait(function() return token_types()['@lsp.typemod.wikiLink.unresolved.markdown'] end), 'the unresolved link is highlighted')
+end
 
 if vim.lsp.buf.workspace_diagnostics then
   require('vulcan.commands').problems()
@@ -211,6 +221,6 @@ end
 vim.fn.delete(vault, 'rf')
 if failures > 0 then
   print(('%d check(s) failed'):format(failures))
-  vim.cmd.cquit(1)
+  vim.cmd('cquit 1')
 end
 print('all checks passed')
