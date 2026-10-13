@@ -21,6 +21,9 @@ struct Client {
     /// `workspace/applyEdit`, which is answered with `accept_edits`.
     server_requests: Vec<Request>,
     accept_edits: bool,
+    /// Report file renames as applied without performing them, like an
+    /// editor whose rename failed silently.
+    skip_renames: bool,
     root: std::path::PathBuf,
 }
 
@@ -63,6 +66,7 @@ impl Client {
             notifications: Vec::new(),
             server_requests: Vec::new(),
             accept_edits: true,
+            skip_renames: false,
             root: root.to_path_buf(),
         };
         let result = client.request("initialize", initialize);
@@ -108,7 +112,7 @@ impl Client {
             }
             Message::Request(request) => {
                 let result = if request.method == "workspace/applyEdit" {
-                    if self.accept_edits {
+                    if self.accept_edits && !self.skip_renames {
                         // Like an editor, perform file renames on disk.
                         for change in request.params["edit"]["documentChanges"]
                             .as_array()
@@ -1490,4 +1494,28 @@ fn index_changes_after_a_move_name_the_moved_note() {
         changed.params["renames"],
         json!([{ "from": "Home.md", "to": "archive/Home.md" }])
     );
+}
+
+#[test]
+fn a_move_the_editor_claims_but_does_not_perform_is_undone() {
+    let dir = rename_vault();
+    let (mut client, _) = Client::start(dir.path(), &editing_client());
+    client.open("notes/Alpha.md", "# Alpha\n\n## Status\n\nGreen.\n");
+    let _ = client.diagnostics("notes/Alpha.md");
+    client.skip_renames = true;
+    let response = client.request(
+        "workspace/executeCommand",
+        json!({ "command": "vulcan.note.move", "arguments": [{
+            "from": "notes/Alpha.md", "to": "deep/new/Alpha.md",
+        }]}),
+    );
+    assert_eq!(response["data"]["kind"], "conflict", "{response}");
+    // Links elsewhere still point at the note where it is, and the
+    // folders made for the move are gone.
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Home.md")).unwrap(),
+        LINKER
+    );
+    assert!(dir.path().join("notes/Alpha.md").exists());
+    assert!(!dir.path().join("deep").exists());
 }

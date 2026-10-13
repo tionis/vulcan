@@ -204,7 +204,9 @@ and create are part of the journaled batch, with a rename hint so the document k
 identity. A note open in the editor is moved by the editor through a `RenameFile` operation at the
 end of the same `workspace/applyEdit` (after any edits to it, addressed by its old URI), because
 that is the only standard way for an LSP client to re-point its buffer; the server then indexes
-the rename with a hint. (An earlier draft had the server always move the file and rely on a plugin
+the rename with a hint. The server creates missing destination folders first (Vim's `rename()`, used by
+yegappan/lsp, does not), and checks on disk that the rename happened: an editor that answers
+`applied` without moving the file gets the same rollback as one that rejects the edit. (An earlier draft had the server always move the file and rely on a plugin
 to re-point buffers; generic clients would keep editing, and could re-save, the old path.)
 
 **Client-initiated renames** (`workspace/willRenameFiles`, sent by file explorers before they

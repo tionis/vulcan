@@ -355,6 +355,12 @@ fn execute(
     }
 
     let edit = json!({ "documentChanges": document_changes(session, plan)? });
+    // Not every editor creates missing folders for a `RenameFile` (Vim's
+    // rename() does not), so make the destination's folder exist first.
+    let created_folder = plan
+        .editor_rename
+        .as_ref()
+        .and_then(|rename| create_parent(session, &rename.to));
     let applied = context
         .client
         .call(
@@ -362,8 +368,16 @@ fn execute(
             json!({ "label": label(plan), "edit": edit }),
         )
         .and_then(|response| response.response_result.ok())
-        .is_some_and(|result| result["applied"] == json!(true));
+        .is_some_and(|result| result["applied"] == json!(true))
+        // Some editors report success for a rename that failed.
+        && plan
+            .editor_rename
+            .as_ref()
+            .is_none_or(|rename| renamed_on_disk(session, rename));
     if !applied {
+        if let Some((parent, topmost)) = created_folder {
+            remove_created_folders(&parent, &topmost);
+        }
         let (inverse, renames) = inverse_changes(&plan.disk, &plan.disk_renames);
         let restored = plan
             .disk
@@ -397,6 +411,47 @@ fn execute(
     }
     record_move();
     Ok(())
+}
+
+/// Create the missing folders above `path` (vault-relative). Returns the
+/// parent folder and the topmost folder created, so a failed move can
+/// remove them again.
+fn create_parent(
+    session: &EditorSession,
+    path: &str,
+) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let parent = session
+        .paths()
+        .vault_root()
+        .join(path)
+        .parent()?
+        .to_path_buf();
+    let mut topmost = None;
+    let mut ancestor = parent.as_path();
+    while !ancestor.exists() {
+        topmost = Some(ancestor.to_path_buf());
+        ancestor = ancestor.parent()?;
+    }
+    std::fs::create_dir_all(&parent).ok()?;
+    topmost.map(|topmost| (parent, topmost))
+}
+
+/// Remove the folders `create_parent` made, deepest first, stopping at
+/// the first that is not empty.
+fn remove_created_folders(parent: &std::path::Path, topmost: &std::path::Path) {
+    let mut folder = parent;
+    while std::fs::remove_dir(folder).is_ok() && folder != topmost {
+        let Some(next) = folder.parent() else {
+            return;
+        };
+        folder = next;
+    }
+}
+
+/// Whether the editor's rename of an open note happened.
+fn renamed_on_disk(session: &EditorSession, rename: &EditorMove) -> bool {
+    let root = session.paths().vault_root();
+    root.join(&rename.to).exists() && !root.join(&rename.from).exists()
 }
 
 /// The plan's editor part as LSP `documentChanges`: versioned text edits,
