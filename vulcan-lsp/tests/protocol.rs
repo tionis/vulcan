@@ -1434,6 +1434,24 @@ fn workspace_folders_in_several_vaults_get_a_server_each() {
         json!(uri(&second.path().join("Note.md")))
     );
 
+    // Requests about a document, and commands naming one, reach its vault.
+    let status = client.request(
+        "vulcan/status",
+        json!({ "textDocument": { "uri": uri(&second.path().join("Note.md")) } }),
+    );
+    assert_eq!(status["vault"], json!(second.path()));
+    let captured = client.request(
+        "workspace/executeCommand",
+        json!({ "command": "vulcan.capture", "arguments": [{
+            "text": "an idea", "uri": uri(&second.path().join("Note.md")),
+        }]}),
+    );
+    assert_eq!(captured["dryRun"], false, "{captured}");
+    assert!(!first.path().join("Inbox.md").exists());
+    assert!(std::fs::read_to_string(second.path().join("Inbox.md"))
+        .unwrap()
+        .contains("an idea"));
+
     // Folders can be added later, and removed.
     client.notify(
         "workspace/didChangeWorkspaceFolders",

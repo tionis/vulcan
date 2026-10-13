@@ -13,7 +13,8 @@ end
 --- @param period string `daily`, `weekly`, `monthly`, ...
 --- @param date? string `YYYY-MM-DD` or another date the CLI understands
 function M.periodic(period, date)
-  vulcan.execute('vulcan.periodic.open', { period = period, date = date }, function(result)
+  -- `uri` names the vault when the editor has several open.
+  vulcan.execute('vulcan.periodic.open', { period = period, date = date, uri = current_uri() }, function(result)
     -- Editors without `window/showDocument` get no automatic jump.
     local path = result and result.report and result.report.path
     if path and vim.fs.normalize(vim.api.nvim_buf_get_name(0)) ~= vim.fs.normalize(vim.fs.joinpath(vulcan.vault_root(), path)) then
@@ -87,7 +88,7 @@ end
 function M.capture(text)
   local function run(value)
     if value and value ~= '' then
-      vulcan.execute('vulcan.capture', { text = value }, function(result)
+      vulcan.execute('vulcan.capture', { text = value, uri = current_uri() }, function(result)
         local path = result and result.report and result.report.path
         if path then
           vim.notify('vulcan: captured to ' .. path)
@@ -178,7 +179,7 @@ end
 
 --- Show the server's status.
 function M.status()
-  vulcan.request('vulcan/status', {}, function(err, result)
+  vulcan.request('vulcan/status', { textDocument = { uri = current_uri() } }, function(err, result)
     if err then
       vim.notify('vulcan: ' .. err.message, vim.log.levels.ERROR)
       return

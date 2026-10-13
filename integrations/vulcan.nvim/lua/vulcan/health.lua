@@ -83,10 +83,10 @@ function M.check()
 
   local response
   if vim.fn.has('nvim-0.11') == 1 then
-    response = client:request_sync('vulcan/status', {}, 2000, bufnr)
+    response = client:request_sync('vulcan/status', { textDocument = { uri = vim.uri_from_bufnr(bufnr) } }, 2000, bufnr)
   else
     ---@diagnostic disable-next-line: param-type-mismatch
-    response = client.request_sync('vulcan/status', {}, 2000, bufnr)
+    response = client.request_sync('vulcan/status', { textDocument = { uri = vim.uri_from_bufnr(bufnr) } }, 2000, bufnr)
   end
   local status = response and response.result
   if not status then

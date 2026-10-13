@@ -390,7 +390,9 @@ Errors use LSP `ResponseError` with `data: { kind, detail }`, reusing the compan
   containing it; files outside every vault go to the first). `workspace/symbol`,
   `workspace/diagnostic` (with `previousResultIds` split per vault), `workspace/willRenameFiles`,
   `vulcan.scan`, and `shutdown` fan out and merge; other commands go to the vault of their
-  `path`/`from`/`uri` argument, else the first vault. Requests the vault servers send the client get
+  `path`/`from`/`uri` argument, else the first vault, and requests to the vault of their
+  `textDocument`. vulcan.nvim passes the current buffer as `uri` to `vulcan.periodic.open` and
+  `vulcan.capture`, and as `textDocument` to `vulcan/status`, so those act on the buffer's vault. Requests the vault servers send the client get
   fresh ids, and their progress tokens and registration ids get a `#<n>` suffix so vaults never
   collide. Only then does the server advertise `workspace.workspaceFolders.changeNotifications`, and
   `didChangeWorkspaceFolders` starts and stops vault servers (the last one stays). A single vault is
