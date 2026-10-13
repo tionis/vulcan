@@ -312,6 +312,12 @@ with template mutations disabled and follows the existing template trust rules.
   vault is indexed. External links are left to the syntax highlighter, and tokens never span lines.
   After an index change, clients that support it are asked to refresh. vulcan.nvim links each type
   to a treesitter group by default and dims unresolved links (`DiagnosticUnnecessary`).
+- `workspace/diagnostic`: the same checks as for open documents, run on closed notes the index
+  reports problems in (read from disk, skipping notes the permission profile hides). Open documents
+  stay push-only; `textDocument/diagnostic` returns an empty report so clients do not show them
+  twice. A note reported before and now clean or open gets an empty report. Because Neovim re-pulls
+  the whole vault on `workspace/diagnostic/refresh`, the server sends that refresh only after the
+  client has pulled workspace diagnostics once.
 - Minimal-diff `TextEdit`s (one per changed line).
 
 ### Later
@@ -319,7 +325,7 @@ with template mutations disabled and follows the existing template trust rules.
 mdbase schema-enum value completion (after the MDB items land); heading and block subpath
 diagnostics (owned by OBS.2 in `vulcan-core`; the LSP only maps what the parser and resolver
 report); extract-section (reusing the note split refactor); multi-root
-workspaces; daemon-backed store; pull-model `workspace/diagnostic`.
+workspaces; daemon-backed store.
 
 ### Explicitly not exposed over LSP
 

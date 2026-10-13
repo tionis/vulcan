@@ -75,6 +75,9 @@ treesitter groups and `@lsp.mod.unresolved.markdown` to
 :Vulcan scan[!]           Rescan the vault; with ! rebuild every document.
 :Vulcan render            Toggle query results for the current buffer.
 :Vulcan doctor            Load `vulcan doctor` problems into the quickfix list.
+:Vulcan problems          Show problems in every note as |vim.diagnostic|
+                          entries, kept current as the index changes
+                          (Neovim 0.12+; falls back to `doctor`).
 :Vulcan status            Show cache and watcher state.
 :Vulcan browse            Open the note browser in a floating terminal.
 :Vulcan bases [file]      Open the Bases TUI for a `.base` file.

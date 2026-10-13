@@ -8413,7 +8413,7 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Semantic tokens: links, embeds, tags, inline-field keys, and block ids, with unresolved and ambiguous modifiers
 - [ ] Multi-root workspaces
 - [ ] **Blocked on 10.5:** daemon-backed note store through client routing
-- [ ] Pull-model `workspace/diagnostic`, only if requested
+- [x] Pull-model `workspace/diagnostic`: closed notes with indexed problems, re-diagnosed from disk; open notes stay push-only, and refreshes start only after a client first pulls (`:Vulcan problems`)
 
 ---
 

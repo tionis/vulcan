@@ -1250,3 +1250,75 @@ fn semantic_tokens_mark_unresolved_links() {
         json!([0, 0, 8, 0, 0, 0, 9, 8, 0, 1, 1, 0, 4, 3, 0])
     );
 }
+
+#[test]
+fn workspace_diagnostics_report_closed_notes() {
+    let dir = vault(&[
+        ("Home.md", "# Home\n"),
+        ("Broken.md", "ok\n[[Gone]]\n"),
+        ("Open.md", "[[Gone]]\n"),
+    ]);
+    let (mut client, result) = Client::start(dir.path(), &json!({}));
+    assert_eq!(
+        result["capabilities"]["diagnosticProvider"]["workspaceDiagnostics"],
+        true
+    );
+    client.open("Open.md", "[[Gone]]\n");
+    let pushed = client.diagnostics("Open.md");
+    assert_eq!(pushed.len(), 1);
+
+    // An open document's problems are pushed, not repeated in a pull.
+    let document = client.request(
+        "textDocument/diagnostic",
+        json!({ "textDocument": { "uri": client.uri("Open.md") } }),
+    );
+    assert_eq!(document, json!({ "kind": "full", "items": [] }));
+
+    let workspace = client.request(
+        "workspace/diagnostic",
+        json!({ "previousResultIds": [
+            { "uri": client.uri("Open.md"), "value": "vulcan" },
+        ]}),
+    );
+    let items = workspace["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "{items:?}");
+    assert_eq!(items[0]["uri"], json!(client.uri("Broken.md")));
+    assert_eq!(items[0]["items"][0]["code"], "unresolved-link");
+    assert_eq!(items[0]["items"][0]["range"]["start"]["line"], 1);
+    // Open.md was reported before and is open now: cleared.
+    assert_eq!(items[1]["uri"], json!(client.uri("Open.md")));
+    assert_eq!(items[1]["items"], json!([]));
+}
+
+#[test]
+fn workspace_diagnostics_refresh_only_after_a_pull() {
+    let dir = vault(&[("Home.md", "# Home\n")]);
+    let (mut client, _) = Client::start(
+        dir.path(),
+        &json!({ "workspace": { "diagnostic": { "refreshSupport": true } } }),
+    );
+    let _ = client.request("vulcan/status", json!({}));
+    let refreshes = |client: &Client| {
+        client
+            .server_requests
+            .iter()
+            .filter(|request| request.method == "workspace/diagnostic/refresh")
+            .count()
+    };
+    let save = |client: &mut Client, text: &str| {
+        std::fs::write(dir.path().join("Home.md"), text).unwrap();
+        client.notify(
+            "textDocument/didSave",
+            json!({ "textDocument": { "uri": client.uri("Home.md") } }),
+        );
+        let _ = client.index_changed();
+        // Replies arrive in order, after any refresh sent with the change.
+        let _ = client.request("vulcan/status", json!({}));
+    };
+
+    save(&mut client, "# Home\n[[Gone]]\n");
+    assert_eq!(refreshes(&client), 0);
+    let _ = client.request("workspace/diagnostic", json!({ "previousResultIds": [] }));
+    save(&mut client, "# Home\n");
+    assert_eq!(refreshes(&client), 1);
+}

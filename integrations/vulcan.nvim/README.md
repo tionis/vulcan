@@ -64,6 +64,7 @@ From the plugin:
 | `:Vulcan scan[!]` | Rescan the vault (`!` rebuilds) |
 | `:Vulcan render` | Toggle query results for this buffer |
 | `:Vulcan doctor` | Load `vulcan doctor` problems into the quickfix list |
+| `:Vulcan problems` | Show problems in every note as diagnostics, kept current as the index changes (Neovim 0.12+; falls back to `doctor`) |
 | `:Vulcan status` | Show the server's cache and watcher state |
 | `:Vulcan browse`, `bases [file]`, `kanban [file]` | Open Vulcan's TUIs in a floating terminal |
 

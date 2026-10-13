@@ -181,8 +181,8 @@ pub use decomposition::{
     SourceByteSpan,
 };
 pub use doctor::{
-    doctor_fix, doctor_vault, DoctorByteRange, DoctorDiagnosticIssue, DoctorError, DoctorFixAction,
-    DoctorFixReport, DoctorLinkIssue, DoctorReport, DoctorSummary,
+    doctor_fix, doctor_vault, documents_with_diagnostics, DoctorByteRange, DoctorDiagnosticIssue,
+    DoctorError, DoctorFixAction, DoctorFixReport, DoctorLinkIssue, DoctorReport, DoctorSummary,
 };
 pub use dql::{
     evaluate_dql, evaluate_dql_with_filter, evaluate_dql_with_guard, evaluate_parsed_dql,

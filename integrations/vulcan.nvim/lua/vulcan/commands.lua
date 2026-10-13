@@ -146,6 +146,23 @@ function M.doctor()
   end, root)
 end
 
+--- Load problems in every note into |vim.diagnostic| from the language
+--- server. They stay current as the index changes. Before Neovim 0.12 this
+--- falls back to |M.doctor()|.
+function M.problems()
+  local client = vulcan.client()
+  if not client then
+    vim.notify('vulcan: no language server attached to this buffer', vim.log.levels.WARN)
+    return
+  end
+  if not vim.lsp.buf.workspace_diagnostics then
+    vim.notify('vulcan: workspace diagnostics need Neovim 0.12; using :Vulcan doctor', vim.log.levels.WARN)
+    M.doctor()
+    return
+  end
+  vim.lsp.buf.workspace_diagnostics({ client_id = client.id })
+end
+
 --- Show the server's status.
 function M.status()
   vulcan.request('vulcan/status', {}, function(err, result)
@@ -212,6 +229,7 @@ local subcommands = {
   scan = function(_, bang) M.scan(bang) end,
   render = function() require('vulcan.render').toggle() end,
   doctor = function() M.doctor() end,
+  problems = function() M.problems() end,
   status = function() M.status() end,
   browse = function() M.float({ 'browse' }) end,
   bases = function(args) M.float({ 'bases', 'tui', args[1] or vim.api.nvim_buf_get_name(0) }) end,

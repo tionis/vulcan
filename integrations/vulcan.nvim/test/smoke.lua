@@ -50,6 +50,7 @@ write('Home.md', {
   'See [[Missing]] and [[Todo]].',
 })
 write('Todo.md', { '- [ ] Open item' })
+write('Stale.md', { 'Points at [[Nowhere]].' })
 write('.vulcan/config.toml', { '[periodic.daily]', 'folder = "Journal"', 'format = "YYYY-MM-DD"' })
 local function run(args)
   local result = vim.system(vim.list_extend({ binary, '--vault', vault }, args), { text = true }):wait()
@@ -102,6 +103,16 @@ local function token_types()
   return types
 end
 check(wait(function() return token_types()['@lsp.typemod.wikiLink.unresolved.markdown'] end), 'an unresolved link gets a semantic token')
+
+if vim.lsp.buf.workspace_diagnostics then
+  require('vulcan.commands').problems()
+  local stale = vim.fs.joinpath(vault, 'Stale.md')
+  local function stale_problems()
+    local bufnr = vim.fn.bufnr(stale)
+    return bufnr ~= -1 and #vim.diagnostic.get(bufnr) > 0
+  end
+  check(wait(stale_problems), 'problems in closed notes reach vim.diagnostic')
+end
 
 local listed
 require('vulcan.cli').json({ 'ls' }, function(values) listed = values end)

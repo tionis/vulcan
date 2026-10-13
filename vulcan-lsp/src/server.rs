@@ -225,6 +225,15 @@ fn capabilities(
             .editor
             .inlay_hints
             .then_some(lsp::OneOf::Left(true)),
+        // Pull diagnostics cover closed notes; open ones are pushed.
+        diagnostic_provider: Some(lsp::DiagnosticServerCapabilities::Options(
+            lsp::DiagnosticOptions {
+                identifier: Some("vulcan".to_string()),
+                inter_file_dependencies: true,
+                workspace_diagnostics: true,
+                ..lsp::DiagnosticOptions::default()
+            },
+        )),
         semantic_tokens_provider: session.config().editor.semantic_tokens.then(|| {
             lsp::SemanticTokensOptions {
                 legend: crate::handlers::semantic_token_legend(),
@@ -286,11 +295,15 @@ struct ClientFeatures {
     refresh: RefreshSupport,
 }
 
+/// One flag per client capability, so plain bools read best.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, Default)]
 struct RefreshSupport {
     code_lens: bool,
     inlay_hint: bool,
     semantic_tokens: bool,
+    diagnostics: bool,
+    workspace_diagnostics_pulled: bool,
 }
 
 impl From<&lsp::ClientCapabilities> for ClientFeatures {
@@ -327,6 +340,12 @@ impl From<&lsp::ClientCapabilities> for ClientFeatures {
                         .as_ref()
                         .and_then(|tokens| tokens.refresh_support)
                         .unwrap_or(false),
+                    diagnostics: workspace
+                        .diagnostic
+                        .as_ref()
+                        .and_then(|diagnostic| diagnostic.refresh_support)
+                        .unwrap_or(false),
+                    workspace_diagnostics_pulled: false,
                 })
                 .unwrap_or_default(),
         }
@@ -626,6 +645,11 @@ impl<'c> Server<'c> {
             });
             return;
         }
+        if request.method == "workspace/diagnostic" {
+            // Refreshing makes clients re-pull every problem in the vault,
+            // so only clients that asked for them once get refreshes.
+            self.client.refresh.workspace_diagnostics_pulled = true;
+        }
         let id = request.id.clone();
         if request.method == "vulcan/status" {
             let status = json!({
@@ -905,6 +929,10 @@ impl<'c> Server<'c> {
             (
                 refresh.semantic_tokens && editor.semantic_tokens,
                 "workspace/semanticTokens/refresh",
+            ),
+            (
+                refresh.diagnostics && refresh.workspace_diagnostics_pulled,
+                "workspace/diagnostic/refresh",
             ),
         ];
         for (enabled, method) in requests {

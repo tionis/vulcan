@@ -63,6 +63,10 @@ pub(crate) fn handle(
         "vulcan/outline" => params(request).map(|p| outline(session, &p)),
         request::CodeLensRequest::METHOD => params(request).and_then(|p| code_lenses(session, &p)),
         request::InlayHintRequest::METHOD => params(request).map(|p| inlay_hints(session, &p)),
+        request::DocumentDiagnosticRequest::METHOD => Ok(document_diagnostics()),
+        request::WorkspaceDiagnosticRequest::METHOD => {
+            params(request).and_then(|p| workspace_diagnostics(session, &p))
+        }
         request::SemanticTokensFullRequest::METHOD => {
             params(request).and_then(|p| semantic_tokens(session, &p))
         }
@@ -213,6 +217,47 @@ fn inlay_hints(session: &EditorSession, params: &lsp::InlayHintParams) -> Value 
         })
         .collect::<Vec<_>>();
     to_value(hints)
+}
+
+/// Open documents get their diagnostics pushed, debounced and aware of the
+/// link being typed, so a pull for one returns nothing rather than a copy.
+fn document_diagnostics() -> Value {
+    serde_json::json!({ "kind": "full", "items": [] })
+}
+
+/// Problems in closed notes, from the index. Notes the client saw before
+/// that are now clean (or open) get an empty report, which clears them.
+fn workspace_diagnostics(
+    session: &EditorSession,
+    params: &lsp::WorkspaceDiagnosticParams,
+) -> Answer {
+    let report = |uri: &lsp::Uri, items: Vec<lsp::Diagnostic>| {
+        serde_json::json!({
+            "kind": "full",
+            "uri": uri,
+            "version": null,
+            "resultId": "vulcan",
+            "items": items,
+        })
+    };
+    let mut reported = std::collections::HashSet::new();
+    let mut items = Vec::new();
+    for (path, diagnostics) in session.workspace_diagnostics()? {
+        let Some(uri) = uri(session, &path) else {
+            continue;
+        };
+        items.push(report(
+            &uri,
+            diagnostics.into_iter().map(convert::diagnostic).collect(),
+        ));
+        reported.insert(uri.as_str().to_string());
+    }
+    for previous in &params.previous_result_ids {
+        if !reported.contains(previous.uri.as_str()) {
+            items.push(report(&previous.uri, Vec::new()));
+        }
+    }
+    Ok(serde_json::json!({ "items": items }))
 }
 
 /// Token types follow [`EditorTokenKind::ALL`]; modifiers are bit flags.

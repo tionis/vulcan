@@ -414,6 +414,25 @@ impl DoctorReport {
     }
 }
 
+/// Paths of indexed documents with stored diagnostics (parse problems and
+/// unresolved or ambiguous links), sorted, without the full doctor walk.
+pub fn documents_with_diagnostics(paths: &VaultPaths) -> Result<Vec<String>, DoctorError> {
+    let Some(connection) = open_existing_cache(paths)? else {
+        return Ok(Vec::new());
+    };
+    let mut statement = connection.prepare(
+        "
+        SELECT DISTINCT documents.path
+        FROM diagnostics
+        JOIN documents ON documents.id = diagnostics.document_id
+        ORDER BY documents.path
+        ",
+    )?;
+    let rows = statement.query_map([], |row| row.get(0))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(DoctorError::from)
+}
+
 fn open_existing_cache(paths: &VaultPaths) -> Result<Option<Connection>, DoctorError> {
     if !paths.cache_db().exists() {
         return Ok(None);
@@ -939,6 +958,24 @@ mod tests {
                 "fixture {fixture} should be doctor-clean"
             );
         }
+    }
+
+    #[test]
+    fn lists_documents_with_stored_diagnostics() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        assert!(documents_with_diagnostics(&paths).unwrap().is_empty());
+        fs::create_dir_all(temp_dir.path().join(".vulcan")).unwrap();
+        fs::write(temp_dir.path().join("Clean.md"), "[[Linked]]\n").unwrap();
+        fs::write(temp_dir.path().join("Linked.md"), "x\n").unwrap();
+        fs::write(temp_dir.path().join("Broken.md"), "[[Gone]] [[Gone]]\n").unwrap();
+        fs::write(temp_dir.path().join("Bad.md"), "---\na: [\n---\n").unwrap();
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        assert_eq!(
+            documents_with_diagnostics(&paths).unwrap(),
+            vec!["Bad.md".to_string(), "Broken.md".to_string()]
+        );
     }
 
     #[test]
