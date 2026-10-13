@@ -1219,9 +1219,13 @@ Vim:
   itself.
 
 Helix:
-  Helix has no plugin system, so vulcan editor helix print-config prints what to merge into
-  ~/.config/helix: languages.toml registers vulcan lsp for Markdown in vaults, and config.toml
-  adds keybindings under `space v` that run the server's commands with :lsp-workspace-command.
+  Helix has no plugin system, so its integration is configuration: languages.toml registers
+  vulcan lsp for Markdown in vaults, and config.toml adds keybindings under `space v` that run the
+  server's commands with :lsp-workspace-command. vulcan editor helix install merges them into
+  ~/.config/helix in place, keeping comments and your own settings: Vulcan is added to the
+  Markdown server list, and bindings you set yourself are kept (--force takes them over). It
+  backs up each file before its first change and records what it wrote in .vulcan-helix.json, so
+  install refreshes and uninstall removes only that. print-config prints the entries instead.
 
 Plugins:
   Re-run install after updating Vulcan (self-update does it for unedited copies); :checkhealth
@@ -1233,6 +1237,7 @@ Examples:
   vulcan editor vim install --dry-run
   vulcan editor nvim install --dir ~/.config/nvim/pack/vulcan/start/vulcan.nvim
   vulcan editor vim status --output json
+  vulcan editor helix install --dry-run
   vulcan editor helix print-config --only keys
 ";
 
@@ -4528,7 +4533,9 @@ pub enum EditorCommand {
         #[command(subcommand)]
         command: EditorPluginCommand,
     },
-    #[command(about = "Print the Helix configuration for vulcan lsp and its keybindings")]
+    #[command(
+        about = "Merge, inspect, or print Helix configuration for vulcan lsp and its keybindings"
+    )]
     Helix {
         #[command(subcommand)]
         command: HelixCommand,
@@ -4547,6 +4554,43 @@ pub enum HelixCommand {
             help = "Print only one file (both by default, each under a heading comment)"
         )]
         only: Option<HelixConfigFileArg>,
+    },
+    #[command(
+        about = "Merge the entries into Helix's languages.toml and config.toml, keeping your own"
+    )]
+    Install {
+        #[arg(
+            long,
+            value_name = "DIR",
+            help = "Helix configuration directory (default: Helix's)"
+        )]
+        dir: Option<std::path::PathBuf>,
+        #[arg(long, help = "Also replace entries you set, changed, or removed")]
+        force: bool,
+        #[arg(long, help = "Show the changes as a diff without writing")]
+        dry_run: bool,
+    },
+    #[command(about = "Show which of Vulcan's entries Helix's configuration holds")]
+    Status {
+        #[arg(
+            long,
+            value_name = "DIR",
+            help = "Helix configuration directory (default: Helix's)"
+        )]
+        dir: Option<std::path::PathBuf>,
+    },
+    #[command(about = "Remove the entries Vulcan merged in")]
+    Uninstall {
+        #[arg(
+            long,
+            value_name = "DIR",
+            help = "Helix configuration directory (default: Helix's)"
+        )]
+        dir: Option<std::path::PathBuf>,
+        #[arg(long, help = "Also remove Vulcan's entries you changed since")]
+        force: bool,
+        #[arg(long, help = "Show the changes as a diff without writing")]
+        dry_run: bool,
     },
 }
 

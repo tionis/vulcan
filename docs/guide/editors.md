@@ -100,10 +100,10 @@ command! VulcanDaily execute 'edit' trim(system('vulcan --output json periodic d
 
 Helix has no plugins, so its integration,
 [`integrations/helix`](../../integrations/helix/README.md), is configuration
-the binary prints for you to merge into `~/.config/helix/`:
+the binary merges into `~/.config/helix/`, keeping your own settings:
 
 ```sh
-vulcan editor helix print-config
+vulcan editor helix install --dry-run   # preview as a diff, then without --dry-run
 ```
 
 Its `languages.toml` registers the server for Markdown and starts it only in

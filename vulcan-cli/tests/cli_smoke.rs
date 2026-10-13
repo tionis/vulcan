@@ -19001,7 +19001,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(editor_skill.contains("vulcan.section.extract"));
     assert!(editor_skill.contains("vulcan editor nvim install"));
     assert!(editor_skill.contains("vulcan editor vim install"));
-    assert!(editor_skill.contains("vulcan editor helix print-config"));
+    assert!(editor_skill.contains("vulcan editor helix install"));
     assert!(editor_skill.contains("workspace/diagnostic"));
     assert!(editor_skill.contains("full evaluation\n  follows `vulcan trust`"));
     assert!(editor_skill.contains("integrations/vulcan.nvim"));
@@ -39519,4 +39519,55 @@ fn editor_nvim_installs_and_removes_the_bundled_plugin_outside_a_vault() {
         .unwrap()
         .contains(&serde_json::json!("plugin/vulcan.lua")));
     assert!(!target.exists());
+}
+
+#[test]
+fn editor_helix_merges_reports_and_removes_its_configuration() {
+    let dir = TempDir::new().unwrap();
+    let helix = dir.path().join("helix");
+    fs::create_dir_all(&helix).unwrap();
+    fs::write(helix.join("config.toml"), "theme = \"onedark\"\n").unwrap();
+    let run = |args: &[&str]| -> Value {
+        let output = Command::cargo_bin("vulcan")
+            .unwrap()
+            .current_dir(dir.path())
+            .args(["--output", "json", "editor", "helix"])
+            .args(args)
+            .arg("--dir")
+            .arg(&helix)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+    assert_eq!(run(&["status"])["installed"], false);
+    let preview = run(&["install", "--dry-run"]);
+    assert!(preview["diffs"]["config.toml"]
+        .as_str()
+        .unwrap()
+        .contains("+[keys.normal.space.v]"));
+    assert_eq!(
+        fs::read_to_string(helix.join("config.toml")).unwrap(),
+        "theme = \"onedark\"\n"
+    );
+    run(&["install"]);
+    let status = run(&["status"]);
+    assert_eq!(status["installed"], true);
+    assert!(status["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|entry| entry["state"] == "current"));
+    run(&["uninstall"]);
+    assert_eq!(
+        fs::read_to_string(helix.join("config.toml"))
+            .unwrap()
+            .trim(),
+        "theme = \"onedark\""
+    );
+    assert!(helix.join("config.toml.vulcan-backup").exists());
 }

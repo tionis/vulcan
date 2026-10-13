@@ -81,8 +81,9 @@ fn write(path: &Path, contents: &str) {
     std::fs::write(path, contents).unwrap();
 }
 
-/// A vault, Helix's configuration as the binary prints it (with `vulcan`
-/// on `PATH`), and Helix started on `Home.md` once the server is attached.
+/// A vault, a user's Helix configuration with Vulcan's merged in by
+/// `vulcan editor helix install` (and `vulcan` on `PATH`), and Helix
+/// started on `Home.md` once the server is attached.
 fn start_helix(helix: &Path, temp: &Path) -> (PathBuf, Session) {
     let vault = temp.join("vault");
     let binary = env!("CARGO_BIN_EXE_vulcan");
@@ -109,21 +110,30 @@ fn start_helix(helix: &Path, temp: &Path) -> (PathBuf, Session) {
         assert!(status.success());
     }
 
-    // Helix's configuration as the binary prints it, with `vulcan` on PATH.
-    let printed = Command::new(binary)
-        .args(["--output", "json", "editor", "helix", "print-config"])
-        .output()
-        .unwrap();
-    let config: serde_json::Value = serde_json::from_slice(&printed.stdout).unwrap();
+    // The user's own configuration, which the install merges into.
     let config_dir = temp.join("config/helix");
     write(
         &config_dir.join("languages.toml"),
-        config["languages_toml"].as_str().unwrap(),
+        "[[language]]\nname = \"markdown\"\nsoft-wrap.enable = true\n",
     );
     write(
         &config_dir.join("config.toml"),
-        config["config_toml"].as_str().unwrap(),
+        "[editor]\nline-number = \"relative\"\n\n[keys.normal.space.v]\nz = \":echo mine\"\n",
     );
+    let installed = Command::new(binary)
+        .args(["--output", "json", "editor", "helix", "install", "--dir"])
+        .arg(&config_dir)
+        .output()
+        .unwrap();
+    assert!(
+        installed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&installed.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&installed.stdout).unwrap();
+    assert_eq!(report["backups"].as_array().unwrap().len(), 2, "{report}");
+    let config = std::fs::read_to_string(config_dir.join("config.toml")).unwrap();
+    assert!(config.contains(r#"z = ":echo mine""#) && config.contains("vulcan.task.toggle"));
     let bin = temp.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     std::os::unix::fs::symlink(binary, bin.join("vulcan")).unwrap();

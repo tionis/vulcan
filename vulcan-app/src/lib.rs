@@ -54,6 +54,7 @@ pub mod editor_plugins;
 pub mod execution;
 pub mod export;
 pub mod folder_notes;
+pub mod helix_config;
 pub mod inbox;
 pub mod integrations;
 pub mod mcp_access;

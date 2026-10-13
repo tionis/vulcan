@@ -7,23 +7,32 @@ semantics stay in Vulcan. Tested with Helix 25.07.
 
 ## Install
 
-Print both files and merge them into `~/.config/helix/` (`%AppData%\helix`
-on Windows):
-
 ```sh
-vulcan editor helix print-config                    # both, each under a heading comment
-vulcan editor helix print-config --only languages   # just languages.toml
-vulcan editor helix print-config --only keys        # just config.toml
+vulcan editor helix install --dry-run   # show the changes as a diff
+vulcan editor helix install             # merge them into ~/.config/helix/
 ```
 
-- [`languages.toml`](languages.toml) registers the server, starts it only in
-  vaults (`required-root-patterns`), makes a note's vault its workspace root,
-  and lists it for Markdown. To keep another Markdown server, list it too:
-  `language-servers = ["vulcan", "marksman"]`.
-- [`config.toml`](config.toml) adds keybindings under `space v`.
+This merges two sets of entries into Helix's own files (`~/.config/helix/`,
+or `%AppData%\helix` on Windows), editing them in place so your comments,
+layout, and settings stay:
 
-If you already have a `[[language]]` entry for Markdown, merge the keys into
-it rather than adding a second one.
+- into [`languages.toml`](languages.toml): the `vulcan` language server,
+  started only in vaults (`required-root-patterns`); and Vulcan added first to
+  the Markdown entry's servers, with the vault markers added to its roots. An
+  existing Markdown entry is extended, and servers already listed (or Helix's
+  defaults, `marksman` and `markdown-oxide`) stay.
+- into [`config.toml`](config.toml): keybindings under `space v`.
+
+Keys you bound yourself are kept, and so are Vulcan's entries you changed or
+removed later; `--force` takes them over. The first change to each file keeps
+the previous version as `<file>.vulcan-backup`, and `.vulcan-helix.json`
+records what Vulcan wrote, so running `install` again (which `vulcan
+self-update` does) refreshes only that, and `vulcan editor helix uninstall`
+removes only that. `vulcan editor helix status` shows each entry's state.
+Run `:config-reload` in Helix afterwards.
+
+To merge by hand instead, `vulcan editor helix print-config` prints both files
+(`--only languages` or `--only keys` for one).
 
 ## What you get
 

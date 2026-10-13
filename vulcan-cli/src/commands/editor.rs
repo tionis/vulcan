@@ -49,8 +49,41 @@ pub(crate) fn handle_editor_command(cli: &Cli, command: &EditorCommand) -> Resul
 }
 
 fn handle_helix_command(cli: &Cli, command: &HelixCommand) -> Result<(), CliError> {
-    let HelixCommand::PrintConfig { only } = command;
-    let config = vulcan_app::editor_plugins::helix_config();
+    use vulcan_app::helix_config;
+    let directory = |dir: &Option<PathBuf>| {
+        dir.clone()
+            .or_else(helix_config::default_config_dir)
+            .ok_or_else(|| CliError::operation("cannot find Helix's config directory; pass --dir"))
+    };
+    let (report, verb) = match command {
+        HelixCommand::PrintConfig { only } => return print_helix_config(cli, *only),
+        HelixCommand::Status { dir } => (helix_config::status(&directory(dir)?)?, None),
+        HelixCommand::Install {
+            dir,
+            force,
+            dry_run,
+        } => (
+            helix_config::install(&directory(dir)?, *force, *dry_run)?,
+            Some("install"),
+        ),
+        HelixCommand::Uninstall {
+            dir,
+            force,
+            dry_run,
+        } => (
+            helix_config::uninstall(&directory(dir)?, *force, *dry_run)?,
+            Some("uninstall"),
+        ),
+    };
+    if cli.output == OutputFormat::Json {
+        return print_json(&report);
+    }
+    print_helix_report(&report, verb);
+    Ok(())
+}
+
+fn print_helix_config(cli: &Cli, only: Option<HelixConfigFileArg>) -> Result<(), CliError> {
+    let config = vulcan_app::helix_config::helix_config();
     if cli.output == OutputFormat::Json {
         return print_json(&config);
     }
@@ -69,6 +102,66 @@ fn handle_helix_command(cli: &Cli, command: &HelixCommand) -> Result<(), CliErro
         }
     }
     Ok(())
+}
+
+fn print_helix_report(report: &vulcan_app::helix_config::HelixReport, verb: Option<&str>) {
+    use vulcan_app::helix_config::{EntryAction, EntryState};
+    let state = |state: EntryState| match state {
+        EntryState::Missing => "missing",
+        EntryState::Current => "current",
+        EntryState::Outdated => "outdated",
+        EntryState::Modified => "changed since Vulcan wrote it",
+        EntryState::Removed => "removed since Vulcan wrote it",
+        EntryState::Foreign => "set by you",
+    };
+    println!("Helix configuration in {}:", report.config_dir.display());
+    for entry in &report.entries {
+        let action = match entry.action {
+            EntryAction::None => String::new(),
+            EntryAction::Write => " -> write".to_string(),
+            EntryAction::Update => " -> update".to_string(),
+            EntryAction::Remove => " -> remove".to_string(),
+            EntryAction::Skip => " -> kept (--force to change)".to_string(),
+        };
+        println!(
+            "  {} {}: {}{action}",
+            entry.file,
+            entry.key,
+            state(entry.state)
+        );
+    }
+    if report.dry_run && verb.is_some() {
+        for diff in report.diffs.values() {
+            print!("\n{diff}");
+        }
+        if report.diffs.is_empty() {
+            println!("Nothing would change.");
+        }
+        return;
+    }
+    if verb.is_some() {
+        if report.diffs.is_empty() {
+            println!("Nothing changed.");
+        } else {
+            println!(
+                "Changed {}.",
+                report
+                    .diffs
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" and ")
+            );
+        }
+        for backup in &report.backups {
+            println!("Kept the previous version as {}.", backup.display());
+        }
+        if verb == Some("install") && !report.diffs.is_empty() {
+            println!("Restart Helix (or run :config-reload) to load it.");
+        }
+    } else if !report.installed {
+        println!("Not installed; run `vulcan editor helix install`.");
+    }
 }
 
 fn install_dir(plugin: EditorPlugin, dir: Option<&Path>) -> Result<PathBuf, CliError> {

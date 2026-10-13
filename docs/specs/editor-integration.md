@@ -540,7 +540,7 @@ Each editor gets the least layer its extension model allows; none of them adds v
 
 | Editor | Layer | Distribution |
 | --- | --- | --- |
-| Helix | Language server plus configuration (no plugin system yet): `languages.toml` and `space v` keybindings running `vulcan.*` commands; query results are not drawn. See "Helix" below. | `vulcan editor helix print-config` (`integrations/helix/`) |
+| Helix | Language server plus configuration (no plugin system yet): `languages.toml` and `space v` keybindings running `vulcan.*` commands; query results are not drawn. See "Helix" below. | `vulcan editor helix install` merges it into Helix's files; `print-config` prints it (`integrations/helix/`) |
 | Emacs | Eglot configuration plus a small Elisp package for `:Vulcan`-style commands and drawing `vulcan/render` results as overlays. | File-based, so the same installer (`vulcan editor emacs install`) |
 | Zed | An extension registering `vulcan lsp` for Markdown. | Zed's extension registry (needs publishing) |
 | VS Code | An extension for commands and drawing `vulcan/render` results; the rest comes from the server. | Marketplace or Open VSX (needs publishing) |
@@ -576,6 +576,21 @@ folders, and UTF-8 positions first; no code lenses, semantic tokens, pull diagno
   Helix searches for roots only up to its workspace (the Git repository or its working directory).
   When a server does not accept workspace-folder changes, Helix starts another instance for another
   root, so each vault gets its own server.
+
+Installing edits Helix's own `languages.toml` and `config.toml` in place (`toml_edit`, so comments,
+order, and formatting stay). The entries Vulcan owns are the `language-server.vulcan` table, each
+`space v` binding, and membership of `vulcan` and the vault markers in the Markdown entry's
+`language-servers` and `roots` (an existing entry is extended; a list it lacks starts as Helix's
+defaults, so other servers keep working; a missing entry is created). Each entry is `missing`,
+`current`, `outdated` (as an older Vulcan wrote it), `modified` or `removed` (Vulcan wrote it, the
+user changed or deleted it since), or `foreign` (the user's own): `install` writes `missing` and
+updates `outdated` entries and leaves the rest unless `--force`; `uninstall` removes what still
+matches what Vulcan wrote, and a Markdown entry it created once only Helix's defaults remain.
+`.vulcan-helix.json` beside the files records what Vulcan wrote (Helix rejects unknown keys in its
+own files), the first change to each file keeps `<file>.vulcan-backup`, `--dry-run` prints a line
+diff, files that are not valid TOML or hold a value where a table is needed are refused, and
+`self-update` reruns `install` when the marker exists. New tables go after the user's, with a
+comment naming the command that manages them.
 
 ## Testing
 

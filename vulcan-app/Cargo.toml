@@ -35,6 +35,7 @@ ssh-key.workspace = true
 tempfile.workspace = true
 tar.workspace = true
 toml.workspace = true
+toml_edit.workspace = true
 ulid.workspace = true
 getrandom.workspace = true
 unicode-normalization.workspace = true

@@ -470,6 +470,28 @@ fn refresh_editor_plugins(executable: &std::path::Path) -> Vec<String> {
             )
         });
     }
+    // Helix's configuration, when Vulcan merged it in: the new binary's
+    // installer updates only the entries Vulcan wrote and nobody changed.
+    if let Some(dir) = vulcan_app::helix_config::default_config_dir()
+        .filter(|dir| dir.join(vulcan_app::helix_config::MARKER_FILE).is_file())
+    {
+        let refreshed = std::process::Command::new(executable)
+            .args(["editor", "helix", "install", "--dir"])
+            .arg(&dir)
+            .output()
+            .is_ok_and(|output| output.status.success());
+        outcomes.push(if refreshed {
+            format!(
+                "Refreshed Vulcan's Helix configuration in {}; run :config-reload in Helix.",
+                dir.display()
+            )
+        } else {
+            format!(
+                "Could not refresh Vulcan's Helix configuration in {}; run `vulcan editor helix install`.",
+                dir.display()
+            )
+        });
+    }
     outcomes
 }
 

@@ -16,7 +16,7 @@ showDocument = true
 
 [[language]]
 name = "markdown"
-# A note's workspace is its vault.
-roots = [".vulcan", ".vulcan.toml", ".obsidian"]
-# To keep another Markdown server, list it too: ["vulcan", "marksman"].
-language-servers = ["vulcan"]
+# A note's workspace is its vault (Helix's default root marker stays).
+roots = [".marksman.toml", ".vulcan", ".vulcan.toml", ".obsidian"]
+# Vulcan first, then Helix's default Markdown servers.
+language-servers = ["vulcan", "marksman", "markdown-oxide"]

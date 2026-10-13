@@ -12793,7 +12793,7 @@
       },
       {
         "about": "Install and manage editor integrations bundled with this binary",
-        "after_help": "Neovim:\n  vulcan editor nvim install writes the vulcan.nvim plugin bundled with this binary into\n  Neovim's package directory (stdpath('data')/site/pack/vulcan/start/vulcan.nvim), where Neovim\n  loads it without a plugin manager. Call require('vulcan').setup() from your config, or point a\n  plugin manager at it: { dir = '<vulcan editor nvim path>', opts = {} } for lazy.nvim.\n\nVim:\n  vulcan editor vim install writes vulcan.vim into ~/.vim/pack/vulcan/start/vulcan.vim (or under\n  ~/.config/vim when Vim uses it). It needs Vim 9 and yegappan/lsp, and registers the server\n  itself.\n\nHelix:\n  Helix has no plugin system, so vulcan editor helix print-config prints what to merge into\n  ~/.config/helix: languages.toml registers vulcan lsp for Markdown in vaults, and config.toml\n  adds keybindings under `space v` that run the server's commands with :lsp-workspace-command.\n\nPlugins:\n  Re-run install after updating Vulcan (self-update does it for unedited copies); :checkhealth\n  vulcan and :Vulcan health report a stale copy. Copies Vulcan did not write, or ones edited\n  since, are left alone unless --force.\n\nExamples:\n  vulcan editor nvim install\n  vulcan editor vim install --dry-run\n  vulcan editor nvim install --dir ~/.config/nvim/pack/vulcan/start/vulcan.nvim\n  vulcan editor vim status --output json\n  vulcan editor helix print-config --only keys\n",
+        "after_help": "Neovim:\n  vulcan editor nvim install writes the vulcan.nvim plugin bundled with this binary into\n  Neovim's package directory (stdpath('data')/site/pack/vulcan/start/vulcan.nvim), where Neovim\n  loads it without a plugin manager. Call require('vulcan').setup() from your config, or point a\n  plugin manager at it: { dir = '<vulcan editor nvim path>', opts = {} } for lazy.nvim.\n\nVim:\n  vulcan editor vim install writes vulcan.vim into ~/.vim/pack/vulcan/start/vulcan.vim (or under\n  ~/.config/vim when Vim uses it). It needs Vim 9 and yegappan/lsp, and registers the server\n  itself.\n\nHelix:\n  Helix has no plugin system, so its integration is configuration: languages.toml registers\n  vulcan lsp for Markdown in vaults, and config.toml adds keybindings under `space v` that run the\n  server's commands with :lsp-workspace-command. vulcan editor helix install merges them into\n  ~/.config/helix in place, keeping comments and your own settings: Vulcan is added to the\n  Markdown server list, and bindings you set yourself are kept (--force takes them over). It\n  backs up each file before its first change and records what it wrote in .vulcan-helix.json, so\n  install refreshes and uninstall removes only that. print-config prints the entries instead.\n\nPlugins:\n  Re-run install after updating Vulcan (self-update does it for unedited copies); :checkhealth\n  vulcan and :Vulcan health report a stale copy. Copies Vulcan did not write, or ones edited\n  since, are left alone unless --force.\n\nExamples:\n  vulcan editor nvim install\n  vulcan editor vim install --dry-run\n  vulcan editor nvim install --dir ~/.config/nvim/pack/vulcan/start/vulcan.nvim\n  vulcan editor vim status --output json\n  vulcan editor helix install --dry-run\n  vulcan editor helix print-config --only keys\n",
         "name": "editor",
         "options": [],
         "subcommands": [
@@ -13044,7 +13044,7 @@
             ]
           },
           {
-            "about": "Print the Helix configuration for vulcan lsp and its keybindings",
+            "about": "Merge, inspect, or print Helix configuration for vulcan lsp and its keybindings",
             "name": "helix",
             "options": [],
             "subcommands": [
@@ -13064,6 +13064,116 @@
                     "short": null,
                     "value_names": [
                       "ONLY"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Merge the entries into Helix's languages.toml and config.toml, keeping your own",
+                "name": "install",
+                "options": [
+                  {
+                    "help": "Helix configuration directory (default: Helix's)",
+                    "id": "dir",
+                    "long": "dir",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DIR"
+                    ]
+                  },
+                  {
+                    "help": "Also replace entries you set, changed, or removed",
+                    "id": "force",
+                    "long": "force",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "FORCE"
+                    ]
+                  },
+                  {
+                    "help": "Show the changes as a diff without writing",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Show which of Vulcan's entries Helix's configuration holds",
+                "name": "status",
+                "options": [
+                  {
+                    "help": "Helix configuration directory (default: Helix's)",
+                    "id": "dir",
+                    "long": "dir",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DIR"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Remove the entries Vulcan merged in",
+                "name": "uninstall",
+                "options": [
+                  {
+                    "help": "Helix configuration directory (default: Helix's)",
+                    "id": "dir",
+                    "long": "dir",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DIR"
+                    ]
+                  },
+                  {
+                    "help": "Also remove Vulcan's entries you changed since",
+                    "id": "force",
+                    "long": "force",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "FORCE"
+                    ]
+                  },
+                  {
+                    "help": "Show the changes as a diff without writing",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
                     ]
                   }
                 ],

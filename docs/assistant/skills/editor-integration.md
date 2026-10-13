@@ -42,9 +42,10 @@ and wants vault-aware features, or when editor diagnostics need explaining.
    `vulcan editor nvim status --output json` reports whether it is current, and copies with local
    changes need the user's `--force`. For Vim 9 with yegappan/lsp, `vulcan editor vim install`
    installs the matching `vulcan.vim` the same way (it registers the server itself; one vault per
-   Vim session); for Helix, `vulcan editor helix print-config` prints the `languages.toml` and
-   `space v` keybindings to merge into `~/.config/helix/` (the user merges them; do not overwrite
-   their config); `docs/guide/editors.md` covers Vim,
+   Vim session); for Helix, `vulcan editor helix install` merges the `languages.toml` entries
+   and `space v` keybindings into `~/.config/helix/` without overwriting the user's settings (run
+   it with `--dry-run` first and show the diff; `--force` replaces bindings the user set, so only
+   pass it when they ask), and `print-config` prints them for merging by hand; `docs/guide/editors.md` covers Vim,
    Helix, and Emacs. Other clients take the same command. Pass `--vault <dir>` only when the editor's workspace
    folder is not inside the vault; otherwise the server discovers it like any other command.
 3. Explain what the server offers: go-to-definition on links, embeds, `#heading`, and `#^block`

@@ -136,38 +136,6 @@ struct Marker {
     files: BTreeMap<String, String>,
 }
 
-/// Helix has no plugin system; its integration is configuration to merge:
-/// `languages.toml` (the language server) and `config.toml` (keybindings).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct HelixConfig {
-    /// Where Helix reads them: `$XDG_CONFIG_HOME/helix` or `~/.config/helix`
-    /// (`%AppData%\\helix` on Windows).
-    pub config_dir: Option<PathBuf>,
-    pub languages_toml: &'static str,
-    pub config_toml: &'static str,
-}
-
-/// The Helix configuration this binary carries.
-#[must_use]
-pub fn helix_config() -> HelixConfig {
-    let env = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
-    HelixConfig {
-        config_dir: helix_config_dir(&env),
-        languages_toml: include_str!("../../integrations/helix/languages.toml"),
-        config_toml: include_str!("../../integrations/helix/config.toml"),
-    }
-}
-
-fn helix_config_dir(env: Env) -> Option<PathBuf> {
-    if cfg!(windows) {
-        return Some(PathBuf::from(env("APPDATA")?).join("helix"));
-    }
-    let config = env("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| Some(PathBuf::from(env("HOME")?).join(".config")))?;
-    Some(config.join("helix"))
-}
-
 fn default_marker_plugin() -> String {
     NVIM.name.to_string()
 }
@@ -716,45 +684,6 @@ mod tests {
             VIM.default_install_dir_with(&home, &both),
             Some(PathBuf::from("/home/me/.vim/pack/vulcan/start/vulcan.vim"))
         );
-    }
-
-    #[test]
-    fn carries_valid_helix_configuration() {
-        let config = helix_config();
-        let languages = config.languages_toml.parse::<toml::Table>().unwrap();
-        let server = &languages["language-server"]["vulcan"];
-        assert_eq!(server["command"].as_str(), Some("vulcan"));
-        assert_eq!(server["config"]["showDocument"].as_bool(), Some(true));
-        let markdown = languages["language"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|language| language["name"].as_str() == Some("markdown"))
-            .unwrap();
-        assert!(markdown["language-servers"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|server| server.as_str() == Some("vulcan")));
-        let keys = config.config_toml.parse::<toml::Table>().unwrap();
-        let bindings = keys["keys"]["normal"]["space"]["v"].as_table().unwrap();
-        assert!(bindings["x"]
-            .as_str()
-            .unwrap()
-            .contains("vulcan.task.toggle"));
-        assert_eq!(bindings["c"].as_str(), Some(":pipe-to vulcan inbox -"));
-
-        let home = env(&[("HOME", "/home/me")]);
-        if !cfg!(windows) {
-            assert_eq!(
-                helix_config_dir(&home),
-                Some(PathBuf::from("/home/me/.config/helix"))
-            );
-            assert_eq!(
-                helix_config_dir(&env(&[("HOME", "/home/me"), ("XDG_CONFIG_HOME", "/cfg")])),
-                Some(PathBuf::from("/cfg/helix"))
-            );
-        }
     }
 
     #[test]
