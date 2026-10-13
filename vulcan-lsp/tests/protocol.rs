@@ -243,6 +243,17 @@ impl Client {
         }
     }
 
+    /// Diagnostics published for `path` until one set satisfies `wanted`
+    /// (earlier sets, published before the change awaited, are skipped).
+    fn diagnostics_until(&mut self, path: &str, wanted: impl Fn(&[Value]) -> bool) -> Vec<Value> {
+        loop {
+            let diagnostics = self.diagnostics(path);
+            if wanted(&diagnostics) {
+                return diagnostics;
+            }
+        }
+    }
+
     /// Wait until the server reports an index change.
     fn index_changed(&mut self) -> Notification {
         self.wait_for(|notification| notification.method == "vulcan/indexChanged")
@@ -276,6 +287,20 @@ impl Drop for Client {
         if let Some(server) = self.server.take() {
             server.join().unwrap();
         }
+    }
+}
+
+/// Wait (up to ten seconds) until `condition` holds: for effects that
+/// several server jobs produce in turn, where no single notification marks
+/// the end.
+fn eventually(what: &str, mut condition: impl FnMut() -> bool) {
+    let started = Instant::now();
+    while !condition() {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "timed out waiting until {what}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -539,7 +564,7 @@ fn client_watching_and_renames_index_reported_paths() {
     );
     let changed = client.index_changed();
     assert_eq!(changed.params["paths"], json!(["Later.md"]));
-    assert!(client.diagnostics("Home.md").is_empty());
+    client.diagnostics_until("Home.md", <[Value]>::is_empty);
 
     // A rename reported by the client is indexed with a rename hint, so the
     // note keeps its identity instead of being deleted and re-added.
@@ -551,7 +576,7 @@ fn client_watching_and_renames_index_reported_paths() {
     let changed = client.index_changed();
     assert_eq!(changed.params["summary"]["deleted"], 0);
     assert_eq!(changed.params["summary"]["added"], 0);
-    assert_eq!(client.diagnostics("Home.md").len(), 1);
+    client.diagnostics_until("Home.md", |diagnostics| diagnostics.len() == 1);
 }
 
 #[test]
@@ -780,9 +805,18 @@ fn moving_an_open_note_asks_the_editor_to_rename_it() {
         .expect("the editor renames the open note");
     assert_eq!(rename["oldUri"], client.uri("notes/Alpha.md"));
     assert_eq!(rename["newUri"], client.uri("archive/Alpha.md"));
-    // The editor moved the file; the index follows it.
-    let found = client.request("workspace/symbol", json!({ "query": "archive" }));
-    assert_eq!(found[0]["location"]["uri"], client.uri("archive/Alpha.md"));
+    // The editor moved the file; the index follows it (the watcher may
+    // index the move on disk concurrently).
+    let target = json!(client.uri("archive/Alpha.md"));
+    let started = Instant::now();
+    loop {
+        let found = client.request("workspace/symbol", json!({ "query": "archive" }));
+        if found[0]["location"]["uri"] == target {
+            break;
+        }
+        assert!(started.elapsed() < Duration::from_secs(10), "{found}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 #[test]
@@ -880,14 +914,10 @@ fn client_renames_rewrite_open_and_closed_links() {
     )
     .unwrap();
     client.notify("workspace/didRenameFiles", renamed);
-    client.wait_for(|notification| {
-        notification.method == "vulcan/indexChanged"
-            && notification.params["paths"] == json!(["notes/Beta.md"])
+    // The rename is indexed, then the closed files are rewritten.
+    eventually("the closed file's link is rewritten", || {
+        std::fs::read_to_string(dir.path().join("Other.md")).unwrap() == "Also [[Beta]].\n"
     });
-    assert_eq!(
-        std::fs::read_to_string(dir.path().join("Other.md")).unwrap(),
-        "Also [[Beta]].\n"
-    );
 }
 
 fn code_actions(
