@@ -278,8 +278,9 @@ with template mutations disabled and follows the existing template trust rules.
 - `textDocument/definition` on wikilinks, Markdown links, embeds, and `#heading`/`^block` subpaths.
 - `textDocument/references`: backlinks plus overlay deltas; on a heading, links with that subpath.
 - `textDocument/completion`: after `[[` (notes and aliases, with `#`/`^` sub-completion from the
-  target's outline); `#tags`; frontmatter property keys; inline-field keys. Uses `textEdit` with
-  `filterText`.
+  target's outline); `#tags`; frontmatter property keys; inline-field keys inside `[` or `(`
+  (inserting `key:: `; bare keys at a line start are not completed, which would fire on every
+  word). Uses `textEdit` with `filterText`.
 - `textDocument/hover`: first lines or the targeted section of a link target, plus a properties
   summary (reusing `build_note_info_report`).
 - `textDocument/publishDiagnostics` for **open buffers only**: parse diagnostics and link problems
@@ -294,7 +295,7 @@ with template mutations disabled and follows the existing template trust rules.
   `codeAction/resolve` is needed: buffer-only actions carry a versioned edit, and actions that
   create files or toggle tasks are `vulcan.*` commands run on the writer thread.
 - `workspace/executeCommand`: `vulcan.scan`, `vulcan.note.create`, `vulcan.note.move`,
-  `vulcan.task.toggle`, `vulcan.periodic.open`, `vulcan.template.insert`.
+  `vulcan.task.toggle`, `vulcan.periodic.open`, `vulcan.template.insert`, `vulcan.capture`.
 
 ### Later
 
@@ -373,8 +374,8 @@ Scope:
   `vulcan/indexChanged`.
 - Buffer re-pointing after moves needs no plugin code: a moved open note is renamed by the editor
   (`RenameFile`), which Neovim applies to the buffer.
-- `vulcan doctor --output json` into the quickfix list (at line 1 of each file, since doctor
-  reports files, not positions).
+- `vulcan doctor --output json` into the quickfix list, at each problem's line (`line`, from the
+  link's or diagnostic's byte offset).
 - Interop notes found in testing: Neovim sends an empty `initializationOptions` table as `[]`, so
   the server treats any non-object as absent; and Neovim lists `resourceOperations` without
   `documentChanges`, so the server treats listed resource operations as `documentChanges`
@@ -394,8 +395,9 @@ recurrence, link rename, moving the open note, periodic notes, and `:checkhealth
 `cargo test -p vulcan-cli --test nvim_plugin` runs it when Neovim 0.10+ is installed (set
 `VULCAN_REQUIRE_NVIM` to fail instead of skipping).
 
-Open item: `tp.file.cursor()` placement needs the template insertion report to return a cursor
-offset, which the template API does not report today.
+`tp.file.cursor()` places the cursor: editor template insertion sets a reserved template variable
+so the call emits a marker, removes it from the inserted text, and reports its position as
+`report.cursor`; the plugin moves the cursor there. Outside editors the call stays a no-op.
 
 ## Testing
 

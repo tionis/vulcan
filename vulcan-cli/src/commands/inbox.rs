@@ -1,15 +1,12 @@
 use crate::commit::AutoCommitPolicy;
 use crate::output::print_json;
 use crate::{
-    append_at_end, append_under_heading, inbox_input_text, render_inbox_entry,
-    run_incremental_scan, warn_auto_commit_if_needed, CliError, OutputFormat,
+    inbox_input_text, run_incremental_scan, warn_auto_commit_if_needed, CliError, OutputFormat,
 };
 use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
 use vulcan_app::notes::{read_note_for_update, write_note_content};
-use vulcan_app::templates::{template_variables_for_path, TemplateTimestamp};
-use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::VaultPaths;
 use vulcan_core::Verbosity;
 
@@ -28,36 +25,21 @@ pub(crate) fn run_inbox_command(
 ) -> Result<InboxReport, CliError> {
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
     warn_auto_commit_if_needed(&auto_commit, verbosity);
-    let inbox_config = vulcan_core::load_vault_config(paths).config.inbox;
-    let relative_path = normalize_relative_input_path(
-        &inbox_config.path,
-        RelativePathOptions {
-            expected_extension: Some("md"),
-            append_extension_if_missing: true,
-        },
-    )
-    .map_err(CliError::operation)?;
-
+    let relative_path =
+        vulcan_app::inbox::inbox_path(&vulcan_core::load_vault_config(paths).config.inbox)
+            .map_err(CliError::operation)?;
     let raw_text = inbox_input_text(text, file)?;
-    let variables = template_variables_for_path(&relative_path, TemplateTimestamp::current());
-    let rendered_entry = render_inbox_entry(&inbox_config.format, &raw_text, &variables);
-    let entry = if inbox_config.timestamp {
-        format!("{} {}", variables.datetime, rendered_entry)
-    } else {
-        rendered_entry
-    };
-
     let absolute_path = paths.vault_root().join(&relative_path);
     if let Some(parent) = absolute_path.parent() {
         fs::create_dir_all(parent).map_err(CliError::operation)?;
     }
     let existing = read_note_for_update(paths, &relative_path).map_err(CliError::operation)?;
-    let current = existing.as_deref().unwrap_or_default();
-    let updated = if let Some(heading) = inbox_config.heading.as_deref() {
-        append_under_heading(current, heading, &entry)
-    } else {
-        append_at_end(current, &entry)
-    };
+    let (_, updated) = vulcan_app::inbox::plan_inbox_capture(
+        paths,
+        existing.as_deref().unwrap_or_default(),
+        &raw_text,
+    )
+    .map_err(CliError::operation)?;
     write_note_content(
         paths,
         &relative_path,

@@ -32,6 +32,7 @@ pub(crate) const COMMANDS: &[&str] = &[
     "vulcan.task.toggle",
     "vulcan.periodic.open",
     "vulcan.template.insert",
+    "vulcan.capture",
 ];
 
 /// Server-to-client requests whose responses someone awaits.
@@ -279,6 +280,7 @@ fn execute_command(
             session.plan_template_insert(&document("path")?, &text("template")?, placement)?
         }
         "vulcan.note.create" => session.plan_note_create(&text("path")?)?,
+        "vulcan.capture" => session.plan_capture(&text("text")?)?,
         "vulcan.task.toggle" => {
             let line = argument["line"]
                 .as_u64()
@@ -448,6 +450,7 @@ fn label(plan: &EditorEditPlan) -> String {
             "rename_block_ref" => "Rename block id".to_string(),
             "toggle_task" => "Toggle task".to_string(),
             "create_note" => "Create note".to_string(),
+            "capture" => "Capture to inbox".to_string(),
             "periodic_open" => "Create periodic note".to_string(),
             "template_insert" => "Insert template".to_string(),
             action => action.to_string(),

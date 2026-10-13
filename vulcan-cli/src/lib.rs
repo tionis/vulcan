@@ -551,12 +551,14 @@ use vulcan_app::site::{
     SiteBuildPhase, SiteBuildProgress, SiteBuildReport, SiteBuildRequest, SiteDoctorReport,
     SiteProfileListEntry,
 };
+use vulcan_app::templates::TemplateInsertMode;
+#[cfg(test)]
+use vulcan_app::templates::TemplateVariables;
 #[cfg(test)]
 use vulcan_app::templates::{
     list_templates_in_directory, prepare_template_insertion, render_template_variable,
     resolve_template_file, template_variables_for_path, TemplateCandidate, TemplateTimestamp,
 };
-use vulcan_app::templates::{TemplateInsertMode, TemplateVariables};
 use vulcan_core::config::OutlineBlockReferencePolicyConfig;
 use vulcan_core::config::OutlineExcludedTargetPolicyConfig;
 #[cfg(test)]
@@ -3921,18 +3923,6 @@ pub(crate) fn inbox_input_text(
             "`inbox` requires text, `-`, or --file <path>",
         )),
     }
-}
-
-pub(crate) fn render_inbox_entry(
-    format: &str,
-    text: &str,
-    variables: &TemplateVariables,
-) -> String {
-    format
-        .replace("{text}", text.trim_end())
-        .replace("{date}", &variables.date)
-        .replace("{time}", &variables.time)
-        .replace("{datetime}", &variables.datetime)
 }
 
 #[cfg(test)]

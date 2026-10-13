@@ -59,6 +59,8 @@ pub(crate) fn handle(
             params(request).and_then(|p| code_actions(session, &p))
         }
         "vulcan/render" => params(request).and_then(|p| render(session, &p, dataview_js)),
+        "vulcan/outline" => params(request).map(|p| outline(session, &p)),
+        "vulcan/backlinks" => params(request).and_then(|p| backlinks(session, &p)),
         method => Err(ResponseFailure::method_not_found(method)),
     };
     respond(id, result)
@@ -159,6 +161,32 @@ fn prepare_rename(session: &EditorSession, params: &lsp::TextDocumentPositionPar
             placeholder: target.placeholder,
         })
     }))
+}
+
+/// Parameters naming one document.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DocumentParams {
+    text_document: lsp::TextDocumentIdentifier,
+}
+
+/// `vulcan/outline`: the `note outline --output json` report of the
+/// document's current text.
+fn outline(session: &EditorSession, params: &DocumentParams) -> Value {
+    vault_path(session, &params.text_document.uri)
+        .and_then(|path| session.outline_report(&path))
+        .map_or(Value::Null, to_value)
+}
+
+/// `vulcan/backlinks`: the `note backlinks --output json` report from the
+/// index.
+fn backlinks(session: &EditorSession, params: &DocumentParams) -> Answer {
+    let Some(path) = vault_path(session, &params.text_document.uri) else {
+        return Ok(Value::Null);
+    };
+    Ok(session
+        .backlinks_report(&path)?
+        .map_or(Value::Null, to_value))
 }
 
 /// Parameters of `vulcan/render`.

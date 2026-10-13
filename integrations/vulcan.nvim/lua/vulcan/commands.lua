@@ -32,11 +32,33 @@ function M.insert_template(name)
   end
   -- Positions use the encoding negotiated with the server.
   local params = vim.lsp.util.make_position_params(0, client.offset_encoding)
+  local bufnr = vim.api.nvim_get_current_buf()
   vulcan.execute('vulcan.template.insert', {
     path = current_uri(),
     template = name,
     position = params.position,
-  })
+  }, function(result)
+    -- Place the cursor where the template called `tp.file.cursor()`.
+    local cursor = result and result.report and result.report.cursor
+    if cursor and cursor ~= vim.NIL and vim.api.nvim_get_current_buf() == bufnr then
+      M.set_cursor(cursor, client.offset_encoding)
+    end
+  end)
+end
+
+--- Move the cursor to an LSP position in the current buffer.
+--- @param position { line: integer, character: integer }
+--- @param encoding string
+function M.set_cursor(position, encoding)
+  local line = vim.api.nvim_buf_get_lines(0, position.line, position.line + 1, false)[1] or ''
+  local column
+  if vim.fn.has('nvim-0.11') == 1 then
+    column = vim.str_byteindex(line, encoding, position.character, false)
+  else
+    ---@diagnostic disable-next-line: param-type-mismatch
+    column = vim.str_byteindex(line, position.character, encoding == 'utf-16')
+  end
+  pcall(vim.api.nvim_win_set_cursor, 0, { position.line + 1, column })
 end
 
 --- Complete or reopen the task on the cursor line.
@@ -45,6 +67,26 @@ function M.toggle_task()
     path = current_uri(),
     line = vim.api.nvim_win_get_cursor(0)[1] - 1,
   })
+end
+
+--- Capture text into the configured inbox note.
+--- @param text? string Prompted for when omitted.
+function M.capture(text)
+  local function run(value)
+    if value and value ~= '' then
+      vulcan.execute('vulcan.capture', { text = value }, function(result)
+        local path = result and result.report and result.report.path
+        if path then
+          vim.notify('vulcan: captured to ' .. path)
+        end
+      end)
+    end
+  end
+  if text then
+    run(text)
+  else
+    vim.ui.input({ prompt = 'Capture: ' }, run)
+  end
 end
 
 --- Move the current note (link-safe) to a vault path.
@@ -165,6 +207,7 @@ local subcommands = {
     end
   end,
   task = function() M.toggle_task() end,
+  capture = function(args) M.capture(#args > 0 and table.concat(args, ' ') or nil) end,
   move = function(args) M.move(args[1]) end,
   scan = function(_, bang) M.scan(bang) end,
   render = function() require('vulcan.render').toggle() end,

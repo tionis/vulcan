@@ -68,6 +68,14 @@ impl EditorSession {
             }
             CompletionContext::Tag { query, .. } => self.tag_items(path, query),
             CompletionContext::PropertyKey { query, .. } => self.property_items(query),
+            CompletionContext::InlineFieldKey { query, .. } => self
+                .property_items(query)
+                .into_iter()
+                .map(|mut item| {
+                    item.insert_text = format!("{}:: ", item.label);
+                    item
+                })
+                .collect(),
             CompletionContext::PropertyValue { key, query, .. } => {
                 if key == "tags" {
                     self.tag_items(path, query)
@@ -401,5 +409,9 @@ mod tests {
         let completion = complete(&mut session, "---\ntags: pr|\n---\n");
         assert_eq!(labels(&completion), vec!["#proj"]);
         assert_eq!(completion.items[0].insert_text, "proj");
+
+        let completion = complete(&mut session, "- [ ] Task [sta|");
+        assert_eq!(labels(&completion), vec!["status"]);
+        assert_eq!(completion.items[0].insert_text, "status:: ");
     }
 }

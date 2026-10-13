@@ -112,6 +112,21 @@ local function lsp_config()
       ['vulcan/indexChanged'] = function()
         require('vulcan.render').refresh_visible()
       end,
+      -- Neovim's handler pushes a tagstack entry named after the word under
+      -- the cursor and throws (E348) when the cursor is on whitespace; open
+      -- the document directly in that case.
+      ['window/showDocument'] = function(err, result, ctx)
+        local ok, response = pcall(vim.lsp.handlers['window/showDocument'], err, result, ctx)
+        if ok then
+          return response
+        end
+        local path = result and vim.uri_to_fname(result.uri)
+        if not path then
+          return { success = false }
+        end
+        vim.cmd.edit(vim.fn.fnameescape(path))
+        return { success = true }
+      end,
     },
   }
 end

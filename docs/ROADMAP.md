@@ -8362,9 +8362,9 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Add overlay-aware link resolution: cache identities with open-buffer overlays replacing them, plus `overlay:<uri>` documents for unsaved new buffers
 - [x] Expose dynamic-region evaluation with byte ranges as a public core API (`EvaluatedMarkdownRenderer::render_regions`)
 - [x] Add `vulcan-app::editor` (`EditorSession`, `completion`, `diagnostics`, `navigation`, `edits`, `render`) with no LSP types — session overlay, navigation, completion, diagnostics, `edits`, and `render` landed
-- [~] Move checkbox and task toggling out of `vulcan-cli/src/commands/note.rs` into a plan-only `vulcan-app` workflow (text in, replacement and report out), including recurrence; rebuild `tasks complete` on it — Tasks-style toggling with next-occurrence insertion lives in `vulcan_core::tasks` and `EditorSession::plan_task_toggle`, and inline `tasks complete` is rebuilt on it; the generic `note checkbox` state command still lives in the CLI
+- [x] Move checkbox and task toggling out of `vulcan-cli/src/commands/note.rs` into plan-only `vulcan-app` workflows: Tasks-style toggling with next-occurrence insertion lives in `vulcan_core::tasks` and `EditorSession::plan_task_toggle` (inline `tasks complete` is rebuilt on it), and `note checkbox` selection and marker updates live in `vulcan_app::checkbox`
 - [x] Add plan-only variants of `rename_heading` and `rename_block_ref` that return `OrdinaryWriteChange` batches
-- [ ] Rebuild shell completion candidates (`collect_complete_candidates`) on `editor::completion`
+- [-] Rebuild shell completion candidates (`collect_complete_candidates`) on `editor::completion` — cut: shell completion completes CLI argument values (profiles, templates, boards, notes), and only the `note` context overlaps link completion; it now offers note aliases, which CLI note arguments resolve, as the editor does
 - [x] Add `boundary_guard.rs` rules: `vulcan-app`/`vulcan-core` never depend on `lsp-types`; `vulcan-lsp` never depends on `vulcan-cli` or `vulcan-daemon`
 
 ### 9.40.2 `vulcan lsp` MVP
@@ -8375,27 +8375,27 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Freshness: startup refresh with `$/progress`, scan on `didSave`, `watcher = own|client|off`, advisory `.vulcan/editor-watch.lock` lease (excluded from sync) with store-clock polling for non-holders, rename hints from `didRenameFiles`, and `vulcan/indexChanged`
 - [ ] **Blocked on a daemon index-ownership probe (Phase 10):** skip the watch lease when a daemon keeps the vault's index fresh; today's daemon watchers only trigger sync, so there is nothing to defer to yet
 - [x] Definition, references (backlinks plus overlay deltas), hover, document and workspace symbols
-- [~] Completion after `[[` (notes, aliases, `#heading`, `^block`), tags, property keys, and inline-field keys — inline-field keys remain
+- [x] Completion after `[[` (notes, aliases, `#heading`, `^block`), tags, property keys, and inline-field keys (inside `[key` or `(key`, inserting `key:: `)
 - [x] Debounced diagnostics for open buffers (200 ms after the last edit; the link being typed is skipped): parse diagnostics and unresolved/ambiguous/outside-vault links using `doctor` categories
 - [x] Mutation contract: open files as versioned `TextDocumentEdit`s (minimal per-line edits), closed files as a journaled preimage-checked batch; disk first, then `workspace/applyEdit`, with a compensating inverse batch on rejection and the specified failure reports; unsaved buffers are rewritten from their own text (only a moved note with unsaved changes is refused)
 - [x] Moves with `moved: { from, to }` results (closed notes moved by Vulcan in the batch, open notes renamed by the editor via `RenameFile` and indexed with a hint); `prepareRename` and `rename` on link targets, headings, and block ids (through links or in place); `vulcan.note.move` with `dryRun`; `willRenameFiles` with closed-file rewrites published after `didRenameFiles`
 - [x] Code actions: create note from unresolved link, disambiguate, convert link style, toggle task (computed eagerly; they are cheap, so `codeAction/resolve` is unnecessary); `dryRun` on every `vulcan.*` command
 - [x] `executeCommand`: `vulcan.scan`, `vulcan.note.create`, `vulcan.note.move`, `vulcan.task.toggle`, `vulcan.periodic.open` (creates the note from its template when missing and shows it), and `vulcan.template.insert` (append, prepend, or at a position; template mutations disabled)
-- [~] Custom protocol v1: `experimental.vulcan` advertisement, `vulcan/render` (inline expressions, Dataview/Tasks blocks, and `.base` embeds as regions), `vulcan/status`, and `vulcan/indexChanged` done; `vulcan/outline` and `vulcan/backlinks` remain
+- [x] Custom protocol v1: `experimental.vulcan` advertisement, `vulcan/render` (inline expressions, Dataview/Tasks blocks, and `.base` embeds as regions), `vulcan/outline` and `vulcan/backlinks` (the `note outline` and `note backlinks` JSON reports), `vulcan/status`, and `vulcan/indexChanged`
 - [x] Safety defaults: DataviewJS renders in the strict sandbox for every vault and with full evaluation for vaults trusted with `vulcan trust` (shared with the CLI, MCP, browse previews, and evaluated exports through `vulcan_core::vault_dataview_js_policy`); `--permissions` checks every planned read and write, gates `vulcan.scan` on `index`, and hides unreadable notes from navigation, completion, diagnostics, and render (the CLI `properties` command now honors the read grant too); the LSP never auto-commits
 - [ ] `[editor]` config section with default and override tests (DataviewJS rendering follows `vulcan trust` instead)
-- [ ] Protocol-level tests against fixture vaults: snapshots, CLI JSON parity, move roundtrip, open/closed split, failure paths, overlay leaves `cache.db` unchanged, encoding, concurrent processes, DataviewJS not executed by default
-- [ ] Add a `vulcan lsp` row to the unified-hosting inventory as a client-owned stdio transport
+- [x] Protocol-level tests: purpose-built vaults cover snapshots of every request, the open/closed split, failure paths, overlay leaving `cache.db` unchanged, encodings, concurrent processes, and DataviewJS policy; the shared `basic` and `ambiguous-links` fixture vaults check `vulcan/outline` and `vulcan/backlinks` parity with the CLI reports and diagnostics parity with `doctor`
+- [x] Add a `vulcan lsp` row to the unified-hosting inventory as a client-owned stdio transport
 
 ### 9.40.3 `vulcan.nvim`
 
 - [x] Create `integrations/vulcan.nvim/` with LSP registration (root markers `.vulcan/`, `.vulcan.toml`, `.obsidian/`) and `:checkhealth vulcan`
 - [x] Pickers (through `vim.ui.select`, so telescope, fzf-lua, or snacks present them) over notes, search, tags, and templates; backlinks through references
-- [~] `:Vulcan daily|weekly|template|capture` commands; floating-terminal launchers for `browse`, `bases`, and `kanban` — all but `capture`
+- [x] `:Vulcan daily|weekly|template|capture` commands (capture through `vulcan.capture` into the configured inbox, sharing `vulcan_app::inbox` with `vulcan inbox`); floating-terminal launchers for `browse`, `bases`, and `kanban`
 - [x] Virtual-line rendering of `vulcan/render` results; buffer re-pointing after moves (editor-side `RenameFile`); `doctor` results in quickfix
 - [x] Headless `nvim` smoke tests (`test/smoke.lua`, run by `cargo test -p vulcan-cli --test nvim_plugin` when Neovim 0.10+ is installed)
 - [x] `docs/guide/editors.md`: Neovim setup, recommended companions (render-markdown.nvim or markview.nvim, image.nvim or snacks.image), plain Vim recipes (`yegappan/lsp` or `vim-lsp` plus fzf.vim), Helix, and Emacs
-- [ ] Return a cursor offset from template insertion so `tp.file.cursor()` can place the cursor
+- [x] Return a cursor offset from template insertion so `tp.file.cursor()` can place the cursor (a reserved template variable makes the call emit a marker that editor insertion removes and reports as `report.cursor`)
 
 ### 9.40.4 Agent skills and documentation
 

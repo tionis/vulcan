@@ -124,10 +124,40 @@ local moved = vim.fs.joinpath(vault, 'archive/Home.md')
 check(wait(function() return vim.fs.normalize(vim.api.nvim_buf_get_name(0)) == vim.fs.normalize(moved) end), 'moving the open note re-points its buffer')
 check(vim.uv.fs_stat(moved) ~= nil and vim.uv.fs_stat(vim.fs.joinpath(vault, 'Home.md')) == nil, 'the note moved on disk')
 
+-- A template's tp.file.cursor() places the cursor.
+vim.fn.mkdir(vim.fs.joinpath(vault, '.vulcan/templates'), 'p')
+vim.fn.writefile({ '- [ ] <% tp.file.cursor() %>' }, vim.fs.joinpath(vault, '.vulcan/templates/Todo.md'))
+vim.cmd('silent! write')
+local before_lines = vim.api.nvim_buf_line_count(0)
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+require('vulcan.commands').insert_template('Todo')
+check(wait(function() return vim.api.nvim_buf_line_count(0) > before_lines end), 'template is inserted')
+local placed = wait(function()
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  -- Normal mode cannot sit past the last character, so column 6 clamps to 5.
+  return vim.api.nvim_get_current_line():find('^%- %[ %] $') ~= nil and cursor[2] >= 5
+end)
+if not placed then
+  print(vim.inspect({ cursor = vim.api.nvim_win_get_cursor(0), line = vim.api.nvim_get_current_line(), tail = vim.api.nvim_buf_get_lines(0, -4, -1, false) }))
+end
+check(placed, 'tp.file.cursor() places the cursor')
+vim.cmd('silent! write')
+
+-- The cursor now sits on whitespace, where Neovim's own showDocument
+-- handler throws (`expand('<cword>')`); the plugin's handler must not.
+local errors_before = #vim.tbl_filter(function(line) return line:find('E348') end, vim.split(vim.fn.execute('messages'), '\n'))
+vim.cmd('Vulcan capture remember the milk')
+check(wait(function()
+  local inbox = vim.fs.joinpath(vault, 'Inbox.md')
+  return vim.uv.fs_stat(inbox) ~= nil and table.concat(vim.fn.readfile(inbox), '\n'):find('remember the milk', 1, true) ~= nil
+end), 'capture appends to the inbox note')
+
 vim.cmd('Vulcan daily 2026-10-13')
 local daily = vim.fs.joinpath(vault, 'Journal/2026-10-13.md')
 check(wait(function() return vim.uv.fs_stat(daily) ~= nil end), 'periodic note is created')
 check(wait(function() return vim.fs.normalize(vim.api.nvim_buf_get_name(0)) == vim.fs.normalize(daily) end), 'periodic note is opened')
+local errors_after = #vim.tbl_filter(function(line) return line:find('E348') end, vim.split(vim.fn.execute('messages'), '\n'))
+check(errors_after == errors_before, 'opening a document from whitespace raises no error')
 
 vim.cmd('checkhealth vulcan')
 local report = table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), '\n')

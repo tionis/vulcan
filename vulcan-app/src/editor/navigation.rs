@@ -244,6 +244,45 @@ impl EditorSession {
         Ok(Some(format!("`{}`\n\n---\n\n{excerpt}", target.path)))
     }
 
+    /// The document's outline in the shape of `vulcan note outline --output
+    /// json`, computed from the open buffer (or the file) so unsaved
+    /// headings appear.
+    #[must_use]
+    pub fn outline_report(&self, path: &str) -> Option<crate::notes::NoteOutlineReport> {
+        let view = self.view(path)?;
+        let outline = outline_note(&view.text, &view.parsed);
+        let selection =
+            vulcan_core::select_note_outline(&outline, &vulcan_core::NoteOutlineOptions::default())
+                .ok()?;
+        Some(crate::notes::NoteOutlineReport {
+            path: path.to_string(),
+            total_lines: selection.total_lines,
+            frontmatter_span: selection.frontmatter_span,
+            scope_section: selection.scope_section,
+            depth_limit: None,
+            sections: selection.sections,
+            block_refs: selection.block_refs,
+        })
+    }
+
+    /// The note's backlinks in the shape of `vulcan note backlinks --output
+    /// json`, from the index and limited to readable sources. `None` when
+    /// the note is not indexed (for example, never saved) or not readable.
+    pub fn backlinks_report(
+        &self,
+        path: &str,
+    ) -> Result<Option<vulcan_core::BacklinksReport>, AppError> {
+        if !self.readable(path) || !self.has_cache() {
+            return Ok(None);
+        }
+        let filter = self.read_filter();
+        match vulcan_core::query_backlinks_with_filter(self.paths(), path, filter.as_ref()) {
+            Ok(report) => Ok(Some(report)),
+            Err(vulcan_core::GraphQueryError::NoteNotFound { .. }) => Ok(None),
+            Err(error) => Err(AppError::operation(error)),
+        }
+    }
+
     /// The outline of an open document as nested symbols.
     #[must_use]
     pub fn document_symbols(&self, path: &str) -> Option<Vec<EditorSymbol>> {

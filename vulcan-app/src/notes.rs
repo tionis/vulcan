@@ -2148,6 +2148,7 @@ fn collect_parse_diagnostics(
                 start: range.start,
                 end: range.end,
             }),
+            line: None,
         })
         .collect::<Vec<_>>();
 
@@ -2159,6 +2160,7 @@ fn collect_parse_diagnostics(
                 document_path: Some(display_path.to_string()),
                 message: diagnostic.message,
                 byte_range: None,
+                line: None,
             }
         }));
     }
@@ -2190,6 +2192,7 @@ fn dataview_parse_diagnostics(
                         start: block.byte_range.start,
                         end: block.byte_range.end,
                     }),
+                    line: Some(block.line_number),
                 })
         })
         .collect()
@@ -2208,6 +2211,7 @@ fn link_diagnostic(
             start: byte_offset,
             end: byte_offset + raw_text.len(),
         }),
+        line: None,
     }
 }
 
@@ -2444,7 +2448,7 @@ fn sort_and_dedup_diagnostics(diagnostics: &mut Vec<DoctorDiagnosticIssue>) {
     diagnostics.dedup();
 }
 
-fn append_entry_at_end(contents: &str, entry: &str) -> String {
+pub(crate) fn append_entry_at_end(contents: &str, entry: &str) -> String {
     let mut prefix = contents.trim_end_matches('\n').to_string();
     if !prefix.is_empty() {
         prefix.push_str("\n\n");
@@ -2455,7 +2459,7 @@ fn append_entry_at_end(contents: &str, entry: &str) -> String {
     updated
 }
 
-fn append_entry_under_heading(contents: &str, heading: &str, entry: &str) -> String {
+pub(crate) fn append_entry_under_heading(contents: &str, heading: &str, entry: &str) -> String {
     let heading = heading.trim();
     if heading.is_empty() {
         return append_entry_at_end(contents, entry);

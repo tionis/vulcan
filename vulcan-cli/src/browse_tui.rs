@@ -4889,6 +4889,8 @@ mod tests {
             message: "ambiguous".to_string(),
             target: Some("Dup".to_string()),
             matches: vec!["Private/Dup.md".to_string(), "Public/Dup.md".to_string()],
+            byte_offset: None,
+            line: None,
         });
         report.orphan_notes.push("Public/Home.md".to_string());
         let rows = |authority: &BrowseAuthority| {

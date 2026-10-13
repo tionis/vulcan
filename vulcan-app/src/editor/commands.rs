@@ -15,6 +15,10 @@ use std::collections::{BTreeMap, HashMap};
 use vulcan_core::editor::TextPosition;
 use vulcan_core::ordinary_write::OrdinaryWriteChange;
 
+/// Stands in for `tp.file.cursor()` while rendering; a private-use
+/// character no note text contains by accident.
+const CURSOR_MARKER: &str = "\u{E000}";
+
 /// Where an inserted template goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorTemplatePlacement {
@@ -54,7 +58,10 @@ impl EditorSession {
                 target_path: path,
                 target_contents: Some(&source),
                 engine: TemplateEngineKind::default(),
-                vars: &HashMap::new(),
+                vars: &HashMap::from([(
+                    crate::templates::TEMPLATE_CURSOR_MARKER_VAR.to_string(),
+                    CURSOR_MARKER.to_string(),
+                )]),
                 allow_mutations: false,
                 run_mode: TemplateRunMode::Append,
                 reference_date: None,
@@ -90,6 +97,14 @@ impl EditorSession {
             }
         }
         .map_err(AppError::operation)?;
+        // `tp.file.cursor()` left a marker: remove it and report where it was.
+        let cursor_offset = updated.find(CURSOR_MARKER);
+        let updated = updated.replace(CURSOR_MARKER, "");
+        let cursor = cursor_offset.map(|offset| {
+            let index = vulcan_core::editor::LineIndex::new(&updated);
+            let position = index.position(&updated, offset, self.encoding());
+            serde_json::json!({ "line": position.line, "character": position.column })
+        });
 
         let mut plan = empty_plan(
             "template_insert",
@@ -99,6 +114,7 @@ impl EditorSession {
                 "engine": rendered.engine.as_str(),
                 "warnings": rendered.warnings,
                 "diagnostics": rendered.diagnostics,
+                "cursor": cursor,
             }),
         );
         if updated != source {
@@ -114,6 +130,36 @@ impl EditorSession {
                     after: Some(updated),
                 }),
             }
+        }
+        Ok(plan)
+    }
+
+    /// Plan capturing `text` into the configured inbox note: an edit to the
+    /// open buffer, else an append (or creation) on disk.
+    pub fn plan_capture(&self, text: &str) -> Result<EditorEditPlan, AppError> {
+        let path = crate::inbox::inbox_path(&self.config().inbox)?;
+        let open = self.document(&path);
+        let current = match open {
+            Some(document) => Some(document.text.clone()),
+            None => std::fs::read_to_string(self.paths().vault_root().join(&path)).ok(),
+        };
+        let (path, updated) = crate::inbox::plan_inbox_capture(
+            self.paths(),
+            current.as_deref().unwrap_or_default(),
+            text,
+        )?;
+        let mut plan = empty_plan("capture", serde_json::json!({ "path": path }));
+        match open {
+            Some(document) => plan.open.push(EditorDocumentEdit {
+                path,
+                version: document.version,
+                edits: text_edits(self, &document.text, &updated),
+            }),
+            None => plan.disk.push(OrdinaryWriteChange {
+                path,
+                before: current,
+                after: Some(updated),
+            }),
         }
         Ok(plan)
     }
@@ -212,6 +258,7 @@ mod tests {
             .map(|edit| edit.new_text.as_str())
             .collect::<String>();
         assert!(edited.contains("**Note**"), "{edited}");
+        assert!(plan.report["cursor"].is_null());
         assert!(edited.contains("- b"), "frontmatter merges: {edited}");
         assert_eq!(
             std::fs::read_to_string(dir.path().join("Note.md")).unwrap(),
@@ -220,6 +267,33 @@ mod tests {
         assert!(session
             .plan_template_insert("Note.md", "Missing", EditorTemplatePlacement::Append)
             .is_err());
+    }
+
+    #[test]
+    fn reports_where_tp_file_cursor_puts_the_cursor() {
+        let text = "# Note\n";
+        let (_dir, mut session) = vault(&[
+            ("Note.md", text),
+            (
+                ".vulcan/templates/Todo.md",
+                "- [ ] <% tp.file.cursor() %>\n",
+            ),
+        ]);
+        session.open("Note.md", 1, text.into());
+        let plan = session
+            .plan_template_insert("Note.md", "Todo", EditorTemplatePlacement::Append)
+            .unwrap();
+        let inserted = plan.open[0]
+            .edits
+            .iter()
+            .map(|edit| edit.new_text.as_str())
+            .collect::<String>();
+        assert!(!inserted.contains(CURSOR_MARKER), "{inserted:?}");
+        // "# Note\n\n- [ ] " puts the cursor after the checkbox on line 2.
+        assert_eq!(
+            plan.report["cursor"],
+            serde_json::json!({ "line": 2, "character": 6 })
+        );
     }
 
     #[test]
@@ -238,6 +312,32 @@ mod tests {
             std::fs::read_to_string(dir.path().join("Note.md")).unwrap(),
             "# Note\n\nFooter for Note\n"
         );
+    }
+
+    #[test]
+    fn captures_into_the_inbox_buffer_or_file() {
+        let (dir, mut session) = vault(&[("Inbox.md", "# Inbox\n")]);
+        std::fs::write(
+            dir.path().join(".vulcan/config.toml"),
+            "[inbox]\nformat = \"- {text}\"\ntimestamp = false\n",
+        )
+        .unwrap();
+        let mut session_reloaded = EditorSession::new(session.paths().clone(), session.encoding());
+        let plan = session_reloaded.plan_capture("closed idea").unwrap();
+        assert_eq!(plan.disk[0].path, "Inbox.md");
+        assert_eq!(
+            plan.disk[0].after.as_deref(),
+            Some("# Inbox\n\n- closed idea\n")
+        );
+        session_reloaded
+            .apply_disk_changes(&plan.disk, &plan.disk_renames)
+            .unwrap();
+
+        session_reloaded.open("Inbox.md", 4, "# Inbox (editing)\n".into());
+        let plan = session_reloaded.plan_capture("open idea").unwrap();
+        assert!(plan.disk.is_empty());
+        assert_eq!(plan.open[0].version, 4);
+        session.close("Inbox.md");
     }
 
     #[test]

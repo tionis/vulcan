@@ -115,6 +115,12 @@ pub struct DoctorLinkIssue {
     pub message: String,
     pub target: Option<String>,
     pub matches: Vec<String>,
+    /// Where the link starts in its note, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub byte_offset: Option<usize>,
+    /// The 1-based line of `byte_offset`, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -122,6 +128,9 @@ pub struct DoctorDiagnosticIssue {
     pub document_path: Option<String>,
     pub message: String,
     pub byte_range: Option<DoctorByteRange>,
+    /// The 1-based line where `byte_range` starts, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -174,7 +183,7 @@ pub fn doctor_vault(paths: &VaultPaths) -> Result<DoctorReport, DoctorError> {
     let orphan_assets =
         load_orphan_assets(&connection, &indexed_documents, &reconciliation.on_disk)?;
 
-    Ok(DoctorReport::new(
+    let mut report = DoctorReport::new(
         sections.unresolved_links,
         sections.ambiguous_links,
         broken_embeds,
@@ -186,7 +195,9 @@ pub fn doctor_vault(paths: &VaultPaths) -> Result<DoctorReport, DoctorError> {
         orphan_notes,
         orphan_assets,
         sections.html_links,
-    ))
+    );
+    fill_issue_lines(paths, &mut report);
+    Ok(report)
 }
 
 pub fn doctor_fix(paths: &VaultPaths, dry_run: bool) -> Result<DoctorFixReport, DoctorError> {
@@ -517,7 +528,7 @@ fn load_orphan_notes(
 fn load_broken_embeds(connection: &Connection) -> Result<Vec<DoctorLinkIssue>, DoctorError> {
     let mut statement = connection.prepare(
         "
-        SELECT source.path, links.target_path_candidate
+        SELECT source.path, links.target_path_candidate, links.byte_offset
         FROM links
         JOIN documents AS source ON source.id = links.source_document_id
         WHERE links.link_kind = 'embed'
@@ -532,6 +543,11 @@ fn load_broken_embeds(connection: &Connection) -> Result<Vec<DoctorLinkIssue>, D
             message: format!("Broken embed target: {}", row.get::<_, String>(1)?),
             target: row.get(1)?,
             matches: Vec::new(),
+            byte_offset: row
+                .get::<_, i64>(2)
+                .ok()
+                .and_then(|offset| usize::try_from(offset).ok()),
+            line: None,
         })
     })?;
 
@@ -642,23 +658,27 @@ fn classify_diagnostics(
                 document_path: diagnostic.document_path,
                 message: diagnostic.message,
                 byte_range: detail_byte_range(detail.as_ref()),
+                line: None,
             }),
             "type_mismatch" => sections.type_mismatches.push(DoctorDiagnosticIssue {
                 document_path: diagnostic.document_path,
                 message: diagnostic.message,
                 byte_range: detail_byte_range(detail.as_ref()),
+                line: None,
             }),
             "unsupported_syntax" if diagnostic.message.contains("HTML link detected") => {
                 sections.html_links.push(DoctorDiagnosticIssue {
                     document_path: diagnostic.document_path,
                     message: diagnostic.message,
                     byte_range: detail_byte_range(detail.as_ref()),
+                    line: None,
                 });
             }
             "unsupported_syntax" => sections.unsupported_syntax.push(DoctorDiagnosticIssue {
                 document_path: diagnostic.document_path,
                 message: diagnostic.message,
                 byte_range: detail_byte_range(detail.as_ref()),
+                line: None,
             }),
             _ => {}
         }
@@ -714,6 +734,8 @@ fn classify_link_issue(
             message: diagnostic.message,
             target,
             matches: detail_matches(detail, path_by_id),
+            byte_offset: detail_byte_offset(detail),
+            line: None,
         });
     } else {
         sections.unresolved_links.push(DoctorLinkIssue {
@@ -721,6 +743,8 @@ fn classify_link_issue(
             message: diagnostic.message,
             target,
             matches: Vec::new(),
+            byte_offset: detail_byte_offset(detail),
+            line: None,
         });
     }
 }
@@ -729,6 +753,46 @@ fn detail_reason(detail: Option<&Value>) -> Option<&str> {
     detail
         .and_then(|value| value.get("reason"))
         .and_then(Value::as_str)
+}
+
+fn detail_byte_offset(detail: Option<&Value>) -> Option<usize> {
+    detail
+        .and_then(|value| value.get("byte_offset"))
+        .and_then(Value::as_u64)
+        .and_then(|offset| usize::try_from(offset).ok())
+}
+
+/// Fill in 1-based lines from byte offsets, reading each note once, so
+/// editors can jump to the problem.
+fn fill_issue_lines(paths: &VaultPaths, report: &mut DoctorReport) {
+    let mut texts = HashMap::<String, Option<Vec<u8>>>::new();
+    let mut line_of = |path: Option<&String>, offset: Option<usize>| -> Option<usize> {
+        let (path, offset) = (path?, offset?);
+        let bytes = texts
+            .entry(path.clone())
+            .or_insert_with(|| std::fs::read(paths.vault_root().join(path)).ok())
+            .as_ref()?;
+        let end = offset.min(bytes.len());
+        Some(bytes[..end].split(|byte| *byte == b'\n').count())
+    };
+    for issue in report
+        .unresolved_links
+        .iter_mut()
+        .chain(report.ambiguous_links.iter_mut())
+        .chain(report.broken_embeds.iter_mut())
+    {
+        issue.line = line_of(issue.document_path.as_ref(), issue.byte_offset).or(issue.line);
+    }
+    for issue in report
+        .parse_failures
+        .iter_mut()
+        .chain(report.type_mismatches.iter_mut())
+        .chain(report.unsupported_syntax.iter_mut())
+        .chain(report.html_links.iter_mut())
+    {
+        let start = issue.byte_range.as_ref().map(|range| range.start);
+        issue.line = line_of(issue.document_path.as_ref(), start).or(issue.line);
+    }
 }
 
 fn detail_target(detail: Option<&Value>) -> Option<String> {
@@ -803,6 +867,7 @@ fn load_dataview_parse_failures(
                     error.message
                 ),
                 byte_range: None,
+                line: usize::try_from(line_number).ok(),
             });
         }
     }
@@ -1002,6 +1067,18 @@ mod tests {
             missing_report.unresolved_links[0].target.as_deref(),
             Some("Ghost")
         );
+        // Editors jump to the link: "# Home\n\nMissing target [[Ghost]]".
+        assert_eq!(missing_report.unresolved_links[0].byte_offset, Some(23));
+        assert_eq!(missing_report.unresolved_links[0].line, Some(3));
+        // An incremental re-resolution records the position too.
+        fs::write(
+            missing_root.join("Home.md"),
+            "# Home\n\n\nMissing target [[Ghost]].\n",
+        )
+        .expect("note should be written");
+        scan_vault(&missing_paths, ScanMode::Incremental).expect("scan should succeed");
+        let missing_report = doctor_vault(&missing_paths).expect("doctor should succeed");
+        assert_eq!(missing_report.unresolved_links[0].line, Some(4));
     }
 
     #[test]

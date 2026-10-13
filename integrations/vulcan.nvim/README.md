@@ -55,6 +55,7 @@ From the plugin:
 | `:Vulcan daily [date]`, `weekly`, `monthly`, `periodic {type} [date]` | Open a periodic note, creating it from its template |
 | `:Vulcan template [name]` | Insert a template at the cursor |
 | `:Vulcan task` | Complete or reopen the task on the cursor line |
+| `:Vulcan capture [text]` | Append a quick capture to the configured inbox note |
 | `:Vulcan move [path]` | Move the current note, rewriting every link |
 | `:Vulcan scan[!]` | Rescan the vault (`!` rebuilds) |
 | `:Vulcan render` | Toggle query results for this buffer |

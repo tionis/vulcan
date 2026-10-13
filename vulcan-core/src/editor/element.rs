@@ -173,6 +173,9 @@ pub enum CompletionContext {
         query: String,
         range: Range<usize>,
     },
+    /// An inline field key being typed inside `[` or `(`, as in
+    /// `[status:: done]`.
+    InlineFieldKey { query: String, range: Range<usize> },
 }
 
 impl CompletionContext {
@@ -184,7 +187,8 @@ impl CompletionContext {
             | Self::LinkBlock { range, .. }
             | Self::Tag { range, .. }
             | Self::PropertyKey { range, .. }
-            | Self::PropertyValue { range, .. } => range.clone(),
+            | Self::PropertyValue { range, .. }
+            | Self::InlineFieldKey { range, .. } => range.clone(),
         }
     }
 }
@@ -207,7 +211,31 @@ pub fn completion_context(source: &str, offset: usize) -> Option<CompletionConte
     if let Some(context) = link_context(before, line_start) {
         return Some(context);
     }
-    tag_context(before, line_start)
+    tag_context(before, line_start).or_else(|| inline_field_context(before, line_start))
+}
+
+/// `[key` or `(key` with no `::` yet: an inline field being started. Link
+/// brackets (`[[`, `![`, `](`) and Markdown link text are excluded.
+fn inline_field_context(before: &str, line_start: usize) -> Option<CompletionContext> {
+    let key_start = before
+        .char_indices()
+        .rev()
+        .take_while(|(_, character)| character.is_alphanumeric() || matches!(character, '_' | '-'))
+        .last()
+        .map_or(before.len(), |(index, _)| index);
+    let bracket = key_start.checked_sub(1)?;
+    let opener = before.as_bytes()[bracket];
+    if opener != b'[' && opener != b'(' {
+        return None;
+    }
+    let preceding = before[..bracket].chars().next_back();
+    if matches!(preceding, Some('[' | '!' | ']')) {
+        return None;
+    }
+    Some(CompletionContext::InlineFieldKey {
+        query: before[key_start..].to_string(),
+        range: line_start + key_start..line_start + before.len(),
+    })
 }
 
 fn link_context(before: &str, line_start: usize) -> Option<CompletionContext> {
@@ -443,6 +471,27 @@ mod tests {
         assert_eq!(completion_context("a#pro", 5), None);
         assert_eq!(completion_context("#1984", 5), None);
         assert_eq!(completion_context("## He", 5), None);
+    }
+
+    #[test]
+    fn classifies_inline_field_key_completion() {
+        assert_eq!(
+            completion_context("Task [sta", 9),
+            Some(CompletionContext::InlineFieldKey {
+                query: "sta".into(),
+                range: 6..9
+            })
+        );
+        assert!(matches!(
+            completion_context("x (due", 6),
+            Some(CompletionContext::InlineFieldKey { .. })
+        ));
+        assert!(matches!(
+            completion_context("[[al", 4),
+            Some(CompletionContext::LinkTarget { .. })
+        ));
+        assert_eq!(completion_context("![img", 5), None);
+        assert_eq!(completion_context("[text](ur", 9), None);
     }
 
     #[test]

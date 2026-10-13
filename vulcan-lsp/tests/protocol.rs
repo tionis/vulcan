@@ -1085,3 +1085,94 @@ fn permission_profiles_limit_what_the_editor_can_change() {
     );
     assert_eq!(scan["data"]["kind"], "permission_denied");
 }
+
+/// Copy a shared fixture vault from `tests/fixtures/vaults/` and index it.
+fn fixture_vault(name: &str) -> tempfile::TempDir {
+    fn copy(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../tests/fixtures/vaults")
+        .join(name);
+    let dir = tempfile::tempdir().unwrap();
+    copy(&source, dir.path());
+    let paths = VaultPaths::new(dir.path());
+    vulcan_core::paths::initialize_vulcan_dir(&paths).unwrap();
+    scan_vault(&paths, ScanMode::Full).unwrap();
+    dir
+}
+
+#[test]
+fn outline_and_backlinks_match_the_cli_reports_on_fixture_vaults() {
+    let dir = fixture_vault("basic");
+    let paths = VaultPaths::new(dir.path());
+    let (mut client, _) = Client::start(dir.path(), &json!({}));
+    for path in ["Home.md", "Projects/Alpha.md", "People/Bob.md"] {
+        let text = std::fs::read_to_string(dir.path().join(path)).unwrap();
+        client.open(path, &text);
+        let _ = client.diagnostics(path);
+        let document = json!({ "textDocument": { "uri": client.uri(path) } });
+
+        let outline = client.request("vulcan/outline", document.clone());
+        let cli_outline = vulcan_app::notes::read_note_outline(&paths, path, None, None).unwrap();
+        assert_eq!(
+            outline,
+            serde_json::to_value(cli_outline).unwrap(),
+            "{path}"
+        );
+
+        let backlinks = client.request("vulcan/backlinks", document);
+        let cli_backlinks = vulcan_core::query_backlinks(&paths, path).unwrap();
+        assert_eq!(
+            backlinks,
+            serde_json::to_value(cli_backlinks).unwrap(),
+            "{path}"
+        );
+    }
+
+    // The outline follows unsaved headings; a never-saved note has no
+    // backlinks report.
+    client.open("Draft.md", "# Draft\n\n## Unsaved section\n");
+    let _ = client.diagnostics("Draft.md");
+    let document = json!({ "textDocument": { "uri": client.uri("Draft.md") } });
+    let outline = client.request("vulcan/outline", document.clone());
+    assert_eq!(outline["sections"][1]["heading"], "Unsaved section");
+    assert_eq!(client.request("vulcan/backlinks", document), Value::Null);
+}
+
+#[test]
+fn diagnostics_on_fixture_vaults_use_doctor_categories() {
+    let dir = fixture_vault("ambiguous-links");
+    let paths = VaultPaths::new(dir.path());
+    let doctor = vulcan_core::doctor_vault(&paths).unwrap();
+    let issue = &doctor.ambiguous_links[0];
+    let path = issue.document_path.clone().unwrap();
+    let (mut client, _) = Client::start(dir.path(), &json!({}));
+    let text = std::fs::read_to_string(dir.path().join(&path)).unwrap();
+    client.open(&path, &text);
+    let diagnostics = client.diagnostics(&path);
+    let ambiguous = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == "ambiguous-link")
+        .expect("the editor reports the ambiguous link doctor reports");
+    assert_eq!(
+        ambiguous["data"]["candidates"],
+        serde_json::to_value(&issue.matches).unwrap()
+    );
+    // Doctor's 1-based line is the editor's 0-based line plus one.
+    assert_eq!(
+        ambiguous["range"]["start"]["line"]
+            .as_u64()
+            .map(|line| line + 1),
+        issue.line.map(|line| line as u64)
+    );
+}

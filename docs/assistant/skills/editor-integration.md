@@ -1,7 +1,7 @@
 ---
 name: editor-integration
 description: Set up and troubleshoot Vulcan's language server for Neovim, Vim, Helix, Emacs, Zed, or another LSP client. Use when the user wants link navigation, backlinks, completion, or diagnostics in a terminal editor, or asks why their editor reports an unresolved or ambiguous link.
-version: 8
+version: 9
 tools:
   - describe
   - help
@@ -49,8 +49,9 @@ and wants vault-aware features, or when editor diagnostics need explaining.
    between wikilink and Markdown style, and toggle the task on the cursor line
    (`vulcan.task.toggle`; completing a recurring task inserts its next occurrence). Commands also
    open or create periodic notes (`vulcan.periodic.open`), insert templates
-   (`vulcan.template.insert`), and rescan (`vulcan.scan`); `vulcan/render` returns query results
-   for display beside their blocks.
+   (`vulcan.template.insert`, honoring `tp.file.cursor()`), capture to the inbox
+   (`vulcan.capture`), and rescan (`vulcan.scan`); `vulcan/render` returns query results for
+   display beside their blocks.
 4. For a whole-vault view of broken links, run `vulcan doctor`. Editor diagnostics use the same
    categories (`unresolved-link`, `ambiguous-link`, `outside-vault-link`, `malformed-frontmatter`)
    but only cover open buffers.

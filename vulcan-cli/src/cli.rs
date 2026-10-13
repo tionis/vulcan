@@ -7664,6 +7664,16 @@ pub enum NoteCheckboxState {
     Unchecked,
 }
 
+impl From<NoteCheckboxState> for vulcan_app::checkbox::CheckboxState {
+    fn from(state: NoteCheckboxState) -> Self {
+        match state {
+            NoteCheckboxState::Toggle => Self::Toggle,
+            NoteCheckboxState::Checked => Self::Checked,
+            NoteCheckboxState::Unchecked => Self::Unchecked,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum TemplateEngineArg {
     Native,

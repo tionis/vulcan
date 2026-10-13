@@ -3432,8 +3432,12 @@ fn resolve_all_links(
                 Ulid::new().to_string(),
                 link.resolver_link.source_document_id,
                 resolution_problem_message(&problem, &link.resolver_link),
-                serde_json::to_string(&resolution_problem_detail(&problem, &link.resolver_link))
-                    .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+                serde_json::to_string(&resolution_problem_detail(
+                    &problem,
+                    &link.resolver_link,
+                    link.byte_offset,
+                ))
+                .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
                 &timestamp,
             ])?;
         }
@@ -3466,7 +3470,8 @@ fn resolve_changed_links(
     // One JSON array parameter, whatever the number of changed documents.
     let id_list = serde_json::to_string(changed_document_ids).unwrap_or_default();
     let sql = "
-        SELECT l.id, l.source_document_id, s.path, l.target_path_candidate, l.link_kind
+        SELECT l.id, l.source_document_id, s.path, l.target_path_candidate, l.link_kind,
+            l.byte_offset
         FROM links l
         JOIN documents s ON s.id = l.source_document_id
         WHERE l.source_document_id IN (SELECT value FROM json_each(?1))
@@ -3482,6 +3487,7 @@ fn resolve_changed_links(
                 target_path_candidate: row.get(3)?,
                 link_kind: parse_link_kind(&row.get::<_, String>(4)?),
             },
+            byte_offset: row.get(5)?,
         })
     })?;
     let links = rows.collect::<Result<Vec<_>, _>>()?;
@@ -3526,8 +3532,12 @@ fn resolve_changed_links(
                 Ulid::new().to_string(),
                 link.resolver_link.source_document_id,
                 resolution_problem_message(&problem, &link.resolver_link),
-                serde_json::to_string(&resolution_problem_detail(&problem, &link.resolver_link))
-                    .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
+                serde_json::to_string(&resolution_problem_detail(
+                    &problem,
+                    &link.resolver_link,
+                    link.byte_offset,
+                ))
+                .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
                 &timestamp,
             ])?;
         }
@@ -3571,7 +3581,8 @@ fn load_resolver_links(transaction: &Transaction<'_>) -> Result<Vec<ResolverLink
             l.source_document_id,
             s.path,
             l.target_path_candidate,
-            l.link_kind
+            l.link_kind,
+            l.byte_offset
         FROM links l
         JOIN documents s ON s.id = l.source_document_id
         ORDER BY l.byte_offset
@@ -3586,6 +3597,7 @@ fn load_resolver_links(transaction: &Transaction<'_>) -> Result<Vec<ResolverLink
                 target_path_candidate: row.get(3)?,
                 link_kind: parse_link_kind(&row.get::<_, String>(4)?),
             },
+            byte_offset: row.get(5)?,
         })
     })?;
 
@@ -3606,20 +3618,24 @@ fn resolution_problem_message(problem: &LinkResolutionProblem, link: &ResolverLi
 fn resolution_problem_detail(
     problem: &LinkResolutionProblem,
     link: &ResolverLink,
+    byte_offset: i64,
 ) -> serde_json::Value {
     match problem {
         LinkResolutionProblem::Unresolved => json!({
             "reason": "unresolved",
             "target": link.target_path_candidate,
+            "byte_offset": byte_offset,
         }),
         LinkResolutionProblem::Ambiguous(matches) => json!({
             "reason": "ambiguous",
             "target": link.target_path_candidate,
             "matches": matches,
+            "byte_offset": byte_offset,
         }),
         LinkResolutionProblem::OutsideVault => json!({
             "reason": "outside_vault",
             "target": link.target_path_candidate,
+            "byte_offset": byte_offset,
         }),
     }
 }
@@ -3636,6 +3652,8 @@ pub(crate) fn parse_link_kind(link_kind: &str) -> LinkKind {
 struct ResolverLinkRow {
     id: String,
     resolver_link: ResolverLink,
+    /// Where the link starts in its source note, for diagnostics.
+    byte_offset: i64,
 }
 
 fn link_kind_name(link_kind: LinkKind) -> &'static str {

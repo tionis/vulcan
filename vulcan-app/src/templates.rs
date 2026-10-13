@@ -464,6 +464,11 @@ impl TemplateRunMode {
     }
 }
 
+/// Template variable that, when set, makes `tp.file.cursor()` emit its
+/// value instead of nothing, so an editor can find and remove the marker and
+/// place the cursor there. Outside editors the call stays a no-op.
+pub const TEMPLATE_CURSOR_MARKER_VAR: &str = "__vulcan_cursor_marker";
+
 #[derive(Debug, Clone)]
 pub struct TemplateRenderRequest<'a> {
     pub paths: &'a VaultPaths,
@@ -1993,7 +1998,13 @@ impl<'a> TemplateSession<'a> {
             "tp.file.create_new" => self.tp_file_create_new_call(args),
             "tp.file.move" => self.tp_file_move_call(args),
             "tp.file.rename" => self.tp_file_rename_call(args),
-            "tp.file.cursor" => Ok(TemplateValue::String(String::new())),
+            "tp.file.cursor" => Ok(TemplateValue::String(
+                self.request
+                    .vars
+                    .get(TEMPLATE_CURSOR_MARKER_VAR)
+                    .cloned()
+                    .unwrap_or_default(),
+            )),
             "tp.file.find_tfile" => Ok(self.tp_file_find_tfile_call(args)),
             "tp.system.prompt" => self.tp_system_prompt_call(args),
             "tp.system.suggester" => self.tp_system_suggester_call(args),
@@ -2941,7 +2952,13 @@ fn js_call_response(
             js_file_rename(&mut state, args)?;
             JsonValue::String(String::new())
         }
-        "file.cursor" => JsonValue::String(String::new()),
+        "file.cursor" => JsonValue::String(
+            state
+                .vars
+                .get(TEMPLATE_CURSOR_MARKER_VAR)
+                .cloned()
+                .unwrap_or_default(),
+        ),
         "file.find_tfile" => args
             .first()
             .and_then(JsonValue::as_str)

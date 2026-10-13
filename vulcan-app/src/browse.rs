@@ -680,6 +680,13 @@ pub fn collect_complete_candidates(
                 if seen.insert(note.path.clone()) {
                     candidates.push(note.path);
                 }
+                // Note arguments resolve aliases too, as editor link
+                // completion offers them.
+                for alias in note.aliases {
+                    if !alias.is_empty() && seen.insert(alias.clone()) {
+                        candidates.push(alias);
+                    }
+                }
             }
             candidates
         }
@@ -1059,6 +1066,24 @@ format = "YYYY-MM-DD"
         assert_eq!(items[0].period_type, "daily");
         assert_eq!(items[0].date.as_deref(), Some("2026-04-20"));
         assert_eq!(items[0].path, "Journal/Daily/2026-04-20.md");
+    }
+
+    #[test]
+    fn collect_complete_candidates_offers_note_names_paths_and_aliases() {
+        let (_dir, paths) = test_paths();
+        fs::create_dir_all(paths.vault_root().join("Projects")).expect("folder");
+        fs::write(
+            paths.vault_root().join("Projects/Alpha.md"),
+            "---\naliases: [First, Launch]\n---\n# Alpha\n",
+        )
+        .expect("note");
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let candidates = collect_complete_candidates(&paths, "note").expect("candidates");
+        assert_eq!(
+            candidates,
+            vec!["Alpha", "Projects/Alpha.md", "First", "Launch"]
+        );
     }
 
     #[test]

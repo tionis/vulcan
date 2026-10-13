@@ -58,6 +58,7 @@ the strict sandbox, with full evaluation for vaults trusted with
 :Vulcan task              Complete or reopen the task on the cursor line.
                           Completing a recurring task inserts its next
                           occurrence.
+:Vulcan capture [text]    Append a quick capture to the configured inbox note.
 :Vulcan move [path]       Move the current note, rewriting every link.
 :Vulcan scan[!]           Rescan the vault; with ! rebuild every document.
 :Vulcan render            Toggle query results for the current buffer.
