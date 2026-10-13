@@ -385,7 +385,13 @@ Errors use LSP `ResponseError` with `data: { kind, detail }`, reusing the compan
 
 - **`initializationOptions`** (client and transport concerns only): `vault` override,
   `permissions` profile, `dataviewJs` preference, `autoCommit`, `watcher` (`own` | `client` | `off`),
-  `diagnostics` (`onChange` | `onSave`), `completion.linkStyle`.
+  `diagnostics` (`onChange` | `onSave`), `completion.linkStyle`, and `showDocument` (treat the
+  client as handling `window/showDocument` although it does not advertise it, as Helix does).
+- **Command arguments for editors without a plugin layer.** A command's document argument (`path`,
+  `from`) may be a file URI, a vault path, or a filesystem path (absolute, `~/`, or relative to the
+  vault root), and a position may be given as 1-based `lineNumber` and `columnNumber` (characters)
+  instead of an LSP `position` (`vulcan.task.toggle` also takes `lineNumber` for `line`). Helix
+  keybindings fill them from `%{buffer_name}`, `%{cursor_line}`, and `%{cursor_column}`.
 - **Vault semantics** stay in `.vulcan/config.toml` and the device-local `.vulcan/config.local.toml`
   (higher precedence). Their `[editor]` section holds editor defaults (see "Beyond the MVP");
   `DataviewJS` rendering follows `vulcan trust` instead of configuration.

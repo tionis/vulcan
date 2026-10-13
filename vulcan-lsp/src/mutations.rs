@@ -256,16 +256,28 @@ fn execute_command(
             .map(str::to_string)
             .ok_or_else(|| invalid(format!("{command} needs a `{name}` string argument")))
     };
-    // A document is named by a vault path or a file URI.
-    let document = |name: &str| {
-        text(name).map(|value| {
-            value
-                .parse::<lsp::Uri>()
-                .ok()
-                .and_then(|uri| handlers::vault_path(session, &uri))
-                .unwrap_or(value)
-        })
-    };
+    let document = |name: &str| text(name).map(|value| document_argument(session, value));
+    // A position is an LSP `position`, or 1-based `lineNumber` and
+    // `columnNumber` (characters), which keybinding-driven editors can
+    // fill in from the cursor (Helix's `%{cursor_line}`).
+    let position =
+        |path: &str| -> Result<Option<vulcan_core::editor::TextPosition>, ResponseFailure> {
+            if argument["position"].is_object() {
+                let position =
+                    serde_json::from_value::<lsp::Position>(argument["position"].clone())
+                        .map_err(|error| invalid(error.to_string()))?;
+                return Ok(Some(convert::position(position)));
+            }
+            let Some(line) = argument["lineNumber"].as_u64() else {
+                return Ok(None);
+            };
+            let column = argument["columnNumber"].as_u64().unwrap_or(1);
+            let number = |value: u64| u32::try_from(value).unwrap_or(u32::MAX);
+            session
+                .position_at_line_column(path, number(line), number(column))
+                .map(Some)
+                .ok_or_else(|| invalid(format!("{command}: line {line} is not in {path}")))
+        };
     if command == "vulcan.scan" {
         let full = argument["full"].as_bool() == Some(true);
         let summary = session.rescan(full)?;
@@ -278,30 +290,36 @@ fn execute_command(
             argument["date"].as_str(),
         )?,
         "vulcan.template.insert" => {
-            let placement = match (&argument["position"], argument["mode"].as_str()) {
-                (position, _) if position.is_object() => {
-                    let position = serde_json::from_value::<lsp::Position>(position.clone())
-                        .map_err(|error| invalid(error.to_string()))?;
-                    EditorTemplatePlacement::At(convert::position(position))
-                }
-                (_, Some("prepend")) => EditorTemplatePlacement::Prepend,
-                (_, None | Some("append")) => EditorTemplatePlacement::Append,
-                (_, Some(mode)) => return Err(invalid(format!("unknown insert mode {mode}"))),
+            let path = document("path")?;
+            let placement = match (position(&path)?, argument["mode"].as_str()) {
+                (Some(position), _) => EditorTemplatePlacement::At(position),
+                (None, Some("prepend")) => EditorTemplatePlacement::Prepend,
+                (None, None | Some("append")) => EditorTemplatePlacement::Append,
+                (None, Some(mode)) => return Err(invalid(format!("unknown insert mode {mode}"))),
             };
-            session.plan_template_insert(&document("path")?, &text("template")?, placement)?
+            session.plan_template_insert(&path, &text("template")?, placement)?
         }
         "vulcan.note.create" => session.plan_note_create(&text("path")?)?,
         "vulcan.section.extract" => {
-            let position = serde_json::from_value::<lsp::Position>(argument["position"].clone())
-                .map_err(|_| invalid(format!("{command} needs a `position` argument")))?;
-            session.plan_extract_section(&document("path")?, convert::position(position))?
+            let path = document("path")?;
+            let position = position(&path)?.ok_or_else(|| {
+                invalid(format!(
+                    "{command} needs a `position` or `lineNumber` argument"
+                ))
+            })?;
+            session.plan_extract_section(&path, position)?
         }
         "vulcan.capture" => session.plan_capture(&text("text")?)?,
         "vulcan.task.toggle" => {
             let line = argument["line"]
                 .as_u64()
+                .or_else(|| argument["lineNumber"].as_u64()?.checked_sub(1))
                 .and_then(|line| u32::try_from(line).ok())
-                .ok_or_else(|| invalid(format!("{command} needs a `line` number argument")))?;
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "{command} needs a `line` (0-based) or `lineNumber` (1-based) argument"
+                    ))
+                })?;
             let today = argument["today"].as_str().map_or_else(
                 vulcan_app::periodic::current_local_date_string,
                 str::to_string,
@@ -427,6 +445,43 @@ fn execute(
     }
     record_move();
     Ok(())
+}
+
+/// The vault path a command's document argument names: a file URI, a vault
+/// path, or a filesystem path (absolute, `~/`, or relative to the vault
+/// root), as editors without a plugin layer pass the current buffer (Helix's
+/// `%{buffer_name}` is relative to its working directory, usually the vault).
+fn document_argument(session: &EditorSession, value: String) -> String {
+    if let Some(path) = value
+        .parse::<lsp::Uri>()
+        .ok()
+        .and_then(|uri| handlers::vault_path(session, &uri))
+    {
+        return path;
+    }
+    let home = || {
+        ["HOME", "USERPROFILE"]
+            .into_iter()
+            .filter_map(std::env::var_os)
+            .find(|home| !home.is_empty())
+            .map(std::path::PathBuf::from)
+    };
+    let path = match value.strip_prefix("~/").zip(home()) {
+        Some((rest, home)) => home.join(rest),
+        None => std::path::PathBuf::from(&value),
+    };
+    if path.is_absolute() {
+        if let Some(path) =
+            convert::file_uri(&path).and_then(|uri| handlers::vault_path(session, &uri))
+        {
+            return path;
+        }
+    }
+    if cfg!(windows) {
+        value.replace('\\', "/")
+    } else {
+        value
+    }
 }
 
 /// Create the missing folders above `path` (vault-relative). Returns the

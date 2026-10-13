@@ -1562,3 +1562,62 @@ fn editors_that_announce_the_servers_own_renames_do_not_stall() {
         "# Home\n\nSee [[Alpha]] and [[Alpha#Status]].\n"
     );
 }
+
+#[test]
+fn commands_take_filesystem_paths_and_one_based_positions() {
+    let note = "# Tasks\n\n- [ ] Water plants\n\n## Later\n\nSoon\n";
+    let dir = vault(&[("Tasks.md", note)]);
+    let (mut client, _) = Client::start(dir.path(), &editing_client());
+    client.open("Tasks.md", note);
+    let _ = client.diagnostics("Tasks.md");
+    let absolute = dir.path().join("Tasks.md").display().to_string();
+
+    // Helix-style: the buffer's path and the cursor's 1-based line.
+    let toggled = client.request(
+        "workspace/executeCommand",
+        json!({ "command": "vulcan.task.toggle", "arguments": [{
+            "path": absolute, "lineNumber": 3, "dryRun": true,
+        }]}),
+    );
+    assert_eq!(toggled["editor"], json!(["Tasks.md"]), "{toggled}");
+
+    let extracted = client.request(
+        "workspace/executeCommand",
+        json!({ "command": "vulcan.section.extract", "arguments": [{
+            "path": "Tasks.md", "lineNumber": 5, "dryRun": true,
+        }]}),
+    );
+    assert_eq!(
+        extracted["report"]["destination"], "Later.md",
+        "{extracted}"
+    );
+
+    let missing = client.request(
+        "workspace/executeCommand",
+        json!({ "command": "vulcan.section.extract", "arguments": [{
+            "path": "Tasks.md", "lineNumber": 99,
+        }]}),
+    );
+    assert_eq!(missing["data"]["kind"], "invalid_request", "{missing}");
+}
+
+#[test]
+fn clients_can_opt_into_show_document() {
+    let dir = vault(&[("Home.md", "# Home\n")]);
+    let (mut client, _) = Client::start_with(
+        dir.path(),
+        &editing_client(),
+        &json!({ "showDocument": true }),
+    );
+    let created = client.request(
+        "workspace/executeCommand",
+        json!({ "command": "vulcan.note.create", "arguments": [{ "path": "Ideas.md" }] }),
+    );
+    assert_eq!(created["dryRun"], false, "{created}");
+    let _ = client.request("vulcan/status", json!({}));
+    assert!(client
+        .server_requests
+        .iter()
+        .any(|request| request.method == "window/showDocument"
+            && request.params["uri"] == json!(client.uri("Ideas.md"))));
+}

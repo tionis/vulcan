@@ -467,6 +467,38 @@ impl EditorSession {
         }
     }
 
+    /// The position of a 1-based line and 1-based character column (Unicode
+    /// scalar values) in a document, as keybinding-driven editors report the
+    /// cursor (Helix's `%{cursor_line}` and `%{cursor_column}`). Columns past
+    /// the end of the line clamp to it.
+    #[must_use]
+    pub fn position_at_line_column(
+        &self,
+        path: &str,
+        line: u32,
+        column: u32,
+    ) -> Option<TextPosition> {
+        let view = self.view(path)?;
+        let line_start = view
+            .text
+            .split_inclusive('\n')
+            .take(usize::try_from(line.checked_sub(1)?).ok()?)
+            .map(str::len)
+            .sum::<usize>();
+        let rest = view.text.get(line_start..)?;
+        let line_text = rest.split('\n').next().unwrap_or_default();
+        let line_text = line_text.strip_suffix('\r').unwrap_or(line_text);
+        let skip = usize::try_from(column.saturating_sub(1)).ok()?;
+        let within = line_text
+            .char_indices()
+            .nth(skip)
+            .map_or(line_text.len(), |(offset, _)| offset);
+        Some(
+            view.line_index
+                .position(&view.text, line_start + within, self.encoding),
+        )
+    }
+
     pub(crate) fn offset(&self, path: &str, position: TextPosition) -> Option<usize> {
         let document = self.documents.get(path)?;
         Some(
@@ -575,6 +607,27 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::*;
     use super::*;
+
+    #[test]
+    fn converts_one_based_line_and_character_columns() {
+        let (_dir, mut session) = vault(&[]);
+        let text = "# Home\n😀 see [[Alpha]]\n";
+        session.open("Home.md", 1, text.into());
+        // Column 3 is the `s` after the emoji, which UTF-16 counts as 2 units.
+        assert_eq!(
+            session.position_at_line_column("Home.md", 2, 3),
+            Some(TextPosition { line: 1, column: 3 })
+        );
+        // Past the end clamps to the line's end (16 UTF-16 units).
+        assert_eq!(
+            session.position_at_line_column("Home.md", 2, 99),
+            Some(TextPosition {
+                line: 1,
+                column: 16
+            })
+        );
+        assert_eq!(session.position_at_line_column("Home.md", 0, 1), None);
+    }
 
     #[test]
     fn applies_incremental_changes_without_touching_the_cache() {

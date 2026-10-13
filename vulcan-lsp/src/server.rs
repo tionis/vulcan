@@ -106,6 +106,10 @@ struct InitializationOptions {
     /// `on` always falls back to `static` for an untrusted vault.
     #[serde(default)]
     dataview_js: Option<vulcan_core::DataviewJsRenderPolicy>,
+    /// Treat the client as handling `window/showDocument` although its
+    /// capabilities do not say so (Helix handles it without advertising).
+    #[serde(default)]
+    show_document: bool,
 }
 
 /// Serve LSP over stdin and stdout until the client exits.
@@ -156,7 +160,8 @@ pub fn run(connection: &Connection, options: &LspOptions) -> Result<(), LspError
     };
     connection.initialize_finish(id, serde_json::to_value(result)?)?;
 
-    let client = ClientFeatures::from(&params.capabilities);
+    let mut client = ClientFeatures::from(&params.capabilities);
+    client.edits.show_document |= initialization.show_document;
     let mut server = Server::start(connection, session, initialization.watcher, client);
     server.dataview_js = initialization.dataview_js;
     let outcome = server.serve();
