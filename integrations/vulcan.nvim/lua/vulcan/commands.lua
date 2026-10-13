@@ -71,13 +71,20 @@ function M.toggle_task()
 end
 
 --- Extract the section of the heading on the cursor line into a new note.
-function M.extract()
+--- @param open? boolean Open the new note afterwards.
+function M.extract(open)
+  local root = vulcan.vault_root()
   vulcan.execute('vulcan.section.extract', {
     path = current_uri(),
     position = { line = vim.api.nvim_win_get_cursor(0)[1] - 1, character = 0 },
   }, function(result)
     local destination = result and result.report and result.report.destination
-    if destination then
+    if not destination then
+      return
+    end
+    if open then
+      vim.cmd.edit(vim.fn.fnameescape(vim.fs.joinpath(root, destination)))
+    else
       vim.notify('vulcan: extracted to ' .. destination)
     end
   end)
@@ -244,7 +251,7 @@ local subcommands = {
   render = function() require('vulcan.render').toggle() end,
   doctor = function() M.doctor() end,
   problems = function() M.problems() end,
-  extract = function() M.extract() end,
+  extract = function(_, bang) M.extract(bang) end,
   status = function() M.status() end,
   browse = function() M.float({ 'browse' }) end,
   bases = function(args) M.float({ 'bases', 'tui', args[1] or vim.api.nvim_buf_get_name(0) }) end,
@@ -255,12 +262,18 @@ local subcommands = {
 --- @param opts { fargs: string[], bang: boolean }
 function M.dispatch(opts)
   local name = opts.fargs[1]
+  -- `:Vulcan scan!` puts the bang on the subcommand; `:Vulcan! scan` on
+  -- the command. Accept both.
+  local bang = opts.bang
+  if name and name:sub(-1) == '!' then
+    name, bang = name:sub(1, -2), true
+  end
   local handler = name and subcommands[name]
   if not handler then
     vim.notify('vulcan: unknown subcommand ' .. tostring(name), vim.log.levels.ERROR)
     return
   end
-  handler(vim.list_slice(opts.fargs, 2), opts.bang)
+  handler(vim.list_slice(opts.fargs, 2), bang)
 end
 
 --- Completion for `:Vulcan`.
