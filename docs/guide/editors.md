@@ -96,6 +96,14 @@ With Eglot:
   (add-to-list 'eglot-server-programs '(markdown-mode . ("vulcan" "lsp"))))
 ```
 
+## Several vaults in one workspace
+
+Editors that open several workspace folders in one session (VS Code
+multi-root workspaces, Helix, Zed) can mix vaults: the server serves each
+folder's vault separately, so links, diagnostics, and renames stay inside
+the vault a note belongs to, while workspace symbols and diagnostics cover
+all of them. Neovim starts one server per vault root instead.
+
 ## Several editors on one vault
 
 Each editor process runs its own server. The first to start holds

@@ -12,6 +12,7 @@
 
 mod convert;
 mod handlers;
+mod multiroot;
 mod mutations;
 mod server;
 

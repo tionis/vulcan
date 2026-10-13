@@ -61,6 +61,12 @@ impl fmt::Display for LspError {
 
 impl std::error::Error for LspError {}
 
+impl LspError {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
+
 impl From<lsp_server::ProtocolError> for LspError {
     fn from(error: lsp_server::ProtocolError) -> Self {
         Self(error.to_string())
@@ -112,8 +118,8 @@ pub fn run_stdio(options: &LspOptions) -> Result<(), LspError> {
 
 /// Serve LSP over `connection` until the client exits.
 pub fn run(connection: &Connection, options: &LspOptions) -> Result<(), LspError> {
-    let (id, params) = connection.initialize_start()?;
-    let params: lsp::InitializeParams = serde_json::from_value(params)?;
+    let (id, raw_params) = connection.initialize_start()?;
+    let params: lsp::InitializeParams = serde_json::from_value(raw_params.clone())?;
     // Clients encode "no options" variously: absent, `null`, or an empty
     // array (Neovim's empty Lua table).
     let initialization = params
@@ -123,6 +129,13 @@ pub fn run(connection: &Connection, options: &LspOptions) -> Result<(), LspError
         .map(serde_json::from_value::<InitializationOptions>)
         .transpose()?
         .unwrap_or_default();
+    if options.vault.is_none() && initialization.vault.is_none() {
+        // Folders spanning several vaults get one server per vault.
+        let roots = crate::multiroot::folder_vaults(&params);
+        if roots.len() > 1 {
+            return crate::multiroot::serve(connection, options, id, raw_params, roots);
+        }
+    }
     let (encoding, encoding_kind) = convert::negotiate_encoding(&params.capabilities);
     let vault_root = vault_root(options, initialization.vault.clone(), &params)?;
     let mut session = EditorSession::new(VaultPaths::new(&vault_root), encoding);

@@ -39,6 +39,19 @@ impl Client {
         options: &Value,
         lsp_options: LspOptions,
     ) -> (Self, Value) {
+        Self::start_initialize(
+            root,
+            json!({
+                "processId": null,
+                "rootUri": uri(root),
+                "capabilities": capabilities,
+                "initializationOptions": options,
+            }),
+            lsp_options,
+        )
+    }
+
+    fn start_initialize(root: &Path, initialize: Value, lsp_options: LspOptions) -> (Self, Value) {
         let (server, client) = Connection::memory();
         let handle = std::thread::spawn(move || {
             vulcan_lsp::run(&server, &lsp_options).unwrap();
@@ -52,15 +65,7 @@ impl Client {
             accept_edits: true,
             root: root.to_path_buf(),
         };
-        let result = client.request(
-            "initialize",
-            json!({
-                "processId": null,
-                "rootUri": uri(root),
-                "capabilities": capabilities,
-                "initializationOptions": options,
-            }),
-        );
+        let result = client.request("initialize", initialize);
         client.notify("initialized", json!({}));
         (client, result)
     }
@@ -1368,3 +1373,81 @@ fn extracts_a_section_through_a_code_action() {
     );
 }
 
+#[test]
+fn workspace_folders_in_several_vaults_get_a_server_each() {
+    let first = vault(&[("Home.md", "[[Alpha]]\n"), ("Alpha.md", "# Alpha\n")]);
+    let second = vault(&[("Note.md", "[[Gone]]\n"), ("Beta.md", "# Beta\n")]);
+    let third = vault(&[("Gamma.md", "[[Home]]\n")]);
+    let folder = |dir: &tempfile::TempDir| json!({ "uri": uri(dir.path()), "name": "v" });
+    let (mut client, result) = Client::start_initialize(
+        Path::new("/"),
+        json!({
+            "processId": null,
+            "rootUri": uri(first.path()),
+            "workspaceFolders": [folder(&first), folder(&second)],
+            "capabilities": editing_client(),
+        }),
+        LspOptions::default(),
+    );
+    assert_eq!(
+        result["capabilities"]["workspace"]["workspaceFolders"]["changeNotifications"],
+        true
+    );
+    let path = |dir: &tempfile::TempDir, name: &str| dir.path().join(name).display().to_string();
+
+    // Each document is diagnosed and resolved in its own vault.
+    client.open(&path(&first, "Home.md"), "[[Alpha]]\n");
+    client.open(&path(&second, "Note.md"), "[[Gone]] [[Beta]]\n");
+    assert!(client.diagnostics(&path(&first, "Home.md")).is_empty());
+    assert_eq!(client.diagnostics(&path(&second, "Note.md")).len(), 1);
+    let definition = client.request(
+        "textDocument/definition",
+        client.at(&path(&second, "Note.md"), 0, 12),
+    );
+    assert_eq!(
+        definition["uri"],
+        json!(uri(&second.path().join("Beta.md")))
+    );
+
+    // Workspace requests merge every vault's answer.
+    let symbols = client.request("workspace/symbol", json!({ "query": "" }));
+    let names = symbols
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|symbol| symbol["name"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert!(names.contains(&"Alpha".to_string()) && names.contains(&"Beta".to_string()));
+
+    // Edits a vault server asks the client to apply reach it and back.
+    let moved = client.request(
+        "workspace/executeCommand",
+        json!({ "command": "vulcan.note.move", "arguments": [{
+            "from": uri(&second.path().join("Beta.md")), "to": "Moved.md",
+        }]}),
+    );
+    assert_eq!(moved["dryRun"], false, "{moved}");
+    assert!(second.path().join("Moved.md").exists());
+    let edits = applied_edits(&client);
+    assert_eq!(
+        edits.last().unwrap()[0]["textDocument"]["uri"],
+        json!(uri(&second.path().join("Note.md")))
+    );
+
+    // Folders can be added later, and removed.
+    client.notify(
+        "workspace/didChangeWorkspaceFolders",
+        json!({ "event": { "added": [folder(&third)], "removed": [folder(&second)] } }),
+    );
+    client.open(&path(&third, "Gamma.md"), "[[Home]]\n");
+    assert_eq!(client.diagnostics(&path(&third, "Gamma.md")).len(), 1);
+    let symbols = client.request("workspace/symbol", json!({ "query": "" }));
+    let names = symbols
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|symbol| symbol["name"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert!(names.contains(&"Gamma".to_string()));
+    assert!(!names.contains(&"Beta".to_string()), "{names:?}");
+}

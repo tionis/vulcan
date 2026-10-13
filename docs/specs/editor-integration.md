@@ -336,8 +336,7 @@ with template mutations disabled and follows the existing template trust rules.
 
 mdbase schema-enum value completion (after the MDB items land); heading and block subpath
 diagnostics (owned by OBS.2 in `vulcan-core`; the LSP only maps what the parser and resolver
-report); multi-root
-workspaces; daemon-backed store.
+report); daemon-backed store.
 
 ### Explicitly not exposed over LSP
 
@@ -385,7 +384,17 @@ Errors use LSP `ResponseError` with `data: { kind, detail }`, reusing the compan
 - **Vault discovery.** The MVP runs one process per vault; Neovim already starts one client per
   `root_dir`. Root markers are `.vulcan/`, `.vulcan.toml`, and `.obsidian/`. The server resolves the
   folder with `discover_vault_root`, so 9.39 repository pointers and MkDocs layouts work unchanged.
-  Multiple vaults in `workspaceFolders` (one `EditorSession` per folder) come later.
+  When the initial `workspaceFolders` resolve to several vaults, the process multiplexes: each
+  vault runs an unchanged single-vault server (its own session, writer, and watcher lease) on an
+  in-memory connection. Document messages route to the vault holding the URI (the longest root
+  containing it; files outside every vault go to the first). `workspace/symbol`,
+  `workspace/diagnostic` (with `previousResultIds` split per vault), `workspace/willRenameFiles`,
+  `vulcan.scan`, and `shutdown` fan out and merge; other commands go to the vault of their
+  `path`/`from`/`uri` argument, else the first vault. Requests the vault servers send the client get
+  fresh ids, and their progress tokens and registration ids get a `#<n>` suffix so vaults never
+  collide. Only then does the server advertise `workspace.workspaceFolders.changeNotifications`, and
+  `didChangeWorkspaceFolders` starts and stops vault servers (the last one stays). A single vault is
+  served directly, as before.
 
 ## `vulcan.nvim`
 

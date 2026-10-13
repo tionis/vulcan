@@ -865,7 +865,7 @@ vim.lsp.config("vulcan", {
 vim.lsp.enable("vulcan")
 ```
 
-- The vault is `--vault` when given, otherwise discovered from the client's workspace folder exactly as other commands discover it from the current directory. The server never initializes a vault; without `.vulcan/` it serves buffer-local features and warns once.
+- The vault is `--vault` when given, otherwise discovered from the client's workspace folder exactly as other commands discover it from the current directory. Workspace folders in several vaults are each served by their own vault, and folders added or removed later start or stop that vault. The server never initializes a vault; without `.vulcan/` it serves buffer-local features and warns once.
 - Supported today: go-to-definition on links, embeds, `#heading` and `#^block` subpaths; references (backlinks, or links to a heading when the cursor is on one); hover previews of link targets and tag counts; completion after `[[` (notes, aliases, attachments, headings, block ids), `#tags`, and frontmatter keys and `tags:` values; diagnostics for open buffers (unresolved, ambiguous, and outside-vault links plus parse problems, using `doctor` categories); document symbols with `note outline` section ids; workspace symbols over paths and aliases.
 - Unsaved buffers are an in-memory overlay. A link to a note that exists only as an unsaved buffer resolves, and the cache is only refreshed from saved files (on `didSave`). The link being typed is not reported as unresolved.
 - Requests run on worker threads from snapshots of the open buffers, and every scan runs on one writer thread, so a `move` or `sync` holding the vault write lock never stalls completion or navigation. Diagnostics refresh 200 ms after the last edit.

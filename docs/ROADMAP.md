@@ -8411,7 +8411,7 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Extract-section code action (`vulcan.section.extract`), planned in the editor layer so unsaved buffers are covered; inbound heading, subheading, and block links follow the content
 - [x] Minimal-diff `TextEdit`s (one edit per changed line)
 - [x] Semantic tokens: links, embeds, tags, inline-field keys, and block ids, with unresolved and ambiguous modifiers
-- [ ] Multi-root workspaces
+- [x] Multi-root workspaces: workspace folders spanning several vaults get one in-process server each behind a routing multiplexer, with added and removed folders handled
 - [ ] **Blocked on 10.5:** daemon-backed note store through client routing
 - [x] Pull-model `workspace/diagnostic`: closed notes with indexed problems, re-diagnosed from disk; open notes stay push-only, and refreshes start only after a client first pulls (`:Vulcan problems`)
 
