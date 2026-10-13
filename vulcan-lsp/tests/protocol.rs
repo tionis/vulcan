@@ -4,7 +4,7 @@ use lsp_server::{Connection, Message, Notification, Request, RequestId};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use vulcan_core::{scan_vault, ScanMode, VaultPaths};
 use vulcan_lsp::LspOptions;
 
@@ -24,6 +24,11 @@ struct Client {
     /// Report file renames as applied without performing them, like an
     /// editor whose rename failed silently.
     skip_renames: bool,
+    /// Like Helix, announce file renames to the server (`willRenameFiles`,
+    /// awaited, then `didRenameFiles`) while applying a workspace edit.
+    announce_renames: bool,
+    /// Answers to those announcements.
+    announcement_answers: Vec<Value>,
     root: std::path::PathBuf,
 }
 
@@ -67,6 +72,8 @@ impl Client {
             server_requests: Vec::new(),
             accept_edits: true,
             skip_renames: false,
+            announce_renames: false,
+            announcement_answers: Vec::new(),
             root: root.to_path_buf(),
         };
         let result = client.request("initialize", initialize);
@@ -127,8 +134,19 @@ impl Client {
                                     .unwrap()
                             };
                             let target = path("newUri");
+                            let files = json!({ "files": [{
+                                "oldUri": change["oldUri"], "newUri": change["newUri"],
+                            }]});
+                            if self.announce_renames {
+                                let answer =
+                                    self.request("workspace/willRenameFiles", files.clone());
+                                self.announcement_answers.push(answer);
+                            }
                             std::fs::create_dir_all(target.parent().unwrap()).unwrap();
                             std::fs::rename(path("oldUri"), target).unwrap();
+                            if self.announce_renames {
+                                self.notify("workspace/didRenameFiles", files);
+                            }
                         }
                     }
                     json!({ "applied": self.accept_edits })
@@ -1518,4 +1536,29 @@ fn a_move_the_editor_claims_but_does_not_perform_is_undone() {
     );
     assert!(dir.path().join("notes/Alpha.md").exists());
     assert!(!dir.path().join("deep").exists());
+}
+
+#[test]
+fn editors_that_announce_the_servers_own_renames_do_not_stall() {
+    let dir = rename_vault();
+    let (mut client, _) = Client::start(dir.path(), &editing_client());
+    client.open("notes/Alpha.md", "# Alpha\n\n## Status\n\nGreen.\n");
+    let _ = client.diagnostics("notes/Alpha.md");
+    client.announce_renames = true;
+    let started = Instant::now();
+    let moved = client.request(
+        "workspace/executeCommand",
+        json!({ "command": "vulcan.note.move", "arguments": [{
+            "from": "notes/Alpha.md", "to": "archive/Alpha.md",
+        }]}),
+    );
+    assert_eq!(moved["dryRun"], false, "{moved}");
+    // Answered at once, not after the writer finished waiting for us.
+    assert_eq!(client.announcement_answers, vec![Value::Null]);
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(dir.path().join("archive/Alpha.md").exists());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Home.md")).unwrap(),
+        "# Home\n\nSee [[Alpha]] and [[Alpha#Status]].\n"
+    );
 }

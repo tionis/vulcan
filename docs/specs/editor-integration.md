@@ -207,7 +207,10 @@ end of the same `workspace/applyEdit` (after any edits to it, addressed by its o
 that is the only standard way for an LSP client to re-point its buffer; the server then indexes
 the rename with a hint. The server creates missing destination folders first (Vim's `rename()`, used by
 yegappan/lsp, does not), and checks on disk that the rename happened: an editor that answers
-`applied` without moving the file gets the same rollback as one that rejects the edit. (An earlier draft had the server always move the file and rely on a plugin
+`applied` without moving the file gets the same rollback as one that rejects the edit. Editors that announce
+renames to servers while applying one (Helix sends `willRenameFiles` and waits for the answer) get
+an immediate empty answer for the rename the server asked for, and its `didRenameFiles` is ignored,
+since the writer thread, which would otherwise handle them, is waiting for that same edit. (An earlier draft had the server always move the file and rely on a plugin
 to re-point buffers; generic clients would keep editing, and could re-save, the old path.)
 
 **Client-initiated renames** (`workspace/willRenameFiles`, sent by file explorers before they

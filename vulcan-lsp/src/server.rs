@@ -13,7 +13,9 @@
 
 use crate::convert;
 use crate::handlers;
-use crate::mutations::{self, ClientChannel, EditSupport, MutationContext, PendingRenames};
+use crate::mutations::{
+    self, ClientChannel, EditSupport, ExpectedRenames, MutationContext, PendingRenames,
+};
 use crossbeam_channel::{after, never, select, unbounded, Receiver, Sender};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::Notification as _;
@@ -429,6 +431,8 @@ type Job = Box<dyn FnOnce() + Send>;
 
 struct Server<'c> {
     connection: &'c Connection,
+    /// Renames the writer is waiting for the editor to perform.
+    expected_renames: ExpectedRenames,
     session: EditorSession,
     client: ClientFeatures,
     freshness: Freshness,
@@ -483,12 +487,14 @@ impl<'c> Server<'c> {
 
         let channel = Arc::new(ClientChannel::new(connection.sender.clone()));
         let (writes, write_receiver) = unbounded::<WriteJob>();
+        let expected_renames = ExpectedRenames::default();
         let writer_session = session.clone();
         let writer_events = indexed_sender.clone();
         let context = MutationContext {
             client: Arc::clone(&channel),
             support: client.edits,
             pending: PendingRenames::default(),
+            expected: Arc::clone(&expected_renames),
             moved: Mutex::new(Vec::new()),
         };
         threads.push(
@@ -541,6 +547,7 @@ impl<'c> Server<'c> {
             _lease: lease,
             channel,
             dataview_js: None,
+            expected_renames,
         };
         server.begin_startup();
         server
@@ -652,6 +659,14 @@ impl<'c> Server<'c> {
     }
 
     fn dispatch(&mut self, request: Request) {
+        if request.method == "workspace/willRenameFiles"
+            && self.renames_are_expected(&request.params)
+        {
+            // The editor announces a rename the server asked for while the
+            // writer waits for it: nothing to plan, and waiting would stall.
+            self.send(Message::Response(Response::new_ok(request.id, Value::Null)));
+            return;
+        }
         if matches!(
             request.method.as_str(),
             "textDocument/rename" | "workspace/willRenameFiles" | "workspace/executeCommand"
@@ -835,7 +850,36 @@ impl<'c> Server<'c> {
 
     /// Files renamed by the client keep their identity through rename
     /// hints to the scan.
+    /// Whether every rename in `RenameFilesParams` is one the server asked
+    /// the editor to perform.
+    fn renames_are_expected(&self, params: &Value) -> bool {
+        let Ok(params) = serde_json::from_value::<lsp::RenameFilesParams>(params.clone()) else {
+            return false;
+        };
+        let expected = lock(&self.expected_renames);
+        !params.files.is_empty()
+            && params.files.iter().all(|rename| {
+                let pair = rename
+                    .old_uri
+                    .parse()
+                    .ok()
+                    .and_then(|old| self.vault_path(&old))
+                    .zip(
+                        rename
+                            .new_uri
+                            .parse()
+                            .ok()
+                            .and_then(|new| self.vault_path(&new)),
+                    );
+                pair.is_some_and(|pair| expected.contains(&pair))
+            })
+    }
+
     fn did_rename(&self, params: &lsp::RenameFilesParams) {
+        if self.renames_are_expected(&serde_json::to_value(params).unwrap_or_default()) {
+            // The writer indexes the server's own move once the edit lands.
+            return;
+        }
         let renames = params
             .files
             .iter()

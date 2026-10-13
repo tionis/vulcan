@@ -13,7 +13,7 @@ use crossbeam_channel::{bounded, Sender};
 use lsp_server::{ErrorCode, Message, Request, RequestId, Response};
 use lsp_types as lsp;
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -140,11 +140,18 @@ impl From<&lsp::ClientCapabilities> for EditSupport {
 /// Plans for client renames, published once the rename happened.
 pub(crate) type PendingRenames = Arc<Mutex<HashMap<(String, String), EditorEditPlan>>>;
 
+/// Renames (from, to) the server is asking the editor to perform right now.
+/// Editors that announce file renames to servers (Helix's `move_path` sends
+/// `willRenameFiles` and waits for the answer) would otherwise wait on the
+/// writer thread, which is waiting for the editor.
+pub(crate) type ExpectedRenames = Arc<Mutex<HashSet<(String, String)>>>;
+
 /// Everything the writer needs to run a mutation.
 pub(crate) struct MutationContext {
     pub(crate) client: Arc<ClientChannel>,
     pub(crate) support: EditSupport,
     pub(crate) pending: PendingRenames,
+    pub(crate) expected: ExpectedRenames,
     /// Notes moved by the last mutation (source, destination), reported
     /// in the next `vulcan/indexChanged`.
     pub(crate) moved: Mutex<Vec<(String, String)>>,
@@ -361,12 +368,21 @@ fn execute(
         .editor_rename
         .as_ref()
         .and_then(|rename| create_parent(session, &rename.to));
-    let applied = context
-        .client
-        .call(
-            "workspace/applyEdit",
-            json!({ "label": label(plan), "edit": edit }),
-        )
+    let expected = plan
+        .editor_rename
+        .as_ref()
+        .map(|rename| (rename.from.clone(), rename.to.clone()));
+    if let Some(pair) = &expected {
+        lock(&context.expected).insert(pair.clone());
+    }
+    let response = context.client.call(
+        "workspace/applyEdit",
+        json!({ "label": label(plan), "edit": edit }),
+    );
+    if let Some(pair) = &expected {
+        lock(&context.expected).remove(pair);
+    }
+    let applied = response
         .and_then(|response| response.response_result.ok())
         .is_some_and(|result| result["applied"] == json!(true))
         // Some editors report success for a rename that failed.
