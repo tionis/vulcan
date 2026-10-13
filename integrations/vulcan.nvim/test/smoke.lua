@@ -51,6 +51,7 @@ write('Home.md', {
 })
 write('Todo.md', { '- [ ] Open item' })
 write('Stale.md', { 'Points at [[Nowhere]].' })
+write('Sections.md', { '# Sections', '', '## Part', '', 'Inside' })
 write('.vulcan/config.toml', { '[periodic.daily]', 'folder = "Journal"', 'format = "YYYY-MM-DD"' })
 local function run(args)
   local result = vim.system(vim.list_extend({ binary, '--vault', vault }, args), { text = true }):wait()
@@ -187,6 +188,17 @@ check(wait(function() return vim.uv.fs_stat(daily) ~= nil end), 'periodic note i
 check(wait(function() return vim.fs.normalize(vim.api.nvim_buf_get_name(0)) == vim.fs.normalize(daily) end), 'periodic note is opened')
 local errors_after = #vim.tbl_filter(function(line) return line:find('E348') end, vim.split(vim.fn.execute('messages'), '\n'))
 check(errors_after == errors_before, 'opening a document from whitespace raises no error')
+
+vim.cmd.edit(vim.fs.joinpath(vault, 'Sections.md'))
+local sections = vim.api.nvim_get_current_buf()
+check(wait(function() return vulcan.client() ~= nil end), 'the server attaches to another note')
+vim.api.nvim_win_set_cursor(0, { 3, 0 })
+vim.cmd('Vulcan extract')
+local part = vim.fs.joinpath(vault, 'Part.md')
+check(wait(function()
+  return vim.uv.fs_stat(part) ~= nil and vim.api.nvim_buf_get_lines(sections, 2, 3, false)[1] == '[[Part]]'
+end), 'a section is extracted into a new note and replaced by a link')
+vim.api.nvim_buf_call(sections, function() vim.cmd('silent! write') end)
 
 vim.cmd('checkhealth vulcan')
 local report = table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), '\n')

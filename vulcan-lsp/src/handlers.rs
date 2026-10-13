@@ -396,6 +396,7 @@ fn code_action(
     let kind = match action.kind {
         EditorActionKind::QuickFix => lsp::CodeActionKind::QUICKFIX,
         EditorActionKind::Refactor => lsp::CodeActionKind::REFACTOR_REWRITE,
+        EditorActionKind::Extract => lsp::CodeActionKind::REFACTOR_EXTRACT,
     };
     if let Some(only) = &params.context.only {
         if !only
@@ -449,6 +450,17 @@ fn code_action(
                 title: action.title.clone(),
                 command: "vulcan.note.create".to_string(),
                 arguments: Some(vec![serde_json::json!({ "path": path })]),
+            }),
+        ),
+        EditorAction::ExtractSection { path, position } => (
+            None,
+            Some(lsp::Command {
+                title: action.title.clone(),
+                command: "vulcan.section.extract".to_string(),
+                arguments: Some(vec![serde_json::json!({
+                    "path": uri(session, &path)?.to_string(),
+                    "position": convert::lsp_position(position),
+                })]),
             }),
         ),
         EditorAction::ToggleTask { path, line } => (

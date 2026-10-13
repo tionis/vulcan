@@ -176,9 +176,9 @@ pub use dataview_js::{
 };
 pub use decomposition::{
     plan_document_decomposition, plan_document_decomposition_with_aligned_outline,
-    AlignedOutlineHeading, DecompositionDiagnostic, DecompositionError, DecompositionLinkPlacement,
-    DecompositionNotePlan, DecompositionOptions, DecompositionPlan, DecompositionSubpathTarget,
-    SourceByteSpan,
+    portable_note_segment, AlignedOutlineHeading, DecompositionDiagnostic, DecompositionError,
+    DecompositionLinkPlacement, DecompositionNotePlan, DecompositionOptions, DecompositionPlan,
+    DecompositionSubpathTarget, SourceByteSpan,
 };
 pub use doctor::{
     doctor_fix, doctor_vault, documents_with_diagnostics, DoctorByteRange, DoctorDiagnosticIssue,

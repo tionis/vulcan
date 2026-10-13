@@ -13,6 +13,7 @@ mod commands;
 mod completion;
 mod diagnostics;
 mod edits;
+mod extract;
 mod hints;
 mod navigation;
 mod render;
@@ -542,6 +543,25 @@ pub(crate) mod test_support {
         scan_vault(&paths, ScanMode::Full).unwrap();
         let session = EditorSession::new(paths, PositionEncoding::Utf16);
         (dir, session)
+    }
+
+    /// Apply edits to `text` as an editor would.
+    pub(crate) fn apply(text: &str, edits: &[super::edits::EditorTextEdit]) -> String {
+        let index = LineIndex::new(text);
+        let mut ranges = edits
+            .iter()
+            .map(|edit| {
+                let start = index.offset(text, edit.range.start, PositionEncoding::Utf16);
+                let end = index.offset(text, edit.range.end, PositionEncoding::Utf16);
+                (start, end, edit.new_text.as_str())
+            })
+            .collect::<Vec<_>>();
+        ranges.sort_by_key(|(start, _, _)| std::cmp::Reverse(*start));
+        let mut result = text.to_string();
+        for (start, end, new_text) in ranges {
+            result.replace_range(start..end, new_text);
+        }
+        result
     }
 
     /// The position of the first occurrence of `needle` plus `shift` bytes.

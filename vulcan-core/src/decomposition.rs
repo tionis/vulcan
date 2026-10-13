@@ -674,7 +674,11 @@ fn join_path(parent: &str, child: &str) -> String {
     }
 }
 
-fn portable_note_segment(title: &str) -> String {
+/// A file name for a note titled `title`: path separators and characters
+/// invalid on common file systems become spaces, runs of spaces collapse,
+/// and the result is at most 100 characters (`Untitled` when empty).
+#[must_use]
+pub fn portable_note_segment(title: &str) -> String {
     let mut rendered = String::new();
     let mut pending_space = false;
     for character in title.trim().chars() {

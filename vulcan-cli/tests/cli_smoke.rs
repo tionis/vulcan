@@ -18998,6 +18998,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(editor_skill.contains("editor-watch.lock"));
     assert!(editor_skill.contains("vulcan.note.move"));
     assert!(editor_skill.contains("vulcan.task.toggle"));
+    assert!(editor_skill.contains("vulcan.section.extract"));
+    assert!(editor_skill.contains("workspace/diagnostic"));
     assert!(editor_skill.contains("full evaluation\n  follows `vulcan trust`"));
     assert!(editor_skill.contains("integrations/vulcan.nvim"));
     assert!(editor_skill.contains("watcher = \"client\""));

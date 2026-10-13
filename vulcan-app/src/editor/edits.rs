@@ -702,7 +702,6 @@ fn refactor_error(error: vulcan_core::refactor::RefactorError) -> AppError {
 mod tests {
     use super::super::test_support::*;
     use super::*;
-    use vulcan_core::editor::PositionEncoding;
 
     const HOME: &str = "# Home\n\nSee [[Alpha]] and [[Alpha#Status]] 😀 [[Alpha#^blk]].\n";
     const ALPHA: &str = "# Alpha\n\n## Status\n\nGreen ^blk\n\nBack to [[Home]].\n";
@@ -715,25 +714,6 @@ mod tests {
         ]);
         session.open("Home.md", 1, HOME.to_string());
         (dir, session)
-    }
-
-    /// Apply edits to `text` as an editor would.
-    fn apply(text: &str, edits: &[EditorTextEdit]) -> String {
-        let index = LineIndex::new(text);
-        let mut ranges = edits
-            .iter()
-            .map(|edit| {
-                let start = index.offset(text, edit.range.start, PositionEncoding::Utf16);
-                let end = index.offset(text, edit.range.end, PositionEncoding::Utf16);
-                (start, end, edit.new_text.as_str())
-            })
-            .collect::<Vec<_>>();
-        ranges.sort_by_key(|(start, _, _)| std::cmp::Reverse(*start));
-        let mut result = text.to_string();
-        for (start, end, new_text) in ranges {
-            result.replace_range(start..end, new_text);
-        }
-        result
     }
 
     #[test]

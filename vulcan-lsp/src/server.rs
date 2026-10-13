@@ -251,6 +251,7 @@ fn capabilities(
                 code_action_kinds: Some(vec![
                     lsp::CodeActionKind::QUICKFIX,
                     lsp::CodeActionKind::REFACTOR_REWRITE,
+                    lsp::CodeActionKind::REFACTOR_EXTRACT,
                 ]),
                 ..lsp::CodeActionOptions::default()
             },

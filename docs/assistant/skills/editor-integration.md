@@ -47,14 +47,17 @@ and wants vault-aware features, or when editor diagnostics need explaining.
    id). The `vulcan.note.move` command moves any note, with `dryRun` to preview. Code actions
    create a missing note from an unresolved link, pick the target of an ambiguous link, convert
    between wikilink and Markdown style, and toggle the task on the cursor line
-   (`vulcan.task.toggle`; completing a recurring task inserts its next occurrence). Commands also
+   (`vulcan.task.toggle`; completing a recurring task inserts its next occurrence). On a heading,
+   a code action extracts its section into a new note (`vulcan.section.extract`), retargeting
+   links into the section. Commands also
    open or create periodic notes (`vulcan.periodic.open`), insert templates
    (`vulcan.template.insert`, honoring `tp.file.cursor()`), capture to the inbox
    (`vulcan.capture`), and rescan (`vulcan.scan`); `vulcan/render` returns query results for
    display beside their blocks.
 4. For a whole-vault view of broken links, run `vulcan doctor`. Editor diagnostics use the same
-   categories (`unresolved-link`, `ambiguous-link`, `outside-vault-link`, `malformed-frontmatter`)
-   but only cover open buffers.
+   categories (`unresolved-link`, `ambiguous-link`, `outside-vault-link`, `malformed-frontmatter`);
+   they are pushed for open buffers, and clients that pull `workspace/diagnostic` also see closed
+   notes the index reports problems in.
 5. Point to `vulcan lsp --help` and `docs/specs/editor-integration.md` for supported methods and
    the custom `vulcan/` protocol (`vulcan/status`, versioned by `protocolVersion`).
 

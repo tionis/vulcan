@@ -33,6 +33,7 @@ pub(crate) const COMMANDS: &[&str] = &[
     "vulcan.periodic.open",
     "vulcan.template.insert",
     "vulcan.capture",
+    "vulcan.section.extract",
 ];
 
 /// Server-to-client requests whose responses someone awaits.
@@ -280,6 +281,11 @@ fn execute_command(
             session.plan_template_insert(&document("path")?, &text("template")?, placement)?
         }
         "vulcan.note.create" => session.plan_note_create(&text("path")?)?,
+        "vulcan.section.extract" => {
+            let position = serde_json::from_value::<lsp::Position>(argument["position"].clone())
+                .map_err(|_| invalid(format!("{command} needs a `position` argument")))?;
+            session.plan_extract_section(&document("path")?, convert::position(position))?
+        }
         "vulcan.capture" => session.plan_capture(&text("text")?)?,
         "vulcan.task.toggle" => {
             let line = argument["line"]

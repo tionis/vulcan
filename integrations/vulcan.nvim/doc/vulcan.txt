@@ -70,6 +70,9 @@ treesitter groups and `@lsp.mod.unresolved.markdown` to
 :Vulcan task              Complete or reopen the task on the cursor line.
                           Completing a recurring task inserts its next
                           occurrence.
+:Vulcan extract           Extract the section of the heading on the cursor
+                          line into a new note named after it, leaving a
+                          link. Links into the section follow it.
 :Vulcan capture [text]    Append a quick capture to the configured inbox note.
 :Vulcan move [path]       Move the current note, rewriting every link.
 :Vulcan scan[!]           Rescan the vault; with ! rebuild every document.

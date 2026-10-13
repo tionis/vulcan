@@ -291,11 +291,13 @@ with template mutations disabled and follows the existing template trust rules.
   `workspace/symbol` (note paths and aliases).
 - `textDocument/rename`, `workspace/willRenameFiles`, `workspace/didRenameFiles`.
 - `textDocument/codeAction`: create a note from an unresolved link, pick a disambiguation
-  candidate, convert link style, toggle a task. Actions are computed eagerly, so no
+  candidate, convert link style, toggle a task, and (on a heading) extract its section into a new
+  note (`refactor.extract`). Actions are computed eagerly, so no
   `codeAction/resolve` is needed: buffer-only actions carry a versioned edit, and actions that
   create files or toggle tasks are `vulcan.*` commands run on the writer thread.
 - `workspace/executeCommand`: `vulcan.scan`, `vulcan.note.create`, `vulcan.note.move`,
-  `vulcan.task.toggle`, `vulcan.periodic.open`, `vulcan.template.insert`, `vulcan.capture`.
+  `vulcan.task.toggle`, `vulcan.periodic.open`, `vulcan.template.insert`, `vulcan.capture`,
+  `vulcan.section.extract`.
 
 ### Beyond the MVP
 
@@ -318,13 +320,23 @@ with template mutations disabled and follows the existing template trust rules.
   twice. A note reported before and now clean or open gets an empty report. Because Neovim re-pulls
   the whole vault on `workspace/diagnostic/refresh`, the server sends that refresh only after the
   client has pulled workspace diagnostics once.
+- Extract section (`vulcan.section.extract` with `{ "path", "position", "dryRun"? }`, offered as a
+  `refactor.extract` code action on a heading line): the heading's section, up to the next heading
+  of the same or a higher level, becomes a note named after the heading in the source note's
+  folder, without its heading line, and a link to it replaces the section. Links anywhere to the
+  heading become links to the new note; links to its subheadings and block ids keep their subpath
+  on the new note; same-note links inside the section that point outside it gain the source note's
+  name. Open buffers (including unsaved ones) get versioned edits, and the new note and closed
+  files are one journaled batch. An existing note at the destination is refused. This is planned in
+  the editor layer rather than over `vulcan refactor split`, which decomposes whole notes from the
+  saved file and cannot see unsaved buffers.
 - Minimal-diff `TextEdit`s (one per changed line).
 
 ### Later
 
 mdbase schema-enum value completion (after the MDB items land); heading and block subpath
 diagnostics (owned by OBS.2 in `vulcan-core`; the LSP only maps what the parser and resolver
-report); extract-section (reusing the note split refactor); multi-root
+report); multi-root
 workspaces; daemon-backed store.
 
 ### Explicitly not exposed over LSP
@@ -343,7 +355,8 @@ Custom requests live in the `vulcan/` namespace. The server advertises them in
   "protocolVersion": 1,
   "vault": { "root": "/path/to/vault", "cacheFresh": true },
   "commands": ["vulcan.scan", "vulcan.note.create", "vulcan.note.move", "vulcan.task.toggle",
-               "vulcan.periodic.open", "vulcan.template.insert"]
+               "vulcan.periodic.open", "vulcan.template.insert", "vulcan.capture",
+               "vulcan.section.extract"]
 }
 ```
 

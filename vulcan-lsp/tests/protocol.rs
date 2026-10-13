@@ -1322,3 +1322,49 @@ fn workspace_diagnostics_refresh_only_after_a_pull() {
     save(&mut client, "# Home\n");
     assert_eq!(refreshes(&client), 1);
 }
+
+#[test]
+fn extracts_a_section_through_a_code_action() {
+    let source = "# Home\n\n## Plan\n\nSteps\n\n## Done\n";
+    let dir = vault(&[("Home.md", source), ("Other.md", "[[Home#Plan]]\n")]);
+    let (mut client, _) = Client::start(dir.path(), &editing_client());
+    client.open("Home.md", source);
+    let _ = client.diagnostics("Home.md");
+    let actions = client.request(
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": client.uri("Home.md") },
+            "range": { "start": { "line": 2, "character": 3 }, "end": { "line": 2, "character": 3 } },
+            "context": { "diagnostics": [] },
+        }),
+    );
+    let extract = actions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action["kind"] == "refactor.extract")
+        .expect("an extract action on a heading");
+    let command = &extract["command"];
+    assert_eq!(command["command"], "vulcan.section.extract");
+
+    let report = client.request(
+        "workspace/executeCommand",
+        json!({ "command": command["command"], "arguments": command["arguments"] }),
+    );
+    assert_eq!(report["dryRun"], false, "{report}");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Plan.md")).unwrap(),
+        "Steps\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Other.md")).unwrap(),
+        "[[Plan]]\n"
+    );
+    let edits = applied_edits(&client);
+    assert_eq!(edits.len(), 1);
+    assert_eq!(
+        edits[0][0]["textDocument"]["uri"],
+        json!(client.uri("Home.md"))
+    );
+}
+

@@ -35,7 +35,8 @@ From the language server, in any Markdown buffer inside a vault (a folder with
 - diagnostics for unresolved and ambiguous links and frontmatter problems
 - link-safe rename of notes, headings, and block ids (`vim.lsp.buf.rename()`)
 - code actions: create a missing note, pick an ambiguous link's target,
-  convert link style, complete or reopen a task
+  convert link style, complete or reopen a task, extract a heading's section
+  into a new note
 - semantic highlighting of links, tags, inline fields, and block ids, with
   unresolved links dimmed (override the `@lsp.type.*.markdown` and
   `@lsp.mod.unresolved.markdown` highlight groups to restyle them)
@@ -59,6 +60,7 @@ From the plugin:
 | `:Vulcan daily [date]`, `weekly`, `monthly`, `periodic {type} [date]` | Open a periodic note, creating it from its template |
 | `:Vulcan template [name]` | Insert a template at the cursor |
 | `:Vulcan task` | Complete or reopen the task on the cursor line |
+| `:Vulcan extract` | Extract the section of the heading on the cursor line into a new note, leaving a link |
 | `:Vulcan capture [text]` | Append a quick capture to the configured inbox note |
 | `:Vulcan move [path]` | Move the current note, rewriting every link |
 | `:Vulcan scan[!]` | Rescan the vault (`!` rebuilds) |

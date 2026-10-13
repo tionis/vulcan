@@ -8408,7 +8408,7 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [ ] **Blocked on OBS.2:** heading and block subpath diagnostics, once OBS.2 reports them in core; the LSP only maps what the parser and resolver report
 - [ ] **Blocked on the MDB items:** mdbase schema-enum value completion
 - [x] Inlay hints and code lens: a backlink-count lens per note (refreshed after index changes) and due-date hints on open tasks
-- [ ] Extract-section code action over the note split refactor
+- [x] Extract-section code action (`vulcan.section.extract`), planned in the editor layer so unsaved buffers are covered; inbound heading, subheading, and block links follow the content
 - [x] Minimal-diff `TextEdit`s (one edit per changed line)
 - [x] Semantic tokens: links, embeds, tags, inline-field keys, and block ids, with unresolved and ambiguous modifiers
 - [ ] Multi-root workspaces

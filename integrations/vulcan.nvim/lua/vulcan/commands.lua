@@ -69,6 +69,19 @@ function M.toggle_task()
   })
 end
 
+--- Extract the section of the heading on the cursor line into a new note.
+function M.extract()
+  vulcan.execute('vulcan.section.extract', {
+    path = current_uri(),
+    position = { line = vim.api.nvim_win_get_cursor(0)[1] - 1, character = 0 },
+  }, function(result)
+    local destination = result and result.report and result.report.destination
+    if destination then
+      vim.notify('vulcan: extracted to ' .. destination)
+    end
+  end)
+end
+
 --- Capture text into the configured inbox note.
 --- @param text? string Prompted for when omitted.
 function M.capture(text)
@@ -230,6 +243,7 @@ local subcommands = {
   render = function() require('vulcan.render').toggle() end,
   doctor = function() M.doctor() end,
   problems = function() M.problems() end,
+  extract = function() M.extract() end,
   status = function() M.status() end,
   browse = function() M.float({ 'browse' }) end,
   bases = function(args) M.float({ 'bases', 'tui', args[1] or vim.api.nvim_buf_get_name(0) }) end,

@@ -22,6 +22,8 @@ pub enum EditorActionKind {
     QuickFix,
     /// Rewrites code without fixing anything.
     Refactor,
+    /// Moves code somewhere new.
+    Extract,
 }
 
 /// What an action does when chosen.
@@ -33,6 +35,11 @@ pub enum EditorAction {
     CreateNote { path: String },
     /// Toggle the task on a 0-based line.
     ToggleTask { path: String, line: u32 },
+    /// Extract the section of the heading at a position into a new note.
+    ExtractSection {
+        path: String,
+        position: TextPosition,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +97,18 @@ impl EditorSession {
                 action: EditorAction::ToggleTask {
                     path: path.to_string(),
                     line: position.line,
+                },
+            });
+        }
+        if self.extractable_heading(path, position).is_some() {
+            actions.push(EditorCodeAction {
+                title: "Extract section into a new note".to_string(),
+                kind: EditorActionKind::Extract,
+                fixes: None,
+                preferred: false,
+                action: EditorAction::ExtractSection {
+                    path: path.to_string(),
+                    position,
                 },
             });
         }
