@@ -1,0 +1,121 @@
+*vulcan.txt*  Vulcan vaults in Vim
+
+==============================================================================
+CONTENTS                                                      *vulcan-contents*
+
+  1. Introduction ......................................... |vulcan-intro|
+  2. Setup ................................................ |vulcan-setup|
+  3. Commands ............................................. |vulcan-commands|
+  4. Query results ........................................ |vulcan-render|
+  5. Limitations .......................................... |vulcan-limits|
+
+==============================================================================
+1. INTRODUCTION                                                 *vulcan-intro*
+
+vulcan.vim connects Vim to the `vulcan lsp` language server, through the
+yegappan/lsp client, and to the `vulcan` command line. Vulcan owns every vault
+semantic; the plugin registers the server, adds |:Vulcan| commands and
+pickers, and draws evaluated query results. Navigation, completion,
+diagnostics, renames, and code actions come from the language server through
+yegappan/lsp's commands (|:LspGotoDefinition|, |:LspRename|,
+|:LspCodeAction|, ...).
+
+Requires Vim 9.0.0067+, yegappan/lsp, and `vulcan` on `PATH`. Run
+`:Vulcan health` to verify the setup.
+
+==============================================================================
+2. SETUP                                                        *vulcan-setup*
+
+Install yegappan/lsp, then the copy of this plugin bundled with your
+`vulcan` binary: >sh
+  vulcan editor vim install
+<
+It lands in `~/.vim/pack/vulcan/start/vulcan.vim` (or under `~/.config/vim`
+when Vim uses that directory), which Vim loads at startup. Re-run it after
+updating Vulcan, or let `vulcan self-update` do it; `:Vulcan health` reports
+a stale copy.
+
+The plugin registers the server with yegappan/lsp when that sets up, so no
+vimrc lines are needed. Set `g:vulcan_register_server` to false to register
+it yourself.
+
+                                                                    *g:vulcan*
+Options go in `g:vulcan` before the server starts; any key can be left out: >vim
+  vim9script
+  g:vulcan = {
+    binary: 'vulcan',
+    root_markers: ['.vulcan/', '.vulcan.toml', '.obsidian/'],
+    init_options: {},
+    render: {enabled: true, max_lines: 30,
+      sources: ['inline', 'dataview', 'dataviewjs', 'tasks', 'base', 'notice']},
+    keymaps: {notes: '<Leader>vn', search: '<Leader>vs', tags: '<Leader>vt',
+      daily: '<Leader>vd', template: '<Leader>vi', task: '<Leader>vx',
+      render: '<Leader>vr'},
+  }
+<
+`init_options` are sent to the server: `watcher` ("own", "client", "off") and
+`dataviewJs` ("off", "static", "on"). Unset, `dataviewjs` blocks run in the
+strict sandbox, with full evaluation for vaults trusted with `vulcan trust`.
+An empty mapping turns that keymap off.
+
+                                                             *g:vulcan_picker*
+Pickers use fzf.vim when it is installed; set `g:vulcan_picker` to "popup" to
+use Vim's |popup_menu()| instead.
+
+==============================================================================
+3. COMMANDS                                                   *vulcan-commands*
+
+                                                                     *:Vulcan*
+:Vulcan notes             Pick a note.
+:Vulcan search [query]    Search note content.
+:Vulcan tags              Pick a tag, then a note carrying it.
+:Vulcan backlinks         List references to the current note.
+:Vulcan daily [date]      Open the daily note, creating it from its template.
+:Vulcan weekly [date]     Same for weekly notes; also `monthly`.
+:Vulcan periodic {type} [date]
+                          Same for any configured periodic type.
+:Vulcan template [name]   Insert a template at the cursor; picks one without
+                          a name.
+:Vulcan task              Complete or reopen the task on the cursor line.
+                          Completing a recurring task inserts its next
+                          occurrence.
+:Vulcan capture [text]    Append a quick capture to the configured inbox note.
+:Vulcan move [path]       Move the current note, rewriting every link. The
+                          buffer follows the note.
+:Vulcan extract[!]        Extract the section of the heading on the cursor
+                          line into a new note named after it, leaving a
+                          link. Links into the section follow it. With !
+                          open the new note.
+:Vulcan scan[!]           Rescan the vault; with ! rebuild every document.
+:Vulcan render            Toggle query results for the current buffer.
+:Vulcan doctor            Load `vulcan doctor` problems into the quickfix list.
+:Vulcan problems          The same (yegappan/lsp has no workspace
+                          diagnostics).
+:Vulcan status            Show cache and watcher state.
+:Vulcan health            Check the setup in a scratch buffer.
+:Vulcan browse            Open the note browser in a terminal popup.
+:Vulcan bases [file]      Open the Bases TUI for a `.base` file.
+:Vulcan kanban [file]     Show a Kanban board.
+
+==============================================================================
+4. QUERY RESULTS                                                *vulcan-render*
+
+Inline Dataview expressions, `dataview`, `dataviewjs`, and `tasks` blocks,
+and `.base` embeds are evaluated by the server (`vulcan/render`). Block
+results appear as virtual text below their block, inline values after their
+line, in the `VulcanRender` highlight group (linked to |hl-Comment|). They
+refresh on |BufEnter|, |BufWritePost|, |InsertLeave|, and whenever the server
+reports an index change. Choose which kinds appear with `render.sources`.
+
+==============================================================================
+5. LIMITATIONS                                                 *vulcan-limits*
+
+- One vault per Vim session: yegappan/lsp starts one server per registration,
+  so notes from a second vault reach the first vault's server, which ignores
+  them. The plugin warns when that happens.
+- Semantic highlighting is not drawn: yegappan/lsp only maps standard token
+  types.
+- yegappan/lsp reports buffer changes on redraw; the plugin sends pending
+  ones before its own requests.
+
+ vim:tw=78:ts=8:ft=help:norl:

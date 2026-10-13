@@ -8423,10 +8423,10 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 
 - [x] Check yegappan/lsp against the server (edits, resource operations, pull diagnostics, custom requests and notifications, command handlers): supported, except buffer re-pointing after `RenameFile` and custom semantic-token types
 - [x] `vulcan/indexChanged` carries `renames` (`{ from, to }`) for moves the server planned, so clients that rename files without re-pointing buffers can fix them (additive to protocol v1)
-- [ ] `integrations/vulcan.vim/`: Vim9script plugin over yegappan/lsp with server registration, `:Vulcan` subcommands, pickers (`popup_menu()` or fzf.vim), `vulcan/render` as text properties, `vulcan/indexChanged` handling and buffer re-pointing, the `vulcan.showBacklinks` lens handler, `:Vulcan health`, and Vim help
-- [ ] Generalize the installer to a table of editor bundles; `vulcan editor vim install|status|path|uninstall` into `~/.vim/pack/vulcan/start/vulcan.vim`
-- [ ] Headless Vim smoke test (pinned yegappan/lsp commit) behind a `cargo test` wrapper with `VULCAN_REQUIRE_VIM`, and a CI job installing both
-- [ ] Docs and skill: `docs/guide/editors.md`, `docs/cli.md`, `editor-integration` skill
+- [x] `integrations/vulcan.vim/`: Vim9script plugin over yegappan/lsp with server registration, `:Vulcan` subcommands, pickers (`popup_menu()` or fzf.vim), `vulcan/render` as text properties, `vulcan/indexChanged` handling and buffer re-pointing, the `vulcan.showBacklinks` lens handler, `:Vulcan health`, and Vim help
+- [x] Generalize the installer to a table of editor bundles; `vulcan editor vim install|status|path|uninstall` into `~/.vim/pack/vulcan/start/vulcan.vim`
+- [x] Headless Vim smoke test (pinned yegappan/lsp commit) behind a `cargo test` wrapper with `VULCAN_REQUIRE_VIM`, and a CI job installing both
+- [x] Docs and skill: `docs/guide/editors.md`, `docs/cli.md`, `editor-integration` skill
 - [ ] Optional standard-type semantic-token legend selectable through `initializationOptions`, for clients like yegappan/lsp that only draw standard types
 - [ ] Helix: configuration helper or documented snippet only (no plugin system yet)
 - [ ] Emacs: Eglot configuration plus a small Elisp package for commands and `vulcan/render` overlays, installed through the same bundle table

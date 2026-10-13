@@ -19000,6 +19000,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(editor_skill.contains("vulcan.task.toggle"));
     assert!(editor_skill.contains("vulcan.section.extract"));
     assert!(editor_skill.contains("vulcan editor nvim install"));
+    assert!(editor_skill.contains("vulcan editor vim install"));
     assert!(editor_skill.contains("workspace/diagnostic"));
     assert!(editor_skill.contains("full evaluation\n  follows `vulcan trust`"));
     assert!(editor_skill.contains("integrations/vulcan.nvim"));

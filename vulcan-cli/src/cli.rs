@@ -1212,13 +1212,22 @@ Neovim:
   Neovim's package directory (stdpath('data')/site/pack/vulcan/start/vulcan.nvim), where Neovim
   loads it without a plugin manager. Call require('vulcan').setup() from your config, or point a
   plugin manager at it: { dir = '<vulcan editor nvim path>', opts = {} } for lazy.nvim.
-  Re-run install after updating Vulcan; :checkhealth vulcan reports a stale copy. Copies Vulcan
-  did not write, or ones edited since, are left alone unless --force.
+
+Vim:
+  vulcan editor vim install writes vulcan.vim into ~/.vim/pack/vulcan/start/vulcan.vim (or under
+  ~/.config/vim when Vim uses it). It needs Vim 9 and yegappan/lsp, and registers the server
+  itself.
+
+Both:
+  Re-run install after updating Vulcan (self-update does it for unedited copies); :checkhealth
+  vulcan and :Vulcan health report a stale copy. Copies Vulcan did not write, or ones edited
+  since, are left alone unless --force.
 
 Examples:
   vulcan editor nvim install
+  vulcan editor vim install --dry-run
   vulcan editor nvim install --dir ~/.config/nvim/pack/vulcan/start/vulcan.nvim
-  vulcan editor nvim status --output json
+  vulcan editor vim status --output json
 ";
 
 const LSP_COMMAND_AFTER_HELP: &str = "\
@@ -4501,16 +4510,23 @@ pub enum SyncScheduleCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum EditorCommand {
-    #[command(about = "Install, refresh, or inspect the bundled vulcan.nvim plugin")]
+    #[command(about = "Install, refresh, or inspect the bundled vulcan.nvim plugin for Neovim")]
     Nvim {
         #[command(subcommand)]
-        command: NvimCommand,
+        command: EditorPluginCommand,
+    },
+    #[command(
+        about = "Install, refresh, or inspect the bundled vulcan.vim plugin for Vim (with yegappan/lsp)"
+    )]
+    Vim {
+        #[command(subcommand)]
+        command: EditorPluginCommand,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
-pub enum NvimCommand {
-    #[command(about = "Install or refresh vulcan.nvim (Neovim's package directory by default)")]
+pub enum EditorPluginCommand {
+    #[command(about = "Install or refresh the plugin (the editor's package directory by default)")]
     Install {
         #[arg(long, value_name = "DIR", help = "Install into DIR instead")]
         dir: Option<std::path::PathBuf>,

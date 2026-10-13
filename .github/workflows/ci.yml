@@ -111,6 +111,22 @@ jobs:
           echo "$RUNNER_TEMP/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
           echo "VULCAN_REQUIRE_NVIM=1" >> "$GITHUB_ENV"
 
+      # The vulcan.vim smoke test (vulcan-cli/tests/vim_plugin.rs) needs Vim 9
+      # and yegappan/lsp; pin the client to the commit the plugin was
+      # checked against, and make a missing one a failure.
+      - name: Install Vim and yegappan/lsp for the plugin smoke test
+        if: matrix.os == 'ubuntu-latest' && matrix.suite == 'cli'
+        env:
+          YEGAPPAN_LSP_COMMIT: 58eac06e81bad174cfa897614ae01adf0d31d10a
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q vim
+          git init -q "$RUNNER_TEMP/yegappan-lsp"
+          git -C "$RUNNER_TEMP/yegappan-lsp" fetch -q --depth 1 https://github.com/yegappan/lsp.git "$YEGAPPAN_LSP_COMMIT"
+          git -C "$RUNNER_TEMP/yegappan-lsp" checkout -q FETCH_HEAD
+          echo "VULCAN_VIM_LSP=$RUNNER_TEMP/yegappan-lsp" >> "$GITHUB_ENV"
+          echo "VULCAN_REQUIRE_VIM=1" >> "$GITHUB_ENV"
+
       - name: Test CLI
         if: matrix.suite == 'cli'
         run: cargo test -p vulcan-cli --no-fail-fast

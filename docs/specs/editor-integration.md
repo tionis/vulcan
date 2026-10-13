@@ -494,16 +494,23 @@ Gaps the plugin or server closes:
 - **Buffer re-pointing after moves.** yegappan applies a `RenameFile` by renaming the file on disk
   only; the buffer keeps the old name, so saving it would recreate the old file. The server adds
   `renames: [{ from, to }]` (vault paths) to `vulcan/indexChanged` for moves it planned, and the
-  plugin re-points a buffer still named `from` (`:file` to the new path, then writes it: a moved open
-  note never has unsaved changes, so its buffer holds only the server's link rewrites). This is
+  plugin re-points a buffer still named `from`: it writes the buffer to the new path (a moved open
+  note never has unsaved changes, so it holds only the server's link rewrites), edits it there, and
+  wipes the old buffer, so yegappan/lsp closes the old document and opens the new one (renaming the
+  buffer with `:file` would leave the server believing the note closed). This is
   additive to protocol v1.
+- **Change reporting.** yegappan reports buffer edits from a `listener_add()` callback, which runs
+  on the next redraw; the plugin calls `listener_flush()` before its own requests so the server
+  answers against the current text (the headless smoke test flushes in its wait loop, since a
+  headless Vim never redraws).
 - **Semantic tokens.** yegappan maps only standard token types to highlight groups, so Vulcan's
   custom types are not drawn. A follow-up can let a client ask for a legend of standard types
   through `initializationOptions`; until then links still get pushed diagnostics.
 
 Scope, mirroring `vulcan.nvim`: `:Vulcan` subcommands (`notes`, `search`, `tags`, `backlinks`,
 periodic notes, `template`, `task`, `capture`, `move`, `extract`, `scan`, `render`, `doctor`,
-`problems` where the client supports it, `status`, and TUI launchers in a `:terminal` popup);
+`problems` (the same as `doctor`, since yegappan/lsp has no workspace diagnostics), `status`, and
+TUI launchers in a `:terminal` popup);
 pickers through `popup_menu()`, or fzf.vim when installed; `vulcan/render` results drawn with text
 properties (`text_align: 'after'` for inline values, `'below'` for block results, Vim 9.0.0067+);
 `:Vulcan health` in place of `:checkhealth`; Vim help in `doc/vulcan.txt`.

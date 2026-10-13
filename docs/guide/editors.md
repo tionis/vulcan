@@ -46,7 +46,20 @@ image.nvim or snacks.image for images; Vulcan does not draw Markdown itself.
 
 ## Vim
 
-With [yegappan/lsp](https://github.com/yegappan/lsp):
+The recommended setup is the bundled plugin,
+[`integrations/vulcan.vim`](../../integrations/vulcan.vim/README.md), on top
+of [yegappan/lsp](https://github.com/yegappan/lsp) (Vim 9). It registers the
+server itself and adds pickers, `:Vulcan` commands, query results as virtual
+text, buffers that follow moved notes, and `:Vulcan health`.
+
+```sh
+vulcan editor vim install   # into ~/.vim/pack/vulcan/start; re-run after updates
+```
+
+One Vim session serves one vault, since yegappan/lsp starts one server per
+registration.
+
+Without the plugin, with yegappan/lsp:
 
 ```vim
 call LspAddServer([#{
@@ -54,9 +67,14 @@ call LspAddServer([#{
       \ filetype: ['markdown'],
       \ path: 'vulcan',
       \ args: ['lsp'],
-      \ rootSearch: ['.vulcan', '.vulcan.toml', '.obsidian'],
+      \ rootSearch: ['.vulcan/', '.vulcan.toml', '.obsidian/'],
+      \ runIfSearch: ['.vulcan/', '.vulcan.toml', '.obsidian/'],
       \ }])
 ```
+
+(yegappan/lsp wants a trailing `/` on directory markers.) Without the plugin,
+moving an open note leaves its buffer on the old path; reopen it from its new
+one.
 
 With [vim-lsp](https://github.com/prabirshrestha/vim-lsp):
 
