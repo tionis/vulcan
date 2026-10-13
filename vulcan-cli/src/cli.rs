@@ -1228,15 +1228,21 @@ Protocol:
 
 Vault:
   --vault wins; otherwise the server discovers the vault from the client's workspace folder,
-  like other commands do from the current directory. It never initializes a vault: without
-  .vulcan/ it serves buffer-local features and warns once.
+  like other commands do from the current directory. Workspace folders in several vaults get one
+  server per vault. It never initializes a vault: without .vulcan/ it serves buffer-local
+  features and warns once.
 
 Features:
   definition, references (backlinks), hover previews, completion of links, headings, block ids,
-  tags, and frontmatter keys, diagnostics for open buffers, document and workspace symbols, and
-  link-safe renames of notes, headings, and block ids, code actions, task toggling, periodic
-  notes, template insertion, and evaluated query regions through vulcan/render.
-  Unsaved buffers are an in-memory overlay; the cache is only refreshed from saved files.
+  tags, and frontmatter keys, diagnostics (pushed for open buffers, pulled for the rest of the
+  vault), document and workspace symbols, link-safe renames of notes, headings, and block ids,
+  code actions (including extracting a section into a new note), task toggling, periodic notes,
+  template insertion, capture, backlink code lenses, due-date inlay hints, semantic tokens, and
+  evaluated query regions through vulcan/render. [editor] in .vulcan/config.toml turns optional
+  features off. Unsaved buffers are an in-memory overlay; the cache is only refreshed from saved
+  files.
+
+Neovim: `vulcan editor nvim install` installs the matching vulcan.nvim plugin.
 
 Spec: docs/specs/editor-integration.md
 ";

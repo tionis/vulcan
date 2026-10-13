@@ -32,6 +32,7 @@ Cargo workspace with crates:
 - `vulcan-embed` — Embedding provider trait, OpenAI-compatible provider, vector store abstraction
 - `vulcan-cli` — CLI binary, command handlers, output formatting, TUI (note picker, bases TUI, browse TUI), JS REPL, and transport/presentation adapters over shared services
 - `vulcan-daemon` — axum-based device-local daemon (`vulcan daemon start/install`): sync supervisor and job ledger, per-wiki watchers, companion HTTP/WebSocket transport, and notification sinks. The multi-vault REST API and unified hosting (Phase 10) are in progress
+- `vulcan-lsp` — Synchronous Language Server Protocol transport (`vulcan lsp`) over `vulcan-app::editor`, including the multi-root router; the only crate that knows LSP
 - `vulcan-sync` — Synchronous sync backend contracts and the Git CLI engine (hidden-ref snapshots, merge policy, conflict preservation); the Phase 12 Git baseline is implemented
 
 Contributor boundary rule: new reusable business logic must not land in `vulcan-cli` unless it is clearly CLI/TUI-only. Prefer `vulcan-core` for reusable semantics and `vulcan-app` for reusable synchronous workflow orchestration.
@@ -97,7 +98,7 @@ See `docs/ROADMAP.md` for the full dependency graph and detailed task lists.
 
 **Phase 15 — external knowledge hub:** Add typed external-document bindings, explicit pull/push routes, durable reconciliation state, scheduling, and first-party connectors for Outline, HedgeDoc/HedgeSync, simple Git-backed wikis, and SilverBullet. All remote-to-remote flow passes through the canonical local vault.
 
-**Phase 9.40 — terminal editor integration (planned, optional):** An editor-neutral `vulcan lsp` stdio server in a new `vulcan-lsp` crate, transport-neutral `vulcan-app::editor` services, and a thin in-repo `integrations/vulcan.nvim/` plugin. Daemon-independent; see `docs/specs/editor-integration.md`.
+**Phase 9.40 — terminal editor integration (implemented):** `vulcan lsp` (the `vulcan-lsp` crate over transport-neutral `vulcan-app::editor` services) and the in-repo `integrations/vulcan.nvim/` plugin, which the binary ships and installs with `vulcan editor nvim install`. Remaining 9.40.5 items are blocked on OBS.2, the MDB items, and 10.5; a standalone plugin mirror repository is optional future work. See `docs/specs/editor-integration.md`.
 
 **Candidate capability tracks:** Continue bounded mdbase and remaining Obsidian-plugin compatibility slices without making them serial blockers for the daemon.
 
