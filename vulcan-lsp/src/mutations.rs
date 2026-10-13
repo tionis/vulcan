@@ -145,6 +145,9 @@ pub(crate) struct MutationContext {
     pub(crate) client: Arc<ClientChannel>,
     pub(crate) support: EditSupport,
     pub(crate) pending: PendingRenames,
+    /// Notes moved by the last mutation (source, destination), reported
+    /// in the next `vulcan/indexChanged`.
+    pub(crate) moved: Mutex<Vec<(String, String)>>,
 }
 
 /// Answer a mutating request. `session` is a snapshot from when it arrived.
@@ -341,7 +344,13 @@ fn execute(
         ));
     }
     session.apply_disk_changes(&plan.disk, &plan.disk_renames)?;
+    let record_move = || {
+        if let Some(moved) = &plan.moved {
+            lock(&context.moved).push((moved.from.clone(), moved.to.clone()));
+        }
+    };
     if !needs_editor {
+        record_move();
         return Ok(());
     }
 
@@ -386,6 +395,7 @@ fn execute(
         let renames = HashMap::from([(rename.to.clone(), rename.from.clone())]);
         session.scan_changed(&[], &renames)?;
     }
+    record_move();
     Ok(())
 }
 

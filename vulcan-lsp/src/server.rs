@@ -391,6 +391,9 @@ struct Indexed {
     paths: Vec<String>,
     summary: Option<ScanSummary>,
     error: Option<String>,
+    /// Notes this server moved (source, destination), for clients that
+    /// rename files without re-pointing their buffers.
+    renames: Vec<(String, String)>,
 }
 
 /// How this process keeps up with external changes.
@@ -486,6 +489,7 @@ impl<'c> Server<'c> {
             client: Arc::clone(&channel),
             support: client.edits,
             pending: PendingRenames::default(),
+            moved: Mutex::new(Vec::new()),
         };
         threads.push(
             std::thread::Builder::new()
@@ -894,12 +898,13 @@ impl<'c> Server<'c> {
         let clock = self.session.store_clock();
         // A scan that found nothing to change (such as the watcher's first
         // pass) must not invalidate requests in flight.
-        let changed = match &event.summary {
-            Some(summary) => summary.added + summary.updated + summary.deleted > 0,
-            None => clock != self.last_clock,
-        };
+        let changed = !event.renames.is_empty()
+            || match &event.summary {
+                Some(summary) => summary.added + summary.updated + summary.deleted > 0,
+                None => clock != self.last_clock,
+            };
         if changed {
-            self.index_changed(&event.paths, event.summary.as_ref(), clock);
+            self.index_changed(&event.paths, event.summary.as_ref(), clock, &event.renames);
         } else {
             self.last_clock = clock;
         }
@@ -911,6 +916,7 @@ impl<'c> Server<'c> {
         paths: &[String],
         summary: Option<&ScanSummary>,
         clock: Option<i64>,
+        renames: &[(String, String)],
     ) {
         self.last_clock = clock;
         self.index_epoch.fetch_add(1, Ordering::SeqCst);
@@ -924,9 +930,16 @@ impl<'c> Server<'c> {
         for path in open {
             self.pending_diagnostics.entry(path).or_insert(now);
         }
+        let mut params = json!({ "paths": paths, "summary": summary });
+        if !renames.is_empty() {
+            params["renames"] = renames
+                .iter()
+                .map(|(from, to)| json!({ "from": from, "to": to }))
+                .collect();
+        }
         self.send(Message::Notification(Notification::new(
             "vulcan/indexChanged".to_string(),
-            json!({ "paths": paths, "summary": summary }),
+            params,
         )));
         // Backlink counts, due dates, and link resolution may have changed.
         let refresh = self.client.refresh;
@@ -977,7 +990,7 @@ impl<'c> Server<'c> {
         self.next_clock_poll = Instant::now() + CLOCK_POLL_INTERVAL;
         let clock = self.session.store_clock();
         if clock != self.last_clock {
-            self.index_changed(&[], None, clock);
+            self.index_changed(&[], None, clock, &[]);
         }
     }
 
@@ -1060,6 +1073,7 @@ fn run_writer(
     events: &Sender<Indexed>,
 ) {
     for job in jobs {
+        let mut renames = Vec::new();
         let (startup, paths, result) = match job {
             WriteJob::Refresh => (true, Vec::new(), session.refresh_index()),
             WriteJob::Scan { paths, renames } => {
@@ -1069,6 +1083,7 @@ fn run_writer(
             }
             WriteJob::Mutate { session, request } => {
                 mutations::handle(context, &session, request);
+                renames = std::mem::take(&mut *lock(&context.moved));
                 // Whatever the mutation changed, the main loop sees through
                 // the store clock.
                 (false, Vec::new(), Ok(None))
@@ -1089,6 +1104,7 @@ fn run_writer(
             paths,
             summary,
             error,
+            renames,
         });
     }
 }
@@ -1112,6 +1128,7 @@ fn spawn_watcher(
                             paths: report.paths,
                             summary: Some(report.summary),
                             error: None,
+                            renames: Vec::new(),
                         })
                         .map_err(|_| "editor session ended")
                 },
@@ -1122,6 +1139,7 @@ fn spawn_watcher(
                     paths: Vec::new(),
                     summary: None,
                     error: Some(format!("the file watcher stopped: {error}")),
+                    renames: Vec::new(),
                 });
             }
         })

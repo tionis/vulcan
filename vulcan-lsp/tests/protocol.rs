@@ -1469,3 +1469,25 @@ fn workspace_folders_in_several_vaults_get_a_server_each() {
     assert!(names.contains(&"Gamma".to_string()));
     assert!(!names.contains(&"Beta".to_string()), "{names:?}");
 }
+
+#[test]
+fn index_changes_after_a_move_name_the_moved_note() {
+    let dir = rename_vault();
+    let (mut client, _) = Client::start(dir.path(), &editing_client());
+    client.open("Home.md", LINKER);
+    let _ = client.diagnostics("Home.md");
+    let moved = client.request(
+        "workspace/executeCommand",
+        json!({ "command": "vulcan.note.move", "arguments": [{
+            "from": "Home.md", "to": "archive/Home.md",
+        }]}),
+    );
+    assert_eq!(moved["dryRun"], false, "{moved}");
+    let changed = client.wait_for(|notification| {
+        notification.method == "vulcan/indexChanged" && !notification.params["renames"].is_null()
+    });
+    assert_eq!(
+        changed.params["renames"],
+        json!([{ "from": "Home.md", "to": "archive/Home.md" }])
+    );
+}
