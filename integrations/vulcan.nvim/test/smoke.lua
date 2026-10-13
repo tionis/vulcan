@@ -92,6 +92,17 @@ if vim.lsp.codelens.is_enabled then
 end
 check(vim.lsp.inlay_hint.is_enabled({ bufnr = 0 }), 'inlay hints are enabled')
 
+check(vim.api.nvim_get_hl(0, { name = '@lsp.type.wikiLink.markdown' }).link == '@markup.link', 'semantic token highlights have defaults')
+local see = vim.fn.search('See \\[\\[Missing', 'n')
+local function token_types()
+  local types = {}
+  for _, token in ipairs(vim.inspect_pos(0, see - 1, 6).semantic_tokens) do
+    types[token.opts.hl_group] = true
+  end
+  return types
+end
+check(wait(function() return token_types()['@lsp.typemod.wikiLink.unresolved.markdown'] end), 'an unresolved link gets a semantic token')
+
 local listed
 require('vulcan.cli').json({ 'ls' }, function(values) listed = values end)
 check(wait(function() return listed ~= nil end) and vim.tbl_contains(listed, 'Home.md'), 'CLI wrapper lists notes')

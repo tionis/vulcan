@@ -36,6 +36,10 @@ From the language server, in any Markdown buffer inside a vault (a folder with
 - link-safe rename of notes, headings, and block ids (`vim.lsp.buf.rename()`)
 - code actions: create a missing note, pick an ambiguous link's target,
   convert link style, complete or reopen a task
+- semantic highlighting of links, tags, inline fields, and block ids, with
+  unresolved links dimmed (override the `@lsp.type.*.markdown` and
+  `@lsp.mod.unresolved.markdown` highlight groups to restyle them)
+- a backlink count above each note and due-date hints on open tasks
 
 From the plugin:
 

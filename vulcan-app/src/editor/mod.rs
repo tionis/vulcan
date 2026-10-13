@@ -16,6 +16,7 @@ mod edits;
 mod hints;
 mod navigation;
 mod render;
+mod tokens;
 
 pub use actions::{EditorAction, EditorActionKind, EditorCodeAction};
 pub use commands::EditorTemplatePlacement;
@@ -28,6 +29,7 @@ pub use edits::{
 pub use hints::{EditorCodeLens, EditorInlayHint};
 pub use navigation::{EditorHover, EditorSymbol, EditorWorkspaceSymbol};
 pub use render::{EditorRender, EditorRenderRegion};
+pub use tokens::{EditorSemanticToken, EditorTokenKind};
 
 use crate::AppError;
 use std::collections::HashMap;

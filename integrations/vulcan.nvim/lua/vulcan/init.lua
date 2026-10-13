@@ -174,12 +174,33 @@ local function set_keymaps(bufnr)
   end
 end
 
+-- Default colours for the server's semantic tokens; colourschemes and user
+-- config override them.
+local token_highlights = {
+  ['@lsp.type.wikiLink.markdown'] = '@markup.link',
+  ['@lsp.type.markdownLink.markdown'] = '@markup.link',
+  ['@lsp.type.embed.markdown'] = '@markup.link',
+  ['@lsp.type.tag.markdown'] = '@label',
+  ['@lsp.type.inlineField.markdown'] = '@property',
+  ['@lsp.type.blockId.markdown'] = '@markup.link.label',
+  ['@lsp.mod.unresolved.markdown'] = 'DiagnosticUnnecessary',
+  ['@lsp.mod.ambiguous.markdown'] = 'DiagnosticUnderlineWarn',
+}
+
+local function set_highlights()
+  for group, link in pairs(token_highlights) do
+    vim.api.nvim_set_hl(0, group, { link = link, default = true })
+  end
+end
+
 --- Configure the plugin and register the language server.
 --- @param opts? vulcan.Config
 function M.setup(opts)
   M.config = vim.tbl_deep_extend('force', vim.deepcopy(M.defaults), opts or {})
   register_lsp()
   local group = vim.api.nvim_create_augroup('vulcan', { clear = true })
+  set_highlights()
+  vim.api.nvim_create_autocmd('ColorScheme', { group = group, callback = set_highlights })
   -- The backlink lens runs this client-side command.
   vim.lsp.commands['vulcan.showBacklinks'] = function()
     vim.lsp.buf.references({ includeDeclaration = false })

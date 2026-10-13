@@ -10,6 +10,7 @@ use serde_json::Value;
 use std::path::Path;
 use vulcan_app::editor::{
     EditorAction, EditorActionKind, EditorCodeAction, EditorLocation, EditorSession,
+    EditorTokenKind,
 };
 
 /// Most workspace symbols returned for one query.
@@ -62,6 +63,9 @@ pub(crate) fn handle(
         "vulcan/outline" => params(request).map(|p| outline(session, &p)),
         request::CodeLensRequest::METHOD => params(request).and_then(|p| code_lenses(session, &p)),
         request::InlayHintRequest::METHOD => params(request).map(|p| inlay_hints(session, &p)),
+        request::SemanticTokensFullRequest::METHOD => {
+            params(request).and_then(|p| semantic_tokens(session, &p))
+        }
         "vulcan/backlinks" => params(request).and_then(|p| backlinks(session, &p)),
         method => Err(ResponseFailure::method_not_found(method)),
     };
@@ -209,6 +213,55 @@ fn inlay_hints(session: &EditorSession, params: &lsp::InlayHintParams) -> Value 
         })
         .collect::<Vec<_>>();
     to_value(hints)
+}
+
+/// Token types follow [`EditorTokenKind::ALL`]; modifiers are bit flags.
+pub(crate) fn semantic_token_legend() -> lsp::SemanticTokensLegend {
+    lsp::SemanticTokensLegend {
+        token_types: EditorTokenKind::ALL
+            .iter()
+            .map(|kind| lsp::SemanticTokenType::new(kind.name()))
+            .collect(),
+        token_modifiers: vec![
+            lsp::SemanticTokenModifier::new("unresolved"),
+            lsp::SemanticTokenModifier::new("ambiguous"),
+        ],
+    }
+}
+
+fn semantic_tokens(session: &EditorSession, params: &lsp::SemanticTokensParams) -> Answer {
+    let Some(path) = vault_path(session, &params.text_document.uri) else {
+        return Ok(Value::Null);
+    };
+    let Some(tokens) = session.semantic_tokens(&path)? else {
+        return Ok(Value::Null);
+    };
+    let mut data = Vec::with_capacity(tokens.len());
+    let (mut line, mut column) = (0, 0);
+    for token in tokens {
+        let start = token.range.start;
+        let delta_line = start.line - line;
+        data.push(lsp::SemanticToken {
+            delta_line,
+            delta_start: if delta_line == 0 {
+                start.column - column
+            } else {
+                start.column
+            },
+            length: token.range.end.column - start.column,
+            token_type: EditorTokenKind::ALL
+                .iter()
+                .position(|kind| *kind == token.kind)
+                .and_then(|index| u32::try_from(index).ok())
+                .unwrap_or_default(),
+            token_modifiers_bitset: u32::from(token.unresolved) | u32::from(token.ambiguous) << 1,
+        });
+        (line, column) = (start.line, start.column);
+    }
+    Ok(to_value(lsp::SemanticTokens {
+        result_id: None,
+        data,
+    }))
 }
 
 /// Parameters naming one document.

@@ -307,13 +307,18 @@ with template mutations disabled and follows the existing template trust rules.
 - `[editor]` in `.vulcan/config.toml` (or the device-local `config.local.toml`, which wins):
   `diagnose_unsupported_syntax`, `diagnostic_delay_ms` (200), `code_lens`, `inlay_hints`, and
   `semantic_tokens`, all on by default; a feature that is off is not advertised.
+- `textDocument/semanticTokens/full`: token types `wikiLink`, `markdownLink`, `embed`, `tag`,
+  `inlineField` (the key only), and `blockId`, with modifiers `unresolved` and `ambiguous` once the
+  vault is indexed. External links are left to the syntax highlighter, and tokens never span lines.
+  After an index change, clients that support it are asked to refresh. vulcan.nvim links each type
+  to a treesitter group by default and dims unresolved links (`DiagnosticUnnecessary`).
 - Minimal-diff `TextEdit`s (one per changed line).
 
 ### Later
 
 mdbase schema-enum value completion (after the MDB items land); heading and block subpath
 diagnostics (owned by OBS.2 in `vulcan-core`; the LSP only maps what the parser and resolver
-report); extract-section (reusing the note split refactor); semantic tokens; multi-root
+report); extract-section (reusing the note split refactor); multi-root
 workspaces; daemon-backed store; pull-model `workspace/diagnostic`.
 
 ### Explicitly not exposed over LSP

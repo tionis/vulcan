@@ -225,6 +225,14 @@ fn capabilities(
             .editor
             .inlay_hints
             .then_some(lsp::OneOf::Left(true)),
+        semantic_tokens_provider: session.config().editor.semantic_tokens.then(|| {
+            lsp::SemanticTokensOptions {
+                legend: crate::handlers::semantic_token_legend(),
+                full: Some(lsp::SemanticTokensFullOptions::Bool(true)),
+                ..lsp::SemanticTokensOptions::default()
+            }
+            .into()
+        }),
         rename_provider: Some(lsp::OneOf::Right(lsp::RenameOptions {
             prepare_provider: Some(true),
             work_done_progress_options: lsp::WorkDoneProgressOptions::default(),
@@ -273,9 +281,16 @@ struct ClientFeatures {
     work_done_progress: bool,
     dynamic_file_watching: bool,
     edits: EditSupport,
-    /// The client accepts `workspace/codeLens/refresh` and
-    /// `workspace/inlayHint/refresh` after index changes.
-    refresh_lenses_and_hints: (bool, bool),
+    /// Which `workspace/*/refresh` requests the client accepts after index
+    /// changes.
+    refresh: RefreshSupport,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct RefreshSupport {
+    code_lens: bool,
+    inlay_hint: bool,
+    semantic_tokens: bool,
 }
 
 impl From<&lsp::ClientCapabilities> for ClientFeatures {
@@ -293,20 +308,27 @@ impl From<&lsp::ClientCapabilities> for ClientFeatures {
                 .and_then(|watched| watched.dynamic_registration)
                 .unwrap_or(false),
             edits: EditSupport::from(capabilities),
-            refresh_lenses_and_hints: (
-                capabilities
-                    .workspace
-                    .as_ref()
-                    .and_then(|workspace| workspace.code_lens.as_ref())
-                    .and_then(|lens| lens.refresh_support)
-                    .unwrap_or(false),
-                capabilities
-                    .workspace
-                    .as_ref()
-                    .and_then(|workspace| workspace.inlay_hint.as_ref())
-                    .and_then(|hint| hint.refresh_support)
-                    .unwrap_or(false),
-            ),
+            refresh: capabilities
+                .workspace
+                .as_ref()
+                .map(|workspace| RefreshSupport {
+                    code_lens: workspace
+                        .code_lens
+                        .as_ref()
+                        .and_then(|lens| lens.refresh_support)
+                        .unwrap_or(false),
+                    inlay_hint: workspace
+                        .inlay_hint
+                        .as_ref()
+                        .and_then(|hint| hint.refresh_support)
+                        .unwrap_or(false),
+                    semantic_tokens: workspace
+                        .semantic_tokens
+                        .as_ref()
+                        .and_then(|tokens| tokens.refresh_support)
+                        .unwrap_or(false),
+                })
+                .unwrap_or_default(),
         }
     }
 }
@@ -868,13 +890,27 @@ impl<'c> Server<'c> {
             "vulcan/indexChanged".to_string(),
             json!({ "paths": paths, "summary": summary }),
         )));
-        // Backlink counts and due dates may have changed.
-        let (lenses, hints) = self.client.refresh_lenses_and_hints;
-        if lenses && self.session.config().editor.code_lens {
-            self.send_request("workspace/codeLens/refresh", Value::Null);
-        }
-        if hints && self.session.config().editor.inlay_hints {
-            self.send_request("workspace/inlayHint/refresh", Value::Null);
+        // Backlink counts, due dates, and link resolution may have changed.
+        let refresh = self.client.refresh;
+        let editor = &self.session.config().editor;
+        let requests = [
+            (
+                refresh.code_lens && editor.code_lens,
+                "workspace/codeLens/refresh",
+            ),
+            (
+                refresh.inlay_hint && editor.inlay_hints,
+                "workspace/inlayHint/refresh",
+            ),
+            (
+                refresh.semantic_tokens && editor.semantic_tokens,
+                "workspace/semanticTokens/refresh",
+            ),
+        ];
+        for (enabled, method) in requests {
+            if enabled {
+                self.send_request(method, Value::Null);
+            }
         }
     }
 

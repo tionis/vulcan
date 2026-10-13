@@ -1220,10 +1220,33 @@ fn editor_config_turns_features_off() {
     let dir = vault(&[("Home.md", "# Home\n")]);
     std::fs::write(
         dir.path().join(".vulcan/config.toml"),
-        "[editor]\ncode_lens = false\ninlay_hints = false\n",
+        "[editor]\ncode_lens = false\ninlay_hints = false\nsemantic_tokens = false\n",
     )
     .unwrap();
     let (_client, result) = Client::start(dir.path(), &json!({}));
     assert!(result["capabilities"]["codeLensProvider"].is_null());
     assert!(result["capabilities"]["inlayHintProvider"].is_null());
+    assert!(result["capabilities"]["semanticTokensProvider"].is_null());
+}
+
+#[test]
+fn semantic_tokens_mark_unresolved_links() {
+    let text = "[[Home]] [[Gone]]\n#tag\n";
+    let dir = vault(&[("Home.md", "# Home\n"), ("Note.md", text)]);
+    let (mut client, result) = Client::start(dir.path(), &json!({}));
+    let legend = &result["capabilities"]["semanticTokensProvider"]["legend"];
+    assert_eq!(legend["tokenTypes"][0], "wikiLink");
+    assert_eq!(legend["tokenTypes"][3], "tag");
+    assert_eq!(legend["tokenModifiers"], json!(["unresolved", "ambiguous"]));
+    client.open("Note.md", text);
+    let _ = client.diagnostics("Note.md");
+    let tokens = client.request(
+        "textDocument/semanticTokens/full",
+        json!({ "textDocument": { "uri": client.uri("Note.md") } }),
+    );
+    // [[Home]] at 0:0, [[Gone]] (unresolved) at 0:9, #tag at 1:0.
+    assert_eq!(
+        tokens["data"],
+        json!([0, 0, 8, 0, 0, 0, 9, 8, 0, 1, 1, 0, 4, 3, 0])
+    );
 }

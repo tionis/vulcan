@@ -8410,7 +8410,7 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Inlay hints and code lens: a backlink-count lens per note (refreshed after index changes) and due-date hints on open tasks
 - [ ] Extract-section code action over the note split refactor
 - [x] Minimal-diff `TextEdit`s (one edit per changed line)
-- [ ] Semantic tokens
+- [x] Semantic tokens: links, embeds, tags, inline-field keys, and block ids, with unresolved and ambiguous modifiers
 - [ ] Multi-root workspaces
 - [ ] **Blocked on 10.5:** daemon-backed note store through client routing
 - [ ] Pull-model `workspace/diagnostic`, only if requested

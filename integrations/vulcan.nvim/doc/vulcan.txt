@@ -47,6 +47,12 @@ the strict sandbox, with full evaluation for vaults trusted with
 references); `inlay_hints` shows how far off each open task's due date is.
 The vault's `[editor]` config can turn either off on the server side.
 
+Semantic tokens from the server highlight links, embeds, tags, inline field
+keys, and block ids. The plugin links `@lsp.type.{type}.markdown` (types
+`wikiLink`, `markdownLink`, `embed`, `tag`, `inlineField`, `blockId`) to
+treesitter groups and `@lsp.mod.unresolved.markdown` to
+|hl-DiagnosticUnnecessary|, all as defaults your colourscheme can override.
+
 ==============================================================================
 3. COMMANDS                                                   *vulcan-commands*
 
