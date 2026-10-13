@@ -311,7 +311,7 @@ with template mutations disabled and follows the existing template trust rules.
   `semantic_tokens`, all on by default; a feature that is off is not advertised.
 - `textDocument/semanticTokens/full`: token types `wikiLink`, `markdownLink`, `embed`, `tag`,
   `inlineField` (the key only), and `blockId`, with modifiers `unresolved` and `ambiguous` once the
-  vault is indexed. External links are left to the syntax highlighter, and tokens never span lines.
+  vault is indexed. External links are left to the syntax highlighter, and a link wrapped across lines becomes one token per line.
   After an index change, clients that support it are asked to refresh. vulcan.nvim links each type
   to a treesitter group by default and dims unresolved links (`DiagnosticUnnecessary`).
 - `workspace/diagnostic`: the same checks as for open documents, run on closed notes the index

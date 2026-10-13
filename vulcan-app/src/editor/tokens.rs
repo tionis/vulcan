@@ -140,21 +140,43 @@ impl EditorSession {
             if range.start < covered || range.is_empty() {
                 continue;
             }
-            let editor_range = self.range(text, &document.line_index, range.clone());
-            // Multi-line tokens need client support; such links are rare.
-            if editor_range.start.line != editor_range.end.line {
-                continue;
-            }
             covered = range.end;
-            tokens.push(EditorSemanticToken {
-                range: editor_range,
-                kind,
-                unresolved,
-                ambiguous,
-            });
+            // Tokens may not span lines (without a client capability few
+            // editors have), so a link wrapped across lines becomes one token
+            // per line.
+            for piece in line_pieces(text, range) {
+                tokens.push(EditorSemanticToken {
+                    range: self.range(text, &document.line_index, piece),
+                    kind,
+                    unresolved,
+                    ambiguous,
+                });
+            }
         }
         Ok(Some(tokens))
     }
+}
+
+/// `range` split at line breaks, without the breaks and empty pieces.
+fn line_pieces(text: &str, range: Range<usize>) -> Vec<Range<usize>> {
+    let mut pieces = Vec::new();
+    let mut start = range.start;
+    for (offset, _) in text[range.clone()].match_indices('\n') {
+        let end = range.start + offset;
+        let line_end = if text[..end].ends_with('\r') {
+            end - 1
+        } else {
+            end
+        };
+        if line_end > start {
+            pieces.push(start..line_end);
+        }
+        start = end + 1;
+    }
+    if range.end > start {
+        pieces.push(start..range.end);
+    }
+    pieces
 }
 
 #[cfg(test)]
@@ -208,6 +230,33 @@ mod tests {
         let field = &tokens[4];
         assert_eq!(field.range.end.column - field.range.start.column, 6);
         assert!(session.semantic_tokens("Missing.md").unwrap().is_none());
+    }
+
+    #[test]
+    fn splits_links_wrapped_across_lines() {
+        let text = "See [a wrapped\r\nlabel](Gone.md) here\n";
+        let (_dir, mut session) = vault(&[("Note.md", text)]);
+        session.open("Note.md", 1, text.into());
+        let tokens = session.semantic_tokens("Note.md").unwrap().unwrap();
+        let ranges = tokens
+            .iter()
+            .map(|token| (token.range.start, token.range.end, token.unresolved))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ranges,
+            vec![
+                (
+                    position_of(text, "[a", 0),
+                    position_of(text, "\r\n", 0),
+                    true
+                ),
+                (
+                    position_of(text, "label", 0),
+                    position_of(text, " here", 0),
+                    true
+                ),
+            ]
+        );
     }
 
     #[test]
