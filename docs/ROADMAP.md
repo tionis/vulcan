@@ -8393,7 +8393,7 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Pickers (through `vim.ui.select`, so telescope, fzf-lua, or snacks present them) over notes, search, tags, and templates; backlinks through references
 - [x] `:Vulcan daily|weekly|template|capture` commands (capture through `vulcan.capture` into the configured inbox, sharing `vulcan_app::inbox` with `vulcan inbox`); floating-terminal launchers for `browse`, `bases`, and `kanban`
 - [x] Virtual-line rendering of `vulcan/render` results; buffer re-pointing after moves (editor-side `RenameFile`); `doctor` results in quickfix
-- [x] Headless `nvim` smoke tests (`test/smoke.lua`, run by `cargo test -p vulcan-cli --test nvim_plugin` when Neovim 0.10+ is installed)
+- [x] Headless `nvim` smoke tests (`test/smoke.lua`, run by `cargo test -p vulcan-cli --test nvim_plugin` when Neovim 0.10+ is installed; CI installs a checksum-pinned Neovim 0.10.4 on Linux and requires it)
 - [x] `docs/guide/editors.md`: Neovim setup, recommended companions (render-markdown.nvim or markview.nvim, image.nvim or snacks.image), plain Vim recipes (`yegappan/lsp` or `vim-lsp` plus fzf.vim), Helix, and Emacs
 - [x] Return a cursor offset from template insertion so `tp.file.cursor()` can place the cursor (a reserved template variable makes the call emit a marker that editor insertion removes and reports as `report.cursor`)
 - [x] Ship the plugin in the binary: `vulcan editor nvim install|status|path|uninstall` writes it into Neovim's package directory (or `--dir`) with generated help tags and a hash-checked `.vulcan-managed.json` marker, refreshes only unedited managed copies, follows `self-update`, and `:checkhealth vulcan` reports a stale copy

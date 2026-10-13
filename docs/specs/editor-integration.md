@@ -451,7 +451,8 @@ The plugin's headless smoke test (`integrations/vulcan.nvim/test/smoke.lua`) dri
 Neovim against the built binary: attaching, rendering, the CLI wrapper, doctor, task toggling with
 recurrence, link rename, moving the open note, periodic notes, and `:checkhealth`.
 `cargo test -p vulcan-cli --test nvim_plugin` runs it when Neovim 0.10+ is installed (set
-`VULCAN_REQUIRE_NVIM` to fail instead of skipping).
+`VULCAN_REQUIRE_NVIM` to fail instead of skipping). Linux CI installs a checksum-pinned Neovim
+0.10.4, the oldest supported release, and sets `VULCAN_REQUIRE_NVIM`.
 
 `tp.file.cursor()` places the cursor: editor template insertion sets a reserved template variable
 so the call emits a marker, removes it from the inserted text, and reports its position as
