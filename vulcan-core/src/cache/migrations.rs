@@ -192,6 +192,11 @@ impl MigrationRegistry {
                 "index the resolution keys of every note's links",
                 schema::apply_schema_v34,
             ),
+            Migration::new(
+                35,
+                "index note identities ignoring ASCII case",
+                schema::apply_schema_v35,
+            ),
         ])
     }
 

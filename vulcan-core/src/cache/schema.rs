@@ -1,5 +1,17 @@
 use rusqlite::Transaction;
 
+/// ASCII case-insensitive identity indexes: note references resolve by path,
+/// file name, or alias ignoring ASCII case, and these let a single reference
+/// read only its candidate rows instead of every note's identity. The
+/// `NOCASE` collation folds exactly the ASCII letters that `to_ascii_lowercase` does.
+pub fn apply_schema_v35(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "CREATE INDEX idx_documents_path_nocase ON documents(path COLLATE NOCASE);
+         CREATE INDEX idx_documents_filename_nocase ON documents(filename COLLATE NOCASE);
+         CREATE INDEX idx_aliases_alias_text_nocase ON aliases(alias_text COLLATE NOCASE);",
+    )
+}
+
 /// A covering index for note identity facts (QRY.6): loading a universe's
 /// paths, file names, aliases, and row versions reads the index alone, not
 /// the `note_query` rows that carry properties.

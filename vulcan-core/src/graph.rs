@@ -635,8 +635,11 @@ pub fn resolve_note_reference_with_filter(
     let connection = open_existing_cache(paths)?;
     // Scope the candidate universe before resolving filenames or aliases. Hidden
     // notes must neither win resolution nor appear in ambiguity diagnostics.
-    let notes = filtered_note_set(&connection, filter)?;
-    let note = notes.resolve(identifier)?;
+    let candidates = load_resolution_candidates(&connection, identifier, None)?
+        .into_iter()
+        .filter(|note| filter.is_none_or(|filter| filter.is_allowed(&note.path)))
+        .collect();
+    let note = IndexedNoteSet::build(candidates).resolve(identifier)?;
     if let Some(filter) = filter {
         if !filter.is_allowed(&note.path) {
             return Err(PermissionError::PathDenied {
@@ -667,25 +670,8 @@ pub fn resolve_note_reference_with_guard(
     let scope = guard
         .read_filter()
         .document_scope_sql("_resolve_permission");
-    let sql = format!(
-        "{}SELECT documents.id, documents.path, documents.filename FROM documents \
-         WHERE documents.extension = 'md' {} ORDER BY documents.path",
-        scope.cte, scope.clause,
-    );
-    let mut statement = connection.prepare(&sql)?;
-    let rows = statement.query_map(params_from_iter(scope.params.iter()), |row| {
-        Ok(IndexedNote {
-            id: row.get(0)?,
-            path: row.get(1)?,
-            filename: row.get(2)?,
-            aliases: Vec::new(),
-        })
-    })?;
-    let mut aliases = connection
-        .prepare("SELECT alias_text FROM aliases WHERE document_id = ?1 ORDER BY alias_text")?;
     let mut notes = Vec::new();
-    for row in rows {
-        let mut note = row?;
+    for note in load_resolution_candidates(&connection, identifier, Some(&scope))? {
         if guard.has_policy_hook() {
             match guard.check_policy_decision("read", Some(&note.path)) {
                 Ok(()) => {}
@@ -697,9 +683,6 @@ pub fn resolve_note_reference_with_guard(
                 Err(error) => return Err(error.into()),
             }
         }
-        note.aliases = aliases
-            .query_map([&note.id], |row| row.get(0))?
-            .collect::<Result<Vec<_>, _>>()?;
         notes.push(note);
     }
     // Keep every authorized identity, including duplicate basenames. Resolution
@@ -2010,6 +1993,66 @@ fn load_indexed_notes(connection: &Connection) -> Result<IndexedNoteSet, GraphQu
     Ok(IndexedNoteSet::build(notes))
 }
 
+/// The indexed notes through which `identifier` can resolve, in `path` order:
+/// those whose path, path without `.md`, file name, file name with `.md`, or
+/// alias equals it ignoring ASCII case. These are exactly the entries
+/// [`IndexedNoteSet::resolve`] consults, so resolving among them equals
+/// resolving among every note, including ambiguity and tie-breaking, while
+/// reading only the candidates' rows through the schema v35 indexes.
+fn load_resolution_candidates(
+    connection: &Connection,
+    identifier: &str,
+    scope: Option<&crate::permissions::PermissionSql>,
+) -> Result<Vec<IndexedNote>, GraphQueryError> {
+    let lower = identifier.to_ascii_lowercase();
+    let with_extension = format!("{lower}.md");
+    // `name.md` also resolves a note whose file name is `name`.
+    let without_extension = lower.strip_suffix(".md").map(ToOwned::to_owned);
+    let (cte, clause) = scope.map_or((String::new(), String::new()), |scope| {
+        (scope.cte.clone(), scope.clause.clone())
+    });
+    let sql = format!(
+        "{cte}SELECT documents.id, documents.path, documents.filename FROM documents
+         WHERE documents.extension = 'md'{clause} AND documents.id IN (
+             SELECT id FROM documents WHERE path = ? COLLATE NOCASE
+             UNION SELECT id FROM documents
+                 WHERE path = ? COLLATE NOCASE AND path GLOB '*.md'
+             UNION SELECT id FROM documents WHERE filename = ? COLLATE NOCASE
+             UNION SELECT id FROM documents WHERE filename = ? COLLATE NOCASE
+             UNION SELECT document_id FROM aliases WHERE alias_text = ? COLLATE NOCASE)
+         ORDER BY documents.path"
+    );
+    let mut values: Vec<Option<String>> = scope
+        .map(|scope| scope.params.iter().cloned().map(Some).collect())
+        .unwrap_or_default();
+    values.extend([
+        Some(lower.clone()),
+        Some(with_extension),
+        Some(lower.clone()),
+        without_extension,
+        Some(lower),
+    ]);
+    let mut statement = connection.prepare(&sql)?;
+    let mut notes = statement
+        .query_map(params_from_iter(values.iter()), |row| {
+            Ok(IndexedNote {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                filename: row.get(2)?,
+                aliases: Vec::new(),
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut aliases = connection
+        .prepare("SELECT alias_text FROM aliases WHERE document_id = ?1 ORDER BY alias_text")?;
+    for note in &mut notes {
+        note.aliases = aliases
+            .query_map([&note.id], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+    }
+    Ok(notes)
+}
+
 fn filtered_note_set(
     connection: &Connection,
     filter: Option<&PermissionFilter>,
@@ -2282,6 +2325,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    #[allow(clippy::too_many_lines)] // One guard fixture covers scope, policy, ambiguity, and failure.
     fn guarded_resolution_preserves_tags_policy_and_visible_ambiguity() {
         struct Guard {
             profile: ProfilePermissionGuard,
@@ -2352,11 +2396,17 @@ mod tests {
             failed: std::cell::Cell::new(false),
             calls: std::cell::RefCell::default(),
         };
-        for identifier in ["Task", "task.md", "Shared", "visible/task"] {
+        // The policy decides each in-scope candidate; a path consults one note.
+        for (identifier, consulted) in [
+            ("Task", &["Policy/Task.md", "Visible/Task.md"][..]),
+            ("task.md", &["Policy/Task.md", "Visible/Task.md"]),
+            ("Shared", &["Policy/Task.md", "Visible/Task.md"]),
+            ("visible/task", &["Visible/Task.md"]),
+        ] {
             guard.calls.borrow_mut().clear();
             let resolved = resolve_note_reference_with_guard(&paths, identifier, &guard).unwrap();
             assert_eq!(resolved.path, "Visible/Task.md");
-            assert_eq!(*guard.calls.borrow(), ["Policy/Task.md", "Visible/Task.md"]);
+            assert_eq!(*guard.calls.borrow(), consulted, "{identifier}");
         }
         for identifier in ["Hidden/Task.md", "Denied/Task.md", "Policy/Task.md"] {
             assert!(matches!(
@@ -2379,6 +2429,122 @@ mod tests {
                 PermissionError::PolicyHookFailed { .. }
             ))
         ));
+    }
+
+    /// Indexed resolution reads only candidate rows; it must answer exactly as
+    /// resolving among every note does, including case variants, `.md` forms,
+    /// ambiguity, ties, non-ASCII names, and scoped universes.
+    #[test]
+    fn indexed_note_resolution_equals_resolving_among_every_note() {
+        let temp = TempDir::new().unwrap();
+        let paths = VaultPaths::new(temp.path());
+        fs::create_dir_all(paths.vulcan_dir()).unwrap();
+        fs::write(
+            paths.config_file(),
+            "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\"] }\n",
+        )
+        .unwrap();
+        let mut files = vec![
+            ("Public/Alpha.md", "---\naliases: [Shared, ÉTÉ]\n---\n"),
+            ("Hidden/Alpha.md", "---\naliases: [shared]\n---\n"),
+            ("Public/Beta.md", "---\naliases: [Alpha]\n---\n"),
+            ("Public/Gamma.md", "---\naliases: [Beta]\n---\n"),
+            ("Public/Upper.MD", "upper\n"),
+            ("Public/md.md", "md\n"),
+            ("Public/Name.md.md", "double\n"),
+            ("Public/été.md", "accent\n"),
+            ("Public/Dotted.Name.md", "dotted\n"),
+        ];
+        // Case variants of one path need a case-sensitive filesystem.
+        fs::create_dir_all(temp.path().join("Public")).unwrap();
+        fs::write(temp.path().join("Public/case.md"), "lower\n").unwrap();
+        if !temp.path().join("Public/CASE.md").exists() {
+            files.push(("Public/CASE.md", "upper\n"));
+        }
+        for (path, contents) in &files {
+            let target = temp.path().join(path);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::write(target, contents).unwrap();
+        }
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        let connection = open_existing_cache(&paths).unwrap();
+        let guard = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+        );
+        let filter = guard.read_filter();
+        let identifiers = [
+            "Alpha",
+            "alpha.md",
+            "ALPHA",
+            "Public/Alpha",
+            "public/alpha.md",
+            "Hidden/Alpha.md",
+            "Shared",
+            "SHARED",
+            "Beta",
+            "beta.md",
+            "Gamma",
+            "Upper",
+            "upper.md",
+            "Public/Upper",
+            "public/upper.md",
+            "md",
+            "md.md",
+            "Name",
+            "name.md",
+            "Name.md.md",
+            "Public/Name.md",
+            "été",
+            "ÉTÉ",
+            "Été",
+            "été.md",
+            "Dotted.Name",
+            "dotted.name.md",
+            "case",
+            "CASE",
+            "Public/case.md",
+            "public/CASE.md",
+            "missing",
+            "",
+            ".md",
+        ];
+        let outcome = |result: Result<NoteReference, GraphQueryError>| match result {
+            Ok(reference) => format!("{} {:?}", reference.path, reference.matched_by),
+            Err(error) => error.to_string(),
+        };
+        for identifier in identifiers {
+            for scoped in [false, true] {
+                let scope = scoped.then_some(&filter);
+                let every_note = filtered_note_set(&connection, scope)
+                    .unwrap()
+                    .resolve(identifier)
+                    .map(|note| NoteReference {
+                        id: note.id,
+                        path: note.path,
+                        matched_by: note.matched_by,
+                    });
+                let indexed = resolve_note_reference_with_filter(&paths, identifier, scope);
+                assert_eq!(
+                    outcome(indexed),
+                    outcome(every_note),
+                    "{identifier:?} scoped={scoped}"
+                );
+            }
+            let guarded = resolve_note_reference_with_guard(&paths, identifier, &guard);
+            let filtered = resolve_note_reference_with_filter(&paths, identifier, Some(&filter));
+            assert_eq!(outcome(guarded), outcome(filtered), "{identifier:?} guard");
+        }
+        // The lookups read candidate rows through the case-insensitive indexes.
+        let plan = connection
+            .prepare("EXPLAIN QUERY PLAN SELECT id FROM documents WHERE path = ?1 COLLATE NOCASE")
+            .unwrap()
+            .query_map(["x"], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join(" ");
+        assert!(plan.contains("idx_documents_path_nocase"), "{plan}");
     }
 
     #[test]

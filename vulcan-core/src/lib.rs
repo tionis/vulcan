@@ -404,4 +404,4 @@ pub fn current_time_override_ms() -> Option<i64> {
 
 pub const PARSER_VERSION: u32 = 9;
 pub const EXTRACTION_VERSION: u32 = 1;
-pub const SCHEMA_VERSION: u32 = 34;
+pub const SCHEMA_VERSION: u32 = 35;
