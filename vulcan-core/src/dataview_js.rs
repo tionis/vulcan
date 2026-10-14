@@ -8570,7 +8570,7 @@ cpu_limit_ms = 25
                 &format!("host.exec({exec_argv})"),
                 Some("Dashboard.md"),
                 DataviewJsEvalOptions {
-                    timeout: Some(Duration::from_secs(1)),
+                    timeout: Some(HOST_SUCCESS_TIMEOUT),
                     sandbox: Some(JsRuntimeSandbox::None),
                     permission_profile: Some("exec_only".to_string()),
                     ..DataviewJsEvalOptions::default()
@@ -8593,7 +8593,7 @@ cpu_limit_ms = 25
                 &format!("host.shell({shell_command})"),
                 Some("Dashboard.md"),
                 DataviewJsEvalOptions {
-                    timeout: Some(Duration::from_secs(1)),
+                    timeout: Some(HOST_SUCCESS_TIMEOUT),
                     sandbox: Some(JsRuntimeSandbox::None),
                     permission_profile: Some("exec_only".to_string()),
                     ..DataviewJsEvalOptions::default()
@@ -8609,7 +8609,7 @@ cpu_limit_ms = 25
                 &format!("host.shell({shell_command})"),
                 Some("Dashboard.md"),
                 DataviewJsEvalOptions {
-                    timeout: Some(Duration::from_secs(1)),
+                    timeout: Some(HOST_SUCCESS_TIMEOUT),
                     sandbox: Some(JsRuntimeSandbox::None),
                     permission_profile: Some("shell_runner".to_string()),
                     ..DataviewJsEvalOptions::default()
@@ -8654,7 +8654,8 @@ cpu_limit_ms = 25
                 },
             )
             .expect("timed-out host.exec should still return a report");
-            assert!(started.elapsed() < Duration::from_secs(1));
+            // The runtime's 75 ms limit wins over the call's own 5 s.
+            assert!(started.elapsed() < Duration::from_secs(4));
             let timeout_value = timeout_result
                 .value
                 .expect("timed-out host.exec should return a value");
@@ -8670,7 +8671,7 @@ cpu_limit_ms = 25
                 &format!("host.exec({noisy_argv}, {{ max_output_bytes: 32 }})"),
                 Some("Dashboard.md"),
                 DataviewJsEvalOptions {
-                    timeout: Some(Duration::from_secs(1)),
+                    timeout: Some(HOST_SUCCESS_TIMEOUT),
                     sandbox: Some(JsRuntimeSandbox::None),
                     permission_profile: Some("exec_only".to_string()),
                     ..DataviewJsEvalOptions::default()
@@ -8720,6 +8721,10 @@ shell = "allow"
             )
             .expect("host permission config should be written");
         }
+
+        /// Room for a cold shell start on a loaded CI runner (`PowerShell` can
+        /// take over a second); these runs check results, not timing.
+        const HOST_SUCCESS_TIMEOUT: Duration = Duration::from_secs(30);
 
         fn test_host_exec_argv(command: &str) -> Vec<String> {
             #[cfg(target_os = "windows")]
