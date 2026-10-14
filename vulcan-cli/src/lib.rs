@@ -679,6 +679,9 @@ impl From<vulcan_app::AppError> for CliError {
             Some("unsupported_context") => "unsupported_context",
             Some("record_not_found") => "record_not_found",
             Some("invalid_request") => "invalid_request",
+            // mdbase query and authorization failures, kept alike on every frontend.
+            Some("invalid_query") => "invalid_query",
+            Some("permission_denied") => "permission_denied",
             _ => "operation_failed",
         };
         Self {

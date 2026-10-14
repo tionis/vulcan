@@ -1001,9 +1001,14 @@ fn load_query_records_with_boundary(
 }
 
 pub fn parse_mdbase_query(source: &str) -> Result<serde_json::Value, AppError> {
-    let yaml = serde_yaml::from_str::<serde_yaml::Value>(source)
-        .map_err(|error| AppError::operation(format!("invalid query YAML or JSON: {error}")))?;
-    serde_json::to_value(yaml).map_err(AppError::operation)
+    let yaml = serde_yaml::from_str::<serde_yaml::Value>(source).map_err(|error| {
+        AppError::operation_with_code(
+            "invalid_query",
+            format!("invalid query YAML or JSON: {error}"),
+        )
+    })?;
+    serde_json::to_value(yaml)
+        .map_err(|error| AppError::operation_with_code("invalid_query", error))
 }
 
 /// Build an immutable, authorization-bound dry-run for an mdbase mutation.

@@ -7,6 +7,7 @@ use crate::mdbase::{
     build_mdbase_schema_report, build_mdbase_types_report, build_mdbase_view_list_report,
     build_mdbase_view_report, parse_mdbase_query, MdbaseChangeFeed, MdbaseQuerySession,
 };
+use crate::AppError;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -365,7 +366,8 @@ fn common_response_schema() -> Value {
         "properties": {
             "ok": { "type": "boolean" },
             "result": {},
-            "error": { "type": "string" }
+            "error": { "type": "string" },
+            "code": { "type": "string" }
         },
         "additionalProperties": true
     })
@@ -384,6 +386,28 @@ impl ServeResponse {
                 "error": message.into(),
             }),
         }
+    }
+
+    /// A failure with its canonical code, if any, and the matching status:
+    /// coded failures are the caller's to correct, uncoded ones are faults.
+    fn app_error(error: &AppError) -> Self {
+        let Some(code) = error.code() else {
+            return Self::error(500, error.to_string());
+        };
+        Self {
+            status: error_status(code),
+            body: json!({ "ok": false, "error": error.to_string(), "code": code }),
+        }
+    }
+}
+
+fn error_status(code: &str) -> u16 {
+    match code {
+        "permission_denied" => 403,
+        "not_found" => 404,
+        code if code.ends_with("_not_found") => 404,
+        "concurrent_modification" | "conflict" | "path_conflict" | "stale_state" => 409,
+        _ => 400,
     }
 }
 
@@ -557,7 +581,7 @@ pub fn route_request_with_sessions(
             };
             let query = match parse_mdbase_query(source) {
                 Ok(query) => query,
-                Err(error) => return ServeResponse::error(400, error.to_string()),
+                Err(error) => return ServeResponse::app_error(&error),
             };
             let result = match mdbase {
                 Some(session) => session.query(&query, read_filter.as_ref()),
@@ -565,7 +589,7 @@ pub fn route_request_with_sessions(
             };
             match result {
                 Ok(result) => ServeResponse::ok(json!({ "ok": true, "result": result })),
-                Err(error) => ServeResponse::error(500, error.to_string()),
+                Err(error) => ServeResponse::app_error(&error),
             }
         }
         ServeRouteId::MdbaseRead => {
@@ -578,17 +602,17 @@ pub fn route_request_with_sessions(
             };
             match result {
                 Ok(result) => ServeResponse::ok(json!({ "ok": true, "result": result })),
-                Err(error) => ServeResponse::error(500, error.to_string()),
+                Err(error) => ServeResponse::app_error(&error),
             }
         }
         ServeRouteId::MdbaseTypes => match build_mdbase_types_report(paths, read_filter.as_ref()) {
             Ok(result) => ServeResponse::ok(json!({ "ok": true, "result": result })),
-            Err(error) => ServeResponse::error(500, error.to_string()),
+            Err(error) => ServeResponse::app_error(&error),
         },
         ServeRouteId::MdbaseContracts => {
             match build_mdbase_contracts_report(paths, read_filter.as_ref()) {
                 Ok(result) => ServeResponse::ok(json!({ "ok": true, "result": result })),
-                Err(error) => ServeResponse::error(500, error.to_string()),
+                Err(error) => ServeResponse::app_error(&error),
             }
         }
         ServeRouteId::MdbaseSchema => {
@@ -598,7 +622,7 @@ pub fn route_request_with_sessions(
             }
             match build_mdbase_schema_report(paths, &types, read_filter.as_ref()) {
                 Ok(result) => ServeResponse::ok(json!({ "ok": true, "result": result })),
-                Err(error) => ServeResponse::error(500, error.to_string()),
+                Err(error) => ServeResponse::app_error(&error),
             }
         }
         ServeRouteId::MdbaseChanges => {
@@ -611,13 +635,13 @@ pub fn route_request_with_sessions(
             let after = parse_optional_usize(&request.query, "after").unwrap_or(0);
             match feed.changes_since(paths, after as u64, read_filter.as_ref()) {
                 Ok(result) => ServeResponse::ok(json!({ "ok": true, "result": result })),
-                Err(error) => ServeResponse::error(500, error.to_string()),
+                Err(error) => ServeResponse::app_error(&error),
             }
         }
         ServeRouteId::MdbaseViews => {
             match build_mdbase_view_list_report(paths, read_filter.as_ref()) {
                 Ok(result) => ServeResponse::ok(json!({ "ok": true, "result": result })),
-                Err(error) => ServeResponse::error(500, error.to_string()),
+                Err(error) => ServeResponse::app_error(&error),
             }
         }
         ServeRouteId::MdbaseView => {
@@ -652,18 +676,7 @@ pub fn route_request_with_sessions(
             };
             match build_mdbase_view_report(paths, &invocation, read_filter.as_ref()) {
                 Ok(result) => ServeResponse::ok(json!({ "ok": true, "result": result })),
-                // Canonical view failures are the caller's to correct.
-                Err(error) => match error.code() {
-                    Some(code) => ServeResponse {
-                        status: if code.ends_with("_not_found") {
-                            404
-                        } else {
-                            400
-                        },
-                        body: json!({ "ok": false, "error": error.to_string(), "code": code }),
-                    },
-                    None => ServeResponse::error(500, error.to_string()),
-                },
+                Err(error) => ServeResponse::app_error(&error),
             }
         }
         ServeRouteId::DataviewQuery => {
@@ -841,8 +854,9 @@ fn parse_optional_search_sort(
 mod tests {
     use super::{
         route_request, route_request_with_sessions, serve_route_capabilities, serve_route_paths,
-        ServeHealthState, ServeRequest, ServeRouteOptions, ServeSessions,
+        ServeHealthState, ServeRequest, ServeResponse, ServeRouteOptions, ServeSessions,
     };
+    use crate::AppError;
     use std::collections::HashMap;
     use std::fs;
     use tempfile::TempDir;
@@ -976,6 +990,63 @@ mod tests {
             &get("/query", &[("dsl", "from notes")]),
         );
         assert!(plain.body["result"].get("plan").is_none());
+    }
+
+    #[test]
+    fn mdbase_failures_carry_their_code_and_a_matching_status() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("mdbase/minimal", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+        let options = ServeRouteOptions {
+            permissions: None,
+            watch_enabled: false,
+        };
+        let state = ServeHealthState::default();
+        for (request, status, code) in [
+            (
+                get("/mdbase/query", &[("query", "{")]),
+                400,
+                "invalid_query",
+            ),
+            (
+                get("/mdbase/query", &[("query", r#"{"where": "status =="}"#)]),
+                400,
+                "invalid_query",
+            ),
+            (
+                get(
+                    "/mdbase/view",
+                    &[("source", "missing.base"), ("view", "all")],
+                ),
+                404,
+                "view_not_found",
+            ),
+        ] {
+            let response = route_request(&paths, &options, &state, &request);
+            assert_eq!(
+                response.status, status,
+                "{:?}: {}",
+                request.query, response.body
+            );
+            assert_eq!(response.body["ok"], false);
+            assert_eq!(response.body["code"], code, "{}", response.body);
+        }
+        for (code, status) in [
+            ("permission_denied", 403),
+            ("record_not_found", 404),
+            ("stale_state", 409),
+            ("concurrent_modification", 409),
+            ("context_required", 400),
+        ] {
+            let response = ServeResponse::app_error(&AppError::operation_with_code(code, "x"));
+            assert_eq!(response.status, status, "{code}");
+            assert_eq!(response.body["code"], code);
+        }
+        // Uncoded failures stay internal errors without a code.
+        let fault = ServeResponse::app_error(&AppError::operation("disk on fire"));
+        assert_eq!(fault.status, 500);
+        assert!(fault.body.get("code").is_none());
     }
 
     #[test]

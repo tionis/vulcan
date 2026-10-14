@@ -16,8 +16,8 @@ use std::collections::BTreeMap;
 use std::time::SystemTime;
 use vulcan_core::mdbase::{
     compile_mdbase_prepared_query, execute_mdbase_view, is_mdbase_view_record, list_mdbase_views,
-    mdbase_content_revision, validate_mdbase_view_source, MdbaseQueryError, MdbaseQueryResult,
-    MdbaseQuerySnapshot, MdbaseViewInvocation, MdbaseViewList, MDBASE_VIEW_SOURCE_FORMAT,
+    mdbase_content_revision, validate_mdbase_view_source, MdbaseQueryResult, MdbaseQuerySnapshot,
+    MdbaseViewInvocation, MdbaseViewList, MDBASE_VIEW_SOURCE_FORMAT,
 };
 use vulcan_core::paths::secure_read_to_string;
 use vulcan_core::Verbosity;
@@ -69,7 +69,7 @@ pub fn build_mdbase_view_report(
         loaded.collection.config.settings.timezone.as_deref(),
         chrono::DateTime::<chrono::Utc>::from(SystemTime::now()),
     )
-    .map_err(view_error)?;
+    .map_err(AppError::from)?;
     report
         .diagnostics
         .splice(0..0, registry_diagnostics(&loaded, filter));
@@ -165,11 +165,11 @@ pub fn create_mdbase_view_source(
                 "views/new.md",
                 document,
             )
-            .map_err(view_error)?;
+            .map_err(AppError::from)?;
             default_view_path(&id)
         };
         validate_mdbase_view_source(&loaded.collection, &loaded.types, &path, document)
-            .map_err(view_error)?;
+            .map_err(AppError::from)?;
         (path, loaded.collection.root.clone())
     };
     // Authorize the write first, so existence is never probed without it.
@@ -221,7 +221,7 @@ pub fn update_mdbase_view_source(
     {
         let loaded = load_collection_authorized(paths, Some(&filter))?;
         validate_mdbase_view_source(&loaded.collection, &loaded.types, path, document)
-            .map_err(view_error)?;
+            .map_err(AppError::from)?;
     }
     let plan = plan_source_write(
         paths,
@@ -385,15 +385,6 @@ fn visible_records(
         &everything,
     )?;
     Ok((loaded, records))
-}
-
-/// Keep the first canonical code (`view_not_found`, `context_required`, ...)
-/// machine-readable for callers.
-fn view_error(error: MdbaseQueryError) -> AppError {
-    match error.diagnostics.first() {
-        Some(diagnostic) => AppError::operation_with_code(diagnostic.code.clone(), error),
-        None => AppError::operation(error),
-    }
 }
 
 #[cfg(test)]

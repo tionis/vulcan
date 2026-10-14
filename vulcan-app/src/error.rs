@@ -66,6 +66,17 @@ impl From<io::Error> for AppError {
     }
 }
 
+/// Keep the first canonical diagnostic code (`invalid_query`,
+/// `context_not_found`, `view_not_found`, ...) machine-readable for callers.
+impl From<vulcan_core::mdbase::MdbaseQueryError> for AppError {
+    fn from(error: vulcan_core::mdbase::MdbaseQueryError) -> Self {
+        match error.diagnostics.first() {
+            Some(diagnostic) => Self::operation_with_code(diagnostic.code.clone(), error),
+            None => Self::operation(error),
+        }
+    }
+}
+
 impl From<vulcan_sync::RepositoryLockError> for AppError {
     fn from(error: vulcan_sync::RepositoryLockError) -> Self {
         match error {

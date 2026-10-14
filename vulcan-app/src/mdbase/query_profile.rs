@@ -64,7 +64,7 @@ pub fn build_mdbase_query_report_profiled(
             load_collection_authorized(paths, filter)
         })?;
         let prepared = time(&mut metrics.query_preparation_seconds, || {
-            compile_mdbase_prepared_query(query).map_err(AppError::operation)
+            compile_mdbase_prepared_query(query).map_err(AppError::from)
         })?;
         let now = DateTime::<Utc>::from(SystemTime::now());
         let mut indexed = super::try_indexed_query(paths, &loaded, filter, &prepared, now, metrics);
@@ -98,7 +98,7 @@ pub fn build_mdbase_query_report_profiled(
                 &mut metrics.execution_work,
             )
         })
-        .map_err(AppError::operation)?;
+        .map_err(AppError::from)?;
         time(&mut metrics.diagnostic_assembly_seconds, || {
             report
                 .diagnostics

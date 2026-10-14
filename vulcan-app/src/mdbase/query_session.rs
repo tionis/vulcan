@@ -665,7 +665,7 @@ impl MdbaseQuerySession {
         if let Some(plan) = lock(&self.plans).get(&key) {
             return Ok(plan);
         }
-        let plan = Arc::new(compile_mdbase_prepared_query(query).map_err(AppError::operation)?);
+        let plan = Arc::new(compile_mdbase_prepared_query(query).map_err(AppError::from)?);
         Ok(lock(&self.plans).insert(key, plan).0)
     }
 }

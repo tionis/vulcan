@@ -108,7 +108,7 @@ fn queries() -> Vec<Value> {
     ]
 }
 
-/// Queries every frontend must refuse, with the same message.
+/// Queries every frontend must refuse, with the same code and message.
 fn invalid_queries() -> Vec<Value> {
     vec![
         json!({"where": "status =="}),
@@ -116,8 +116,13 @@ fn invalid_queries() -> Vec<Value> {
     ]
 }
 
-/// The outcome of one query: the envelope, or the error message.
-type Outcome = Result<Value, String>;
+/// The outcome of one query: the envelope, or the error code and message.
+type Outcome = Result<Value, (String, String)>;
+
+fn failure(body: &Value) -> (String, String) {
+    let text = |key: &str| body[key].as_str().unwrap_or_default().to_string();
+    (text("code"), text("error"))
+}
 
 fn in_process(root: &Path, query: &Value, profile: Option<&str>) -> Outcome {
     let paths = VaultPaths::new(root);
@@ -127,7 +132,10 @@ fn in_process(root: &Path, query: &Value, profile: Option<&str>) -> Outcome {
     });
     vulcan_app::mdbase::build_mdbase_query_report(&paths, query, filter.as_ref())
         .map(|report| serde_json::to_value(report).unwrap())
-        .map_err(|error| error.to_string())
+        .map_err(|error| {
+            let code = error.code().unwrap_or("operation_failed");
+            (code.to_string(), error.to_string())
+        })
 }
 
 fn cli(root: &Path, query: &Value, profile: Option<&str>) -> Outcome {
@@ -144,7 +152,7 @@ fn cli(root: &Path, query: &Value, profile: Option<&str>) -> Outcome {
     if output.status.success() {
         Ok(body)
     } else {
-        Err(body["error"].as_str().unwrap_or_default().to_string())
+        Err(failure(&body))
     }
 }
 
@@ -195,7 +203,7 @@ for query in json.loads(sys.stdin.read()):
                 let line: Value = serde_json::from_str(line).unwrap();
                 match line.get("ok") {
                     Some(envelope) => Ok(envelope.clone()),
-                    None => Err(line["error"].as_str().unwrap_or_default().to_string()),
+                    None => Err(failure(&line)),
                 }
             })
             .collect(),
@@ -282,12 +290,16 @@ impl Server {
             body.to_string()
         };
         // The HTTP transport wraps the envelope: `{ok, result}` or
-        // `{ok: false, error}`.
+        // `{ok: false, error, code}`.
         let body: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
         if head.starts_with("HTTP/1.1 200") && body["ok"] == true {
             Ok(body["result"].clone())
         } else {
-            Err(body["error"].as_str().unwrap_or_default().to_string())
+            // Invalid queries are the caller's to correct, not server faults.
+            if body["code"] == "invalid_query" {
+                assert!(head.starts_with("HTTP/1.1 400"), "{head}");
+            }
+            Err(failure(&body))
         }
     }
 }
@@ -328,7 +340,9 @@ fn every_frontend_answers_canonical_queries_alike() {
             .collect::<Vec<_>>();
         // The fixture exercises what the comparison is for.
         assert!(expected[..queries().len()].iter().all(Result::is_ok));
-        assert!(expected[queries().len()..].iter().all(Result::is_err));
+        assert!(expected[queries().len()..].iter().all(|outcome| outcome
+            .as_ref()
+            .is_err_and(|(code, _)| code == "invalid_query")));
         let tasks = expected[0].as_ref().unwrap()["results"]
             .as_array()
             .unwrap()

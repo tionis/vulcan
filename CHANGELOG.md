@@ -4,6 +4,13 @@
 
 ### Changed
 
+- mdbase query and permission failures keep their canonical code. `vulcan mdbase query` (and
+  other mdbase commands) now report `invalid_query`, `context_not_found`, or `permission_denied`
+  in `--output json` instead of `operation_failed`, as does the Python example's
+  `CollectionError.code`. The HTTP mdbase routes (`vulcan serve` and the daemon) include the same
+  `code` in error bodies and answer coded failures with 400 (invalid query or parameter), 403
+  (permission denied), 404 (missing record or view), or 409 (conflict or stale state) instead of
+  500; uncoded internal faults stay 500.
 - Per-device Obsidian layout files no longer need a separate step. Setting a vault up for Git sync
   (`vulcan vault add`, `vulcan vault clone`, `vulcan sync clone`) adds their `.gitignore` entries
   when the vault has a `.obsidian` directory; `--keep-device-files` skips it. Sync itself still
