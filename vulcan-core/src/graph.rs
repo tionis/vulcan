@@ -579,6 +579,7 @@ impl GraphAdjacency {
     }
 
     fn hubs(&self, notes: &[IndexedNote], min_degree: usize) -> Vec<GraphNodeScore> {
+        let mut breakdowns = self.node_confidence_breakdowns();
         notes
             .iter()
             .filter_map(|note| {
@@ -590,20 +591,24 @@ impl GraphAdjacency {
                     inbound,
                     outbound,
                     total,
-                    confidence: self.node_confidence_breakdown(&note.id),
+                    confidence: breakdowns.remove(note.id.as_str()).unwrap_or_default(),
                 })
             })
             .collect()
     }
 
-    fn node_confidence_breakdown(&self, note_id: &str) -> GraphConfidenceBreakdown {
-        let mut breakdown = GraphConfidenceBreakdown::default();
+    /// Each node's breakdown over the edges touching it, in one pass over the
+    /// edges. A self-link counts once for its node.
+    fn node_confidence_breakdowns(&self) -> HashMap<&str, GraphConfidenceBreakdown> {
+        let mut breakdowns = HashMap::<&str, GraphConfidenceBreakdown>::new();
         for (source_id, target_id) in &self.edges {
-            if source_id == note_id || target_id == note_id {
-                breakdown.add(self.edge_confidence(source_id, target_id).0);
+            let confidence = self.edge_confidence(source_id, target_id).0;
+            breakdowns.entry(source_id).or_default().add(confidence);
+            if target_id != source_id {
+                breakdowns.entry(target_id).or_default().add(confidence);
             }
         }
-        breakdown
+        breakdowns
     }
 }
 
@@ -2573,6 +2578,59 @@ mod tests {
             ),
             other => panic!("expected ambiguous identifier error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn hub_confidence_breakdowns_match_a_per_note_count_over_every_edge() {
+        let edge = |source: &str, target: &str| (source.to_string(), target.to_string());
+        let edges = vec![
+            edge("a", "b"),
+            edge("a", "b"),
+            edge("a", "c"),
+            edge("b", "a"),
+            edge("c", "c"),
+        ];
+        let mut counts = HashMap::<String, (usize, usize)>::new();
+        for (source, target) in &edges {
+            counts.entry(source.clone()).or_insert((0, 0)).1 += 1;
+            counts.entry(target.clone()).or_insert((0, 0)).0 += 1;
+        }
+        let confidence = HashMap::from([
+            (edge("a", "c"), (LinkConfidence::Inferred, 0.5)),
+            (edge("b", "a"), (LinkConfidence::Ambiguous, 0.2)),
+        ]);
+        let adjacency = GraphAdjacency {
+            edges,
+            counts,
+            confidence,
+        };
+        let note = |id: &str| IndexedNote {
+            id: id.to_string(),
+            path: format!("{id}.md"),
+            filename: id.to_string(),
+            aliases: Vec::new(),
+        };
+        let notes = ["a", "b", "c", "lonely"].map(note);
+        for score in adjacency.hubs(&notes, 0) {
+            let id = score.document_path.trim_end_matches(".md");
+            // Every edge touching the note, a self-link once.
+            let mut expected = GraphConfidenceBreakdown::default();
+            for (source, target) in &adjacency.edges {
+                if source == id || target == id {
+                    expected.add(adjacency.edge_confidence(source, target).0);
+                }
+            }
+            assert_eq!(score.confidence, expected, "{id}");
+        }
+        let a = &adjacency.hubs(&notes, 0)[0];
+        assert_eq!(
+            (
+                a.confidence.extracted,
+                a.confidence.inferred,
+                a.confidence.ambiguous
+            ),
+            (2, 1, 1)
+        );
     }
 
     #[test]
