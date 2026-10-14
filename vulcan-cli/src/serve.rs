@@ -283,19 +283,23 @@ mod tests {
         fs::write(vault.path().join("Home.md"), "# Home\n").expect("note");
         let paths = VaultPaths::new(vault.path());
         scan_vault(&paths, ScanMode::Full).expect("scan");
-        let occupied = TcpListener::bind("127.0.0.1:0").expect("occupied listener");
-        let address = occupied.local_addr().expect("address");
-        let options = ServeOptions {
-            bind: address.to_string(),
-            watch: false,
-            debounce_ms: 50,
-            auth_token: Some("secret".to_string()),
-            permissions: None,
-        };
-
-        assert!(spawn_server(paths.clone(), options.clone()).is_err());
-        drop(occupied);
-        let handle = spawn_server(paths, options).expect("port is reusable after conflict");
+        // A released port can be taken by a parallel test before the server
+        // rebinds it, so try a few ports: a leaked listener fails every one.
+        let handle = (0..8)
+            .find_map(|_| {
+                let occupied = TcpListener::bind("127.0.0.1:0").expect("occupied listener");
+                let options = ServeOptions {
+                    bind: occupied.local_addr().expect("address").to_string(),
+                    watch: false,
+                    debounce_ms: 50,
+                    auth_token: Some("secret".to_string()),
+                    permissions: None,
+                };
+                assert!(spawn_server(paths.clone(), options.clone()).is_err());
+                drop(occupied);
+                spawn_server(paths.clone(), options).ok()
+            })
+            .expect("port is reusable after conflict");
         assert_eq!(
             get_json(handle.addr(), "/health", Some("secret"))["ok"],
             true
@@ -307,10 +311,11 @@ mod tests {
     fn partial_watcher_startup_failure_rolls_back_the_listener() {
         let temporary = TempDir::new().expect("temporary directory");
         let missing_vault = temporary.path().join("missing-vault");
-        // The probed port is free only until it is released, and parallel
-        // tests may take it before the server binds; probe again if so.
-        let (address, error) = (0..8)
-            .find_map(|_| {
+        // A probed port is free only until it is released, and parallel tests
+        // may take it before the server binds or before it is rebound here; a
+        // listener the failed startup leaked would fail every attempt.
+        let attempts = (0..8)
+            .map(|_| {
                 let probe = TcpListener::bind("127.0.0.1:0").expect("port probe");
                 let address = probe.local_addr().expect("address");
                 drop(probe);
@@ -324,16 +329,21 @@ mod tests {
                         permissions: None,
                     },
                 )
-                .expect_err("missing watched vault must fail startup");
-                let message = error.to_string().to_ascii_lowercase();
-                let taken = message.contains("address already in use")
-                    || message.contains("address in use");
-                (!taken).then_some((address, error))
+                .expect_err("missing watched vault must fail startup")
+                .to_string();
+                let message = error.to_ascii_lowercase();
+                if message.contains("address already in use") || message.contains("address in use")
+                {
+                    return None;
+                }
+                assert!(error.contains("service"), "{error}");
+                Some(TcpListener::bind(address).is_ok())
             })
-            .expect("a free port for the listener");
-        assert!(error.to_string().contains("service"), "{error}");
-        let rebound = TcpListener::bind(address).expect("failed startup releases listener");
-        drop(rebound);
+            .collect::<Vec<_>>();
+        assert!(
+            attempts.contains(&Some(true)),
+            "failed startup releases its listener: {attempts:?}"
+        );
     }
 
     #[test]
