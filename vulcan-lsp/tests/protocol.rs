@@ -254,6 +254,21 @@ impl Client {
         }
     }
 
+    /// Wait until the startup index is done, dropping the index changes it
+    /// reported, so a later change is not mistaken for one of them.
+    fn settle(&mut self) {
+        let started = Instant::now();
+        while self.request("vulcan/status", json!({}))["cache"] == "indexing" {
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "startup indexing did not finish"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        self.notifications
+            .retain(|notification| notification.method != "vulcan/indexChanged");
+    }
+
     /// Wait until the server reports an index change.
     fn index_changed(&mut self) -> Notification {
         self.wait_for(|notification| notification.method == "vulcan/indexChanged")
@@ -513,16 +528,19 @@ fn warns_about_uninitialized_vaults_without_creating_one() {
 fn the_lease_holder_watches_and_other_processes_follow_the_store_clock() {
     let dir = vault(&[("Home.md", "[[Later]]\n")]);
     let (mut watching, _) = Client::start(dir.path(), &json!({}));
-    let (mut polling, _) = Client::start(dir.path(), &json!({}));
+    // A server takes the lease after answering `initialize`; its first
+    // answer after that comes once it holds it.
     assert_eq!(
         watching.request("vulcan/status", json!({}))["watcher"],
         "lease"
     );
+    let (mut polling, _) = Client::start(dir.path(), &json!({}));
     assert_eq!(
         polling.request("vulcan/status", json!({}))["watcher"],
         "polling"
     );
     for client in [&mut watching, &mut polling] {
+        client.settle();
         client.open("Home.md", "[[Later]]\n");
         assert_eq!(client.diagnostics("Home.md").len(), 1);
     }
@@ -531,9 +549,9 @@ fn the_lease_holder_watches_and_other_processes_follow_the_store_clock() {
     // and the other process notices through the store clock.
     std::fs::write(dir.path().join("Later.md"), "# Later\n").unwrap();
     for client in [&mut watching, &mut polling] {
+        client.diagnostics_until("Home.md", <[Value]>::is_empty);
         let changed = client.index_changed();
         assert!(changed.params.is_object());
-        assert!(client.diagnostics("Home.md").is_empty());
     }
 }
 
@@ -554,6 +572,7 @@ fn client_watching_and_renames_index_reported_paths() {
         .iter()
         .any(|request| request.method == "client/registerCapability"
             && request.params["registrations"][0]["method"] == "workspace/didChangeWatchedFiles"));
+    client.settle();
     client.open("Home.md", "[[Later]] [[Old]]\n");
     assert_eq!(client.diagnostics("Home.md").len(), 1);
 
