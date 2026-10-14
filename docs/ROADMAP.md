@@ -5287,6 +5287,15 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
 - [ ] `vulcan --daemon` flag or `VULCAN_DAEMON_URL` env var on any CLI command: route the command through the daemon's REST API instead of direct SQLite access. Same UX, daemon does the work.
 - [ ] Define explicit direct/daemon/automatic routing modes in 10.7.1. Automatic fallback is permitted only before dispatch when absence or incompatibility is established; never replay a write directly after timeout, disconnect, or an ambiguous daemon result. Explicit daemon mode reports failure without fallback.
 
+**Scope:** [`docs/specs/index-ownership-and-client-routing.md`](specs/index-ownership-and-client-routing.md) refines the two items above into slices. The resident daemon already indexes registered knowledge vaults (`d7f236ca`), so the work is one index owner per vault plus routed reads, not daemon indexing:
+
+- [ ] Baseline: direct cold and warm-session timings at 10K and 100K for the first routed operations, plus the cost of the runtime-record check
+- [ ] Index-owner lease (`.vulcan/index-owner.lock`): the daemon index consumer, `serve`, MCP HTTP, previews, and the LSP elect one indexer per vault and the rest follow the store clock; the LSP's `editor-watch.lock` migrates to it; tests prove one scan per external edit and handover on exit
+- [ ] Routed read protocol on the companion listener: versioned typed operations returning the exact `--output json` report, a freshness barrier no staler than direct execution, and the intersection of caller and registration permission profiles; `query`, `status`, and `note get` first, each with direct-versus-routed equivalence tests
+- [ ] CLI routing modes `--route direct|daemon|auto`, `VULCAN_ROUTE`, and `[client] route` (default `direct`); `auto` routes only reads and may fall back at any point; writes always run directly
+- [ ] Remaining first operations (`ls`, `search`, `note info|outline|backlinks`, `tasks query`, `graph stats|path|hubs`), each with equivalence tests and measurements
+- [ ] Acceptance on the reference host: routed p95 within 100 ms at 100K for `query`, `status`, and `note get`; `auto` without a daemon within 1 ms of `direct`
+
 ### 10.6 Implementation notes
 
 - **`serve` becomes a lightweight shim over daemon internals.** The existing `vulcan serve` command is kept for single-vault convenience but refactored to use the same router and handler code as the daemon. Internally it registers the current vault as the sole vault and starts the daemon in single-vault mode. This ensures API consistency between `serve` and `daemon` without maintaining two codepaths.
@@ -8386,7 +8395,7 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Threading: main loop with inline overlay updates, a three-thread reader pool answering from cheap `EditorSession` snapshots (shared identities and resolver keyed by the store clock), a single writer thread for every scan under the write lock, and cancellation (`RequestCanceled` between stages, `ContentModified` when a real index change lands mid-request)
 - [x] Position-encoding negotiation (prefer UTF-8, fall back to UTF-16)
 - [x] Freshness: startup refresh with `$/progress`, scan on `didSave`, `watcher = own|client|off`, advisory `.vulcan/editor-watch.lock` lease (excluded from sync) with store-clock polling for non-holders, rename hints from `didRenameFiles`, and `vulcan/indexChanged`
-- [ ] **Blocked on a daemon index-ownership probe (Phase 10):** skip the watch lease when a daemon keeps the vault's index fresh; today's daemon watchers only trigger sync, so there is nothing to defer to yet
+- [ ] Skip the watch lease when a daemon keeps the vault's index fresh: the daemon already indexes registered knowledge vaults, so this becomes the LSP following the 10.5 index-owner lease ([scope](specs/index-ownership-and-client-routing.md))
 - [x] Definition, references (backlinks plus overlay deltas), hover, document and workspace symbols
 - [x] Completion after `[[` (notes, aliases, `#heading`, `^block`), tags, property keys, and inline-field keys (inside `[key` or `(key`, inserting `key:: `)
 - [x] Debounced diagnostics for open buffers (200 ms after the last edit; the link being typed is skipped): parse diagnostics and unresolved/ambiguous/outside-vault links using `doctor` categories

@@ -112,8 +112,9 @@ short. WAL readers keep seeing the previous complete snapshot during a scan.
   - `client`: rely on `workspace/didChangeWatchedFiles` registration, then scan the reported paths.
   - `off`: never scan for external changes.
   - Planned: if a live daemon keeps the vault's index fresh, no LSP process takes the lease, and
-    every process behaves like a non-holder (clock polling). This waits for a daemon
-    index-ownership probe; today's daemon watchers only trigger sync.
+    every process behaves like a non-holder (clock polling). The resident daemon already indexes
+    registered knowledge vaults; the vault-wide index-owner lease that lets the LSP defer to it is
+    scoped in [index ownership and client routing](index-ownership-and-client-routing.md).
 - **Client-initiated renames** (file explorers such as oil.nvim or neo-tree): `didRenameFiles` is
   passed as a rename hint to `scan_vault_paths_unlocked_with_renames`, so document identity
   survives. The server registers for file (not folder) renames; a folder rename falls back to
