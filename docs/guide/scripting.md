@@ -14,7 +14,7 @@ Vulcan currently uses the shared runtime in five main ways:
 | --- | --- |
 | `vulcan run` and the REPL | Ad hoc scripts, named vault scripts, and interactive exploration |
 | DataviewJS | Computed views over indexed vault data |
-| Templater JavaScript | Dynamic template rendering and compatible `tp.*` helpers |
+| Templater JavaScript | Dynamic template rendering and compatible `tp.*` helpers ([templates guide](./templates.md)) |
 | Skill command scripts | Reusable, schema-validated commands exposed through CLI, MCP, and JS tools |
 | JavaScript plugins | Manual entrypoints and lifecycle hooks around note, scan, refactor, and Git events |
 

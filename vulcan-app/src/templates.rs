@@ -24,11 +24,17 @@ use vulcan_core::{
 };
 
 mod frontmatter;
+mod program;
+mod prompt;
 
 pub use frontmatter::{
     apply_template_insertion_mode, find_frontmatter_block, format_frontmatter_block,
     merge_template_frontmatter, parse_frontmatter_document, prepare_template_insertion,
     render_note_from_parts,
+};
+pub use prompt::{
+    with_template_prompter, TemplateInput, TemplatePromptRequest, TemplatePrompter,
+    TemplateSuggestRequest, TEMPLATE_INPUT_REQUIRED_CODE,
 };
 
 pub type CliError = AppError;
@@ -517,6 +523,8 @@ pub struct TemplateShowReport {
     pub source: String,
     pub path: String,
     pub content: String,
+    /// Prompts the template asks, with the `--var` key answering each.
+    pub inputs: Vec<TemplateInput>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -688,11 +696,23 @@ fn render_template_request_with_authority(
     mutation_guard: Option<&ProfilePermissionGuard>,
     staged_creates: Option<StagedTemplateCreates>,
 ) -> Result<TemplateRenderOutput, CliError> {
+    render_template_request_at_depth(request, read_filter, mutation_guard, staged_creates, 0)
+}
+
+fn render_template_request_at_depth(
+    request: TemplateRenderRequest<'_>,
+    read_filter: Option<&PermissionFilter>,
+    mutation_guard: Option<&ProfilePermissionGuard>,
+    staged_creates: Option<StagedTemplateCreates>,
+    include_depth: usize,
+) -> Result<TemplateRenderOutput, CliError> {
     let engine = detect_template_engine(request.template_text, request.engine);
     let template_text = request.template_text;
+    let source_name = template_source_name(&request);
     let mut session =
         TemplateSession::new(request, engine, read_filter, mutation_guard, staged_creates);
-    let content = session.render_source(template_text, engine, 0)?;
+    session.include_depth = include_depth;
+    let content = session.render_source(template_text, engine, include_depth, &source_name)?;
     let content = session.merge_pending_frontmatter(&content)?;
     #[cfg(feature = "js_runtime")]
     let content = session.run_post_render_hooks(content)?;
@@ -1201,6 +1221,7 @@ pub fn build_template_show_report(
         name: loaded.template.name,
         source: loaded.template.source.to_string(),
         path: loaded.template.display_path,
+        inputs: prompt::discover_template_inputs(&loaded.source),
         content: loaded.source,
     })
 }
@@ -1434,8 +1455,13 @@ struct TemplateSession<'a> {
     read_filter: Option<PermissionFilter>,
     mutation_guard: Option<ProfilePermissionGuard>,
     staged_creates: Option<StagedTemplateCreates>,
+    /// Include nesting of this render; nested renders start one deeper.
+    include_depth: usize,
     #[cfg(feature = "js_runtime")]
     js_runtime: Option<JsTemplateRuntime>,
+    /// The last JS program run, kept to locate errors from hooks it registered.
+    #[cfg(feature = "js_runtime")]
+    last_js_program: Option<(String, String, program::CompiledProgram)>,
 }
 
 impl<'a> TemplateSession<'a> {
@@ -1467,8 +1493,11 @@ impl<'a> TemplateSession<'a> {
             read_filter: read_filter.cloned(),
             mutation_guard: mutation_guard.cloned(),
             staged_creates,
+            include_depth: 0,
             #[cfg(feature = "js_runtime")]
             js_runtime: None,
+            #[cfg(feature = "js_runtime")]
+            last_js_program: None,
         }
     }
 
@@ -1613,19 +1642,28 @@ impl<'a> TemplateSession<'a> {
         let millis = if let Some(millis) = self.quickadd_date_vars.get(&key) {
             *millis
         } else {
-            let supplied = lookup_template_var(
+            let value = lookup_template_var(
                 self.request.vars,
                 &PromptLookupKey::named(variable_name),
                 Some(variable_name),
             )
-            .or_else(|| default_value.map(ToOwned::to_owned));
-
-            let Some(value) = supplied else {
-                return Err(CliError::operation(format!(
-                    "{{{{VDATE:{variable_name},{format}}}}} needs --var {}=<date> in non-interactive mode",
-                    slugify_var_key(variable_name)
-                )));
-            };
+            .map_or_else(
+                || {
+                    prompt::resolve_prompt_text(
+                        &format!("{{{{VDATE:{variable_name},{format}}}}}"),
+                        variable_name,
+                        default_value,
+                        "<date>",
+                    )
+                },
+                Ok,
+            )
+            .map_err(|error| match error {
+                prompt::PromptError::InputRequired(message) => {
+                    CliError::operation_with_code(TEMPLATE_INPUT_REQUIRED_CODE, message)
+                }
+                prompt::PromptError::Failed(message) => CliError::operation(message),
+            })?;
             let millis = quickadd_parse_date_input(&value, self.current_timestamp_millis())
                 .ok_or_else(|| {
                     CliError::operation(format!(
@@ -1679,15 +1717,18 @@ impl<'a> TemplateSession<'a> {
             self.lookup_quickadd_value_var(variable_name, default_prompt_name)
         {
             value
-        } else if let Some(default_value) = &spec.default_value {
-            default_value.clone()
-        } else if let Some(first_option) = spec.choices.first() {
-            first_option.clone()
         } else {
-            return Err(CliError::operation(format!(
-                "{{{{VALUE:{variable_name}}}}} needs --var {}=<value> in non-interactive mode",
-                slugify_var_key(variable_name)
-            )));
+            prompt::resolve_quickadd_value(
+                variable_name,
+                &spec.choices,
+                spec.default_value.as_deref(),
+            )
+            .map_err(|error| match error {
+                prompt::PromptError::InputRequired(message) => {
+                    CliError::operation_with_code(TEMPLATE_INPUT_REQUIRED_CODE, message)
+                }
+                prompt::PromptError::Failed(message) => CliError::operation(message),
+            })?
         };
 
         if raw_value.is_empty() {
@@ -1753,6 +1794,7 @@ impl<'a> TemplateSession<'a> {
         template: &str,
         engine: TemplateEngineKind,
         include_depth: usize,
+        source_name: &str,
     ) -> Result<String, CliError> {
         if include_depth > MAX_TEMPLATE_INCLUDE_DEPTH {
             return Err(CliError::operation(format!(
@@ -1764,25 +1806,45 @@ impl<'a> TemplateSession<'a> {
             return self.render_native_text(template);
         }
 
-        let mut output = String::with_capacity(template.len());
-        let mut cursor = 0_usize;
-        while let Some(start) = template[cursor..].find("<%") {
-            let absolute_start = cursor + start;
-            let text_segment = &template[cursor..absolute_start];
-            output.push_str(&self.render_native_text(text_segment)?);
-            let (tag, next_cursor) = parse_templater_tag(template, absolute_start)
-                .ok_or_else(|| CliError::operation("unterminated templater tag"))?;
-            apply_left_trim(&mut output, tag.left_trim);
-            let replacement = self.evaluate_tag(&tag, include_depth)?;
-            output.push_str(&replacement);
-            cursor = apply_right_trim(template, next_cursor, tag.right_trim);
+        let segments = program::split_templater_segments(template).map_err(|error| {
+            located_template_error(
+                &CliError::operation_with_code(
+                    "template_syntax_error",
+                    "unterminated Templater tag: `<%` has no closing `%>`",
+                ),
+                source_name,
+                Some(error.line),
+                template,
+            )
+        })?;
+
+        #[cfg(feature = "js_runtime")]
+        if segments.iter().any(|segment| {
+            matches!(segment, program::TemplateSegment::Tag { tag, .. } if tag_requires_js(tag))
+        }) {
+            return self.render_js_program(template, &segments, source_name);
         }
 
-        let tail = &template[cursor..];
-        output.push_str(&self.render_native_text(tail)?);
+        let mut output = String::with_capacity(template.len());
+        for segment in &segments {
+            match segment {
+                program::TemplateSegment::Text(text) => {
+                    output.push_str(&self.render_native_text(text)?);
+                }
+                program::TemplateSegment::Tag { tag, line } => {
+                    let replacement = self.evaluate_tag(tag, include_depth).map_err(|error| {
+                        located_template_error(&error, source_name, Some(*line), template)
+                    })?;
+                    output.push_str(&replacement);
+                }
+            }
+        }
         Ok(output)
     }
 
+    /// Evaluates one tag with the native interpreter. With `js_runtime`,
+    /// templates that need JavaScript never reach this; without it, those
+    /// tags render empty and leave a diagnostic.
     fn evaluate_tag(
         &mut self,
         tag: &TemplaterTag<'_>,
@@ -1796,41 +1858,23 @@ impl<'a> TemplateSession<'a> {
         }
 
         if tag.execution {
-            #[cfg(feature = "js_runtime")]
-            return self.evaluate_code(tag.body);
-            #[cfg(not(feature = "js_runtime"))]
-            return Ok(self.evaluate_code(tag.body));
+            self.push_diagnostic(
+                "Templater execution tags (`<%* %>`) require the `js_runtime` feature".to_string(),
+            );
+            return Ok(String::new());
         }
 
         match self.evaluate_native_expression(tag.body, include_depth) {
             Ok(value) => Ok(template_value_to_string(&value)),
             Err(NativeExpressionError::RequiresJsRuntime(message)) => {
-                #[cfg(feature = "js_runtime")]
-                {
-                    let _ = &message;
-                    self.evaluate_js_expression(tag.body)
-                }
-                #[cfg(not(feature = "js_runtime"))]
-                {
-                    self.push_diagnostic(message);
-                    Ok(String::new())
-                }
+                self.push_diagnostic(message);
+                Ok(String::new())
             }
             Err(NativeExpressionError::Message(message)) => Err(CliError::operation(message)),
+            Err(NativeExpressionError::InputRequired(message)) => Err(
+                CliError::operation_with_code(TEMPLATE_INPUT_REQUIRED_CODE, message),
+            ),
         }
-    }
-
-    #[cfg(feature = "js_runtime")]
-    fn evaluate_code(&mut self, source: &str) -> Result<String, CliError> {
-        self.evaluate_js_code(source)
-    }
-
-    #[cfg(not(feature = "js_runtime"))]
-    fn evaluate_code(&mut self, _source: &str) -> String {
-        self.push_diagnostic(
-            "Templater execution tags (`<%* %>`) require the `js_runtime` feature".to_string(),
-        );
-        String::new()
     }
 
     fn evaluate_native_expression(
@@ -1982,9 +2026,25 @@ impl<'a> TemplateSession<'a> {
         include_depth: usize,
     ) -> Result<TemplateValue, NativeExpressionError> {
         let signature = join_native_path(callee);
+        self.eval_native_call_inner(&signature, args, include_depth)
+            .map_err(|error| match error {
+                NativeExpressionError::Message(message) => {
+                    NativeExpressionError::Message(format!("{signature}(): {message}"))
+                }
+                other @ (NativeExpressionError::RequiresJsRuntime(_)
+                | NativeExpressionError::InputRequired(_)) => other,
+            })
+    }
+
+    fn eval_native_call_inner(
+        &mut self,
+        signature: &str,
+        args: &[NativeExpression],
+        include_depth: usize,
+    ) -> Result<TemplateValue, NativeExpressionError> {
         let args = self.eval_native_call_args(args, include_depth)?;
         let args = args.as_slice();
-        match signature.as_str() {
+        match signature {
             "tp.date.now" => self.tp_date_now(args, false),
             "tp.date.tomorrow" => self.tp_date_fixed_offset(args, 1),
             "tp.date.yesterday" => self.tp_date_fixed_offset(args, -1),
@@ -2094,26 +2154,18 @@ impl<'a> TemplateSession<'a> {
     }
 
     fn tp_file_path_call(&self, args: &[NativeExpression]) -> TemplateValue {
-        let absolute = bool_arg(args, 0).unwrap_or(false);
-        TemplateValue::String(if absolute {
-            self.request
-                .paths
-                .vault_root()
-                .join(&self.target_path)
-                .display()
-                .to_string()
-        } else {
-            self.target_path.clone()
-        })
+        TemplateValue::String(templater_file_path(
+            self.request.paths,
+            &self.target_path,
+            bool_arg(args, 0).unwrap_or(false),
+        ))
     }
 
     fn tp_file_folder_call(&self, args: &[NativeExpression]) -> TemplateValue {
-        let absolute = bool_arg(args, 0).unwrap_or(false);
-        TemplateValue::String(if absolute {
-            self.absolute_folder()
-        } else {
-            self.relative_folder()
-        })
+        TemplateValue::String(templater_file_folder(
+            &self.target_path,
+            bool_arg(args, 0).unwrap_or(false),
+        ))
     }
 
     fn tp_file_timestamp_call(&self, args: &[NativeExpression], creation: bool) -> TemplateValue {
@@ -2151,8 +2203,18 @@ impl<'a> TemplateSession<'a> {
             &include_path,
         )
         .map_err(NativeExpressionError::Message)?;
+        let source = match split_include_link(&path).1 {
+            Some(subpath) => extract_include_subpath(&source, subpath, self.request.vault_config)
+                .map_err(NativeExpressionError::Message)?,
+            None => source,
+        };
         let rendered = self
-            .render_source(&source, TemplateEngineKind::Templater, include_depth + 1)
+            .render_source(
+                &source,
+                TemplateEngineKind::Templater,
+                include_depth + 1,
+                &include_path,
+            )
             .map_err(|error| NativeExpressionError::Message(error.to_string()))?;
         self.capture_frontmatter_from_rendered_include(&rendered)?;
         let (_, body) = parse_frontmatter_document(&rendered, true)
@@ -2183,20 +2245,32 @@ impl<'a> TemplateSession<'a> {
         };
         let normalized =
             normalize_note_output_path(&relative_path).map_err(NativeExpressionError::Message)?;
-        let content = match self.eval_native_expression(template_arg, 0)? {
-            TemplateValue::String(value) => {
-                match resolve_template_file(self.request.paths, self.request.templates, &value) {
-                    Ok(template) => {
-                        let source = fs::read_to_string(&template.absolute_path)
-                            .map_err(|error| NativeExpressionError::Message(error.to_string()))?;
-                        self.render_source(&source, TemplateEngineKind::Templater, 0)
-                            .map_err(|error| NativeExpressionError::Message(error.to_string()))?
-                    }
-                    Err(_) => value,
-                }
+        // Templater semantics: a TFile renders that template file for the new
+        // note; a string is template content rendered for the new note.
+        let (template_path, source) = match self.eval_native_expression(template_arg, 0)? {
+            TemplateValue::Object(file) => {
+                let identifier = file
+                    .get("path")
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let target = self.resolve_vault_path(&identifier).ok_or_else(|| {
+                    NativeExpressionError::Message(format!("template {identifier} doesn't exist"))
+                })?;
+                let source = template_path_content(
+                    self.request.paths,
+                    self.staged_creates.as_ref(),
+                    &target,
+                )
+                .map_err(NativeExpressionError::Message)?;
+                (Some(self.request.paths.vault_root().join(target)), source)
             }
-            other => template_value_to_string(&other),
+            other => (None, template_value_to_string(&other)),
         };
+        let content = self
+            .render_nested_template(template_path.as_deref(), &source, &normalized)
+            .map_err(|error| NativeExpressionError::Message(error.to_string()))?
+            .content;
         if let Some(guard) = self.mutation_guard.as_ref() {
             guard
                 .check_write_path(&normalized)
@@ -2309,26 +2383,19 @@ impl<'a> TemplateSession<'a> {
         args: &[NativeExpression],
     ) -> Result<TemplateValue, NativeExpressionError> {
         self.prompt_count += 1;
-        let prompt = string_arg(args, 0).unwrap_or_default();
+        let message = string_arg(args, 0).unwrap_or_default();
         let default = string_arg(args, 1);
-        let throw_on_cancel = bool_arg(args, 2).unwrap_or(false);
-        let key = prompt_lookup_key(&prompt, self.prompt_count);
-        if let Some(value) = lookup_template_var(self.request.vars, &key, Some(&prompt)) {
-            return Ok(TemplateValue::String(value));
-        }
-        default.map_or_else(
-            || {
-                if throw_on_cancel {
-                    Err(NativeExpressionError::Message(format!(
-                        "tp.system.prompt() needs --var {}=<value> in non-interactive mode",
-                        key.slug
-                    )))
-                } else {
-                    Ok(TemplateValue::Null)
-                }
+        let answer = prompt::resolve_prompt(
+            self.request.vars,
+            &prompt::PromptCall {
+                message: &message,
+                default: default.as_deref(),
+                throw_on_cancel: bool_arg(args, 2).unwrap_or(false),
+                multiline: bool_arg(args, 3).unwrap_or(false),
+                ordinal: self.prompt_count,
             },
-            |value| Ok(TemplateValue::String(value)),
-        )
+        )?;
+        Ok(answer.map_or(TemplateValue::Null, TemplateValue::String))
     }
 
     fn tp_system_suggester_call(
@@ -2336,23 +2403,79 @@ impl<'a> TemplateSession<'a> {
         args: &[NativeExpression],
     ) -> Result<TemplateValue, NativeExpressionError> {
         self.suggester_count += 1;
-        let values = args
-            .get(1)
-            .map(|expression| self.eval_native_expression(expression, 0))
-            .transpose()?
-            .unwrap_or(TemplateValue::Array(Vec::new()));
-        let items = values.as_string_list();
-        let placeholder = string_arg(args, 3).unwrap_or_default();
-        let key = prompt_lookup_key(&placeholder, self.suggester_count);
-        if let Some(value) = lookup_template_var(self.request.vars, &key, None) {
-            return Ok(TemplateValue::String(value));
+        let mut evaluate = |index: usize| {
+            args.get(index)
+                .map(|expression| self.eval_native_expression(expression, 0))
+                .transpose()
+                .map(|value| value.unwrap_or(TemplateValue::Array(Vec::new())))
+        };
+        let options = evaluate(0)?.as_string_list();
+        let items = match evaluate(1)? {
+            TemplateValue::Array(items) => items,
+            TemplateValue::Null => Vec::new(),
+            item => vec![item],
+        };
+        if options.len() != items.len() {
+            return Err(NativeExpressionError::Message(format!(
+                "text_items has {} entries but items has {}",
+                options.len(),
+                items.len()
+            )));
         }
-        items
-            .first()
-            .cloned()
-            .map_or(Ok(TemplateValue::Null), |value| {
-                Ok(TemplateValue::String(value))
-            })
+        let item_keys: Vec<String> = items.iter().map(template_value_to_string).collect();
+        let placeholder = string_arg(args, 3).unwrap_or_default();
+        let choice = prompt::resolve_suggestion(
+            self.request.vars,
+            &prompt::SuggestCall {
+                options: &options,
+                item_keys: &item_keys,
+                throw_on_cancel: bool_arg(args, 2).unwrap_or(false),
+                placeholder: &placeholder,
+                limit: number_arg(args, 4).and_then(|limit| usize::try_from(limit).ok()),
+                multiple: false,
+                ordinal: self.suggester_count,
+            },
+        )?;
+        Ok(choice
+            .and_then(|indices| indices.first().copied())
+            .and_then(|index| items.get(index).cloned())
+            .unwrap_or(TemplateValue::Null))
+    }
+
+    /// Renders another template for `target_path` with this render's inputs
+    /// and authority, one include level deeper.
+    fn render_nested_template(
+        &mut self,
+        template_path: Option<&Path>,
+        template_text: &str,
+        target_path: &str,
+    ) -> Result<TemplateRenderOutput, CliError> {
+        let output = render_template_request_at_depth(
+            TemplateRenderRequest {
+                paths: self.request.paths,
+                vault_config: self.request.vault_config,
+                templates: self.request.templates,
+                template_path,
+                template_text,
+                target_path,
+                target_contents: None,
+                engine: TemplateEngineKind::Templater,
+                vars: self.request.vars,
+                allow_mutations: self.request.allow_mutations,
+                run_mode: self.request.run_mode,
+                reference_date: self.request.reference_date,
+            },
+            self.read_filter.as_ref(),
+            self.mutation_guard.as_ref(),
+            self.staged_creates.clone(),
+            self.include_depth + 1,
+        )?;
+        self.changed_paths
+            .extend(output.changed_paths.iter().cloned());
+        for diagnostic in &output.diagnostics {
+            self.push_diagnostic(diagnostic.clone());
+        }
+        Ok(output)
     }
 
     fn record_move_summary(&mut self, summary: &vulcan_core::MoveSummary) {
@@ -2363,15 +2486,7 @@ impl<'a> TemplateSession<'a> {
     }
 
     fn resolve_include_target(&self, include: &str) -> Result<String, NativeExpressionError> {
-        let trimmed = include.trim();
-        let target = trimmed
-            .strip_prefix("[[")
-            .and_then(|value| value.strip_suffix("]]"))
-            .unwrap_or(trimmed)
-            .split('#')
-            .next()
-            .unwrap_or(trimmed)
-            .trim();
+        let (target, _) = split_include_link(include);
         self.resolve_vault_path(target)
             .ok_or_else(|| NativeExpressionError::Message(format!("File {include} doesn't exist")))
     }
@@ -2413,13 +2528,7 @@ impl<'a> TemplateSession<'a> {
         let (frontmatter, _) = parse_frontmatter_document(rendered, true)
             .map_err(|error| NativeExpressionError::Message(error.to_string()))?;
         if let Some(frontmatter) = frontmatter {
-            self.pending_frontmatter = Some(match self.pending_frontmatter.take() {
-                Some(mut existing) => {
-                    merge_yaml_mappings(&mut existing, &frontmatter);
-                    existing
-                }
-                None => frontmatter,
-            });
+            merge_pending_frontmatter_mapping(&mut self.pending_frontmatter, &frontmatter);
         }
         Ok(())
     }
@@ -2437,10 +2546,7 @@ impl<'a> TemplateSession<'a> {
             }
             None => pending,
         };
-        let yaml =
-            serde_yaml::to_string(&YamlValue::Mapping(merged)).map_err(CliError::operation)?;
-        let yaml = yaml.strip_prefix("---\n").unwrap_or(&yaml);
-        Ok(format!("---\n{}---\n{}", yaml.trim_end_matches('\n'), body))
+        with_frontmatter(&merged, &body).map_err(CliError::operation)
     }
 
     fn current_title(&self) -> String {
@@ -2456,11 +2562,6 @@ impl<'a> TemplateSession<'a> {
             .parent()
             .map(|parent| parent.to_string_lossy().replace('\\', "/"))
             .unwrap_or_default()
-    }
-
-    fn absolute_folder(&self) -> String {
-        let folder = self.request.paths.vault_root().join(self.relative_folder());
-        folder.display().to_string()
     }
 
     fn current_tags(&self) -> Vec<String> {
@@ -2504,7 +2605,7 @@ impl<'a> TemplateSession<'a> {
                 "template_file".to_string(),
                 self.request
                     .template_path
-                    .map(path_to_relative_file_json)
+                    .map(|path| path_to_relative_file_json(self.request.paths, path))
                     .map_or(JsonValue::Null, JsonValue::Object),
             ),
             (
@@ -2531,17 +2632,41 @@ impl<'a> TemplateSession<'a> {
 
 #[cfg(feature = "js_runtime")]
 impl TemplateSession<'_> {
-    fn sync_from_js_runtime(&mut self) {
-        if let Some((target_path, target_contents, changed_paths, diagnostics)) = self
-            .js_runtime
-            .as_ref()
-            .and_then(JsTemplateRuntime::snapshot)
-        {
-            self.target_path = target_path;
-            self.target_contents = target_contents;
-            self.changed_paths = changed_paths;
-            self.diagnostics = diagnostics;
+    /// Hands session state to the JS runtime before it runs, so a runtime
+    /// reused across includes never acts on a stale target or path set.
+    fn sync_to_js_runtime(&self) {
+        let Some(runtime) = self.js_runtime.as_ref() else {
+            return;
+        };
+        if let Ok(mut state) = runtime.state.lock() {
+            state.target_path.clone_from(&self.target_path);
+            state.target_contents.clone_from(&self.target_contents);
+            state.changed_paths.clone_from(&self.changed_paths);
+            state.diagnostics.clone_from(&self.diagnostics);
         }
+    }
+
+    fn sync_from_js_runtime(&mut self) {
+        let Some(runtime) = self.js_runtime.as_ref() else {
+            return;
+        };
+        let Ok(mut state) = runtime.state.lock() else {
+            return;
+        };
+        self.target_path.clone_from(&state.target_path);
+        self.target_contents.clone_from(&state.target_contents);
+        self.changed_paths.clone_from(&state.changed_paths);
+        self.diagnostics.clone_from(&state.diagnostics);
+        if let Some(frontmatter) = state.pending_frontmatter.take() {
+            merge_pending_frontmatter_mapping(&mut self.pending_frontmatter, &frontmatter);
+        }
+    }
+
+    fn take_js_input_required(&self) -> bool {
+        self.js_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.state.lock().ok())
+            .is_some_and(|mut state| std::mem::take(&mut state.input_required))
     }
 
     fn js_runtime(&mut self) -> Result<&mut JsTemplateRuntime, CliError> {
@@ -2553,52 +2678,223 @@ impl TemplateSession<'_> {
             .ok_or_else(|| CliError::operation("failed to initialize templater runtime"))
     }
 
-    fn evaluate_js_expression(&mut self, source: &str) -> Result<String, CliError> {
-        let result = {
-            let runtime = self.js_runtime()?;
-            runtime.evaluate_expression(source)?
-        };
+    /// Runs a template that needs JavaScript as one async program, the way
+    /// Templater does, so control flow and declarations can span tags.
+    fn render_js_program(
+        &mut self,
+        template: &str,
+        segments: &[program::TemplateSegment<'_>],
+        source_name: &str,
+    ) -> Result<String, CliError> {
+        let mut pieces = Vec::with_capacity(segments.len());
+        for segment in segments {
+            match segment {
+                program::TemplateSegment::Text(text) => {
+                    pieces.push(program::ProgramPiece::Text(self.render_native_text(text)?));
+                }
+                program::TemplateSegment::Tag { tag, line } => {
+                    if tag.dynamic {
+                        self.push_diagnostic(
+                            "Templater dynamic tags (`<%+ %>`) are evaluated eagerly in CLI templates"
+                                .to_string(),
+                        );
+                    }
+                    if tag.execution {
+                        pieces.push(program::ProgramPiece::Code {
+                            body: tag.body,
+                            line: *line,
+                        });
+                    } else {
+                        let body = tag.body.trim_end_matches(';').trim_end();
+                        if !body.is_empty() {
+                            pieces.push(program::ProgramPiece::Expression { body, line: *line });
+                        }
+                    }
+                }
+            }
+        }
+        let compiled = program::compile_templater_program(&pieces);
+        self.sync_to_js_runtime();
+        let result = self
+            .js_runtime()?
+            .run_async(&compiled.source, program::TEMPLATE_PROGRAM_FILENAME);
+        let input_required = self.take_js_input_required();
         self.sync_from_js_runtime();
-        Ok(result)
-    }
-
-    fn evaluate_js_code(&mut self, source: &str) -> Result<String, CliError> {
-        let result = {
-            let runtime = self.js_runtime()?;
-            runtime.evaluate_code(source)?
-        };
-        self.sync_from_js_runtime();
-        Ok(result)
+        let failure_context = (source_name.to_string(), template.to_string(), compiled);
+        let output = result.map_err(|mut failure| {
+            failure.input_required = input_required;
+            failure.into_error(
+                &failure_context.0,
+                &failure_context.1,
+                Some(&failure_context.2),
+            )
+        });
+        self.last_js_program = Some(failure_context);
+        output
     }
 
     fn run_post_render_hooks(&mut self, rendered: String) -> Result<String, CliError> {
         let Some(runtime) = self.js_runtime.as_mut() else {
             return Ok(rendered);
         };
-        let rendered = runtime.run_post_render_hooks(&rendered)?;
+        let result = runtime.run_post_render_hooks(&rendered);
+        let input_required = self.take_js_input_required();
         self.sync_from_js_runtime();
-        Ok(rendered)
+        result
+            .map_err(|mut failure| {
+                failure.input_required = input_required;
+                failure
+            })
+            .map_err(|failure| match self.last_js_program.as_ref() {
+                Some((source_name, template, compiled)) => {
+                    failure.into_error(source_name, template, Some(compiled))
+                }
+                None => failure.into_error("template hooks", "", None),
+            })
     }
 }
+
+/// Moment.js 2.30.1, which Obsidian exposes to templates as `moment`.
+#[cfg(feature = "js_runtime")]
+const MOMENT_JS: &str = include_str!("templates/vendor/moment.min.js");
+
+#[cfg(feature = "js_runtime")]
+const TEMPLATER_PRELUDE_FILENAME: &str = "templater-prelude.js";
+
+#[cfg(feature = "js_runtime")]
+const TEMPLATER_HOOKS_SOURCE: &str = "(async () => { const hooks = globalThis.__tpHooks ?? []; globalThis.__tpHooks = []; for (const hook of hooks) { if (typeof hook === 'function') { await hook(); } } return ''; })()";
+
+/// A JavaScript failure while running a template, kept raw until the
+/// session can point it at a template line.
+#[cfg(feature = "js_runtime")]
+#[derive(Debug, Clone, Default)]
+struct JsFailure {
+    name: String,
+    message: String,
+    stack: String,
+    timeout: Option<std::time::Duration>,
+    input_required: bool,
+}
+
+#[cfg(feature = "js_runtime")]
+impl JsFailure {
+    fn message(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            ..Self::default()
+        }
+    }
+
+    fn from_caught(error: &rquickjs::CaughtError<'_>) -> Self {
+        match error {
+            rquickjs::CaughtError::Exception(exception) => Self {
+                name: exception
+                    .as_object()
+                    .get::<_, Option<String>>("name")
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default(),
+                message: exception.message().unwrap_or_default(),
+                stack: exception.stack().unwrap_or_default(),
+                ..Self::default()
+            },
+            rquickjs::CaughtError::Value(value) => Self::message(
+                value
+                    .as_string()
+                    .and_then(|text| text.to_string().ok())
+                    .unwrap_or_else(|| format!("uncaught non-Error value {value:?}")),
+            ),
+            rquickjs::CaughtError::Error(error) => Self::message(error.to_string()),
+        }
+    }
+
+    fn summary(&self) -> String {
+        let message = self.message.trim();
+        // A plain `Error` adds nothing; specific names like `TypeError` do.
+        let mut summary =
+            if self.name.is_empty() || self.name == "Error" || message.starts_with(&self.name) {
+                message.to_string()
+            } else if message.is_empty() {
+                self.name.clone()
+            } else {
+                format!("{}: {message}", self.name)
+            };
+        if let Some(frame) = program::first_external_frame(&self.stack) {
+            summary = format!("{summary} ({frame})");
+        }
+        summary
+    }
+
+    fn into_error(
+        self,
+        source_name: &str,
+        template: &str,
+        compiled: Option<&program::CompiledProgram>,
+    ) -> CliError {
+        let line = compiled.and_then(|compiled| {
+            program::program_line_from_stack(&self.stack)
+                .and_then(|line| compiled.template_line(line))
+        });
+        let error = match self.timeout {
+            Some(timeout) => CliError::operation_with_code(
+                "template_script_timeout",
+                format!(
+                    "template script did not finish within {}s; raise [js_runtime] default_timeout_seconds if it legitimately needs longer",
+                    timeout.as_secs()
+                ),
+            ),
+            None if self.input_required => {
+                CliError::operation_with_code(TEMPLATE_INPUT_REQUIRED_CODE, self.message.trim())
+            }
+            None => CliError::operation_with_code("template_script_error", self.summary()),
+        };
+        located_template_error(&error, source_name, line, template)
+    }
+}
+
+#[cfg(feature = "js_runtime")]
+type JsDeadline = Arc<Mutex<Option<std::time::Instant>>>;
 
 #[cfg(feature = "js_runtime")]
 struct JsTemplateRuntime {
     runtime: rquickjs::Runtime,
     context: rquickjs::Context,
-    state: std::sync::Arc<std::sync::Mutex<JsTemplateState>>,
+    state: Arc<Mutex<JsTemplateState>>,
+    deadline: JsDeadline,
+    timeout: Option<std::time::Duration>,
 }
 
 #[cfg(feature = "js_runtime")]
 impl JsTemplateRuntime {
     fn new(session: &mut TemplateSession<'_>) -> Result<Self, CliError> {
         use rquickjs::function::Func;
-        use rquickjs::{Context, Ctx, Runtime};
-        use std::sync::{Arc, Mutex};
+        use rquickjs::{CatchResultExt, Context, Ctx, Runtime};
 
         let runtime = Runtime::new().map_err(CliError::operation)?;
         let context = Context::full(&runtime).map_err(CliError::operation)?;
+        let deadline: JsDeadline = Arc::new(Mutex::new(None));
+        let timeout_seconds = session
+            .request
+            .vault_config
+            .js_runtime
+            .default_timeout_seconds;
+        let timeout = (timeout_seconds > 0).then(|| {
+            std::time::Duration::from_secs(u64::try_from(timeout_seconds).unwrap_or(u64::MAX))
+        });
+        runtime.set_interrupt_handler(Some(Box::new({
+            let deadline = Arc::clone(&deadline);
+            move || {
+                deadline
+                    .lock()
+                    .ok()
+                    .and_then(|deadline| *deadline)
+                    .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+            }
+        })));
 
-        let state = Arc::new(Mutex::new(JsTemplateState::from_session(session)));
+        let mut initial_state = JsTemplateState::from_session(session);
+        initial_state.deadline = Some(Arc::clone(&deadline));
+        let state = Arc::new(Mutex::new(initial_state));
         context.with(|ctx| -> Result<(), CliError> {
             let globals = ctx.globals();
             globals
@@ -2615,8 +2911,25 @@ impl JsTemplateRuntime {
                     }),
                 )
                 .map_err(CliError::operation)?;
-            ctx.eval::<(), _>(TEMPLATER_JS_PRELUDE)
-                .map_err(CliError::operation)?;
+            ctx.eval_with_options::<(), _>(MOMENT_JS, js_eval_options("moment.min.js"))
+                .catch(&ctx)
+                .map_err(|error| {
+                    CliError::operation(format!(
+                        "failed to load moment.js: {}",
+                        JsFailure::from_caught(&error).summary()
+                    ))
+                })?;
+            ctx.eval_with_options::<(), _>(
+                TEMPLATER_JS_PRELUDE,
+                js_eval_options(TEMPLATER_PRELUDE_FILENAME),
+            )
+            .catch(&ctx)
+            .map_err(|error| {
+                CliError::operation(format!(
+                    "failed to initialize the Templater runtime: {}",
+                    JsFailure::from_caught(&error).summary()
+                ))
+            })?;
             load_user_scripts(&ctx, &state)?;
             Ok(())
         })?;
@@ -2625,68 +2938,123 @@ impl JsTemplateRuntime {
             runtime,
             context,
             state,
+            deadline,
+            timeout,
         })
     }
 
-    fn evaluate_expression(&mut self, source: &str) -> Result<String, CliError> {
-        let source = strip_top_level_await(source);
-        let wrapped = format!("__vulcanTemplaterStringify(({source}))");
-        let result = self
+    /// Evaluates `source`, which must produce a promise, and waits for it.
+    fn run_async(&mut self, source: &str, filename: &str) -> Result<String, JsFailure> {
+        if let Ok(mut deadline) = self.deadline.lock() {
+            *deadline = self
+                .timeout
+                .map(|timeout| std::time::Instant::now() + timeout);
+        }
+        let result = self.run_async_unbounded(source, filename);
+        let timed_out = self
+            .deadline
+            .lock()
+            .ok()
+            .and_then(|mut deadline| deadline.take())
+            .is_some_and(|deadline| std::time::Instant::now() >= deadline);
+        result.map_err(|mut failure| {
+            if timed_out {
+                failure.timeout = self.timeout;
+            }
+            failure
+        })
+    }
+
+    fn run_async_unbounded(&mut self, source: &str, filename: &str) -> Result<String, JsFailure> {
+        use rquickjs::CatchResultExt;
+
+        self.context.with(|ctx| -> Result<(), JsFailure> {
+            let promise: rquickjs::Value<'_> = ctx
+                .eval_with_options(source, js_eval_options(filename))
+                .catch(&ctx)
+                .map_err(|error| JsFailure::from_caught(&error))?;
+            let settle: rquickjs::Function<'_> = ctx
+                .globals()
+                .get("__vulcanTemplaterSettle")
+                .map_err(|error| JsFailure::message(error.to_string()))?;
+            settle
+                .call::<_, ()>((promise,))
+                .catch(&ctx)
+                .map_err(|error| JsFailure::from_caught(&error))
+        })?;
+        while self.runtime.is_job_pending() {
+            if let Err(error) = self.runtime.execute_pending_job() {
+                return Err(error.0.with(|ctx| {
+                    JsFailure::from_caught(&rquickjs::CaughtError::from_error(
+                        &ctx,
+                        rquickjs::Error::Exception,
+                    ))
+                }));
+            }
+        }
+        let outcome = self
             .context
-            .with(|ctx| ctx.eval::<String, _>(wrapped))
-            .map_err(CliError::operation)?;
-        drain_jobs(&self.runtime)?;
-        Ok(result)
-    }
-
-    fn evaluate_code(&mut self, source: &str) -> Result<String, CliError> {
-        let source = strip_top_level_await(source);
-        self.context
             .with(|ctx| {
-                ctx.eval::<(), _>("globalThis.tR = ''")
-                    .map_err(CliError::operation)?;
-                ctx.eval::<(), _>(source).map_err(CliError::operation)?;
-                ctx.eval::<String, _>("String(globalThis.tR ?? '')")
-                    .map_err(CliError::operation)
+                ctx.eval::<String, _>("JSON.stringify(globalThis.__vulcanTemplaterOutcome ?? null)")
             })
-            .and_then(|result| {
-                drain_jobs(&self.runtime)?;
-                Ok(result)
-            })
+            .map_err(|error| JsFailure::message(error.to_string()))?;
+        let outcome: JsonValue = serde_json::from_str(&outcome)
+            .map_err(|error| JsFailure::message(error.to_string()))?;
+        match outcome.get("ok").and_then(JsonValue::as_bool) {
+            Some(true) => Ok(outcome
+                .get("value")
+                .and_then(JsonValue::as_str)
+                .unwrap_or_default()
+                .to_string()),
+            Some(false) => {
+                let error = outcome.get("error");
+                let field = |name: &str| {
+                    error
+                        .and_then(|error| error.get(name))
+                        .and_then(JsonValue::as_str)
+                        .unwrap_or_default()
+                        .to_string()
+                };
+                Err(JsFailure {
+                    name: field("name"),
+                    message: field("message"),
+                    stack: field("stack"),
+                    ..JsFailure::default()
+                })
+            }
+            None => Err(JsFailure::message(
+                "template script never finished: it awaits a promise that never settles",
+            )),
+        }
     }
 
-    fn snapshot(&self) -> Option<(String, String, BTreeSet<String>, Vec<String>)> {
-        self.state.lock().ok().map(|state| {
-            (
-                state.target_path.clone(),
-                state.target_contents.clone(),
-                state.changed_paths.clone(),
-                state.diagnostics.clone(),
-            )
-        })
-    }
-
-    fn run_post_render_hooks(&mut self, rendered: &str) -> Result<String, CliError> {
+    fn run_post_render_hooks(&mut self, rendered: &str) -> Result<String, JsFailure> {
         {
             let mut state = self
                 .state
                 .lock()
-                .map_err(|_| CliError::operation("templater lock poisoned"))?;
+                .map_err(|_| JsFailure::message("templater lock poisoned"))?;
             state.target_contents = rendered.to_string();
+            state.in_hooks = true;
         }
-        self.context
-            .with(|ctx| {
-                ctx.eval::<(), _>(
-                    "(async () => { const hooks = globalThis.__tpHooks ?? []; globalThis.__tpHooks = []; for (const hook of hooks) { if (typeof hook === 'function') { await hook(); } } })()",
-                )
-                .map_err(CliError::operation)
-            })?;
-        drain_jobs(&self.runtime)?;
-        self.state
+        let result = self.run_async(TEMPLATER_HOOKS_SOURCE, "templater-hooks.js");
+        let mut state = self
+            .state
             .lock()
-            .map(|state| state.target_contents.clone())
-            .map_err(|_| CliError::operation("templater lock poisoned"))
+            .map_err(|_| JsFailure::message("templater lock poisoned"))?;
+        state.in_hooks = false;
+        result.map(|_| state.target_contents.clone())
     }
+}
+
+#[cfg(feature = "js_runtime")]
+fn js_eval_options(filename: &str) -> rquickjs::context::EvalOptions {
+    let mut options = rquickjs::context::EvalOptions::default();
+    options.global = true;
+    options.strict = false;
+    options.backtrace_barrier = true;
+    options.filename = Some(filename.to_string());
+    options
 }
 
 #[cfg(feature = "js_runtime")]
@@ -2701,12 +3069,22 @@ struct JsTemplateState {
     vars: HashMap<String, String>,
     allow_mutations: bool,
     run_mode_code: i64,
+    reference_date: Option<String>,
+    include_depth: usize,
     changed_paths: BTreeSet<String>,
     diagnostics: Vec<String>,
+    pending_frontmatter: Option<YamlMapping>,
     read_filter: Option<PermissionFilter>,
     mutation_guard: Option<ProfilePermissionGuard>,
     staged_creates: Option<StagedTemplateCreates>,
     original_target_contents: Option<String>,
+    deadline: Option<JsDeadline>,
+    prompt_count: usize,
+    suggester_count: usize,
+    /// Set when a prompt had no answer, so the failure keeps its own code.
+    input_required: bool,
+    /// True while `on_all_templates_executed` hooks run.
+    in_hooks: bool,
 }
 
 #[cfg(feature = "js_runtime")]
@@ -2722,18 +3100,90 @@ impl JsTemplateState {
             vars: session.request.vars.clone(),
             allow_mutations: session.request.allow_mutations,
             run_mode_code: session.request.run_mode.config_code(),
+            reference_date: session.request.reference_date.map(str::to_string),
+            include_depth: session.include_depth,
             changed_paths: session.changed_paths.clone(),
             diagnostics: session.diagnostics.clone(),
+            pending_frontmatter: None,
             read_filter: session.read_filter.clone(),
             mutation_guard: session.mutation_guard.clone(),
             staged_creates: session.staged_creates.clone(),
             original_target_contents: session.request.target_contents.map(str::to_string),
+            deadline: None,
+            prompt_count: session.prompt_count,
+            suggester_count: session.suggester_count,
+            input_required: false,
+            in_hooks: false,
         }
     }
 
     fn push_diagnostic(&mut self, message: String) {
         if !self.diagnostics.iter().any(|existing| existing == &message) {
             self.diagnostics.push(message);
+        }
+    }
+
+    /// Renders another template (an include or a `create_new` source) with
+    /// this render's inputs and authority, one include level deeper.
+    fn render_nested(
+        &self,
+        template_path: Option<&Path>,
+        template_text: &str,
+        target_path: &str,
+        target_contents: Option<&str>,
+    ) -> Result<TemplateRenderOutput, String> {
+        render_template_request_at_depth(
+            TemplateRenderRequest {
+                paths: &self.paths,
+                vault_config: &self.vault_config,
+                templates: &self.templates,
+                template_path,
+                template_text,
+                target_path,
+                target_contents,
+                engine: TemplateEngineKind::Templater,
+                vars: &self.vars,
+                allow_mutations: self.allow_mutations,
+                run_mode: template_run_mode_from_code(self.run_mode_code),
+                reference_date: self.reference_date.as_deref(),
+            },
+            self.read_filter.as_ref(),
+            self.mutation_guard.as_ref(),
+            self.staged_creates.clone(),
+            self.include_depth + 1,
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    /// Runs an interactive prompt without letting the time a person spends
+    /// answering count against the script timeout.
+    fn while_waiting_for_user<T>(&self, ask: impl FnOnce() -> T) -> T {
+        let started = std::time::Instant::now();
+        let result = ask();
+        if let Some(deadline) = self.deadline.as_ref() {
+            if let Ok(mut deadline) = deadline.lock() {
+                if let Some(at) = deadline.as_mut() {
+                    *at += started.elapsed();
+                }
+            }
+        }
+        result
+    }
+
+    fn prompt_result<T>(&mut self, result: Result<T, prompt::PromptError>) -> Result<T, String> {
+        result.map_err(|error| {
+            if matches!(error, prompt::PromptError::InputRequired(_)) {
+                self.input_required = true;
+            }
+            error.message().to_string()
+        })
+    }
+
+    fn absorb_nested(&mut self, nested: &TemplateRenderOutput) {
+        self.changed_paths
+            .extend(nested.changed_paths.iter().cloned());
+        for diagnostic in &nested.diagnostics {
+            self.push_diagnostic(diagnostic.clone());
         }
     }
 }
@@ -2747,11 +3197,50 @@ function __tpCall(name, ...args) {
   }
   return response.value;
 }
+function __tpPathOf(value) {
+  if (value && typeof value === "object" && typeof value.path === "string") return value.path;
+  return String(value);
+}
+function __tpItemKey(item) {
+  if (item && typeof item === "object") {
+    if (typeof item.path === "string") return item.path;
+    try { return JSON.stringify(item); } catch (_) { return String(item); }
+  }
+  return item == null ? "" : String(item);
+}
+function __tpSuggestion(textItems, items) {
+  const list = Array.from(items ?? []);
+  const labels = typeof textItems === "function"
+    ? list.map((item, index) => String(textItems(item, index)))
+    : Array.from(textItems ?? []).map((label) => String(label));
+  if (labels.length !== list.length) {
+    throw new Error(`text_items has ${labels.length} entries but items has ${list.length}`);
+  }
+  return [labels, list];
+}
 function __vulcanTemplaterStringify(value) {
   if (value === undefined || value === null) return "";
   if (Array.isArray(value)) return value.map(__vulcanTemplaterStringify).join(",");
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
+}
+function __vulcanTemplaterDescribeError(error) {
+  if (error instanceof Error) {
+    return { name: String(error.name ?? ""), message: String(error.message ?? ""), stack: String(error.stack ?? "") };
+  }
+  let message;
+  try { message = typeof error === "string" ? error : JSON.stringify(error); } catch (_) { message = String(error); }
+  return { name: "", message: `uncaught value: ${message}`, stack: "" };
+}
+function __vulcanTemplaterSettle(promise) {
+  globalThis.__vulcanTemplaterOutcome = undefined;
+  Promise.resolve(promise).then(
+    (value) => { globalThis.__vulcanTemplaterOutcome = { ok: true, value: value == null ? "" : String(value) }; },
+    (error) => { globalThis.__vulcanTemplaterOutcome = { ok: false, error: __vulcanTemplaterDescribeError(error) }; },
+  );
+}
+function require(name) {
+  throw new Error(`require(${JSON.stringify(String(name))}) is not available in Vulcan templates; Node and Obsidian modules cannot be loaded`);
 }
 const tp = {
   date: {
@@ -2762,25 +3251,46 @@ const tp = {
   },
   file: {
     get title() { return __tpCall("file.title"); },
-    path: (absolute = false) => __tpCall("file.path", Boolean(absolute)),
+    path: (relative = false) => __tpCall("file.path", Boolean(relative)),
     folder: (absolute = false) => __tpCall("file.folder", Boolean(absolute)),
     creation_date: (format) => __tpCall("file.creation_date", format ?? null),
     last_modified_date: (format) => __tpCall("file.last_modified_date", format ?? null),
     get content() { return __tpCall("file.content"); },
     get tags() { return __tpCall("file.tags"); },
-    exists: (path) => __tpCall("file.exists", String(path)),
-    include: (path) => __tpCall("file.include", String(path)),
-    create_new: (template, filename, openNew = false, folder = "") => __tpCall("file.create_new", template, filename ?? "", Boolean(openNew), folder ?? ""),
+    exists: (path) => __tpCall("file.exists", __tpPathOf(path)),
+    include: (link) => __tpCall("file.include", __tpPathOf(link)),
+    create_new: (template, filename, openNew = false, folder = "") => __tpCall(
+      "file.create_new",
+      template && typeof template === "object" ? { template: __tpPathOf(template) } : String(template ?? ""),
+      filename ?? "",
+      Boolean(openNew),
+      folder == null ? "" : __tpPathOf(folder),
+    ),
     move: (path) => __tpCall("file.move", String(path)),
     rename: (name) => __tpCall("file.rename", String(name)),
     cursor: (order = null) => __tpCall("file.cursor", order),
+    cursor_append: (content) => {
+      __tpCall("diagnostic", "tp.file.cursor_append() has no editor cursor in Vulcan; its content was not inserted");
+      return "";
+    },
+    selection: () => "",
     find_tfile: (path) => __tpCall("file.find_tfile", String(path)),
   },
   get frontmatter() { return __tpCall("frontmatter"); },
   system: {
-    prompt: (...args) => __tpCall("system.prompt", ...args),
-    suggester: (...args) => __tpCall("system.suggester", ...args),
-    clipboard: () => __tpCall("system.clipboard"),
+    prompt: async (promptText = "", defaultValue = null, throwOnCancel = false, multiLine = false) =>
+      __tpCall("system.prompt", String(promptText ?? ""), defaultValue == null ? null : String(defaultValue), Boolean(throwOnCancel), Boolean(multiLine)),
+    suggester: async (textItems, items, throwOnCancel = false, placeholder = "", limit = undefined) => {
+      const [labels, list] = __tpSuggestion(textItems, items);
+      const index = __tpCall("system.suggester", labels, list.map(__tpItemKey), Boolean(throwOnCancel), String(placeholder ?? ""), limit ?? null);
+      return index == null ? null : list[index];
+    },
+    multi_suggester: async (textItems, items, throwOnCancel = false, title = "", limit = undefined) => {
+      const [labels, list] = __tpSuggestion(textItems, items);
+      const indices = __tpCall("system.multi_suggester", labels, list.map(__tpItemKey), Boolean(throwOnCancel), String(title ?? ""), limit ?? null);
+      return indices == null ? null : indices.map((index) => list[index]);
+    },
+    clipboard: async () => __tpCall("system.clipboard"),
   },
   web: {
     request: (...args) => __tpCall("web.request", ...args),
@@ -2796,30 +3306,108 @@ const tp = {
   },
   get config() { return __tpCall("config"); },
   obsidian: {
+    moment: globalThis.moment,
     normalizePath: (path) => __tpCall("obsidian.normalizePath", String(path)),
     htmlToMarkdown: (html) => __tpCall("obsidian.htmlToMarkdown", String(html)),
-    requestUrl: (url) => __tpCall("obsidian.requestUrl", String(url)),
+    parseYaml: (text) => __tpCall("obsidian.parseYaml", String(text)),
+    stringifyYaml: (value) => __tpCall("obsidian.stringifyYaml", value),
+    request: async (request) => __tpCall("obsidian.requestUrl", __tpRequestUrl(request)),
+    requestUrl: async (request) => {
+      const text = __tpCall("obsidian.requestUrl", __tpRequestUrl(request));
+      return { status: 200, headers: {}, text, get json() { return JSON.parse(text); } };
+    },
+    Notice: class Notice {
+      constructor(message) { __tpCall("diagnostic", `Notice: ${String(message)}`); }
+      setMessage(message) { __tpCall("diagnostic", `Notice: ${String(message)}`); return this; }
+      hide() {}
+    },
   },
 };
-tp.app = new Proxy({}, {
-  get() {
-    __tpCall("diagnostic", "tp.app.* is not available in CLI templates");
-    return undefined;
+function __tpRequestUrl(request) {
+  if (request && typeof request === "object") {
+    if (request.method && String(request.method).toUpperCase() !== "GET") {
+      throw new Error(`requestUrl() only supports GET requests in Vulcan templates, not ${request.method}`);
+    }
+    return String(request.url);
   }
-});
+  return String(request);
+}
+async function __tpProcessFrontMatter(file, update) {
+  const path = __tpPathOf(file);
+  const frontmatter = __tpCall("app.frontmatter", path);
+  await update(frontmatter);
+  __tpCall("app.set_frontmatter", path, frontmatter);
+}
+const __tpAppApi = {
+  vault: {
+    getName: () => __tpCall("app.vault_name"),
+    getMarkdownFiles: () => __tpCall("app.files"),
+    getFiles: () => __tpCall("app.files"),
+    getAbstractFileByPath: (path) => __tpCall("app.file", String(path)),
+    getFileByPath: (path) => __tpCall("app.file", String(path)),
+    read: async (file) => __tpCall("app.read", __tpPathOf(file)),
+    cachedRead: async (file) => __tpCall("app.read", __tpPathOf(file)),
+    create: async (path, data) => __tpCall("app.create", String(path), String(data ?? "")),
+    modify: async (file, data) => { __tpCall("app.modify", __tpPathOf(file), String(data ?? "")); },
+    process: async (file, update) => {
+      const path = __tpPathOf(file);
+      const data = String(update(__tpCall("app.read", path)) ?? "");
+      __tpCall("app.modify", path, data);
+      return data;
+    },
+    adapter: {
+      exists: async (path) => __tpCall("app.exists", String(path)),
+      read: async (path) => __tpCall("app.read", String(path)),
+    },
+  },
+  metadataCache: {
+    getFileCache: (file) => __tpCall("app.cache", __tpPathOf(file)),
+    getCache: (path) => __tpCall("app.cache", String(path)),
+    getFirstLinkpathDest: (linkpath) => __tpCall("app.file", String(linkpath)),
+  },
+  workspace: {
+    getActiveFile: () => __tpCall("app.active"),
+  },
+  fileManager: {
+    processFrontMatter: __tpProcessFrontMatter,
+    generateMarkdownLink: (file) => `[[${file.basename ?? __tpPathOf(file)}]]`,
+  },
+};
+// Unsupported parts of the Obsidian API fail loudly with their full name
+// instead of surfacing later as "cannot read property of undefined".
+function __tpGuard(target, path) {
+  return new Proxy(target, {
+    get(object, key) {
+      if (typeof key === "symbol" || key === "then" || key === "toJSON") return object[key];
+      if (!(key in object)) {
+        throw new Error(`${path}.${String(key)} is not available in Vulcan templates`);
+      }
+      const value = object[key];
+      return value && typeof value === "object" && !Array.isArray(value)
+        ? __tpGuard(value, `${path}.${String(key)}`)
+        : value;
+    },
+  });
+}
+tp.app = __tpGuard(__tpAppApi, "app");
+globalThis.app = tp.app;
+globalThis.window = globalThis;
 globalThis.tp = tp;
 "#;
 
 #[cfg(feature = "js_runtime")]
 fn load_user_scripts(
     ctx: &rquickjs::Ctx<'_>,
-    state: &std::sync::Arc<std::sync::Mutex<JsTemplateState>>,
+    state: &Arc<Mutex<JsTemplateState>>,
 ) -> Result<(), CliError> {
-    let (user_scripts_folder, templates_pairs, enable_system_commands) = {
+    use rquickjs::CatchResultExt;
+
+    let (vault_root, user_scripts_folder, templates_pairs, enable_system_commands) = {
         let state = state
             .lock()
             .map_err(|_| CliError::operation("templater lock poisoned"))?;
         (
+            state.paths.vault_root().to_path_buf(),
             state.vault_config.templates.user_scripts_folder.clone(),
             state.vault_config.templates.templates_pairs.clone(),
             state.vault_config.templates.enable_system_commands,
@@ -2830,28 +3418,58 @@ fn load_user_scripts(
     let user: rquickjs::Object<'_> = tp.get("user").map_err(CliError::operation)?;
 
     if let Some(folder) = user_scripts_folder {
-        let absolute = {
-            let state = state
-                .lock()
-                .map_err(|_| CliError::operation("templater lock poisoned"))?;
-            state.paths.vault_root().join(folder)
-        };
+        let absolute = vault_root.join(&folder);
         if absolute.is_dir() {
-            for entry in fs::read_dir(&absolute).map_err(CliError::operation)? {
-                let entry = entry.map_err(CliError::operation)?;
-                let path = entry.path();
+            let mut scripts = fs::read_dir(&absolute)
+                .map_err(CliError::operation)?
+                .map(|entry| entry.map(|entry| entry.path()))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(CliError::operation)?;
+            scripts.sort();
+            for path in scripts {
                 if path.extension().and_then(|value| value.to_str()) != Some("js") {
                     continue;
                 }
                 let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
                     continue;
                 };
+                let display = path
+                    .strip_prefix(&vault_root)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
                 let script = fs::read_to_string(&path).map_err(CliError::operation)?;
+                // The prefix stays on the script's first line so stack
+                // frames report the script's own line numbers.
                 let wrapper = format!(
-                    "(function(){{ const module = {{ exports: {{}} }}; const exports = module.exports; {script}; return module.exports; }})()"
+                    "(function(){{ const module = {{ exports: {{}} }}; const exports = module.exports; {script}\n; return module.exports; }})()"
                 );
-                let exported: rquickjs::Value<'_> =
-                    ctx.eval(wrapper).map_err(CliError::operation)?;
+                let exported: rquickjs::Value<'_> = ctx
+                    .eval_with_options(wrapper, js_eval_options(&display))
+                    .catch(ctx)
+                    .map_err(|error| {
+                        let failure = JsFailure::from_caught(&error);
+                        let line = failure
+                            .stack
+                            .split(&format!("{display}:"))
+                            .nth(1)
+                            .and_then(|rest| {
+                                rest.split(|c: char| !c.is_ascii_digit()).next()?.parse::<usize>().ok()
+                            });
+                        CliError::operation_with_code(
+                            "template_script_error",
+                            match line {
+                                Some(line) => format!(
+                                    "failed to load Templater user script `{display}` (line {line}): {}",
+                                    failure.summary()
+                                ),
+                                None => format!(
+                                    "failed to load Templater user script `{display}`: {}",
+                                    failure.summary()
+                                ),
+                            },
+                        )
+                    })?;
                 user.set(stem, exported).map_err(CliError::operation)?;
             }
         }
@@ -2872,28 +3490,35 @@ fn load_user_scripts(
 }
 
 #[cfg(feature = "js_runtime")]
-fn drain_jobs(runtime: &rquickjs::Runtime) -> Result<(), CliError> {
-    while runtime.is_job_pending() {
-        runtime
-            .execute_pending_job()
-            .map_err(|_| CliError::operation("failed to execute pending templater JS job"))?;
-    }
-    Ok(())
-}
-
-#[cfg(feature = "js_runtime")]
 fn dispatch_js_call(
     ctx: &rquickjs::Ctx<'_>,
-    state: &std::sync::Arc<std::sync::Mutex<JsTemplateState>>,
+    state: &Arc<Mutex<JsTemplateState>>,
     name: &str,
     args_json: &str,
 ) -> rquickjs::Result<String> {
     let args: Vec<JsonValue> = serde_json::from_str(args_json)
         .map_err(|error| rquickjs::Exception::throw_message(ctx, &error.to_string()))?;
-    let response = js_call_response(state, name, &args)
-        .map_err(|error| rquickjs::Exception::throw_message(ctx, &error))?;
+    let response = js_call_response(state, name, &args).map_err(|error| {
+        let message = if error.starts_with("tp.") || error.starts_with("--var ") {
+            error
+        } else {
+            format!("{}: {error}", js_call_display_name(name))
+        };
+        rquickjs::Exception::throw_message(ctx, &message)
+    })?;
     serde_json::to_string(&response)
         .map_err(|error| rquickjs::Exception::throw_message(ctx, &error.to_string()))
+}
+
+#[cfg(feature = "js_runtime")]
+fn js_call_display_name(name: &str) -> String {
+    match name {
+        "frontmatter" | "config" | "file.title" | "file.content" | "file.tags" => {
+            format!("tp.{name}")
+        }
+        name if name.contains('.') => format!("tp.{name}()"),
+        name => format!("tp.user.{name}()"),
+    }
 }
 
 #[cfg(feature = "js_runtime")]
@@ -2924,8 +3549,15 @@ fn js_call_response(
                 .unwrap_or("Untitled")
                 .to_string(),
         ),
-        "file.path" => JsonValue::String(js_file_path(&state, args)),
-        "file.folder" => JsonValue::String(js_file_folder(&state, args)),
+        "file.path" => JsonValue::String(templater_file_path(
+            &state.paths,
+            &state.target_path,
+            args.first().and_then(JsonValue::as_bool).unwrap_or(false),
+        )),
+        "file.folder" => JsonValue::String(templater_file_folder(
+            &state.target_path,
+            args.first().and_then(JsonValue::as_bool).unwrap_or(false),
+        )),
         "file.creation_date" => JsonValue::String(js_file_timestamp(&state, args, true)),
         "file.last_modified_date" => JsonValue::String(js_file_timestamp(&state, args, false)),
         "file.content" => JsonValue::String(state.target_contents.clone()),
@@ -2942,7 +3574,7 @@ fn js_call_response(
                 .and_then(|path| resolve_vault_path_from_state(&state, path))
                 .is_some(),
         ),
-        "file.include" => JsonValue::String(js_file_include(&state, args)?),
+        "file.include" => JsonValue::String(js_file_include(&mut state, args)?),
         "file.create_new" => js_file_create_new(&mut state, args)?,
         "file.move" => {
             js_file_move(&mut state, args)?;
@@ -2975,7 +3607,7 @@ fn js_call_response(
                 state
                     .template_path
                     .as_deref()
-                    .map(path_to_relative_file_json)
+                    .map(|path| path_to_relative_file_json(&state.paths, path))
                     .map_or(JsonValue::Null, JsonValue::Object),
             ),
             (
@@ -2991,14 +3623,37 @@ fn js_call_response(
                 JsonValue::Object(file_object_json(&state.target_path)),
             ),
         ])),
-        "system.prompt" => JsonValue::String(js_system_prompt(&state, args)),
-        "system.suggester" => js_system_suggester(&state, args),
+        "system.prompt" => js_system_prompt(&mut state, args)?,
+        "system.suggester" => js_system_suggester(&mut state, args, false)?,
+        "system.multi_suggester" => js_system_suggester(&mut state, args, true)?,
         "system.clipboard" => JsonValue::String(read_clipboard_best_effort()),
-        "web.request" | "obsidian.requestUrl" => {
+        "web.request" => {
+            // Templater returns the parsed JSON response (or the value at
+            // `path`); plain-text responses come back as strings.
             let url = args.first().and_then(JsonValue::as_str).unwrap_or_default();
-            let path = args.get(1).and_then(JsonValue::as_str);
-            JsonValue::String(js_web_request_string(&state, url, path)?)
+            let body = js_web_request_string(&state, url, None)?;
+            match args.get(1).and_then(JsonValue::as_str) {
+                Some(path) if !path.trim().is_empty() => json_path_value(
+                    serde_json::from_str(&body).map_err(|error| error.to_string())?,
+                    path,
+                )?,
+                _ => serde_json::from_str(&body).unwrap_or(JsonValue::String(body)),
+            }
         }
+        "obsidian.requestUrl" => {
+            let url = args.first().and_then(JsonValue::as_str).unwrap_or_default();
+            JsonValue::String(js_web_request_string(&state, url, None)?)
+        }
+        "obsidian.parseYaml" => {
+            let text = args.first().and_then(JsonValue::as_str).unwrap_or_default();
+            let value: YamlValue = serde_yaml::from_str(text).map_err(|error| error.to_string())?;
+            yaml_to_json(&value)
+        }
+        "obsidian.stringifyYaml" => JsonValue::String(
+            serde_yaml::to_string(args.first().unwrap_or(&JsonValue::Null))
+                .map_err(|error| error.to_string())?,
+        ),
+        name if name.starts_with("app.") => js_app_call(&mut state, name, args)?,
         "web.daily_quote" => JsonValue::String(js_daily_quote(&state)?),
         "web.random_picture" => JsonValue::String(random_picture_markdown(
             args.first().and_then(JsonValue::as_str),
@@ -3102,35 +3757,27 @@ fn js_date_weekday(state: &JsTemplateState, args: &[JsonValue]) -> Result<String
     Ok(format_date(weekday_timestamp(millis, weekday), format))
 }
 
-#[cfg(feature = "js_runtime")]
-fn js_file_path(state: &JsTemplateState, args: &[JsonValue]) -> String {
-    if args.first().and_then(JsonValue::as_bool).unwrap_or(false) {
-        state
-            .paths
-            .vault_root()
-            .join(&state.target_path)
-            .display()
-            .to_string()
+/// `tp.file.path(relative)`: the absolute filesystem path by default, the
+/// vault-relative path when `relative` is true (Templater semantics).
+fn templater_file_path(paths: &VaultPaths, target_path: &str, relative: bool) -> String {
+    if relative {
+        target_path.to_string()
     } else {
-        state.target_path.clone()
+        paths.vault_root().join(target_path).display().to_string()
     }
 }
 
-#[cfg(feature = "js_runtime")]
-fn js_file_folder(state: &JsTemplateState, args: &[JsonValue]) -> String {
-    let relative = Path::new(&state.target_path)
+/// `tp.file.folder(absolute)`: the folder's own name by default, its
+/// vault-relative path when `absolute` is true (Templater semantics).
+fn templater_file_folder(target_path: &str, absolute: bool) -> String {
+    let folder = Path::new(target_path)
         .parent()
         .map(|parent| parent.to_string_lossy().replace('\\', "/"))
         .unwrap_or_default();
-    if args.first().and_then(JsonValue::as_bool).unwrap_or(false) {
-        state
-            .paths
-            .vault_root()
-            .join(relative)
-            .display()
-            .to_string()
+    if absolute {
+        folder
     } else {
-        relative
+        folder.rsplit('/').next().unwrap_or_default().to_string()
     }
 }
 
@@ -3147,18 +3794,36 @@ fn js_file_timestamp(state: &JsTemplateState, args: &[JsonValue], creation: bool
 }
 
 #[cfg(feature = "js_runtime")]
-fn js_file_include(state: &JsTemplateState, args: &[JsonValue]) -> Result<String, String> {
+fn js_file_include(state: &mut JsTemplateState, args: &[JsonValue]) -> Result<String, String> {
+    if state.include_depth >= MAX_TEMPLATE_INCLUDE_DEPTH {
+        return Err(format!(
+            "Reached inclusion depth limit (max = {MAX_TEMPLATE_INCLUDE_DEPTH})"
+        ));
+    }
     let path = args.first().and_then(JsonValue::as_str).unwrap_or_default();
     let target = resolve_vault_path_from_state(state, path)
         .ok_or_else(|| format!("File {path} doesn't exist"))?;
-    if state
-        .read_filter
-        .as_ref()
-        .is_some_and(|filter| !filter.is_allowed(&target))
-    {
-        return Err(format!("File {path} doesn't exist"));
+    let source = template_path_content(&state.paths, state.staged_creates.as_ref(), &target)?;
+    let source = match split_include_link(path).1 {
+        Some(subpath) => extract_include_subpath(&source, subpath, &state.vault_config)?,
+        None => source,
+    };
+    let template_path = state.paths.vault_root().join(&target);
+    let target_path = state.target_path.clone();
+    let target_contents = state.target_contents.clone();
+    let rendered = state.render_nested(
+        Some(&template_path),
+        &source,
+        &target_path,
+        Some(&target_contents),
+    )?;
+    state.absorb_nested(&rendered);
+    let (frontmatter, body) =
+        parse_frontmatter_document(&rendered.content, true).map_err(|error| error.to_string())?;
+    if let Some(frontmatter) = frontmatter {
+        merge_pending_frontmatter_mapping(&mut state.pending_frontmatter, &frontmatter);
     }
-    template_path_content(&state.paths, state.staged_creates.as_ref(), &target)
+    Ok(body)
 }
 
 fn normalize_template_include_path(path: &str) -> Option<String> {
@@ -3172,6 +3837,37 @@ fn normalize_template_include_path(path: &str) -> Option<String> {
     .ok()
 }
 
+/// Content for `tp.file.create_new()`, following Templater: a `TFile` renders
+/// that template file for the new note, and a string is itself template
+/// content rendered for the new note.
+#[cfg(feature = "js_runtime")]
+fn js_create_new_content(
+    state: &mut JsTemplateState,
+    template: Option<&JsonValue>,
+    new_path: &str,
+) -> Result<String, String> {
+    let (template_path, source) = match template {
+        Some(JsonValue::Object(object)) => {
+            let identifier = object
+                .get("template")
+                .and_then(JsonValue::as_str)
+                .unwrap_or_default();
+            let target = resolve_vault_path_from_state(state, identifier)
+                .ok_or_else(|| format!("template {identifier} doesn't exist"))?;
+            (
+                Some(state.paths.vault_root().join(&target)),
+                template_path_content(&state.paths, state.staged_creates.as_ref(), &target)?,
+            )
+        }
+        Some(JsonValue::String(text)) => (None, text.clone()),
+        Some(other) => (None, json_value_to_js_string(other)),
+        None => return Ok(String::new()),
+    };
+    let rendered = state.render_nested(template_path.as_deref(), &source, new_path, None)?;
+    state.absorb_nested(&rendered);
+    Ok(rendered.content)
+}
+
 #[cfg(feature = "js_runtime")]
 fn js_file_create_new(
     state: &mut JsTemplateState,
@@ -3183,13 +3879,10 @@ fn js_file_create_new(
         );
         return Ok(JsonValue::Null);
     }
-    let content = args
-        .first()
-        .map(json_value_to_js_string)
-        .unwrap_or_default();
     let filename = args
         .get(1)
         .and_then(JsonValue::as_str)
+        .filter(|name| !name.trim().is_empty())
         .unwrap_or("Untitled");
     let folder = args.get(3).and_then(JsonValue::as_str).unwrap_or_default();
     let path = if folder.trim().is_empty() {
@@ -3198,6 +3891,19 @@ fn js_file_create_new(
         format!("{}/{}.md", folder.trim_matches('/'), filename)
     };
     let normalized = normalize_note_output_path(&path)?;
+    let content = js_create_new_content(state, args.first(), &normalized)?;
+    js_write_new_note(state, &normalized, content)
+}
+
+/// Writes a new note as a template side effect, staged with the render
+/// when a batch is open, and under the active permission profile.
+#[cfg(feature = "js_runtime")]
+fn js_write_new_note(
+    state: &mut JsTemplateState,
+    normalized: &str,
+    content: String,
+) -> Result<JsonValue, String> {
+    let normalized = normalized.to_string();
     if let Some(guard) = state.mutation_guard.as_ref() {
         guard
             .check_write_path(&normalized)
@@ -3284,29 +3990,254 @@ fn js_file_rename(state: &mut JsTemplateState, args: &[JsonValue]) -> Result<(),
 }
 
 #[cfg(feature = "js_runtime")]
-fn js_system_prompt(state: &JsTemplateState, args: &[JsonValue]) -> String {
-    let prompt = args.first().and_then(JsonValue::as_str).unwrap_or_default();
-    let default = args.get(1).and_then(JsonValue::as_str);
-    let slug = slugify_var_key(prompt);
+fn js_system_prompt(state: &mut JsTemplateState, args: &[JsonValue]) -> Result<JsonValue, String> {
+    state.prompt_count += 1;
+    let message = args
+        .first()
+        .map(json_value_to_js_string)
+        .unwrap_or_default();
+    let default = args
+        .get(1)
+        .filter(|value| !value.is_null())
+        .map(json_value_to_js_string);
+    let call = prompt::PromptCall {
+        message: &message,
+        default: default.as_deref(),
+        throw_on_cancel: args.get(2).and_then(JsonValue::as_bool).unwrap_or(false),
+        multiline: args.get(3).and_then(JsonValue::as_bool).unwrap_or(false),
+        ordinal: state.prompt_count,
+    };
+    let vars = state.vars.clone();
+    let answer = state.while_waiting_for_user(|| prompt::resolve_prompt(&vars, &call));
     state
-        .vars
-        .get(prompt)
-        .cloned()
-        .or_else(|| state.vars.get(&slug).cloned())
-        .or_else(|| default.map(ToOwned::to_owned))
-        .unwrap_or_default()
+        .prompt_result(answer)
+        .map(|answer| answer.map_or(JsonValue::Null, JsonValue::String))
+}
+
+/// Resolves a suggester to the chosen index (or indices for
+/// `multi_suggester`); the prelude maps them back onto the original items.
+#[cfg(feature = "js_runtime")]
+fn js_system_suggester(
+    state: &mut JsTemplateState,
+    args: &[JsonValue],
+    multiple: bool,
+) -> Result<JsonValue, String> {
+    state.suggester_count += 1;
+    let strings = |index: usize| -> Vec<String> {
+        args.get(index)
+            .and_then(JsonValue::as_array)
+            .map(|values| values.iter().map(json_value_to_js_string).collect())
+            .unwrap_or_default()
+    };
+    let options = strings(0);
+    let item_keys = strings(1);
+    let placeholder = args.get(3).map(json_value_to_js_string).unwrap_or_default();
+    let call = prompt::SuggestCall {
+        options: &options,
+        item_keys: &item_keys,
+        throw_on_cancel: args.get(2).and_then(JsonValue::as_bool).unwrap_or(false),
+        placeholder: &placeholder,
+        limit: args
+            .get(4)
+            .and_then(JsonValue::as_u64)
+            .and_then(|limit| usize::try_from(limit).ok()),
+        multiple,
+        ordinal: state.suggester_count,
+    };
+    let vars = state.vars.clone();
+    let choice = state.while_waiting_for_user(|| prompt::resolve_suggestion(&vars, &call));
+    Ok(match state.prompt_result(choice)? {
+        None => JsonValue::Null,
+        Some(indices) if multiple => JsonValue::Array(
+            indices
+                .into_iter()
+                .map(|index| JsonValue::from(index as u64))
+                .collect(),
+        ),
+        Some(indices) => indices
+            .first()
+            .map_or(JsonValue::Null, |index| JsonValue::from(*index as u64)),
+    })
+}
+
+/// The subset of Obsidian's `app` API templates commonly use, backed by the
+/// vault and cache. Writes stay inside the template's authority.
+#[cfg(feature = "js_runtime")]
+fn js_app_call(
+    state: &mut JsTemplateState,
+    name: &str,
+    args: &[JsonValue],
+) -> Result<JsonValue, String> {
+    let path_arg = || args.first().and_then(JsonValue::as_str).unwrap_or_default();
+    match name {
+        "app.vault_name" => Ok(JsonValue::String(
+            state
+                .paths
+                .vault_root()
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string(),
+        )),
+        "app.files" => match vulcan_core::list_note_identities_with_filter(
+            &state.paths,
+            state.read_filter.as_ref(),
+        ) {
+            Ok(notes) => Ok(JsonValue::Array(
+                notes
+                    .iter()
+                    .map(|note| JsonValue::Object(file_object_json(&note.path)))
+                    .collect(),
+            )),
+            Err(error) => {
+                state.push_diagnostic(format!(
+                    "app.vault.getMarkdownFiles() returned no files because the cache is unavailable ({error}); run `vulcan scan`"
+                ));
+                Ok(JsonValue::Array(Vec::new()))
+            }
+        },
+        "app.active" => Ok(JsonValue::Object(file_object_json(&state.target_path))),
+        "app.file" => Ok(
+            js_app_resolve(state, path_arg()).map_or(JsonValue::Null, |path| {
+                JsonValue::Object(file_object_json(&path))
+            }),
+        ),
+        "app.exists" => Ok(JsonValue::Bool(js_app_resolve(state, path_arg()).is_some())),
+        "app.read" => js_app_read(state, path_arg()).map(JsonValue::String),
+        "app.cache" => {
+            let Some(path) = js_app_resolve(state, path_arg()) else {
+                return Ok(JsonValue::Null);
+            };
+            let content = js_app_read(state, &path)?;
+            Ok(js_app_file_cache(&content, &state.vault_config))
+        }
+        "app.create" => {
+            if !state.allow_mutations {
+                state.push_diagnostic(
+                    "app.vault.create() is disabled during template preview".to_string(),
+                );
+                return Ok(JsonValue::Null);
+            }
+            let normalized = normalize_note_output_path(path_arg())?;
+            if js_app_resolve(state, &normalized).is_some() {
+                return Err(format!("File already exists: {normalized}"));
+            }
+            let content = args.get(1).map(json_value_to_js_string).unwrap_or_default();
+            js_write_new_note(state, &normalized, content)
+        }
+        "app.modify" => {
+            let content = args.get(1).map(json_value_to_js_string).unwrap_or_default();
+            js_app_require_target_in_hooks(state, path_arg(), "app.vault.modify()")?;
+            state.target_contents = content;
+            Ok(JsonValue::Null)
+        }
+        "app.frontmatter" => {
+            let Some(path) = js_app_resolve(state, path_arg())
+                .or_else(|| (path_arg() == state.target_path).then(|| state.target_path.clone()))
+            else {
+                return Err(format!("File {} doesn't exist", path_arg()));
+            };
+            let content = js_app_read(state, &path)?;
+            Ok(JsonValue::Object(yaml_mapping_to_json_object(
+                &current_frontmatter_mapping(&content).unwrap_or_default(),
+            )))
+        }
+        "app.set_frontmatter" => {
+            js_app_require_target_in_hooks(
+                state,
+                path_arg(),
+                "app.fileManager.processFrontMatter()",
+            )?;
+            let mapping: YamlMapping =
+                serde_yaml::to_value(args.get(1).unwrap_or(&JsonValue::Null))
+                    .ok()
+                    .and_then(|value| value.as_mapping().cloned())
+                    .unwrap_or_default();
+            let (_, body) = parse_frontmatter_document(&state.target_contents, true)
+                .map_err(|error| error.to_string())?;
+            state.target_contents = if mapping.is_empty() {
+                body
+            } else {
+                with_frontmatter(&mapping, &body)?
+            };
+            Ok(JsonValue::Null)
+        }
+        other => Err(format!("unsupported templater JS call: {other}")),
+    }
 }
 
 #[cfg(feature = "js_runtime")]
-fn js_system_suggester(state: &JsTemplateState, args: &[JsonValue]) -> JsonValue {
-    if let Some(selected) = state.vars.get("suggester") {
-        return JsonValue::String(selected.clone());
+fn js_app_resolve(state: &JsTemplateState, identifier: &str) -> Option<String> {
+    let identifier = identifier.trim().trim_start_matches('/');
+    if identifier == state.target_path {
+        return Some(state.target_path.clone());
     }
-    args.get(1)
-        .and_then(JsonValue::as_array)
-        .and_then(|items| items.first())
-        .cloned()
-        .unwrap_or(JsonValue::Null)
+    resolve_vault_path_from_state(state, identifier)
+}
+
+/// A note's content; the note being rendered reads as its current contents.
+#[cfg(feature = "js_runtime")]
+fn js_app_read(state: &JsTemplateState, identifier: &str) -> Result<String, String> {
+    let path = js_app_resolve(state, identifier)
+        .ok_or_else(|| format!("File {identifier} doesn't exist"))?;
+    if path == state.target_path {
+        return Ok(state.target_contents.clone());
+    }
+    template_path_content(&state.paths, state.staged_creates.as_ref(), &path)
+}
+
+/// Writes to a note are limited to the note being rendered, after the
+/// template output exists, which is when Templater users make them.
+#[cfg(feature = "js_runtime")]
+fn js_app_require_target_in_hooks(
+    state: &JsTemplateState,
+    identifier: &str,
+    api: &str,
+) -> Result<(), String> {
+    let identifier = identifier.trim().trim_start_matches('/');
+    if identifier != state.target_path {
+        return Err(format!(
+            "{api} can only change the note being rendered ({}) in Vulcan templates; use `tp.file.create_new()` or Vulcan commands for other notes",
+            state.target_path
+        ));
+    }
+    if !state.in_hooks {
+        return Err(format!(
+            "{api} on the note being rendered must run inside tp.hooks.on_all_templates_executed(), after the template output exists"
+        ));
+    }
+    Ok(())
+}
+
+/// The `CachedMetadata` fields templates read: frontmatter, tags,
+/// headings, and links.
+#[cfg(feature = "js_runtime")]
+fn js_app_file_cache(content: &str, config: &VaultConfig) -> JsonValue {
+    let parsed = parse_document(content, config);
+    json!({
+        "frontmatter": current_frontmatter_mapping(content)
+            .map(|mapping| JsonValue::Object(yaml_mapping_to_json_object(&mapping))),
+        "tags": parsed.tags.iter().map(|tag| json!({
+            "tag": if tag.tag_text.starts_with('#') { tag.tag_text.clone() } else { format!("#{}", tag.tag_text) },
+        })).collect::<Vec<_>>(),
+        "headings": parsed.headings.iter().map(|heading| json!({
+            "heading": heading.text,
+            "level": heading.level,
+        })).collect::<Vec<_>>(),
+        "links": parsed.links.iter().filter(|link| !link.is_note_embed).filter_map(|link| {
+            link.target_path_candidate.as_ref().map(|target| json!({
+                "link": target,
+                "original": link.raw_text,
+                "displayText": link.display_text.clone().unwrap_or_else(|| target.clone()),
+            }))
+        }).collect::<Vec<_>>(),
+        "embeds": parsed.links.iter().filter(|link| link.is_note_embed).filter_map(|link| {
+            link.target_path_candidate.as_ref().map(|target| json!({
+                "link": target,
+                "original": link.raw_text,
+            }))
+        }).collect::<Vec<_>>(),
+    })
 }
 
 #[cfg(feature = "js_runtime")]
@@ -3386,7 +4317,19 @@ fn extract_web_response(body: String, json_path: Option<&str>) -> Result<String,
     let Some(path) = json_path.filter(|value| !value.trim().is_empty()) else {
         return Ok(body);
     };
-    let mut value: JsonValue = serde_json::from_str(&body).map_err(|error| error.to_string())?;
+    let value = json_path_value(
+        serde_json::from_str(&body).map_err(|error| error.to_string())?,
+        path,
+    )?;
+    Ok(match value {
+        JsonValue::String(text) => text,
+        other => other.to_string(),
+    })
+}
+
+/// The value at a dotted `path` (array indices allowed) inside `value`.
+#[cfg(feature = "js_runtime")]
+fn json_path_value(mut value: JsonValue, path: &str) -> Result<JsonValue, String> {
     for segment in path.split('.') {
         value = match value {
             JsonValue::Array(items) => {
@@ -3399,10 +4342,7 @@ fn extract_web_response(body: String, json_path: Option<&str>) -> Result<String,
             _ => JsonValue::Null,
         };
     }
-    Ok(match value {
-        JsonValue::String(text) => text,
-        other => other.to_string(),
-    })
+    Ok(value)
 }
 
 #[cfg(feature = "js_runtime")]
@@ -3470,6 +4410,17 @@ fn template_value_to_string(value: &TemplateValue) -> String {
 enum NativeExpressionError {
     Message(String),
     RequiresJsRuntime(String),
+    /// A prompt nothing could answer; reported with its own error code.
+    InputRequired(String),
+}
+
+impl From<prompt::PromptError> for NativeExpressionError {
+    fn from(error: prompt::PromptError) -> Self {
+        match error {
+            prompt::PromptError::InputRequired(message) => Self::InputRequired(message),
+            prompt::PromptError::Failed(message) => Self::Message(message),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -3564,47 +4515,6 @@ fn trim_mode_from_marker(marker: u8) -> TrimMode {
         b'-' => TrimMode::Newline,
         b'_' => TrimMode::All,
         _ => TrimMode::None,
-    }
-}
-
-fn apply_left_trim(output: &mut String, trim: TrimMode) {
-    match trim {
-        TrimMode::None => {}
-        TrimMode::All => {
-            *output = output.trim_end().to_string();
-        }
-        TrimMode::Newline => trim_single_trailing_newline(output),
-    }
-}
-
-fn apply_right_trim(source: &str, mut cursor: usize, trim: TrimMode) -> usize {
-    match trim {
-        TrimMode::None => {}
-        TrimMode::All => {
-            while let Some(character) = source[cursor..].chars().next() {
-                if character.is_whitespace() {
-                    cursor += character.len_utf8();
-                } else {
-                    break;
-                }
-            }
-        }
-        TrimMode::Newline => {
-            if source[cursor..].starts_with("\r\n") {
-                cursor += 2;
-            } else if source[cursor..].starts_with('\n') {
-                cursor += 1;
-            }
-        }
-    }
-    cursor
-}
-
-fn trim_single_trailing_newline(output: &mut String) {
-    if output.ends_with("\r\n") {
-        output.truncate(output.len().saturating_sub(2));
-    } else if output.ends_with('\n') {
-        output.truncate(output.len().saturating_sub(1));
     }
 }
 
@@ -3904,6 +4814,193 @@ fn merge_yaml_mappings(target: &mut YamlMapping, source: &YamlMapping) {
         if !target.contains_key(key) {
             target.insert(key.clone(), value.clone());
         }
+    }
+}
+
+/// Splits an include link such as `[[Note#Heading|alias]]`, `[[Note#^id]]`,
+/// or `Note` into the note and its optional heading/block subpath.
+fn split_include_link(link: &str) -> (&str, Option<&str>) {
+    let trimmed = link.trim();
+    let inner = trimmed
+        .strip_prefix("[[")
+        .and_then(|value| value.strip_suffix("]]"))
+        .unwrap_or(trimmed);
+    let inner = inner.split('|').next().unwrap_or(inner);
+    match inner.split_once('#') {
+        Some((note, subpath)) => (
+            note.trim(),
+            Some(subpath.trim()).filter(|subpath| !subpath.is_empty()),
+        ),
+        None => (inner.trim(), None),
+    }
+}
+
+/// The part of a note an include subpath names, as Obsidian embeds it: a
+/// heading with everything up to the next heading of the same or higher
+/// level, or a `^block` without its marker.
+fn extract_include_subpath(
+    source: &str,
+    subpath: &str,
+    config: &VaultConfig,
+) -> Result<String, String> {
+    let parsed = parse_document(source, config);
+    if let Some(block_id) = subpath.strip_prefix('^') {
+        let block = parsed
+            .block_refs
+            .iter()
+            .find(|block| block.block_id_text.trim_start_matches('^') == block_id)
+            .ok_or_else(|| format!("block ^{block_id} not found"))?;
+        let text = &source[block.target_block_byte_start..block.target_block_byte_end];
+        let marker = format!(" ^{block_id}");
+        return Ok(text
+            .lines()
+            .map(|line| line.trim_end().strip_suffix(&marker).unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n"));
+    }
+    let wanted = subpath.rsplit('#').next().unwrap_or(subpath).trim();
+    let index = parsed
+        .headings
+        .iter()
+        .position(|heading| heading.text.trim().eq_ignore_ascii_case(wanted))
+        .ok_or_else(|| format!("heading #{wanted} not found"))?;
+    let heading = &parsed.headings[index];
+    let end = parsed.headings[index + 1..]
+        .iter()
+        .find(|next| next.level <= heading.level)
+        .map_or(source.len(), |next| next.byte_offset);
+    Ok(source[heading.byte_offset..end].to_string())
+}
+
+/// `body` under a frontmatter block holding `mapping`.
+fn with_frontmatter(mapping: &YamlMapping, body: &str) -> Result<String, String> {
+    let yaml = serde_yaml::to_string(&YamlValue::Mapping(mapping.clone()))
+        .map_err(|error| error.to_string())?;
+    let yaml = yaml.strip_prefix("---\n").unwrap_or(&yaml);
+    Ok(format!(
+        "---\n{}\n---\n{}",
+        yaml.trim_end_matches('\n'),
+        body
+    ))
+}
+
+fn merge_pending_frontmatter_mapping(pending: &mut Option<YamlMapping>, frontmatter: &YamlMapping) {
+    match pending {
+        Some(existing) => merge_yaml_mappings(existing, frontmatter),
+        None => *pending = Some(frontmatter.clone()),
+    }
+}
+
+/// Name a render reports in errors: the template's vault-relative path when
+/// known, otherwise a generic label.
+fn template_source_name(request: &TemplateRenderRequest<'_>) -> String {
+    request.template_path.map_or_else(
+        || "inline template".to_string(),
+        |path| {
+            path.strip_prefix(request.paths.vault_root())
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace('\\', "/")
+        },
+    )
+}
+
+/// Prefixes an error with the template and line it came from, plus the
+/// offending source line, keeping the error code machine-readable.
+fn located_template_error(
+    error: &CliError,
+    source_name: &str,
+    line: Option<usize>,
+    template: &str,
+) -> CliError {
+    const MAX_EXCERPT_CHARS: usize = 160;
+    let mut message = match line {
+        Some(line) => format!(
+            "template `{source_name}` failed at line {line}: {}",
+            error.message()
+        ),
+        None => format!("template `{source_name}` failed: {}", error.message()),
+    };
+    if let Some((line, excerpt)) = line.and_then(|line| {
+        template
+            .lines()
+            .nth(line.checked_sub(1)?)
+            .map(|text| (line, text.trim_end()))
+    }) {
+        let excerpt: String = if excerpt.chars().count() > MAX_EXCERPT_CHARS {
+            excerpt
+                .chars()
+                .take(MAX_EXCERPT_CHARS)
+                .chain("…".chars())
+                .collect()
+        } else {
+            excerpt.to_string()
+        };
+        message = format!("{message}\n  {line} | {excerpt}");
+    }
+    match error.code() {
+        Some(code) => CliError::operation_with_code(code.to_string(), message),
+        None => CliError::operation(message),
+    }
+}
+
+/// Native-interpreter calls; anything else in a tag needs JavaScript.
+#[cfg(feature = "js_runtime")]
+const NATIVE_TEMPLATER_CALLS: &[&str] = &[
+    "tp.date.now",
+    "tp.date.tomorrow",
+    "tp.date.yesterday",
+    "tp.date.weekday",
+    "tp.file.path",
+    "tp.file.folder",
+    "tp.file.creation_date",
+    "tp.file.last_modified_date",
+    "tp.file.exists",
+    "tp.file.include",
+    "tp.file.create_new",
+    "tp.file.move",
+    "tp.file.rename",
+    "tp.file.cursor",
+    "tp.file.find_tfile",
+    "tp.system.prompt",
+    "tp.system.suggester",
+    "tp.system.clipboard",
+];
+
+/// Whether a tag needs the JS runtime. Decided before rendering, so a
+/// template never runs half natively and half in JavaScript.
+#[cfg(feature = "js_runtime")]
+fn tag_requires_js(tag: &TemplaterTag<'_>) -> bool {
+    tag.execution
+        || parse_native_expression(tag.body).map_or(true, |expression| {
+            native_expression_requires_js(&expression)
+        })
+}
+
+#[cfg(feature = "js_runtime")]
+fn native_expression_requires_js(expression: &NativeExpression) -> bool {
+    match expression {
+        NativeExpression::String(_)
+        | NativeExpression::Number(_)
+        | NativeExpression::Bool(_)
+        | NativeExpression::Null => false,
+        NativeExpression::Path(path) => !native_path_supported(path),
+        NativeExpression::Call { callee, args } => {
+            !NATIVE_TEMPLATER_CALLS.contains(&join_native_path(callee).as_str())
+                || args.iter().any(native_expression_requires_js)
+        }
+    }
+}
+
+#[cfg(feature = "js_runtime")]
+fn native_path_supported(path: &[NativePathPart]) -> bool {
+    match (path_name(path, 0), path_name(path, 1), path_name(path, 2)) {
+        (Some("tp"), Some("frontmatter" | "config"), _) => true,
+        (Some("tp"), Some("file"), None) => path.len() == 2,
+        (Some("tp"), Some("file"), Some("title" | "content" | "tags" | "path" | "folder")) => {
+            path.len() == 3
+        }
+        _ => false,
     }
 }
 
@@ -4549,34 +5646,59 @@ fn file_object_json(path: &str) -> JsonMap<String, JsonValue> {
         .parent()
         .map(|parent| parent.to_string_lossy().replace('\\', "/"))
         .unwrap_or_default();
+    let name = Path::new(&relative)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let extension = Path::new(&relative)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let parent = json!({
+        "path": if folder.is_empty() { "/" } else { folder.as_str() },
+        "name": folder.rsplit('/').next().unwrap_or_default(),
+    });
+    // Mirrors the Obsidian `TFile` fields templates read, plus `title`/`folder`.
     JsonMap::from_iter([
         ("path".to_string(), JsonValue::String(relative.clone())),
+        ("name".to_string(), JsonValue::String(name)),
         ("basename".to_string(), JsonValue::String(stem.clone())),
+        ("extension".to_string(), JsonValue::String(extension)),
         ("title".to_string(), JsonValue::String(stem)),
         ("folder".to_string(), JsonValue::String(folder)),
+        ("parent".to_string(), parent),
     ])
 }
 
-fn path_to_relative_file_json(path: &Path) -> JsonMap<String, JsonValue> {
-    file_object_json(&path.to_string_lossy().replace('\\', "/"))
+/// `TFile` for a template, vault-relative when it lives inside the vault.
+fn path_to_relative_file_json(paths: &VaultPaths, path: &Path) -> JsonMap<String, JsonValue> {
+    let relative = path.strip_prefix(paths.vault_root()).unwrap_or(path);
+    file_object_json(&relative.to_string_lossy().replace('\\', "/"))
 }
 
 #[cfg(feature = "js_runtime")]
 fn resolve_vault_path_from_state(state: &JsTemplateState, identifier: &str) -> Option<String> {
+    resolve_unfiltered_vault_path_from_state(state, identifier).filter(|path| {
+        state
+            .read_filter
+            .as_ref()
+            .is_none_or(|filter| filter.is_allowed(path))
+    })
+}
+
+#[cfg(feature = "js_runtime")]
+fn resolve_unfiltered_vault_path_from_state(
+    state: &JsTemplateState,
+    identifier: &str,
+) -> Option<String> {
     if let Ok(reference) = resolve_note_reference(&state.paths, identifier) {
         return normalize_template_include_path(&reference.path).filter(|path| {
             template_path_exists(&state.paths, state.staged_creates.as_ref(), path)
         });
     }
-    let trimmed = identifier
-        .trim()
-        .strip_prefix("[[")
-        .and_then(|value| value.strip_suffix("]]"))
-        .unwrap_or(identifier)
-        .split('#')
-        .next()
-        .unwrap_or(identifier)
-        .trim();
+    let (trimmed, _) = split_include_link(identifier);
     let path = Path::new(trimmed);
     let candidate = if path.extension().is_none() {
         PathBuf::from(format!("{trimmed}.md"))
@@ -4670,11 +5792,6 @@ fn html_to_markdown(html: &str) -> String {
         .replace("</h1>", "\n\n")
         .replace("<h2>", "## ")
         .replace("</h2>", "\n\n")
-}
-
-#[cfg(feature = "js_runtime")]
-fn strip_top_level_await(source: &str) -> String {
-    source.replace("await ", "")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

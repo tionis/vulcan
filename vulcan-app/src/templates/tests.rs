@@ -1,12 +1,11 @@
 use super::{
-    apply_right_trim, apply_template_create, apply_template_creation_trigger,
-    apply_template_insert, build_template_list_report, build_template_preview_report,
-    build_template_show_report, parse_native_expression, parse_template_var_bindings,
-    parse_templater_tag, random_picture_markdown, render_template_request,
-    render_template_request_with_filter, template_value_to_string, TemplateCandidate,
-    TemplateCreateRequest, TemplateEngineKind, TemplateInsertMode, TemplateInsertRequest,
-    TemplatePreviewRequest, TemplateRenderRequest, TemplateRunMode, TemplateSession,
-    TemplateTimestamp, TemplateValue, TrimMode,
+    apply_template_create, apply_template_creation_trigger, apply_template_insert,
+    build_template_list_report, build_template_preview_report, build_template_show_report,
+    parse_native_expression, parse_template_var_bindings, parse_templater_tag,
+    random_picture_markdown, render_template_request, render_template_request_with_filter,
+    template_value_to_string, TemplateCandidate, TemplateCreateRequest, TemplateEngineKind,
+    TemplateInsertMode, TemplateInsertRequest, TemplatePreviewRequest, TemplateRenderRequest,
+    TemplateRunMode, TemplateSession, TemplateTimestamp, TemplateValue, TrimMode,
 };
 use serde::Serialize;
 use std::collections::HashMap;
@@ -345,13 +344,6 @@ fn parses_templater_tags_with_trim_markers() {
     assert_eq!(tag.right_trim, TrimMode::Newline);
     assert_eq!(tag.body, "tp.file.title");
     assert_eq!(next, 22);
-}
-
-#[test]
-fn trims_one_newline_after_tag() {
-    let source = "<% tp.file.title -%>\nBody";
-    let cursor = apply_right_trim(source, 20, TrimMode::Newline);
-    assert_eq!(&source[cursor..], "Body");
 }
 
 #[test]
@@ -1745,6 +1737,7 @@ fn reference_date_drives_builtin_dates_but_not_tp_date_now() {
             "{{date}} {{date:dddd}} {{time}} {{DATE+1}}",
             TemplateEngineKind::Native,
             0,
+            "test",
         )
         .expect("native template should render");
     let templater = session
@@ -1752,6 +1745,7 @@ fn reference_date_drives_builtin_dates_but_not_tp_date_now() {
             "<% tp.date.now(\"YYYY-MM-DD\") %> <% tp.file.title %>",
             TemplateEngineKind::Templater,
             0,
+            "test",
         )
         .expect("templater template should render");
 
@@ -1797,4 +1791,663 @@ fn template_insert_writes_collection_records_through_managed_writes() {
     let written = fs::read_to_string(root.join("Note.md")).unwrap();
     assert!(written.starts_with("---\ntitle: Note\n---\n"), "{written}");
     assert!(written.contains("Inserted"), "{written}");
+}
+
+#[cfg(feature = "js_runtime")]
+fn render_js_text(
+    paths: &VaultPaths,
+    config: &VaultConfig,
+    text: &str,
+    vars: &HashMap<String, String>,
+    allow_mutations: bool,
+) -> Result<super::TemplateRenderOutput, super::AppError> {
+    render_template_request(TemplateRenderRequest {
+        paths,
+        vault_config: config,
+        templates: &[],
+        template_path: None,
+        template_text: text,
+        target_path: "Projects/2026-10-14 Alpha.md",
+        target_contents: Some("Body\n"),
+        engine: TemplateEngineKind::Templater,
+        vars,
+        allow_mutations,
+        run_mode: TemplateRunMode::Create,
+        reference_date: None,
+    })
+}
+
+#[cfg(feature = "js_runtime")]
+#[test]
+fn templater_control_flow_and_declarations_span_tags() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    let config = VaultConfig::default();
+    let rendered = render_js_text(
+        &paths,
+        &config,
+        "<%* const items = ['a', 'b']; -%>\n<%* for (const item of items) { -%>\n- <% item %>\n<%* } -%>\n<%* if (tp.file.title.startsWith('2026')) { -%>\ndated\n<%* } else { -%>\nundated\n<%* } -%>\n",
+        &HashMap::new(),
+        false,
+    )
+    .expect("template should render");
+    assert_eq!(rendered.content, "- a\n- b\ndated\n");
+}
+
+#[cfg(feature = "js_runtime")]
+#[test]
+fn templater_awaits_real_promises_without_rewriting_source() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    let config = VaultConfig::default();
+    let rendered = render_js_text(
+        &paths,
+        &config,
+        "<% await new Promise((resolve) => resolve('settled')) %> <%* tR += 'please await your turn' %>",
+        &HashMap::new(),
+        false,
+    )
+    .expect("template should render");
+    assert_eq!(rendered.content, "settled please await your turn");
+}
+
+#[cfg(feature = "js_runtime")]
+#[test]
+fn templater_script_errors_name_the_template_line_and_message() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    let config = VaultConfig::default();
+    let error = render_js_text(
+        &paths,
+        &config,
+        "intro\n<%* const x = undefinedThing.foo; %>\nafter\n",
+        &HashMap::new(),
+        false,
+    )
+    .expect_err("undefined global should fail");
+    assert_eq!(error.code(), Some("template_script_error"));
+    assert_eq!(
+        error.message(),
+        "template `inline template` failed at line 2: ReferenceError: undefinedThing is not defined\n  2 | <%* const x = undefinedThing.foo; %>"
+    );
+
+    let error = render_js_text(
+        &paths,
+        &config,
+        "a\nb\n<%*\nconst ok = 1;\nconst broken = ;\n%>",
+        &HashMap::new(),
+        false,
+    )
+    .expect_err("syntax error should fail");
+    assert!(
+        error.message().starts_with(
+            "template `inline template` failed at line 5: SyntaxError: unexpected token in expression: ';'"
+        ),
+        "{}",
+        error.message()
+    );
+
+    let error = render_js_text(
+        &paths,
+        &config,
+        "<%* throw 'plain string' %>",
+        &HashMap::new(),
+        false,
+    )
+    .expect_err("thrown string should fail");
+    assert!(error.message().contains("uncaught value: plain string"));
+}
+
+#[cfg(feature = "js_runtime")]
+#[test]
+fn templater_host_errors_name_the_failing_api() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    let config = VaultConfig::default();
+    let error = render_js_text(
+        &paths,
+        &config,
+        "<%* tR += tp.file.include('[[Missing]]') %>",
+        &HashMap::new(),
+        false,
+    )
+    .expect_err("missing include should fail");
+    assert!(
+        error
+            .message()
+            .contains("failed at line 1: tp.file.include(): File [[Missing]] doesn't exist"),
+        "{}",
+        error.message()
+    );
+    let error = render_js_text(
+        &paths,
+        &config,
+        "<% tp.file.include('[[Missing]]') %>",
+        &HashMap::new(),
+        false,
+    )
+    .expect_err("missing native include should fail");
+    assert!(
+        error
+            .message()
+            .contains("failed at line 1: tp.file.include(): File [[Missing]] doesn't exist"),
+        "{}",
+        error.message()
+    );
+}
+
+#[test]
+fn unterminated_templater_tags_report_their_line() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    let config = VaultConfig::default();
+    let vars = HashMap::new();
+    let error = render_template_request(TemplateRenderRequest {
+        paths: &paths,
+        vault_config: &config,
+        templates: &[],
+        template_path: None,
+        template_text: "ok\n<% tp.file.title",
+        target_path: "Alpha.md",
+        target_contents: None,
+        engine: TemplateEngineKind::Templater,
+        vars: &vars,
+        allow_mutations: false,
+        run_mode: TemplateRunMode::Create,
+        reference_date: None,
+    })
+    .expect_err("unterminated tag should fail");
+    assert_eq!(error.code(), Some("template_syntax_error"));
+    assert!(error
+        .message()
+        .starts_with("template `inline template` failed at line 2: unterminated Templater tag"));
+}
+
+#[cfg(feature = "js_runtime")]
+#[test]
+fn templater_scripts_time_out_with_a_clear_error() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    let mut config = VaultConfig::default();
+    config.js_runtime.default_timeout_seconds = 1;
+    let error = render_js_text(
+        &paths,
+        &config,
+        "<%* while (true) {} %>",
+        &HashMap::new(),
+        false,
+    )
+    .expect_err("infinite loop should time out");
+    assert_eq!(error.code(), Some("template_script_timeout"));
+    assert!(error.message().contains("did not finish within 1s"));
+}
+
+#[cfg(feature = "js_runtime")]
+#[test]
+fn templater_user_script_errors_point_at_the_script() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    fs::create_dir_all(temp_dir.path().join("Scripts")).expect("script dir");
+    fs::write(
+        temp_dir.path().join("Scripts/helper.js"),
+        "function helper() {\n  return missingValue + 1;\n}\nmodule.exports = helper;\n",
+    )
+    .expect("script");
+    fs::write(
+        temp_dir.path().join("Scripts/broken.js"),
+        "module.exports = ;\n",
+    )
+    .expect("script");
+    let mut config = VaultConfig::default();
+    config.templates.user_scripts_folder = Some(PathBuf::from("Scripts"));
+
+    let error = render_js_text(
+        &paths,
+        &config,
+        "<% tp.user.helper() %>",
+        &HashMap::new(),
+        false,
+    )
+    .expect_err("broken script should fail to load");
+    assert!(
+        error
+            .message()
+            .contains("failed to load Templater user script `Scripts/broken.js` (line 1)"),
+        "{}",
+        error.message()
+    );
+
+    fs::remove_file(temp_dir.path().join("Scripts/broken.js")).expect("remove");
+    let error = render_js_text(
+        &paths,
+        &config,
+        "<% tp.user.helper() %>",
+        &HashMap::new(),
+        false,
+    )
+    .expect_err("script error should fail");
+    assert!(
+        error.message().contains(
+            "failed at line 1: ReferenceError: missingValue is not defined (in helper (Scripts/helper.js))"
+        ),
+        "{}",
+        error.message()
+    );
+}
+
+#[cfg(feature = "js_runtime")]
+#[test]
+fn templater_js_include_renders_the_included_template_and_frontmatter() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    fs::write(
+        temp_dir.path().join("Partial.md"),
+        "---\nkind: partial\n---\n<%* const n = 2 * 3; %>six=<% n %>",
+    )
+    .expect("partial");
+    let config = VaultConfig::default();
+    let rendered = render_js_text(
+        &paths,
+        &config,
+        "---\ntitle: main\n---\n<%* const inc = await tp.file.include('[[Partial]]'); tR += inc.trim(); %>",
+        &HashMap::new(),
+        false,
+    )
+    .expect("template should render");
+    assert_eq!(
+        rendered.content,
+        "---\ntitle: main\nkind: partial\n---\nsix=6"
+    );
+}
+
+#[cfg(feature = "js_runtime")]
+#[test]
+fn templater_js_create_new_renders_a_found_template_for_the_new_note() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    fs::create_dir_all(temp_dir.path().join("Templates")).expect("templates");
+    fs::write(
+        temp_dir.path().join("Templates/Child.md"),
+        "child of <% tp.file.title %>",
+    )
+    .expect("template");
+    let config = VaultConfig::default();
+    let rendered = render_js_text(
+        &paths,
+        &config,
+        "<%* await tp.file.create_new(tp.file.find_tfile('Templates/Child'), 'Kid', false, 'Notes'); %>done",
+        &HashMap::new(),
+        true,
+    )
+    .expect("template should render");
+    assert_eq!(rendered.content, "done");
+    assert_eq!(
+        fs::read_to_string(temp_dir.path().join("Notes/Kid.md")).expect("created"),
+        "child of Kid"
+    );
+}
+
+#[cfg(feature = "js_runtime")]
+#[test]
+fn templater_js_file_lookups_respect_the_read_filter() {
+    let temp_dir = tempdir().expect("temp dir");
+    let root = temp_dir.path();
+    fs::create_dir_all(root.join("Secret")).expect("secret dir");
+    fs::write(root.join("Secret/Hidden.md"), "hidden\n").expect("hidden");
+    let paths = VaultPaths::new(root);
+    let filter = PermissionFilter::new(PathPermission {
+        allow: vec![ResourceSpecifier::All],
+        deny: vec![ResourceSpecifier::Folder("Secret/**".to_string())],
+    });
+    let config = VaultConfig::default();
+    let vars = HashMap::new();
+    let rendered = render_template_request_with_filter(
+        TemplateRenderRequest {
+            paths: &paths,
+            vault_config: &config,
+            templates: &[],
+            template_path: None,
+            template_text: "<% tp.file.exists('Secret/Hidden') %>/<% tp.file.find_tfile('Secret/Hidden') === null %>",
+            target_path: "Projects/Alpha.md",
+            target_contents: None,
+            engine: TemplateEngineKind::Templater,
+            vars: &vars,
+            allow_mutations: false,
+            run_mode: TemplateRunMode::Create,
+            reference_date: None,
+        },
+        Some(&filter),
+    )
+    .expect("template should render");
+    assert_eq!(rendered.content, "false/true");
+}
+
+#[cfg(feature = "js_runtime")]
+#[test]
+fn templater_hook_failures_are_reported() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    let config = VaultConfig::default();
+    let error = render_js_text(
+        &paths,
+        &config,
+        "body\n<%* tp.hooks.on_all_templates_executed(() => {\n  throw new Error('hook broke');\n}); %>",
+        &HashMap::new(),
+        false,
+    )
+    .expect_err("hook failure should surface");
+    assert!(
+        error.message().contains("failed at line 3: hook broke"),
+        "{}",
+        error.message()
+    );
+}
+
+#[cfg(feature = "js_runtime")]
+#[test]
+fn templater_suggester_returns_the_chosen_item_and_validates_vars() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    let config = VaultConfig::default();
+    let template = "<%* const pick = await tp.system.suggester((item) => item.label, [{ label: 'Meeting', id: 1 }, { label: 'Idea', id: 2 }], false, 'Note type'); tR += pick.id; %>";
+    let vars = HashMap::from([("note_type".to_string(), "Idea".to_string())]);
+    let rendered = render_js_text(&paths, &config, template, &vars, false).expect("render");
+    assert_eq!(rendered.content, "2");
+
+    let vars = HashMap::from([("note_type".to_string(), "Task".to_string())]);
+    let error = render_js_text(&paths, &config, template, &vars, false).expect_err("bad var");
+    assert!(
+        error.message().contains(
+            "failed at line 1: --var note_type=\"Task\" matches none of the options of tp.system.suggester(\"Note type\"); choose one of: \"Meeting\", \"Idea\""
+        ),
+        "{}",
+        error.message()
+    );
+
+    let error = render_js_text(&paths, &config, template, &HashMap::new(), false)
+        .expect_err("unanswered suggester");
+    assert_eq!(error.code(), Some(super::TEMPLATE_INPUT_REQUIRED_CODE));
+    assert!(
+        error.message().contains(
+            "tp.system.suggester(\"Note type\") needs a choice: pass --var note_type=<option>"
+        ),
+        "{}",
+        error.message()
+    );
+}
+
+#[cfg(feature = "js_runtime")]
+#[test]
+fn templater_multi_suggester_and_prompt_answers() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    let config = VaultConfig::default();
+    let vars = HashMap::from([
+        ("tags".to_string(), "b, c".to_string()),
+        ("Project name".to_string(), "Vulcan".to_string()),
+    ]);
+    let rendered = render_js_text(
+        &paths,
+        &config,
+        "<% (await tp.system.multi_suggester(['A', 'B', 'C'], ['a', 'b', 'c'], false, 'Tags')).join('+') %> <% tp.system.prompt('Project name') %> <% tp.system.prompt('Owner', 'me') %>",
+        &vars,
+        false,
+    )
+    .expect("render");
+    assert_eq!(rendered.content, "b+c Vulcan me");
+}
+
+#[cfg(feature = "js_runtime")]
+#[test]
+fn templater_prompts_use_an_installed_interactive_prompter() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    struct Answers(RefCell<Vec<String>>);
+    impl super::TemplatePrompter for Answers {
+        fn prompt(&self, request: &super::TemplatePromptRequest) -> Result<Option<String>, String> {
+            self.0
+                .borrow_mut()
+                .push(format!("prompt:{}", request.message));
+            Ok(Some("typed".to_string()))
+        }
+        fn suggest(
+            &self,
+            request: &super::TemplateSuggestRequest,
+        ) -> Result<Option<Vec<usize>>, String> {
+            self.0
+                .borrow_mut()
+                .push(format!("suggest:{}", request.options.join("|")));
+            Ok(None)
+        }
+    }
+
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    let config = VaultConfig::default();
+    let answers = Rc::new(Answers(RefCell::new(Vec::new())));
+    let rendered = super::with_template_prompter(answers.clone(), || {
+        render_js_text(
+            &paths,
+            &config,
+            "<% tp.system.prompt('Name') %>/<% (await tp.system.suggester(['x', 'y'], [1, 2])) ?? 'cancelled' %>",
+            &HashMap::new(),
+            false,
+        )
+    })
+    .expect("render");
+    assert_eq!(rendered.content, "typed/cancelled");
+    assert_eq!(*answers.0.borrow(), ["prompt:Name", "suggest:x|y"]);
+}
+
+#[test]
+fn native_suggester_reads_options_from_frontmatter() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    let config = VaultConfig::default();
+    let vars = HashMap::from([("suggester_1".to_string(), "beta".to_string())]);
+    let rendered = render_template_request(TemplateRenderRequest {
+        paths: &paths,
+        vault_config: &config,
+        templates: &[],
+        template_path: None,
+        template_text: "<% tp.system.suggester(tp.frontmatter.choices, tp.frontmatter.choices) %>",
+        target_path: "Alpha.md",
+        target_contents: Some("---\nchoices: [alpha, beta]\n---\n"),
+        engine: TemplateEngineKind::Templater,
+        vars: &vars,
+        allow_mutations: false,
+        run_mode: TemplateRunMode::Create,
+        reference_date: None,
+    })
+    .expect("render");
+    assert_eq!(rendered.content, "beta");
+}
+
+#[cfg(feature = "js_runtime")]
+#[test]
+fn templater_exposes_moment_like_obsidian() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    let config = VaultConfig::default();
+    let rendered = render_js_text(
+        &paths,
+        &config,
+        "<% moment(tp.file.title.slice(0, 10), 'YYYY-MM-DD').add(1, 'day').format('YYYY-MM-DD dddd') %>|<% tp.obsidian.moment === moment && window.moment === moment %>",
+        &HashMap::new(),
+        false,
+    )
+    .expect("render");
+    assert_eq!(rendered.content, "2026-10-15 Thursday|true");
+}
+
+#[test]
+fn templater_file_path_and_folder_follow_templater_semantics() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    let config = VaultConfig::default();
+    let vars = HashMap::new();
+    let render = |text: &str| {
+        render_template_request(TemplateRenderRequest {
+            paths: &paths,
+            vault_config: &config,
+            templates: &[],
+            template_path: None,
+            template_text: text,
+            target_path: "Projects/Sub/Note.md",
+            target_contents: None,
+            engine: TemplateEngineKind::Templater,
+            vars: &vars,
+            allow_mutations: false,
+            run_mode: TemplateRunMode::Create,
+            reference_date: None,
+        })
+        .expect("render")
+        .content
+    };
+    let absolute = temp_dir
+        .path()
+        .join("Projects/Sub/Note.md")
+        .display()
+        .to_string();
+    // Native interpreter and JS runtime agree.
+    for suffix in ["", " + ''"] {
+        assert_eq!(
+            render(&format!("<% tp.file.path(true){suffix} %>")),
+            "Projects/Sub/Note.md"
+        );
+        assert_eq!(render(&format!("<% tp.file.path(){suffix} %>")), absolute);
+        assert_eq!(render(&format!("<% tp.file.folder(){suffix} %>")), "Sub");
+        assert_eq!(
+            render(&format!("<% tp.file.folder(true){suffix} %>")),
+            "Projects/Sub"
+        );
+    }
+}
+
+#[test]
+fn templater_include_extracts_heading_and_block_subpaths() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    fs::write(
+        temp_dir.path().join("Source.md"),
+        "# Intro\nhello\n## Details\nmore\n### Deeper\ndeep\n# Other\nlast line ^tail\n",
+    )
+    .expect("source");
+    let config = VaultConfig::default();
+    let vars = HashMap::new();
+    for (link, expected) in [
+        ("[[Source#Details]]", "## Details\nmore\n### Deeper\ndeep\n"),
+        ("[[Source#^tail]]", "last line"),
+    ] {
+        for template in [
+            format!("<% tp.file.include('{link}') %>"),
+            format!("<%* tR += await tp.file.include('{link}') %>"),
+        ] {
+            let rendered = render_template_request(TemplateRenderRequest {
+                paths: &paths,
+                vault_config: &config,
+                templates: &[],
+                template_path: None,
+                template_text: &template,
+                target_path: "Out.md",
+                target_contents: None,
+                engine: TemplateEngineKind::Templater,
+                vars: &vars,
+                allow_mutations: false,
+                run_mode: TemplateRunMode::Create,
+                reference_date: None,
+            })
+            .expect("render");
+            assert_eq!(rendered.content, expected, "{template}");
+        }
+    }
+}
+
+#[cfg(feature = "js_runtime")]
+#[test]
+fn templater_app_shim_reads_the_vault_and_rejects_unknown_apis() {
+    let temp_dir = tempdir().expect("temp dir");
+    let root = temp_dir.path();
+    fs::create_dir_all(root.join(".vulcan")).expect("vulcan dir");
+    fs::create_dir_all(root.join("Notes")).expect("notes");
+    fs::write(
+        root.join("Notes/Src.md"),
+        "---\nstatus: open\n---\n# Heading\n#tag [[Other]]\n",
+    )
+    .expect("note");
+    let paths = VaultPaths::new(root);
+    scan_vault(&paths, ScanMode::Full).expect("scan");
+    let config = VaultConfig::default();
+    let rendered = render_js_text(
+        &paths,
+        &config,
+        "<%* const file = app.vault.getAbstractFileByPath('Notes/Src.md'); const cache = app.metadataCache.getFileCache(file); tR += [app.vault.getMarkdownFiles().map((f) => f.path).join(','), file.parent.name, cache.frontmatter.status, cache.tags[0].tag, cache.headings[0].heading, cache.links[0].link, (await app.vault.read(file)).length > 0, app.workspace.getActiveFile().basename].join('|'); %>",
+        &HashMap::new(),
+        false,
+    )
+    .expect("render");
+    assert_eq!(
+        rendered.content,
+        "Notes/Src.md|Notes|open|#tag|Heading|Other|true|2026-10-14 Alpha"
+    );
+
+    let error = render_js_text(
+        &paths,
+        &config,
+        "<% app.commands.executeCommandById('x') %>",
+        &HashMap::new(),
+        false,
+    )
+    .expect_err("unsupported api");
+    assert!(error
+        .message()
+        .contains("app.commands is not available in Vulcan templates"));
+}
+
+#[cfg(feature = "js_runtime")]
+#[test]
+fn templater_process_front_matter_updates_the_rendered_note_in_hooks() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    let config = VaultConfig::default();
+    let rendered = render_js_text(
+        &paths,
+        &config,
+        "---\nstatus: draft\n---\nBody<%* tp.hooks.on_all_templates_executed(async () => { await app.fileManager.processFrontMatter(tp.config.target_file, (fm) => { fm.status = 'ready'; }); }); %>",
+        &HashMap::new(),
+        false,
+    )
+    .expect("render");
+    assert_eq!(rendered.content, "---\nstatus: ready\n---\nBody");
+
+    let error = render_js_text(
+        &paths,
+        &config,
+        "<%* await app.fileManager.processFrontMatter(tp.config.target_file, (fm) => { fm.x = 1; }); %>",
+        &HashMap::new(),
+        false,
+    )
+    .expect_err("outside hooks");
+    assert!(error
+        .message()
+        .contains("must run inside tp.hooks.on_all_templates_executed()"));
+}
+
+#[cfg(feature = "js_runtime")]
+#[test]
+fn templater_obsidian_helpers_cover_yaml_and_notices() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    let config = VaultConfig::default();
+    let rendered = render_js_text(
+        &paths,
+        &config,
+        "<% tp.obsidian.parseYaml('a: [1, 2]').a[1] %>|<% tp.obsidian.stringifyYaml({ b: 'c' }).trim() %><%* new tp.obsidian.Notice('Saved'); %>|<% tp.file.selection() %>",
+        &HashMap::new(),
+        false,
+    )
+    .expect("render");
+    assert_eq!(rendered.content, "2|b: c|");
+    assert!(rendered.diagnostics.iter().any(|d| d == "Notice: Saved"));
 }

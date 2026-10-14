@@ -19095,6 +19095,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         .contains("companions publish with the final ordinary note in one recoverable batch"));
     assert!(template_skill.contains("creation trigger applied to an existing ordinary note"));
     assert!(template_skill.contains("Templater `tp.file.move` and `tp.file.rename` refuse"));
+    assert!(template_skill.contains("`vulcan template show NAME`"));
+    assert!(template_skill.contains("`template_input_required`"));
     let permission_skill = fs::read_to_string(
         vault_root.join(".agents/skills/configuration-and-permissions/SKILL.md"),
     )
@@ -32781,6 +32783,77 @@ fn template_show_subcommand_displays_template_contents() {
         content.contains("Meeting Notes"),
         "content should include template body, got: {content}"
     );
+}
+
+#[test]
+fn template_inputs_are_listed_and_unanswered_prompts_name_their_var() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan/templates"))
+        .expect("template dir should be created");
+    fs::write(
+        vault_root.join(".vulcan/templates/kind.md"),
+        "<%* const kind = await tp.system.suggester(['Meeting', 'Idea'], ['meeting', 'idea'], false, 'Note type'); -%>\nkind: <% kind %>\n",
+    )
+    .expect("template should be written");
+    let vault = vault_root.to_str().expect("utf-8");
+
+    let show = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault", vault, "--output", "json", "template", "show", "kind",
+        ])
+        .assert()
+        .success();
+    let parsed: Value = serde_json::from_slice(&show.get_output().stdout).expect("json");
+    assert_eq!(
+        parsed["inputs"],
+        serde_json::json!([{
+            "function": "tp.system.suggester",
+            "label": "Note type",
+            "var_key": "note_type",
+            "default": null,
+        }])
+    );
+
+    let missing = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault", vault, "--output", "json", "template", "preview", "kind",
+        ])
+        .assert()
+        .failure();
+    let error: Value = serde_json::from_slice(&missing.get_output().stdout)
+        .or_else(|_| serde_json::from_slice(&missing.get_output().stderr))
+        .expect("error json");
+    assert_eq!(error["code"], "template_input_required");
+    let message = error["error"].as_str().expect("message");
+    assert!(
+        message.contains("failed at line 1: tp.system.suggester(\"Note type\") needs a choice: pass --var note_type=<option>"),
+        "{message}"
+    );
+    assert!(
+        message.contains("options: \"Meeting\", \"Idea\""),
+        "{message}"
+    );
+
+    let answered = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault,
+            "--output",
+            "json",
+            "template",
+            "preview",
+            "kind",
+            "--var",
+            "note_type=Idea",
+        ])
+        .assert()
+        .success();
+    let preview: Value = serde_json::from_slice(&answered.get_output().stdout).expect("json");
+    assert_eq!(preview["content"], "kind: idea\n");
 }
 
 #[test]

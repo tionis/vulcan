@@ -741,7 +741,10 @@ Notes:
   If --path is omitted, Vulcan creates <date>-<template-name>.md in the vault root.
   In an interactive terminal, the new note is opened in $VISUAL/$EDITOR after rendering.
   --engine auto detects <% ... %> tags and switches to the Templater-compatible renderer.
-  Repeat --var key=value to satisfy tp.system.prompt()/suggester() in automation and CI.
+  tp.system.prompt()/suggester() and QuickAdd {{VALUE}} read --var key=value first, then ask
+  in an interactive terminal; without either they fail with the --var key to pass.
+  `template show NAME` lists a template's inputs and their --var keys.
+  Errors name the template line; see `vulcan help templates` for the full Templater guide.
   `template insert` appends by default; use --prepend to insert after frontmatter instead.
   If the insert target note is omitted in an interactive terminal, Vulcan opens the note picker.
   `template preview` renders without writing files and disables mutating tp.file.* helpers.

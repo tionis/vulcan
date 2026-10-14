@@ -379,6 +379,22 @@ pub(crate) fn run_template_show_command(
             println!("Name:   {}", report.name);
             println!("Source: {}", report.source);
             println!("Path:   {}", report.path);
+            if !report.inputs.is_empty() {
+                println!("Inputs (answer with --var KEY=VALUE, or interactively in a terminal):");
+                for input in &report.inputs {
+                    let label = input
+                        .label
+                        .as_deref()
+                        .map(|label| format!(" {label:?}"))
+                        .unwrap_or_default();
+                    let default = input
+                        .default
+                        .as_deref()
+                        .map(|default| format!(" (default {default:?})"))
+                        .unwrap_or_default();
+                    println!("  {} ← {}{label}{default}", input.var_key, input.function);
+                }
+            }
             println!();
             print!("{}", report.content);
             Ok(())

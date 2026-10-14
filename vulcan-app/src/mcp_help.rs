@@ -447,6 +447,13 @@ pub fn builtin_help_topics() -> Vec<HelpTopicReport> {
             &["sandbox", "js", "js.plugins", "describe"],
         ),
         static_help_topic(
+            "templates",
+            HelpTopicKind::Concept,
+            "Templater-compatible templates: execution model, prompts and --var keys, errors, and supported tp.* and app APIs.",
+            include_str!("../../docs/guide/templates.md"),
+            &["template", "template preview", "template insert", "scripting"],
+        ),
+        static_help_topic(
             "skill-commands",
             HelpTopicKind::Concept,
             "Declare executable, schema-validated commands inside skills and expose them through CLI, MCP, describe, and JS.",
@@ -785,6 +792,15 @@ mod tests {
         assert!(scripting.body.contains("JavaScript plugins"));
         assert!(scripting.body.contains("`host.exec()`"));
         assert!(scripting.body.contains("`js_runtime`"));
+    }
+
+    #[test]
+    fn templates_help_topic_documents_prompt_keys_and_error_codes() {
+        let templates = builtin_help_topic("templates").expect("templates topic");
+        assert!(templates.body.starts_with("# Templates"));
+        assert!(templates.body.contains("`template_input_required`"));
+        assert!(templates.body.contains("`suggester_1`"));
+        assert!(templates.body.contains("vulcan template show NAME"));
     }
 
     #[test]

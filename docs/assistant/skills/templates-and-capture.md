@@ -27,6 +27,8 @@ compatibility matter.
 - Use `vulcan template create` for new notes and `vulcan template insert` for existing notes.
 - Use `vulcan inbox` or `note append` for quick additive capture.
 - Use `template preview` when variables, Templater tags, or QuickAdd tokens may produce surprising output.
+- Run `vulcan template show NAME` to see which prompts a template asks and their `--var` keys, then pass every answer with `--var key=value`. Agents have no terminal, so an unanswered `tp.system.prompt`/`suggester` or QuickAdd `{{VALUE}}` fails with `template_input_required`; the error names the exact key and lists suggester options. Do not guess an option that is not listed.
+- On a template failure, read the reported template line and JavaScript error before editing the template; `vulcan help templates` documents the supported `tp.*`, `moment`, and `app` APIs.
 - Import Obsidian template/QuickAdd/Templater settings before expecting compatibility defaults.
 - Check `templates.trigger_on_file_creation` and its mode before assuming a newly created note is empty. `note create` applies configured creation triggers automatically; an explicit `--template` takes precedence.
 - Keep `vulcan watch` running when creation triggers must also apply to Markdown files created by editors or other filesystem tools.

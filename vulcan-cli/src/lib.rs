@@ -39,6 +39,7 @@ mod preview_images;
 mod resolve;
 mod serve;
 mod site_server;
+mod template_prompt;
 mod terminal_markdown;
 
 pub(crate) use commands::edit::{
@@ -682,6 +683,11 @@ impl From<vulcan_app::AppError> for CliError {
             // mdbase query and authorization failures, kept alike on every frontend.
             Some("invalid_query") => "invalid_query",
             Some("permission_denied") => "permission_denied",
+            // Template rendering failures: missing answers, broken tags, scripts.
+            Some("template_input_required") => "template_input_required",
+            Some("template_syntax_error") => "template_syntax_error",
+            Some("template_script_error") => "template_script_error",
+            Some("template_script_timeout") => "template_script_timeout",
             _ => "operation_failed",
         };
         Self {
@@ -4784,7 +4790,29 @@ where
         return Ok(());
     }
     let cli = Cli::from_arg_matches(&matches).map_err(|error| CliError::clap(&error))?;
+    if command_allows_template_prompts(&cli.command)
+        && template_prompt::interactive_prompts_available()
+    {
+        return vulcan_app::templates::with_template_prompter(
+            std::rc::Rc::new(template_prompt::TerminalTemplatePrompter),
+            || dispatch(&cli),
+        );
+    }
     dispatch(&cli)
+}
+
+/// Long-running servers never stop to ask the terminal; templates they render
+/// must be answered with `--var` or defaults.
+fn command_allows_template_prompts(command: &Command) -> bool {
+    !matches!(
+        command,
+        Command::Serve { .. }
+            | Command::Mcp { .. }
+            | Command::Lsp
+            | Command::Daemon { .. }
+            | Command::Site { .. }
+            | Command::Editor { .. }
+    )
 }
 
 #[allow(clippy::too_many_lines)]

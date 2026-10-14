@@ -1524,8 +1524,8 @@ Implement the `tp` namespace natively (no JS required) for the most common templ
 
 **tp.file:**
 - [x] `tp.file.title` — filename without extension
-- [x] `tp.file.path(absolute?)` — file path (vault-relative or absolute)
-- [x] `tp.file.folder(absolute?)` — parent folder name or path
+- [x] `tp.file.path(relative?)` — absolute filesystem path, or vault-relative with `relative` (Templater semantics)
+- [x] `tp.file.folder(absolute?)` — parent folder name, or its vault-relative path with `absolute` (Templater semantics)
 - [x] `tp.file.creation_date(format?)`, `tp.file.last_modified_date(format?)` — file timestamps
 - [x] `tp.file.content` — full file content
 - [x] `tp.file.tags` — all tags in file
@@ -1610,6 +1610,19 @@ These require the sandboxed JS runtime and are only available when `--features j
 
 - [ ] Implement the documented `vulcan template run-startup` command as an explicit trusted workflow; startup templates execute for side effects without rewriting the template source
 - [ ] Decide which long-lived daemon/serve entrypoints may invoke startup templates, keeping execution default-off and permission-gated
+
+#### 9.9.8 Templater execution model, prompts, and API gaps
+
+**Goal:** Templates written for Obsidian run unchanged, and failures say where and why. User guide: `docs/guide/templates.md` (`vulcan help templates`).
+
+- [x] Compile a JS-needing template into one async program like Templater, so declarations, `if` blocks, and loops span tags and `await` is real (replaces the per-tag eval and textual `await` stripping); decide native vs JS per template statically
+- [x] Located errors: template path, line, JS error name and message, and the source line; `tp.*` helper and user-script frames named; error codes `template_syntax_error`, `template_script_error`, `template_script_timeout`, `template_input_required` through CLI JSON
+- [x] Script timeout from `[js_runtime] default_timeout_seconds`, paused while a person answers a prompt; hook (`on_all_templates_executed`) failures surface instead of being dropped
+- [x] `tp.system.prompt`/`suggester`/`multi_suggester` and QuickAdd `{{VALUE}}`/`{{VDATE}}`: answers from `--var`, then an interactive terminal prompter (CLI only, never servers), then defaults; otherwise an error naming the `--var` key and options instead of silently picking the first option. Suggesters accept a label function and return the original item
+- [x] `vulcan template show` lists a template's prompts with their `--var` keys
+- [x] `moment` (vendored moment.js 2.30.1), `tp.obsidian.moment`/`parseYaml`/`stringifyYaml`/`request`/`Notice`, `requestUrl` response objects, JSON-returning `tp.web.request`
+- [x] JS `tp.file.include` renders the included template and merges its frontmatter; heading and `^block` include subpaths; `create_new` renders a `TFile` or template string for the new note; JS file lookups honor the read filter
+- [x] Guarded `app` shim for common vault, metadata cache, workspace, and `processFrontMatter` calls; unsupported Obsidian APIs fail by name
 
 ### 9.10 Tasks plugin compatibility (parsing and query layer)
 
