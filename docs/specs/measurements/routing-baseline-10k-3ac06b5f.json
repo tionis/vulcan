@@ -1,0 +1,396 @@
+{
+  "acceptance_gate_result": "not_evaluated",
+  "binary": "/home/eric/vulcan-eval/target/release/vulcan",
+  "binary_sha256": "71290021d39a672a1d5b6ef1ba0e5cd70c628738a0a474ca6ac1f8fc75b6f6ab",
+  "binary_unchanged": true,
+  "commit": "3ac06b5f",
+  "complete_and_valid": true,
+  "fixture": {
+    "acceptance_gate_result": "not_evaluated",
+    "body_bytes_per_record": 4096,
+    "digest_format": "generation-order u64be path-length/path/u64be byte-length/bytes; excludes manifest",
+    "generator_version": 1,
+    "invalid_priority_records": 104,
+    "links": 100000,
+    "missing_status_records": 2000,
+    "payload_files": 10014,
+    "payload_sha256": "ba3b33b62cbbcea1e68628920268cd143416d1216345c5aeb029220c28e9a348",
+    "private_records": 1000,
+    "records": 10000,
+    "seed": 42,
+    "type_counts": {
+      "contact": 3333,
+      "project": 3333,
+      "task": 3334
+    }
+  },
+  "fixture_unchanged": true,
+  "limitations": [
+    "Frontends return different report shapes; equivalence is not checked",
+    "No concurrent writers or external edits during measurement",
+    "Host power, frequency, background load, and OS page cache are uncontrolled"
+  ],
+  "machine": {
+    "architecture": "x86_64",
+    "cpus": 16,
+    "host": "designated evaluation host (Intel Core i7-10700, 31 GiB RAM, Debian 13)",
+    "load_average": [
+      1.32470703125,
+      2.666015625,
+      2.09521484375
+    ],
+    "platform": "Linux-6.12.111+deb13-amd64-x86_64-with-glibc2.41"
+  },
+  "measurement": "daemon_routing_baseline",
+  "method": {
+    "cli": "process start through exit, default blocking refresh",
+    "concurrency": 1,
+    "http": "loopback GET round trip to one watched serve process",
+    "mcp": "tools/call round trip in one stdio process",
+    "missing_record_check": "Python os.stat of a missing path; an upper bound",
+    "percentiles": "nearest rank over repeated successful requests",
+    "requested_repeated_samples": 20
+  },
+  "missing_record_check_ns": 1291.6413,
+  "operations": {
+    "dql": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 51.62402696441859,
+        "repeated_ms": {
+          "max": 54.129306925460696,
+          "p50": 50.93934200704098,
+          "p95": 52.187540917657316,
+          "p99": 54.129306925460696,
+          "samples": 20
+        }
+      },
+      "http": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 22.849523928016424,
+        "repeated_ms": {
+          "max": 1.591769978404045,
+          "p50": 1.2578630121424794,
+          "p95": 1.3534660683944821,
+          "p99": 1.591769978404045,
+          "samples": 20
+        }
+      },
+      "mcp": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 25.737275020219386,
+        "repeated_ms": {
+          "max": 25.779915042221546,
+          "p50": 25.38511692546308,
+          "p95": 25.743432925082743,
+          "p99": 25.779915042221546,
+          "samples": 20
+        }
+      }
+    },
+    "graph_hubs": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 11305.419748998247,
+        "repeated_ms": {
+          "max": 11429.392511025071,
+          "p50": 11151.81772003416,
+          "p95": 11391.002497985028,
+          "p99": 11429.392511025071,
+          "samples": 20
+        }
+      }
+    },
+    "graph_path": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 332.34571700450033,
+        "repeated_ms": {
+          "max": 340.03109601326287,
+          "p50": 328.9045080309734,
+          "p95": 334.18934198562056,
+          "p99": 340.03109601326287,
+          "samples": 20
+        }
+      }
+    },
+    "graph_stats": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 373.77891095820814,
+        "repeated_ms": {
+          "max": 411.826163996011,
+          "p50": 376.52385607361794,
+          "p95": 383.1292790127918,
+          "p99": 411.826163996011,
+          "samples": 20
+        }
+      },
+      "http": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 360.89609493501484,
+        "repeated_ms": {
+          "max": 376.3173191109672,
+          "p50": 352.87982400041074,
+          "p95": 369.19959902297705,
+          "p99": 376.3173191109672,
+          "samples": 20
+        }
+      }
+    },
+    "ls": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 88.2064689649269,
+        "repeated_ms": {
+          "max": 90.11678607203066,
+          "p50": 88.27746903989464,
+          "p95": 89.67760496307164,
+          "p99": 90.11678607203066,
+          "samples": 20
+        }
+      }
+    },
+    "note_backlinks": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 51.34797003120184,
+        "repeated_ms": {
+          "max": 58.77686000894755,
+          "p50": 53.136856062337756,
+          "p95": 57.844814960844815,
+          "p99": 58.77686000894755,
+          "samples": 20
+        }
+      }
+    },
+    "note_get": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 20.915625034831464,
+        "repeated_ms": {
+          "max": 21.382100065238774,
+          "p50": 20.98620100878179,
+          "p95": 21.28174901008606,
+          "p99": 21.382100065238774,
+          "samples": 20
+        }
+      },
+      "mcp": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 14.912020997144282,
+        "repeated_ms": {
+          "max": 14.583720010705292,
+          "p50": 14.474063063971698,
+          "p95": 14.580145012587309,
+          "p99": 14.583720010705292,
+          "samples": 20
+        }
+      }
+    },
+    "note_info": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 137.73824810050428,
+        "repeated_ms": {
+          "max": 138.87499703560024,
+          "p50": 137.35722401179373,
+          "p95": 138.7268790276721,
+          "p99": 138.87499703560024,
+          "samples": 20
+        }
+      },
+      "mcp": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 120.24003290571272,
+        "repeated_ms": {
+          "max": 121.11375702079386,
+          "p50": 119.37975999899209,
+          "p95": 120.83418190013617,
+          "p99": 121.11375702079386,
+          "samples": 20
+        }
+      }
+    },
+    "note_outline": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 20.641171955503523,
+        "repeated_ms": {
+          "max": 21.219356101937592,
+          "p50": 20.69282706361264,
+          "p95": 21.177340066060424,
+          "p99": 21.219356101937592,
+          "samples": 20
+        }
+      },
+      "mcp": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 14.417910948395729,
+        "repeated_ms": {
+          "max": 14.436212950386107,
+          "p50": 14.209331944584846,
+          "p95": 14.426601002924144,
+          "p99": 14.436212950386107,
+          "samples": 20
+        }
+      }
+    },
+    "query": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 66.63987506181002,
+        "repeated_ms": {
+          "max": 67.51743203494698,
+          "p50": 66.15660199895501,
+          "p95": 66.89671997446567,
+          "p99": 67.51743203494698,
+          "samples": 20
+        }
+      },
+      "http": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 100.5017589777708,
+        "repeated_ms": {
+          "max": 2.347322995774448,
+          "p50": 1.8954949919134378,
+          "p95": 2.132265013642609,
+          "p99": 2.347322995774448,
+          "samples": 20
+        }
+      },
+      "mcp": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 85.11318801902235,
+        "repeated_ms": {
+          "max": 85.6484220130369,
+          "p50": 74.68994602095336,
+          "p95": 77.50362798105925,
+          "p99": 85.6484220130369,
+          "samples": 20
+        }
+      }
+    },
+    "search": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 28.233504039235413,
+        "repeated_ms": {
+          "max": 30.635437928140163,
+          "p50": 29.37294007278979,
+          "p95": 30.553160002455115,
+          "p99": 30.635437928140163,
+          "samples": 20
+        }
+      },
+      "http": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 5.149708944372833,
+        "repeated_ms": {
+          "max": 3.759226994588971,
+          "p50": 3.5688079660758376,
+          "p95": 3.6428539315238595,
+          "p99": 3.759226994588971,
+          "samples": 20
+        }
+      },
+      "mcp": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 5.344923003576696,
+        "repeated_ms": {
+          "max": 4.018170991912484,
+          "p50": 3.9171980461105704,
+          "p95": 3.9677959866821766,
+          "p99": 4.018170991912484,
+          "samples": 20
+        }
+      }
+    },
+    "status": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 128.9579849690199,
+        "repeated_ms": {
+          "max": 128.69597296230495,
+          "p50": 127.23559490405023,
+          "p95": 128.20479995571077,
+          "p99": 128.69597296230495,
+          "samples": 20
+        }
+      },
+      "mcp": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 128.6824099952355,
+        "repeated_ms": {
+          "max": 127.99042498227209,
+          "p50": 125.60525699518621,
+          "p95": 127.17164598871022,
+          "p99": 127.99042498227209,
+          "samples": 20
+        }
+      }
+    },
+    "tasks_query": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 764.2068230779842,
+        "repeated_ms": {
+          "max": 794.6902890689671,
+          "p50": 766.7040119413286,
+          "p95": 785.2297639474273,
+          "p99": 794.6902890689671,
+          "samples": 20
+        }
+      },
+      "mcp": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 512.3800829751417,
+        "repeated_ms": {
+          "max": 464.37063801568,
+          "p50": 446.9425759743899,
+          "p95": 457.13577896822244,
+          "p99": 464.37063801568,
+          "samples": 20
+        }
+      }
+    }
+  },
+  "process_floor": {
+    "complete": true,
+    "failures": [],
+    "first_ms": 5.050112958997488,
+    "repeated_ms": {
+      "max": 5.062279989942908,
+      "p50": 4.81122697237879,
+      "p95": 4.976624040864408,
+      "p99": 5.062279989942908,
+      "samples": 20
+    }
+  },
+  "runner_sha256": "f7ed5f429725202aaac4fa4de5b23cd1e7cf362f764faaef65d9e3272e0755e2"
+}

@@ -1,0 +1,397 @@
+{
+  "acceptance_gate_result": "not_evaluated",
+  "binary": "/home/eric/vulcan-eval/target/release/vulcan",
+  "binary_sha256": "38f46f4c03a4ceeadd1cac92cda846a60863941551e4dbd214273905bd170d2e",
+  "binary_unchanged": true,
+  "commit": "1a0186bb",
+  "complete_and_valid": true,
+  "fixture": {
+    "acceptance_gate_result": "not_evaluated",
+    "body_bytes_per_record": 4096,
+    "digest_format": "generation-order u64be path-length/path/u64be byte-length/bytes; excludes manifest",
+    "generator_version": 1,
+    "invalid_priority_records": 1031,
+    "links": 1000000,
+    "missing_status_records": 20000,
+    "payload_files": 100014,
+    "payload_sha256": "b934b38bb58223d523aba60a8b4e346c553deee93828d3d52c0570dca9166d5f",
+    "private_records": 10000,
+    "records": 100000,
+    "seed": 42,
+    "type_counts": {
+      "contact": 33333,
+      "project": 33333,
+      "task": 33334
+    }
+  },
+  "fixture_unchanged": true,
+  "limitations": [
+    "Frontends return different report shapes; equivalence is not checked",
+    "No concurrent writers or external edits during measurement",
+    "Host power, frequency, background load, and OS page cache are uncontrolled"
+  ],
+  "machine": {
+    "architecture": "x86_64",
+    "cpus": 16,
+    "host": "designated evaluation host (Intel Core i7-10700, 31 GiB RAM, Debian 13)",
+    "load_average": [
+      1.2783203125,
+      1.8486328125,
+      1.9580078125
+    ],
+    "platform": "Linux-6.12.111+deb13-amd64-x86_64-with-glibc2.41"
+  },
+  "measurement": "daemon_routing_baseline",
+  "method": {
+    "cli": "process start through exit, default blocking refresh",
+    "concurrency": 1,
+    "http": "loopback GET round trip to one watched serve process",
+    "mcp": "tools/call round trip in one stdio process",
+    "missing_record_check": "Python os.stat of a missing path; an upper bound",
+    "percentiles": "nearest rank over repeated successful requests",
+    "requested_repeated_samples": 10
+  },
+  "missing_record_check_ns": 1261.4053,
+  "operations": {
+    "dql": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 426.61135201342404,
+        "repeated_ms": {
+          "max": 456.37924305628985,
+          "p50": 432.8892430057749,
+          "p95": 456.37924305628985,
+          "p99": 456.37924305628985,
+          "samples": 10
+        }
+      },
+      "http": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 184.88630396313965,
+        "repeated_ms": {
+          "max": 6.905099959112704,
+          "p50": 5.953448009677231,
+          "p95": 6.905099959112704,
+          "p99": 6.905099959112704,
+          "samples": 10
+        }
+      },
+      "mcp": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 254.47216106113046,
+        "repeated_ms": {
+          "max": 250.40172995068133,
+          "p50": 246.73426302615553,
+          "p95": 250.40172995068133,
+          "p99": 250.40172995068133,
+          "samples": 10
+        }
+      }
+    },
+    "graph_hubs": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 5004.49782598298,
+        "repeated_ms": {
+          "max": 5080.373698961921,
+          "p50": 5018.640678958036,
+          "p95": 5080.373698961921,
+          "p99": 5080.373698961921,
+          "samples": 10
+        }
+      }
+    },
+    "graph_path": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 4503.399436944164,
+        "repeated_ms": {
+          "max": 4581.219648011029,
+          "p50": 4485.797206987627,
+          "p95": 4581.219648011029,
+          "p99": 4581.219648011029,
+          "samples": 10
+        }
+      }
+    },
+    "graph_stats": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 5550.577659974806,
+        "repeated_ms": {
+          "max": 5523.508258978836,
+          "p50": 5426.245094975457,
+          "p95": 5523.508258978836,
+          "p99": 5523.508258978836,
+          "samples": 10
+        }
+      },
+      "http": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 4835.839190054685,
+        "repeated_ms": {
+          "max": 4837.086727027781,
+          "p50": 4801.621134974994,
+          "p95": 4837.086727027781,
+          "p99": 4837.086727027781,
+          "samples": 10
+        }
+      }
+    },
+    "ls": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 809.9165291059762,
+        "repeated_ms": {
+          "max": 843.8550239661708,
+          "p50": 806.1357770347968,
+          "p95": 843.8550239661708,
+          "p99": 843.8550239661708,
+          "samples": 10
+        }
+      }
+    },
+    "note_backlinks": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 616.2147369468585,
+        "repeated_ms": {
+          "max": 639.7888580104336,
+          "p50": 590.8436020836234,
+          "p95": 639.7888580104336,
+          "p99": 639.7888580104336,
+          "samples": 10
+        }
+      }
+    },
+    "note_get": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 223.39324199128896,
+        "repeated_ms": {
+          "max": 238.19837300106883,
+          "p50": 225.32507102005184,
+          "p95": 238.19837300106883,
+          "p99": 238.19837300106883,
+          "samples": 10
+        }
+      },
+      "mcp": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 193.51897994056344,
+        "repeated_ms": {
+          "max": 205.7154419599101,
+          "p50": 198.98339896462858,
+          "p95": 205.7154419599101,
+          "p99": 205.7154419599101,
+          "samples": 10
+        }
+      }
+    },
+    "note_info": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 1823.8477238919586,
+        "repeated_ms": {
+          "max": 1833.2291570259258,
+          "p50": 1790.3874510666355,
+          "p95": 1833.2291570259258,
+          "p99": 1833.2291570259258,
+          "samples": 10
+        }
+      },
+      "mcp": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 1679.3889419641346,
+        "repeated_ms": {
+          "max": 1694.9794559041038,
+          "p50": 1679.936773958616,
+          "p95": 1694.9794559041038,
+          "p99": 1694.9794559041038,
+          "samples": 10
+        }
+      }
+    },
+    "note_outline": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 223.10323303099722,
+        "repeated_ms": {
+          "max": 253.96394392009825,
+          "p50": 228.96271804347634,
+          "p95": 253.96394392009825,
+          "p99": 253.96394392009825,
+          "samples": 10
+        }
+      },
+      "mcp": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 188.36231401655823,
+        "repeated_ms": {
+          "max": 202.18567899428308,
+          "p50": 200.9048640029505,
+          "p95": 202.18567899428308,
+          "p99": 202.18567899428308,
+          "samples": 10
+        }
+      }
+    },
+    "query": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 514.8671790957451,
+        "repeated_ms": {
+          "max": 535.7334059663117,
+          "p50": 516.7986890301108,
+          "p95": 535.7334059663117,
+          "p99": 535.7334059663117,
+          "samples": 10
+        }
+      },
+      "http": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 835.5121369240806,
+        "repeated_ms": {
+          "max": 5.614330060780048,
+          "p50": 4.754900000989437,
+          "p95": 5.614330060780048,
+          "p99": 5.614330060780048,
+          "samples": 10
+        }
+      },
+      "mcp": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 867.7956650499254,
+        "repeated_ms": {
+          "max": 843.1789369788021,
+          "p50": 829.1760860010982,
+          "p95": 843.1789369788021,
+          "p99": 843.1789369788021,
+          "samples": 10
+        }
+      }
+    },
+    "search": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 180.75172102544457,
+        "repeated_ms": {
+          "max": 187.9643650026992,
+          "p50": 174.6027210028842,
+          "p95": 187.9643650026992,
+          "p99": 187.9643650026992,
+          "samples": 10
+        }
+      },
+      "http": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 7.742405985482037,
+        "repeated_ms": {
+          "max": 6.413549999706447,
+          "p50": 6.2758419662714005,
+          "p95": 6.413549999706447,
+          "p99": 6.413549999706447,
+          "samples": 10
+        }
+      },
+      "mcp": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 7.91993597522378,
+        "repeated_ms": {
+          "max": 6.906992988660932,
+          "p50": 6.545187905430794,
+          "p95": 6.906992988660932,
+          "p99": 6.906992988660932,
+          "samples": 10
+        }
+      }
+    },
+    "status": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 1475.0366329681128,
+        "repeated_ms": {
+          "max": 1507.6561449095607,
+          "p50": 1475.0552590703592,
+          "p95": 1507.6561449095607,
+          "p99": 1507.6561449095607,
+          "samples": 10
+        }
+      },
+      "mcp": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 1516.3778439164162,
+        "repeated_ms": {
+          "max": 1511.625814018771,
+          "p50": 1464.8104330990463,
+          "p95": 1511.625814018771,
+          "p99": 1511.625814018771,
+          "samples": 10
+        }
+      }
+    },
+    "tasks_query": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 8655.090210027993,
+        "repeated_ms": {
+          "max": 9096.59463900607,
+          "p50": 8790.480406023562,
+          "p95": 9096.59463900607,
+          "p99": 9096.59463900607,
+          "samples": 10
+        }
+      },
+      "mcp": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 5397.999670938589,
+        "repeated_ms": {
+          "max": 5039.923578966409,
+          "p50": 4993.139251950197,
+          "p95": 5039.923578966409,
+          "p99": 5039.923578966409,
+          "samples": 10
+        }
+      }
+    }
+  },
+  "process_floor": {
+    "complete": true,
+    "failures": [],
+    "first_ms": 4.970745998434722,
+    "repeated_ms": {
+      "max": 5.680553964339197,
+      "p50": 5.062061012722552,
+      "p95": 5.680553964339197,
+      "p99": 5.680553964339197,
+      "samples": 10
+    }
+  },
+  "recording_note": "Two stray lines after the document in the raw output (left by the cancelled first 100K run) were dropped; the document itself is unchanged.",
+  "runner_sha256": "f7ed5f429725202aaac4fa4de5b23cd1e7cf362f764faaef65d9e3272e0755e2"
+}

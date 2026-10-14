@@ -133,10 +133,20 @@ and run directly. In `daemon` mode they say so instead of silently running direc
 - Report construction for each routed command lives in `vulcan-app`. The daemon runs the same
   workflow as the CLI's direct path. Moving any remaining CLI-only report logic into `vulcan-app` is
   part of each operation's slice, as the boundary rule already requires.
-- The first operations are the commands where a warm session saves the most and that agents call
-  most: `query` (including DQL) and `ls`, `search`, `status`, `note get`, `note info`,
-  `note outline`, `note backlinks`, `tasks query`, and `graph stats|path|hubs`. Each is
-  added only with a parity test and a measurement.
+- **A routed operation answers from retained state.** The baseline (below) shows that a warm
+  process alone saves little: `status` and `note info` cost the same in a long-lived MCP process
+  as in a fresh CLI process. The large gains come only where the host keeps retained state between
+  requests, as `serve` does for `query` and DQL. Each routed operation therefore names the
+  retained state it reads (a `NoteStoreSession`, retained graph adjacency, a retained task index),
+  and its tests assert, through stage counters, that a warm request rebuilds none of it. An
+  operation that would only run the direct workflow in another process is not routed.
+- **Slow algorithms are fixed directly, not routed.** An operation that is slow in a warm process
+  for algorithmic reasons is fixed in the shared workflow first, which benefits every integration
+  including direct mode. It is routed only after that fix, and only if retained state still saves
+  a meaningful share of its time.
+- The candidate operations are `query` (including DQL), `ls`, `search`, `status`, `note get`,
+  `note info`, `note outline`, `note backlinks`, `tasks query`, and `graph stats|path|hubs`. Each
+  is added only with a parity test, a retained-state assertion, and a measurement.
 
 ### Freshness
 
@@ -176,7 +186,8 @@ A routed error carries the same error code and message as the direct path, plus 
 
 1. **Baseline.** Record direct cold timings for the first operation set at 10K and 100K, warm
    in-process session timings for the same requests, and the cost of the runtime-record check.
-   This decides which operations are worth routing first.
+   This decides which operations are worth routing first. Recorded in the
+   [baseline](#baseline) below.
 2. **Index-owner lease (Part A).** Implement the lease, convert the five background indexers to
    holders or followers, migrate the LSP lease, and correct the editor contract. Add tests for
    handover, crash release, and exactly one scan per edit. This ships value on its own.
@@ -193,6 +204,53 @@ A routed error carries the same error code and message as the direct path, plus 
 
 Routed writes, the full REST surface, and remote access stay out of scope. They need the operation
 status and authorization work of 10.3 and Phase 17, and nothing above depends on them.
+
+## Baseline
+
+Slice 1 measured the candidate operations on the public MDB fixture on the designated evaluation
+host (Intel Core i7-10700, 31 GiB RAM, Debian 13), release builds, with
+`scripts/measure_routing_baseline.py`. Records:
+[10K](measurements/routing-baseline-10k-3ac06b5f.json) (20 samples),
+[100K](measurements/routing-baseline-100k-1a0186bb.json) (10 samples), and the
+[`graph hubs` fix at 10K](measurements/graph-hubs-10k-1a0186bb.json). These are diagnostics, not
+gate results. Repeated-request p50 in milliseconds:
+
+| Operation | 10K CLI | 10K warm MCP | 10K `serve` | 100K CLI | 100K warm MCP | 100K `serve` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `query` | 66 | 75 | 2 | 517 | 829 | 5 |
+| `query` (DQL) | 51 | 25 | 1 | 433 | 247 | 6 |
+| `search` | 29 | 4 | 4 | 175 | 7 | 6 |
+| `status` | 127 | 126 | | 1,475 | 1,465 | |
+| `note get` | 21 | 14 | | 225 | 199 | |
+| `note outline` | 21 | 14 | | 229 | 201 | |
+| `note info` | 137 | 119 | | 1,790 | 1,680 | |
+| `note backlinks` | 53 | | | 591 | | |
+| `ls` | 88 | | | 806 | | |
+| `tasks query` | 767 | 447 | | 8,790 | 4,993 | |
+| `graph stats` | 377 | | 353 | 5,426 | | 4,802 |
+| `graph path` | 329 | | | 4,486 | | |
+| `graph hubs` | 11,152 → 388 | | | 5,019 | | |
+
+The process floor (`vulcan --version`) is about 5 ms, and checking for a missing runtime record
+costs about 1.3 µs, so the `auto` budget and the 100 ms routed budget are both reachable.
+
+What it shows:
+
+- **Retained state is where routing pays.** `query`, DQL, and `search` fall from 175-517 ms to
+  5-7 ms at 100K in a process that retains state between requests. A warm process without retained
+  state saves little: `status`, `note get`, and `note info` cost nearly the same as a fresh CLI
+  process, and the MCP `query` path is slower than the CLI's. Hence the retained-state rule under
+  [Operations and presentation](#operations-and-presentation).
+- **Single-note reads scale with the vault.** `note get` and `note outline` read one note but take
+  about ten times longer at 100K than at 10K, `note info` takes 1.8 s, and `note backlinks` 0.6 s.
+  These are shared-path costs for every integration and are fixed directly before any routing.
+- **Whole-graph operations take about 5 s at 100K**, warm or not: `graph stats` costs nearly the
+  same in `serve`. They need retained adjacency or incremental graph state before routing helps.
+- **`graph hubs` was quadratic.** It recounted every edge for each note (O(notes × edges)): about
+  11 s at 10K and more than 500 s per call at 100K. Fixed in `1a0186bb`; its 10K row shows the
+  time before and after, and its 100K row is from the fixed binary.
+- **`tasks query` is proportional to its output.** The fixture's 3,333 `type: task` notes are
+  TaskNotes task files, and `not done` returns 2,445 of them (3 MB of JSON) at 10K.
 
 ## Open questions
 
