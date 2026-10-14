@@ -87,6 +87,16 @@ run and prints a JSON report labeled `not_evaluated`. Results:
 [note-query-frontends.json](note-query-frontends.json) and
 [note-query-session-mixed-10k.json](note-query-session-mixed-10k.json).
 
+`scripts/measure_mdb_frontends.py FIXTURE --binary target/release/vulcan` runs the fixture's
+canonical mdbase query cases through the standalone frontends of the shared query service: the CLI
+(one process per request), the Python wrapper in `docs/examples/mdbase`, and `vulcan serve` over
+loopback HTTP with and without its watched session (`--frontends` picks a subset, `--samples` the
+repeated requests per frontend, default 1,000, `--restricted` uses `benchmark_public`, which skips
+the HTTP frontends because `vulcan serve` needs index access). It checks every response against the
+generator's answer, requires identical envelopes across frontends, and prints a JSON report labeled
+`not_evaluated`. Result: [mdb-frontends-10k.json](mdb-frontends-10k.json) (development host).
+`VULCAN_TEST_BINARY` also enables its test in `scripts/tests`.
+
 ### Designated evaluation host
 
 Reference measurements of note queries run on a project-designated evaluation host (designated by

@@ -20,7 +20,16 @@ import subprocess
 
 
 class CollectionError(RuntimeError):
-    """A vulcan command failed; the message is its stderr."""
+    """A vulcan command failed.
+
+    `code` is the JSON error code when the command reported one (else None)
+    and `message` its text (or stderr); `str()` is "code: message".
+    """
+
+    def __init__(self, message, code=None):
+        super().__init__(f"{code}: {message}" if code else message)
+        self.code = code
+        self.message = message
 
 
 class Collection:
@@ -40,9 +49,11 @@ class Collection:
             # JSON mode reports errors as {"code": ..., "error": ...} on stdout.
             try:
                 error = json.loads(result.stdout)
-                raise CollectionError(f"{error['code']}: {error['error']}")
+                code, message = error["code"], error["error"]
             except (ValueError, KeyError, TypeError):
                 pass
+            else:
+                raise CollectionError(message, code=code)
             raise CollectionError(result.stderr.strip() or f"exit status {result.returncode}")
         return json.loads(result.stdout)
 

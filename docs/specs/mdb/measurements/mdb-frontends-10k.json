@@ -1,0 +1,147 @@
+{
+  "measurement": "mdb_frontends_diagnostic",
+  "acceptance_gate_result": "not_evaluated",
+  "gate_reference": "MDB.10 / PERFORMANCE_AND_NATIVE_INTEGRATION.md section 3: direct CLI metadata query p95 < 100 ms and local shared-service query p95 < 50 ms on the designated reference machine; this run is on a development host",
+  "boundary": "per frontend: CLI process start through exit; Python Collection.query including its CLI process; loopback HTTP request through decoded response for vulcan serve with --no-watch (one-shot service) and with watching (retained session)",
+  "build": "cargo build --release -p vulcan-cli from the commit that adds this file (parent 8df434d8)",
+  "binary_sha256": "7a9c528ffccf2e265ece37df7daa8be7648acdfd33a65d49c97a2bb0b32a7f09",
+  "runner": "scripts/measure_mdb_frontends.py",
+  "runner_sha256": "fde785d2d2019108c300f89d4cc1620622025d86bb51fcca0fa623df37459599",
+  "fixture": {
+    "generator_version": 1,
+    "payload_sha256": "ba3b33b62cbbcea1e68628920268cd143416d1216345c5aeb029220c28e9a348",
+    "records": 10000
+  },
+  "host": {
+    "cpu": "Intel Core i7-8650U (laptop)",
+    "memory_gib": 31,
+    "os": "Debian GNU/Linux 13",
+    "reference_machine": false,
+    "conditions": "uncontrolled power, frequency, and background load"
+  },
+  "method": {
+    "concurrency": 1,
+    "percentiles": "nearest rank; repeated successful requests only",
+    "permission_profile": "none (unrestricted) and benchmark_public (restricted)",
+    "query_cases": [
+      "task-open",
+      "task-active",
+      "task-done",
+      "contact-1",
+      "contact-4",
+      "contact-7",
+      "project-open",
+      "project-active",
+      "project-done"
+    ],
+    "requested_repeated_samples": 1000,
+    "timing": {
+      "cli": "process start through exit",
+      "http_oneshot": "loopback request through decoded response (urllib, one connection per request)",
+      "http_watched": "loopback request through decoded response (urllib, one connection per request)",
+      "python": "Collection.query call, including its CLI process and JSON decoding"
+    }
+  },
+  "runs": {
+    "unrestricted": {
+      "complete_and_valid": true,
+      "envelope_parity": {
+        "mismatched": [],
+        "query_cases_compared": 9
+      },
+      "wall_ms": {
+        "cli": {
+          "p50": 77.2,
+          "p95": 105.1,
+          "p99": 123.3,
+          "samples": 1000,
+          "first_request_ms": 15697.1
+        },
+        "http_oneshot": {
+          "p50": 4.5,
+          "p95": 6.7,
+          "p99": 8.5,
+          "samples": 1000,
+          "first_request_ms": 337.7
+        },
+        "http_watched": {
+          "p50": 5.1,
+          "p95": 7.3,
+          "p99": 8.4,
+          "samples": 1000,
+          "first_request_ms": 355.3
+        },
+        "python": {
+          "p50": 93.4,
+          "p95": 377.6,
+          "p99": 435.3,
+          "samples": 1000,
+          "first_request_ms": 88.7
+        }
+      }
+    },
+    "restricted_benchmark_public": {
+      "complete_and_valid": true,
+      "envelope_parity": {
+        "mismatched": [],
+        "query_cases_compared": 9
+      },
+      "skipped_frontends": {
+        "http_oneshot": "benchmark_public grants no index access, which vulcan serve requires",
+        "http_watched": "benchmark_public grants no index access, which vulcan serve requires"
+      },
+      "wall_ms": {
+        "cli": {
+          "p50": 82.8,
+          "p95": 111.5,
+          "p99": 158.9,
+          "samples": 1000,
+          "first_request_ms": 84.4
+        },
+        "python": {
+          "p50": 84.2,
+          "p95": 125.8,
+          "p99": 157.8,
+          "samples": 1000,
+          "first_request_ms": 97.3
+        }
+      }
+    },
+    "unrestricted_rerun_cli_python": {
+      "complete_and_valid": true,
+      "envelope_parity": {
+        "mismatched": [],
+        "query_cases_compared": 9
+      },
+      "wall_ms": {
+        "cli": {
+          "p50": 74.5,
+          "p95": 87.4,
+          "p99": 104.8,
+          "samples": 300,
+          "first_request_ms": 71.1
+        },
+        "python": {
+          "p50": 79.6,
+          "p95": 116.4,
+          "p99": 180.7,
+          "samples": 300,
+          "first_request_ms": 76.1
+        }
+      }
+    }
+  },
+  "findings": [
+    "Every measured frontend returned the identical envelope for each of the fixture's nine query cases, unrestricted and under benchmark_public; every response matched the generator's known answer.",
+    "The HTTP frontends are within about 1 ms of each other (p95 6.7 ms one-shot, 7.3 ms watched): both serve these queries from the indexed path, and per-request HTTP and permission work is small.",
+    "The CLI's p95 (105 ms unrestricted, 112 ms restricted) includes process start, vault discovery, and the blocking freshness check; it is near the 100 ms reference-host target on this slower laptop and is not an acceptance verdict.",
+    "The Python wrapper adds a few milliseconds to its CLI process at p50. The first run's p95 of 378 ms did not reproduce: a 300-sample rerun measured p95 116 ms against the CLI's 87 ms, so that tail was host noise.",
+    "The first CLI request after `vulcan index scan` took 15.7 s building the mdbase record cache; it is reported separately and excluded from the percentiles."
+  ],
+  "limitations": [
+    "Development host, not the designated reference machine; no acceptance verdict",
+    "Sequential single-client requests; no concurrent readers or writers",
+    "Restricted HTTP was not measured: vulcan serve needs a profile with index access and benchmark_public (part of the fixture digest) has none; vulcan-cli/tests/mdbase_frontends.rs covers restricted HTTP parity",
+    "No in-process (route handler) frontend here; note-query-frontends.json measures that boundary"
+  ]
+}

@@ -62,6 +62,8 @@ impl ServeHandle {
 
 pub fn serve_forever(paths: &VaultPaths, options: &ServeOptions) -> Result<(), CliError> {
     let mut handle = spawn_server(paths.clone(), options.clone())?;
+    // The bound address, so `--bind 127.0.0.1:0` is usable.
+    eprintln!("Vulcan serve listening on http://{}", handle.addr);
     if let Some(join_handle) = handle.join_handle.take() {
         join_handle
             .join()

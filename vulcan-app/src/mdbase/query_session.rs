@@ -775,6 +775,50 @@ mod tests {
         assert!(session.query(&queries()[0], Some(&denied)).is_err());
     }
 
+    /// What the metrics record of the physical plan: whether the indexed
+    /// path served the query, and the candidate, SQL-decided, residual, and
+    /// hydration work either path did.
+    fn plan(metrics: &MdbaseQueryMetrics) -> serde_json::Value {
+        json!({
+            "indexed": metrics.indexed_hits > 0,
+            "type_candidates": metrics.indexed.type_candidates,
+            "sql_decided": metrics.indexed.sql_decided,
+            "residual_evaluations": metrics.indexed.residual_evaluations,
+            "matched": metrics.indexed.matched,
+            "hydrated": metrics.indexed.hydrated,
+            "execution": serde_json::to_value(&metrics.execution_work).unwrap(),
+        })
+    }
+
+    #[test]
+    #[cfg_attr(not(unix), ignore = "indexed reads need Unix stat fingerprints")]
+    fn fresh_sessions_choose_the_ordinary_services_physical_plan() {
+        let (_directory, paths) = initialized();
+        let filter = restricted();
+        let mut indexed = 0;
+        for query in queries() {
+            for scope in [None, Some(&filter)] {
+                let mut ordinary = MdbaseQueryMetrics::default();
+                build_mdbase_query_report_profiled(&paths, &query, scope, &mut ordinary).unwrap();
+                // A fresh session's first execution plans from scratch; later
+                // ones may reuse retained matches, which is the point of it.
+                let mut retained = MdbaseQueryMetrics::default();
+                MdbaseQuerySession::new(paths.clone())
+                    .query_profiled(&query, scope, &mut retained)
+                    .unwrap();
+                assert_eq!(
+                    plan(&retained),
+                    plan(&ordinary),
+                    "{query}, scoped {}",
+                    scope.is_some()
+                );
+                indexed += usize::from(ordinary.indexed_hits > 0);
+            }
+        }
+        // The comparison covers the indexed path, not only scans.
+        assert!(indexed > 0);
+    }
+
     #[test]
     #[cfg_attr(not(unix), ignore = "indexed reads need Unix stat fingerprints")]
     fn watched_sessions_trust_proofs_only_until_a_change_is_observed() {

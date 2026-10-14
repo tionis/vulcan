@@ -33,6 +33,29 @@ mdbase defines the collection write semantics; Vulcan implements authorization, 
 
 Before claiming unified write support, route generic managed structured note/property/task mutations that affect collection records through this pipeline too, including old and proposed membership and multi-record scope. Keep raw-edit/repair behavior explicit and distinguish it from validated collection writes: it may preserve invalid source for repair, but must respect normal permissions, revision/recovery guarantees, invalidate derived state, and report resulting diagnostics without claiming a validated write. Never silently fall back to raw editing when managed validation fails. This routing and its public repair contract are future work, not a claim about current `note`, `update`, `unset`, or TaskNotes commands. External editors remain outside the cooperating-writer boundary; reindex their actual bytes and surface invalid records without silently rewriting them.
 
+### Query frontends and native-query binding review (2026-10-14)
+
+This review covers the query frontends that exist today and decides what, if anything, is exposed as a native-query convenience. All of them accept only canonical mdbase queries and return the canonical envelope (`results`, `meta.total_count`/`has_more`, `diagnostics`); none adds a native convenience.
+
+| Frontend | Collection binding | Input | Output and errors | Capability discovery | Execution path |
+| --- | --- | --- | --- | --- | --- |
+| `vulcan mdbase query` | The vault selected by `--vault` or discovery; its `mdbase.yaml` root is the collection. `--permissions` selects the profile. | Canonical query as inline JSON/YAML or `--file` | `--output json`: the envelope on stdout, exit 0. Failure: `{code, error}` on stdout, exit 1. | `vulcan mdbase status`, `types`, `schema`, `contracts` | One-shot shared service (`build_mdbase_query_report`) |
+| `vulcan serve` and the daemon's per-vault HTTP routes (`GET /mdbase/query`) | The served vault, with the profile fixed at startup; `x-vulcan-token` authenticates. | `query` parameter: canonical JSON/YAML | `{ok: true, result: <envelope>}`. A malformed parameter is HTTP 400; any query or authorization failure is HTTP 500 with `{ok: false, error}` | `GET /mdbase/types`, `/schema`, `/contracts`, and `GET /` (capabilities from the closed route catalog) | The retained query session when watching, else the one-shot service |
+| `docs/examples/mdbase/collection.py` | Constructor vault and optional profile | A query `dict`, sent to the CLI as JSON | The envelope `dict`; `CollectionError` with `code` and `message` | `status()`, `types()` | CLI |
+| `docs/examples/mdbase/task-list.sh` | Vault argument | A status, validated and placed into a canonical CEL literal | Human CLI output | None | CLI |
+| App `stores.mdbase.query` | Specified in the App v1 contract | Canonical query | Canonical envelope | App capability negotiation | Not implemented (Phase 19) |
+
+Decision: no native-query convenience is exposed now, and none is planned until a consumer shows a gap the canonical query cannot fill. A future convenience must, through a versioned API review: name its collection binding explicitly (never a type name alone); define its lowering to a canonical query, which every frontend then executes unchanged so that equivalent requests share the physical plan; advertise itself through capability discovery (`mdbase status`/`types` and the App's negotiation) rather than by trial; return the canonical envelope; and join the cross-frontend parity fixtures below before it ships.
+
+Parity evidence. `vulcan-cli/tests/mdbase_frontends.rs` runs one set of canonical queries (defaults, ordering, paging, grouping, projections, bodies, two invalid queries) unrestricted and under a restricting profile through the in-process service, the CLI, the Python wrapper, and `vulcan serve` with and without its watched session, and requires identical envelopes and identical error messages; it also checks that the shell example lists exactly what its canonical query returns. `vulcan-app`'s `fresh_sessions_choose_the_ordinary_services_physical_plan` requires the retained session and the one-shot service, the two execution paths behind every frontend, to report the same physical plan (indexed path or scan, type candidates, SQL-decided rows, residual evaluations, matches, hydration). `scripts/measure_mdb_frontends.py` measures latency per frontend on the public fixture and checks envelope parity on it ([development-host diagnostic](measurements/mdb-frontends-10k.json)).
+
+Findings, not changed by this review because they alter existing output contracts:
+
+- **Error codes are lost in the app layer.** mdbase errors carry specific codes (`expression_compile_error`, ...), but query preparation wraps them as a generic failure, so the CLI reports `code: operation_failed` with the specific code only as a message prefix, and HTTP reports no code at all. Even a permission denial, which `vulcan-app` raises as `permission_denied`, reaches the CLI as `operation_failed`.
+- **HTTP maps every execution error to 500**, including client errors (an invalid expression) and authorization failures, which should be 4xx.
+
+Proposed follow-up (one change, since both touch the same error path): keep the mdbase error code through `vulcan-app`, report it as `code` on every frontend (CLI JSON, HTTP error bodies, the Python wrapper), and map it to HTTP 400 (invalid query), 403 (permission), or 500 (internal), with the change noted in the changelog.
+
 ## 3. Performance acceptance contract
 
 These are acceptance targets on a documented reference machine, using a release build with pinned build settings. The benchmark artifact must record CPU, memory, storage, OS/filesystem, binary commit/features, fixture seed/digest, cache state, concurrency, request mix, and timings. Select and record the reference machine before claiming a pass; do not change it to conceal a regression.
