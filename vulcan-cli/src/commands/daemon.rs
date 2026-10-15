@@ -1031,6 +1031,9 @@ fn print_hosted_services(services: &[vulcan_daemon::host::ServiceStatus]) {
             service.start_count,
             service.restart_count
         );
+        if let Some(reason) = &service.disabled_reason {
+            println!("    Disabled: {reason}");
+        }
         if let Some(failure) = &service.last_failure {
             println!(
                 "    Last failure [{}]: {}",

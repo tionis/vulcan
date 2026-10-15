@@ -103,6 +103,10 @@ pub struct ServiceDefinition {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dependencies: Vec<ServiceId>,
     pub restart: RestartPolicy,
+    /// Why a disabled service is not running, when that is worth reporting:
+    /// configured work that cannot start is shown, not silently absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,6 +152,8 @@ pub struct ServiceStatus {
     pub last_transition_unix_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_failure: Option<ServiceFailure>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,6 +193,14 @@ impl ServiceCatalog {
                         restart_count: 0,
                         last_transition_unix_ms: None,
                         last_failure: None,
+                        disabled_reason: if definition.enabled {
+                            None
+                        } else {
+                            definition
+                                .disabled_reason
+                                .clone()
+                                .map(|reason| bounded_text(reason, MAX_FAILURE_DETAIL_BYTES))
+                        },
                     },
                 )
             })
@@ -1146,6 +1160,7 @@ mod tests {
             required: true,
             dependencies: dependencies.iter().map(|value| id(value)).collect(),
             restart: RestartPolicy::Never,
+            disabled_reason: None,
         }
     }
 

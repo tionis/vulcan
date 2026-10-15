@@ -373,6 +373,7 @@ pub fn preview_services<B: PreviewBuilder>(
             required: true,
             dependencies,
             restart: RestartPolicy::Never,
+            disabled_reason: None,
         },
         move |service| {
             let listener = listener
@@ -415,6 +416,7 @@ fn rebuild_service<B: PreviewBuilder>(
             required: true,
             dependencies: Vec::new(),
             restart: RestartPolicy::Never,
+            disabled_reason: None,
         },
         move |service| {
             let mut ready = false;

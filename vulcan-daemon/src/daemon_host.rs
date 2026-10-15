@@ -77,6 +77,7 @@ pub fn companion_listener_service(
             required: true,
             dependencies,
             restart: RestartPolicy::Never,
+            disabled_reason: None,
         },
         move |service| {
             let listener = listener

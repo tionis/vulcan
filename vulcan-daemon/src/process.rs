@@ -279,27 +279,42 @@ where
     })?;
     load_daemon_environment(config_directory)?;
     let config = context.registry.load()?;
-    let (resolution_agent, semantic_agent) = configured_agents(&config)?;
-    let agents = (resolution_agent.map(Arc::new), semantic_agent.map(Arc::new));
+    let agents = configured_agents(&config)?;
+    agents.log_unavailable();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(run_daemon(
-        context,
-        config,
-        (agents.0.clone(), agents.1.clone()),
-        additional_services,
-    ))
+    runtime.block_on(run_daemon(context, config, agents, additional_services))
+}
+
+/// The daemon's AI agent providers. An agent whose credential environment
+/// variable is not set on this device is unavailable rather than fatal, so a
+/// device without the key still synchronizes; the reason is kept so the
+/// workers that need the agent report why they are disabled.
+#[derive(Default)]
+struct DaemonAgents {
+    resolution: Option<Arc<CompanionResolutionAgent>>,
+    semantic: Option<Arc<CompanionSemanticAgent>>,
+    resolution_unavailable: Option<String>,
+    semantic_unavailable: Option<String>,
+}
+
+impl DaemonAgents {
+    fn log_unavailable(&self) {
+        if let Some(reason) = &self.resolution_unavailable {
+            eprintln!("resolution agent disabled: {reason}");
+        }
+        if let Some(reason) = &self.semantic_unavailable {
+            eprintln!("semantic agent disabled: {reason}");
+        }
+    }
 }
 
 #[allow(clippy::too_many_lines)] // Assembles the one supervised daemon service graph.
 async fn run_daemon<F>(
     context: &DaemonProcessContext,
     config: crate::registry::DaemonConfig,
-    agents: (
-        Option<Arc<CompanionResolutionAgent>>,
-        Option<Arc<CompanionSemanticAgent>>,
-    ),
+    agents: DaemonAgents,
     additional_services: &F,
 ) -> Result<(), DaemonProcessError>
 where
@@ -325,8 +340,7 @@ where
         }
     })?;
 
-    let (resolution_agent, semantic_agent) = agents;
-    validate_worker_agents(&config, resolution_agent.as_ref(), semantic_agent.as_ref())?;
+    validate_worker_agents(&config, &agents)?;
     let requested_bind = configured_daemon_bind(&config.bind)?;
     let (listener, bind) = bind_companion_listener(requested_bind)
         .await
@@ -362,8 +376,8 @@ where
         supervisor: Arc::clone(&supervisor),
         state_store: Arc::clone(&state_store),
         credential: Arc::new(credential),
-        resolution_agent,
-        semantic_agent,
+        resolution_agent: agents.resolution.clone(),
+        semantic_agent: agents.semantic.clone(),
         shutdown: Some(Arc::clone(&stop)),
         ingress_shutdown: Some(Arc::clone(&ingress_stop)),
         routed_reads: Some(routed_reads.clone()),
@@ -378,8 +392,7 @@ where
         &config,
         &supervisor,
         &state_store,
-        state.resolution_agent.as_ref(),
-        state.semantic_agent.as_ref(),
+        &agents,
         &runtime,
         &scheduler,
         &routed_reads,
@@ -456,13 +469,12 @@ fn daemon_worker_registrations(
     config: &crate::registry::DaemonConfig,
     supervisor: &Arc<SyncSupervisor>,
     state_store: &Arc<SyncStateStore>,
-    resolution_agent: Option<&Arc<CompanionResolutionAgent>>,
-    semantic_agent: Option<&Arc<CompanionSemanticAgent>>,
+    agents: &DaemonAgents,
     runtime: &tokio::runtime::Handle,
     scheduler: &Arc<MutationScheduler>,
     routed_reads: &crate::routed_reads::RoutedReadRegistry,
 ) -> Result<Vec<ServiceRegistration>, DaemonProcessError> {
-    validate_worker_agents(config, resolution_agent, semantic_agent)?;
+    validate_worker_agents(config, agents)?;
     let alert_enabled = config.notifications.desktop
         || !config.notifications.webhooks.is_empty()
         || !config.notifications.commands.is_empty();
@@ -604,13 +616,19 @@ fn daemon_worker_registrations(
         },
     ));
 
-    let conflict_definition = worker_definition(
+    let mut conflict_definition = worker_definition(
         "worker.conflict",
-        config.conflict_worker.is_some(),
+        config.conflict_worker.is_some() && agents.resolution.is_some(),
         false,
         &[service_id("worker.sync-executor")?],
         optional_worker_restart(),
     )?;
+    if config.conflict_worker.is_some() {
+        conflict_definition.disabled_reason = agents
+            .resolution_unavailable
+            .as_ref()
+            .map(|reason| format!("resolution agent disabled: {reason}"));
+    }
     let conflict_config = config.conflict_worker.clone();
     let conflict_registry = context.registry.clone();
     let conflict_supervisor = Arc::clone(supervisor);
@@ -618,7 +636,7 @@ fn daemon_worker_registrations(
     let conflict_state_root = context.state_root.clone();
     let conflict_gate =
         HostedWorkerGate::new(Arc::clone(scheduler), runtime.clone(), "worker.conflict");
-    let resolution_agent = resolution_agent.cloned();
+    let resolution_agent = agents.resolution.clone();
     registrations.push(ServiceRegistration::new(
         conflict_definition,
         move |service| {
@@ -642,13 +660,19 @@ fn daemon_worker_registrations(
         },
     ));
 
-    let semantic_definition = worker_definition(
+    let mut semantic_definition = worker_definition(
         "worker.semantic",
-        config.semantic_worker.is_some(),
+        config.semantic_worker.is_some() && agents.semantic.is_some(),
         false,
         &[service_id("worker.sync-executor")?],
         optional_worker_restart(),
     )?;
+    if config.semantic_worker.is_some() {
+        semantic_definition.disabled_reason = agents
+            .semantic_unavailable
+            .as_ref()
+            .map(|reason| format!("semantic agent disabled: {reason}"));
+    }
     let semantic_config = config.semantic_worker.clone();
     let semantic_registry = context.registry.clone();
     let semantic_supervisor = Arc::clone(supervisor);
@@ -656,7 +680,7 @@ fn daemon_worker_registrations(
     let semantic_state_root = context.state_root.clone();
     let semantic_gate =
         HostedWorkerGate::new(Arc::clone(scheduler), runtime.clone(), "worker.semantic");
-    let semantic_agent = semantic_agent.cloned();
+    let semantic_agent = agents.semantic.clone();
     registrations.push(ServiceRegistration::new(
         semantic_definition,
         move |service| {
@@ -704,6 +728,7 @@ fn worker_definition(
         required,
         dependencies: dependencies.to_vec(),
         restart,
+        disabled_reason: None,
     })
 }
 
@@ -715,17 +740,25 @@ const fn optional_worker_restart() -> RestartPolicy {
     }
 }
 
+/// A worker configured without any agent is a configuration error. A worker
+/// whose agent is configured but unavailable on this device is disabled
+/// instead, with its reason reported in the service status.
 fn validate_worker_agents(
     config: &crate::registry::DaemonConfig,
-    resolution_agent: Option<&Arc<CompanionResolutionAgent>>,
-    semantic_agent: Option<&Arc<CompanionSemanticAgent>>,
+    agents: &DaemonAgents,
 ) -> Result<(), DaemonProcessError> {
-    if config.semantic_worker.is_some() && semantic_agent.is_none() {
+    if config.semantic_worker.is_some()
+        && agents.semantic.is_none()
+        && agents.semantic_unavailable.is_none()
+    {
         return Err(DaemonProcessError::Configuration(
             "the semantic worker requires a configured semantic agent".to_string(),
         ));
     }
-    if config.conflict_worker.is_some() && resolution_agent.is_none() {
+    if config.conflict_worker.is_some()
+        && agents.resolution.is_none()
+        && agents.resolution_unavailable.is_none()
+    {
         return Err(DaemonProcessError::Configuration(
             "the conflict worker requires a configured resolution agent".to_string(),
         ));
@@ -735,40 +768,41 @@ fn validate_worker_agents(
 
 fn configured_agents(
     config: &crate::registry::DaemonConfig,
-) -> Result<
-    (
-        Option<CompanionResolutionAgent>,
-        Option<CompanionSemanticAgent>,
-    ),
-    DaemonProcessError,
-> {
+) -> Result<DaemonAgents, DaemonProcessError> {
     #[cfg(feature = "web")]
     {
-        let resolution = config
-            .resolution_agent
-            .as_ref()
-            .map(|agent| {
-                CompanionResolutionAgent::openai_compatible(
-                    agent.base_url.clone(),
-                    agent.model.clone(),
-                    configured_api_key(agent)?,
-                )
-                .map_err(|error| DaemonProcessError::Configuration(error.to_string()))
-            })
-            .transpose()?;
-        let semantic = config
-            .semantic_agent
-            .as_ref()
-            .map(|agent| {
-                CompanionSemanticAgent::openai_compatible(
-                    agent.base_url.clone(),
-                    agent.model.clone(),
-                    configured_api_key(agent)?,
-                )
-                .map_err(|error| DaemonProcessError::Configuration(error.to_string()))
-            })
-            .transpose()?;
-        Ok((resolution, semantic))
+        let mut agents = DaemonAgents::default();
+        if let Some(agent) = &config.resolution_agent {
+            match configured_api_key(agent)? {
+                Ok(api_key) => {
+                    agents.resolution = Some(Arc::new(
+                        CompanionResolutionAgent::openai_compatible(
+                            agent.base_url.clone(),
+                            agent.model.clone(),
+                            api_key,
+                        )
+                        .map_err(|error| DaemonProcessError::Configuration(error.to_string()))?,
+                    ));
+                }
+                Err(reason) => agents.resolution_unavailable = Some(reason),
+            }
+        }
+        if let Some(agent) = &config.semantic_agent {
+            match configured_api_key(agent)? {
+                Ok(api_key) => {
+                    agents.semantic = Some(Arc::new(
+                        CompanionSemanticAgent::openai_compatible(
+                            agent.base_url.clone(),
+                            agent.model.clone(),
+                            api_key,
+                        )
+                        .map_err(|error| DaemonProcessError::Configuration(error.to_string()))?,
+                    ));
+                }
+                Err(reason) => agents.semantic_unavailable = Some(reason),
+            }
+        }
+        Ok(agents)
     }
     #[cfg(not(feature = "web"))]
     {
@@ -777,23 +811,27 @@ fn configured_agents(
                 "daemon agent providers require Vulcan's `web` feature".to_string(),
             ));
         }
-        Ok((None, None))
+        Ok(DaemonAgents::default())
     }
 }
 
+/// Resolves an agent's credential. An unset variable makes the agent
+/// unavailable (the inner `Err` carries the reason); a variable that is set
+/// but unreadable is still a configuration error.
 #[cfg(feature = "web")]
-fn configured_api_key(agent: &DaemonAgentConfig) -> Result<Option<String>, DaemonProcessError> {
-    agent
-        .api_key_env
-        .as_deref()
-        .map(|name| {
-            std::env::var(name).map_err(|error| {
-                DaemonProcessError::Configuration(format!(
-                    "daemon agent credential environment variable `{name}` is unavailable: {error}"
-                ))
-            })
-        })
-        .transpose()
+fn configured_api_key(
+    agent: &DaemonAgentConfig,
+) -> Result<Result<Option<String>, String>, DaemonProcessError> {
+    let Some(name) = agent.api_key_env.as_deref() else {
+        return Ok(Ok(None));
+    };
+    match std::env::var(name) {
+        Ok(value) => Ok(Ok(Some(value))),
+        Err(std::env::VarError::NotPresent) => Ok(Err(format!("{name} is not set"))),
+        Err(error) => Err(DaemonProcessError::Configuration(format!(
+            "daemon agent credential environment variable `{name}` is unavailable: {error}"
+        ))),
+    }
 }
 
 async fn wait_for_daemon_shutdown(
@@ -1514,11 +1552,103 @@ mod tests {
             }),
             ..DaemonConfig::default()
         };
-        let error = validate_worker_agents(&config, None, None)
+        let error = validate_worker_agents(&config, &DaemonAgents::default())
             .expect_err("worker without provider must fail");
         assert!(error
             .to_string()
             .contains("conflict worker requires a configured resolution agent"));
+
+        let unavailable = DaemonAgents {
+            resolution_unavailable: Some("OPENROUTER_API_KEY is not set".to_string()),
+            ..DaemonAgents::default()
+        };
+        validate_worker_agents(&config, &unavailable)
+            .expect("a worker whose agent lacks a credential is disabled, not fatal");
+    }
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn missing_agent_credential_disables_ai_workers_but_the_daemon_runs() {
+        let missing_name = "VULCAN_TEST_MISSING_DAEMON_WORKER_KEY_4B21D7";
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+        let agent = DaemonAgentConfig {
+            base_url: "http://127.0.0.1:9/v1".to_string(),
+            model: "test-model".to_string(),
+            api_key_env: Some(missing_name.to_string()),
+        };
+        let wiki = WikiId::parse("notes").expect("wiki ID");
+        let config = DaemonConfig {
+            bind: "127.0.0.1:0".to_string(),
+            resolution_agent: Some(agent.clone()),
+            semantic_agent: Some(agent),
+            conflict_worker: Some(DaemonConflictWorkerConfig {
+                wikis: vec![wiki.clone()],
+                remote: "origin".to_string(),
+                live_ref: "refs/heads/__vulcan-sync/live".to_string(),
+                max_groups_per_run: 1,
+                poll_seconds: 30,
+            }),
+            semantic_worker: Some(
+                toml::from_str(&format!("wikis = [\"{wiki}\"]")).expect("semantic worker"),
+            ),
+            ..DaemonConfig::default()
+        };
+        fs::write(
+            registry.path(),
+            toml::to_string_pretty(&config).expect("serialize config"),
+        )
+        .expect("write registry");
+        let context = DaemonProcessContext {
+            registry,
+            state_root: temporary.path().join("state"),
+            device_identity: DeviceIdentityStore::at(
+                temporary.path().join("state/sync/device-identity"),
+            ),
+            verbosity: Verbosity::Normal,
+        };
+        let child_context = context.clone();
+        let (result_sender, result_receiver) = std::sync::mpsc::channel();
+        let daemon = thread::spawn(move || {
+            let result = run_daemon_foreground_with_services(&child_context, &|_, _, _| Ok(vec![]));
+            result_sender.send(result).expect("send daemon result");
+        });
+
+        let status = wait_until_running(&context, &result_receiver);
+        for (id, reason) in [
+            (
+                "worker.conflict",
+                format!("resolution agent disabled: {missing_name} is not set"),
+            ),
+            (
+                "worker.semantic",
+                format!("semantic agent disabled: {missing_name} is not set"),
+            ),
+        ] {
+            let service = status
+                .services
+                .iter()
+                .find(|service| service.id.as_str() == id)
+                .expect("AI worker is listed");
+            assert_eq!(service.state, crate::host::ServiceLifecycleState::Disabled);
+            assert_eq!(service.disabled_reason.as_deref(), Some(reason.as_str()));
+        }
+        let record = read_runtime_record(&context.runtime_path())
+            .expect("runtime record")
+            .expect("running daemon");
+        let capabilities: serde_json::Value = serde_json::from_slice(
+            &authenticated_request(&context, &record, "GET", "/capabilities")
+                .expect("capabilities"),
+        )
+        .expect("capabilities JSON");
+        assert_eq!(capabilities["agent_conflict_proposals"], false);
+        assert_eq!(capabilities["agent_semantic_plans"], false);
+        request_daemon_shutdown(&context).expect("request shutdown");
+        daemon.join().expect("daemon thread");
+        result_receiver
+            .recv()
+            .expect("daemon result")
+            .expect("clean daemon shutdown");
     }
 
     #[test]
@@ -1566,6 +1696,7 @@ mod tests {
                             ServiceId::parse("worker.sync-trigger").expect("dependency")
                         ],
                         restart: RestartPolicy::Never,
+                        disabled_reason: None,
                     },
                     |service| {
                         service.ready()?;
@@ -1659,9 +1790,11 @@ mod tests {
             semantic_agent: Some(agent),
             ..DaemonConfig::default()
         };
-        let (resolution, semantic) = configured_agents(&config).expect("configured agents");
-        assert!(resolution.is_some());
-        assert!(semantic.is_some());
+        let agents = configured_agents(&config).expect("configured agents");
+        assert!(agents.resolution.is_some());
+        assert!(agents.semantic.is_some());
+        assert!(agents.resolution_unavailable.is_none());
+        assert!(agents.semantic_unavailable.is_none());
 
         let missing_name = "VULCAN_TEST_MISSING_DAEMON_AGENT_KEY_7F3C9B";
         let missing = DaemonConfig {
@@ -1672,10 +1805,29 @@ mod tests {
             }),
             ..DaemonConfig::default()
         };
-        let error = configured_agents(&missing)
-            .err()
-            .expect("missing credential must fail");
-        assert!(error.to_string().contains(missing_name));
+        let agents = configured_agents(&missing).expect("a missing credential is not fatal");
+        assert!(agents.resolution.is_none());
+        assert_eq!(
+            agents.resolution_unavailable.as_deref(),
+            Some(format!("{missing_name} is not set").as_str())
+        );
+        assert!(agents.semantic.is_none());
+        assert!(agents.semantic_unavailable.is_none());
+
+        let present_name = "VULCAN_TEST_PRESENT_DAEMON_AGENT_KEY_9A0E52";
+        // The variable name is unique to this test; nothing else reads it.
+        std::env::set_var(present_name, "test-key");
+        let present = DaemonConfig {
+            semantic_agent: Some(DaemonAgentConfig {
+                base_url: "http://127.0.0.1:9/v1".to_string(),
+                model: "test-model".to_string(),
+                api_key_env: Some(present_name.to_string()),
+            }),
+            ..DaemonConfig::default()
+        };
+        let agents = configured_agents(&present).expect("configured agents");
+        assert!(agents.semantic.is_some());
+        assert!(agents.semantic_unavailable.is_none());
     }
 
     #[cfg(not(feature = "web"))]

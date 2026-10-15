@@ -525,6 +525,7 @@ fn resident_named_mcp_service_with_endpoints(
         required: true,
         dependencies: vec![ServiceId::parse("worker.sync-trigger").map_err(CliError::operation)?],
         restart: RestartPolicy::Never,
+        disabled_reason: None,
     };
     let process = process.clone();
     let remotes = remotes.to_vec();
@@ -1019,6 +1020,7 @@ fn run_mcp_http_temporary_host(
             required: true,
             dependencies: Vec::new(),
             restart: RestartPolicy::Never,
+            disabled_reason: None,
         },
         move |service| {
             let listener = listener
@@ -1102,6 +1104,7 @@ fn mcp_index_watch_service(
             required: false,
             dependencies: Vec::new(),
             restart: RestartPolicy::Never,
+            disabled_reason: None,
         },
         move |service| {
             // Ready before the initial scan, which can outlast host startup on

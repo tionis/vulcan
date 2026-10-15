@@ -237,6 +237,7 @@ pub fn vault_listener_service_for(
             required: true,
             dependencies,
             restart: RestartPolicy::Never,
+            disabled_reason: None,
         },
         move |service| {
             let listener = listener
@@ -277,6 +278,7 @@ pub fn vault_watch_service(
             required: true,
             dependencies: Vec::new(),
             restart: RestartPolicy::Never,
+            disabled_reason: None,
         },
         move |service| {
             let mut ready = false;

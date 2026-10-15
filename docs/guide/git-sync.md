@@ -342,6 +342,13 @@ vulcan daemon conflict-status
 vulcan daemon semantic-status
 ```
 
+If a named credential variable is not set in the daemon's environment or `daemon.env`, the daemon
+still starts and synchronizes. That agent is unavailable, the workers that need it are listed as
+`disabled` in `vulcan daemon status` with the reason (for example
+`resolution agent disabled: VULCAN_RESOLUTION_KEY is not set`), and the companion does not
+advertise the matching agent capability. This lets one shared `daemon.toml` enable unattended
+resolution only on the device that holds the key.
+
 The worker skips paused or actively syncing wikis and only sends pending singleton Markdown or text
 overlaps with complete regular-file evidence under strict byte ceilings. It never enables broad
 context. Binary, structural, missing-side, device-state, oversized, and other ineligible conflicts

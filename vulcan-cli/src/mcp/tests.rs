@@ -1213,6 +1213,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
             required: true,
             dependencies: Vec::new(),
             restart: RestartPolicy::Never,
+            disabled_reason: None,
         },
         |context| {
             context.ready()?;
