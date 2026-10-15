@@ -39388,15 +39388,33 @@ fn run_vulcan_with_deadline(config_home: &str, arguments: &[&str]) -> ProcessOut
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
+    // Read both pipes while waiting: a child whose output outgrows the pipe
+    // buffer (about 4 KiB on Windows) blocks on its write and would look hung.
+    let drain = |mut pipe: Box<dyn std::io::Read + Send>| {
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            pipe.read_to_end(&mut bytes).unwrap();
+            bytes
+        })
+    };
+    let stdout = drain(Box::new(child.stdout.take().unwrap()));
+    let stderr = drain(Box::new(child.stderr.take().unwrap()));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    while child.try_wait().unwrap().is_none() {
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
         if std::time::Instant::now() > deadline {
             let _ = child.kill();
             panic!("`vulcan {}` did not finish", arguments.join(" "));
         }
         thread::sleep(std::time::Duration::from_millis(50));
+    };
+    ProcessOutput {
+        status,
+        stdout: stdout.join().unwrap(),
+        stderr: stderr.join().unwrap(),
     }
-    child.wait_with_output().unwrap()
 }
 
 /// A blocking `on_note_write` hook may write through the vault API, for
