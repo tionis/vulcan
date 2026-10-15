@@ -84,7 +84,9 @@ impl IndexOwnerLease {
 }
 
 /// Who holds the lease, as `"<kind> <pid>"`, or `None` when nobody does.
-/// Advisory: the holder may exit right after this returns.
+/// Advisory: the holder may exit right after this returns. Windows locks are
+/// mandatory, so there the held file cannot be read and the holder is
+/// reported as `"another process"`.
 pub fn current_index_owner(paths: &VaultPaths) -> Result<Option<String>, std::io::Error> {
     let path = lease_path(paths)?;
     let Ok(file) = File::open(&path) else {
@@ -98,7 +100,12 @@ pub fn current_index_owner(paths: &VaultPaths) -> Result<Option<String>, std::io
         }
         Err(error) if error.kind() == fs2::lock_contended_error().kind() => {
             let contents = std::fs::read_to_string(&path).unwrap_or_default();
-            Ok(Some(contents.trim().to_string()).filter(|owner| !owner.is_empty()))
+            let owner = contents.trim();
+            Ok(Some(if owner.is_empty() {
+                "another process".to_string()
+            } else {
+                owner.to_string()
+            }))
         }
         Err(error) => Err(error),
     }
@@ -129,19 +136,20 @@ mod tests {
         assert!(IndexOwnerLease::try_acquire(&paths, IndexOwnerKind::Daemon)
             .unwrap()
             .is_none());
-        assert_eq!(
-            current_index_owner(&paths).unwrap(),
-            Some(format!("serve {}", std::process::id()))
-        );
+        let named = |kind: &str| {
+            if cfg!(windows) {
+                "another process".to_string()
+            } else {
+                format!("{kind} {}", std::process::id())
+            }
+        };
+        assert_eq!(current_index_owner(&paths).unwrap(), Some(named("serve")));
         drop(lease);
         assert_eq!(current_index_owner(&paths).unwrap(), None);
         let daemon = IndexOwnerLease::try_acquire(&paths, IndexOwnerKind::Daemon).unwrap();
         assert!(daemon.is_some());
         // A shorter record replaces the previous one entirely.
-        assert_eq!(
-            current_index_owner(&paths).unwrap(),
-            Some(format!("daemon {}", std::process::id()))
-        );
+        assert_eq!(current_index_owner(&paths).unwrap(), Some(named("daemon")));
     }
 
     #[test]
