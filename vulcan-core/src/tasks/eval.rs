@@ -56,6 +56,9 @@ impl TaskRow {
     fn field(&self, field: &str) -> Value {
         match field {
             "source" => self.task.get("taskSource").cloned().unwrap_or(Value::Null),
+            // The Tasks plugin calls a task's text its description, as the
+            // `description includes` filter does.
+            "description" => self.task.get("text").cloned().unwrap_or(Value::Null),
             "status.name" => self.task.get("statusName").cloned().unwrap_or(Value::Null),
             "status.type" => self.task.get("statusType").cloned().unwrap_or(Value::Null),
             "status.next" | "status.nextSymbol" => {
@@ -529,6 +532,37 @@ mod tests {
             ),
         )
         .expect("fixture note should be written");
+    }
+
+    /// `sort by description` and `group by description` read the task's
+    /// text; they used to read a missing field and keep file order.
+    #[test]
+    fn sorts_and_groups_by_description() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        write_eval_fixture(&vault_root);
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let sorted =
+            evaluate_tasks_query(&paths, "sort by description").expect("sort query should succeed");
+        let texts = task_texts(&sorted);
+        let mut expected = texts.clone();
+        expected.sort();
+        assert_eq!(texts, expected);
+        assert!(texts[0].starts_with("Alpha") && texts[3].starts_with("Gamma"));
+        let reversed = evaluate_tasks_query(&paths, "sort by description reverse")
+            .expect("reverse sort query should succeed");
+        expected.reverse();
+        assert_eq!(task_texts(&reversed), expected);
+
+        let grouped = evaluate_tasks_query(&paths, "group by description")
+            .expect("group query should succeed");
+        assert_eq!(grouped.groups.len(), 4);
+        assert!(grouped
+            .groups
+            .iter()
+            .all(|group| group.key.as_str().is_some_and(|key| !key.is_empty())));
     }
 
     #[test]
