@@ -139,22 +139,44 @@ pub(crate) fn handle_query_command(
         {
             eprintln!("(detected as Dataview query)");
         }
-        let guard = crate::selected_permission_guard(cli, paths)?;
-        let result = vulcan_app::browse::build_dataview_query_report_with_guard_and_plan(
-            paths, dql_source, None, &guard, explain,
-        )
-        .map_err(CliError::operation)?;
+        let request = vulcan_app::routed::dql::DqlRequest {
+            source: dql_source.to_string(),
+            explain,
+        };
+        let routed = if crate::routing::defers_refresh(cli) {
+            crate::routing::route_dql(cli, paths, &request)?
+        } else {
+            None
+        };
+        let result = if let Some(result) = routed {
+            result
+        } else {
+            if crate::routing::defers_refresh(cli) {
+                let use_stderr_color = crate::resolve_use_color(
+                    cli.color,
+                    std::io::IsTerminal::is_terminal(&std::io::stderr()),
+                );
+                crate::maybe_auto_refresh_command_cache(paths, cli, use_stderr_color)?;
+                read_guard = consistent_read_guard(paths)?;
+            }
+            let guard = crate::selected_permission_guard(cli, paths)?;
+            vulcan_app::routed::dql::run_dql(None, paths, &request, &guard)
+                .map_err(CliError::operation)?
+        };
         let display_result_count = load_vault_config(paths)
             .config
             .dataview
             .display_result_count;
-        return crate::print_dql_query_result(
+        let printed = crate::print_dql_query_result(
             cli.output,
             &result,
             display_result_count,
             stdout_is_tty,
             use_stdout_color,
         );
+        // Held, as for a direct query, until the result is printed.
+        drop(read_guard);
+        return printed;
     }
 
     let read_filter = selected_read_permission_filter(cli, paths)?;
@@ -315,8 +337,8 @@ pub(crate) fn handle_ls_command(
     let request = vulcan_app::routed::ls::LsRequest {
         filters: filters.to_vec(),
         tag: tag.map(ToString::to_string),
-        // Paths and counts read nothing a hydrated note adds.
-        stored_only: matches!(
+        // Paths and counts read nothing but each note's path.
+        paths_only: matches!(
             format,
             crate::QueryFormatArg::Paths | crate::QueryFormatArg::Count
         ),

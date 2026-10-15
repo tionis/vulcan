@@ -13,10 +13,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use vulcan_app::routed::ls::{run_ls, LsRequest};
+use vulcan_app::routed::dql::{run_dql, DqlRequest};
+use vulcan_app::routed::ls::{run_ls, LsRequest, LsWire};
 use vulcan_app::routed::query::{run_query, QueryRequest};
 use vulcan_app::routed::search;
 use vulcan_app::routed::wire::QueryReportWire;
+use vulcan_core::dql::DqlQueryResult;
 use vulcan_core::note_session::NoteStoreSession;
 use vulcan_core::search::{SearchQuery, SearchReport};
 use vulcan_core::{
@@ -128,6 +130,16 @@ impl Display for RoutedReadError {
 
 impl std::error::Error for RoutedReadError {}
 
+/// A routed DQL query.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RoutedDql {
+    pub request: DqlRequest,
+    /// The caller's `--permissions` profile, resolved by the vault's config.
+    pub permissions: Option<String>,
+    /// Whether the caller's refresh mode requires a fresh index.
+    pub refresh: bool,
+}
+
 /// A routed `ls`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoutedLs {
@@ -150,12 +162,12 @@ pub struct RoutedSearch {
 
 /// The checks every routed read passes before it runs: the registration's
 /// permission ceiling, the index barrier, and the caller's profile. Returns
-/// the read filter the caller's profile imposes, if any.
+/// the caller's permission guard.
 fn prepare_read(
     vault: &RoutedVault,
     permissions: Option<&str>,
     refresh: bool,
-) -> Result<Option<PermissionFilter>, RoutedReadError> {
+) -> Result<ProfilePermissionGuard, RoutedReadError> {
     if vault.permissions_profile.is_some() {
         // Intersecting a registration's ceiling with the caller's profile
         // could narrow the result below the direct one; decline instead.
@@ -176,9 +188,13 @@ fn prepare_read(
     }
     let profile = resolve_permission_profile(&vault.paths, permissions)
         .map_err(|error| RoutedReadError::Failed(error.to_string()))?;
-    let guard = ProfilePermissionGuard::new(&vault.paths, profile);
+    Ok(ProfilePermissionGuard::new(&vault.paths, profile))
+}
+
+/// The read filter `guard` imposes, if it restricts anything.
+fn read_filter(guard: &ProfilePermissionGuard) -> Option<PermissionFilter> {
     let filter = guard.read_filter();
-    Ok((!filter.path_permission().is_unrestricted()).then_some(filter))
+    (!filter.path_permission().is_unrestricted()).then_some(filter)
 }
 
 /// Answer a routed `query` from the vault's retained session.
@@ -186,7 +202,11 @@ pub fn routed_query(
     vault: &RoutedVault,
     query: &RoutedQuery,
 ) -> Result<QueryReportWire, RoutedReadError> {
-    let filter = prepare_read(vault, query.permissions.as_deref(), query.refresh)?;
+    let filter = read_filter(&prepare_read(
+        vault,
+        query.permissions.as_deref(),
+        query.refresh,
+    )?);
     let report = vault
         .with_store(|store| run_query(store, &vault.paths, &query.request, filter.as_ref()))?;
     QueryReportWire::from_report(report).ok_or_else(|| {
@@ -194,12 +214,19 @@ pub fn routed_query(
     })
 }
 
+/// Answer a routed DQL query from the vault's retained session.
+pub fn routed_dql(vault: &RoutedVault, dql: &RoutedDql) -> Result<DqlQueryResult, RoutedReadError> {
+    let guard = prepare_read(vault, dql.permissions.as_deref(), dql.refresh)?;
+    run_dql(Some(&vault.session), &vault.paths, &dql.request, &guard)
+        .map_err(|error| RoutedReadError::Failed(error.to_string()))
+}
+
 /// Answer a routed `ls` from the vault's retained session.
-pub fn routed_ls(vault: &RoutedVault, ls: &RoutedLs) -> Result<QueryReportWire, RoutedReadError> {
-    let filter = prepare_read(vault, ls.permissions.as_deref(), ls.refresh)?;
+pub fn routed_ls(vault: &RoutedVault, ls: &RoutedLs) -> Result<LsWire, RoutedReadError> {
+    let filter = read_filter(&prepare_read(vault, ls.permissions.as_deref(), ls.refresh)?);
     let report =
         vault.with_store(|store| run_ls(store, &vault.paths, &ls.request, filter.as_ref()))?;
-    QueryReportWire::from_report(report).ok_or_else(|| {
+    LsWire::from_report(report, &ls.request).ok_or_else(|| {
         RoutedReadError::Unavailable("the report carries a publication selection".to_string())
     })
 }
@@ -214,7 +241,11 @@ pub fn routed_search(
             "hybrid search embeds the query with the client's provider".to_string(),
         ));
     }
-    let filter = prepare_read(vault, search.permissions.as_deref(), search.refresh)?;
+    let filter = read_filter(&prepare_read(
+        vault,
+        search.permissions.as_deref(),
+        search.refresh,
+    )?);
     search::run_search(&vault.paths, &search.query, filter.as_ref())
         .map_err(|error| RoutedReadError::Failed(error.to_string()))
 }

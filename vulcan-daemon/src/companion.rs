@@ -74,6 +74,8 @@ pub enum CompanionOperation {
     RoutedSearch,
     /// `POST /{id}/ops/ls`: a routed note listing.
     RoutedLs,
+    /// `POST /{id}/ops/dql`: a routed DQL query.
+    RoutedDql,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

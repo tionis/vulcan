@@ -51,7 +51,7 @@ Use this skill when the task depends on metadata, frontmatter, tags, paths, or p
 - If the result set is surprising, inspect the filter first before adding more conditions.
 - When running many queries or searches against a large vault that a running daemon hosts
   (`vulcan vault add` plus `vulcan daemon start`), set `VULCAN_ROUTE=auto` or pass `--route auto`:
-  `query` with a DSL or JSON query, keyword `search`, and `ls` are answered by the daemon after it
+  `query` (DSL, JSON, or DQL), keyword `search`, and `ls` are answered by the daemon after it
   confirms every earlier change is indexed, and print exactly what a direct run prints. `auto`
   runs the read directly whenever the daemon cannot answer; `--route daemon` fails with
   `daemon_unavailable` instead. Hybrid search, writes, and other commands always run directly.

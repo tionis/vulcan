@@ -64,6 +64,35 @@ impl From<NoteRecord> for NoteRecordWire {
     }
 }
 
+impl NoteRecordWire {
+    /// A record carrying only its path, for printers that read nothing else.
+    #[must_use]
+    pub fn path_only(document_path: String) -> Self {
+        Self {
+            document_id: String::new(),
+            document_path,
+            file_name: String::new(),
+            file_ext: String::new(),
+            file_mtime: 0,
+            file_ctime: 0,
+            file_size: 0,
+            properties: Value::Null,
+            tags: Vec::new(),
+            links: Vec::new(),
+            starred: false,
+            inlinks: Vec::new(),
+            aliases: Vec::new(),
+            frontmatter: Value::Null,
+            periodic_type: None,
+            periodic_date: None,
+            list_items: Vec::new(),
+            tasks: Vec::new(),
+            raw_inline_expressions: Vec::new(),
+            inline_expressions: Vec::new(),
+        }
+    }
+}
+
 impl From<NoteRecordWire> for NoteRecord {
     fn from(note: NoteRecordWire) -> Self {
         Self {

@@ -212,7 +212,7 @@ A routed error carries the same error code and message as the direct path, plus 
 2. **Index-owner lease (Part A).** Implement the lease, convert the five background indexers to
    holders or followers, migrate the LSP lease, and correct the editor contract. Add tests for
    handover, crash release, and exactly one scan per edit. This ships value on its own.
-3. **Routed read protocol.** Done for `query`, keyword `search`, and `ls`: the companion `ops`
+3. **Routed read protocol.** Done for `query` (DSL, JSON, and DQL), keyword `search`, and `ls`: the companion `ops`
    endpoints, capability advertisement, the index barrier, profile resolution (registrations that
    narrow permissions decline), and full-fidelity wire reports printed by the client. The baseline
    made `status` and single-note reads fast directly, so `search` followed `query`. A search

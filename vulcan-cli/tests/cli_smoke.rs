@@ -9704,8 +9704,8 @@ fn daemon_cli_detaches_reports_status_and_stops_gracefully() {
         .contains("daemon must be running to provision a companion client"));
 }
 
-/// `--route daemon` prints exactly what a direct `query`, `search`, or `ls` prints,
-/// sees changes made just before it, and fails as a direct read would; `auto`
+/// `--route daemon` prints exactly what a direct `query` (DSL, JSON, or DQL),
+/// `search`, or `ls` prints, sees changes made just before it, and fails as a direct read would; `auto`
 /// falls back once the daemon is gone, and `daemon` then reports
 /// `daemon_unavailable`.
 #[test]
@@ -9763,7 +9763,7 @@ fn routed_queries_print_what_direct_queries_print() {
         thread::sleep(std::time::Duration::from_millis(100));
     }
 
-    let cases: [&[&str]; 17] = [
+    let cases: [&[&str]; 21] = [
         &[
             "--output",
             "json",
@@ -9837,6 +9837,27 @@ fn routed_queries_print_what_direct_queries_print() {
             "status = active",
             "--glob",
             "*.md",
+        ],
+        &[
+            "--output",
+            "json",
+            "query",
+            "TABLE status, file.name FROM \"\" SORT file.path ASC",
+        ],
+        &["query", "LIST FROM \"Projects\""],
+        &[
+            "--output",
+            "json",
+            "query",
+            "--language",
+            "dql",
+            "TASK FROM \"\"",
+        ],
+        &[
+            "--output",
+            "json",
+            "query",
+            "TABLE length(rows) AS n FROM \"\" GROUP BY status",
         ],
     ];
     for case in cases {

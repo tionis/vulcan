@@ -7,6 +7,7 @@ use vulcan_core::properties::{query_notes_page_in, query_notes_stored_in, NoteQu
 use vulcan_core::{PermissionFilter, QueryAst, QueryReport, VaultPaths};
 
 use crate::routed::query::printed_page;
+use crate::routed::wire::{NoteRecordWire, QueryReportWire};
 use crate::AppError;
 
 /// An `ls` with the paging the client will print.
@@ -15,9 +16,10 @@ pub struct LsRequest {
     /// `--where` filters.
     pub filters: Vec<String>,
     pub tag: Option<String>,
-    /// Whether the client prints only paths or a count, which read nothing
-    /// a hydrated note adds.
-    pub stored_only: bool,
+    /// Whether the client prints only paths or a count. The listing then
+    /// reads stored fields only, and its wire form carries only paths: the
+    /// paths and count printers (and the glob filter) read nothing else.
+    pub paths_only: bool,
     /// The client's `--offset` (0 when not given).
     pub offset: usize,
     /// The client's `--limit`, when given.
@@ -49,7 +51,7 @@ pub fn run_ls(
     filter: Option<&PermissionFilter>,
 ) -> Result<QueryReport, AppError> {
     let note_query = request.note_query();
-    let notes = if request.stored_only {
+    let notes = if request.paths_only {
         query_notes_stored_in(store, paths, &note_query, filter)
     } else {
         query_notes_page_in(
@@ -70,20 +72,60 @@ pub fn run_ls(
     })
 }
 
+/// A routed `ls` answer: the full report, or only the matching paths when
+/// the client prints only paths or a count.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LsWire {
+    Report { report: QueryReportWire },
+    Paths { query: QueryAst, paths: Vec<String> },
+}
+
+impl LsWire {
+    /// `None` for a report that carries a publication selection.
+    #[must_use]
+    pub fn from_report(report: QueryReport, request: &LsRequest) -> Option<Self> {
+        if !request.paths_only {
+            return QueryReportWire::from_report(report).map(|report| Self::Report { report });
+        }
+        Some(Self::Paths {
+            query: report.query,
+            paths: report
+                .notes
+                .into_iter()
+                .map(|note| note.document_path)
+                .collect(),
+        })
+    }
+}
+
+impl From<LsWire> for QueryReport {
+    fn from(wire: LsWire) -> Self {
+        match wire {
+            LsWire::Report { report } => report.into(),
+            LsWire::Paths { query, paths } => QueryReportWire {
+                query,
+                notes: paths.into_iter().map(NoteRecordWire::path_only).collect(),
+                plan: None,
+            }
+            .into(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::routed::test_support::copy_fixture;
-    use crate::routed::wire::QueryReportWire;
     use vulcan_core::note_store::DirectNoteStore;
     use vulcan_core::properties::query_notes_with_filter;
     use vulcan_core::{scan_vault, ScanMode};
 
-    fn request(filters: &[&str], tag: Option<&str>, stored_only: bool) -> LsRequest {
+    fn request(filters: &[&str], tag: Option<&str>, paths_only: bool) -> LsRequest {
         LsRequest {
             filters: filters.iter().map(ToString::to_string).collect(),
             tag: tag.map(ToString::to_string),
-            stored_only,
+            paths_only,
             offset: 0,
             limit: None,
             glob: false,
@@ -133,12 +175,28 @@ mod tests {
                     .map(|note| &note.document_path)
                     .collect::<Vec<_>>();
                 assert_eq!(stored_paths, expected_paths, "{fixture}");
-                for report in [report, page, stored] {
-                    let wire = QueryReportWire::from_report(report.clone()).unwrap();
-                    let decoded: QueryReportWire =
+                for (report, request) in [(report, &full), (page, &paged)] {
+                    let wire = LsWire::from_report(report.clone(), request).unwrap();
+                    let decoded: LsWire =
                         serde_json::from_slice(&serde_json::to_vec(&wire).unwrap()).unwrap();
                     assert_eq!(QueryReport::from(decoded), report, "{fixture}");
                 }
+                // The paths form keeps the query and every path, in order.
+                let paths_request = request(filters, tag, true);
+                let wire = LsWire::from_report(stored.clone(), &paths_request).unwrap();
+                let decoded = QueryReport::from(
+                    serde_json::from_slice::<LsWire>(&serde_json::to_vec(&wire).unwrap()).unwrap(),
+                );
+                assert_eq!(decoded.query, stored.query);
+                assert_eq!(
+                    decoded
+                        .notes
+                        .iter()
+                        .map(|note| &note.document_path)
+                        .collect::<Vec<_>>(),
+                    expected_paths,
+                    "{fixture}"
+                );
             }
         }
     }

@@ -8,17 +8,19 @@
 //! A routed command defers this process's own cache refresh until it knows
 //! the read runs here.
 
+use vulcan_app::routed::dql::DqlRequest;
 use vulcan_app::routed::ls::LsRequest;
 use vulcan_app::routed::query::QueryRequest;
+use vulcan_core::dql::DqlQueryResult;
 use vulcan_core::search::{SearchQuery, SearchReport};
 use vulcan_core::{QueryReport, VaultPaths};
 use vulcan_daemon::process::{
-    request_routed_ls, request_routed_query, request_routed_search, DaemonProcessContext,
-    RoutedClientError,
+    request_routed_dql, request_routed_ls, request_routed_query, request_routed_search,
+    DaemonProcessContext, RoutedClientError,
 };
-use vulcan_daemon::routed_reads::{RoutedLs, RoutedQuery, RoutedSearch};
+use vulcan_daemon::routed_reads::{RoutedDql, RoutedLs, RoutedQuery, RoutedSearch};
 
-use crate::cli::{Command, QueryEngineArg, RouteMode, SearchMode};
+use crate::cli::{Command, RouteMode, SearchMode};
 use crate::{Cli, CliError};
 
 fn route_mode(cli: &Cli) -> RouteMode {
@@ -28,22 +30,13 @@ fn route_mode(cli: &Cli) -> RouteMode {
 /// Whether the command is a read the daemon can answer.
 fn is_routable(command: &Command) -> bool {
     match command {
+        // DSL, JSON, and DQL queries; not the field catalog.
         Command::Query {
             dsl,
             json,
             list_fields: false,
-            engine,
             ..
-        } => {
-            let dql = match engine {
-                QueryEngineArg::Dql => true,
-                QueryEngineArg::Dsl => false,
-                QueryEngineArg::Auto => dsl
-                    .as_deref()
-                    .is_some_and(crate::commands::query::looks_like_dql),
-            };
-            !dql && (dsl.is_some() || json.is_some())
-        }
+        } => dsl.is_some() || json.is_some(),
         // Hybrid search embeds the query with this process's provider.
         Command::Search { mode, .. } => *mode == SearchMode::Keyword,
         Command::Ls { .. } => true,
@@ -73,6 +66,25 @@ pub(crate) fn route_query(
             },
         )
         .map(QueryReport::from)
+    })
+}
+
+/// The daemon's answer to a DQL query, or `None` when it should run here.
+pub(crate) fn route_dql(
+    cli: &Cli,
+    paths: &VaultPaths,
+    request: &DqlRequest,
+) -> Result<Option<DqlQueryResult>, CliError> {
+    route(cli, paths, |context, refresh| {
+        request_routed_dql(
+            context,
+            paths.vault_root(),
+            &RoutedDql {
+                request: request.clone(),
+                permissions: cli.permissions.clone(),
+                refresh,
+            },
+        )
     })
 }
 

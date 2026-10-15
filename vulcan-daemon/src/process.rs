@@ -1271,13 +1271,23 @@ pub fn request_routed_query(
     request_routed(context, vault_root, "query", query)
 }
 
+/// Ask the running daemon to answer a DQL query for the vault at
+/// `vault_root`. Costs one file check when no daemon runs.
+pub fn request_routed_dql(
+    context: &DaemonProcessContext,
+    vault_root: &Path,
+    dql: &crate::routed_reads::RoutedDql,
+) -> Result<vulcan_core::dql::DqlQueryResult, RoutedClientError> {
+    request_routed(context, vault_root, "dql", dql)
+}
+
 /// Ask the running daemon to answer `ls` for the vault at `vault_root`.
 /// Costs one file check when no daemon runs.
 pub fn request_routed_ls(
     context: &DaemonProcessContext,
     vault_root: &Path,
     ls: &crate::routed_reads::RoutedLs,
-) -> Result<vulcan_app::routed::wire::QueryReportWire, RoutedClientError> {
+) -> Result<vulcan_app::routed::ls::LsWire, RoutedClientError> {
     request_routed(context, vault_root, "ls", ls)
 }
 

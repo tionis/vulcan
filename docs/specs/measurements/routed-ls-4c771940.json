@@ -1,0 +1,163 @@
+{
+  "acceptance_gate_result": "not_evaluated",
+  "note": "Diagnostic for routed ls; the spec's speed criterion names query, status, and note get.",
+  "commit": "4c771940",
+  "binary": "/home/eric/vulcan-eval/target/release/vulcan (cargo build --release -p vulcan-cli)",
+  "fixtures": [
+    "~/vulcan-eval-fixtures/mdb-10k/collection (generator v1, seed 42, 10,000 records)",
+    "~/vulcan-eval-fixtures/mdb-100k/collection (generator v1, seed 42, 100,000 records, 1,000,000 links)"
+  ],
+  "machine": {
+    "host": "designated evaluation host (Intel Core i7-10700, 31 GiB RAM, Debian 13)",
+    "load_average_at_end": [
+      4.78,
+      2.59,
+      1.18
+    ]
+  },
+  "setup": [
+    "Isolated XDG_CONFIG_HOME and XDG_STATE_HOME; daemon.toml binds 127.0.0.1:0",
+    "Both fixtures scanned, then registered with `vault add --no-sync`",
+    "`daemon start --detach`, then waited until both vaults reported cache state fresh"
+  ],
+  "method": {
+    "cases": [
+      "ls --where type = task",
+      "--limit 50 ls --format detail",
+      "ls --tag group-1 --format count"
+    ],
+    "command": "vulcan --vault <fixture> --route <direct|daemon> --output json <case>",
+    "timing": "wall clock of the whole process from Python subprocess.run; 11 runs per case, the first discarded; 30 samples per size and route",
+    "refresh": "default refresh mode: direct runs prove freshness by stat walk; routed runs pass an index barrier",
+    "equivalence": "sha256 of stdout of the second run of each case, compared between direct and daemon"
+  },
+  "results_ms": {
+    "10k": {
+      "outputs_identical": true,
+      "direct": {
+        "p50": 85.1,
+        "p95": 135.3,
+        "per_case": {
+          "ls --where type = task": {
+            "p50": 85.1,
+            "max": 86.5
+          },
+          "--limit 50 ls --format detail": {
+            "p50": 133.4,
+            "max": 136.1
+          },
+          "ls --tag group-1 --format count": {
+            "p50": 52.2,
+            "max": 53.6
+          }
+        },
+        "output_lines": [
+          3334,
+          50,
+          1
+        ],
+        "stdout_sha256": [
+          "e54ff3c9c39057bf8b100117b7ef37b7a11c3f5fea7e13decd31e54edb4f03de",
+          "02885f531aea641670926e6c80d8df9ba5afc9d02b2bca04b5b7bb87853f2276",
+          "a3169315014951b2235c182b56f78d2be47aef4cc120ff05034153d759751612"
+        ]
+      },
+      "daemon": {
+        "p50": 35.7,
+        "p95": 85.8,
+        "per_case": {
+          "ls --where type = task": {
+            "p50": 84.0,
+            "max": 87.3
+          },
+          "--limit 50 ls --format detail": {
+            "p50": 8.3,
+            "max": 8.5
+          },
+          "ls --tag group-1 --format count": {
+            "p50": 35.7,
+            "max": 44.3
+          }
+        },
+        "output_lines": [
+          3334,
+          50,
+          1
+        ],
+        "stdout_sha256": [
+          "e54ff3c9c39057bf8b100117b7ef37b7a11c3f5fea7e13decd31e54edb4f03de",
+          "02885f531aea641670926e6c80d8df9ba5afc9d02b2bca04b5b7bb87853f2276",
+          "a3169315014951b2235c182b56f78d2be47aef4cc120ff05034153d759751612"
+        ]
+      }
+    },
+    "100k": {
+      "outputs_identical": true,
+      "direct": {
+        "p50": 737.3,
+        "p95": 1168.3,
+        "per_case": {
+          "ls --where type = task": {
+            "p50": 737.3,
+            "max": 746.0
+          },
+          "--limit 50 ls --format detail": {
+            "p50": 1162.1,
+            "max": 1207.4
+          },
+          "ls --tag group-1 --format count": {
+            "p50": 417.7,
+            "max": 420.3
+          }
+        },
+        "output_lines": [
+          33334,
+          50,
+          1
+        ],
+        "stdout_sha256": [
+          "42b6493c0ddd149aa2416531368401bce4807febbe32208d295718aece9595d9",
+          "61c61dd087ece674f305b7870a909f4ac867cb79bd84632dd862ef012e7754e9",
+          "d32582a2f5333899e1a9c879e14bffc3cdefe51e25078965dc011114431a366c"
+        ]
+      },
+      "daemon": {
+        "p50": 304.3,
+        "p95": 753.8,
+        "per_case": {
+          "ls --where type = task": {
+            "p50": 744.7,
+            "max": 776.7
+          },
+          "--limit 50 ls --format detail": {
+            "p50": 11.6,
+            "max": 12.0
+          },
+          "ls --tag group-1 --format count": {
+            "p50": 304.3,
+            "max": 310.7
+          }
+        },
+        "output_lines": [
+          33334,
+          50,
+          1
+        ],
+        "stdout_sha256": [
+          "42b6493c0ddd149aa2416531368401bce4807febbe32208d295718aece9595d9",
+          "61c61dd087ece674f305b7870a909f4ac867cb79bd84632dd862ef012e7754e9",
+          "d32582a2f5333899e1a9c879e14bffc3cdefe51e25078965dc011114431a366c"
+        ]
+      }
+    }
+  },
+  "findings": [
+    "A printed page is where routing pays: `--limit 50 ls --format detail` takes 11.6 ms routed against 1,162 ms direct at 100K",
+    "Listings of every match are no faster routed: the daemon returned full note records that the paths and count printers do not read (33,334 records for `ls --where type = task`: 745 ms routed, 737 ms direct). Routed listings printed as paths or counts now return only paths"
+  ],
+  "limitations": [
+    "Measured right after a release build; load was elevated, which slows both routes",
+    "Equivalence compares one run's stdout per case, not every sample",
+    "Host power, frequency, background load, and OS page cache are uncontrolled"
+  ]
+}

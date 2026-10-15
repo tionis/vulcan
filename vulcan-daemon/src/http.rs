@@ -148,6 +148,7 @@ pub fn companion_router(state: CompanionHttpState) -> Router {
         .route("/{id}/ops/query", post(routed_query))
         .route("/{id}/ops/search", post(routed_search))
         .route("/{id}/ops/ls", post(routed_ls))
+        .route("/{id}/ops/dql", post(routed_dql))
         .route("/jobs/{job}", get(job_status).delete(cancel_job))
         .route(
             "/aggregate-jobs/{job}",
@@ -350,6 +351,7 @@ async fn capabilities(State(state): State<CompanionHttpState>) -> Json<Companion
             CompanionOperation::RoutedQuery,
             CompanionOperation::RoutedSearch,
             CompanionOperation::RoutedLs,
+            CompanionOperation::RoutedDql,
         ]);
     }
     Json(capabilities)
@@ -362,6 +364,15 @@ async fn routed_query(
     body: Result<Json<crate::routed_reads::RoutedQuery>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
     answer_routed(&state, &id, body, crate::routed_reads::routed_query).await
+}
+
+/// A routed DQL query answered from the vault's retained state.
+async fn routed_dql(
+    State(state): State<CompanionHttpState>,
+    Path(id): Path<String>,
+    body: Result<Json<crate::routed_reads::RoutedDql>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    answer_routed(&state, &id, body, crate::routed_reads::routed_dql).await
 }
 
 /// A routed `ls` answered from the vault's retained state.
@@ -1227,12 +1238,58 @@ mod tests {
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
+    /// A routed DQL query is the direct result, computed through the
+    /// vault's retained session.
+    #[tokio::test]
+    async fn routed_dql_answers_like_the_direct_query() {
+        use crate::routed_reads::{RoutedReadRegistry, RoutedVault};
+        use vulcan_app::routed::dql::{run_dql, DqlRequest};
+        use vulcan_core::dql::DqlQueryResult;
+        let (temporary, mut state) = fixture();
+        let vault = temporary.path().join("vault");
+        std::fs::write(vault.join("A.md"), "---\nstatus: open\n---\n- [ ] task\n").unwrap();
+        std::fs::write(vault.join("B.md"), "---\nstatus: done\n---\n").unwrap();
+        let paths = vulcan_core::VaultPaths::new(&vault);
+        vulcan_core::initialize_vulcan_dir(&paths).unwrap();
+        vulcan_core::scan_vault(&paths, vulcan_core::ScanMode::Full).unwrap();
+        let registry = RoutedReadRegistry::default();
+        let tracker = Arc::new(crate::scan_runtime::VaultScanTracker::default());
+        registry.insert("notes", RoutedVault::new(paths.clone(), tracker, None));
+        state.routed_reads = Some(registry);
+        let router = companion_router(state.clone());
+        let guard = vulcan_core::ProfilePermissionGuard::new(
+            &paths,
+            vulcan_core::resolve_permission_profile(&paths, None).unwrap(),
+        );
+        for source in [
+            "TABLE status FROM \"\" SORT file.name ASC",
+            "TASK FROM \"\"",
+        ] {
+            let dql = DqlRequest {
+                source: source.to_string(),
+                explain: false,
+            };
+            let body = json!({ "request": dql, "permissions": null, "refresh": false });
+            let mut post = request(&state, Method::POST, "/notes/ops/dql");
+            *post.body_mut() = Body::from(body.to_string());
+            post.headers_mut().insert(
+                axum::http::header::CONTENT_TYPE,
+                "application/json".parse().unwrap(),
+            );
+            let response = router.clone().oneshot(post).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let answer: DqlQueryResult = serde_json::from_value(body_json(response).await).unwrap();
+            let direct = run_dql(None, &paths, &dql, &guard).unwrap();
+            assert_eq!(answer, direct, "{source}");
+            assert!(!direct.rows.is_empty(), "{source}");
+        }
+    }
+
     /// A routed `ls` is the direct listing, paged as the client prints it.
     #[tokio::test]
     async fn routed_listings_answer_like_the_direct_listing() {
         use crate::routed_reads::{RoutedReadRegistry, RoutedVault};
-        use vulcan_app::routed::ls::{run_ls, LsRequest};
-        use vulcan_app::routed::wire::QueryReportWire;
+        use vulcan_app::routed::ls::{run_ls, LsRequest, LsWire};
         let (temporary, mut state) = fixture();
         let vault = temporary.path().join("vault");
         for name in ["A", "B", "C"] {
@@ -1250,12 +1307,12 @@ mod tests {
         registry.insert("notes", RoutedVault::new(paths.clone(), tracker, None));
         state.routed_reads = Some(registry);
         let router = companion_router(state.clone());
-        for (stored_only, offset, limit) in [(false, 0, None), (false, 1, Some(1)), (true, 0, None)]
+        for (paths_only, offset, limit) in [(false, 0, None), (false, 1, Some(1)), (true, 0, None)]
         {
             let ls = LsRequest {
                 filters: Vec::new(),
                 tag: Some("listed".to_string()),
-                stored_only,
+                paths_only,
                 offset,
                 limit,
                 glob: false,
@@ -1269,8 +1326,7 @@ mod tests {
             );
             let response = router.clone().oneshot(post).await.unwrap();
             assert_eq!(response.status(), StatusCode::OK);
-            let answer: QueryReportWire =
-                serde_json::from_value(body_json(response).await).unwrap();
+            let answer: LsWire = serde_json::from_value(body_json(response).await).unwrap();
             let direct = run_ls(
                 &vulcan_core::note_store::DirectNoteStore::new(&paths),
                 &paths,
@@ -1278,7 +1334,8 @@ mod tests {
                 None,
             )
             .unwrap();
-            assert_eq!(vulcan_core::QueryReport::from(answer), direct);
+            let expected = LsWire::from_report(direct.clone(), &ls).unwrap();
+            assert_eq!(answer, expected);
             assert!(!direct.notes.is_empty());
         }
     }
