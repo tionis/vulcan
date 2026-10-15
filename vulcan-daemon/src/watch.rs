@@ -748,8 +748,10 @@ fn index_barrier_id(paths: &VaultPaths, path: &Path) -> Option<u64> {
 }
 
 fn relative_watch_path(paths: &VaultPaths, path: &Path) -> Option<PathBuf> {
+    // FSEvents reports canonical paths (`/private/var/...`) even when the
+    // vault root was given through an alias such as `/var/...`.
     paths
-        .relative_to_vault(path)
+        .resolve_relative_to_vault(path)
         .or_else(|| windows_relative_watch_path(paths, path))
 }
 
@@ -775,6 +777,28 @@ mod tests {
     use std::process::Command;
     use tempfile::tempdir;
     use ulid::Ulid;
+
+    /// `FSEvents` reports canonical paths; a vault reached through an alias
+    /// (macOS `/var` → `/private/var`) must still see its barriers and notes.
+    #[test]
+    #[cfg(unix)]
+    fn canonical_event_paths_resolve_under_an_aliased_vault_root() {
+        let temporary = tempdir().expect("temporary directory");
+        let real = temporary.path().join("real");
+        std::fs::create_dir_all(real.join(".vulcan")).expect("vault");
+        let alias = temporary.path().join("alias");
+        std::os::unix::fs::symlink(&real, &alias).expect("alias");
+        let paths = VaultPaths::new(&alias);
+        let canonical = real.canonicalize().expect("canonical vault");
+        assert_eq!(
+            index_barrier_id(&paths, &canonical.join(".vulcan/.index-barrier-42")),
+            Some(42)
+        );
+        assert_eq!(
+            normalize_watch_path(&paths, &canonical.join("Note.md")).as_deref(),
+            Some("Note.md")
+        );
+    }
 
     fn change(path: PathBuf) -> Event {
         Event::new(EventKind::Modify(ModifyKind::Any)).add_path(path)
