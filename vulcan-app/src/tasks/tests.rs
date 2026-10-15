@@ -1550,6 +1550,22 @@ fn task_note_frontmatter_mutation_refuses_a_late_periodic_note_collision() {
     );
 }
 
+/// With no completed status opting into auto-archive (the default), the
+/// upkeep every `tasks` command runs first must not load task notes: that
+/// cost about a second per command at 10K notes. Without a cache, loading
+/// them would fail.
+#[test]
+fn auto_archive_upkeep_loads_nothing_unless_a_status_opts_in() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    initialize_vulcan_dir(&paths).expect("init should succeed");
+    assert!(!paths.cache_db().exists());
+    assert_eq!(
+        process_due_tasknote_auto_archives(&paths, None).expect("nothing to archive"),
+        Vec::<String>::new()
+    );
+}
+
 #[test]
 fn process_due_tasknote_auto_archives_moves_completed_tasks() {
     let temp_dir = tempdir().expect("temp dir");

@@ -510,6 +510,17 @@ pub fn process_due_tasknote_auto_archives_with_guard(
         recover_pending_ordinary_task_write(paths)?;
     }
     let config = load_vault_config(paths).config;
+    // Nothing can be archived automatically unless a completed status opts
+    // in; loading every task note to find that out cost about a second per
+    // `tasks` command at 10K notes.
+    if !config
+        .tasknotes
+        .statuses
+        .iter()
+        .any(|status| status.is_completed && status.auto_archive)
+    {
+        return Ok(Vec::new());
+    }
     let now_ms = current_utc_timestamp_ms();
     let excluded_path = exclude_task
         .and_then(|task| load_tasknote_note_with_guard(paths, task, guard).ok())
