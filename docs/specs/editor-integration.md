@@ -103,18 +103,18 @@ short. WAL readers keep seeing the previous complete snapshot during a scan.
 - **`didSave`.** The writer scans the saved path (`scan_vault_paths_unlocked`) under the write lock,
   then republishes diagnostics for all open documents, because backlink-derived state may change.
 - **External changes.** Configured by `watcher`:
-  - `own` (default): the process tries to take an advisory OS lock on `.vulcan/editor-watch.lock`
-    (the same exclusive-lock pattern and sync exclusion as `write.lock`). Exactly one LSP process
-    per vault holds it. That process runs the watcher and scans. Other LSP processes on the same
-    vault skip watching and poll the store clock (`note_store_clock`) about every two seconds,
-    republishing diagnostics when it advances. Because it is an OS lock, a crashed holder never
-    leaves a stale lease.
+  - `own` (default): the process takes part in the vault's index ownership
+    ([index ownership and client routing](index-ownership-and-client-routing.md)): an advisory OS
+    lock on `.vulcan/index-owner.lock`, shared with the daemon, `serve`, and MCP over HTTP, and
+    excluded from sync like `write.lock`. The holder watches and scans. Every other process
+    follows: it receives the owner's scanned changes, with their paths, from the scan journal,
+    republishes diagnostics, and sends `vulcan/indexChanged`; it takes over when the owner exits.
+    Because it is an OS lock, a crashed holder never leaves a stale lease. Ownership is decided
+    before the first answer after `initialize`, so `vulcan/status` reports `lease` or `following`
+    deterministically. Releases before this one used `.vulcan/editor-watch.lock` among editors
+    only; during an upgrade an old and a new server may both index, which is harmless.
   - `client`: rely on `workspace/didChangeWatchedFiles` registration, then scan the reported paths.
   - `off`: never scan for external changes.
-  - Planned: if a live daemon keeps the vault's index fresh, no LSP process takes the lease, and
-    every process behaves like a non-holder (clock polling). The resident daemon already indexes
-    registered knowledge vaults; the vault-wide index-owner lease that lets the LSP defer to it is
-    scoped in [index ownership and client routing](index-ownership-and-client-routing.md).
 - **Client-initiated renames** (file explorers such as oil.nvim or neo-tree): `didRenameFiles` is
   passed as a rename hint to `scan_vault_paths_unlocked_with_renames`, so document identity
   survives. The server registers for file (not folder) renames; a folder rename falls back to
@@ -376,7 +376,7 @@ fields do not.
 | `vulcan/render` | `{ textDocument, range?, dataviewJs? }` | `{ regions: [{ range, kind, source, markdown }], diagnostics, dataviewJs }`: every inline expression, `dataview`/`dataviewjs`/`tasks` block, and `.base` embed intersecting `range` (or the whole document), evaluated against the open buffer. `kind` is `inline` or `block`; `source` is `inline`, `dataview`, `dataviewjs`, `tasks`, `base`, or `notice` (disabled or failed regions); `markdown` is the result as `vulcan render` would splice it in; `dataviewJs` is the policy actually used. Clients choose which regions to show. |
 | `vulcan/outline` | `{ textDocument }` | `NoteOutline`, exactly as `vulcan note outline --output json` |
 | `vulcan/backlinks` | `{ textDocument }` | `BacklinksReport`, exactly as `vulcan note backlinks --output json` (keeps `context`, `matched_by`) |
-| `vulcan/status` | `{}` | `{ cache: "fresh" \| "stale" \| "indexing", lastScan, backlinkCount?, daemon: "attached" \| "absent", watcher: "lease" \| "polling" \| "client" \| "off" }` |
+| `vulcan/status` | `{}` | `{ cache: "fresh" \| "stale" \| "indexing", lastScan, backlinkCount?, daemon: "attached" \| "absent", watcher: "lease" \| "following" \| "client" \| "off" }` |
 | notification `vulcan/indexChanged` | `{ paths, summary, renames? }` (`ScanSummary`; `renames` lists `{ from, to }` vault paths of moves the server planned) | Sent after every scan the server observes |
 
 Errors use LSP `ResponseError` with `data: { kind, detail }`, reusing the companion protocol kinds:

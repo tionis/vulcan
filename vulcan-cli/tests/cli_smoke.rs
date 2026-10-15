@@ -18995,7 +18995,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(editor_skill.contains("never initializes a vault"));
     assert!(editor_skill.contains("never writes unsaved buffer text to the cache"));
     assert!(editor_skill.contains("vulcan doctor"));
-    assert!(editor_skill.contains("editor-watch.lock"));
+    assert!(editor_skill.contains("index-owner.lock"));
     assert!(editor_skill.contains("vulcan.note.move"));
     assert!(editor_skill.contains("vulcan.task.toggle"));
     assert!(editor_skill.contains("vulcan.section.extract"));
@@ -33005,6 +33005,105 @@ fn mcp_http_initialize_requires_a_request_id_without_consuming_a_session() {
     );
     assert_eq!(valid.status_line, "HTTP/1.1 200 OK");
     assert!(valid.headers.contains_key("mcp-session-id"));
+}
+
+/// A `serve` that follows another process's index still announces that
+/// process's scans on `/mdbase/changes`, from the scan journal.
+#[test]
+fn serve_follows_the_index_owner_and_announces_its_changes() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vault");
+    fs::write(vault_root.join("mdbase.yaml"), "spec_version: \"0.3.0\"\n").expect("config");
+    fs::write(vault_root.join("a.md"), "---\ntitle: A\n---\n").expect("record");
+    run_scan(&vault_root);
+    let paths = VaultPaths::new(&vault_root);
+    let _owner = vulcan_core::index_owner::IndexOwnerLease::try_acquire(
+        &paths,
+        vulcan_core::index_owner::IndexOwnerKind::Watch,
+    )
+    .expect("lease should open")
+    .expect("lease should be free");
+
+    let mut child = ProcessCommand::new(assert_cmd::cargo::cargo_bin("vulcan"))
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "serve",
+            "--bind",
+            "127.0.0.1:0",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("serve should start");
+    let mut stderr = BufReader::new(child.stderr.take().expect("stderr"));
+    let (mut address, mut token) = (None, None);
+    while address.is_none() || token.is_none() {
+        let mut line = String::new();
+        assert!(
+            stderr.read_line(&mut line).expect("stderr") > 0,
+            "serve exited"
+        );
+        if let Some(value) = line.strip_prefix("Vulcan serve token: ") {
+            token = Some(value.trim().to_string());
+        } else if let Some((_, value)) = line.trim().rsplit_once("http://") {
+            address = Some(value.to_string());
+        }
+    }
+    let (address, token) = (address.expect("address"), token.expect("token"));
+    let get = |route: &str| {
+        let mut stream = TcpStream::connect(&address).expect("serve should listen");
+        stream
+            .write_all(
+                format!(
+                    "GET {route} HTTP/1.1\r\nHost: {address}\r\nx-vulcan-token: {token}\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .expect("request should write");
+        read_http_response(stream).json_body()
+    };
+    let changes = || get("/mdbase/changes?after=0");
+
+    // The owner (this test) indexes a new record; the follower never scans.
+    fs::write(vault_root.join("b.md"), "---\ntitle: B\n---\n").expect("record");
+    vulcan_core::scan_vault(&paths, vulcan_core::ScanMode::Incremental).expect("owner scan");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let value = changes();
+        let announced = value["result"]["notifications"]
+            .as_array()
+            .is_some_and(|notifications| {
+                notifications.iter().any(|notification| {
+                    notification["paths"]
+                        .as_array()
+                        .is_some_and(|paths| paths.iter().any(|path| path == "b.md"))
+                })
+            });
+        if announced {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "serve should announce the owner's change: {value}"
+        );
+        thread::sleep(std::time::Duration::from_millis(100));
+    }
+    // The report came from the owner's journal: a scan of its own would
+    // have discovered the vault's files.
+    let health = get("/health");
+    let report = &health["last_watch_report"];
+    assert_eq!(report["summary"]["discovered"], 0, "{health}");
+    assert!(
+        report["paths"]
+            .as_array()
+            .is_some_and(|paths| paths.iter().any(|path| path == "b.md")),
+        "{health}"
+    );
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// While another process owns the vault's index, the MCP watcher leaves

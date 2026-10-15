@@ -29,7 +29,7 @@ use vulcan_app::serve::{
     ServeRouteOptions, ServeSessions,
 };
 use vulcan_core::note_session::NoteStoreSession;
-use vulcan_core::{watch_vault_until, VaultPaths, WatchOptions};
+use vulcan_core::{VaultPaths, WatchOptions};
 
 pub const VAULT_HTTP_MAX_REQUEST_BYTES: usize = 32 * 1024;
 pub const VAULT_HTTP_TOKEN_HEADER: &str = "x-vulcan-token";
@@ -280,10 +280,14 @@ pub fn vault_watch_service(
         },
         move |service| {
             let mut ready = false;
-            let result = watch_vault_until(
+            // Follows another process that owns the vault's index, receiving
+            // its scans' changes, and takes over when that process exits.
+            let result = vulcan_core::watch::watch_vault_as_owner(
                 &paths,
                 &options,
+                vulcan_core::index_owner::IndexOwnerKind::Serve,
                 || service.stop().is_cancelled(),
+                || {},
                 |report| {
                     if !ready {
                         service.ready()?;

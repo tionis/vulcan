@@ -135,9 +135,10 @@ all of them. Neovim starts one server per vault root instead.
 
 ## Several editors on one vault
 
-Each editor process runs its own server. The first to start holds
-`.vulcan/editor-watch.lock` and watches the file system; the others follow the
-cache. Set `initializationOptions.watcher` to `"client"` to rely on the
+Each editor process runs its own server. One Vulcan process per vault holds
+`.vulcan/index-owner.lock` and indexes file system changes; it may be an editor,
+the daemon, or `vulcan serve`. The others follow it, receive its changes, and
+take over when it exits. Set `initializationOptions.watcher` to `"client"` to rely on the
 editor's file watching instead, or `"off"` to index only saved files.
 
 ## Safety

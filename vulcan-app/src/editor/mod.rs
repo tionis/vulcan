@@ -509,43 +509,6 @@ impl EditorSession {
     }
 }
 
-/// File name of the per-vault editor watch lease inside `.vulcan/`.
-pub const EDITOR_WATCH_LOCK_FILE: &str = "editor-watch.lock";
-
-/// The per-vault right to watch the file system for editors.
-///
-/// Several editor processes may serve one vault; only the holder of this
-/// advisory OS lock runs a watcher and scans for external changes, and the
-/// others follow the store clock. The lock is released when the lease is
-/// dropped or the process exits, so a crashed holder never leaves it stale.
-#[derive(Debug)]
-pub struct EditorWatchLease {
-    _file: std::fs::File,
-}
-
-impl EditorWatchLease {
-    /// Take the lease if no other process holds it. Returns `None` while
-    /// another process holds it or the vault is not initialized.
-    pub fn try_acquire(paths: &VaultPaths) -> Result<Option<Self>, AppError> {
-        use fs2::FileExt;
-        if !paths.vulcan_dir().is_dir() {
-            return Ok(None);
-        }
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(paths.vulcan_dir().join(EDITOR_WATCH_LOCK_FILE))
-            .map_err(AppError::operation)?;
-        match file.try_lock_exclusive() {
-            Ok(()) => Ok(Some(Self { _file: file })),
-            Err(error) if error.kind() == fs2::lock_contended_error().kind() => Ok(None),
-            Err(error) => Err(AppError::operation(error)),
-        }
-    }
-}
-
 pub(crate) fn is_markdown_path(path: &str) -> bool {
     std::path::Path::new(path)
         .extension()
@@ -722,22 +685,6 @@ mod tests {
     }
 
     #[test]
-    fn only_one_process_holds_the_watch_lease() {
-        let (_dir, session) = vault(&[("Alpha.md", "x")]);
-        let first = EditorWatchLease::try_acquire(session.paths()).unwrap();
-        assert!(first.is_some());
-        // fs2 locks are per open file description, so a second open in the
-        // same process contends exactly like another process would.
-        assert!(EditorWatchLease::try_acquire(session.paths())
-            .unwrap()
-            .is_none());
-        drop(first);
-        assert!(EditorWatchLease::try_acquire(session.paths())
-            .unwrap()
-            .is_some());
-    }
-
-    #[test]
     fn rename_hints_keep_document_identity() {
         let (dir, session) = vault(&[("Old.md", "# Note\n"), ("Home.md", "[[Old]]\n")]);
         let before = vulcan_core::query_backlinks(session.paths(), "Old.md").unwrap();
@@ -859,9 +806,12 @@ mod tests {
         assert!(!session.has_cache());
         assert_eq!(session.refresh_index().unwrap(), None);
         assert_eq!(session.scan_saved(&["a.md".into()]).unwrap(), None);
-        assert!(EditorWatchLease::try_acquire(session.paths())
-            .unwrap()
-            .is_none());
+        // The index-owner lease never creates `.vulcan/` either.
+        assert!(vulcan_core::index_owner::IndexOwnerLease::try_acquire(
+            session.paths(),
+            vulcan_core::index_owner::IndexOwnerKind::Editor
+        )
+        .is_err());
         assert!(!dir.path().join(".vulcan").exists());
     }
 }

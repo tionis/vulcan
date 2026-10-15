@@ -74,9 +74,10 @@ and wants vault-aware features, or when editor diagnostics need explaining.
 
 ## Several Editors on One Vault
 
-Each editor process runs its own `vulcan lsp`. One of them holds `.vulcan/editor-watch.lock` and
-watches the file system; the others follow the cache. `vulcan/status` shows which (`watcher`:
-`lease` or `polling`). If the editor already reports file changes, `initializationOptions =
+Each editor process runs its own `vulcan lsp`. One process per vault, an editor or another Vulcan
+process such as the daemon or `vulcan serve`, holds `.vulcan/index-owner.lock` and indexes file
+system changes; the others follow it and take over when it exits. `vulcan/status` shows which
+(`watcher`: `lease` or `following`). If the editor already reports file changes, `initializationOptions =
 { watcher = "client" }` uses those instead; `"off"` indexes saved files only. Never delete the
 lease file to change which process watches: it is an OS lock that is released when the process
 exits.

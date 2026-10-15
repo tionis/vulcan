@@ -8,8 +8,9 @@
 //! - a small reader pool answers requests from those snapshots;
 //! - one writer thread runs every scan this process starts, so a vault
 //!   write lock held elsewhere never stalls requests;
-//! - a watcher thread runs only while this process holds the vault's
-//!   editor watch lease; other processes follow the store clock.
+//! - a watcher thread indexes external changes while this process owns the
+//!   vault's index (`vulcan_core::index_owner`); otherwise it receives the
+//!   owner's changes from the scan journal and takes over when it exits.
 
 use crate::convert;
 use crate::handlers;
@@ -27,7 +28,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use vulcan_app::editor::{EditorSession, EditorTextChange, EditorWatchLease};
+use vulcan_app::editor::{EditorSession, EditorTextChange};
 use vulcan_app::AppError;
 use vulcan_core::editor::TextPosition;
 use vulcan_core::{ScanSummary, VaultPaths};
@@ -35,8 +36,6 @@ use vulcan_core::{ScanSummary, VaultPaths};
 /// Threads answering requests.
 const READER_THREADS: usize = 3;
 /// Quiet time after an edit before its diagnostics are recomputed.
-/// How often a process without the watch lease checks the store clock.
-const CLOCK_POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// Token of the startup indexing progress report.
 const INDEX_PROGRESS_TOKEN: &str = "vulcan/index";
 const WATCHER_THREAD: &str = "vulcan-lsp-watcher";
@@ -85,7 +84,7 @@ impl From<serde_json::Error> for LspError {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum WatcherMode {
-    /// One process per vault watches (the lease holder); others poll.
+    /// One process per vault indexes (the index owner); others follow it.
     #[default]
     Own,
     /// Rely on the client's `workspace/didChangeWatchedFiles`.
@@ -406,21 +405,10 @@ struct Indexed {
 /// How this process keeps up with external changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Freshness {
-    Lease,
-    Polling,
+    /// Owns the vault's index, or follows the process that does.
+    Own,
     Client,
     Off,
-}
-
-impl Freshness {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Lease => "lease",
-            Self::Polling => "polling",
-            Self::Client => "client",
-            Self::Off => "off",
-        }
-    }
 }
 
 /// Startup indexing progress, which needs a client-acknowledged token.
@@ -455,11 +443,11 @@ struct Server<'c> {
     /// answers `ContentModified`.
     index_epoch: Arc<AtomicU64>,
     last_clock: Option<i64>,
-    next_clock_poll: Instant,
     indexing: bool,
     progress: Progress,
     stop_watching: Arc<AtomicBool>,
-    _lease: Option<EditorWatchLease>,
+    /// Whether this process owns the vault's index (see [`Freshness::Own`]).
+    owns_index: Arc<AtomicBool>,
     channel: Arc<ClientChannel>,
     /// The client's `DataviewJS` preference for `vulcan/render`, if any.
     dataview_js: Option<vulcan_core::DataviewJsRenderPolicy>,
@@ -512,23 +500,30 @@ impl<'c> Server<'c> {
         );
 
         let stop_watching = Arc::new(AtomicBool::new(false));
-        let mut lease = None;
+        let owns_index = Arc::new(AtomicBool::new(false));
         let freshness = match watcher {
             WatcherMode::Off => Freshness::Off,
             WatcherMode::Client => Freshness::Client,
-            WatcherMode::Own => match EditorWatchLease::try_acquire(session.paths()) {
-                Ok(Some(acquired)) => {
-                    lease = Some(acquired);
+            WatcherMode::Own => {
+                // Decided before the first answer, so `vulcan/status` is
+                // deterministic; a follower may take over later.
+                // Without `.vulcan/` the lease cannot open: nothing to index
+                // or follow, and the server never initializes a vault.
+                if let Ok(lease) = vulcan_core::index_owner::IndexOwnerLease::try_acquire(
+                    session.paths(),
+                    vulcan_core::index_owner::IndexOwnerKind::Editor,
+                ) {
+                    owns_index.store(lease.is_some(), Ordering::SeqCst);
                     threads.push(spawn_watcher(
                         session.paths().clone(),
                         Arc::clone(&stop_watching),
                         indexed_sender,
+                        lease,
+                        Arc::clone(&owns_index),
                     ));
-                    Freshness::Lease
                 }
-                // Another editor process watches; follow the store clock.
-                Ok(None) | Err(_) => Freshness::Polling,
-            },
+                Freshness::Own
+            }
         };
 
         let mut server = Self {
@@ -545,11 +540,10 @@ impl<'c> Server<'c> {
             threads,
             in_flight: Arc::new(Mutex::new(HashMap::new())),
             index_epoch: Arc::new(AtomicU64::new(0)),
-            next_clock_poll: Instant::now() + CLOCK_POLL_INTERVAL,
             indexing: false,
             progress: Progress::None,
             stop_watching,
-            _lease: lease,
+            owns_index,
             channel,
             dataview_js: None,
             expected_renames,
@@ -612,17 +606,11 @@ impl<'c> Server<'c> {
                 recv(wait) -> _ => {}
             }
             self.flush_diagnostics();
-            self.poll_clock();
         }
     }
 
     fn next_wakeup(&self) -> Option<Instant> {
-        let diagnostics = self.pending_diagnostics.values().min().copied();
-        let poll = (self.freshness == Freshness::Polling).then_some(self.next_clock_poll);
-        match (diagnostics, poll) {
-            (Some(left), Some(right)) => Some(left.min(right)),
-            (left, right) => left.or(right),
-        }
+        self.pending_diagnostics.values().min().copied()
     }
 
     /// Handle one client message; `true` ends the loop.
@@ -701,7 +689,12 @@ impl<'c> Server<'c> {
                     "missing"
                 },
                 "daemon": "absent",
-                "watcher": self.freshness.name(),
+                "watcher": match self.freshness {
+                    Freshness::Own if self.owns_index.load(Ordering::SeqCst) => "lease",
+                    Freshness::Own => "following",
+                    Freshness::Client => "client",
+                    Freshness::Off => "off",
+                },
             });
             self.send(Message::Response(Response::new_ok(id, status)));
             return;
@@ -1033,17 +1026,6 @@ impl<'c> Server<'c> {
         }
     }
 
-    fn poll_clock(&mut self) {
-        if self.freshness != Freshness::Polling || Instant::now() < self.next_clock_poll {
-            return;
-        }
-        self.next_clock_poll = Instant::now() + CLOCK_POLL_INTERVAL;
-        let clock = self.session.store_clock();
-        if clock != self.last_clock {
-            self.index_changed(&[], None, clock, &[]);
-        }
-    }
-
     fn publish_diagnostics(&self, path: &str) {
         let Some(uri) = handlers::uri(&self.session, path) else {
             return;
@@ -1163,26 +1145,52 @@ fn spawn_watcher(
     paths: VaultPaths,
     stop: Arc<AtomicBool>,
     events: Sender<Indexed>,
+    lease: Option<vulcan_core::index_owner::IndexOwnerLease>,
+    owns_index: Arc<AtomicBool>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name(WATCHER_THREAD.to_string())
         .spawn(move || {
-            let result = vulcan_core::watch::watch_vault_until(
-                &paths,
-                &vulcan_core::watch::WatchOptions::default(),
-                || stop.load(Ordering::SeqCst),
-                |report| {
-                    events
-                        .send(Indexed {
-                            startup: false,
-                            paths: report.paths,
-                            summary: Some(report.summary),
-                            error: None,
-                            renames: Vec::new(),
-                        })
-                        .map_err(|_| "editor session ended")
-                },
-            );
+            let send = |report: vulcan_core::watch::WatchReport| {
+                events
+                    .send(Indexed {
+                        startup: false,
+                        paths: report.paths,
+                        summary: Some(report.summary),
+                        error: None,
+                        renames: Vec::new(),
+                    })
+                    .map_err(|_| "editor session ended")
+            };
+            let options = vulcan_core::watch::WatchOptions::default();
+            let result = if let Some(lease) = lease {
+                let result = vulcan_core::watch::watch_vault_until(
+                    &paths,
+                    &options,
+                    || stop.load(Ordering::SeqCst),
+                    send,
+                );
+                drop(lease);
+                result
+            } else {
+                // Follow the owner: its changes arrive as reports. The first
+                // report only marks the start of following; this server ran
+                // its own startup refresh.
+                let mut started = false;
+                vulcan_core::watch::watch_vault_as_owner(
+                    &paths,
+                    &options,
+                    vulcan_core::index_owner::IndexOwnerKind::Editor,
+                    || stop.load(Ordering::SeqCst),
+                    || owns_index.store(true, Ordering::SeqCst),
+                    |report| {
+                        if !std::mem::replace(&mut started, true) && report.startup {
+                            return Ok(());
+                        }
+                        send(report)
+                    },
+                )
+            };
             if let Err(error) = result {
                 let _ = events.send(Indexed {
                     startup: false,

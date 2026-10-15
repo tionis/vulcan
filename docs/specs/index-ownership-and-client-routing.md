@@ -30,7 +30,7 @@ and scans what changed:
 | `vulcan serve` | `vault_http.rs`, invocation-owned | none |
 | `vulcan mcp --transport http` | `mcp.rs` index-watch service | none |
 | Site and bundle previews | `preview.rs` rebuild watcher (also scans) | none |
-| `vulcan lsp` | `.vulcan/editor-watch.lock` lease | among LSP processes only |
+| `vulcan lsp` | `.vulcan/editor-watch.lock` lease (before Part A) | among LSP processes only |
 | `vulcan index watch` (also `vulcan watch`) | foreground watch loop with creation triggers, hooks, and auto-commit | none |
 
 All scans serialize on the vault write lock, so concurrent indexers are safe. They are wasteful: on
@@ -54,31 +54,43 @@ daemon's process. Slice 1 measures how much of each command's time a warm sessio
 
 ## Part A: one index owner per vault
 
-Generalize the editor's lease into a vault-wide index-owner lease:
+Implemented in `vulcan_core::index_owner`, `vulcan_core::scan_journal`, and
+`vulcan_core::watch::watch_vault_as_owner`:
 
-- **Lease.** An advisory OS lock on `.vulcan/index-owner.lock` (device-local, excluded from sync
-  like `write.lock` and `editor-watch.lock`). Because it is an OS lock, a crashed holder never
-  leaves a stale lease. The holder records its process kind and PID in the file for diagnostics
-  only; the lock, not the contents, is authoritative.
+- **Lease.** An advisory OS lock on `.vulcan/index-owner.lock` (beside `write.lock`, in the private
+  state directory on Android, and excluded from sync). Because it is an OS lock, a crashed holder
+  never leaves a stale lease. The holder records its process kind and PID in the file for
+  diagnostics only; the lock, not the contents, is authoritative.
 - **Holder.** The process that holds the lease runs the vault's indexing watcher and scans.
-- **Followers.** Every other background indexer skips watching and follows the store clock
-  (`note_store_clock`), as non-holding LSP processes do today. Followers reacquire the lease
-  promptly when the holder exits, so indexing never stops while any interested process remains.
-- **Participants.** The daemon index consumer, `serve`, MCP HTTP, previews, and the LSP. The
-  previews keep their own rebuild watcher, because rebuilding is their purpose. Only their scanning
-  defers to the owner.
-- **Explicit watch commands** (`vulcan index watch` and `vulcan watch`) exist to run creation
-  triggers, scan hooks, and auto-commit. They always watch. They take the lease when it is free, so background indexers defer
-  to them, but they never wait for it.
+- **Scan journal.** Several consumers act on the paths each scan changed (`serve`'s
+  `/mdbase/changes`, the LSP's `vulcan/indexChanged`, the daemon's post-scan events), so knowing
+  only that the store clock moved is not enough to follow. Every incremental scan that changes the
+  index appends one batch of `(path, added | updated | deleted)` rows inside its own transaction
+  (schema v37). A rename journals its old path as deleted and its new one as updated. A full
+  rebuild, or a batch of more than 10,000 paths, records a reconciliation marker instead. Only the
+  newest 64 batches are kept; a follower whose position is below the dropped batches is told to
+  reconcile.
+- **Followers.** Every other participant skips watching. `watch_vault_as_owner` gives a follower one
+  startup report when it begins following, then reports each batch of the owner's changes in the
+  same shape a scan report has, polling the journal every 250 ms. It retries the lease every two
+  seconds and takes over, starting with the usual startup reconciliation, when the holder exits.
+  Callers receive the same reports whether they own the index or follow it.
+- **Participants.** MCP over HTTP, `serve`, and the LSP (`watcher = "own"`, reporting `lease` or
+  `following` in `vulcan/status`) use the shared loop. The daemon's index consumer is event-driven
+  through its observation hub and adopts the lease separately.
+- **Previews and explicit watch commands** (`vulcan watch`, `vulcan index watch`, site and bundle
+  previews) rebuild or run creation triggers, scan hooks, and auto-commit on their own scans, so
+  they keep watching and scanning without the lease. Their scans are journaled like any other, so
+  followers still hear of them.
 - **Freshness stays proven, not trusted.** A follower never treats the owner's existence as proof of
   freshness. Requests that need a fresh index use `prove_note_store_fresh` and fall back to an
   incremental scan under the write lock, exactly as direct commands do now.
-- **Migration.** `editor-watch.lock` becomes an alias for one release: LSP processes take both
-  locks, so mixed-version LSPs still elect one owner, then the old file is retired.
+- **Upgrade.** Older LSP releases used `.vulcan/editor-watch.lock` among editors only. During an
+  upgrade an old and a new process may both index, which is harmless; the old file is left alone.
 
-Part A is independent of client routing and removes the duplicate watchers by itself. It also
-unblocks the 9.40.2 item "skip the watch lease when a daemon keeps the vault's index fresh". Under
-this design that item is simply the LSP becoming a follower.
+Part A is independent of client routing and removes duplicate watchers by itself. It also
+unblocks the 9.40.2 item "skip the watch lease when a daemon keeps the vault's index fresh": the
+LSP follows whichever process owns the index, including the daemon once it takes part.
 
 ## Part B: routing finite reads to the daemon
 

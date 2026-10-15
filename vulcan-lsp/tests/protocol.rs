@@ -525,34 +525,51 @@ fn warns_about_uninitialized_vaults_without_creating_one() {
 }
 
 #[test]
-fn the_lease_holder_watches_and_other_processes_follow_the_store_clock() {
-    let dir = vault(&[("Home.md", "[[Later]]\n")]);
+fn the_index_owner_watches_and_other_processes_follow_and_take_over() {
+    let dir = vault(&[("Home.md", "[[Later]] [[Afterwards]]\n")]);
     let (mut watching, _) = Client::start(dir.path(), &json!({}));
-    // A server takes the lease after answering `initialize`; its first
-    // answer after that comes once it holds it.
+    // A server decides ownership after answering `initialize`; its first
+    // answer after that comes once it has.
     assert_eq!(
         watching.request("vulcan/status", json!({}))["watcher"],
         "lease"
     );
-    let (mut polling, _) = Client::start(dir.path(), &json!({}));
+    let (mut following, _) = Client::start(dir.path(), &json!({}));
     assert_eq!(
-        polling.request("vulcan/status", json!({}))["watcher"],
-        "polling"
+        following.request("vulcan/status", json!({}))["watcher"],
+        "following"
     );
-    for client in [&mut watching, &mut polling] {
+    for client in [&mut watching, &mut following] {
         client.settle();
-        client.open("Home.md", "[[Later]]\n");
-        assert_eq!(client.diagnostics("Home.md").len(), 1);
+        client.open("Home.md", "[[Later]] [[Afterwards]]\n");
+        assert_eq!(client.diagnostics("Home.md").len(), 2);
     }
 
-    // A file created outside any editor is indexed by the lease holder,
-    // and the other process notices through the store clock.
+    // A file created outside any editor is indexed by the owner, and the
+    // follower hears of it with its path through the scan journal.
     std::fs::write(dir.path().join("Later.md"), "# Later\n").unwrap();
-    for client in [&mut watching, &mut polling] {
-        client.diagnostics_until("Home.md", <[Value]>::is_empty);
+    for client in [&mut watching, &mut following] {
+        client.diagnostics_until("Home.md", |diagnostics| diagnostics.len() == 1);
         let changed = client.index_changed();
-        assert!(changed.params.is_object());
+        assert!(
+            changed.params.to_string().contains("Later.md"),
+            "{}",
+            changed.params
+        );
     }
+
+    // When the owner exits, the follower takes over indexing.
+    drop(watching);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while following.request("vulcan/status", json!({}))["watcher"] != "lease" {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the follower should take over"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    std::fs::write(dir.path().join("Afterwards.md"), "# Afterwards\n").unwrap();
+    following.diagnostics_until("Home.md", <[Value]>::is_empty);
 }
 
 #[test]
