@@ -5305,7 +5305,7 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
 - [x] CLI routing modes `--route direct|daemon|auto` and `VULCAN_ROUTE` (default `direct`): a routable query defers its cache refresh and read lock until it knows it runs locally; `auto` falls back on any failure and `daemon` fails with `daemon_unavailable`; writes always run directly. An end-to-end test compares routed and direct stdout (JSON and human, paging, fields), checks a note written just before a routed query is in its answer, and checks the fallbacks. Skill review: `vault-query` recommends `VULCAN_ROUTE=auto` for many queries against a daemon-hosted vault.
 - [ ] Device config `[client] route`
 - [ ] Remaining operations (`search` next, then `ls`, DQL, `tasks query`, and `graph stats|path|hubs` with retained adjacency), each with equivalence tests and measurements
-- [ ] Acceptance on the reference host: routed `query` p95 within 100 ms at 100K; `auto` without a daemon within 1 ms of `direct`
+- [x] Acceptance on the reference host: routed `query` p95 within 100 ms at 100K; `auto` without a daemon within 1 ms of `direct` ([record](specs/measurements/routed-query-501b24cc.json)). At 100K, routed p95 is 12.1 ms against 1,165 ms direct (p50 10.6 against 684 ms; 10K p95 8.9 against 131 ms), with identical output. With no daemon, `auto` medians stay within 0.43 ms of `direct`. The macOS barrier timeout in CI was the watcher dropping canonical FSEvents paths under an aliased vault root; it now resolves them.
 
 ### 10.6 Implementation notes
 

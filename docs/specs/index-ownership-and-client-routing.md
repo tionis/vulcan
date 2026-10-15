@@ -218,7 +218,11 @@ A routed error carries the same error code and message as the direct path, plus 
    single-note reads fast directly, so `search` follows `query`.
 4. **CLI routing modes.** Done: `--route` and `VULCAN_ROUTE`, discovery through the runtime record
    and registry, deferred refresh and read lock, and the fallback rules. `[client] route` device
-   configuration remains.
+   configuration remains. Measured on the reference host
+   ([record](measurements/routed-query-501b24cc.json)): routed `query` p95 is 12.1 ms at 100K
+   (direct 1,165 ms) with identical output, and `auto` with no daemon stays within 0.43 ms of
+   `direct`, so the `query` and `auto` speed criteria under [Acceptance](#acceptance) pass.
+   `status` and `note get` are not routed yet.
 5. **Remaining operations.** Add the rest of the first operation set, one slice per operation
    group, each with equivalence tests and measurements.
 6. **LSP daemon-backed store (9.40.5).** The LSP reads through the routed protocol when a daemon

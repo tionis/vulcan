@@ -1,0 +1,55 @@
+{
+  "acceptance_gate_result": "passed",
+  "acceptance_gate": "routed query p95 within 100 ms at 100K with a fresh index; auto without a daemon within 1 ms of direct",
+  "commit": "501b24cc",
+  "binary": "/home/eric/vulcan-eval/target/release/vulcan (cargo build --release -p vulcan-cli)",
+  "fixtures": [
+    "~/vulcan-eval-fixtures/mdb-10k/collection (generator v1, seed 42, 10,000 records)",
+    "~/vulcan-eval-fixtures/mdb-100k/collection (generator v1, seed 42, 100,000 records, 1,000,000 links)"
+  ],
+  "machine": {
+    "host": "designated evaluation host (Intel Core i7-10700, 31 GiB RAM, Debian 13)",
+    "load_average_at_start": [6.87, 3.41, 1.46],
+    "load_average_at_end": [5.75, 3.69, 1.65]
+  },
+  "setup": [
+    "Isolated XDG_CONFIG_HOME and XDG_STATE_HOME; daemon.toml binds 127.0.0.1:0",
+    "Both fixtures scanned, then registered with `vault add --no-sync`",
+    "`daemon start --detach`, then waited until both vaults reported cache state fresh"
+  ],
+  "method": {
+    "queries": [
+      "from notes where type = task and status = active order by title limit 50",
+      "from notes where status = open limit 20",
+      "from notes order by file.path desc limit 10"
+    ],
+    "command": "vulcan --vault <fixture> --route <direct|daemon> --output json query <q>",
+    "timing": "wall clock of the whole process from Python subprocess.run; 11 runs per query, the first discarded; 30 samples per size and route",
+    "refresh": "default refresh mode: direct runs prove freshness by stat walk; routed runs pass an index barrier",
+    "equivalence": "stdout of the second run of each query compared between direct and daemon"
+  },
+  "results_ms": {
+    "10k": {
+      "direct": { "p50": 83.6, "p95": 130.7 },
+      "daemon": { "p50": 7.3, "p95": 8.9 },
+      "outputs_identical": true
+    },
+    "100k": {
+      "direct": { "p50": 684.3, "p95": 1165.2 },
+      "daemon": { "p50": 10.6, "p95": 12.1 },
+      "outputs_identical": true
+    }
+  },
+  "auto_overhead": {
+    "method": "daemon stopped; 10K fixture, `from notes where status = open limit 20`; interleaved direct, auto, direct, auto; 31 runs each, first discarded; median per block",
+    "direct_medians_ms": [82.84, 82.74],
+    "auto_medians_ms": [82.77, 83.17],
+    "largest_auto_minus_direct_ms": 0.43
+  },
+  "limitations": [
+    "Measured right after a release build finished; load was elevated, which slows both routes",
+    "No concurrent writers or external edits during measurement",
+    "Equivalence compares one run's stdout per query, not every sample",
+    "Host power, frequency, background load, and OS page cache are uncontrolled"
+  ]
+}
