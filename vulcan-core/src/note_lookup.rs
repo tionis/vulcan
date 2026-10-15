@@ -883,6 +883,28 @@ impl<'a> IndexedNoteLookup<'a> {
             .collect())
     }
 
+    /// The hydrated notes only, keyed like [`Self::into_index`]; loads
+    /// nothing more.
+    pub fn into_hydrated_index(self) -> Result<HashMap<String, NoteRecord>, PropertyError> {
+        if let Some(error) = self.take_error() {
+            return Err(error);
+        }
+        Ok(self
+            .index
+            .identities
+            .iter()
+            .zip(self.hydrated)
+            .filter_map(|(identity, hydrated)| {
+                hydrated.into_inner().map(|note| {
+                    (
+                        identity.key.clone(),
+                        Arc::try_unwrap(note).unwrap_or_else(|shared| (*shared).clone()),
+                    )
+                })
+            })
+            .collect())
+    }
+
     /// Whether `path` is in the readable universe; loads nothing.
     pub fn contains(&self, path: &str) -> bool {
         self.index.by_path.contains_key(path)

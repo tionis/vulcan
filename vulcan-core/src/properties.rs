@@ -1006,11 +1006,11 @@ pub fn load_note_index_with_filter_deferring_hydration(
     load_note_index_with_read_scope(paths, filter, None, NoteIndexHydration::AliasesOnly)
 }
 
-/// The note index a Tasks query reads: every readable note with stored
-/// fields and aliases, fully hydrated only where it carries tasks
-/// (Markdown tasks, or a `TaskNotes` task derived from its properties). Task
-/// rows, their notes' fields, and `blocked` dependencies come only from
-/// those notes.
+/// The note index a Tasks query reads: the readable notes that carry tasks
+/// (Markdown tasks, or a `TaskNotes` task derived from its properties),
+/// fully hydrated. Task rows, their notes' fields, and `blocked`
+/// dependencies come only from those notes, so the rest of the vault is not
+/// loaded into the index.
 pub fn load_task_note_index(
     paths: &VaultPaths,
     scope: NoteIndexReadScope<'_>,
@@ -1067,7 +1067,7 @@ pub fn load_task_note_index_with_plan(
             top: None,
         },
     )?;
-    Ok((lookup.into_index()?, planned.explain))
+    Ok((lookup.into_hydrated_index()?, planned.explain))
 }
 
 /// The read scope an index was loaded with, for hydrating its entries.

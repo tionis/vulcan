@@ -791,6 +791,27 @@ mod tests {
                 }
             }
             assert!(compared > 0, "{fixture}");
+            // The task index holds the notes that carry tasks, and only
+            // those: the rest of the vault is not loaded into it.
+            let config = crate::load_vault_config(&paths).config;
+            let mut carrying = full
+                .iter()
+                .filter(|(_, note)| {
+                    !note.tasks.is_empty()
+                        || crate::tasknotes::extract_tasknote(
+                            &note.document_path,
+                            &note.file_name,
+                            &note.properties,
+                            &config.tasknotes,
+                        )
+                        .is_some()
+                })
+                .map(|(key, _)| key.clone())
+                .collect::<Vec<_>>();
+            let mut loaded = scoped.keys().cloned().collect::<Vec<_>>();
+            carrying.sort();
+            loaded.sort();
+            assert_eq!(loaded, carrying, "{fixture}");
         }
     }
 
