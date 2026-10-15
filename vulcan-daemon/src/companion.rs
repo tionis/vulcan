@@ -78,6 +78,8 @@ pub enum CompanionOperation {
     RoutedDql,
     /// `POST /{id}/ops/tasks-query`: a routed Tasks query.
     RoutedTasksQuery,
+    /// `POST /{id}/ops/graph`: a routed whole-graph report.
+    RoutedGraph,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

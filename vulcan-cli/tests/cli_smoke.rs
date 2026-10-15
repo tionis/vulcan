@@ -9705,7 +9705,7 @@ fn daemon_cli_detaches_reports_status_and_stops_gracefully() {
 }
 
 /// `--route daemon` prints exactly what a direct `query` (DSL, JSON, or DQL),
-/// `search`, `ls`, or `tasks query` prints, sees changes made just before it, and fails as a direct read would; `auto`
+/// `search`, `ls`, `tasks query`, or a whole-graph report prints, sees changes made just before it, and fails as a direct read would; `auto`
 /// falls back once the daemon is gone, and `daemon` then reports
 /// `daemon_unavailable`.
 #[test]
@@ -9768,7 +9768,7 @@ fn routed_queries_print_what_direct_queries_print() {
         thread::sleep(std::time::Duration::from_millis(100));
     }
 
-    let cases: [&[&str]; 24] = [
+    let cases: [&[&str]; 27] = [
         &[
             "--output",
             "json",
@@ -9867,6 +9867,16 @@ fn routed_queries_print_what_direct_queries_print() {
         &["--output", "json", "tasks", "query", "not done"],
         &["tasks", "query", "not done\nsort by description"],
         &["--output", "json", "tasks", "query", "done\ngroup by path"],
+        &["--output", "json", "graph", "stats"],
+        &["graph", "hubs"],
+        &[
+            "--output",
+            "json",
+            "graph",
+            "path",
+            "Home",
+            "Projects/Alpha",
+        ],
     ];
     for case in cases {
         let direct = vulcan(&[&["--route", "direct"], case].concat());
@@ -9894,6 +9904,20 @@ fn routed_queries_print_what_direct_queries_print() {
     assert!(
         String::from_utf8_lossy(&fresh.stdout).contains("Fresh.md"),
         "{fresh:?}"
+    );
+    // A link written just before a routed graph report is in it.
+    fs::write(
+        vault_root.join("Linker.md"),
+        "[[Home]] [[Projects/Alpha]]\n",
+    )
+    .unwrap();
+    let stats = ["--output", "json", "graph", "stats"];
+    let routed = vulcan(&[&["--route", "daemon"], &stats[..]].concat());
+    let direct = vulcan(&[&["--route", "direct"], &stats[..]].concat());
+    assert!(routed.status.success(), "{routed:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&routed.stdout),
+        String::from_utf8_lossy(&direct.stdout)
     );
     fs::write(
         vault_root.join("Searched.md"),

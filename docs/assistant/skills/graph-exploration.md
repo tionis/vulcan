@@ -27,6 +27,7 @@ Use this skill when note relationships matter more than raw content matching.
 - Start with `links` or `backlinks` for one note before jumping to vault-wide analytics.
 - Use graph path when the task is about how two notes connect.
 - Use hubs, dead ends, or components when the task is about structure across the vault.
+- For repeated `graph stats`, `graph hubs`, or `graph path` runs against a large vault that a running daemon hosts, set `VULCAN_ROUTE=auto` (or `--route auto`): the daemon answers from a graph it keeps until the cache changes, after confirming every earlier change is indexed, and prints exactly what a direct run prints.
 - Use `graph communities` when the task is about topic clusters, orphan placement, or bridge notes at vault scale.
 - Use `suggest links` when a note feels isolated and you need a ranked review queue before creating inferred links.
 - Combine graph inspection with `query` when topology alone is not enough.

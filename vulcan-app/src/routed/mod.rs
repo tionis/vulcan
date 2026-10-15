@@ -7,6 +7,7 @@
 //! wire as full-fidelity [`wire`] types and are printed by the client.
 
 pub mod dql;
+pub mod graph;
 pub mod ls;
 pub mod query;
 pub mod search;

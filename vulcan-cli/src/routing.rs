@@ -9,6 +9,7 @@
 //! the read runs here.
 
 use vulcan_app::routed::dql::DqlRequest;
+use vulcan_app::routed::graph::{GraphAnswer, GraphRequest};
 use vulcan_app::routed::ls::LsRequest;
 use vulcan_app::routed::query::QueryRequest;
 use vulcan_app::routed::tasks::TasksQueryRequest;
@@ -17,14 +18,14 @@ use vulcan_core::search::{SearchQuery, SearchReport};
 use vulcan_core::tasks::TasksQueryResult;
 use vulcan_core::{QueryReport, VaultPaths};
 use vulcan_daemon::process::{
-    request_routed_dql, request_routed_ls, request_routed_query, request_routed_search,
-    request_routed_tasks_query, DaemonProcessContext, RoutedClientError,
+    request_routed_dql, request_routed_graph, request_routed_ls, request_routed_query,
+    request_routed_search, request_routed_tasks_query, DaemonProcessContext, RoutedClientError,
 };
 use vulcan_daemon::routed_reads::{
-    RoutedDql, RoutedLs, RoutedQuery, RoutedSearch, RoutedTasksQuery,
+    RoutedDql, RoutedGraph, RoutedLs, RoutedQuery, RoutedSearch, RoutedTasksQuery,
 };
 
-use crate::cli::{Command, RouteMode, SearchMode, TasksCommand};
+use crate::cli::{Command, GraphCommand, RouteMode, SearchMode, TasksCommand};
 use crate::{Cli, CliError};
 
 fn route_mode(cli: &Cli) -> RouteMode {
@@ -46,6 +47,10 @@ fn is_routable(command: &Command) -> bool {
         Command::Ls { .. }
         | Command::Tasks {
             command: TasksCommand::Query { .. },
+        }
+        | Command::Graph {
+            command:
+                GraphCommand::Stats { .. } | GraphCommand::Hubs { .. } | GraphCommand::Path { .. },
         } => true,
         _ => false,
     }
@@ -106,6 +111,26 @@ pub(crate) fn route_tasks_query(
             context,
             paths.vault_root(),
             &RoutedTasksQuery {
+                request: request.clone(),
+                permissions: cli.permissions.clone(),
+                refresh,
+            },
+        )
+    })
+}
+
+/// The daemon's answer to a whole-graph report, or `None` when it should
+/// run here.
+pub(crate) fn route_graph(
+    cli: &Cli,
+    paths: &VaultPaths,
+    request: &GraphRequest,
+) -> Result<Option<GraphAnswer>, CliError> {
+    route(cli, paths, |context, refresh| {
+        request_routed_graph(
+            context,
+            paths.vault_root(),
+            &RoutedGraph {
                 request: request.clone(),
                 permissions: cli.permissions.clone(),
                 refresh,

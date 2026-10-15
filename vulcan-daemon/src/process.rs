@@ -1291,6 +1291,16 @@ pub fn request_routed_tasks_query(
     request_routed(context, vault_root, "tasks-query", query)
 }
 
+/// Ask the running daemon for a whole-graph report for the vault at
+/// `vault_root`. Costs one file check when no daemon runs.
+pub fn request_routed_graph(
+    context: &DaemonProcessContext,
+    vault_root: &Path,
+    graph: &crate::routed_reads::RoutedGraph,
+) -> Result<vulcan_app::routed::graph::GraphAnswer, RoutedClientError> {
+    request_routed(context, vault_root, "graph", graph)
+}
+
 /// Ask the running daemon to answer `ls` for the vault at `vault_root`.
 /// Costs one file check when no daemon runs.
 pub fn request_routed_ls(

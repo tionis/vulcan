@@ -309,6 +309,21 @@ impl NoteStoreSnapshot<'_> {
         self.clock.version
     }
 
+    /// The cache state the snapshot reads, as (store id, clock version):
+    /// equal keys name the same complete state of the same cache file, so a
+    /// host may reuse anything it derived from an earlier snapshot with the
+    /// same key.
+    #[must_use]
+    pub fn state_key(&self) -> (String, i64) {
+        (self.clock.store_id.clone(), self.clock.version)
+    }
+
+    /// The snapshot's connection, inside its read transaction.
+    #[must_use]
+    pub fn connection(&self) -> &rusqlite::Connection {
+        self.database().connection()
+    }
+
     fn database(&self) -> &Rc<CacheDatabase> {
         self.database.as_ref().expect("held until drop")
     }

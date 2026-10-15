@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use vulcan_app::routed::dql::{run_dql, DqlRequest};
+use vulcan_app::routed::graph::{GraphAnswer, GraphRequest, RetainedGraph};
 use vulcan_app::routed::ls::{run_ls, LsRequest, LsWire};
 use vulcan_app::routed::query::{run_query, QueryRequest};
 use vulcan_app::routed::search;
@@ -40,6 +41,7 @@ pub struct RoutedVault {
     /// The registration's permission ceiling, if it narrows access.
     pub permissions_profile: Option<String>,
     session: NoteStoreSession,
+    graph: RetainedGraph,
 }
 
 impl RoutedVault {
@@ -51,6 +53,7 @@ impl RoutedVault {
     ) -> Self {
         Self {
             session: NoteStoreSession::new(paths.clone()),
+            graph: RetainedGraph::default(),
             paths,
             tracker,
             permissions_profile,
@@ -152,6 +155,16 @@ pub struct RoutedTasksQuery {
     pub refresh: bool,
 }
 
+/// A routed whole-graph report (`graph stats|hubs|path`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RoutedGraph {
+    pub request: GraphRequest,
+    /// The caller's `--permissions` profile, resolved by the vault's config.
+    pub permissions: Option<String>,
+    /// Whether the caller's refresh mode requires a fresh index.
+    pub refresh: bool,
+}
+
 /// A routed `ls`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoutedLs {
@@ -240,6 +253,27 @@ pub fn routed_tasks_query(
 ) -> Result<TasksQueryResult, RoutedReadError> {
     let guard = prepare_read(vault, query.permissions.as_deref(), query.refresh)?;
     run_tasks_query(Some(&vault.session), &vault.paths, &query.request, &guard)
+        .map_err(|error| RoutedReadError::Failed(error.to_string()))
+}
+
+/// Answer a routed graph report from the vault's retained graph.
+pub fn routed_graph(
+    vault: &RoutedVault,
+    graph: &RoutedGraph,
+) -> Result<GraphAnswer, RoutedReadError> {
+    let filter = read_filter(&prepare_read(
+        vault,
+        graph.permissions.as_deref(),
+        graph.refresh,
+    )?);
+    vault
+        .graph
+        .run(
+            &vault.session,
+            &vault.paths,
+            &graph.request,
+            filter.as_ref(),
+        )
         .map_err(|error| RoutedReadError::Failed(error.to_string()))
 }
 

@@ -557,6 +557,41 @@ fn print_graph_export_report(
 // template show
 // ────────────────────────────────────────────────────────────────────────────
 
+/// Print a daemon's answer as the command prints its direct report.
+fn print_graph_answer(
+    cli: &Cli,
+    command: &GraphCommand,
+    answer: vulcan_app::routed::graph::GraphAnswer,
+    list_controls: &ListOutputControls,
+    stdout_is_tty: bool,
+    use_stdout_color: bool,
+) -> Result<(), CliError> {
+    use vulcan_app::routed::graph::GraphAnswer;
+    match (command, answer) {
+        (GraphCommand::Stats { export }, GraphAnswer::Stats(report)) => {
+            let export = crate::resolve_cli_export(export)?;
+            print_graph_analytics_report(cli.output, &report, export.as_ref())
+        }
+        (GraphCommand::Hubs { export }, GraphAnswer::Hubs(report)) => {
+            let export = crate::resolve_cli_export(export)?;
+            print_graph_hubs_report(
+                cli.output,
+                &report,
+                list_controls,
+                stdout_is_tty,
+                use_stdout_color,
+                export.as_ref(),
+            )
+        }
+        (GraphCommand::Path { .. }, GraphAnswer::Path(report)) => {
+            print_graph_path_report(cli.output, &report)
+        }
+        _ => Err(CliError::operation(
+            "the daemon answered with a different graph report",
+        )),
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 pub(crate) fn handle_graph_command(
     cli: &Cli,
@@ -567,6 +602,41 @@ pub(crate) fn handle_graph_command(
     stdout_is_tty: bool,
     use_stdout_color: bool,
 ) -> Result<(), CliError> {
+    if crate::routing::defers_refresh(cli) {
+        // Whole-graph reports a daemon can answer; `graph path` only with
+        // both notes named and no picker to offer.
+        let request = match command {
+            GraphCommand::Stats { .. } => Some(vulcan_app::routed::graph::GraphRequest::Stats),
+            GraphCommand::Hubs { .. } => Some(vulcan_app::routed::graph::GraphRequest::Hubs),
+            GraphCommand::Path {
+                from: Some(from),
+                to: Some(to),
+            } if !interactive_note_selection => {
+                Some(vulcan_app::routed::graph::GraphRequest::Path {
+                    from: from.clone(),
+                    to: to.clone(),
+                })
+            }
+            _ => None,
+        };
+        if let Some(request) = request {
+            if let Some(answer) = crate::routing::route_graph(cli, paths, &request)? {
+                return print_graph_answer(
+                    cli,
+                    command,
+                    answer,
+                    list_controls,
+                    stdout_is_tty,
+                    use_stdout_color,
+                );
+            }
+        }
+        let use_stderr_color = crate::resolve_use_color(
+            cli.color,
+            std::io::IsTerminal::is_terminal(&std::io::stderr()),
+        );
+        crate::maybe_auto_refresh_command_cache(paths, cli, use_stderr_color)?;
+    }
     let _read_guard = vulcan_core::ordinary_write::acquire_consistent_ordinary_read(paths)
         .map_err(CliError::operation)?;
     match command {

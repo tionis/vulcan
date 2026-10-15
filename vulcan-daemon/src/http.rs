@@ -150,6 +150,7 @@ pub fn companion_router(state: CompanionHttpState) -> Router {
         .route("/{id}/ops/ls", post(routed_ls))
         .route("/{id}/ops/dql", post(routed_dql))
         .route("/{id}/ops/tasks-query", post(routed_tasks_query))
+        .route("/{id}/ops/graph", post(routed_graph))
         .route("/jobs/{job}", get(job_status).delete(cancel_job))
         .route(
             "/aggregate-jobs/{job}",
@@ -354,6 +355,7 @@ async fn capabilities(State(state): State<CompanionHttpState>) -> Json<Companion
             CompanionOperation::RoutedLs,
             CompanionOperation::RoutedDql,
             CompanionOperation::RoutedTasksQuery,
+            CompanionOperation::RoutedGraph,
         ]);
     }
     Json(capabilities)
@@ -387,6 +389,15 @@ async fn routed_tasks_query(
     >,
 ) -> Response {
     answer_routed(&state, &id, body, crate::routed_reads::routed_tasks_query).await
+}
+
+/// A routed graph report answered from the vault's retained graph.
+async fn routed_graph(
+    State(state): State<CompanionHttpState>,
+    Path(id): Path<String>,
+    body: Result<Json<crate::routed_reads::RoutedGraph>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    answer_routed(&state, &id, body, crate::routed_reads::routed_graph).await
 }
 
 /// A routed `ls` answered from the vault's retained state.
@@ -1341,6 +1352,69 @@ mod tests {
             assert_eq!(answer, direct, "{source}");
             assert!(direct.result_count > 0, "{source}");
         }
+    }
+
+    /// A routed graph report is the direct report, from a graph the daemon
+    /// keeps until the cache changes.
+    #[tokio::test]
+    async fn routed_graph_reports_answer_like_the_direct_report() {
+        use crate::routed_reads::{RoutedReadRegistry, RoutedVault};
+        use vulcan_app::routed::graph::{run_graph, GraphAnswer, GraphRequest};
+        let (temporary, mut state) = fixture();
+        let vault = temporary.path().join("vault");
+        std::fs::write(vault.join("A.md"), "[[B]] #a\n").unwrap();
+        std::fs::write(vault.join("B.md"), "[[C]]\n").unwrap();
+        std::fs::write(vault.join("C.md"), "plain\n").unwrap();
+        let paths = vulcan_core::VaultPaths::new(&vault);
+        vulcan_core::initialize_vulcan_dir(&paths).unwrap();
+        vulcan_core::scan_vault(&paths, vulcan_core::ScanMode::Full).unwrap();
+        let registry = RoutedReadRegistry::default();
+        let tracker = Arc::new(crate::scan_runtime::VaultScanTracker::default());
+        registry.insert("notes", RoutedVault::new(paths.clone(), tracker, None));
+        state.routed_reads = Some(registry);
+        let router = companion_router(state.clone());
+        let ask = |graph: &GraphRequest| {
+            let body = json!({ "request": graph, "permissions": null, "refresh": false });
+            let mut post = request(&state, Method::POST, "/notes/ops/graph");
+            *post.body_mut() = Body::from(body.to_string());
+            post.headers_mut().insert(
+                axum::http::header::CONTENT_TYPE,
+                "application/json".parse().unwrap(),
+            );
+            post
+        };
+        for round in 0..2 {
+            for graph in [
+                GraphRequest::Stats,
+                GraphRequest::Hubs,
+                GraphRequest::Path {
+                    from: "A".to_string(),
+                    to: "C".to_string(),
+                },
+            ] {
+                // The second answer comes from the retained graph.
+                for _ in 0..2 {
+                    let response = router.clone().oneshot(ask(&graph)).await.unwrap();
+                    assert_eq!(response.status(), StatusCode::OK);
+                    let answer: GraphAnswer =
+                        serde_json::from_value(body_json(response).await).unwrap();
+                    assert_eq!(answer, run_graph(&paths, &graph, None).unwrap(), "{round}");
+                }
+            }
+            std::fs::write(vault.join("D.md"), "[[A]] [[C]]\n").unwrap();
+            vulcan_core::scan_vault(&paths, vulcan_core::ScanMode::Incremental).unwrap();
+        }
+        // An unknown note fails as it does directly.
+        let missing = GraphRequest::Path {
+            from: "A".to_string(),
+            to: "Missing".to_string(),
+        };
+        let response = router.oneshot(ask(&missing)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            body_json(response).await["message"],
+            run_graph(&paths, &missing, None).unwrap_err().to_string()
+        );
     }
 
     /// A routed `ls` is the direct listing, paged as the client prints it.
