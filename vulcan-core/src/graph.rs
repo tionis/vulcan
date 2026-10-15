@@ -417,7 +417,7 @@ pub enum LinkConfidence {
 }
 
 impl LinkConfidence {
-    fn from_db(value: &str) -> Self {
+    pub(crate) fn from_db(value: &str) -> Self {
         match value {
             "INFERRED" => Self::Inferred,
             "AMBIGUOUS" => Self::Ambiguous,
@@ -443,7 +443,7 @@ pub struct GraphConfidenceBreakdown {
 }
 
 impl GraphConfidenceBreakdown {
-    fn add(&mut self, confidence: LinkConfidence) {
+    pub(crate) fn add(&mut self, confidence: LinkConfidence) {
         match confidence {
             LinkConfidence::Extracted => self.extracted += 1,
             LinkConfidence::Inferred => self.inferred += 1,
@@ -1110,7 +1110,10 @@ const NOTE_EDGES_SQL: &str = "
 
 /// A pair's links in order decide its confidence: a later link replaces
 /// the current one when its confidence ranks higher or its score is higher.
-fn prefer_edge_confidence(existing: &mut (LinkConfidence, f64), next: (LinkConfidence, f64)) {
+pub(crate) fn prefer_edge_confidence(
+    existing: &mut (LinkConfidence, f64),
+    next: (LinkConfidence, f64),
+) {
     if confidence_rank(next.0) > confidence_rank(existing.0) || next.1 > existing.1 {
         *existing = next;
     }
@@ -1123,35 +1126,7 @@ pub fn query_graph_confidence(
     paths: &VaultPaths,
 ) -> Result<GraphConfidenceBreakdown, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
-    let mut statement = connection.prepare(NOTE_EDGES_SQL)?;
-    let mut rows = statement.query([])?;
-    let mut breakdown = GraphConfidenceBreakdown::default();
-    let mut pair: Option<(String, String, (LinkConfidence, f64), usize)> = None;
-    let mut finish = |pair: Option<(String, String, (LinkConfidence, f64), usize)>| {
-        if let Some((_, _, (confidence, _), links)) = pair {
-            for _ in 0..links {
-                breakdown.add(confidence);
-            }
-        }
-    };
-    while let Some(row) = rows.next()? {
-        let (source, target): (String, String) = (row.get(0)?, row.get(1)?);
-        let next = (
-            LinkConfidence::from_db(&row.get::<_, String>(2)?),
-            row.get::<_, f64>(3)?,
-        );
-        match pair.as_mut() {
-            Some((current_source, current_target, existing, links))
-                if *current_source == source && *current_target == target =>
-            {
-                prefer_edge_confidence(existing, next);
-                *links += 1;
-            }
-            _ => finish(pair.replace((source, target, next, 1))),
-        }
-    }
-    finish(pair);
-    Ok(breakdown)
+    Ok(crate::graph_confidence::read(&connection)?)
 }
 
 pub fn query_graph_analytics(paths: &VaultPaths) -> Result<GraphAnalyticsReport, GraphQueryError> {

@@ -511,6 +511,8 @@ where
                     // Durable link decisions join the same commit, so a reader
                     // never sees the rebuilt cache without them.
                     crate::link_feedback::restore(paths, transaction)?;
+                    // Foreign keys are off during a rebuild, so recount every source.
+                    crate::graph_confidence::recompute_all(transaction)?;
                     crate::cache::advance_note_store_clock(transaction)?;
 
                     Ok(ScanSummary {
@@ -628,6 +630,7 @@ where
                         crate::link_feedback::restore(paths, transaction)?;
                         crate::cache::advance_note_store_clock(transaction)?;
                     }
+                    crate::graph_confidence::recompute_dirty(transaction)?;
                     emit_scan_progress(
                         on_progress,
                         ScanProgress {

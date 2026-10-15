@@ -197,6 +197,11 @@ impl MigrationRegistry {
                 "index note identities ignoring ASCII case",
                 schema::apply_schema_v35,
             ),
+            Migration::new(
+                36,
+                "store each note's outgoing link confidence",
+                schema::apply_schema_v36,
+            ),
         ])
     }
 

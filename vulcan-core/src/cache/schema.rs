@@ -1,5 +1,11 @@
 use rusqlite::Transaction;
 
+/// Stored per-source link confidence for the whole-graph breakdown; see
+/// [`crate::graph_confidence`].
+pub fn apply_schema_v36(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    crate::graph_confidence::apply_schema(transaction)
+}
+
 /// ASCII case-insensitive identity indexes: note references resolve by path,
 /// file name, or alias ignoring ASCII case, and these let a single reference
 /// read only its candidate rows instead of every note's identity. The

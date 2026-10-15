@@ -70,6 +70,7 @@ pub mod fingerprint;
 pub mod folder_notes;
 pub mod git;
 pub mod graph;
+mod graph_confidence;
 pub mod history;
 pub mod html;
 pub mod init;
@@ -404,4 +405,4 @@ pub fn current_time_override_ms() -> Option<i64> {
 
 pub const PARSER_VERSION: u32 = 9;
 pub const EXTRACTION_VERSION: u32 = 1;
-pub const SCHEMA_VERSION: u32 = 35;
+pub const SCHEMA_VERSION: u32 = 36;
