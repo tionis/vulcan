@@ -216,6 +216,7 @@ deploy key in the forge.
 | Git says the device key is unavailable | The identity changed or its files are unreadable. | `vulcan device show`; re-run `vulcan vault enroll <id>`; `vulcan device repair-permissions` for loose permissions. |
 | Only one process (such as the daemon) says it uses a different device than the bound one | That process reads another identity directory, usually a different `HOME` or `XDG_DATA_HOME`. | Fix that process's environment; do not re-bind, which would lock the installation key out. |
 | Plain `git` ignores the key | `core.sshCommand` is owned by another tool, or Vulcan moved. | `vulcan sync transport status`; `vulcan sync transport bind` refreshes it. |
+| Your own `git` or `ssh` to a forge is refused right after a Vulcan sync | Your `~/.ssh/config` multiplexes that host, and a Vulcan release older than this fix left a device-key master on your socket. Current Vulcan never uses your `ControlPath`. | Close the stale master with `ssh -O exit <host>`, or wait for its `ControlPersist` to lapse. |
 | A daemon sync fails for one vault only | That vault is not authorized for this key. | `vulcan sync doctor <id>` and `vulcan vault enroll <id>`. |
 | Hardware or card-backed key never works unattended | Signing needs a touch or PIN. | Use `ambient` for that host; the device key is file-backed by design. |
 

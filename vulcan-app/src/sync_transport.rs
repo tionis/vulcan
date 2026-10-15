@@ -40,15 +40,16 @@ const SSH_OPTIONS: [&str; 6] = [
 /// saves a TCP and SSH handshake on each. Kept short so a replaced or revoked
 /// key stops being used soon after.
 const CONTROL_PERSIST_SECONDS: u32 = 60;
-/// Socket name; OpenSSH expands `%C` to a 40-character connection hash.
-const CONTROL_SOCKET_NAME: &str = "vulcan-%C";
+/// Hex digits of the key tag in a control socket name.
+const KEY_TAG_LENGTH: usize = 8;
 /// macOS limits socket paths to 104 bytes including the terminator, and
 /// OpenSSH binds through a temporary name 17 bytes longer than the final one.
 #[cfg(unix)]
 const MAX_CONTROL_SOCKET_PATH: usize = 103 - 17;
-/// Length of the expanded `%C` token in [`CONTROL_SOCKET_NAME`].
+/// Length of an expanded control socket name: `vulcan-`, the key tag, `-`, and
+/// the 40-character connection hash OpenSSH substitutes for `%C`.
 #[cfg(unix)]
-const EXPANDED_CONNECTION_HASH: usize = 40;
+const EXPANDED_CONTROL_SOCKET_NAME: usize = "vulcan-".len() + KEY_TAG_LENGTH + 1 + 40;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -219,17 +220,15 @@ fn path_word(path: &Path) -> String {
 /// socket directory exists, these processes share one SSH connection.
 fn ssh_command_for(key: &Path) -> String {
     let mut command = ssh_command_with("ssh", key);
-    if let Some(directory) = control_directory() {
-        for option in multiplex_options(&directory) {
-            command.push(' ');
-            command.push_str(&option);
-        }
+    for option in connection_sharing_options(key, control_directory().as_deref()) {
+        command.push(' ');
+        command.push_str(&shell_word(&option));
     }
     command
 }
 
 /// As [`ssh_command_for`] with an explicit `ssh` program, which tests replace,
-/// and without connection sharing.
+/// and without the connection sharing options.
 fn ssh_command_with(program: &str, key: &Path) -> String {
     let program = if program == "ssh" {
         program.to_owned()
@@ -241,18 +240,64 @@ fn ssh_command_with(program: &str, key: &Path) -> String {
     parts.join(" ")
 }
 
-/// SSH options that share one connection through a socket in `directory`.
-/// The control path is shell-quoted for `GIT_SSH_COMMAND`.
-fn multiplex_options(directory: &Path) -> Vec<String> {
-    let control_path = directory.join(CONTROL_SOCKET_NAME);
-    vec![
-        "-o".to_owned(),
-        "ControlMaster=auto".to_owned(),
-        "-o".to_owned(),
-        shell_quote(&format!("ControlPath={}", control_path.to_string_lossy())),
-        "-o".to_owned(),
-        format!("ControlPersist={CONTROL_PERSIST_SECONDS}"),
-    ]
+/// A shell word for `value`, quoted only when it holds something the shell
+/// would interpret.
+fn shell_word(value: &str) -> String {
+    if !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"=%/._-".contains(&byte))
+    {
+        value.to_owned()
+    } else {
+        shell_quote(value)
+    }
+}
+
+/// SSH options that decide whether a device-key `ssh` shares a connection.
+///
+/// They are always explicit. OpenSSH takes the first value it sees for an
+/// option, and the command line comes before `~/.ssh/config`, so these
+/// override any `ControlMaster`/`ControlPath` the user configured for the same
+/// host. Without them, a device-key connection could become the master on the
+/// user's own socket, and the user's later `git` or `ssh` to that host would
+/// silently run with the device key's narrow access; or a device-key `ssh`
+/// could ride an existing user connection and act with the user's access.
+///
+/// With a private `directory`, the connection is shared only with other
+/// Vulcan processes using the same key: the socket name carries a tag of the
+/// key path besides OpenSSH's `%C` connection hash, which covers only the
+/// endpoints and user. Without one, sharing is turned off.
+fn connection_sharing_options(key: &Path, directory: Option<&Path>) -> Vec<String> {
+    match directory {
+        Some(directory) => {
+            let socket = format!("vulcan-{}-%C", key_tag(key));
+            vec![
+                "-o".to_owned(),
+                "ControlMaster=auto".to_owned(),
+                "-o".to_owned(),
+                format!("ControlPath={}", directory.join(socket).to_string_lossy()),
+                "-o".to_owned(),
+                format!("ControlPersist={CONTROL_PERSIST_SECONDS}"),
+            ]
+        }
+        None => isolated_connection_options(),
+    }
+}
+
+/// Options that neither use nor create any shared connection.
+fn isolated_connection_options() -> Vec<String> {
+    ["-o", "ControlMaster=no", "-o", "ControlPath=none"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Short hex tag naming the key in a control socket name, so connections made
+/// with different keys never share a socket.
+fn key_tag(key: &Path) -> String {
+    let hash = blake3::hash(key.as_os_str().as_encoded_bytes());
+    hash.to_hex()[..KEY_TAG_LENGTH].to_owned()
 }
 
 /// The first of `$XDG_RUNTIME_DIR` and `$TMPDIR` that can safely hold control
@@ -277,8 +322,7 @@ fn is_control_directory(directory: &Path) -> bool {
     };
     if !directory.is_absolute()
         || text.contains('%')
-        || text.len() + 1 + CONTROL_SOCKET_NAME.len() - 2 + EXPANDED_CONNECTION_HASH
-            > MAX_CONTROL_SOCKET_PATH
+        || text.len() + 1 + EXPANDED_CONTROL_SOCKET_NAME > MAX_CONTROL_SOCKET_PATH
     {
         return false;
     }
@@ -314,11 +358,16 @@ pub fn device_git_ssh_command(store: &DeviceIdentityStore) -> Result<String, App
 }
 
 /// Argv for the `vulcan device ssh-command` wrapper: `ssh` with the device
-/// key and the pinned options, followed by Git's own arguments.
+/// key and the pinned options, followed by Git's own arguments. Plain `git`
+/// shares Vulcan's own connection for the key, never the user's.
 pub fn device_ssh_argv(store: &DeviceIdentityStore) -> Result<Vec<String>, AppError> {
     let (_, key) = eligible_key(store).map_err(AppError::operation)?;
     let mut argv = vec!["-i".to_owned(), key.to_string_lossy().into_owned()];
     argv.extend(SSH_OPTIONS.iter().map(|option| (*option).to_owned()));
+    argv.extend(connection_sharing_options(
+        &key,
+        control_directory().as_deref(),
+    ));
     Ok(argv)
 }
 
@@ -427,8 +476,9 @@ pub(crate) fn probe_device_key_with(
         .env(
             "GIT_SSH_COMMAND",
             format!(
-                "{} -o ConnectTimeout=15",
-                ssh_command_with(ssh_program, &key)
+                "{} {} -o ConnectTimeout=15",
+                ssh_command_with(ssh_program, &key),
+                isolated_connection_options().join(" ")
             ),
         )
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -818,15 +868,101 @@ mod tests {
         assert!(!command.contains("StrictHostKeyChecking"));
     }
 
-    // Connection sharing is Unix-only, and the expected path uses `/`.
+    // The expected paths use `/`.
     #[cfg(unix)]
     #[test]
-    fn multiplexing_options_quote_the_control_path_for_the_shell() {
-        let options = multiplex_options(Path::new("/run/user/it's"));
+    fn shared_connections_use_a_vulcan_socket_tagged_with_the_key() {
+        let key = Path::new("/home/me/id");
+        let options = connection_sharing_options(key, Some(Path::new("/run/user/it's")));
+        let tag = key_tag(key);
+        assert_eq!(tag.len(), KEY_TAG_LENGTH);
         assert_eq!(
-            options.join(" "),
-            "-o ControlMaster=auto -o 'ControlPath=/run/user/it'\\''s/vulcan-%C' -o ControlPersist=60"
+            options,
+            [
+                "-o".to_owned(),
+                "ControlMaster=auto".to_owned(),
+                "-o".to_owned(),
+                format!("ControlPath=/run/user/it's/vulcan-{tag}-%C"),
+                "-o".to_owned(),
+                "ControlPersist=60".to_owned(),
+            ]
         );
+        let words: Vec<String> = options.iter().map(|option| shell_word(option)).collect();
+        assert_eq!(
+            words[3],
+            format!("'ControlPath=/run/user/it'\\''s/vulcan-{tag}-%C'")
+        );
+        assert_eq!(shell_word("ControlMaster=auto"), "ControlMaster=auto");
+        assert_ne!(
+            key_tag(Path::new("/home/me/other")),
+            tag,
+            "different keys must never share a socket"
+        );
+    }
+
+    #[test]
+    fn without_a_private_directory_sharing_is_explicitly_off() {
+        // Leaving the options out would let `~/.ssh/config` multiplexing apply.
+        assert_eq!(
+            connection_sharing_options(Path::new("/home/me/id"), None).join(" "),
+            "-o ControlMaster=no -o ControlPath=none"
+        );
+    }
+
+    /// The effective `controlmaster` and `controlpath` OpenSSH resolves for
+    /// `options` against a user config that multiplexes every host, or `None`
+    /// where no `ssh` is installed.
+    #[cfg(unix)]
+    fn resolved_multiplexing(options: &[String]) -> Option<(String, String)> {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let config = directory.path().join("config");
+        fs::write(
+            &config,
+            "Host *\n  ControlMaster auto\n  ControlPath /home/me/.ssh/cm-%C\n  ControlPersist 600\n",
+        )
+        .expect("ssh config");
+        let output = Command::new("ssh")
+            .arg("-G")
+            .arg("-F")
+            .arg(&config)
+            .args(options)
+            .arg("git@forge.example")
+            .output()
+            .ok()?;
+        assert!(output.status.success(), "ssh -G failed: {output:?}");
+        let resolved = String::from_utf8_lossy(&output.stdout).into_owned();
+        let value = |name: &str| {
+            resolved
+                .lines()
+                .find_map(|line| line.strip_prefix(name)?.strip_prefix(' '))
+                .unwrap_or_default()
+                .to_owned()
+        };
+        Some((value("controlmaster"), value("controlpath")))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn device_key_connections_never_use_the_users_control_socket() {
+        let key = Path::new("/home/me/id");
+        let Some(shared) =
+            resolved_multiplexing(&connection_sharing_options(key, Some(Path::new("/run/v"))))
+        else {
+            return;
+        };
+        assert_eq!(shared.0, "auto");
+        assert!(
+            shared
+                .1
+                .starts_with(&format!("/run/v/vulcan-{}-", key_tag(key))),
+            "{shared:?}"
+        );
+
+        let isolated = resolved_multiplexing(&connection_sharing_options(key, None))
+            .expect("ssh ran once already");
+        // `ssh -G` leaves out a `none` control path.
+        assert_eq!(isolated.0, "false");
+        assert_eq!(isolated.1, "");
     }
 
     #[cfg(unix)]

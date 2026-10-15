@@ -90,24 +90,36 @@ and `~/.ssh/config` host aliases still apply. The engine sets `GIT_SSH_COMMAND` 
 `GIT_SSH`) on its own Git processes, so the daemon does not depend on repository configuration. The
 key path never appears in logs, JSON, or notifications.
 
-On Unix the engine's command also shares one authenticated connection between its Git processes:
+Every device-key `ssh` also states its connection sharing explicitly. OpenSSH takes the first
+value it sees for an option and reads the command line before `~/.ssh/config`, so these options
+override any `ControlMaster`/`ControlPath` the user configured for the same host. Leaving them out
+is not neutral: a device-key connection could become the master on the user's own socket, after
+which the user's ordinary `git` or `ssh` to that forge silently runs with the device key's narrow
+access, or a device-key `ssh` could ride the user's existing connection and act with the user's
+access (and a probe would then accept a key the forge never saw).
+
+On Unix, where a private socket directory exists, connections are shared among Vulcan processes
+using the same key:
 
 ```text
--o ControlMaster=auto -o ControlPath=<dir>/vulcan-%C -o ControlPersist=60
+-o ControlMaster=auto -o ControlPath=<dir>/vulcan-<key tag>-%C -o ControlPersist=60
 ```
+
+Otherwise sharing is turned off with `-o ControlMaster=no -o ControlPath=none`.
 
 A sync cycle makes several remote trips, and each new connection repeats the TCP and SSH handshake
 (about half of a typical forge round trip). `<dir>` is the first of `$XDG_RUNTIME_DIR` and `$TMPDIR`
 that is absolute, owned by the current user, not group- or world-writable, free of `%`, and short
-enough for the platform's socket-path limit; without one, connections are not shared. A shared
-master stays up at most 60 seconds after its last use, so a replaced or revoked key stops being
-used shortly after. The window is deliberately short: the first sync after an idle minute pays the
-full handshake again. A longer `ControlPersist` would hide that cost but keep idle connections open
-and delay picking up a replaced key; revisit it only if measured sync latency after idle periods
-becomes a problem. The device-key probe never shares a connection, so it always tests a fresh
-authentication, and plain `git` through `core.sshCommand` is unaffected. Sharing relies on OpenSSH
-7.3 or newer, where a backgrounded master no longer holds the caller's stderr open. Windows OpenSSH
-does not support it.
+enough for the platform's socket-path limit. `%C` hashes only the endpoints and remote user, so the
+socket name adds `<key tag>`, eight hex digits of a BLAKE3 hash of the key path, and two identity
+stores never share a connection. A shared master stays up at most 60 seconds after its last use, so a
+replaced or revoked key stops being used shortly after. The window is deliberately short: the first
+sync after an idle minute pays the full handshake again. A longer `ControlPersist` would hide that
+cost but keep idle connections open and delay picking up a replaced key; revisit it only if measured
+sync latency after idle periods becomes a problem. The engine, the daemon, and the `core.sshCommand`
+wrapper below share this socket. The device-key probe always turns sharing off, so it tests a fresh
+authentication. Sharing relies on OpenSSH 7.3 or newer, where a backgrounded master no longer holds
+the caller's stderr open. Windows OpenSSH does not support it and always runs isolated.
 
 ### Plain `git` (`core.sshCommand`, on by default)
 
