@@ -157,31 +157,31 @@ impl Default for SearchQuery {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchPlan {
     pub effective_query: String,
     pub semantic_text: String,
     pub tag: Option<String>,
     pub path_prefix: Option<String>,
     pub has_property: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub property_filters: Vec<String>,
     pub raw_query: bool,
     pub fuzzy_requested: bool,
     pub fuzzy_fallback_used: bool,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parsed_query_explanation: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fuzzy_expansions: Vec<SearchFuzzyExpansion>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchFuzzyExpansion {
     pub term: String,
     pub candidates: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SearchHitExplain {
     pub strategy: String,
     pub effective_query: String,
@@ -198,14 +198,14 @@ pub struct SearchHitExplain {
     pub vector_contribution: Option<f64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SearchReport {
     pub query: String,
     pub mode: SearchMode,
     pub tag: Option<String>,
     pub path_prefix: Option<String>,
     pub has_property: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub filters: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan: Option<SearchPlan>,
@@ -231,7 +231,7 @@ pub struct StaticSearchIndexEntry {
     pub aliases_text: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SearchHit {
     pub document_path: String,
     pub chunk_id: String,

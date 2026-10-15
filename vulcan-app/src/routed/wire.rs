@@ -130,27 +130,8 @@ impl From<QueryReportWire> for QueryReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::routed::test_support::copy_fixture;
     use vulcan_core::{scan_vault, ScanMode, VaultPaths};
-
-    fn copy_fixture(name: &str, destination: &std::path::Path) {
-        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../tests/fixtures/vaults")
-            .join(name);
-        let mut pending = vec![source.clone()];
-        while let Some(directory) = pending.pop() {
-            for entry in std::fs::read_dir(directory).unwrap() {
-                let path = entry.unwrap().path();
-                let target = destination.join(path.strip_prefix(&source).unwrap());
-                if path.is_dir() {
-                    std::fs::create_dir_all(&target).unwrap();
-                    pending.push(path);
-                } else {
-                    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-                    std::fs::copy(&path, &target).unwrap();
-                }
-            }
-        }
-    }
 
     /// Every field of a record survives, including those a query might
     /// leave empty (tasks, list items, periodic metadata).

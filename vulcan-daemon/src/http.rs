@@ -146,6 +146,7 @@ pub fn companion_router(state: CompanionHttpState) -> Router {
         )
         .route("/{id}/sync/semantic-plans", post(create_semantic_plan))
         .route("/{id}/ops/query", post(routed_query))
+        .route("/{id}/ops/search", post(routed_search))
         .route("/jobs/{job}", get(job_status).delete(cancel_job))
         .route(
             "/aggregate-jobs/{job}",
@@ -344,21 +345,48 @@ async fn capabilities(State(state): State<CompanionHttpState>) -> Json<Companion
             .push(CompanionOperation::DaemonShutdown);
     }
     if state.routed_reads.is_some() {
-        capabilities
-            .operations
-            .push(CompanionOperation::RoutedQuery);
+        capabilities.operations.extend([
+            CompanionOperation::RoutedQuery,
+            CompanionOperation::RoutedSearch,
+        ]);
     }
     Json(capabilities)
 }
 
-/// A routed `query` answered from the vault's retained state: the wire
-/// report, `503` with `unavailable` when the client should run it directly,
-/// or `422` with `failed` when running it directly would fail the same way.
+/// A routed `query` answered from the vault's retained state.
 async fn routed_query(
     State(state): State<CompanionHttpState>,
     Path(id): Path<String>,
     body: Result<Json<crate::routed_reads::RoutedQuery>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
+    answer_routed(&state, &id, body, crate::routed_reads::routed_query).await
+}
+
+/// A routed keyword `search` answered from the vault's fresh cache.
+async fn routed_search(
+    State(state): State<CompanionHttpState>,
+    Path(id): Path<String>,
+    body: Result<Json<crate::routed_reads::RoutedSearch>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    answer_routed(&state, &id, body, crate::routed_reads::routed_search).await
+}
+
+/// Answer a routed read: its report, `503` with `unavailable` when the
+/// client should run it directly, or `422` with `failed` when running it
+/// directly would fail the same way.
+async fn answer_routed<R, T>(
+    state: &CompanionHttpState,
+    id: &str,
+    body: Result<Json<R>, axum::extract::rejection::JsonRejection>,
+    read: fn(
+        &crate::routed_reads::RoutedVault,
+        &R,
+    ) -> Result<T, crate::routed_reads::RoutedReadError>,
+) -> Response
+where
+    R: Send + 'static,
+    T: Serialize + Send + 'static,
+{
     use crate::routed_reads::RoutedReadError;
     let unavailable = |reason: &str| {
         (
@@ -367,7 +395,7 @@ async fn routed_query(
         )
             .into_response()
     };
-    let Json(query) = match body {
+    let Json(request) = match body {
         Ok(body) => body,
         Err(rejection) => {
             return (
@@ -380,13 +408,11 @@ async fn routed_query(
     let Some(vault) = state
         .routed_reads
         .as_ref()
-        .and_then(|registry| registry.get(&id))
+        .and_then(|registry| registry.get(id))
     else {
         return unavailable("the daemon does not index this vault");
     };
-    match tokio::task::spawn_blocking(move || crate::routed_reads::routed_query(&vault, &query))
-        .await
-    {
+    match tokio::task::spawn_blocking(move || read(&vault, &request)).await {
         Ok(Ok(report)) => Json(report).into_response(),
         Ok(Err(error @ RoutedReadError::Unavailable(_))) => {
             (StatusCode::SERVICE_UNAVAILABLE, Json(error)).into_response()
@@ -1188,6 +1214,75 @@ mod tests {
         );
         let response = router.oneshot(post("notes", &query(None))).await.unwrap();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// A routed keyword search is the direct report; hybrid search declines
+    /// because it embeds the query with the client's provider.
+    #[tokio::test]
+    async fn routed_searches_answer_like_the_direct_search_or_decline() {
+        use crate::routed_reads::{RoutedReadRegistry, RoutedVault};
+        use vulcan_core::search::{SearchMode, SearchQuery, SearchReport};
+        let (temporary, mut state) = fixture();
+        let vault = temporary.path().join("vault");
+        std::fs::write(vault.join("A.md"), "# Alpha\n\nThe dashboard is green.\n").unwrap();
+        std::fs::write(vault.join("B.md"), "# Beta\n\nAnother dashboard note.\n").unwrap();
+        let paths = vulcan_core::VaultPaths::new(&vault);
+        vulcan_core::initialize_vulcan_dir(&paths).unwrap();
+        vulcan_core::scan_vault(&paths, vulcan_core::ScanMode::Full).unwrap();
+        let registry = RoutedReadRegistry::default();
+        let tracker = Arc::new(crate::scan_runtime::VaultScanTracker::default());
+        registry.insert("notes", RoutedVault::new(paths.clone(), tracker, None));
+        state.routed_reads = Some(registry);
+        let router = companion_router(state.clone());
+
+        let capabilities = body_json(
+            router
+                .clone()
+                .oneshot(request(&state, Method::GET, "/capabilities"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(capabilities["operations"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("routed_search")));
+
+        let search = |mode: SearchMode| SearchQuery {
+            text: "dashboard".to_string(),
+            mode,
+            explain: true,
+            ..SearchQuery::default()
+        };
+        let post = |query: &SearchQuery| {
+            let body = json!({ "query": query, "permissions": null, "refresh": false });
+            let mut request = request(&state, Method::POST, "/notes/ops/search");
+            *request.body_mut() = Body::from(body.to_string());
+            request.headers_mut().insert(
+                axum::http::header::CONTENT_TYPE,
+                "application/json".parse().unwrap(),
+            );
+            request
+        };
+        let response = router
+            .clone()
+            .oneshot(post(&search(SearchMode::Keyword)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let answer: SearchReport = serde_json::from_value(body_json(response).await).unwrap();
+        let direct =
+            vulcan_app::routed::search::run_search(&paths, &search(SearchMode::Keyword), None)
+                .unwrap();
+        assert_eq!(answer, direct);
+        assert_eq!(direct.hits.len(), 2);
+
+        let response = router
+            .oneshot(post(&search(SearchMode::Hybrid)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body_json(response).await["code"], "unavailable");
     }
 
     #[tokio::test]

@@ -14,10 +14,13 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use vulcan_app::routed::query::{run_query, QueryRequest};
+use vulcan_app::routed::search;
 use vulcan_app::routed::wire::QueryReportWire;
 use vulcan_core::note_session::NoteStoreSession;
+use vulcan_core::search::{SearchQuery, SearchReport};
 use vulcan_core::{
-    resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
+    resolve_permission_profile, PermissionFilter, PermissionGuard, ProfilePermissionGuard,
+    VaultPaths,
 };
 
 use crate::scan_runtime::{request_index_barrier, CacheFreshnessState, VaultScanTracker};
@@ -109,11 +112,24 @@ impl Display for RoutedReadError {
 
 impl std::error::Error for RoutedReadError {}
 
-/// Answer a routed `query` from the vault's retained session.
-pub fn routed_query(
+/// A routed keyword `search`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RoutedSearch {
+    pub query: SearchQuery,
+    /// The caller's `--permissions` profile, resolved by the vault's config.
+    pub permissions: Option<String>,
+    /// Whether the caller's refresh mode requires a fresh index.
+    pub refresh: bool,
+}
+
+/// The checks every routed read passes before it runs: the registration's
+/// permission ceiling, the index barrier, and the caller's profile. Returns
+/// the read filter the caller's profile imposes, if any.
+fn prepare_read(
     vault: &RoutedVault,
-    query: &RoutedQuery,
-) -> Result<QueryReportWire, RoutedReadError> {
+    permissions: Option<&str>,
+    refresh: bool,
+) -> Result<Option<PermissionFilter>, RoutedReadError> {
     if vault.permissions_profile.is_some() {
         // Intersecting a registration's ceiling with the caller's profile
         // could narrow the result below the direct one; decline instead.
@@ -121,7 +137,7 @@ pub fn routed_query(
             "the registration narrows permissions".to_string(),
         ));
     }
-    if query.refresh {
+    if refresh {
         let completion =
             request_index_barrier(vault.paths.vault_root(), &vault.tracker, BARRIER_TIMEOUT)
                 .map_err(|error| RoutedReadError::Unavailable(error.to_string()))?;
@@ -132,11 +148,19 @@ pub fn routed_query(
             )));
         }
     }
-    let profile = resolve_permission_profile(&vault.paths, query.permissions.as_deref())
+    let profile = resolve_permission_profile(&vault.paths, permissions)
         .map_err(|error| RoutedReadError::Failed(error.to_string()))?;
     let guard = ProfilePermissionGuard::new(&vault.paths, profile);
     let filter = guard.read_filter();
-    let filter = (!filter.path_permission().is_unrestricted()).then_some(filter);
+    Ok((!filter.path_permission().is_unrestricted()).then_some(filter))
+}
+
+/// Answer a routed `query` from the vault's retained session.
+pub fn routed_query(
+    vault: &RoutedVault,
+    query: &RoutedQuery,
+) -> Result<QueryReportWire, RoutedReadError> {
+    let filter = prepare_read(vault, query.permissions.as_deref(), query.refresh)?;
     let report = match vault.session.snapshot() {
         Some(store) => run_query(&store, &vault.paths, &query.request, filter.as_ref()),
         None => run_query(
@@ -150,4 +174,19 @@ pub fn routed_query(
     QueryReportWire::from_report(report).ok_or_else(|| {
         RoutedReadError::Unavailable("the report carries a publication selection".to_string())
     })
+}
+
+/// Answer a routed keyword `search` from the vault's fresh cache.
+pub fn routed_search(
+    vault: &RoutedVault,
+    search: &RoutedSearch,
+) -> Result<SearchReport, RoutedReadError> {
+    if !search::routable(&search.query) {
+        return Err(RoutedReadError::Unavailable(
+            "hybrid search embeds the query with the client's provider".to_string(),
+        ));
+    }
+    let filter = prepare_read(vault, search.permissions.as_deref(), search.refresh)?;
+    search::run_search(&vault.paths, &search.query, filter.as_ref())
+        .map_err(|error| RoutedReadError::Failed(error.to_string()))
 }

@@ -9,11 +9,14 @@
 //! the read runs here.
 
 use vulcan_app::routed::query::QueryRequest;
+use vulcan_core::search::{SearchQuery, SearchReport};
 use vulcan_core::{QueryReport, VaultPaths};
-use vulcan_daemon::process::{request_routed_query, DaemonProcessContext, RoutedClientError};
-use vulcan_daemon::routed_reads::RoutedQuery;
+use vulcan_daemon::process::{
+    request_routed_query, request_routed_search, DaemonProcessContext, RoutedClientError,
+};
+use vulcan_daemon::routed_reads::{RoutedQuery, RoutedSearch};
 
-use crate::cli::{Command, QueryEngineArg, RouteMode};
+use crate::cli::{Command, QueryEngineArg, RouteMode, SearchMode};
 use crate::{Cli, CliError};
 
 fn route_mode(cli: &Cli) -> RouteMode {
@@ -39,6 +42,8 @@ fn is_routable(command: &Command) -> bool {
             };
             !dql && (dsl.is_some() || json.is_some())
         }
+        // Hybrid search embeds the query with this process's provider.
+        Command::Search { mode, .. } => *mode == SearchMode::Keyword,
         _ => false,
     }
 }
@@ -54,25 +59,56 @@ pub(crate) fn route_query(
     paths: &VaultPaths,
     request: &QueryRequest,
 ) -> Result<Option<QueryReport>, CliError> {
+    route(cli, paths, |context, refresh| {
+        request_routed_query(
+            context,
+            paths.vault_root(),
+            &RoutedQuery {
+                request: request.clone(),
+                permissions: cli.permissions.clone(),
+                refresh,
+            },
+        )
+        .map(QueryReport::from)
+    })
+}
+
+/// The daemon's answer to a keyword `search`, or `None` when it should run
+/// here.
+pub(crate) fn route_search(
+    cli: &Cli,
+    paths: &VaultPaths,
+    query: &SearchQuery,
+) -> Result<Option<SearchReport>, CliError> {
+    route(cli, paths, |context, refresh| {
+        request_routed_search(
+            context,
+            paths.vault_root(),
+            &RoutedSearch {
+                query: query.clone(),
+                permissions: cli.permissions.clone(),
+                refresh,
+            },
+        )
+    })
+}
+
+/// Ask the daemon with `ask` (given whether the caller wants a fresh
+/// index) unless the mode is `direct`, and apply the fallback rules.
+fn route<T>(
+    cli: &Cli,
+    paths: &VaultPaths,
+    ask: impl FnOnce(&DaemonProcessContext, bool) -> Result<T, RoutedClientError>,
+) -> Result<Option<T>, CliError> {
     let mode = route_mode(cli);
     if mode == RouteMode::Direct {
         return Ok(None);
     }
     let answer = DaemonProcessContext::user_default()
         .map_err(|error| RoutedClientError::Transport(error.to_string()))
-        .and_then(|context| {
-            request_routed_query(
-                &context,
-                paths.vault_root(),
-                &RoutedQuery {
-                    request: request.clone(),
-                    permissions: cli.permissions.clone(),
-                    refresh: crate::refresh_requested(paths, cli),
-                },
-            )
-        });
+        .and_then(|context| ask(&context, crate::refresh_requested(paths, cli)));
     match (answer, mode) {
-        (Ok(report), _) => Ok(Some(report.into())),
+        (Ok(report), _) => Ok(Some(report)),
         // Running it here fails the same way; report the daemon's error.
         (Err(RoutedClientError::Failed(message)), _) => Err(CliError::operation(message)),
         (Err(_), RouteMode::Auto) => Ok(None),

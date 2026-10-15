@@ -7,4 +7,29 @@
 //! wire as full-fidelity [`wire`] types and are printed by the client.
 
 pub mod query;
+pub mod search;
 pub mod wire;
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    /// Copy the fixture vault `name` into `destination`.
+    pub(crate) fn copy_fixture(name: &str, destination: &std::path::Path) {
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/fixtures/vaults")
+            .join(name);
+        let mut pending = vec![source.clone()];
+        while let Some(directory) = pending.pop() {
+            for entry in std::fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                let target = destination.join(path.strip_prefix(&source).unwrap());
+                if path.is_dir() {
+                    std::fs::create_dir_all(&target).unwrap();
+                    pending.push(path);
+                } else {
+                    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+                    std::fs::copy(&path, &target).unwrap();
+                }
+            }
+        }
+    }
+}

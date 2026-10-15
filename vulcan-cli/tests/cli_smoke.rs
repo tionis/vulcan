@@ -9704,9 +9704,10 @@ fn daemon_cli_detaches_reports_status_and_stops_gracefully() {
         .contains("daemon must be running to provision a companion client"));
 }
 
-/// `--route daemon` prints exactly what a direct query prints, sees changes
-/// made just before it, and fails as a direct query would; `auto` falls back
-/// once the daemon is gone, and `daemon` then reports `daemon_unavailable`.
+/// `--route daemon` prints exactly what a direct `query` or `search` prints,
+/// sees changes made just before it, and fails as a direct read would; `auto`
+/// falls back once the daemon is gone, and `daemon` then reports
+/// `daemon_unavailable`.
 #[test]
 fn routed_queries_print_what_direct_queries_print() {
     let temporary = TempDir::new().expect("temp dir should be created");
@@ -9762,7 +9763,7 @@ fn routed_queries_print_what_direct_queries_print() {
         thread::sleep(std::time::Duration::from_millis(100));
     }
 
-    let cases: [&[&str]; 6] = [
+    let cases: [&[&str]; 11] = [
         &[
             "--output",
             "json",
@@ -9801,6 +9802,18 @@ fn routed_queries_print_what_direct_queries_print() {
             "query",
             "from notes",
         ],
+        &["--output", "json", "search", "dashboard"],
+        &["search", "dashboard"],
+        &[
+            "--output",
+            "json",
+            "search",
+            "--explain",
+            "--fuzzy",
+            "dashbord",
+        ],
+        &["--output", "json", "--limit", "1", "search", "dashboard"],
+        &["--output", "json", "search", "--regex", "dash.oard"],
     ];
     for case in cases {
         let direct = vulcan(&[&["--route", "direct"], case].concat());
@@ -9827,6 +9840,17 @@ fn routed_queries_print_what_direct_queries_print() {
     assert!(fresh.status.success(), "{fresh:?}");
     assert!(
         String::from_utf8_lossy(&fresh.stdout).contains("Fresh.md"),
+        "{fresh:?}"
+    );
+    fs::write(
+        vault_root.join("Searched.md"),
+        "# Zeppelin\n\nAn airship.\n",
+    )
+    .unwrap();
+    let fresh = vulcan(&["--route", "daemon", "--output", "json", "search", "airship"]);
+    assert!(fresh.status.success(), "{fresh:?}");
+    assert!(
+        String::from_utf8_lossy(&fresh.stdout).contains("Searched.md"),
         "{fresh:?}"
     );
 
@@ -9860,6 +9884,16 @@ fn routed_queries_print_what_direct_queries_print() {
     assert_eq!(auto.stdout, direct.stdout);
     let required = vulcan(&[&["--route", "daemon"], &query[..]].concat());
     assert!(!required.status.success());
+    assert_eq!(
+        parse_stdout_json_bytes(&required.stdout)["code"],
+        "daemon_unavailable"
+    );
+    let search = ["--output", "json", "search", "dashboard"];
+    let direct = vulcan(&[&["--route", "direct"], &search[..]].concat());
+    let auto = vulcan(&[&["--route", "auto"], &search[..]].concat());
+    assert!(auto.status.success(), "{auto:?}");
+    assert_eq!(auto.stdout, direct.stdout);
+    let required = vulcan(&[&["--route", "daemon"], &search[..]].concat());
     assert_eq!(
         parse_stdout_json_bytes(&required.stdout)["code"],
         "daemon_unavailable"

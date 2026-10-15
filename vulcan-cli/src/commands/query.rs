@@ -16,8 +16,8 @@ use vulcan_app::properties::apply_bulk_property_mutation;
 use vulcan_core::Verbosity;
 use vulcan_core::{
     list_query_fields, load_vault_config, query_backlinks_with_filter, query_links_with_filter,
-    query_notes_with_filter, search_vault_with_filter, NamedCount, NoteQuery, PermissionGuard,
-    PropertyCatalogEntry, QueryAst, QueryReport, SearchQuery, VaultPaths,
+    query_notes_with_filter, NamedCount, NoteQuery, PermissionGuard, PropertyCatalogEntry,
+    QueryAst, QueryReport, SearchQuery, VaultPaths,
 };
 
 fn consistent_read_guard(
@@ -557,7 +557,13 @@ pub(crate) fn handle_search_command(
     stdout_is_tty: bool,
     use_stdout_color: bool,
 ) -> Result<(), CliError> {
-    let _read_guard = consistent_read_guard(paths)?;
+    // As for `query`, a routed search takes the read lock only if it runs
+    // here, so the daemon's barrier scan is not blocked by it.
+    let mut _read_guard = if crate::routing::defers_refresh(cli) {
+        None
+    } else {
+        consistent_read_guard(paths)?
+    };
     let effective_query = match (query, regex) {
         (Some(_), Some(_)) => {
             return Err(CliError::operation(
@@ -572,28 +578,43 @@ pub(crate) fn handle_search_command(
             ));
         }
     };
-    let read_filter = selected_read_permission_filter(cli, paths)?;
-    let report = search_vault_with_filter(
-        paths,
-        &SearchQuery {
-            text: effective_query,
-            tag: tag.map(ToString::to_string),
-            path_prefix: path_prefix.map(ToString::to_string),
-            has_property: has_property.map(ToString::to_string),
-            filters: filters.to_vec(),
-            provider: cli.provider.clone(),
-            mode: crate::cli_search_mode(mode),
-            sort: sort.map(crate::cli_search_sort),
-            match_case: match_case.then_some(true),
-            limit: cli.limit.map(|limit| limit.saturating_add(cli.offset)),
-            context_size,
-            raw_query,
-            fuzzy,
-            explain,
-        },
-        read_filter.as_ref(),
-    )
-    .map_err(CliError::operation)?;
+    let search = SearchQuery {
+        text: effective_query,
+        tag: tag.map(ToString::to_string),
+        path_prefix: path_prefix.map(ToString::to_string),
+        has_property: has_property.map(ToString::to_string),
+        filters: filters.to_vec(),
+        provider: cli.provider.clone(),
+        mode: crate::cli_search_mode(mode),
+        sort: sort.map(crate::cli_search_sort),
+        match_case: match_case.then_some(true),
+        limit: cli.limit.map(|limit| limit.saturating_add(cli.offset)),
+        context_size,
+        raw_query,
+        fuzzy,
+        explain,
+    };
+    let routed = if crate::routing::defers_refresh(cli) {
+        crate::routing::route_search(cli, paths, &search)?
+    } else {
+        None
+    };
+    let report = if let Some(report) = routed {
+        report
+    } else {
+        if crate::routing::defers_refresh(cli) {
+            let use_stderr_color = crate::resolve_use_color(
+                cli.color,
+                std::io::IsTerminal::is_terminal(&std::io::stderr()),
+            );
+            crate::maybe_auto_refresh_command_cache(paths, cli, use_stderr_color)?;
+            // Held, as for a direct search, until the report is printed.
+            _read_guard = consistent_read_guard(paths)?;
+        }
+        let read_filter = selected_read_permission_filter(cli, paths)?;
+        vulcan_app::routed::search::run_search(paths, &search, read_filter.as_ref())
+            .map_err(CliError::operation)?
+    };
     let export = crate::resolve_cli_export(export)?;
     crate::print_search_report(
         cli.output,

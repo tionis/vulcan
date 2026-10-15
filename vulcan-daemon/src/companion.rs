@@ -70,6 +70,8 @@ pub enum CompanionOperation {
     DaemonShutdown,
     /// `POST /{id}/ops/query`: a routed read (Roadmap 10.5).
     RoutedQuery,
+    /// `POST /{id}/ops/search`: a routed keyword search.
+    RoutedSearch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

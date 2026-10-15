@@ -1268,6 +1268,31 @@ pub fn request_routed_query(
     vault_root: &Path,
     query: &crate::routed_reads::RoutedQuery,
 ) -> Result<vulcan_app::routed::wire::QueryReportWire, RoutedClientError> {
+    request_routed(context, vault_root, "query", query)
+}
+
+/// Ask the running daemon to answer a keyword `search` for the vault at
+/// `vault_root`. Costs one file check when no daemon runs.
+pub fn request_routed_search(
+    context: &DaemonProcessContext,
+    vault_root: &Path,
+    search: &crate::routed_reads::RoutedSearch,
+) -> Result<vulcan_core::search::SearchReport, RoutedClientError> {
+    request_routed(context, vault_root, "search", search)
+}
+
+/// POST `request` to the daemon's `/{id}/ops/{operation}` for the vault at
+/// `vault_root` and decode its answer.
+fn request_routed<R, T>(
+    context: &DaemonProcessContext,
+    vault_root: &Path,
+    operation: &str,
+    request: &R,
+) -> Result<T, RoutedClientError>
+where
+    R: serde::Serialize,
+    T: serde::de::DeserializeOwned,
+{
     let transport = |error: DaemonProcessError| RoutedClientError::Transport(error.to_string());
     let record = read_runtime_record(&context.runtime_path())
         .map_err(transport)?
@@ -1290,12 +1315,12 @@ pub fn request_routed_query(
             "daemon runtime credential identity does not match device state".to_string(),
         ));
     }
-    let body = serde_json::to_vec(query)
+    let body = serde_json::to_vec(request)
         .map_err(|error| RoutedClientError::Transport(error.to_string()))?;
     let (status, response) = send_http_json(
         record.bind,
         &credential,
-        &format!("/{wiki_id}/ops/query"),
+        &format!("/{wiki_id}/ops/{operation}"),
         &body,
     )
     .map_err(transport)?;
