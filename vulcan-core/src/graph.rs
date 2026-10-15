@@ -460,32 +460,56 @@ struct GraphAdjacency {
 }
 
 impl GraphAdjacency {
-    fn load(connection: &Connection) -> Result<Self, GraphQueryError> {
-        let mut edges = Vec::new();
+    /// The edges among `notes`: one per link whose source and target are both
+    /// in `notes`, ordered by source path, target path, and byte offset, with
+    /// each pair's confidence folded in that order. `notes` is in path order,
+    /// so sorting by note index reproduces the path order. Links are read
+    /// without joins and endpoints matched against `notes`, which also
+    /// applies a permission-scoped universe.
+    fn load_for(connection: &Connection, notes: &IndexedNoteSet) -> Result<Self, GraphQueryError> {
+        let index = notes
+            .notes
+            .iter()
+            .enumerate()
+            .map(|(position, note)| (note.id.as_str(), position))
+            .collect::<HashMap<_, _>>();
+        let mut statement = connection.prepare(
+            "SELECT source_document_id, resolved_target_id, byte_offset, confidence,
+                    confidence_score
+             FROM links WHERE resolved_target_id IS NOT NULL",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut links = Vec::new();
+        while let Some(row) = rows.next()? {
+            let (Some(&source), Some(&target)) =
+                (index.get(row_text(row, 0)?), index.get(row_text(row, 1)?))
+            else {
+                continue;
+            };
+            links.push((
+                source,
+                target,
+                row.get::<_, i64>(2)?,
+                LinkConfidence::from_db(row_text(row, 3)?),
+                row.get::<_, f64>(4)?,
+            ));
+        }
+        links.sort_unstable_by_key(|&(source, target, offset, ..)| (source, target, offset));
+
+        let mut edges = Vec::with_capacity(links.len());
         let mut counts = HashMap::<String, (usize, usize)>::new();
-        let mut statement = connection.prepare(NOTE_EDGES_SQL)?;
-        let rows = statement.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                LinkConfidence::from_db(&row.get::<_, String>(2)?),
-                row.get::<_, f64>(3)?,
-            ))
-        })?;
-        let mut confidence = HashMap::new();
-        for row in rows {
-            let (source_id, target_id, edge_confidence, confidence_score) = row?;
+        let mut confidence = HashMap::<(String, String), (LinkConfidence, f64)>::new();
+        for (source, target, _, edge_confidence, score) in links {
+            let source_id = notes.notes[source].id.clone();
+            let target_id = notes.notes[target].id.clone();
             counts.entry(source_id.clone()).or_insert((0, 0)).1 += 1;
             counts.entry(target_id.clone()).or_insert((0, 0)).0 += 1;
             confidence
                 .entry((source_id.clone(), target_id.clone()))
-                .and_modify(|existing: &mut (LinkConfidence, f64)| {
-                    prefer_edge_confidence(existing, (edge_confidence, confidence_score));
-                })
-                .or_insert((edge_confidence, confidence_score));
+                .and_modify(|existing| prefer_edge_confidence(existing, (edge_confidence, score)))
+                .or_insert((edge_confidence, score));
             edges.push((source_id, target_id));
         }
-
         Ok(Self {
             edges,
             counts,
@@ -550,32 +574,6 @@ impl GraphAdjacency {
                 .insert(source_id.clone());
         }
         adjacency
-    }
-
-    fn from_filtered(adjacency: GraphAdjacency, allowed_ids: &HashSet<String>) -> Self {
-        let mut edges = Vec::new();
-        let mut counts = HashMap::<String, (usize, usize)>::new();
-        let mut confidence = HashMap::new();
-        for (source_id, target_id) in adjacency.edges {
-            if !(allowed_ids.contains(&source_id) && allowed_ids.contains(&target_id)) {
-                continue;
-            }
-            counts.entry(source_id.clone()).or_insert((0, 0)).1 += 1;
-            counts.entry(target_id.clone()).or_insert((0, 0)).0 += 1;
-            if let Some(edge_confidence) = adjacency
-                .confidence
-                .get(&(source_id.clone(), target_id.clone()))
-                .copied()
-            {
-                confidence.insert((source_id.clone(), target_id.clone()), edge_confidence);
-            }
-            edges.push((source_id, target_id));
-        }
-        Self {
-            edges,
-            counts,
-            confidence,
-        }
     }
 
     fn hubs(&self, notes: &[IndexedNote], min_degree: usize) -> Vec<GraphNodeScore> {
@@ -1097,17 +1095,6 @@ pub fn query_graph_communities_with_filter(
     Ok(report)
 }
 
-/// Resolved note-to-note links in path order, then by position: every link
-/// between one pair of notes is contiguous.
-const NOTE_EDGES_SQL: &str = "
-    SELECT source.id, target.id, links.confidence, links.confidence_score
-    FROM links
-    JOIN documents AS source ON source.id = links.source_document_id
-    JOIN documents AS target ON target.id = links.resolved_target_id
-    WHERE source.extension = 'md' AND target.extension = 'md'
-    ORDER BY source.path, target.path, links.byte_offset
-";
-
 /// A pair's links in order decide its confidence: a later link replaces
 /// the current one when its confidence ranks higher or its score is higher.
 pub(crate) fn prefer_edge_confidence(
@@ -1140,7 +1127,7 @@ pub fn query_graph_analytics_with_filter(
     let connection = open_existing_cache(paths)?;
     let notes = filtered_note_set(&connection, filter)?;
     let adjacency = filtered_graph_adjacency(&connection, &notes)?;
-    build_graph_analytics_report(&connection, &notes, &adjacency)
+    build_graph_analytics_report(&connection, &notes, &adjacency, filter.is_some())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1904,12 +1891,26 @@ fn persist_graph_clusters(
     Ok(())
 }
 
+/// `scoped` says whether `notes` is a permission-filtered universe; without
+/// one, tag and property counts read every note instead of binding each id.
 fn build_graph_analytics_report(
     connection: &Connection,
     notes: &IndexedNoteSet,
     adjacency: &GraphAdjacency,
+    scoped: bool,
 ) -> Result<GraphAnalyticsReport, GraphQueryError> {
-    let allowed_ids = allowed_note_ids(notes);
+    let (top_tags, top_properties) = if scoped {
+        let allowed_ids = allowed_note_ids(notes);
+        (
+            tag_counts_for_ids(connection, &allowed_ids, Some(10))?,
+            top_property_counts_for_ids(connection, &allowed_ids)?,
+        )
+    } else {
+        (
+            tag_counts(connection, Some(10))?,
+            top_property_counts(connection)?,
+        )
+    };
     let resolved_note_links = adjacency.total_resolved_links();
     let orphan_notes = notes
         .notes
@@ -1930,8 +1931,8 @@ fn build_graph_analytics_report(
         },
         orphan_notes,
         confidence: adjacency.confidence_breakdown(),
-        top_tags: tag_counts_for_ids(connection, &allowed_ids, Some(10))?,
-        top_properties: top_property_counts_for_ids(connection, &allowed_ids)?,
+        top_tags,
+        top_properties,
     })
 }
 
@@ -1974,6 +1975,20 @@ fn load_indexed_notes(connection: &Connection) -> Result<IndexedNoteSet, GraphQu
         .collect::<Result<Vec<_>, _>>()
         .map_err(GraphQueryError::from)?;
     Ok(IndexedNoteSet::build(notes))
+}
+
+/// A text column borrowed from the row, without allocating.
+fn row_text<'row>(
+    row: &'row rusqlite::Row<'_>,
+    column: usize,
+) -> Result<&'row str, rusqlite::Error> {
+    row.get_ref(column)?.as_str().map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Text,
+            Box::new(error),
+        )
+    })
 }
 
 /// Resolve `identifier` among every indexed note, as callers that check
@@ -2071,9 +2086,7 @@ fn filtered_graph_adjacency(
     connection: &Connection,
     notes: &IndexedNoteSet,
 ) -> Result<GraphAdjacency, GraphQueryError> {
-    let allowed_ids = allowed_note_ids(notes);
-    let adjacency = GraphAdjacency::load(connection)?;
-    Ok(GraphAdjacency::from_filtered(adjacency, &allowed_ids))
+    GraphAdjacency::load_for(connection, notes)
 }
 
 fn strip_markdown_extension(path: &str) -> &str {
@@ -2237,6 +2250,26 @@ fn json_id_list(ids: &HashSet<String>) -> String {
     let mut ids = ids.iter().collect::<Vec<_>>();
     ids.sort();
     serde_json::to_string(&ids).unwrap_or_default()
+}
+
+/// [`top_property_counts_for_ids`] over every note.
+fn top_property_counts(connection: &Connection) -> Result<Vec<NamedCount>, GraphQueryError> {
+    let mut statement = connection.prepare(
+        "SELECT key, COUNT(*) AS total_usage
+         FROM property_values
+         WHERE document_id IN (SELECT id FROM documents WHERE extension = 'md')
+         GROUP BY key
+         ORDER BY total_usage DESC, key ASC
+         LIMIT 10",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(NamedCount {
+            name: row.get(0)?,
+            count: usize::try_from(row.get::<_, i64>(1)?).unwrap_or(usize::MAX),
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(GraphQueryError::from)
 }
 
 fn top_property_counts_for_ids(
@@ -2821,11 +2854,8 @@ mod tests {
         };
         let notes = load_indexed_notes(&connection).unwrap();
         lap("load notes");
-        let raw = GraphAdjacency::load(&connection).unwrap();
+        let adjacency = GraphAdjacency::load_for(&connection, &notes).unwrap();
         lap("load adjacency");
-        let allowed = allowed_note_ids(&notes);
-        let adjacency = GraphAdjacency::from_filtered(raw, &allowed);
-        lap("filter adjacency");
         let orphans = notes
             .notes
             .iter()
@@ -2833,9 +2863,9 @@ mod tests {
             .count();
         let confidence = adjacency.confidence_breakdown();
         lap("orphans and confidence");
-        let tags = tag_counts_for_ids(&connection, &allowed, Some(10)).unwrap();
+        let tags = tag_counts(&connection, Some(10)).unwrap();
         lap("top tags");
-        let properties = top_property_counts_for_ids(&connection, &allowed).unwrap();
+        let properties = top_property_counts(&connection).unwrap();
         lap("top properties");
         let hubs = build_graph_hubs_report(&notes, &adjacency);
         lap("hubs report");
@@ -2851,6 +2881,148 @@ mod tests {
             hubs.notes.len(),
             path.is_ok()
         );
+    }
+
+    /// Resolved note-to-note links in path order, then by position: every link
+    /// between one pair of notes is contiguous.
+    const NOTE_EDGES_SQL: &str = "
+        SELECT source.id, target.id, links.confidence, links.confidence_score
+        FROM links
+        JOIN documents AS source ON source.id = links.source_document_id
+        JOIN documents AS target ON target.id = links.resolved_target_id
+        WHERE source.extension = 'md' AND target.extension = 'md'
+        ORDER BY source.path, target.path, links.byte_offset
+    ";
+
+    // The former loader, joined and sorted by path in SQL, then filtered to
+    // the universe: the reference `GraphAdjacency::load_for` must equal.
+    fn reference_load(connection: &Connection) -> GraphAdjacency {
+        let mut edges = Vec::new();
+        let mut counts = HashMap::<String, (usize, usize)>::new();
+        let mut statement = connection.prepare(NOTE_EDGES_SQL).unwrap();
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    LinkConfidence::from_db(&row.get::<_, String>(2)?),
+                    row.get::<_, f64>(3)?,
+                ))
+            })
+            .unwrap();
+        let mut confidence = HashMap::new();
+        for row in rows {
+            let (source_id, target_id, edge_confidence, confidence_score) = row.unwrap();
+            counts.entry(source_id.clone()).or_insert((0, 0)).1 += 1;
+            counts.entry(target_id.clone()).or_insert((0, 0)).0 += 1;
+            confidence
+                .entry((source_id.clone(), target_id.clone()))
+                .and_modify(|existing: &mut (LinkConfidence, f64)| {
+                    prefer_edge_confidence(existing, (edge_confidence, confidence_score));
+                })
+                .or_insert((edge_confidence, confidence_score));
+            edges.push((source_id, target_id));
+        }
+
+        GraphAdjacency {
+            edges,
+            counts,
+            confidence,
+        }
+    }
+
+    fn reference_filter(
+        adjacency: GraphAdjacency,
+        allowed_ids: &HashSet<String>,
+    ) -> GraphAdjacency {
+        let mut edges = Vec::new();
+        let mut counts = HashMap::<String, (usize, usize)>::new();
+        let mut confidence = HashMap::new();
+        for (source_id, target_id) in adjacency.edges {
+            if !(allowed_ids.contains(&source_id) && allowed_ids.contains(&target_id)) {
+                continue;
+            }
+            counts.entry(source_id.clone()).or_insert((0, 0)).1 += 1;
+            counts.entry(target_id.clone()).or_insert((0, 0)).0 += 1;
+            if let Some(edge_confidence) = adjacency
+                .confidence
+                .get(&(source_id.clone(), target_id.clone()))
+                .copied()
+            {
+                confidence.insert((source_id.clone(), target_id.clone()), edge_confidence);
+            }
+            edges.push((source_id, target_id));
+        }
+        GraphAdjacency {
+            edges,
+            counts,
+            confidence,
+        }
+    }
+
+    #[test]
+    fn unscoped_tag_and_property_counts_equal_counting_every_note_id() {
+        let temp = TempDir::new().unwrap();
+        let vault_root = temp.path().join("vault");
+        copy_fixture_vault("mixed-properties", &vault_root);
+        fs::write(vault_root.join("data.base"), "views: []\n").unwrap();
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        let connection = open_existing_cache(&paths).unwrap();
+        let every_id = allowed_note_ids(&filtered_note_set(&connection, None).unwrap());
+        let properties = top_property_counts(&connection).unwrap();
+        assert!(!properties.is_empty());
+        assert_eq!(
+            properties,
+            top_property_counts_for_ids(&connection, &every_id).unwrap()
+        );
+        assert_eq!(
+            tag_counts(&connection, Some(10)).unwrap(),
+            tag_counts_for_ids(&connection, &every_id, Some(10)).unwrap()
+        );
+    }
+
+    #[test]
+    fn indexed_adjacency_equals_the_joined_path_ordered_load() {
+        let temp = TempDir::new().unwrap();
+        let vault_root = temp.path().join("vault");
+        copy_fixture_vault("ambiguous-links", &vault_root);
+        fs::write(
+            vault_root.join("Self.md"),
+            "[[Self]] [[Root]] [[Root]] ![[pic.png]]\n",
+        )
+        .unwrap();
+        fs::write(vault_root.join("pic.png"), [0_u8; 4]).unwrap();
+        fs::create_dir_all(vault_root.join(".vulcan")).unwrap();
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            "[permissions.profiles.scoped]\nread = { allow = [\"folder:Projects/**\", \"note:Self.md\", \"note:Root.md\"] }\n",
+        )
+        .unwrap();
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        let connection = open_existing_cache(&paths).unwrap();
+        // Mixed confidence within one pair exercises the ordered fold.
+        connection
+            .execute_batch(
+                "UPDATE links SET confidence = 'AMBIGUOUS', confidence_score = 0.2
+                 WHERE id IN (SELECT links.id FROM links JOIN documents AS s
+                              ON s.id = links.source_document_id
+                              WHERE s.path = 'Self.md' ORDER BY byte_offset LIMIT 2);",
+            )
+            .unwrap();
+        let guard = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+        );
+        let filter = guard.read_filter();
+        for scope in [None, Some(&filter)] {
+            let notes = filtered_note_set(&connection, scope).unwrap();
+            let expected = reference_filter(reference_load(&connection), &allowed_note_ids(&notes));
+            let indexed = GraphAdjacency::load_for(&connection, &notes).unwrap();
+            assert!(!expected.edges.is_empty());
+            assert_eq!(indexed, expected, "scoped={}", scope.is_some());
+        }
     }
 
     #[test]
