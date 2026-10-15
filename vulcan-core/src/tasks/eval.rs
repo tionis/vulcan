@@ -126,11 +126,16 @@ pub fn shape_tasks_query_result(tasks: Vec<Value>, query: &TasksQuery) -> TasksQ
 }
 
 fn task_rows(note_index: &HashMap<String, crate::NoteRecord, impl BuildHasher>) -> Vec<TaskRow> {
-    let mut notes = note_index.values().cloned().collect::<Vec<_>>();
+    // Only notes with tasks yield rows; the index also holds every other
+    // note of the vault, which cloning cost more than reading the tasks.
+    let mut notes = note_index
+        .values()
+        .filter(|note| !note.tasks.is_empty())
+        .collect::<Vec<_>>();
     notes.sort_by(|left, right| left.document_path.cmp(&right.document_path));
 
     let mut rows = Vec::new();
-    for note in &notes {
+    for note in notes {
         let tasks = match FileMetadataResolver::field(note, "tasks") {
             Value::Array(tasks) => tasks,
             _ => Vec::new(),
