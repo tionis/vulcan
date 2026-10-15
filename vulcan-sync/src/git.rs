@@ -9606,7 +9606,16 @@ mod tests {
                 )],
             )
             .expect("fetch refs");
-        assert_eq!(tracking(&worktree), "");
+        let unexpected = tracking(&worktree);
+        // Flaky on Windows and macOS CI only; the reflogs name the command
+        // that wrote any remote-tracking ref.
+        let writers = unexpected
+            .lines()
+            .map(|reference| {
+                run_git_capture(&worktree, &["reflog", "show", "--date=iso", reference])
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(unexpected, "", "written by: {writers:?}");
 
         let root = GitRefName::parse("refs/heads/__vulcan-sync").expect("root");
         assert!(engine
