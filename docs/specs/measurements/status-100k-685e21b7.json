@@ -1,0 +1,110 @@
+{
+  "acceptance_gate_result": "not_evaluated",
+  "binary": "/home/eric/vulcan-eval/target/release/vulcan",
+  "binary_sha256": "6b643c6bd82f324eb9ed0ae042c17eb29389e8119e68a8490f59fe4c770f5ce7",
+  "binary_unchanged": true,
+  "commit": "685e21b7",
+  "complete_and_valid": true,
+  "fixture": {
+    "acceptance_gate_result": "not_evaluated",
+    "body_bytes_per_record": 4096,
+    "digest_format": "generation-order u64be path-length/path/u64be byte-length/bytes; excludes manifest",
+    "generator_version": 1,
+    "invalid_priority_records": 1031,
+    "links": 1000000,
+    "missing_status_records": 20000,
+    "payload_files": 100014,
+    "payload_sha256": "b934b38bb58223d523aba60a8b4e346c553deee93828d3d52c0570dca9166d5f",
+    "private_records": 10000,
+    "records": 100000,
+    "seed": 42,
+    "type_counts": {
+      "contact": 33333,
+      "project": 33333,
+      "task": 33334
+    }
+  },
+  "fixture_unchanged": true,
+  "limitations": [
+    "Frontends return different report shapes; equivalence is not checked",
+    "No concurrent writers or external edits during measurement",
+    "Host power, frequency, background load, and OS page cache are uncontrolled"
+  ],
+  "machine": {
+    "architecture": "x86_64",
+    "cpus": 16,
+    "host": "designated evaluation host (Intel Core i7-10700, 31 GiB RAM, Debian 13)",
+    "load_average": [
+      2.337890625,
+      2.5546875,
+      1.345703125
+    ],
+    "platform": "Linux-6.12.111+deb13-amd64-x86_64-with-glibc2.41"
+  },
+  "measurement": "daemon_routing_baseline",
+  "method": {
+    "cli": "process start through exit, default blocking refresh",
+    "concurrency": 1,
+    "http": "loopback GET round trip to one watched serve process",
+    "mcp": "tools/call round trip in one stdio process",
+    "missing_record_check": "Python os.stat of a missing path; an upper bound",
+    "percentiles": "nearest rank over repeated successful requests",
+    "requested_repeated_samples": 10
+  },
+  "missing_record_check_ns": 1275.3796,
+  "operations": {
+    "graph_stats": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 4925.978690967895,
+        "repeated_ms": {
+          "max": 4993.170697009191,
+          "p50": 4943.917391938157,
+          "p95": 4993.170697009191,
+          "p99": 4993.170697009191,
+          "samples": 10
+        }
+      }
+    },
+    "status": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 60.77837303746492,
+        "repeated_ms": {
+          "max": 62.48536007478833,
+          "p50": 60.961870942264795,
+          "p95": 62.48536007478833,
+          "p99": 62.48536007478833,
+          "samples": 10
+        }
+      },
+      "mcp": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 62.38320702686906,
+        "repeated_ms": {
+          "max": 58.688548975624144,
+          "p50": 58.144734939560294,
+          "p95": 58.688548975624144,
+          "p99": 58.688548975624144,
+          "samples": 10
+        }
+      }
+    }
+  },
+  "process_floor": {
+    "complete": true,
+    "failures": [],
+    "first_ms": 4.808366997167468,
+    "repeated_ms": {
+      "max": 4.817075910978019,
+      "p50": 4.573329002596438,
+      "p95": 4.817075910978019,
+      "p99": 4.817075910978019,
+      "samples": 10
+    }
+  },
+  "runner_sha256": "f7ed5f429725202aaac4fa4de5b23cd1e7cf362f764faaef65d9e3272e0755e2"
+}
