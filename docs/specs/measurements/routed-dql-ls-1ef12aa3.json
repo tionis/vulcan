@@ -1,0 +1,206 @@
+{
+  "acceptance_gate_result": "not_evaluated",
+  "note": "Diagnostic for routed DQL and ls; the spec's speed criterion names query, status, and note get.",
+  "commit": "1ef12aa3",
+  "binary": "/home/eric/vulcan-eval/target/release/vulcan (cargo build --release -p vulcan-cli)",
+  "fixtures": [
+    "~/vulcan-eval-fixtures/mdb-10k/collection (generator v1, seed 42, 10,000 records)",
+    "~/vulcan-eval-fixtures/mdb-100k/collection (generator v1, seed 42, 100,000 records, 1,000,000 links)"
+  ],
+  "machine": {
+    "host": "designated evaluation host (Intel Core i7-10700, 31 GiB RAM, Debian 13)",
+    "load_average_at_end": [
+      4.54,
+      2.44,
+      1.25
+    ]
+  },
+  "setup": [
+    "Isolated XDG_CONFIG_HOME and XDG_STATE_HOME; daemon.toml binds 127.0.0.1:0",
+    "Both fixtures scanned, then registered with `vault add --no-sync`",
+    "`daemon start --detach`, then waited until both vaults reported cache state fresh"
+  ],
+  "method": {
+    "cases": [
+      "ls --where type = task",
+      "--limit 50 ls --format detail",
+      "ls --tag group-1 --format count",
+      "query --language dql TABLE title FROM \"public/task\" WHERE status = \"active\" SORT title ASC LIMIT 50",
+      "query LIST FROM #group-1 LIMIT 20"
+    ],
+    "command": "vulcan --vault <fixture> --route <direct|daemon> --output json <case>",
+    "timing": "wall clock of the whole process from Python subprocess.run; 11 runs per case, the first discarded; per-case p50 and max of 10 samples",
+    "refresh": "default refresh mode: direct runs prove freshness by stat walk; routed runs pass an index barrier",
+    "equivalence": "sha256 of stdout of the second run of each case, compared between direct and daemon"
+  },
+  "results_ms": {
+    "10k": {
+      "outputs_identical": true,
+      "direct": {
+        "per_case": {
+          "ls --where type = task": {
+            "p50": 85.1,
+            "max": 86.0
+          },
+          "--limit 50 ls --format detail": {
+            "p50": 131.4,
+            "max": 134.3
+          },
+          "ls --tag group-1 --format count": {
+            "p50": 52.3,
+            "max": 53.7
+          },
+          "query --language dql TABLE title FROM \"public/task\" WHERE status = \"active\" SORT title ASC LIMIT 50": {
+            "p50": 51.1,
+            "max": 52.5
+          },
+          "query LIST FROM #group-1 LIMIT 20": {
+            "p50": 51.9,
+            "max": 53.8
+          }
+        },
+        "output_lines": [
+          3334,
+          50,
+          1,
+          1,
+          1
+        ],
+        "stdout_sha256": [
+          "e54ff3c9c39057bf8b100117b7ef37b7a11c3f5fea7e13decd31e54edb4f03de",
+          "02885f531aea641670926e6c80d8df9ba5afc9d02b2bca04b5b7bb87853f2276",
+          "a3169315014951b2235c182b56f78d2be47aef4cc120ff05034153d759751612",
+          "0a2e26f0e4e7fa2c6dc3786107a8ce6c6073603f7856c3669ad407f3cc38d7e2",
+          "bd65da6e04f22d0927ad15b67979a1596180018dd080636b184d44dd9831c1ae"
+        ]
+      },
+      "daemon": {
+        "per_case": {
+          "ls --where type = task": {
+            "p50": 37.9,
+            "max": 41.0
+          },
+          "--limit 50 ls --format detail": {
+            "p50": 8.5,
+            "max": 8.8
+          },
+          "ls --tag group-1 --format count": {
+            "p50": 18.9,
+            "max": 19.2
+          },
+          "query --language dql TABLE title FROM \"public/task\" WHERE status = \"active\" SORT title ASC LIMIT 50": {
+            "p50": 7.3,
+            "max": 7.5
+          },
+          "query LIST FROM #group-1 LIMIT 20": {
+            "p50": 6.6,
+            "max": 6.9
+          }
+        },
+        "output_lines": [
+          3334,
+          50,
+          1,
+          1,
+          1
+        ],
+        "stdout_sha256": [
+          "e54ff3c9c39057bf8b100117b7ef37b7a11c3f5fea7e13decd31e54edb4f03de",
+          "02885f531aea641670926e6c80d8df9ba5afc9d02b2bca04b5b7bb87853f2276",
+          "a3169315014951b2235c182b56f78d2be47aef4cc120ff05034153d759751612",
+          "0a2e26f0e4e7fa2c6dc3786107a8ce6c6073603f7856c3669ad407f3cc38d7e2",
+          "bd65da6e04f22d0927ad15b67979a1596180018dd080636b184d44dd9831c1ae"
+        ]
+      }
+    },
+    "100k": {
+      "outputs_identical": true,
+      "direct": {
+        "per_case": {
+          "ls --where type = task": {
+            "p50": 739.5,
+            "max": 762.1
+          },
+          "--limit 50 ls --format detail": {
+            "p50": 1170.3,
+            "max": 1225.6
+          },
+          "ls --tag group-1 --format count": {
+            "p50": 420.2,
+            "max": 425.4
+          },
+          "query --language dql TABLE title FROM \"public/task\" WHERE status = \"active\" SORT title ASC LIMIT 50": {
+            "p50": 412.6,
+            "max": 418.4
+          },
+          "query LIST FROM #group-1 LIMIT 20": {
+            "p50": 415.1,
+            "max": 455.8
+          }
+        },
+        "output_lines": [
+          33334,
+          50,
+          1,
+          1,
+          1
+        ],
+        "stdout_sha256": [
+          "42b6493c0ddd149aa2416531368401bce4807febbe32208d295718aece9595d9",
+          "61c61dd087ece674f305b7870a909f4ac867cb79bd84632dd862ef012e7754e9",
+          "d32582a2f5333899e1a9c879e14bffc3cdefe51e25078965dc011114431a366c",
+          "0a2e26f0e4e7fa2c6dc3786107a8ce6c6073603f7856c3669ad407f3cc38d7e2",
+          "f4a7a5c63f1162e92d3c6a24b760621a5dfa0d43b2b7f803858362984a058ebe"
+        ]
+      },
+      "daemon": {
+        "per_case": {
+          "ls --where type = task": {
+            "p50": 339.7,
+            "max": 428.4
+          },
+          "--limit 50 ls --format detail": {
+            "p50": 12.0,
+            "max": 12.1
+          },
+          "ls --tag group-1 --format count": {
+            "p50": 142.3,
+            "max": 151.4
+          },
+          "query --language dql TABLE title FROM \"public/task\" WHERE status = \"active\" SORT title ASC LIMIT 50": {
+            "p50": 12.8,
+            "max": 13.5
+          },
+          "query LIST FROM #group-1 LIMIT 20": {
+            "p50": 10.2,
+            "max": 10.4
+          }
+        },
+        "output_lines": [
+          33334,
+          50,
+          1,
+          1,
+          1
+        ],
+        "stdout_sha256": [
+          "42b6493c0ddd149aa2416531368401bce4807febbe32208d295718aece9595d9",
+          "61c61dd087ece674f305b7870a909f4ac867cb79bd84632dd862ef012e7754e9",
+          "d32582a2f5333899e1a9c879e14bffc3cdefe51e25078965dc011114431a366c",
+          "0a2e26f0e4e7fa2c6dc3786107a8ce6c6073603f7856c3669ad407f3cc38d7e2",
+          "f4a7a5c63f1162e92d3c6a24b760621a5dfa0d43b2b7f803858362984a058ebe"
+        ]
+      }
+    }
+  },
+  "findings": [
+    "Routed DQL answers in about 13 ms at 100K against about 413 ms direct (the baseline's warm MCP took 247 ms)",
+    "Answering path listings with paths alone halved full listings routed: `ls --where type = task` (33,334 paths) 745 to 340 ms, `--format count` 304 to 142 ms; direct stays at 740 and 420 ms",
+    "The remaining routed cost of full listings is evaluating every note's filter in the daemon and printing the paths"
+  ],
+  "limitations": [
+    "Measured right after a release build; load was elevated, which slows both routes",
+    "Equivalence compares one run's stdout per case, not every sample",
+    "Host power, frequency, background load, and OS page cache are uncontrolled"
+  ]
+}
