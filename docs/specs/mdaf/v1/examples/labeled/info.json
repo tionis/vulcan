@@ -1,0 +1,63 @@
+{
+  "format": "mdaf",
+  "version": 1,
+  "title": "Synthetic Rules",
+  "markdown": {
+    "path": "text.md",
+    "digest": "blake3:3b963643ca135586b2060986cffd981f9994735d5ef8e92397dd757b7ad40679",
+    "media_type": "text/markdown"
+  },
+  "producer": {
+    "name": "example-producer",
+    "version": "1.0.0"
+  },
+  "members": [
+    {
+      "path": "text.md",
+      "role": "primary",
+      "media_type": "text/markdown",
+      "size": 90,
+      "digest": "blake3:3b963643ca135586b2060986cffd981f9994735d5ef8e92397dd757b7ad40679",
+      "created_by": "activity:extract"
+    },
+    {
+      "path": "source-map.json",
+      "role": "source-map",
+      "media_type": "application/json",
+      "size": 1327,
+      "digest": "blake3:068e2af39df8222631eca2d10fa3f90de7f85ed82582e9da4bf63250fd857107",
+      "created_by": "activity:extract",
+      "schema": "https://vulcan.tionis.dev/schemas/mdaf/v1/source-map.schema.json"
+    },
+    {
+      "path": "assets/cover.svg",
+      "role": "asset",
+      "media_type": "image/svg+xml",
+      "size": 112,
+      "digest": "blake3:edfd6f93b080b2f48ffb9c537f65629545f0002206f2baedfd37072c45c72549",
+      "created_by": "activity:cover"
+    },
+    {
+      "path": "provenance.json",
+      "role": "provenance",
+      "media_type": "application/json",
+      "size": 1107,
+      "digest": "blake3:c765f7083c3c20352dcec4d791d7b1b5f4272a6dc78d1cdaca862ca7492f13cf",
+      "created_by": "activity:cover",
+      "schema": "https://vulcan.tionis.dev/schemas/mdaf/v1/provenance.schema.json"
+    }
+  ],
+  "sources": [
+    {
+      "id": "document",
+      "media_type": "application/pdf",
+      "digest": "blake3:e3875db23d2d1a70c2658554ba8735efecc6ed06f3d0d86179302e51486dd935",
+      "name": "synthetic-rules.pdf"
+    }
+  ],
+  "capabilities": [
+    "source-map"
+  ],
+  "language": "en",
+  "cover": "assets/cover.svg"
+}

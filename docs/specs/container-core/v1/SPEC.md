@@ -130,6 +130,8 @@ A mutable or unresolved model alias is marked `mutable-alias` or `unavailable` a
 
 `derived_from` lists the logical identities of immutable parent packages. It is lineage only, not an instruction to fetch anything. A derivative is self-contained. Improving a package creates a new package with its own provenance and never edits the old one in place.
 
+A derivative may also leave members out, for example native renditions or environment inventories that a consumer does not need. It stays truthful in three ways. The omitting activity names what it left out in its `parameters`. Earlier activities no longer list omitted members among their outputs. An earlier activity that read an omitted member names the parent package itself instead: the parent's file is declared as a source (its media type and canonical digest, not embedded), and the input becomes `source:<id>`. Every input therefore still exists, and the omitted evidence remains reachable through the parent. Capabilities follow the members that remain.
+
 ## Consumer rules
 
 Consumers:

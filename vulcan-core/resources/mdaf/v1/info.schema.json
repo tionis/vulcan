@@ -48,7 +48,9 @@
       "type": "array",
       "items": { "$ref": "#/$defs/digest" },
       "uniqueItems": true
-    }
+    },
+    "language": { "type": "string", "pattern": "^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$" },
+    "cover": { "type": "string", "minLength": 1 }
   },
   "$defs": {
     "digest": { "type": "string", "pattern": "^blake3:[0-9a-f]{64}$" },

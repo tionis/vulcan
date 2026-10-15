@@ -111,6 +111,94 @@ pub struct MdafManifest {
     pub capabilities: Vec<String>,
     #[serde(default)]
     pub derived_from: Vec<String>,
+    /// The primary Markdown's language, a BCP 47 tag such as `en` or `de-CH`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// A declared image asset that represents the document (a cover or thumbnail).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover: Option<String>,
+}
+
+/// How a run of a paged source's pages is labeled, from its zero-based `start` page until the
+/// next range: the model of PDF page labels.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MdafPageLabelRange {
+    pub start: u64,
+    pub style: MdafPageLabelStyle,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+    /// The number of the range's first page (default 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MdafPageLabelStyle {
+    Decimal,
+    RomanUpper,
+    RomanLower,
+    AlphaUpper,
+    AlphaLower,
+    /// Only the prefix, no number.
+    None,
+}
+
+/// The label of a zero-based page under `ranges` (sorted by `start`), or `None` when no range
+/// covers it.
+#[must_use]
+pub fn page_label(ranges: &[MdafPageLabelRange], page: u64) -> Option<String> {
+    let range = ranges.iter().rev().find(|range| range.start <= page)?;
+    let number = range.first.unwrap_or(1) + (page - range.start);
+    let numeral = match range.style {
+        MdafPageLabelStyle::Decimal => number.to_string(),
+        MdafPageLabelStyle::RomanUpper => roman(number),
+        MdafPageLabelStyle::RomanLower => roman(number).to_lowercase(),
+        MdafPageLabelStyle::AlphaUpper => alpha(number),
+        MdafPageLabelStyle::AlphaLower => alpha(number).to_lowercase(),
+        MdafPageLabelStyle::None => String::new(),
+    };
+    Some(format!(
+        "{}{numeral}",
+        range.prefix.as_deref().unwrap_or("")
+    ))
+}
+
+fn roman(mut number: u64) -> String {
+    const NUMERALS: [(u64, &str); 13] = [
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
+    ];
+    let mut out = String::new();
+    for (value, numeral) in NUMERALS {
+        while number >= value {
+            out.push_str(numeral);
+            number -= value;
+        }
+    }
+    out
+}
+
+/// PDF's letters: A to Z, then AA to ZZ, then AAA and so on (the letter repeated).
+fn alpha(number: u64) -> String {
+    if number == 0 {
+        return String::new();
+    }
+    let letter = char::from(b'A' + u8::try_from((number - 1) % 26).unwrap_or(0));
+    let times = usize::try_from((number - 1) / 26 + 1).unwrap_or(1);
+    letter.to_string().repeat(times)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -140,6 +228,9 @@ pub struct MdafSourceMap {
     pub document_digest: String,
     pub mappings: Vec<MdafSourceMapping>,
     pub references: Vec<MdafSourceReference>,
+    /// Page labels of paged sources, by source ID (printed page numbers, roman front matter).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub page_labels: BTreeMap<String, Vec<MdafPageLabelRange>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -935,6 +1026,7 @@ fn validate_semantics(
             diagnostics,
         );
     }
+    validate_document_metadata(manifest, diagnostics);
     validate_capability(manifest, "source-map", source_map.is_some(), diagnostics);
     validate_capability(manifest, "outline", outline.is_some(), diagnostics);
     validate_role_capability(
@@ -961,6 +1053,79 @@ fn validate_semantics(
         MdafMemberRole::Extension,
         diagnostics,
     );
+}
+
+/// `language` is a well-formed BCP 47 tag; `cover` names a declared image asset.
+fn validate_document_metadata(manifest: &MdafManifest, diagnostics: &mut Vec<MdafDiagnostic>) {
+    if let Some(language) = &manifest.language {
+        if !is_language_tag(language) {
+            error_diag(
+                diagnostics,
+                "language_invalid",
+                format!("language {language:?} is not a BCP 47 tag"),
+                "info.json",
+            );
+        }
+    }
+    if let Some(cover) = &manifest.cover {
+        let member = manifest.members.iter().find(|member| &member.path == cover);
+        if !member.is_some_and(|member| {
+            member.role == MdafMemberRole::Asset && member.media_type.starts_with("image/")
+        }) {
+            error_diag(
+                diagnostics,
+                "cover_invalid",
+                format!("cover {cover:?} must name a declared image asset"),
+                "info.json",
+            );
+        }
+    }
+}
+
+/// A well-formed BCP 47 tag (the syntax: a 2 to 8 letter language, then subtags of 1 to 8
+/// letters or digits); registered subtags are not checked.
+fn is_language_tag(tag: &str) -> bool {
+    let mut parts = tag.split('-');
+    let Some(language) = parts.next() else {
+        return false;
+    };
+    (2..=8).contains(&language.len())
+        && language.bytes().all(|b| b.is_ascii_alphabetic())
+        && parts.all(|part| {
+            (1..=8).contains(&part.len()) && part.bytes().all(|b| b.is_ascii_alphanumeric())
+        })
+}
+
+/// Page label ranges name declared sources and start in strictly increasing order.
+fn validate_page_labels(
+    map: &MdafSourceMap,
+    source_ids: &BTreeSet<&str>,
+    diagnostics: &mut Vec<MdafDiagnostic>,
+) {
+    for (source, ranges) in &map.page_labels {
+        if !source_ids.contains(source.as_str()) {
+            error_diag(
+                diagnostics,
+                "page_labels_source_unknown",
+                format!("page labels name unknown source {source:?}"),
+                "source-map.json",
+            );
+        }
+        let increasing = ranges.windows(2).all(|pair| pair[0].start < pair[1].start);
+        let numbered = ranges
+            .iter()
+            .all(|range| range.first.is_none_or(|first| first >= 1));
+        if ranges.is_empty() || !increasing || !numbered {
+            error_diag(
+                diagnostics,
+                "page_labels_invalid",
+                format!(
+                    "page labels of {source:?} need ranges in increasing order, numbered from 1"
+                ),
+                "source-map.json",
+            );
+        }
+    }
 }
 
 fn validate_role_capability(
@@ -1026,6 +1191,7 @@ fn validate_source_map(
             diagnostics,
         );
     }
+    validate_page_labels(map, source_ids, diagnostics);
 }
 
 fn validate_outline(
@@ -1473,6 +1639,8 @@ mod tests {
             }],
             capabilities: vec!["source-map".to_string(), "outline".to_string()],
             derived_from: vec![blake3_digest(b"parent")],
+            language: None,
+            cover: None,
         };
         let source_map = MdafSourceMap {
             version: 1,
@@ -1534,6 +1702,7 @@ mod tests {
                 method: Some("provider.example/alignment".to_string()),
             }],
             references: Vec::new(),
+            page_labels: BTreeMap::new(),
         };
         let outline = MdafOutline {
             version: 1,
@@ -1629,5 +1798,153 @@ mod tests {
             &mut diagnostics,
         );
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    fn labels(
+        ranges: &[(u64, MdafPageLabelStyle, Option<&str>, Option<u64>)],
+    ) -> Vec<MdafPageLabelRange> {
+        ranges
+            .iter()
+            .map(|(start, style, prefix, first)| MdafPageLabelRange {
+                start: *start,
+                style: *style,
+                prefix: prefix.map(str::to_string),
+                first: *first,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn labels_pages_as_pdf_page_labels_do() {
+        // A cover, roman front matter, then the book from its printed page 1, and an appendix.
+        let ranges = labels(&[
+            (0, MdafPageLabelStyle::None, Some("Cover"), None),
+            (1, MdafPageLabelStyle::RomanLower, None, None),
+            (5, MdafPageLabelStyle::Decimal, None, None),
+            (300, MdafPageLabelStyle::AlphaUpper, Some("App. "), Some(1)),
+        ]);
+        let label = |page| page_label(&ranges, page);
+        assert_eq!(label(0).as_deref(), Some("Cover"));
+        assert_eq!(label(1).as_deref(), Some("i"));
+        assert_eq!(label(4).as_deref(), Some("iv"));
+        assert_eq!(label(5).as_deref(), Some("1"));
+        assert_eq!(label(299).as_deref(), Some("295"));
+        assert_eq!(label(300).as_deref(), Some("App. A"));
+        assert_eq!(label(327).as_deref(), Some("App. BB"));
+        assert_eq!(roman(1994), "MCMXCIV");
+        // An offset: printed page 1 is the PDF's third page.
+        let offset = labels(&[(2, MdafPageLabelStyle::Decimal, None, None)]);
+        assert_eq!(page_label(&offset, 0), None);
+        assert_eq!(page_label(&offset, 2).as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn validates_language_cover_and_page_labels() {
+        let member = |path: &str, role, media_type: &str| MdafMember {
+            path: path.to_string(),
+            role,
+            media_type: media_type.to_string(),
+            size: 1,
+            digest: blake3_digest(b"x"),
+            created_by: "activity:a".to_string(),
+            schema: None,
+            namespace: None,
+        };
+        let mut manifest: MdafManifest = serde_json::from_value(serde_json::json!({
+            "format": "mdaf", "version": 1,
+            "markdown": { "path": "text.md", "digest": blake3_digest(b"x"), "media_type": "text/markdown" },
+            "producer": { "name": "p", "version": "1" },
+            "members": [], "sources": [], "language": "de-CH", "cover": "assets/cover.jpg"
+        }))
+        .expect("a manifest with language and cover");
+        manifest.members = vec![
+            member("assets/cover.jpg", MdafMemberRole::Asset, "image/jpeg"),
+            member("assets/notes.txt", MdafMemberRole::Asset, "text/plain"),
+        ];
+        let mut diagnostics = Vec::new();
+        validate_document_metadata(&manifest, &mut diagnostics);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+        manifest.language = Some("not a tag".to_string());
+        manifest.cover = Some("assets/notes.txt".to_string());
+        validate_document_metadata(&manifest, &mut diagnostics);
+        let codes = diagnostics
+            .iter()
+            .map(|d| d.code.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(codes, ["language_invalid", "cover_invalid"]);
+
+        // Page labels: of known sources, in increasing order, numbered from 1.
+        let mut map = MdafSourceMap {
+            version: 1,
+            document_digest: blake3_digest(b"x"),
+            mappings: Vec::new(),
+            references: Vec::new(),
+            page_labels: BTreeMap::from([(
+                "book".to_string(),
+                labels(&[
+                    (0, MdafPageLabelStyle::RomanLower, None, None),
+                    (4, MdafPageLabelStyle::Decimal, None, None),
+                ]),
+            )]),
+        };
+        let mut diagnostics = Vec::new();
+        validate_page_labels(&map, &BTreeSet::from(["book"]), &mut diagnostics);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        map.page_labels.insert(
+            "other".to_string(),
+            labels(&[
+                (4, MdafPageLabelStyle::Decimal, None, None),
+                (2, MdafPageLabelStyle::Decimal, None, Some(0)),
+            ]),
+        );
+        validate_page_labels(&map, &BTreeSet::from(["book"]), &mut diagnostics);
+        let codes = diagnostics
+            .iter()
+            .map(|d| d.code.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(codes, ["page_labels_source_unknown", "page_labels_invalid"]);
+
+        // The published schemas take the new fields.
+        let mut schema_diagnostics = Vec::new();
+        validate_schema(
+            "info.json",
+            INFO_SCHEMA,
+            &serde_json::json!({
+                "format": "mdaf", "version": 1,
+                "markdown": { "path": "text.md", "digest": blake3_digest(b"x"), "media_type": "text/markdown" },
+                "producer": { "name": "p", "version": "1" },
+                "members": [], "sources": [], "language": "de-CH", "cover": "assets/cover.jpg"
+            }),
+            &mut schema_diagnostics,
+        );
+        validate_schema(
+            "source-map.json",
+            SOURCE_MAP_SCHEMA,
+            &serde_json::json!({
+                "version": 1, "document_digest": blake3_digest(b"x"), "mappings": [], "references": [],
+                "page_labels": { "book": [ { "start": 0, "style": "roman-lower" }, { "start": 4, "style": "decimal", "prefix": "S-", "first": 1 } ] }
+            }),
+            &mut schema_diagnostics,
+        );
+        assert!(schema_diagnostics.is_empty(), "{schema_diagnostics:?}");
+    }
+
+    #[test]
+    fn the_labeled_example_is_valid_and_labels_its_pages() {
+        let example = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("workspace root")
+            .join("docs/specs/mdaf/v1/examples/labeled");
+        let artifact = inspect_mdaf(&example).expect("the example");
+        assert!(artifact.valid, "{:?}", artifact.diagnostics);
+        let manifest = artifact.manifest.expect("manifest");
+        assert_eq!(manifest.language.as_deref(), Some("en"));
+        assert_eq!(manifest.cover.as_deref(), Some("assets/cover.svg"));
+        let ranges = &artifact.source_map.expect("source map").page_labels["document"];
+        let labels = (0..3)
+            .map(|page| page_label(ranges, page).expect("a label"))
+            .collect::<Vec<_>>();
+        assert_eq!(labels, ["Cover", "i", "1"]);
     }
 }

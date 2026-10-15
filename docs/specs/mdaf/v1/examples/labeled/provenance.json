@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "activities": [
+    {
+      "id": "activity:extract",
+      "kind": "document-extraction",
+      "tools": [
+        {
+          "name": "example-extractor",
+          "version": "1.0.0"
+        }
+      ],
+      "models": [],
+      "inputs": [
+        "source:document"
+      ],
+      "outputs": [
+        "text.md",
+        "source-map.json"
+      ],
+      "depends_on": [],
+      "parameters": {
+        "mode": "synthetic"
+      },
+      "parameters_digest": "blake3:5ea54201a84078e0433629fee2037e0e977deddd60f013fc097140a293c538c3"
+    },
+    {
+      "id": "activity:cover",
+      "kind": "cover-rendering",
+      "tools": [
+        {
+          "name": "example-renderer",
+          "version": "1.0.0"
+        }
+      ],
+      "models": [],
+      "inputs": [
+        "source:document"
+      ],
+      "outputs": [
+        "assets/cover.svg",
+        "provenance.json"
+      ],
+      "depends_on": [],
+      "parameters": {
+        "page": "0"
+      },
+      "parameters_digest": "blake3:a53df6ef8df6d67a9e4119a3fb91b21538514d9d162babb64a44386c8ba5dbd3"
+    }
+  ],
+  "redactions": []
+}

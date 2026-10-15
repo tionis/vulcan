@@ -1510,6 +1510,7 @@ mod tests {
                 },
                 kind: Some("page-reference".to_string()),
             }],
+            page_labels: std::collections::BTreeMap::new(),
         };
         let mut diagnostics = Vec::new();
         let target = import_link_target(link, &plan, &[], Some(&source_map), &mut diagnostics)

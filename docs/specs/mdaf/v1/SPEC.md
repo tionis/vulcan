@@ -39,6 +39,13 @@ Container Core [member paths](../../container-core/v1/SPEC.md#member-paths) and 
 
 The primary Markdown media type is `text/markdown`. `markdown.variant` and `markdown.features` describe syntax without changing the MDAF contract. Sources have stable artifact-local IDs, media types, canonical BLAKE3 digests, optional alternate algorithm-tagged digests, and optional embedded member paths. Alternate digests preserve upstream identities without weakening or replacing the canonical digest. Portable core fields must not contain credentials, signed URLs, authorization headers, or absolute local paths.
 
+## Document metadata
+
+`info.json` may describe the document beyond its title. Both fields are optional, and an artifact without them is unchanged.
+
+- `language` is the primary Markdown's language as a well-formed BCP 47 tag (`en`, `de-CH`, `pt-BR`). Only the syntax is required; registered subtags are not checked. A document in several languages names the one most of `text.md` is in. Consumers may use it for search, hyphenation, and spelling, never to select extraction behavior.
+- `cover` is the path of a declared `asset` member whose media type is an image: a cover or thumbnail that represents the document in a library. It need not be referenced by `text.md`. A producer that renders one (for example a PDF's first page) records the rendering activity in provenance like any other generated member.
+
 ## Logical identity
 
 The logical identity is the Container Core [logical identity](../../container-core/v1/SPEC.md#logical-identity) over every regular member, including `info.json`. The specification fixtures provide a test vector. `info.json.derived_from` contains canonical logical identities of immutable parents; it is lineage, not an instruction to fetch them. A derivative remains self-contained and carries forward the evidence needed for future processing.
@@ -50,6 +57,8 @@ The logical identity is the Container Core [logical identity](../../container-co
 A mapping connects a Markdown span to a source locator and may carry confidence and a namespaced method. A reference connects authored Markdown text to a target locator. Mappings may overlap, may be partial, and may repeat the same Markdown span for multiple sources. Producers decide which inferred records are reliable enough to publish; consumers preserve confidence and method but do not rerun extraction.
 
 Locators and selectors follow Container Core [locators and selectors](../../container-core/v1/SPEC.md#locators-and-selectors): `interval`, `rectangle`, `polygon`, `grid`, `text-quote`, `fragment`, and namespaced `extension`. Unknown future source formats therefore require neither a new MDAF version nor a Vulcan code branch. They use the closest lossless normalized selectors and keep any richer native locator in an extension selector or rendition.
+
+A paged source may have page labels: the numbers printed on its pages, which often differ from their position (roman front matter, a cover before page 1, appendix letters). `source-map.json.page_labels` maps a declared source ID to label ranges, the model of PDF page labels. Each range starts at a zero-based page `start` and applies until the next range; ranges are ordered by strictly increasing `start`. A range has a `style` (`decimal`, `roman-upper`, `roman-lower`, `alpha-upper` for A to Z then AA to ZZ, `alpha-lower`, or `none` for a prefix only), an optional `prefix`, and an optional `first` number (default 1). Pages before the first range have no label. Labels come from evidence: the source's own page labels (a PDF's `/PageLabels`), or a derivation that provenance records as an activity with its method and parameters, such as matching printed numbers against known page references. A presumed offset without such evidence must not be published. Interval selectors' `label_start` and `label_end` remain valid and take precedence for their selector.
 
 Source-reference resolution is conservative. A target selector must be matched by a compatible mapping selector for the same declared source; all target selectors must overlap or identify the same segment. Ambiguous or unsupported matches remain authored Markdown and produce a diagnostic rather than an inferred link.
 

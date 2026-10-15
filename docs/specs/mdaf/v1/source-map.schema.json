@@ -9,9 +9,24 @@
     "version": { "const": 1 },
     "document_digest": { "$ref": "#/$defs/digest" },
     "mappings": { "type": "array", "items": { "$ref": "#/$defs/mapping" } },
-    "references": { "type": "array", "items": { "$ref": "#/$defs/reference" } }
+    "references": { "type": "array", "items": { "$ref": "#/$defs/reference" } },
+    "page_labels": {
+      "type": "object",
+      "additionalProperties": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/page_label_range" } }
+    }
   },
   "$defs": {
+    "page_label_range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "style"],
+      "properties": {
+        "start": { "type": "integer", "minimum": 0 },
+        "style": { "enum": ["decimal", "roman-upper", "roman-lower", "alpha-upper", "alpha-lower", "none"] },
+        "prefix": { "type": "string" },
+        "first": { "type": "integer", "minimum": 1 }
+      }
+    },
     "digest": { "type": "string", "pattern": "^blake3:[0-9a-f]{64}$" },
     "span": {
       "type": "object",

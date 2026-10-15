@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Added
+
+- MDAF v1 gains optional document metadata and page labels, additive and backwards compatible.
+  `info.json` may carry `language` (a BCP 47 tag) and `cover` (a declared image asset that
+  represents the document), and `source-map.json` may carry `page_labels`: per paged source,
+  label ranges in the model of PDF page labels (decimal, roman, or letter numbering with an
+  optional prefix and first number), published only from evidence. `vulcan artifact validate`
+  checks them (`language_invalid`, `cover_invalid`, `page_labels_source_unknown`,
+  `page_labels_invalid`), and `artifact::page_label` turns a page into its printed label.
+- Container Core's lineage section says how a derivative leaves members out truthfully: the
+  omitting activity names them, earlier activities stop listing them as outputs, and an activity
+  that read one names the parent package, declared as a non-embedded source, instead.
+
 ### Changed
 
 - mdbase query and permission failures keep their canonical code. `vulcan mdbase query` (and
