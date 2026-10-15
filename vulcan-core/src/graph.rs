@@ -2805,6 +2805,54 @@ mod tests {
         }
     }
 
+    /// Stage timings of the whole-graph reports on an existing vault:
+    /// `VULCAN_GRAPH_BENCH_VAULT=<vault> cargo test --release -p vulcan-core
+    /// --lib graph_report_stage_benchmark -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "diagnostic benchmark over a caller-supplied vault"]
+    fn graph_report_stage_benchmark() {
+        let vault = std::env::var("VULCAN_GRAPH_BENCH_VAULT").expect("VULCAN_GRAPH_BENCH_VAULT");
+        let paths = VaultPaths::new(vault);
+        let connection = open_existing_cache(&paths).unwrap();
+        let mut clock = std::time::Instant::now();
+        let mut lap = |stage: &str| {
+            println!("{stage}: {} ms", clock.elapsed().as_millis());
+            clock = std::time::Instant::now();
+        };
+        let notes = load_indexed_notes(&connection).unwrap();
+        lap("load notes");
+        let raw = GraphAdjacency::load(&connection).unwrap();
+        lap("load adjacency");
+        let allowed = allowed_note_ids(&notes);
+        let adjacency = GraphAdjacency::from_filtered(raw, &allowed);
+        lap("filter adjacency");
+        let orphans = notes
+            .notes
+            .iter()
+            .filter(|note| adjacency.is_orphan(&note.id))
+            .count();
+        let confidence = adjacency.confidence_breakdown();
+        lap("orphans and confidence");
+        let tags = tag_counts_for_ids(&connection, &allowed, Some(10)).unwrap();
+        lap("top tags");
+        let properties = top_property_counts_for_ids(&connection, &allowed).unwrap();
+        lap("top properties");
+        let hubs = build_graph_hubs_report(&notes, &adjacency);
+        lap("hubs report");
+        let first = &notes.notes[0].path;
+        let last = &notes.notes[notes.notes.len() - 1].path;
+        let path = build_graph_path_report(&notes, &adjacency, first, last);
+        lap("path report");
+        println!(
+            "{} notes, {orphans} orphans, {confidence:?}, {} tags, {} properties, {} hubs, path ok {}",
+            notes.notes.len(),
+            tags.len(),
+            properties.len(),
+            hubs.notes.len(),
+            path.is_ok()
+        );
+    }
+
     #[test]
     fn hub_confidence_breakdowns_match_a_per_note_count_over_every_edge() {
         let edge = |source: &str, target: &str| (source.to_string(), target.to_string());
