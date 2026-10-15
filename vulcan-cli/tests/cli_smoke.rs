@@ -33007,6 +33007,53 @@ fn mcp_http_initialize_requires_a_request_id_without_consuming_a_session() {
     assert!(valid.headers.contains_key("mcp-session-id"));
 }
 
+/// While another process owns the vault's index, the MCP watcher leaves
+/// indexing to it, and takes over once that process releases ownership.
+#[test]
+fn mcp_http_transport_watcher_follows_and_takes_over_the_index_owner() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    let paths = VaultPaths::new(&vault_root);
+    let owner = vulcan_core::index_owner::IndexOwnerLease::try_acquire(
+        &paths,
+        vulcan_core::index_owner::IndexOwnerKind::Watch,
+    )
+    .expect("lease should open")
+    .expect("lease should be free");
+
+    let _session = McpHttpSession::start(&vault_root, "/mcp", None, &[]);
+    fs::write(vault_root.join("Followed.md"), "# Followed\n").expect("note should be written");
+    let connection = Connection::open(vault_root.join(".vulcan/cache.db")).expect("cache open");
+    let indexed = || -> i64 {
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM documents WHERE path = 'Followed.md'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("documents should be queryable")
+    };
+    // Generous for a watcher that would index on its own (debounce 250 ms).
+    thread::sleep(std::time::Duration::from_secs(2));
+    assert_eq!(
+        indexed(),
+        0,
+        "a following watcher leaves indexing to the owner"
+    );
+
+    drop(owner);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while indexed() == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the watcher should take over and index the note"
+        );
+        thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 #[test]
 fn mcp_http_transport_watcher_indexes_new_notes_while_serving() {
     let temp_dir = TempDir::new().expect("temp dir should be created");

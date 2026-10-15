@@ -34,7 +34,7 @@ const TERMINATION_GRACE_PERIOD: Duration = Duration::from_secs(2);
 #[cfg(windows)]
 const WINDOWS_GIT_CREATION_FLAGS: u32 = 0x0800_0000; // CREATE_NO_WINDOW
 const REQUIREMENTS_CACHE_VERSION: u32 = 1;
-const DEVICE_LOCAL_VULCAN_PATHS: [&str; 7] = [
+const DEVICE_LOCAL_VULCAN_PATHS: [&str; 8] = [
     ".vulcan/config.local.toml",
     ".vulcan/cache.db",
     ".vulcan/cache.db-wal",
@@ -42,6 +42,7 @@ const DEVICE_LOCAL_VULCAN_PATHS: [&str; 7] = [
     ".vulcan/write.lock",
     ".vulcan/write.intent",
     ".vulcan/editor-watch.lock",
+    ".vulcan/index-owner.lock",
 ];
 /// Excludes for the capture's `git add`. The final character is a bracket
 /// expression so Git treats each as a wildcard pattern: a literal exclude
@@ -49,7 +50,7 @@ const DEVICE_LOCAL_VULCAN_PATHS: [&str; 7] = [
 /// addition and fails the capture. Excluding them keeps the capture from
 /// reading files another process holds locked (Windows refuses reads of a
 /// held `write.lock`) and from hashing the cache.
-const DEVICE_LOCAL_CAPTURE_EXCLUDES: [&str; 7] = [
+const DEVICE_LOCAL_CAPTURE_EXCLUDES: [&str; 8] = [
     ":(exclude).vulcan/config.local.tom[l]",
     ":(exclude).vulcan/cache.d[b]",
     ":(exclude).vulcan/cache.db-wa[l]",
@@ -57,8 +58,9 @@ const DEVICE_LOCAL_CAPTURE_EXCLUDES: [&str; 7] = [
     ":(exclude).vulcan/write.loc[k]",
     ":(exclude).vulcan/write.inten[t]",
     ":(exclude).vulcan/editor-watch.loc[k]",
+    ":(exclude).vulcan/index-owner.loc[k]",
 ];
-const WORKTREE_CAPTURE_PATHS: [&str; 8] = [
+const WORKTREE_CAPTURE_PATHS: [&str; 9] = [
     ".",
     ":(exclude).vulcan/config.local.toml",
     ":(exclude).vulcan/cache.db",
@@ -67,6 +69,7 @@ const WORKTREE_CAPTURE_PATHS: [&str; 8] = [
     ":(exclude).vulcan/write.lock",
     ":(exclude).vulcan/write.intent",
     ":(exclude).vulcan/editor-watch.lock",
+    ":(exclude).vulcan/index-owner.lock",
 ];
 const REPOSITORY_ENVIRONMENT_OVERRIDES: &[&str] = &[
     "GIT_DIR",
@@ -8789,6 +8792,7 @@ mod tests {
             ("write.lock", b"coordination lock".as_slice()),
             ("write.intent", b"writer turnstile".as_slice()),
             ("editor-watch.lock", b"editor watch lease".as_slice()),
+            ("index-owner.lock", b"serve 42\n".as_slice()),
         ] {
             fs::write(temporary.path().join(".vulcan").join(path), contents)
                 .expect("device-local file");
@@ -8826,6 +8830,7 @@ mod tests {
             ".vulcan/write.lock",
             ".vulcan/write.intent",
             ".vulcan/editor-watch.lock",
+            ".vulcan/index-owner.lock",
         ] {
             assert!(engine
                 .path_object(&repository, &snapshot, path)
@@ -8854,6 +8859,7 @@ mod tests {
                 ".vulcan/write.lock",
                 ".vulcan/write.intent",
                 ".vulcan/editor-watch.lock",
+                ".vulcan/index-owner.lock",
             ],
         );
         let tracked_internal = commit_all(temporary.path(), "track internal state");

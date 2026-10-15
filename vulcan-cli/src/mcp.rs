@@ -59,7 +59,7 @@ use vulcan_core::{
     discover_indieauth_endpoints, LocalOAuthIssuer, LocalOAuthIssuerConfig, OAuthResourceServer,
     OAuthResourceServerConfig,
 };
-use vulcan_core::{resolve_permission_profile, watch_vault_until, VaultPaths, WatchOptions};
+use vulcan_core::{resolve_permission_profile, VaultPaths, WatchOptions};
 use vulcan_daemon::host::{
     HostSupervisor, RestartPolicy, ServiceDefinition, ServiceId, ServiceLifecycleState,
     ServiceRegistration, ServiceScope,
@@ -1107,10 +1107,17 @@ fn mcp_index_watch_service(
             // Ready before the initial scan, which can outlast host startup on
             // a large vault; the listener serves meanwhile, as before.
             service.ready()?;
-            let result = watch_vault_until(
+            // Another process may already keep this vault's index fresh; the
+            // watcher then waits and takes over when that process exits.
+            if let Ok(Some(owner)) = vulcan_core::index_owner::current_index_owner(&paths) {
+                eprintln!("MCP index watcher following the index owner ({owner})");
+            }
+            let result = vulcan_core::watch::watch_vault_as_owner(
                 &paths,
                 &WatchOptions::default(),
+                vulcan_core::index_owner::IndexOwnerKind::McpHttp,
                 || service.stop().is_cancelled(),
+                || eprintln!("MCP index watcher owns the vault index"),
                 |report| -> Result<(), String> {
                     if report.startup {
                         eprintln!(

@@ -77,7 +77,7 @@ pub fn try_acquire_read_lock(paths: &VaultPaths) -> Result<Option<ReadLockGuard>
 pub const INTENT_FILE_NAME: &str = "write.intent";
 
 #[allow(clippy::unnecessary_wraps)] // Android path resolution and directory creation are fallible.
-fn lock_file_path(paths: &VaultPaths) -> Result<PathBuf, std::io::Error> {
+pub(crate) fn lock_file_path(paths: &VaultPaths) -> Result<PathBuf, std::io::Error> {
     #[cfg(target_os = "android")]
     {
         let state_root = crate::vulcan_user_state_dir().ok_or_else(|| {
@@ -105,7 +105,7 @@ fn private_lock_file_path(
     Ok(directory.join("write.lock"))
 }
 
-fn validate_lock_directory(paths: &VaultPaths) -> Result<(), std::io::Error> {
+pub(crate) fn validate_lock_directory(paths: &VaultPaths) -> Result<(), std::io::Error> {
     let metadata = fs::symlink_metadata(paths.vulcan_dir()).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             std::io::Error::new(

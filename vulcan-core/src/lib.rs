@@ -73,6 +73,7 @@ pub mod graph;
 mod graph_confidence;
 pub mod history;
 pub mod html;
+pub mod index_owner;
 pub mod init;
 pub mod js_transform;
 pub mod json_schema;

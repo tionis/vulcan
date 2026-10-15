@@ -132,6 +132,77 @@ where
     watch_vault_until_polling(paths, *options, should_stop, on_report)
 }
 
+/// How often a follower tries to take over indexing.
+pub const INDEX_OWNER_RETRY: Duration = Duration::from_secs(2);
+
+/// [`watch_vault_until`] while this process owns the vault's index (see
+/// [`crate::index_owner`]). A follower waits, retrying every
+/// [`INDEX_OWNER_RETRY`], and starts watching, beginning with the usual
+/// startup reconciliation, once the holder exits. `on_owner` runs when this
+/// process takes ownership. A vault whose lease cannot be opened (such as one
+/// without `.vulcan/`) is watched without one, as before leases existed.
+pub fn watch_vault_as_owner<F, S, E, O>(
+    paths: &VaultPaths,
+    options: &WatchOptions,
+    kind: crate::index_owner::IndexOwnerKind,
+    should_stop: S,
+    on_owner: O,
+    on_report: F,
+) -> Result<(), WatchError>
+where
+    F: FnMut(WatchReport) -> Result<(), E>,
+    S: Fn() -> bool,
+    E: Display,
+    O: FnOnce(),
+{
+    watch_vault_as_owner_every(
+        paths,
+        *options,
+        kind,
+        INDEX_OWNER_RETRY,
+        should_stop,
+        on_owner,
+        on_report,
+    )
+}
+
+fn watch_vault_as_owner_every<F, S, E, O>(
+    paths: &VaultPaths,
+    options: WatchOptions,
+    kind: crate::index_owner::IndexOwnerKind,
+    retry: Duration,
+    should_stop: S,
+    on_owner: O,
+    on_report: F,
+) -> Result<(), WatchError>
+where
+    F: FnMut(WatchReport) -> Result<(), E>,
+    S: Fn() -> bool,
+    E: Display,
+    O: FnOnce(),
+{
+    loop {
+        if should_stop() {
+            return Ok(());
+        }
+        let lease = match crate::index_owner::IndexOwnerLease::try_acquire(paths, kind) {
+            Ok(Some(lease)) => Some(lease),
+            Ok(None) => {
+                let deadline = Instant::now() + retry;
+                while Instant::now() < deadline && !should_stop() {
+                    std::thread::sleep(retry.min(Duration::from_millis(50)));
+                }
+                continue;
+            }
+            Err(_) => None,
+        };
+        on_owner();
+        let result = watch_vault_until(paths, &options, should_stop, on_report);
+        drop(lease);
+        return result;
+    }
+}
+
 fn recoverable_native_watch_error(error: &WatchError) -> bool {
     matches!(error, WatchError::Notify(_) | WatchError::ChannelClosed)
 }
@@ -571,6 +642,77 @@ mod tests {
     use notify::event::{AccessKind, CreateKind, ModifyKind};
     use notify::Config;
     use tempfile::TempDir;
+
+    /// Two processes' watchers on one vault: only the lease holder indexes an
+    /// edit, and the follower takes over once the holder stops.
+    #[test]
+    fn only_the_index_owner_scans_and_a_follower_takes_over() {
+        use crate::index_owner::IndexOwnerKind;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let temporary = TempDir::new().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        std::fs::create_dir_all(paths.vulcan_dir()).unwrap();
+        std::fs::write(temporary.path().join("A.md"), "a").unwrap();
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        let start = |kind: IndexOwnerKind| {
+            let stop = Arc::new(AtomicBool::new(false));
+            let owner = Arc::new(AtomicBool::new(false));
+            let added = Arc::new(AtomicUsize::new(0));
+            let handle = {
+                let (paths, stop, owner, added) =
+                    (paths.clone(), stop.clone(), owner.clone(), added.clone());
+                std::thread::spawn(move || {
+                    watch_vault_as_owner_every(
+                        &paths,
+                        WatchOptions { debounce_ms: 20 },
+                        kind,
+                        Duration::from_millis(50),
+                        || stop.load(Ordering::SeqCst),
+                        || owner.store(true, Ordering::SeqCst),
+                        // Counted with the startup reconciliation, so an edit
+                        // made before the watcher is ready still counts once.
+                        |report| -> Result<(), String> {
+                            added.fetch_add(report.summary.added, Ordering::SeqCst);
+                            Ok(())
+                        },
+                    )
+                })
+            };
+            (stop, owner, added, handle)
+        };
+        let wait = |condition: &dyn Fn() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !condition() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            condition()
+        };
+        let first = start(IndexOwnerKind::Serve);
+        assert!(wait(&|| first.1.load(Ordering::SeqCst)));
+        let second = start(IndexOwnerKind::Daemon);
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            !second.1.load(Ordering::SeqCst),
+            "the second process follows"
+        );
+        std::fs::write(temporary.path().join("B.md"), "b").unwrap();
+        assert!(wait(&|| first.2.load(Ordering::SeqCst) == 1));
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(second.2.load(Ordering::SeqCst), 0, "a follower never scans");
+
+        first.0.store(true, Ordering::SeqCst);
+        first.3.join().unwrap().unwrap();
+        assert!(
+            wait(&|| second.1.load(Ordering::SeqCst)),
+            "the follower takes over"
+        );
+        std::fs::write(temporary.path().join("C.md"), "c").unwrap();
+        assert!(wait(&|| second.2.load(Ordering::SeqCst) == 1));
+        second.0.store(true, Ordering::SeqCst);
+        second.3.join().unwrap().unwrap();
+    }
 
     #[cfg(unix)]
     #[test]
