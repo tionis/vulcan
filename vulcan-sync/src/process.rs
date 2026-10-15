@@ -32,7 +32,8 @@ pub fn spawn_retrying_busy(command: &mut Command) -> std::io::Result<Child> {
     }
 }
 
-#[cfg(all(test, unix))]
+// Only Linux refuses to execute a file held open for writing.
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use std::io::Write;

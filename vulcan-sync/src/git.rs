@@ -9567,9 +9567,11 @@ mod tests {
         let worktree = temporary.path().join("wiki");
         fs::create_dir(&worktree).expect("worktree");
         init_repo(&worktree);
-        run_git(&worktree, &["remote", "add", "origin", remote_path]);
         fs::write(worktree.join("Home.md"), "home\n").expect("note");
         commit_all(&worktree, "initial");
+        // Push before naming the remote: Git updates a configured remote's
+        // tracking refs when a push's URL matches it, which on Windows and
+        // macOS left exactly the refs this test asserts are absent.
         run_git(
             &worktree,
             &[
@@ -9581,6 +9583,7 @@ mod tests {
                 "HEAD:refs/heads/__vulcan-sync/devices/p/d",
             ],
         );
+        run_git(&worktree, &["remote", "add", "origin", remote_path]);
         let engine = GitCliEngine::default();
         let repository = engine.discover_repository(&worktree).expect("repository");
         let remote = GitRemote::parse("origin").expect("remote");
