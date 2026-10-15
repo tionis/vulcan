@@ -1395,6 +1395,17 @@ pub enum RefreshMode {
     Background,
 }
 
+/// Where routable reads run (Roadmap 10.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum RouteMode {
+    /// Run against the vault's cache in this process.
+    Direct,
+    /// Ask the running daemon; fail when it cannot answer.
+    Daemon,
+    /// Ask the running daemon when it hosts the vault; otherwise run directly.
+    Auto,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum TagSortArg {
     Count,
@@ -9204,6 +9215,20 @@ ancestor `.vulcan/` vault."
         help = "Override automatic cache refresh mode for cache-backed commands"
     )]
     pub refresh: Option<RefreshMode>,
+
+    #[arg(
+        long,
+        global = true,
+        value_enum,
+        env = "VULCAN_ROUTE",
+        help = "Where routable reads run: direct, daemon, or auto [default: direct]",
+        long_help = "Where routable reads (currently `query` with a DSL or JSON query) run. \
+`direct` (the default) reads the vault's cache in this process. `daemon` asks the running \
+daemon, which answers from its retained index after confirming every earlier change is \
+indexed, and fails when it cannot. `auto` asks the daemon when it hosts the vault and runs \
+directly otherwise. Writes always run directly."
+    )]
+    pub route: Option<RouteMode>,
 
     #[arg(
         long,

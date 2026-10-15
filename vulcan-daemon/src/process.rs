@@ -1187,6 +1187,151 @@ fn send_http_request(
     Ok(response[header_end + 4..].to_vec())
 }
 
+/// Responses to routed reads carry full note records.
+const ROUTED_RESPONSE_LIMIT: usize = 256 * 1024 * 1024;
+/// Covers the daemon's index barrier and the read itself.
+const ROUTED_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Why a routed read was not answered by the daemon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RoutedClientError {
+    /// No daemon runtime record: the daemon is not running.
+    NotRunning,
+    /// The daemon does not have the vault registered.
+    NotRegistered,
+    /// The daemon cannot answer as direct execution would; run directly.
+    Unavailable(String),
+    /// The read fails as running it directly would.
+    Failed(String),
+    /// The request did not complete (connection, protocol, or timeout).
+    Transport(String),
+}
+
+impl std::fmt::Display for RoutedClientError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotRunning => formatter.write_str("the Vulcan daemon is not running"),
+            Self::NotRegistered => {
+                formatter.write_str("the vault is not registered with the Vulcan daemon")
+            }
+            Self::Unavailable(reason) => write!(formatter, "the daemon cannot answer: {reason}"),
+            Self::Failed(message) => formatter.write_str(message),
+            Self::Transport(error) => write!(formatter, "the daemon request failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for RoutedClientError {}
+
+/// Ask the running daemon to answer `query` for the vault at `vault_root`.
+/// Costs one file check when no daemon runs.
+pub fn request_routed_query(
+    context: &DaemonProcessContext,
+    vault_root: &Path,
+    query: &crate::routed_reads::RoutedQuery,
+) -> Result<vulcan_app::routed::wire::QueryReportWire, RoutedClientError> {
+    let transport = |error: DaemonProcessError| RoutedClientError::Transport(error.to_string());
+    let record = read_runtime_record(&context.runtime_path())
+        .map_err(transport)?
+        .ok_or(RoutedClientError::NotRunning)?;
+    let canonical = |path: &Path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let vault = canonical(vault_root);
+    let wiki_id = context
+        .registry
+        .list(None)
+        .map_err(|error| RoutedClientError::Transport(error.to_string()))?
+        .into_iter()
+        .find(|status| canonical(&status.registration.path) == vault)
+        .map(|status| status.registration.id.as_str().to_string())
+        .ok_or(RoutedClientError::NotRegistered)?;
+    let credential = CompanionCredentialStore::at(&context.state_root)
+        .load()
+        .map_err(|error| RoutedClientError::Transport(error.to_string()))?;
+    if credential.id != record.credential_id {
+        return Err(RoutedClientError::Transport(
+            "daemon runtime credential identity does not match device state".to_string(),
+        ));
+    }
+    let body = serde_json::to_vec(query)
+        .map_err(|error| RoutedClientError::Transport(error.to_string()))?;
+    let (status, response) = send_http_json(
+        record.bind,
+        &credential,
+        &format!("/{wiki_id}/ops/query"),
+        &body,
+    )
+    .map_err(transport)?;
+    let decline = |response: &[u8]| {
+        use crate::routed_reads::RoutedReadError;
+        match serde_json::from_slice::<RoutedReadError>(response) {
+            Ok(RoutedReadError::Unavailable(message) | RoutedReadError::Failed(message)) => message,
+            Err(error) => error.to_string(),
+        }
+    };
+    match status {
+        200 => serde_json::from_slice(&response)
+            .map_err(|error| RoutedClientError::Transport(error.to_string())),
+        503 => Err(RoutedClientError::Unavailable(decline(&response))),
+        422 => Err(RoutedClientError::Failed(decline(&response))),
+        status => Err(RoutedClientError::Transport(format!(
+            "unexpected status {status}: {}",
+            String::from_utf8_lossy(&response)
+        ))),
+    }
+}
+
+/// POST `body` as JSON and return the status and body.
+fn send_http_json(
+    bind: SocketAddr,
+    credential: &CompanionCredential,
+    path: &str,
+    body: &[u8],
+) -> Result<(u16, Vec<u8>), DaemonProcessError> {
+    let mut stream = TcpStream::connect_timeout(&bind, Duration::from_millis(500))?;
+    stream.set_read_timeout(Some(ROUTED_READ_TIMEOUT))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    write!(
+        stream,
+        "POST {path} HTTP/1.1\r\nHost: {bind}\r\nAuthorization: Bearer {}\r\nVulcan-Protocol-Version: 1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        credential.token,
+        body.len()
+    )?;
+    stream.write_all(body)?;
+    let mut response = Vec::new();
+    stream
+        .take((ROUTED_RESPONSE_LIMIT + 1) as u64)
+        .read_to_end(&mut response)?;
+    if response.len() > ROUTED_RESPONSE_LIMIT {
+        return Err(DaemonProcessError::Configuration(
+            "daemon HTTP response exceeded its byte limit".to_string(),
+        ));
+    }
+    let status_line = response
+        .split(|byte| *byte == b'\n')
+        .next()
+        .unwrap_or_default();
+    let status = std::str::from_utf8(status_line)
+        .ok()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok())
+        .ok_or_else(|| {
+            DaemonProcessError::Configuration("daemon HTTP response has no status".to_string())
+        })?;
+    let header_end = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| {
+            DaemonProcessError::Configuration("daemon HTTP response has no header end".to_string())
+        })?;
+    let headers = String::from_utf8_lossy(&response[..header_end]).to_ascii_lowercase();
+    if headers.contains("transfer-encoding:") {
+        return Err(DaemonProcessError::Configuration(
+            "daemon HTTP response uses an unsupported transfer encoding".to_string(),
+        ));
+    }
+    Ok((status, response[header_end + 4..].to_vec()))
+}
+
 fn unix_time_ms() -> Result<u64, DaemonProcessError> {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)

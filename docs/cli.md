@@ -113,6 +113,7 @@ These global flags are available on all commands:
 - `--vault <PATH>`: vault root directory
 - `--output <human|markdown|json>`: output format
 - `--refresh <off|blocking|background>`: override automatic cache refresh for cache-backed commands
+- `--route <direct|daemon|auto>` (or `VULCAN_ROUTE`): where routable reads run. `direct` (the default) reads the cache in this process. `daemon` asks the running daemon, which answers from its retained index after an index barrier confirms every change made before the request is indexed, and fails with `daemon_unavailable` when it cannot. `auto` asks the daemon when it hosts the vault (registered with `vulcan vault add` and indexed) and runs directly otherwise. Routed output is identical to direct output. Currently routable: `query` with a DSL or `--json` query (not DQL, `--where`, or `--list-fields`).
 - `--fields <a,b,c>`: select columns on list-style output
 - `--provider <NAME>`: override the embedding provider for vector commands
 - `--limit <N>`: cap returned rows

@@ -37,6 +37,7 @@ mod note_picker;
 mod output;
 mod preview_images;
 mod resolve;
+mod routing;
 mod serve;
 mod site_server;
 mod template_prompt;
@@ -617,6 +618,15 @@ impl CliError {
         Self {
             exit_code: 1,
             code: "operation_failed",
+            message: error.to_string(),
+        }
+    }
+
+    /// `--route daemon` could not be answered by the daemon.
+    pub(crate) fn daemon_unavailable(error: impl Display) -> Self {
+        Self {
+            exit_code: 1,
+            code: "daemon_unavailable",
             message: error.to_string(),
         }
     }
@@ -3726,6 +3736,11 @@ fn run_incremental_scan(
     .map_err(CliError::operation)
 }
 
+/// Whether this command's refresh mode asks for a current cache.
+pub(crate) fn refresh_requested(paths: &VaultPaths, cli: &Cli) -> bool {
+    refresh_mode_for_target(paths, cli, RefreshTarget::Command) != AutoScanMode::Off
+}
+
 fn refresh_mode_for_target(paths: &VaultPaths, cli: &Cli, target: RefreshTarget) -> AutoScanMode {
     if let Some(mode) = cli.refresh {
         return match mode {
@@ -3820,7 +3835,7 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
     }
 }
 
-fn maybe_auto_refresh_command_cache(
+pub(crate) fn maybe_auto_refresh_command_cache(
     paths: &VaultPaths,
     cli: &Cli,
     use_stderr_color: bool,
@@ -4924,7 +4939,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
     let stderr_is_tty = io::stderr().is_terminal();
     let use_stdout_color = resolve_use_color(cli.color, stdout_is_tty);
     let use_stderr_color = resolve_use_color(cli.color, stderr_is_tty);
-    maybe_auto_refresh_command_cache(&paths, cli, use_stderr_color)?;
+    // A routable read decides between the daemon and this process first; it
+    // refreshes the cache only if it runs here.
+    if !routing::defers_refresh(cli) {
+        maybe_auto_refresh_command_cache(&paths, cli, use_stderr_color)?;
+    }
     let interactive_note_selection = interactive_note_selection_allowed(cli, stdout_is_tty);
 
     match cli.command {

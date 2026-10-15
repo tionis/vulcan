@@ -101,7 +101,14 @@ pub(crate) fn handle_query_command(
     stdout_is_tty: bool,
     use_stdout_color: bool,
 ) -> Result<(), CliError> {
-    let _read_guard = consistent_read_guard(paths)?;
+    // A routed query must not hold the vault's read lock while the daemon
+    // indexes pending changes for it (that scan takes the write lock); it
+    // takes the lock only if it runs here (see `execute_paged`).
+    let mut read_guard = if crate::routing::defers_refresh(cli) {
+        None
+    } else {
+        consistent_read_guard(paths)?
+    };
     if list_fields {
         if dsl.is_some() || json.is_some() {
             return Err(CliError::operation(
@@ -164,7 +171,15 @@ pub(crate) fn handle_query_command(
                 ));
             }
             let ast = QueryAst::from_dsl(dsl).map_err(CliError::operation)?;
-            execute_paged(paths, ast, read_filter.as_ref(), list_controls, glob)?
+            execute_paged(
+                cli,
+                paths,
+                ast,
+                read_filter.as_ref(),
+                list_controls,
+                glob,
+                &mut read_guard,
+            )?
         }
         (None, Some(json)) => {
             if !filters.is_empty() || sort.is_some() || desc {
@@ -173,7 +188,15 @@ pub(crate) fn handle_query_command(
                 ));
             }
             let ast = QueryAst::from_json(json).map_err(CliError::operation)?;
-            execute_paged(paths, ast, read_filter.as_ref(), list_controls, glob)?
+            execute_paged(
+                cli,
+                paths,
+                ast,
+                read_filter.as_ref(),
+                list_controls,
+                glob,
+                &mut read_guard,
+            )?
         }
         (None, None) => {
             let note_query = NoteQuery {
@@ -230,13 +253,17 @@ pub(crate) fn handle_query_command(
     Ok(())
 }
 
-/// Run `ast` through the shared routed `query` operation over the cache.
+/// Run `ast` through the shared routed `query` operation: answered by the
+/// daemon when `--route` sends it there, otherwise over the cache here,
+/// after the cache refresh a routable command defers.
 fn execute_paged(
+    cli: &Cli,
     paths: &VaultPaths,
     ast: QueryAst,
     read_filter: Option<&vulcan_core::PermissionFilter>,
     list_controls: &ListOutputControls,
     glob: Option<&str>,
+    read_guard: &mut Option<vulcan_core::write_lock::ReadLockGuard>,
 ) -> Result<QueryReport, CliError> {
     let request = vulcan_app::routed::query::QueryRequest {
         ast,
@@ -244,6 +271,18 @@ fn execute_paged(
         limit: list_controls.limit,
         glob: glob.is_some(),
     };
+    if crate::routing::defers_refresh(cli) {
+        if let Some(report) = crate::routing::route_query(cli, paths, &request)? {
+            return Ok(report);
+        }
+        let use_stderr_color = crate::resolve_use_color(
+            cli.color,
+            std::io::IsTerminal::is_terminal(&std::io::stderr()),
+        );
+        crate::maybe_auto_refresh_command_cache(paths, cli, use_stderr_color)?;
+        // Held, as for a direct query, until the report is printed.
+        *read_guard = consistent_read_guard(paths)?;
+    }
     vulcan_app::routed::query::run_query(
         &vulcan_core::note_store::DirectNoteStore::new(paths),
         paths,
@@ -572,7 +611,7 @@ pub(crate) fn handle_search_command(
 
 /// Returns `true` when `input` looks like a Dataview Query Language (DQL) query rather than
 /// vulcan's native query DSL.  DQL queries start with TABLE, LIST, TASK, or CALENDAR.
-fn looks_like_dql(input: &str) -> bool {
+pub(crate) fn looks_like_dql(input: &str) -> bool {
     let first_word = input.split_whitespace().next().unwrap_or("");
     matches!(
         first_word.to_ascii_uppercase().as_str(),

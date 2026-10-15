@@ -21690,6 +21690,21 @@
         ]
       },
       {
+        "help": "Where routable reads run: direct, daemon, or auto [default: direct]",
+        "id": "route",
+        "long": "route",
+        "possible_values": [
+          "direct",
+          "daemon",
+          "auto"
+        ],
+        "required": false,
+        "short": null,
+        "value_names": [
+          "ROUTE"
+        ]
+      },
+      {
         "help": "Comma-separated field selection for list output",
         "id": "fields",
         "long": "fields",

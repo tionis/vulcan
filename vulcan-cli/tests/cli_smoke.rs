@@ -9704,6 +9704,172 @@ fn daemon_cli_detaches_reports_status_and_stops_gracefully() {
         .contains("daemon must be running to provision a companion client"));
 }
 
+/// `--route daemon` prints exactly what a direct query prints, sees changes
+/// made just before it, and fails as a direct query would; `auto` falls back
+/// once the daemon is gone, and `daemon` then reports `daemon_unavailable`.
+#[test]
+fn routed_queries_print_what_direct_queries_print() {
+    let temporary = TempDir::new().expect("temp dir should be created");
+    let config_home = temporary.path().join("config");
+    let state_home = temporary.path().join("state");
+    let vulcan_config = config_home.join("vulcan");
+    fs::create_dir_all(&vulcan_config).expect("config directory");
+    fs::write(
+        vulcan_config.join("daemon.toml"),
+        format!(
+            "device_id = \"{}\"\nbind = \"127.0.0.1:0\"\n",
+            ulid::Ulid::new()
+        ),
+    )
+    .expect("daemon config");
+    let vault_root = temporary.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    let vault = vault_root.to_str().expect("utf-8");
+    let vulcan = |arguments: &[&str]| {
+        ProcessCommand::new(assert_cmd::cargo::cargo_bin("vulcan"))
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", &state_home)
+            .env_remove("VULCAN_ROUTE")
+            .args(["--vault", vault])
+            .args(arguments)
+            .output()
+            .expect("vulcan should run")
+    };
+    // The fixture is not a Git repository, so the vault is indexed but not synced.
+    let registered = vulcan(&[
+        "--output",
+        "json",
+        "vault",
+        "add",
+        "--no-sync",
+        "notes",
+        vault,
+    ]);
+    assert!(registered.status.success(), "{registered:?}");
+    let daemon = |arguments: &[&str]| run_daemon_test_command(&config_home, &state_home, arguments);
+    successful_process_json(&daemon(&["start", "--detach"]));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let status = successful_process_json(&daemon(&["status"]));
+        if status["wiki_statuses"][0]["cache"]["state"] == "fresh" {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the daemon should index the vault: {status}"
+        );
+        thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    let cases: [&[&str]; 6] = [
+        &[
+            "--output",
+            "json",
+            "query",
+            "from notes where status = active",
+        ],
+        &[
+            "--output",
+            "json",
+            "query",
+            "from notes order by file.path desc limit 2",
+        ],
+        &[
+            "--output",
+            "json",
+            "--limit",
+            "1",
+            "--offset",
+            "1",
+            "query",
+            "from notes",
+        ],
+        &[
+            "--output",
+            "json",
+            "query",
+            "--json",
+            r#"{"source":"notes","predicates":[]}"#,
+        ],
+        &["query", "from notes where status = active"],
+        &[
+            "--output",
+            "json",
+            "--fields",
+            "file.path,status",
+            "query",
+            "from notes",
+        ],
+    ];
+    for case in cases {
+        let direct = vulcan(&[&["--route", "direct"], case].concat());
+        let routed = vulcan(&[&["--route", "daemon"], case].concat());
+        assert!(direct.status.success(), "{case:?}: {direct:?}");
+        assert!(routed.status.success(), "{case:?}: {routed:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&routed.stdout),
+            String::from_utf8_lossy(&direct.stdout),
+            "{case:?}"
+        );
+    }
+
+    // A note written just before the request is in the routed answer.
+    fs::write(vault_root.join("Fresh.md"), "---\nstatus: brand-new\n---\n").unwrap();
+    let fresh = vulcan(&[
+        "--route",
+        "daemon",
+        "--output",
+        "json",
+        "query",
+        "from notes where status = brand-new",
+    ]);
+    assert!(fresh.status.success(), "{fresh:?}");
+    assert!(
+        String::from_utf8_lossy(&fresh.stdout).contains("Fresh.md"),
+        "{fresh:?}"
+    );
+
+    // A profile the vault does not define fails as it does directly.
+    let undefined = [
+        "--permissions",
+        "missing",
+        "--output",
+        "json",
+        "query",
+        "from notes",
+    ];
+    let direct = vulcan(&[&["--route", "direct"], &undefined[..]].concat());
+    let routed = vulcan(&[&["--route", "daemon"], &undefined[..]].concat());
+    assert!(!direct.status.success() && !routed.status.success());
+    assert_eq!(
+        parse_stdout_json_bytes(&routed.stdout)["code"],
+        parse_stdout_json_bytes(&direct.stdout)["code"]
+    );
+
+    successful_process_json(&daemon(&["stop"]));
+    let query = [
+        "--output",
+        "json",
+        "query",
+        "from notes where status = active",
+    ];
+    let direct = vulcan(&[&["--route", "direct"], &query[..]].concat());
+    let auto = vulcan(&[&["--route", "auto"], &query[..]].concat());
+    assert!(auto.status.success(), "{auto:?}");
+    assert_eq!(auto.stdout, direct.stdout);
+    let required = vulcan(&[&["--route", "daemon"], &query[..]].concat());
+    assert!(!required.status.success());
+    assert_eq!(
+        parse_stdout_json_bytes(&required.stdout)["code"],
+        "daemon_unavailable"
+    );
+}
+
+fn parse_stdout_json_bytes(stdout: &[u8]) -> Value {
+    serde_json::from_slice(stdout).expect("stdout should be JSON")
+}
+
 #[test]
 fn foreground_hosts_and_direct_commands_run_beside_and_without_a_resident_daemon() {
     let temporary = TempDir::new().expect("temp dir should be created");
@@ -18745,6 +18911,13 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         include_str!("../../docs/assistant/skills/vault-query.md")
     );
     assert!(vault_query.contains("run from the index without loading note bodies"));
+    assert!(vault_query.contains("VULCAN_ROUTE=auto"));
+    Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args(["query", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--route <ROUTE>"));
     Command::cargo_bin("vulcan")
         .expect("binary")
         .args(["mdbase", "query", "--help"])
