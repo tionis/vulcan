@@ -1,0 +1,153 @@
+//! Reads a CLI routes to the resident daemon (Roadmap 10.5, Part B of
+//! `docs/specs/index-ownership-and-client-routing.md`).
+//!
+//! A vault is routable while the daemon's index consumer runs for it. Each
+//! read first passes an index barrier, so every change made before the
+//! request is indexed, then runs the shared operation from
+//! `vulcan_app::routed` over the vault's retained note-store session, and
+//! returns a full-fidelity wire report the client prints itself.
+
+use std::collections::HashMap;
+use std::fmt::{Display, Formatter};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use vulcan_app::routed::query::{run_query, QueryRequest};
+use vulcan_app::routed::wire::QueryReportWire;
+use vulcan_core::note_session::NoteStoreSession;
+use vulcan_core::{
+    resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
+};
+
+use crate::scan_runtime::{request_index_barrier, CacheFreshnessState, VaultScanTracker};
+
+/// How long a read waits for its index barrier before declining.
+const BARRIER_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// A vault the daemon can answer routed reads for.
+pub struct RoutedVault {
+    pub paths: VaultPaths,
+    pub tracker: Arc<VaultScanTracker>,
+    /// The registration's permission ceiling, if it narrows access.
+    pub permissions_profile: Option<String>,
+    session: NoteStoreSession,
+}
+
+impl RoutedVault {
+    #[must_use]
+    pub fn new(
+        paths: VaultPaths,
+        tracker: Arc<VaultScanTracker>,
+        permissions_profile: Option<String>,
+    ) -> Self {
+        Self {
+            session: NoteStoreSession::new(paths.clone()),
+            paths,
+            tracker,
+            permissions_profile,
+        }
+    }
+}
+
+/// The routable vaults, by wiki id: filled while index consumers run.
+#[derive(Clone, Default)]
+pub struct RoutedReadRegistry {
+    vaults: Arc<Mutex<HashMap<String, Arc<RoutedVault>>>>,
+}
+
+impl RoutedReadRegistry {
+    pub fn insert(&self, wiki_id: &str, vault: RoutedVault) {
+        lock(&self.vaults).insert(wiki_id.to_string(), Arc::new(vault));
+    }
+
+    pub fn remove(&self, wiki_id: &str) {
+        lock(&self.vaults).remove(wiki_id);
+    }
+
+    #[must_use]
+    pub fn get(&self, wiki_id: &str) -> Option<Arc<RoutedVault>> {
+        lock(&self.vaults).get(wiki_id).cloned()
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// A routed `query`: the shared request plus the caller's context.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RoutedQuery {
+    pub request: QueryRequest,
+    /// The caller's `--permissions` profile, resolved by the vault's config.
+    pub permissions: Option<String>,
+    /// Whether the caller's refresh mode requires a fresh index.
+    pub refresh: bool,
+}
+
+/// Why a routed read was not answered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "code", content = "message", rename_all = "snake_case")]
+pub enum RoutedReadError {
+    /// The daemon cannot answer as the client would; run directly instead.
+    Unavailable(String),
+    /// The read failed as running it directly would (an invalid query or
+    /// profile, a missing cache): report it rather than retry.
+    Failed(String),
+}
+
+impl Display for RoutedReadError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unavailable(reason) => write!(formatter, "routed read unavailable: {reason}"),
+            Self::Failed(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for RoutedReadError {}
+
+/// Answer a routed `query` from the vault's retained session.
+pub fn routed_query(
+    vault: &RoutedVault,
+    query: &RoutedQuery,
+) -> Result<QueryReportWire, RoutedReadError> {
+    if vault.permissions_profile.is_some() {
+        // Intersecting a registration's ceiling with the caller's profile
+        // could narrow the result below the direct one; decline instead.
+        return Err(RoutedReadError::Unavailable(
+            "the registration narrows permissions".to_string(),
+        ));
+    }
+    if query.refresh {
+        let completion =
+            request_index_barrier(vault.paths.vault_root(), &vault.tracker, BARRIER_TIMEOUT)
+                .map_err(|error| RoutedReadError::Unavailable(error.to_string()))?;
+        if completion.state != CacheFreshnessState::Fresh {
+            return Err(RoutedReadError::Unavailable(format!(
+                "the daemon cannot vouch for the index ({:?})",
+                completion.state
+            )));
+        }
+    }
+    let profile = resolve_permission_profile(&vault.paths, query.permissions.as_deref())
+        .map_err(|error| RoutedReadError::Failed(error.to_string()))?;
+    let guard = ProfilePermissionGuard::new(&vault.paths, profile);
+    let filter = guard.read_filter();
+    let filter = (!filter.path_permission().is_unrestricted()).then_some(filter);
+    let report = match vault.session.snapshot() {
+        Some(store) => run_query(&store, &vault.paths, &query.request, filter.as_ref()),
+        None => run_query(
+            &vulcan_core::note_store::DirectNoteStore::new(&vault.paths),
+            &vault.paths,
+            &query.request,
+            filter.as_ref(),
+        ),
+    }
+    .map_err(|error| RoutedReadError::Failed(error.to_string()))?;
+    QueryReportWire::from_report(report).ok_or_else(|| {
+        RoutedReadError::Unavailable("the report carries a publication selection".to_string())
+    })
+}

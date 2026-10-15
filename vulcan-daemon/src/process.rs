@@ -356,6 +356,7 @@ where
     // Publishing the runtime record is the daemon's readiness boundary. Keep
     // it behind required-service startup so every successful authenticated
     // probe observes the corresponding service-health snapshot.
+    let routed_reads = crate::routed_reads::RoutedReadRegistry::default();
     let state = CompanionHttpState {
         registry: Arc::new(context.registry.clone()),
         supervisor: Arc::clone(&supervisor),
@@ -365,6 +366,7 @@ where
         semantic_agent,
         shutdown: Some(Arc::clone(&stop)),
         ingress_shutdown: Some(Arc::clone(&ingress_stop)),
+        routed_reads: Some(routed_reads.clone()),
     };
     let runtime = tokio::runtime::Handle::current();
     let scheduler = Arc::new(
@@ -380,6 +382,7 @@ where
         state.semantic_agent.as_ref(),
         &runtime,
         &scheduler,
+        &routed_reads,
     )?;
     registrations.extend(
         additional_services(context, &config, &scheduler)
@@ -457,6 +460,7 @@ fn daemon_worker_registrations(
     semantic_agent: Option<&Arc<CompanionSemanticAgent>>,
     runtime: &tokio::runtime::Handle,
     scheduler: &Arc<MutationScheduler>,
+    routed_reads: &crate::routed_reads::RoutedReadRegistry,
 ) -> Result<Vec<ServiceRegistration>, DaemonProcessError> {
     validate_worker_agents(config, resolution_agent, semantic_agent)?;
     let alert_enabled = config.notifications.desktop
@@ -555,6 +559,7 @@ fn daemon_worker_registrations(
     let trigger_registry = context.registry.clone();
     let trigger_supervisor = Arc::clone(supervisor);
     let trigger_state_store = Arc::clone(state_store);
+    let trigger_routed = routed_reads.clone();
     registrations.push(ServiceRegistration::new(
         trigger_definition,
         move |service| {
@@ -565,6 +570,7 @@ fn daemon_worker_registrations(
                 &trigger_state_store,
                 &SyncTriggerRuntimeOptions::default(),
                 service.stop(),
+                &trigger_routed,
             )
             .map_err(|error| error.to_string())
         },

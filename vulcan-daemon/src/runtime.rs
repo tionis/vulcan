@@ -5,6 +5,7 @@ use crate::observation::{
     ObservationFilter, VaultObservationHub,
 };
 use crate::registry::{RegistryError, WikiRegistration, WikiRegistry};
+use crate::routed_reads::{RoutedReadRegistry, RoutedVault};
 use crate::scan_runtime::{
     consume_index_observations_with_stop, scan_status_path, VaultScanTracker,
 };
@@ -22,6 +23,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 use vulcan_app::sync_state::SyncStateStore;
+use vulcan_core::VaultPaths;
 use vulcan_sync::{GitCliEngine, GitEngine, SyncJobTrigger};
 
 const RUNTIME_STOP_POLL: Duration = Duration::from_millis(50);
@@ -116,9 +118,21 @@ struct WatcherTask {
 struct IndexConsumerTask {
     stop: Arc<ShutdownSignal>,
     handle: JoinHandle<Result<(), DaemonWatchError>>,
-    #[allow(dead_code)]
-    // Exposed through hosted runtime status in the next status projection slice.
     tracker: Arc<VaultScanTracker>,
+    /// Withdraws the vault from routed reads when the consumer stops.
+    _routed: RoutedRegistration,
+}
+
+/// A vault's entry in the routed-read registry, removed on drop.
+struct RoutedRegistration {
+    registry: RoutedReadRegistry,
+    wiki_id: String,
+}
+
+impl Drop for RoutedRegistration {
+    fn drop(&mut self) {
+        self.registry.remove(&self.wiki_id);
+    }
 }
 
 struct SyncConsumerTask {
@@ -146,15 +160,19 @@ where
         options,
         should_stop,
         None,
+        &RoutedReadRegistry::default(),
     )
 }
 
+/// [`run_sync_trigger_runtime_until`] stopped by `stop`, publishing each
+/// indexed vault in `routed` while its index consumer runs.
 pub(crate) fn run_sync_trigger_runtime_with_stop(
     registry: &WikiRegistry,
     supervisor: &Arc<SyncSupervisor>,
     state_store: &SyncStateStore,
     options: &SyncTriggerRuntimeOptions,
     stop: &ShutdownSignal,
+    routed: &RoutedReadRegistry,
 ) -> Result<(), SyncTriggerRuntimeError> {
     run_sync_trigger_runtime(
         registry,
@@ -163,6 +181,7 @@ pub(crate) fn run_sync_trigger_runtime_with_stop(
         options,
         || stop.is_cancelled(),
         Some(stop),
+        routed,
     )
 }
 
@@ -173,6 +192,7 @@ fn run_sync_trigger_runtime<S>(
     options: &SyncTriggerRuntimeOptions,
     should_stop: S,
     stop: Option<&ShutdownSignal>,
+    routed: &RoutedReadRegistry,
 ) -> Result<(), SyncTriggerRuntimeError>
 where
     S: Fn() -> bool,
@@ -214,6 +234,7 @@ where
                 options.watch,
                 &mut watchers,
                 &mut vault_catalog,
+                routed,
             ) {
                 stop_all_watchers(&mut watchers);
                 return Err(error);
@@ -293,6 +314,7 @@ fn reconcile_watchers(
     watch_options: DaemonWatchOptions,
     watchers: &mut BTreeMap<String, WatcherTask>,
     catalog: &mut VaultRuntimeCatalog,
+    routed: &RoutedReadRegistry,
 ) -> Result<(), SyncTriggerRuntimeError> {
     let config = registry.poll()?;
     let desired = desired_observers(&config.vaults, catalog)?;
@@ -345,6 +367,7 @@ fn reconcile_watchers(
                     Arc::clone(supervisor),
                     state_store.clone(),
                     watch_options,
+                    routed,
                 )?,
             );
         }
@@ -367,6 +390,19 @@ fn reconcile_watchers(
                 stop_sync_consumer(sync);
             }
         }
+        // A changed permission ceiling applies to routed reads at once.
+        if task.registration.permissions_profile != registration.permissions_profile {
+            if let Some(index) = &task.index {
+                routed.insert(
+                    registration.id.as_str(),
+                    RoutedVault::new(
+                        VaultPaths::new(&registration.path),
+                        Arc::clone(&index.tracker),
+                        registration.permissions_profile.clone(),
+                    ),
+                );
+            }
+        }
         task.registration = registration.clone();
     }
     Ok(())
@@ -386,6 +422,7 @@ fn spawn_watcher(
     supervisor: Arc<SyncSupervisor>,
     state_store: SyncStateStore,
     options: DaemonWatchOptions,
+    routed: &RoutedReadRegistry,
 ) -> Result<WatcherTask, SyncTriggerRuntimeError> {
     let hub = VaultObservationHub::default();
     let observer_stop = Arc::new(ShutdownSignal::new(false));
@@ -419,7 +456,15 @@ fn spawn_watcher(
     let index = registration
         .capabilities()
         .markdown_index
-        .then(|| spawn_index_consumer(registration.clone(), &hub, state_store.root(), options))
+        .then(|| {
+            spawn_index_consumer(
+                registration.clone(),
+                &hub,
+                state_store.root(),
+                options,
+                routed,
+            )
+        })
         .transpose()?;
     let sync = sync_consumer_enabled(&registration)
         .then(|| spawn_sync_consumer(registration.clone(), &hub, supervisor, state_store, options))
@@ -439,6 +484,7 @@ fn spawn_index_consumer(
     hub: &VaultObservationHub,
     state_root: &std::path::Path,
     options: DaemonWatchOptions,
+    routed: &RoutedReadRegistry,
 ) -> Result<IndexConsumerTask, SyncTriggerRuntimeError> {
     let subscription = hub.subscribe(
         ObservationConsumerId::parse(format!("index-{}", registration.id))?,
@@ -454,6 +500,18 @@ fn spawn_index_consumer(
         VaultScanTracker::persisted(scan_status_path(state_root, registration.registration_id))
             .map_err(SyncTriggerRuntimeError::Index)?,
     );
+    routed.insert(
+        registration.id.as_str(),
+        RoutedVault::new(
+            VaultPaths::new(&registration.path),
+            Arc::clone(&tracker),
+            registration.permissions_profile.clone(),
+        ),
+    );
+    let routed = RoutedRegistration {
+        registry: routed.clone(),
+        wiki_id: registration.id.as_str().to_string(),
+    };
     let thread_tracker = Arc::clone(&tracker);
     let stop = Arc::new(ShutdownSignal::default());
     let thread_stop = Arc::clone(&stop);
@@ -472,6 +530,7 @@ fn spawn_index_consumer(
         stop,
         handle,
         tracker,
+        _routed: routed,
     })
 }
 
@@ -703,6 +762,7 @@ mod tests {
             supervisor,
             state_store.clone(),
             DaemonWatchOptions::default(),
+            &RoutedReadRegistry::default(),
         )
         .unwrap();
         assert!(watcher.index.is_none());
@@ -733,6 +793,7 @@ mod tests {
             Arc::clone(&supervisor),
             state_store.clone(),
             DaemonWatchOptions::default(),
+            &RoutedReadRegistry::default(),
         )
         .unwrap();
         let files_watcher = spawn_watcher(
@@ -740,6 +801,7 @@ mod tests {
             supervisor,
             state_store,
             DaemonWatchOptions::default(),
+            &RoutedReadRegistry::default(),
         )
         .unwrap();
         assert!(knowledge_watcher.index.is_some());
@@ -827,6 +889,7 @@ mod tests {
             DaemonWatchOptions::default(),
             &mut watchers,
             &mut catalog,
+            &RoutedReadRegistry::default(),
         )
         .unwrap();
         assert_eq!(watchers.len(), 2);
@@ -901,6 +964,7 @@ mod tests {
             DaemonWatchOptions::default(),
             &mut watchers,
             &mut catalog,
+            &RoutedReadRegistry::default(),
         )
         .unwrap();
         assert_eq!(watchers["git-notes"].observer.thread().id(), observer_id);

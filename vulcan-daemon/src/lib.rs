@@ -55,6 +55,7 @@ pub mod observation;
 pub mod preview;
 pub mod process;
 pub mod registry;
+pub mod routed_reads;
 pub mod runtime;
 pub mod scan_runtime;
 pub mod semantic_worker;

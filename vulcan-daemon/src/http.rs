@@ -55,6 +55,8 @@ pub struct CompanionHttpState {
     pub shutdown: Option<Arc<ShutdownSignal>>,
     /// Stops accepting new requests before final synchronization begins.
     pub ingress_shutdown: Option<Arc<ShutdownSignal>>,
+    /// Vaults this daemon answers routed reads for; `None` disables them.
+    pub routed_reads: Option<crate::routed_reads::RoutedReadRegistry>,
 }
 
 impl CompanionHttpState {
@@ -143,6 +145,7 @@ pub fn companion_router(state: CompanionHttpState) -> Router {
             post(reject_conflict_proposal),
         )
         .route("/{id}/sync/semantic-plans", post(create_semantic_plan))
+        .route("/{id}/ops/query", post(routed_query))
         .route("/jobs/{job}", get(job_status).delete(cancel_job))
         .route(
             "/aggregate-jobs/{job}",
@@ -340,7 +343,59 @@ async fn capabilities(State(state): State<CompanionHttpState>) -> Json<Companion
             .operations
             .push(CompanionOperation::DaemonShutdown);
     }
+    if state.routed_reads.is_some() {
+        capabilities
+            .operations
+            .push(CompanionOperation::RoutedQuery);
+    }
     Json(capabilities)
+}
+
+/// A routed `query` answered from the vault's retained state: the wire
+/// report, `503` with `unavailable` when the client should run it directly,
+/// or `422` with `failed` when running it directly would fail the same way.
+async fn routed_query(
+    State(state): State<CompanionHttpState>,
+    Path(id): Path<String>,
+    body: Result<Json<crate::routed_reads::RoutedQuery>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    use crate::routed_reads::RoutedReadError;
+    let unavailable = |reason: &str| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(RoutedReadError::Unavailable(reason.to_string())),
+        )
+            .into_response()
+    };
+    let Json(query) = match body {
+        Ok(body) => body,
+        Err(rejection) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(RoutedReadError::Failed(rejection.body_text())),
+            )
+                .into_response()
+        }
+    };
+    let Some(vault) = state
+        .routed_reads
+        .as_ref()
+        .and_then(|registry| registry.get(&id))
+    else {
+        return unavailable("the daemon does not index this vault");
+    };
+    match tokio::task::spawn_blocking(move || crate::routed_reads::routed_query(&vault, &query))
+        .await
+    {
+        Ok(Ok(report)) => Json(report).into_response(),
+        Ok(Err(error @ RoutedReadError::Unavailable(_))) => {
+            (StatusCode::SERVICE_UNAVAILABLE, Json(error)).into_response()
+        }
+        Ok(Err(error @ RoutedReadError::Failed(_))) => {
+            (StatusCode::UNPROCESSABLE_ENTITY, Json(error)).into_response()
+        }
+        Err(error) => unavailable(&format!("the routed read task failed: {error}")),
+    }
 }
 
 async fn shutdown(State(state): State<CompanionHttpState>) -> Result<Json<Value>, ApiError> {
@@ -817,6 +872,7 @@ mod tests {
             semantic_agent: None,
             shutdown: None,
             ingress_shutdown: None,
+            routed_reads: None,
         };
         (temporary, state)
     }
@@ -1026,6 +1082,112 @@ mod tests {
             .as_array()
             .expect("operations")
             .contains(&json!("event_subscribe")));
+    }
+
+    /// A routed query is the direct report, and the daemon declines when it
+    /// cannot answer as the client would.
+    #[tokio::test]
+    async fn routed_queries_answer_like_the_direct_query_or_decline() {
+        use crate::routed_reads::{RoutedReadRegistry, RoutedVault};
+        use vulcan_app::routed::query::{run_query, QueryRequest};
+        use vulcan_app::routed::wire::QueryReportWire;
+        let (temporary, mut state) = fixture();
+        let vault = temporary.path().join("vault");
+        std::fs::write(vault.join("A.md"), "---\nstatus: open\n---\n[[B]]\n").unwrap();
+        std::fs::write(vault.join("B.md"), "---\nstatus: done\n---\n").unwrap();
+        let paths = vulcan_core::VaultPaths::new(&vault);
+        vulcan_core::initialize_vulcan_dir(&paths).unwrap();
+        vulcan_core::scan_vault(&paths, vulcan_core::ScanMode::Full).unwrap();
+        let registry = RoutedReadRegistry::default();
+        let tracker = Arc::new(crate::scan_runtime::VaultScanTracker::default());
+        registry.insert(
+            "notes",
+            RoutedVault::new(paths.clone(), Arc::clone(&tracker), None),
+        );
+        state.routed_reads = Some(registry.clone());
+        let router = companion_router(state.clone());
+
+        let capabilities = body_json(
+            router
+                .clone()
+                .oneshot(request(&state, Method::GET, "/capabilities"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(capabilities["operations"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("routed_query")));
+
+        let query = |permissions: Option<&str>| {
+            json!({
+                "request": QueryRequest {
+                    ast: vulcan_core::QueryAst::from_dsl("from notes where status = open").unwrap(),
+                    offset: 0,
+                    limit: None,
+                    glob: false,
+                },
+                "permissions": permissions,
+                "refresh": false,
+            })
+        };
+        let post = |id: &str, body: &Value| {
+            let mut request = request(&state, Method::POST, &format!("/{id}/ops/query"));
+            *request.body_mut() = Body::from(body.to_string());
+            request.headers_mut().insert(
+                axum::http::header::CONTENT_TYPE,
+                "application/json".parse().unwrap(),
+            );
+            request
+        };
+        let response = router
+            .clone()
+            .oneshot(post("notes", &query(None)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let answer: QueryReportWire = serde_json::from_value(body_json(response).await).unwrap();
+        let direct = run_query(
+            &vulcan_core::note_store::DirectNoteStore::new(&paths),
+            &paths,
+            &serde_json::from_value(query(None)["request"].clone()).unwrap(),
+            None,
+        )
+        .unwrap();
+        // The plan says how each ran (retained or not) and carries timings;
+        // the CLI shows it only for `--explain`.
+        let (mut answer, mut direct) = (vulcan_core::QueryReport::from(answer), direct);
+        assert!(answer
+            .plan
+            .take()
+            .is_some_and(|plan| plan.candidate_path.contains("retained")));
+        direct.plan = None;
+        assert_eq!(answer, direct);
+        assert_eq!(direct.notes.len(), 1);
+
+        // Unknown vaults and narrowing registrations decline; a profile the
+        // vault does not define fails as it would directly.
+        let response = router
+            .clone()
+            .oneshot(post("other", &query(None)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body_json(response).await["code"], "unavailable");
+        let response = router
+            .clone()
+            .oneshot(post("notes", &query(Some("missing"))))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body_json(response).await["code"], "failed");
+        registry.insert(
+            "notes",
+            RoutedVault::new(paths.clone(), tracker, Some("readonly".to_string())),
+        );
+        let response = router.oneshot(post("notes", &query(None))).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
