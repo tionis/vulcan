@@ -16,6 +16,7 @@ mod lock;
 mod merge_policy;
 mod notifications;
 mod platform;
+pub mod process;
 mod racy_index;
 mod refs;
 mod structured_merge;

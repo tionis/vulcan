@@ -2020,7 +2020,7 @@ impl GitCliEngine {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         configure_git_process(command);
-        let mut child = command.spawn().map_err(|source| {
+        let mut child = crate::process::spawn_retrying_busy(command).map_err(|source| {
             if source.kind() == std::io::ErrorKind::NotFound {
                 GitEngineError::ExecutableUnavailable {
                     executable: self.executable.clone(),
@@ -2144,7 +2144,7 @@ impl GitCliEngine {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         configure_git_process(&mut command);
-        let mut child = command.spawn().map_err(|source| {
+        let mut child = crate::process::spawn_retrying_busy(&mut command).map_err(|source| {
             if source.kind() == std::io::ErrorKind::NotFound {
                 GitEngineError::ExecutableUnavailable {
                     executable: self.executable.clone(),
