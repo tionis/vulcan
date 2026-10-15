@@ -796,8 +796,7 @@ pub fn query_links_with_filter(
     filter: Option<&PermissionFilter>,
 ) -> Result<OutgoingLinksReport, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
-    let notes = load_indexed_notes(&connection)?;
-    let note = notes.resolve(identifier)?;
+    let note = resolve_among_every_note(&connection, identifier)?;
     if let Some(filter) = filter {
         if !filter.is_allowed(&note.path) {
             return Err(PermissionError::PathDenied {
@@ -891,13 +890,23 @@ pub fn query_note_link_confidence_with_filter(
         .into());
     }
     let connection = open_existing_cache(paths)?;
+    // The note's outgoing and incoming links through their indexes; the union
+    // counts a self-link once. Matching either path across both joins in one
+    // condition scanned every link in the vault.
     let mut statement = connection.prepare(
         "
         SELECT links.confidence, source.path, COUNT(*)
         FROM links
         JOIN documents AS source ON source.id = links.source_document_id
-        LEFT JOIN documents AS target ON target.id = links.resolved_target_id
-        WHERE source.path = ?1 OR target.path = ?1
+        WHERE links.id IN (
+            SELECT links.id FROM links
+            JOIN documents AS note ON note.id = links.source_document_id
+            WHERE note.path = ?1
+            UNION
+            SELECT links.id FROM links
+            JOIN documents AS note ON note.id = links.resolved_target_id
+            WHERE note.path = ?1
+        )
         GROUP BY links.confidence, source.path
         ",
     )?;
@@ -930,8 +939,7 @@ pub fn query_backlinks_with_filter(
     filter: Option<&PermissionFilter>,
 ) -> Result<BacklinksReport, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
-    let notes = load_indexed_notes(&connection)?;
-    let note = notes.resolve(identifier)?;
+    let note = resolve_among_every_note(&connection, identifier)?;
     if let Some(filter) = filter {
         if !filter.is_allowed(&note.path) {
             return Err(PermissionError::PathDenied {
@@ -1993,6 +2001,16 @@ fn load_indexed_notes(connection: &Connection) -> Result<IndexedNoteSet, GraphQu
     Ok(IndexedNoteSet::build(notes))
 }
 
+/// Resolve `identifier` among every indexed note, as callers that check
+/// permissions on the resolved note itself do, reading only candidate rows.
+fn resolve_among_every_note(
+    connection: &Connection,
+    identifier: &str,
+) -> Result<ResolvedNote, GraphQueryError> {
+    IndexedNoteSet::build(load_resolution_candidates(connection, identifier, None)?)
+        .resolve(identifier)
+}
+
 /// The indexed notes through which `identifier` can resolve, in `path` order:
 /// those whose path, path without `.md`, file name, file name with `.md`, or
 /// alias equals it ignoring ASCII case. These are exactly the entries
@@ -2622,6 +2640,72 @@ mod tests {
             streamed.inferred > 0 && streamed.extracted > 0,
             "{streamed:?}"
         );
+    }
+
+    /// The indexed confidence query counts exactly the links the former
+    /// whole-table condition did, self-links once, without scanning `links`.
+    #[test]
+    fn note_link_confidence_reads_indexed_links_and_counts_them_like_a_scan() {
+        let temp = TempDir::new().expect("temp dir");
+        let vault_root = temp.path().join("vault");
+        copy_fixture_vault("ambiguous-links", &vault_root);
+        fs::write(vault_root.join("Self.md"), "[[Self]] [[Self]] [[Root]]\n").expect("self note");
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan");
+        let connection = open_existing_cache(&paths).expect("cache");
+        let note_paths = connection
+            .prepare("SELECT path FROM documents WHERE extension = 'md'")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let mut scan = connection
+            .prepare(
+                "SELECT links.confidence, COUNT(*) FROM links
+                 JOIN documents AS source ON source.id = links.source_document_id
+                 LEFT JOIN documents AS target ON target.id = links.resolved_target_id
+                 WHERE source.path = ?1 OR target.path = ?1 GROUP BY links.confidence",
+            )
+            .unwrap();
+        let mut counted = 0;
+        for path in &note_paths {
+            let mut expected = GraphConfidenceBreakdown::default();
+            for row in scan
+                .query_map([path], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, usize>(1)?))
+                })
+                .unwrap()
+            {
+                let (label, count) = row.unwrap();
+                match label.as_str() {
+                    "EXTRACTED" => expected.extracted += count,
+                    "INFERRED" => expected.inferred += count,
+                    _ => expected.ambiguous += count,
+                }
+            }
+            counted += expected.extracted + expected.inferred + expected.ambiguous;
+            let indexed = query_note_link_confidence_with_filter(&paths, path, None).unwrap();
+            assert_eq!(indexed, expected, "{path}");
+        }
+        let self_note = query_note_link_confidence_with_filter(&paths, "Self.md", None).unwrap();
+        assert_eq!(
+            self_note.extracted + self_note.inferred + self_note.ambiguous,
+            3
+        );
+        assert!(counted > 0, "the fixture must have links");
+        let plan = connection
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT links.id FROM links
+                 JOIN documents AS note ON note.id = links.resolved_target_id WHERE note.path = ?1",
+            )
+            .unwrap()
+            .query_map(["Root.md"], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join(" ");
+        assert!(!plan.contains("SCAN links"), "{plan}");
     }
 
     #[test]
