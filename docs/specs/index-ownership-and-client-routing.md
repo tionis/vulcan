@@ -217,7 +217,10 @@ A routed error carries the same error code and message as the direct path, plus 
    narrow permissions decline), and full-fidelity wire reports printed by the client. The baseline
    made `status` and single-note reads fast directly, so `search` followed `query`. A search
    report serializes every field, so it is its own wire form. Hybrid search is not routed: it
-   embeds the query with the client's provider configuration and credentials.
+   embeds the query with the client's provider configuration and credentials. Measured
+   ([record](measurements/routed-search-31296e6d.json)): selective searches take 12 ms routed at
+   100K against 165 ms direct. A term that matches every note takes about 490 ms either way,
+   because ranking every match dominates.
 4. **CLI routing modes.** Done: `--route` and `VULCAN_ROUTE`, discovery through the runtime record
    and registry, deferred refresh and read lock, and the fallback rules. `[client] route` device
    configuration remains. Measured on the reference host

@@ -1,0 +1,164 @@
+{
+  "acceptance_gate_result": "not_evaluated",
+  "note": "The spec's speed criterion names query, status, and note get; this records routed keyword search as a diagnostic.",
+  "commit": "31296e6d",
+  "binary": "/home/eric/vulcan-eval/target/release/vulcan (cargo build --release -p vulcan-cli)",
+  "fixtures": [
+    "~/vulcan-eval-fixtures/mdb-10k/collection (generator v1, seed 42, 10,000 records)",
+    "~/vulcan-eval-fixtures/mdb-100k/collection (generator v1, seed 42, 100,000 records, 1,000,000 links)"
+  ],
+  "machine": {
+    "host": "designated evaluation host (Intel Core i7-10700, 31 GiB RAM, Debian 13)",
+    "load_average_at_end": [
+      2.71,
+      2.83,
+      1.33
+    ]
+  },
+  "setup": [
+    "Isolated XDG_CONFIG_HOME and XDG_STATE_HOME; daemon.toml binds 127.0.0.1:0",
+    "Both fixtures scanned, then registered with `vault add --no-sync`",
+    "`daemon start --detach`, then waited until both vaults reported cache state fresh",
+    "Second run of the script; the first run (same binary) gave the same aggregates without per-case detail"
+  ],
+  "method": {
+    "cases": [
+      "search Task 000027",
+      "--limit 20 search benchmark",
+      "search --path-prefix public/project Project 000245"
+    ],
+    "command": "vulcan --vault <fixture> --route <direct|daemon> --output json <case>",
+    "timing": "wall clock of the whole process from Python subprocess.run; 11 runs per case, the first discarded; 30 samples per size and route",
+    "refresh": "default refresh mode: direct runs prove freshness by stat walk; routed runs pass an index barrier",
+    "equivalence": "sha256 of stdout of the second run of each case, compared between direct and daemon"
+  },
+  "results_ms": {
+    "10k": {
+      "outputs_identical": true,
+      "direct": {
+        "p50": 29.5,
+        "p95": 81.7,
+        "per_case": {
+          "search Task 000027": {
+            "p50": 29.5,
+            "max": 30.9
+          },
+          "--limit 20 search benchmark": {
+            "p50": 81.4,
+            "max": 82.7
+          },
+          "search --path-prefix public/project Project 000245": {
+            "p50": 28.0,
+            "max": 28.9
+          }
+        },
+        "hit_lines": [
+          12,
+          20,
+          4
+        ],
+        "stdout_sha256": [
+          "ec80589440292bb57932d2d2dc91d8d5fdcab1f11c1310956e9cde4f13c60384",
+          "4e186e4549e1240a020c38043a8c3328110c71edc8ec860010bbb157e751046a",
+          "8a7d49c68925da68453b7183eeae5b61c7e5c13d955ff39f277f4330bfbb8299"
+        ]
+      },
+      "daemon": {
+        "p50": 9.7,
+        "p95": 58.7,
+        "per_case": {
+          "search Task 000027": {
+            "p50": 9.7,
+            "max": 9.9
+          },
+          "--limit 20 search benchmark": {
+            "p50": 58.5,
+            "max": 58.9
+          },
+          "search --path-prefix public/project Project 000245": {
+            "p50": 8.6,
+            "max": 8.9
+          }
+        },
+        "hit_lines": [
+          12,
+          20,
+          4
+        ],
+        "stdout_sha256": [
+          "ec80589440292bb57932d2d2dc91d8d5fdcab1f11c1310956e9cde4f13c60384",
+          "4e186e4549e1240a020c38043a8c3328110c71edc8ec860010bbb157e751046a",
+          "8a7d49c68925da68453b7183eeae5b61c7e5c13d955ff39f277f4330bfbb8299"
+        ]
+      }
+    },
+    "100k": {
+      "outputs_identical": true,
+      "direct": {
+        "p50": 165.5,
+        "p95": 639.0,
+        "per_case": {
+          "search Task 000027": {
+            "p50": 165.2,
+            "max": 167.8
+          },
+          "--limit 20 search benchmark": {
+            "p50": 632.0,
+            "max": 661.7
+          },
+          "search --path-prefix public/project Project 000245": {
+            "p50": 164.3,
+            "max": 167.9
+          }
+        },
+        "hit_lines": [
+          12,
+          20,
+          4
+        ],
+        "stdout_sha256": [
+          "6ecc308bdd0a72f60d3a14a36bcd80cb8e73e7474157873c891940350deaa81b",
+          "6e4dd91c9ea32fc1de97c2ded1f965266d6be6aa3b2c22364b52392b4516528e",
+          "72f85915e29613bf8c14a196bff96485ecc6ceaab3fd4951d658f928aa9a9791"
+        ]
+      },
+      "daemon": {
+        "p50": 12.5,
+        "p95": 489.0,
+        "per_case": {
+          "search Task 000027": {
+            "p50": 12.5,
+            "max": 12.8
+          },
+          "--limit 20 search benchmark": {
+            "p50": 487.6,
+            "max": 514.0
+          },
+          "search --path-prefix public/project Project 000245": {
+            "p50": 11.4,
+            "max": 11.8
+          }
+        },
+        "hit_lines": [
+          12,
+          20,
+          4
+        ],
+        "stdout_sha256": [
+          "6ecc308bdd0a72f60d3a14a36bcd80cb8e73e7474157873c891940350deaa81b",
+          "6e4dd91c9ea32fc1de97c2ded1f965266d6be6aa3b2c22364b52392b4516528e",
+          "72f85915e29613bf8c14a196bff96485ecc6ceaab3fd4951d658f928aa9a9791"
+        ]
+      }
+    }
+  },
+  "findings": [
+    "Selective searches answer in about 12 ms routed at 100K against about 165 ms direct: routing removes the freshness proof and process-side cache work",
+    "`benchmark` matches every note; ranking every match costs about 490 ms routed and 630 ms direct at 100K, so the search itself, not routing, sets the tail"
+  ],
+  "limitations": [
+    "No concurrent writers or external edits during measurement",
+    "Equivalence compares one run's stdout per case, not every sample",
+    "Host power, frequency, background load, and OS page cache are uncontrolled"
+  ]
+}
