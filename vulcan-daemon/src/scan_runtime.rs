@@ -12,6 +12,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use vulcan_core::index_owner::{IndexOwnerKind, IndexOwnerLease};
+use vulcan_core::watch::{IndexFollower, WatchReport, FOLLOW_POLL, INDEX_OWNER_RETRY};
 use vulcan_core::{initialize_vulcan_dir, VaultPaths};
 
 const SCAN_STATUS_VERSION: u32 = 1;
@@ -27,6 +29,9 @@ pub enum CacheFreshnessState {
     Unknown,
     Dirty,
     Fresh,
+    /// Another process owns the vault's index and keeps it fresh; this
+    /// consumer follows its scans (see `vulcan_core::index_owner`).
+    Following,
     Error,
 }
 
@@ -263,11 +268,51 @@ pub fn consume_index_observations_with_stop(
     stop.register_current_thread();
     let quiet = Duration::from_millis(subscription.policy.quiet_period_ms);
     let maximum = Duration::from_millis(subscription.policy.maximum_dirty_ms);
+    let paths = VaultPaths::new(vault);
+    // Registered vaults are initialized here, as their first scan would do.
+    let _ = initialize_vulcan_dir(&paths);
+    // Another process may own the vault's index; then follow its scans
+    // through the journal and take over when it exits. A lease that cannot
+    // be opened leaves this consumer indexing as before.
+    let (mut _lease, mut following) =
+        match IndexOwnerLease::try_acquire(&paths, IndexOwnerKind::Daemon) {
+            Ok(Some(lease)) => (Some(lease), None),
+            Ok(None) => (None, Some(IndexFollower::start(&paths))),
+            Err(_) => (None, None),
+        };
+    let mut next_attempt = Instant::now() + INDEX_OWNER_RETRY;
     let mut pending = PendingScan::startup(tracker.mark_dirty()?);
+    if following.is_some() {
+        publish_followed(hub, tracker, None)?;
+    }
     let _ = subscription.take_reconciliation_required();
     loop {
         if stop.is_cancelled() {
             return Ok(());
+        }
+        if let Some(follower) = following.as_mut() {
+            if Instant::now() >= next_attempt {
+                if let Ok(Some(lease)) =
+                    IndexOwnerLease::try_acquire(&paths, IndexOwnerKind::Daemon)
+                {
+                    _lease = Some(lease);
+                    following = None;
+                    pending = PendingScan::startup(tracker.mark_dirty()?);
+                    continue;
+                }
+                next_attempt = Instant::now() + INDEX_OWNER_RETRY;
+            }
+            if let Some(report) = follower.poll() {
+                publish_followed(hub, tracker, Some(&report))?;
+            }
+            // File system hints are the owner's to act on.
+            let _ = subscription.take_reconciliation_required();
+            if let Err(std::sync::mpsc::RecvTimeoutError::Disconnected) =
+                subscription.recv_timeout(FOLLOW_POLL)
+            {
+                return Err("vault observation channel closed unexpectedly".to_string());
+            }
+            continue;
         }
         if subscription.take_reconciliation_required() {
             pending.merge_reconciliation(tracker.mark_dirty()?);
@@ -292,6 +337,34 @@ pub fn consume_index_observations_with_stop(
             }
         }
     }
+}
+
+/// Publish the owner's scan as this consumer's: a post-scan event naming its
+/// changed paths, and a completed generation in the `following` state.
+/// `None`, or a reconciliation report, names no paths: everything may have
+/// changed.
+fn publish_followed(
+    hub: &VaultObservationHub,
+    tracker: &VaultScanTracker,
+    report: Option<&WatchReport>,
+) -> Result<(), String> {
+    let generation = tracker.mark_dirty()?;
+    let paths = report
+        .filter(|report| !report.startup)
+        .map(|report| report.paths.iter().cloned().collect())
+        .unwrap_or_default();
+    let event =
+        PostScanEvent::new(generation, paths, Vec::new()).map_err(|error| error.to_string())?;
+    tracker.complete(&ScanCompletion {
+        generation,
+        state: CacheFreshnessState::Following,
+        completed_unix_ms: Some(unix_time_ms()?),
+        fingerprint: Some(event.fingerprint.clone()),
+        error: None,
+    })?;
+    hub.publish(&ObservationEvent::PostScan(event))
+        .map(drop)
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Debug)]
@@ -515,6 +588,104 @@ mod tests {
                 fs::metadata(&status_path).unwrap().permissions().mode() & 0o777,
                 0o600
             );
+        }
+        stop.cancel();
+        worker.join().unwrap().unwrap();
+    }
+
+    /// While another process owns the vault's index, the consumer reports
+    /// its scans from the journal without scanning; it takes over when that
+    /// process releases ownership.
+    #[test]
+    fn index_consumer_follows_the_index_owner_and_takes_over() {
+        use vulcan_core::index_owner::{IndexOwnerKind, IndexOwnerLease};
+        let temporary = tempdir().unwrap();
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&vault).unwrap();
+        fs::write(vault.join("First.md"), "# First\n").unwrap();
+        let paths = VaultPaths::new(&vault);
+        initialize_vulcan_dir(&paths).unwrap();
+        vulcan_core::scan_vault(&paths, vulcan_core::ScanMode::Full).unwrap();
+        let owner = IndexOwnerLease::try_acquire(&paths, IndexOwnerKind::Watch)
+            .unwrap()
+            .unwrap();
+
+        let hub = VaultObservationHub::default();
+        let subscription = subscription(&hub);
+        let observer = hub
+            .subscribe(
+                ObservationConsumerId::parse("observer").unwrap(),
+                ObservationConsumerPolicy {
+                    kind: ObservationConsumerKind::Index,
+                    queue_capacity: 64,
+                    quiet_period_ms: 10,
+                    maximum_dirty_ms: 50,
+                    filter: ObservationFilter::default(),
+                },
+            )
+            .unwrap();
+        let tracker = Arc::new(VaultScanTracker::default());
+        let stop = Arc::new(ShutdownSignal::default());
+        let worker = {
+            let (tracker, stop, vault, hub) = (
+                Arc::clone(&tracker),
+                Arc::clone(&stop),
+                vault.clone(),
+                hub.clone(),
+            );
+            thread::spawn(move || {
+                consume_index_observations_with_stop(&vault, &hub, &subscription, &tracker, &stop)
+            })
+        };
+        let following = tracker
+            .wait_for_generation(1, Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(following.state, CacheFreshnessState::Following);
+
+        // The owner (this test) scans a new note; the consumer publishes it.
+        fs::write(vault.join("Second.md"), "# Second\n").unwrap();
+        vulcan_core::scan_vault(&paths, vulcan_core::ScanMode::Incremental).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "the owner's change should be published"
+            );
+            if let Ok(ObservationEvent::PostScan(event)) =
+                observer.recv_timeout(Duration::from_millis(100))
+            {
+                if event.changed_paths.contains("Second.md") {
+                    break;
+                }
+            }
+        }
+        assert_eq!(tracker.status().state, CacheFreshnessState::Following);
+
+        drop(owner);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while tracker.status().state != CacheFreshnessState::Fresh {
+            assert!(Instant::now() < deadline, "the consumer should take over");
+            thread::sleep(Duration::from_millis(50));
+        }
+        fs::write(vault.join("Third.md"), "# Third\n").unwrap();
+        hub.publish(&ObservationEvent::FilesystemHint(FilesystemHint {
+            sequence: 2,
+            event_count: 1,
+            untagged_events: 1,
+            paths: BTreeSet::from(["Third.md".to_string()]),
+            self_generated_transactions: BTreeSet::new(),
+            safety_rescan: false,
+            watcher_errors: vec![],
+        }))
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !load_note_index(&paths)
+            .unwrap()
+            .values()
+            .any(|note| note.document_path == "Third.md")
+        {
+            assert!(Instant::now() < deadline, "the new owner should index");
+            thread::sleep(Duration::from_millis(50));
         }
         stop.cancel();
         worker.join().unwrap().unwrap();

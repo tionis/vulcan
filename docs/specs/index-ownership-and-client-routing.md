@@ -76,8 +76,10 @@ Implemented in `vulcan_core::index_owner`, `vulcan_core::scan_journal`, and
   seconds and takes over, starting with the usual startup reconciliation, when the holder exits.
   Callers receive the same reports whether they own the index or follow it.
 - **Participants.** MCP over HTTP, `serve`, and the LSP (`watcher = "own"`, reporting `lease` or
-  `following` in `vulcan/status`) use the shared loop. The daemon's index consumer is event-driven
-  through its observation hub and adopts the lease separately.
+  `following` in `vulcan/status`) use the shared loop. The daemon's event-driven index consumer
+  polls the same follower (`vulcan_core::watch::IndexFollower`): while following it publishes the
+  owner's changes as post-scan events, `vulcan daemon status` shows the cache as `following`, and
+  it takes over with a reconciliation scan when the owner exits.
 - **Previews and explicit watch commands** (`vulcan watch`, `vulcan index watch`, site and bundle
   previews) rebuild or run creation triggers, scan hooks, and auto-commit on their own scans, so
   they keep watching and scanning without the lease. Their scans are journaled like any other, so

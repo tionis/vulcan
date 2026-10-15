@@ -1005,13 +1005,14 @@ const fn cache_freshness_name(
     state: vulcan_daemon::scan_runtime::CacheFreshnessState,
 ) -> &'static str {
     use vulcan_daemon::scan_runtime::CacheFreshnessState::{
-        Dirty, Disabled, Error, Fresh, Unknown,
+        Dirty, Disabled, Error, Following, Fresh, Unknown,
     };
     match state {
         Disabled => "disabled",
         Unknown => "unknown",
         Dirty => "dirty",
         Fresh => "fresh",
+        Following => "following",
         Error => "error",
     }
 }

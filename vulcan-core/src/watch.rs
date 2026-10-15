@@ -222,18 +222,21 @@ where
 }
 
 /// How often a follower reads the scan journal.
-const FOLLOW_POLL: Duration = Duration::from_millis(250);
+pub const FOLLOW_POLL: Duration = Duration::from_millis(250);
 
 /// Reports the owner's scans to a following process from the scan journal
-/// ([`crate::scan_journal`]).
-struct IndexFollower {
+/// ([`crate::scan_journal`]). [`watch_vault_as_owner`] uses it; event-driven
+/// consumers such as the daemon's index consumer poll it directly.
+pub struct IndexFollower {
     paths: VaultPaths,
     database: Option<crate::CacheDatabase>,
     position: Option<i64>,
 }
 
 impl IndexFollower {
-    fn start(paths: &VaultPaths) -> Self {
+    /// Follow from the journal's current position.
+    #[must_use]
+    pub fn start(paths: &VaultPaths) -> Self {
         let mut follower = Self {
             paths: paths.clone(),
             database: None,
@@ -254,7 +257,7 @@ impl IndexFollower {
 
     /// The owner's changes since the last poll, if any. A position that could
     /// not be read, or changes the journal no longer lists, reconcile.
-    fn poll(&mut self) -> Option<WatchReport> {
+    pub fn poll(&mut self) -> Option<WatchReport> {
         let position = self.position;
         let read = self.connection().map(|connection| match position {
             Some(position) => crate::scan_journal::changes_since(connection, position),
