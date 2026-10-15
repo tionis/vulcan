@@ -6,4 +6,5 @@
 //! routed answer is the direct answer computed elsewhere. Results cross the
 //! wire as full-fidelity [`wire`] types and are printed by the client.
 
+pub mod query;
 pub mod wire;

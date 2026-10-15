@@ -230,9 +230,7 @@ pub(crate) fn handle_query_command(
     Ok(())
 }
 
-/// Run `ast` loading only the notes the output shows: the page the printer
-/// slices (its offset and limit, or the query's), when no glob filters the
-/// notes first. Hydrating every match for a page of 50 cost seconds at 100K.
+/// Run `ast` through the shared routed `query` operation over the cache.
 fn execute_paged(
     paths: &VaultPaths,
     ast: QueryAst,
@@ -240,26 +238,17 @@ fn execute_paged(
     list_controls: &ListOutputControls,
     glob: Option<&str>,
 ) -> Result<QueryReport, CliError> {
-    let offset = if list_controls.offset > 0 {
-        list_controls.offset
-    } else {
-        ast.offset
+    let request = vulcan_app::routed::query::QueryRequest {
+        ast,
+        offset: list_controls.offset,
+        limit: list_controls.limit,
+        glob: glob.is_some(),
     };
-    // An empty page would also empty the report `--exit-code` inspects.
-    let page = list_controls
-        .limit
-        .or(ast.limit)
-        .filter(|limit| glob.is_none() && *limit > 0)
-        .map(|limit| vulcan_core::properties::NotePage {
-            offset: 0,
-            limit: Some(offset.saturating_add(limit)),
-        });
-    vulcan_core::execute_query_report_page_in(
+    vulcan_app::routed::query::run_query(
         &vulcan_core::note_store::DirectNoteStore::new(paths),
         paths,
-        ast,
+        &request,
         read_filter,
-        page,
     )
     .map_err(CliError::operation)
 }
