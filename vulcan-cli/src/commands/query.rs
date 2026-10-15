@@ -304,45 +304,57 @@ pub(crate) fn handle_ls_command(
     stdout_is_tty: bool,
     use_stdout_color: bool,
 ) -> Result<(), CliError> {
-    let _read_guard = consistent_read_guard(paths)?;
-    let mut query_filters = filters.to_vec();
-    if let Some(tag) = tag {
-        query_filters.push(format!("file.tags has_tag {tag}"));
-    }
-    let note_query = NoteQuery {
-        filters: query_filters,
-        sort_by: Some("file.path".to_string()),
-        sort_descending: false,
+    // As for `query`, a routed listing takes the read lock only if it runs
+    // here, so the daemon's barrier scan is not blocked by it.
+    let routing = crate::routing::defers_refresh(cli);
+    let mut _read_guard = if routing {
+        None
+    } else {
+        consistent_read_guard(paths)?
     };
-    let read_filter = selected_read_permission_filter(cli, paths)?;
-    let store = vulcan_core::note_store::DirectNoteStore::new(paths);
-    let notes_report = if matches!(
-        format,
-        crate::QueryFormatArg::Paths | crate::QueryFormatArg::Count
-    ) {
+    let request = vulcan_app::routed::ls::LsRequest {
+        filters: filters.to_vec(),
+        tag: tag.map(ToString::to_string),
         // Paths and counts read nothing a hydrated note adds.
-        vulcan_core::properties::query_notes_stored_in(
-            &store,
+        stored_only: matches!(
+            format,
+            crate::QueryFormatArg::Paths | crate::QueryFormatArg::Count
+        ),
+        offset: list_controls.offset,
+        limit: list_controls.limit,
+        glob: glob.is_some(),
+    };
+    let routed = if routing {
+        crate::routing::route_ls(cli, paths, &request)?
+    } else {
+        None
+    };
+    let report = if let Some(report) = routed {
+        report
+    } else {
+        if routing {
+            let use_stderr_color = crate::resolve_use_color(
+                cli.color,
+                std::io::IsTerminal::is_terminal(&std::io::stderr()),
+            );
+            crate::maybe_auto_refresh_command_cache(paths, cli, use_stderr_color)?;
+            // Held, as for a direct listing, until the report is printed.
+            _read_guard = consistent_read_guard(paths)?;
+        }
+        let read_filter = selected_read_permission_filter(cli, paths)?;
+        vulcan_app::routed::ls::run_ls(
+            &vulcan_core::note_store::DirectNoteStore::new(paths),
             paths,
-            &note_query,
+            &request,
             read_filter.as_ref(),
         )
-    } else {
-        query_notes_with_filter(paths, &note_query, read_filter.as_ref())
-    }
-    .map_err(CliError::operation)?;
-    let ast = QueryAst::from_note_query(&note_query);
+        .map_err(CliError::operation)?
+    };
     let export = crate::resolve_cli_export(export)?;
     crate::print_query_report(
         paths,
         cli.output,
-        &QueryReport {
-            query: ast,
-            notes: notes_report.notes,
-            selection: None,
-            selection_provenance: Vec::new(),
-            plan: None,
-        },
+        &report,
         list_controls,
         crate::QueryReportRenderOptions {
             format,

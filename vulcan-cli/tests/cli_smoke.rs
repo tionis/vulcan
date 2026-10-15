@@ -9704,7 +9704,7 @@ fn daemon_cli_detaches_reports_status_and_stops_gracefully() {
         .contains("daemon must be running to provision a companion client"));
 }
 
-/// `--route daemon` prints exactly what a direct `query` or `search` prints,
+/// `--route daemon` prints exactly what a direct `query`, `search`, or `ls` prints,
 /// sees changes made just before it, and fails as a direct read would; `auto`
 /// falls back once the daemon is gone, and `daemon` then reports
 /// `daemon_unavailable`.
@@ -9763,7 +9763,7 @@ fn routed_queries_print_what_direct_queries_print() {
         thread::sleep(std::time::Duration::from_millis(100));
     }
 
-    let cases: [&[&str]; 11] = [
+    let cases: [&[&str]; 17] = [
         &[
             "--output",
             "json",
@@ -9814,6 +9814,30 @@ fn routed_queries_print_what_direct_queries_print() {
         ],
         &["--output", "json", "--limit", "1", "search", "dashboard"],
         &["--output", "json", "search", "--regex", "dash.oard"],
+        &["--output", "json", "ls"],
+        &["ls"],
+        &["--output", "json", "ls", "--format", "detail"],
+        &[
+            "--output", "json", "--limit", "2", "--offset", "1", "ls", "--format", "detail",
+        ],
+        &[
+            "--output",
+            "json",
+            "ls",
+            "--tag",
+            "dashboard",
+            "--format",
+            "count",
+        ],
+        &[
+            "--output",
+            "json",
+            "ls",
+            "--where",
+            "status = active",
+            "--glob",
+            "*.md",
+        ],
     ];
     for case in cases {
         let direct = vulcan(&[&["--route", "direct"], case].concat());

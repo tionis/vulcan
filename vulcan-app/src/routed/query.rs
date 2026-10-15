@@ -30,15 +30,20 @@ impl QueryRequest {
         } else {
             self.ast.offset
         };
-        // An empty page would also empty the report `--exit-code` inspects.
-        self.limit
-            .or(self.ast.limit)
-            .filter(|limit| !self.glob && *limit > 0)
-            .map(|limit| NotePage {
-                offset: 0,
-                limit: Some(offset.saturating_add(limit)),
-            })
+        printed_page(offset, self.limit.or(self.ast.limit), self.glob)
     }
+}
+
+/// The notes a printer that skips `offset` and shows `limit` notes reads,
+/// unless a filename glob filters the notes before printing.
+pub(crate) fn printed_page(offset: usize, limit: Option<usize>, glob: bool) -> Option<NotePage> {
+    // An empty page would also empty the report `--exit-code` inspects.
+    limit
+        .filter(|limit| !glob && *limit > 0)
+        .map(|limit| NotePage {
+            offset: 0,
+            limit: Some(offset.saturating_add(limit)),
+        })
 }
 
 /// Run `request` over `store`: the cache directly for the CLI, a retained

@@ -147,6 +147,7 @@ pub fn companion_router(state: CompanionHttpState) -> Router {
         .route("/{id}/sync/semantic-plans", post(create_semantic_plan))
         .route("/{id}/ops/query", post(routed_query))
         .route("/{id}/ops/search", post(routed_search))
+        .route("/{id}/ops/ls", post(routed_ls))
         .route("/jobs/{job}", get(job_status).delete(cancel_job))
         .route(
             "/aggregate-jobs/{job}",
@@ -348,6 +349,7 @@ async fn capabilities(State(state): State<CompanionHttpState>) -> Json<Companion
         capabilities.operations.extend([
             CompanionOperation::RoutedQuery,
             CompanionOperation::RoutedSearch,
+            CompanionOperation::RoutedLs,
         ]);
     }
     Json(capabilities)
@@ -360,6 +362,15 @@ async fn routed_query(
     body: Result<Json<crate::routed_reads::RoutedQuery>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
     answer_routed(&state, &id, body, crate::routed_reads::routed_query).await
+}
+
+/// A routed `ls` answered from the vault's retained state.
+async fn routed_ls(
+    State(state): State<CompanionHttpState>,
+    Path(id): Path<String>,
+    body: Result<Json<crate::routed_reads::RoutedLs>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    answer_routed(&state, &id, body, crate::routed_reads::routed_ls).await
 }
 
 /// A routed keyword `search` answered from the vault's fresh cache.
@@ -1214,6 +1225,62 @@ mod tests {
         );
         let response = router.oneshot(post("notes", &query(None))).await.unwrap();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// A routed `ls` is the direct listing, paged as the client prints it.
+    #[tokio::test]
+    async fn routed_listings_answer_like_the_direct_listing() {
+        use crate::routed_reads::{RoutedReadRegistry, RoutedVault};
+        use vulcan_app::routed::ls::{run_ls, LsRequest};
+        use vulcan_app::routed::wire::QueryReportWire;
+        let (temporary, mut state) = fixture();
+        let vault = temporary.path().join("vault");
+        for name in ["A", "B", "C"] {
+            std::fs::write(
+                vault.join(format!("{name}.md")),
+                "---\ntags: [listed]\n---\n",
+            )
+            .unwrap();
+        }
+        let paths = vulcan_core::VaultPaths::new(&vault);
+        vulcan_core::initialize_vulcan_dir(&paths).unwrap();
+        vulcan_core::scan_vault(&paths, vulcan_core::ScanMode::Full).unwrap();
+        let registry = RoutedReadRegistry::default();
+        let tracker = Arc::new(crate::scan_runtime::VaultScanTracker::default());
+        registry.insert("notes", RoutedVault::new(paths.clone(), tracker, None));
+        state.routed_reads = Some(registry);
+        let router = companion_router(state.clone());
+        for (stored_only, offset, limit) in [(false, 0, None), (false, 1, Some(1)), (true, 0, None)]
+        {
+            let ls = LsRequest {
+                filters: Vec::new(),
+                tag: Some("listed".to_string()),
+                stored_only,
+                offset,
+                limit,
+                glob: false,
+            };
+            let body = json!({ "request": ls, "permissions": null, "refresh": false });
+            let mut post = request(&state, Method::POST, "/notes/ops/ls");
+            *post.body_mut() = Body::from(body.to_string());
+            post.headers_mut().insert(
+                axum::http::header::CONTENT_TYPE,
+                "application/json".parse().unwrap(),
+            );
+            let response = router.clone().oneshot(post).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let answer: QueryReportWire =
+                serde_json::from_value(body_json(response).await).unwrap();
+            let direct = run_ls(
+                &vulcan_core::note_store::DirectNoteStore::new(&paths),
+                &paths,
+                &ls,
+                None,
+            )
+            .unwrap();
+            assert_eq!(vulcan_core::QueryReport::from(answer), direct);
+            assert!(!direct.notes.is_empty());
+        }
     }
 
     /// A routed keyword search is the direct report; hybrid search declines

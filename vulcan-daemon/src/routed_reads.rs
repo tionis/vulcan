@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use vulcan_app::routed::ls::{run_ls, LsRequest};
 use vulcan_app::routed::query::{run_query, QueryRequest};
 use vulcan_app::routed::search;
 use vulcan_app::routed::wire::QueryReportWire;
@@ -50,6 +51,21 @@ impl RoutedVault {
             tracker,
             permissions_profile,
         }
+    }
+}
+
+impl RoutedVault {
+    /// Run `read` over the retained session, or the cache directly while
+    /// the session has no snapshot.
+    fn with_store<T>(
+        &self,
+        read: impl FnOnce(&dyn vulcan_core::note_store::NoteStore) -> Result<T, vulcan_app::AppError>,
+    ) -> Result<T, RoutedReadError> {
+        match self.session.snapshot() {
+            Some(store) => read(&store),
+            None => read(&vulcan_core::note_store::DirectNoteStore::new(&self.paths)),
+        }
+        .map_err(|error| RoutedReadError::Failed(error.to_string()))
     }
 }
 
@@ -112,6 +128,16 @@ impl Display for RoutedReadError {
 
 impl std::error::Error for RoutedReadError {}
 
+/// A routed `ls`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RoutedLs {
+    pub request: LsRequest,
+    /// The caller's `--permissions` profile, resolved by the vault's config.
+    pub permissions: Option<String>,
+    /// Whether the caller's refresh mode requires a fresh index.
+    pub refresh: bool,
+}
+
 /// A routed keyword `search`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoutedSearch {
@@ -161,16 +187,18 @@ pub fn routed_query(
     query: &RoutedQuery,
 ) -> Result<QueryReportWire, RoutedReadError> {
     let filter = prepare_read(vault, query.permissions.as_deref(), query.refresh)?;
-    let report = match vault.session.snapshot() {
-        Some(store) => run_query(&store, &vault.paths, &query.request, filter.as_ref()),
-        None => run_query(
-            &vulcan_core::note_store::DirectNoteStore::new(&vault.paths),
-            &vault.paths,
-            &query.request,
-            filter.as_ref(),
-        ),
-    }
-    .map_err(|error| RoutedReadError::Failed(error.to_string()))?;
+    let report = vault
+        .with_store(|store| run_query(store, &vault.paths, &query.request, filter.as_ref()))?;
+    QueryReportWire::from_report(report).ok_or_else(|| {
+        RoutedReadError::Unavailable("the report carries a publication selection".to_string())
+    })
+}
+
+/// Answer a routed `ls` from the vault's retained session.
+pub fn routed_ls(vault: &RoutedVault, ls: &RoutedLs) -> Result<QueryReportWire, RoutedReadError> {
+    let filter = prepare_read(vault, ls.permissions.as_deref(), ls.refresh)?;
+    let report =
+        vault.with_store(|store| run_ls(store, &vault.paths, &ls.request, filter.as_ref()))?;
     QueryReportWire::from_report(report).ok_or_else(|| {
         RoutedReadError::Unavailable("the report carries a publication selection".to_string())
     })

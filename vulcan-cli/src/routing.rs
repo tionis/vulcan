@@ -8,13 +8,15 @@
 //! A routed command defers this process's own cache refresh until it knows
 //! the read runs here.
 
+use vulcan_app::routed::ls::LsRequest;
 use vulcan_app::routed::query::QueryRequest;
 use vulcan_core::search::{SearchQuery, SearchReport};
 use vulcan_core::{QueryReport, VaultPaths};
 use vulcan_daemon::process::{
-    request_routed_query, request_routed_search, DaemonProcessContext, RoutedClientError,
+    request_routed_ls, request_routed_query, request_routed_search, DaemonProcessContext,
+    RoutedClientError,
 };
-use vulcan_daemon::routed_reads::{RoutedQuery, RoutedSearch};
+use vulcan_daemon::routed_reads::{RoutedLs, RoutedQuery, RoutedSearch};
 
 use crate::cli::{Command, QueryEngineArg, RouteMode, SearchMode};
 use crate::{Cli, CliError};
@@ -44,6 +46,7 @@ fn is_routable(command: &Command) -> bool {
         }
         // Hybrid search embeds the query with this process's provider.
         Command::Search { mode, .. } => *mode == SearchMode::Keyword,
+        Command::Ls { .. } => true,
         _ => false,
     }
 }
@@ -64,6 +67,26 @@ pub(crate) fn route_query(
             context,
             paths.vault_root(),
             &RoutedQuery {
+                request: request.clone(),
+                permissions: cli.permissions.clone(),
+                refresh,
+            },
+        )
+        .map(QueryReport::from)
+    })
+}
+
+/// The daemon's answer to `ls`, or `None` when it should run here.
+pub(crate) fn route_ls(
+    cli: &Cli,
+    paths: &VaultPaths,
+    request: &LsRequest,
+) -> Result<Option<QueryReport>, CliError> {
+    route(cli, paths, |context, refresh| {
+        request_routed_ls(
+            context,
+            paths.vault_root(),
+            &RoutedLs {
                 request: request.clone(),
                 permissions: cli.permissions.clone(),
                 refresh,
