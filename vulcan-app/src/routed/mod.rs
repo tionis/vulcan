@@ -10,6 +10,7 @@ pub mod dql;
 pub mod ls;
 pub mod query;
 pub mod search;
+pub mod tasks;
 pub mod wire;
 
 #[cfg(test)]

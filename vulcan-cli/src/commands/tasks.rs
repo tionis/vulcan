@@ -53,6 +53,16 @@ pub(crate) fn handle_tasks_command(
     use_stderr_color: bool,
 ) -> Result<(), CliError> {
     let guard = crate::selected_permission_guard(cli, paths)?;
+    // A routed `tasks query` refreshes nothing here, but the auto-archive
+    // upkeep reads the cache and may write: with it configured, refresh now
+    // and run the query here.
+    let routing = crate::routing::defers_refresh(cli)
+        && !vulcan_app::tasks::tasknote_auto_archive_enabled(
+            &vulcan_core::load_vault_config(paths).config.tasknotes,
+        );
+    if crate::routing::defers_refresh(cli) && !routing {
+        crate::maybe_auto_refresh_command_cache(paths, cli, use_stderr_color)?;
+    }
     if should_process_tasknotes_auto_archive(command) {
         process_due_tasknote_auto_archives(
             paths,
@@ -332,7 +342,22 @@ pub(crate) fn handle_tasks_command(
             print_task_mutation_report(cli.output, &report)
         }
         TasksCommand::Query { query } => {
-            let result = run_tasks_query_command(paths, &guard, query)?;
+            let request = vulcan_app::routed::tasks::TasksQueryRequest {
+                source: query.clone(),
+            };
+            let routed = if routing {
+                crate::routing::route_tasks_query(cli, paths, &request)?
+            } else {
+                None
+            };
+            let result = if let Some(result) = routed {
+                result
+            } else {
+                if routing {
+                    crate::maybe_auto_refresh_command_cache(paths, cli, use_stderr_color)?;
+                }
+                run_tasks_query_command(paths, &guard, query)?
+            };
             print_tasks_query_result(cli.output, &result)
         }
         TasksCommand::Eval { file, block } => {

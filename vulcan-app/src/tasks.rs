@@ -488,6 +488,16 @@ pub fn apply_task_archive_with_guard(
     )
 }
 
+/// Whether a completed `TaskNotes` status archives its tasks automatically,
+/// so task commands run the auto-archive upkeep first.
+#[must_use]
+pub fn tasknote_auto_archive_enabled(config: &vulcan_core::config::TaskNotesConfig) -> bool {
+    config
+        .statuses
+        .iter()
+        .any(|status| status.is_completed && status.auto_archive)
+}
+
 pub fn process_due_tasknote_auto_archives(
     paths: &VaultPaths,
     exclude_task: Option<&str>,
@@ -513,12 +523,7 @@ pub fn process_due_tasknote_auto_archives_with_guard(
     // Nothing can be archived automatically unless a completed status opts
     // in; loading every task note to find that out cost about a second per
     // `tasks` command at 10K notes.
-    if !config
-        .tasknotes
-        .statuses
-        .iter()
-        .any(|status| status.is_completed && status.auto_archive)
-    {
+    if !tasknote_auto_archive_enabled(&config.tasknotes) {
         return Ok(Vec::new());
     }
     let now_ms = current_utc_timestamp_ms();
@@ -1641,11 +1646,27 @@ impl TaskReadScope<'_> {
         ),
         AppError,
     > {
+        self.load_tasks_with_plan_in(&vulcan_core::note_store::DirectNoteStore::new(paths), paths)
+    }
+
+    /// [`Self::load_tasks_with_plan`] through `store`, such as a host's
+    /// retained note session.
+    fn load_tasks_with_plan_in(
+        self,
+        store: &dyn vulcan_core::note_store::NoteStore,
+        paths: &VaultPaths,
+    ) -> Result<
+        (
+            HashMap<String, NoteRecord>,
+            vulcan_core::plan::QueryPlanExplain,
+        ),
+        AppError,
+    > {
         let scope = match self {
             Self::Filter(filter) => vulcan_core::properties::NoteIndexReadScope::Filter(filter),
             Self::Guard(guard) => vulcan_core::properties::NoteIndexReadScope::Guard(guard),
         };
-        vulcan_core::properties::load_task_note_index_with_plan(paths, scope)
+        vulcan_core::properties::load_task_note_index_with_plan_in(store, paths, scope)
             .map_err(AppError::operation)
     }
 
@@ -1693,6 +1714,28 @@ fn build_tasks_query_result_with_scope(
     scope.recheck(paths)?;
     let _read_guard = consistent_task_read(paths)?;
     let result = build_tasks_query_result_with_options(paths, source, false, scope);
+    scope.recheck(paths)?;
+    result
+}
+
+/// [`build_tasks_query_result_with_guard`] through a host's retained note
+/// session when one is attached, as [`crate::browse::build_dataview_query_report_in`]
+/// does for DQL: a session snapshot is consistent without the read lock.
+pub fn build_tasks_query_result_in(
+    session: Option<&vulcan_core::note_session::NoteStoreSession>,
+    paths: &VaultPaths,
+    source: &str,
+    guard: &ProfilePermissionGuard,
+) -> Result<TasksQueryResult, AppError> {
+    let Some(store) = session.and_then(vulcan_core::note_session::NoteStoreSession::snapshot)
+    else {
+        return build_tasks_query_result_with_guard(paths, source, guard);
+    };
+    TaskReadScope::Guard(guard).recheck(paths)?;
+    let snapshot = guard.snapshot_read_policy().map_err(AppError::operation)?;
+    let scope = TaskReadScope::Guard(&snapshot);
+    scope.recheck(paths)?;
+    let result = build_tasks_query_result_with_options_in(&store, paths, source, false, scope);
     scope.recheck(paths)?;
     result
 }
@@ -3080,11 +3123,27 @@ fn build_tasks_query_result_with_options(
     include_global_query: bool,
     scope: TaskReadScope<'_>,
 ) -> Result<TasksQueryResult, AppError> {
+    build_tasks_query_result_with_options_in(
+        &vulcan_core::note_store::DirectNoteStore::new(paths),
+        paths,
+        source,
+        include_global_query,
+        scope,
+    )
+}
+
+fn build_tasks_query_result_with_options_in(
+    store: &dyn vulcan_core::note_store::NoteStore,
+    paths: &VaultPaths,
+    source: &str,
+    include_global_query: bool,
+    scope: TaskReadScope<'_>,
+) -> Result<TasksQueryResult, AppError> {
     let config = load_vault_config(paths).config.tasks;
     let effective_source = tasks_query_source(&config, source, include_global_query);
     // Parse before loading records, preserving syntax-error precedence.
     parse_tasks_query(&effective_source).map_err(AppError::operation)?;
-    let (note_index, note_plan) = scope.load_tasks_with_plan(paths)?;
+    let (note_index, note_plan) = scope.load_tasks_with_plan_in(store, paths)?;
     let mut result =
         vulcan_core::tasks::evaluate_tasks_query_with_note_index(&effective_source, &note_index)
             .map_err(AppError::operation)?;

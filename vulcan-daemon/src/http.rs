@@ -149,6 +149,7 @@ pub fn companion_router(state: CompanionHttpState) -> Router {
         .route("/{id}/ops/search", post(routed_search))
         .route("/{id}/ops/ls", post(routed_ls))
         .route("/{id}/ops/dql", post(routed_dql))
+        .route("/{id}/ops/tasks-query", post(routed_tasks_query))
         .route("/jobs/{job}", get(job_status).delete(cancel_job))
         .route(
             "/aggregate-jobs/{job}",
@@ -352,6 +353,7 @@ async fn capabilities(State(state): State<CompanionHttpState>) -> Json<Companion
             CompanionOperation::RoutedSearch,
             CompanionOperation::RoutedLs,
             CompanionOperation::RoutedDql,
+            CompanionOperation::RoutedTasksQuery,
         ]);
     }
     Json(capabilities)
@@ -373,6 +375,18 @@ async fn routed_dql(
     body: Result<Json<crate::routed_reads::RoutedDql>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
     answer_routed(&state, &id, body, crate::routed_reads::routed_dql).await
+}
+
+/// A routed `tasks query` answered from the vault's retained state.
+async fn routed_tasks_query(
+    State(state): State<CompanionHttpState>,
+    Path(id): Path<String>,
+    body: Result<
+        Json<crate::routed_reads::RoutedTasksQuery>,
+        axum::extract::rejection::JsonRejection,
+    >,
+) -> Response {
+    answer_routed(&state, &id, body, crate::routed_reads::routed_tasks_query).await
 }
 
 /// A routed `ls` answered from the vault's retained state.
@@ -1282,6 +1296,50 @@ mod tests {
             let direct = run_dql(None, &paths, &dql, &guard).unwrap();
             assert_eq!(answer, direct, "{source}");
             assert!(!direct.rows.is_empty(), "{source}");
+        }
+    }
+
+    /// A routed `tasks query` is the direct result, computed through the
+    /// vault's retained session.
+    #[tokio::test]
+    async fn routed_tasks_queries_answer_like_the_direct_query() {
+        use crate::routed_reads::{RoutedReadRegistry, RoutedVault};
+        use vulcan_app::routed::tasks::{run_tasks_query, TasksQueryRequest};
+        use vulcan_core::tasks::TasksQueryResult;
+        let (temporary, mut state) = fixture();
+        let vault = temporary.path().join("vault");
+        std::fs::write(vault.join("A.md"), "- [ ] write\n- [x] file\n").unwrap();
+        std::fs::write(vault.join("B.md"), "- [ ] call\n").unwrap();
+        let paths = vulcan_core::VaultPaths::new(&vault);
+        vulcan_core::initialize_vulcan_dir(&paths).unwrap();
+        vulcan_core::scan_vault(&paths, vulcan_core::ScanMode::Full).unwrap();
+        let registry = RoutedReadRegistry::default();
+        let tracker = Arc::new(crate::scan_runtime::VaultScanTracker::default());
+        registry.insert("notes", RoutedVault::new(paths.clone(), tracker, None));
+        state.routed_reads = Some(registry);
+        let router = companion_router(state.clone());
+        let guard = vulcan_core::ProfilePermissionGuard::new(
+            &paths,
+            vulcan_core::resolve_permission_profile(&paths, None).unwrap(),
+        );
+        for source in ["not done", "done\ngroup by path"] {
+            let query = TasksQueryRequest {
+                source: source.to_string(),
+            };
+            let body = json!({ "request": query, "permissions": null, "refresh": false });
+            let mut post = request(&state, Method::POST, "/notes/ops/tasks-query");
+            *post.body_mut() = Body::from(body.to_string());
+            post.headers_mut().insert(
+                axum::http::header::CONTENT_TYPE,
+                "application/json".parse().unwrap(),
+            );
+            let response = router.clone().oneshot(post).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let answer: TasksQueryResult =
+                serde_json::from_value(body_json(response).await).unwrap();
+            let direct = run_tasks_query(None, &paths, &query, &guard).unwrap();
+            assert_eq!(answer, direct, "{source}");
+            assert!(direct.result_count > 0, "{source}");
         }
     }
 

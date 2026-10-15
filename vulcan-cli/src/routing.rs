@@ -11,16 +11,20 @@
 use vulcan_app::routed::dql::DqlRequest;
 use vulcan_app::routed::ls::LsRequest;
 use vulcan_app::routed::query::QueryRequest;
+use vulcan_app::routed::tasks::TasksQueryRequest;
 use vulcan_core::dql::DqlQueryResult;
 use vulcan_core::search::{SearchQuery, SearchReport};
+use vulcan_core::tasks::TasksQueryResult;
 use vulcan_core::{QueryReport, VaultPaths};
 use vulcan_daemon::process::{
     request_routed_dql, request_routed_ls, request_routed_query, request_routed_search,
-    DaemonProcessContext, RoutedClientError,
+    request_routed_tasks_query, DaemonProcessContext, RoutedClientError,
 };
-use vulcan_daemon::routed_reads::{RoutedDql, RoutedLs, RoutedQuery, RoutedSearch};
+use vulcan_daemon::routed_reads::{
+    RoutedDql, RoutedLs, RoutedQuery, RoutedSearch, RoutedTasksQuery,
+};
 
-use crate::cli::{Command, RouteMode, SearchMode};
+use crate::cli::{Command, RouteMode, SearchMode, TasksCommand};
 use crate::{Cli, CliError};
 
 fn route_mode(cli: &Cli) -> RouteMode {
@@ -39,7 +43,10 @@ fn is_routable(command: &Command) -> bool {
         } => dsl.is_some() || json.is_some(),
         // Hybrid search embeds the query with this process's provider.
         Command::Search { mode, .. } => *mode == SearchMode::Keyword,
-        Command::Ls { .. } => true,
+        Command::Ls { .. }
+        | Command::Tasks {
+            command: TasksCommand::Query { .. },
+        } => true,
         _ => false,
     }
 }
@@ -80,6 +87,25 @@ pub(crate) fn route_dql(
             context,
             paths.vault_root(),
             &RoutedDql {
+                request: request.clone(),
+                permissions: cli.permissions.clone(),
+                refresh,
+            },
+        )
+    })
+}
+
+/// The daemon's answer to `tasks query`, or `None` when it should run here.
+pub(crate) fn route_tasks_query(
+    cli: &Cli,
+    paths: &VaultPaths,
+    request: &TasksQueryRequest,
+) -> Result<Option<TasksQueryResult>, CliError> {
+    route(cli, paths, |context, refresh| {
+        request_routed_tasks_query(
+            context,
+            paths.vault_root(),
+            &RoutedTasksQuery {
                 request: request.clone(),
                 permissions: cli.permissions.clone(),
                 refresh,

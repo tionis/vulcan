@@ -76,6 +76,8 @@ pub enum CompanionOperation {
     RoutedLs,
     /// `POST /{id}/ops/dql`: a routed DQL query.
     RoutedDql,
+    /// `POST /{id}/ops/tasks-query`: a routed Tasks query.
+    RoutedTasksQuery,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

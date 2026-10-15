@@ -9705,7 +9705,7 @@ fn daemon_cli_detaches_reports_status_and_stops_gracefully() {
 }
 
 /// `--route daemon` prints exactly what a direct `query` (DSL, JSON, or DQL),
-/// `search`, or `ls` prints, sees changes made just before it, and fails as a direct read would; `auto`
+/// `search`, `ls`, or `tasks query` prints, sees changes made just before it, and fails as a direct read would; `auto`
 /// falls back once the daemon is gone, and `daemon` then reports
 /// `daemon_unavailable`.
 #[test]
@@ -9725,6 +9725,11 @@ fn routed_queries_print_what_direct_queries_print() {
     .expect("daemon config");
     let vault_root = temporary.path().join("vault");
     copy_fixture_vault("basic", &vault_root);
+    fs::write(
+        vault_root.join("Todo.md"),
+        "# Todo\n\n- [ ] Write the report 📅 2026-10-20\n- [x] File the receipts\n- [ ] Call Bob #people\n",
+    )
+    .expect("task note");
     run_scan(&vault_root);
     let vault = vault_root.to_str().expect("utf-8");
     let vulcan = |arguments: &[&str]| {
@@ -9763,7 +9768,7 @@ fn routed_queries_print_what_direct_queries_print() {
         thread::sleep(std::time::Duration::from_millis(100));
     }
 
-    let cases: [&[&str]; 21] = [
+    let cases: [&[&str]; 24] = [
         &[
             "--output",
             "json",
@@ -9859,6 +9864,9 @@ fn routed_queries_print_what_direct_queries_print() {
             "query",
             "TABLE length(rows) AS n FROM \"\" GROUP BY status",
         ],
+        &["--output", "json", "tasks", "query", "not done"],
+        &["tasks", "query", "not done\nsort by description"],
+        &["--output", "json", "tasks", "query", "done\ngroup by path"],
     ];
     for case in cases {
         let direct = vulcan(&[&["--route", "direct"], case].concat());

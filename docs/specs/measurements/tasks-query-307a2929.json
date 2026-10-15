@@ -1,0 +1,93 @@
+{
+  "acceptance_gate_result": "not_evaluated",
+  "note": "Diagnostic for the direct tasks query path before routing it.",
+  "commits": {
+    "before": "1ef12aa3",
+    "auto_archive_and_rows": "51d00679 (57d3b26e skips auto-archive upkeep; 51d00679 stops cloning every note into task rows)",
+    "task_index": "307a2929 (the task index holds only task-carrying notes)"
+  },
+  "binary": "cargo build --release -p vulcan-cli at each commit; the 1ef12aa3 binary kept aside",
+  "fixtures": [
+    "~/vulcan-eval-fixtures/mdb-10k/collection (generator v1, seed 42, 10,000 records, 3,334 task records)",
+    "~/vulcan-eval-fixtures/mdb-100k/collection (generator v1, seed 42, 100,000 records, 33,334 task records)"
+  ],
+  "machine": {
+    "host": "designated evaluation host (Intel Core i7-10700, 31 GiB RAM, Debian 13)"
+  },
+  "method": {
+    "command": "vulcan --vault <fixture> --refresh <blocking|off> --output json tasks query 'not done'",
+    "timing": "wall clock of the whole process; 6 runs, the first discarded; p50 and max of 5",
+    "equivalence": "sha256 of stdout, compared across binaries"
+  },
+  "results_ms": {
+    "10k 1ef12aa3 refresh=blocking": {
+      "p50": 748.7,
+      "max": 753.1,
+      "stdout_sha256": "b4b06150b89fc6a6e79b107c5c039665dcaab11d17a8dca712278115f933db05"
+    },
+    "10k 1ef12aa3 refresh=off": {
+      "p50": 727.2,
+      "max": 733.4,
+      "stdout_sha256": "b4b06150b89fc6a6e79b107c5c039665dcaab11d17a8dca712278115f933db05"
+    },
+    "10k 51d00679 refresh=blocking": {
+      "p50": 361.1,
+      "max": 363.4,
+      "stdout_sha256": "b4b06150b89fc6a6e79b107c5c039665dcaab11d17a8dca712278115f933db05"
+    },
+    "10k 51d00679 refresh=off": {
+      "p50": 346.8,
+      "max": 347.2,
+      "stdout_sha256": "b4b06150b89fc6a6e79b107c5c039665dcaab11d17a8dca712278115f933db05"
+    },
+    "100k 1ef12aa3 refresh=blocking": {
+      "p50": 8205.4,
+      "max": 8316.5,
+      "stdout_sha256": "16d20ddb20a82a7c3715802145b222b4899b85da256a5c40d59eb3f55e418849"
+    },
+    "100k 1ef12aa3 refresh=off": {
+      "p50": 8086.1,
+      "max": 8194.3,
+      "stdout_sha256": "16d20ddb20a82a7c3715802145b222b4899b85da256a5c40d59eb3f55e418849"
+    },
+    "100k 51d00679 refresh=blocking": {
+      "p50": 3810.2,
+      "max": 3888.2,
+      "stdout_sha256": "16d20ddb20a82a7c3715802145b222b4899b85da256a5c40d59eb3f55e418849"
+    },
+    "100k 51d00679 refresh=off": {
+      "p50": 3695.6,
+      "max": 3743.0,
+      "stdout_sha256": "16d20ddb20a82a7c3715802145b222b4899b85da256a5c40d59eb3f55e418849"
+    },
+    "10k 307a2929 refresh=blocking": {
+      "p50": 352.3,
+      "max": 363.6,
+      "stdout_sha256": "b4b06150b89fc6a6e79b107c5c039665dcaab11d17a8dca712278115f933db05"
+    },
+    "10k 307a2929 refresh=off": {
+      "p50": 337.5,
+      "max": 344.5,
+      "stdout_sha256": "b4b06150b89fc6a6e79b107c5c039665dcaab11d17a8dca712278115f933db05"
+    },
+    "100k 307a2929 refresh=blocking": {
+      "p50": 3749.1,
+      "max": 3808.6,
+      "stdout_sha256": "16d20ddb20a82a7c3715802145b222b4899b85da256a5c40d59eb3f55e418849"
+    },
+    "100k 307a2929 refresh=off": {
+      "p50": 3623.9,
+      "max": 3643.9,
+      "stdout_sha256": "16d20ddb20a82a7c3715802145b222b4899b85da256a5c40d59eb3f55e418849"
+    }
+  },
+  "findings": [
+    "Output is identical across all three binaries at both sizes",
+    "At 100K, tasks query fell from 8,101 ms to 3,810 ms with the auto-archive skip and row change, and to 3,749 ms with the task-only index",
+    "The remaining time is hydrating 33,334 task notes, checking every note for a TaskNotes task, and printing 31 MB of JSON"
+  ],
+  "limitations": [
+    "Single host; no concurrent writers",
+    "Host power, frequency, background load, and OS page cache are uncontrolled"
+  ]
+}

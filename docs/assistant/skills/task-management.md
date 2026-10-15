@@ -23,6 +23,7 @@ Use this skill when the task depends on extracting, filtering, reviewing, or upd
 
 - Use `tasks query` or `tasks list` to inspect existing task state before mutating anything.
 - Add the Tasks `explain` instruction to a `tasks query` to see the parsed query and, as `note_plan`, how many notes were scanned and hydrated to load the tasks.
+- For repeated `tasks query` runs against a large vault that a running daemon hosts, set `VULCAN_ROUTE=auto` (or `--route auto`): the daemon answers from its retained index after confirming every earlier change is indexed and prints exactly what a direct run prints. With a TaskNotes status that auto-archives, the query runs directly so the archive upkeep sees a fresh cache.
 - Use `tasks show <path-or-name>` for one TaskNotes note's current details and body; an exact path disambiguates multiple readable notes with the same filename or alias.
 - Use `tasks eval <file> [--block <zero-based-index>]` for indexed Tasks query blocks in a note.
 - Reach for `tasks create`, `tasks complete`, `tasks next`, or `tasks blocked` when the workflow is task-specific.

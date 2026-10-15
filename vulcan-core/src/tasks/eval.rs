@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::hash::BuildHasher;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::expression::eval::compare_values;
@@ -16,7 +16,7 @@ use super::{
     parse_tasks_query, TasksDateRelation, TasksError, TasksFilter, TasksQuery, TasksQueryCommand,
 };
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TasksQueryResult {
     pub tasks: Vec<Value>,
     pub groups: Vec<TasksQueryGroup>,
@@ -34,7 +34,7 @@ pub struct TasksQueryResult {
     pub note_plan: Option<crate::plan::QueryPlanExplain>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TasksQueryGroup {
     pub field: String,
     pub key: Value,

@@ -1025,7 +1025,21 @@ pub fn load_task_note_index_with_plan(
     paths: &VaultPaths,
     scope: NoteIndexReadScope<'_>,
 ) -> Result<(HashMap<String, NoteRecord>, crate::plan::QueryPlanExplain), PropertyError> {
-    let lookup = load_indexed_note_lookup(paths, scope)?;
+    load_task_note_index_with_plan_in(
+        &crate::note_store::DirectNoteStore::new(paths),
+        paths,
+        scope,
+    )
+}
+
+/// [`load_task_note_index_with_plan`] through `store`, such as a host's
+/// retained note session.
+pub fn load_task_note_index_with_plan_in(
+    store: &dyn crate::note_store::NoteStore,
+    paths: &VaultPaths,
+    scope: NoteIndexReadScope<'_>,
+) -> Result<(HashMap<String, NoteRecord>, crate::plan::QueryPlanExplain), PropertyError> {
+    let lookup = store.lookup(scope, None)?;
     let mut task_paths = {
         let database = lookup
             .database()

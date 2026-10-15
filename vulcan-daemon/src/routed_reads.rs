@@ -17,10 +17,12 @@ use vulcan_app::routed::dql::{run_dql, DqlRequest};
 use vulcan_app::routed::ls::{run_ls, LsRequest, LsWire};
 use vulcan_app::routed::query::{run_query, QueryRequest};
 use vulcan_app::routed::search;
+use vulcan_app::routed::tasks::{run_tasks_query, TasksQueryRequest};
 use vulcan_app::routed::wire::QueryReportWire;
 use vulcan_core::dql::DqlQueryResult;
 use vulcan_core::note_session::NoteStoreSession;
 use vulcan_core::search::{SearchQuery, SearchReport};
+use vulcan_core::tasks::TasksQueryResult;
 use vulcan_core::{
     resolve_permission_profile, PermissionFilter, PermissionGuard, ProfilePermissionGuard,
     VaultPaths,
@@ -140,6 +142,16 @@ pub struct RoutedDql {
     pub refresh: bool,
 }
 
+/// A routed `tasks query`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RoutedTasksQuery {
+    pub request: TasksQueryRequest,
+    /// The caller's `--permissions` profile, resolved by the vault's config.
+    pub permissions: Option<String>,
+    /// Whether the caller's refresh mode requires a fresh index.
+    pub refresh: bool,
+}
+
 /// A routed `ls`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoutedLs {
@@ -218,6 +230,16 @@ pub fn routed_query(
 pub fn routed_dql(vault: &RoutedVault, dql: &RoutedDql) -> Result<DqlQueryResult, RoutedReadError> {
     let guard = prepare_read(vault, dql.permissions.as_deref(), dql.refresh)?;
     run_dql(Some(&vault.session), &vault.paths, &dql.request, &guard)
+        .map_err(|error| RoutedReadError::Failed(error.to_string()))
+}
+
+/// Answer a routed `tasks query` from the vault's retained session.
+pub fn routed_tasks_query(
+    vault: &RoutedVault,
+    query: &RoutedTasksQuery,
+) -> Result<TasksQueryResult, RoutedReadError> {
+    let guard = prepare_read(vault, query.permissions.as_deref(), query.refresh)?;
+    run_tasks_query(Some(&vault.session), &vault.paths, &query.request, &guard)
         .map_err(|error| RoutedReadError::Failed(error.to_string()))
 }
 
