@@ -1,5 +1,10 @@
 use rusqlite::Transaction;
 
+/// The bounded journal of each scan's changes; see [`crate::scan_journal`].
+pub fn apply_schema_v37(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    crate::scan_journal::apply_schema(transaction)
+}
+
 /// Stored per-source link confidence for the whole-graph breakdown; see
 /// [`crate::graph_confidence`].
 pub fn apply_schema_v36(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {

@@ -202,6 +202,11 @@ impl MigrationRegistry {
                 "store each note's outgoing link confidence",
                 schema::apply_schema_v36,
             ),
+            Migration::new(
+                37,
+                "journal each scan's changes for index followers",
+                schema::apply_schema_v37,
+            ),
         ])
     }
 

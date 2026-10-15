@@ -181,25 +181,146 @@ where
     E: Display,
     O: FnOnce(),
 {
+    let mut on_report = on_report;
+    let mut follower: Option<IndexFollower> = None;
+    let mut next_attempt = Instant::now();
     loop {
         if should_stop() {
             return Ok(());
         }
-        let lease = match crate::index_owner::IndexOwnerLease::try_acquire(paths, kind) {
-            Ok(Some(lease)) => Some(lease),
-            Ok(None) => {
-                let deadline = Instant::now() + retry;
-                while Instant::now() < deadline && !should_stop() {
-                    std::thread::sleep(retry.min(Duration::from_millis(50)));
+        if Instant::now() >= next_attempt {
+            match crate::index_owner::IndexOwnerLease::try_acquire(paths, kind) {
+                Ok(Some(lease)) => {
+                    on_owner();
+                    let result = watch_vault_until(paths, &options, should_stop, on_report);
+                    drop(lease);
+                    return result;
                 }
-                continue;
+                // No lease can be opened (no `.vulcan/`): watch as before.
+                Err(_) if follower.is_none() => {
+                    on_owner();
+                    return watch_vault_until(paths, &options, should_stop, on_report);
+                }
+                // Held elsewhere, or a transient failure while following.
+                Ok(None) | Err(_) => {}
             }
-            Err(_) => None,
+            next_attempt = Instant::now() + retry;
+        }
+        let report = if let Some(follower) = follower.as_mut() {
+            follower.poll()
+        } else {
+            // Start following: one startup report, as an owner's first scan
+            // would give, then the journal's changes.
+            follower = Some(IndexFollower::start(paths));
+            Some(WatchReport::reconciliation())
         };
-        on_owner();
-        let result = watch_vault_until(paths, &options, should_stop, on_report);
-        drop(lease);
-        return result;
+        if let Some(report) = report {
+            on_report(report).map_err(|error| WatchError::Callback(error.to_string()))?;
+        }
+        std::thread::sleep(FOLLOW_POLL.min(retry));
+    }
+}
+
+/// How often a follower reads the scan journal.
+const FOLLOW_POLL: Duration = Duration::from_millis(250);
+
+/// Reports the owner's scans to a following process from the scan journal
+/// ([`crate::scan_journal`]).
+struct IndexFollower {
+    paths: VaultPaths,
+    database: Option<crate::CacheDatabase>,
+    position: Option<i64>,
+}
+
+impl IndexFollower {
+    fn start(paths: &VaultPaths) -> Self {
+        let mut follower = Self {
+            paths: paths.clone(),
+            database: None,
+            position: None,
+        };
+        follower.position = follower
+            .connection()
+            .and_then(|connection| crate::scan_journal::latest(connection).ok());
+        follower
+    }
+
+    fn connection(&mut self) -> Option<&rusqlite::Connection> {
+        if self.database.is_none() {
+            self.database = crate::CacheDatabase::open(&self.paths).ok();
+        }
+        self.database.as_ref().map(crate::CacheDatabase::connection)
+    }
+
+    /// The owner's changes since the last poll, if any. A position that could
+    /// not be read, or changes the journal no longer lists, reconcile.
+    fn poll(&mut self) -> Option<WatchReport> {
+        let position = self.position;
+        let read = self.connection().map(|connection| match position {
+            Some(position) => crate::scan_journal::changes_since(connection, position),
+            None => crate::scan_journal::latest(connection).map(|latest| {
+                Some(crate::scan_journal::ScanChanges {
+                    position: latest,
+                    reconcile: true,
+                    changes: Vec::new(),
+                })
+            }),
+        });
+        match read {
+            Some(Ok(Some(changes))) => {
+                self.position = Some(changes.position);
+                Some(WatchReport::from_journal(&changes))
+            }
+            Some(Ok(None)) | None => None,
+            // A failed read reopens the cache and reconciles next time.
+            Some(Err(_)) => {
+                self.database = None;
+                self.position = None;
+                None
+            }
+        }
+    }
+}
+
+impl WatchReport {
+    /// "Everything may have changed": what a startup scan reports.
+    fn reconciliation() -> Self {
+        Self {
+            startup: true,
+            event_count: 0,
+            paths: Vec::new(),
+            created_paths: Vec::new(),
+            summary: ScanSummary {
+                mode: ScanMode::Incremental,
+                discovered: 0,
+                added: 0,
+                updated: 0,
+                unchanged: 0,
+                deleted: 0,
+            },
+        }
+    }
+
+    fn from_journal(changes: &crate::scan_journal::ScanChanges) -> Self {
+        use crate::scan_journal::ScanChangeStatus;
+        if changes.reconcile {
+            return Self::reconciliation();
+        }
+        let mut report = Self::reconciliation();
+        report.startup = false;
+        report.event_count = changes.changes.len();
+        for (path, status) in &changes.changes {
+            report.paths.push(path.clone());
+            match status {
+                ScanChangeStatus::Added => {
+                    report.created_paths.push(path.clone());
+                    report.summary.added += 1;
+                }
+                ScanChangeStatus::Updated => report.summary.updated += 1,
+                ScanChangeStatus::Deleted => report.summary.deleted += 1,
+            }
+        }
+        report
     }
 }
 
@@ -643,14 +764,16 @@ mod tests {
     use notify::Config;
     use tempfile::TempDir;
 
-    /// Two processes' watchers on one vault: only the lease holder indexes an
-    /// edit, and the follower takes over once the holder stops.
+    /// Two processes' watchers on one vault: only the lease holder indexes,
+    /// the follower is told what the holder's scans changed through the scan
+    /// journal, and it takes over once the holder stops.
     #[test]
-    fn only_the_index_owner_scans_and_a_follower_takes_over() {
+    fn only_the_index_owner_scans_and_followers_receive_its_changes() {
         use crate::index_owner::IndexOwnerKind;
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Mutex};
 
+        type Seen = Arc<Mutex<Vec<(bool, bool, Vec<String>)>>>;
         let temporary = TempDir::new().unwrap();
         let paths = VaultPaths::new(temporary.path());
         std::fs::create_dir_all(paths.vulcan_dir()).unwrap();
@@ -659,10 +782,11 @@ mod tests {
         let start = |kind: IndexOwnerKind| {
             let stop = Arc::new(AtomicBool::new(false));
             let owner = Arc::new(AtomicBool::new(false));
-            let added = Arc::new(AtomicUsize::new(0));
+            // (owned the index, startup report, changed paths) per report.
+            let seen: Seen = Arc::default();
             let handle = {
-                let (paths, stop, owner, added) =
-                    (paths.clone(), stop.clone(), owner.clone(), added.clone());
+                let (paths, stop, owner, seen) =
+                    (paths.clone(), stop.clone(), owner.clone(), seen.clone());
                 std::thread::spawn(move || {
                     watch_vault_as_owner_every(
                         &paths,
@@ -671,16 +795,18 @@ mod tests {
                         Duration::from_millis(50),
                         || stop.load(Ordering::SeqCst),
                         || owner.store(true, Ordering::SeqCst),
-                        // Counted with the startup reconciliation, so an edit
-                        // made before the watcher is ready still counts once.
                         |report| -> Result<(), String> {
-                            added.fetch_add(report.summary.added, Ordering::SeqCst);
+                            seen.lock().unwrap().push((
+                                owner.load(Ordering::SeqCst),
+                                report.startup,
+                                report.paths,
+                            ));
                             Ok(())
                         },
                     )
                 })
             };
-            (stop, owner, added, handle)
+            (stop, owner, seen, handle)
         };
         let wait = |condition: &dyn Fn() -> bool| {
             let deadline = Instant::now() + Duration::from_secs(10);
@@ -689,18 +815,30 @@ mod tests {
             }
             condition()
         };
+        let reported = |seen: &Seen, path: &str, as_owner: bool| {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .any(|(owner, _, paths)| *owner == as_owner && paths.iter().any(|p| p == path))
+        };
         let first = start(IndexOwnerKind::Serve);
         assert!(wait(&|| first.1.load(Ordering::SeqCst)));
         let second = start(IndexOwnerKind::Daemon);
-        std::thread::sleep(Duration::from_millis(300));
+        // A follower starts with a reconciliation report, as a startup scan would.
+        assert!(wait(&|| second
+            .2
+            .lock()
+            .unwrap()
+            .first()
+            .is_some_and(|(owner, startup, _)| !owner && *startup)));
+        std::fs::write(temporary.path().join("B.md"), "b").unwrap();
+        // The holder scans the edit (an early edit lands in its startup scan);
+        // the follower hears of it without owning the index.
+        assert!(wait(&|| reported(&second.2, "B.md", false)));
         assert!(
             !second.1.load(Ordering::SeqCst),
             "the second process follows"
         );
-        std::fs::write(temporary.path().join("B.md"), "b").unwrap();
-        assert!(wait(&|| first.2.load(Ordering::SeqCst) == 1));
-        std::thread::sleep(Duration::from_millis(300));
-        assert_eq!(second.2.load(Ordering::SeqCst), 0, "a follower never scans");
 
         first.0.store(true, Ordering::SeqCst);
         first.3.join().unwrap().unwrap();
@@ -709,7 +847,19 @@ mod tests {
             "the follower takes over"
         );
         std::fs::write(temporary.path().join("C.md"), "c").unwrap();
-        assert!(wait(&|| second.2.load(Ordering::SeqCst) == 1));
+        let indexed = || {
+            crate::CacheDatabase::open(&paths)
+                .unwrap()
+                .connection()
+                .query_row(
+                    "SELECT COUNT(*) FROM documents WHERE path = 'C.md'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap()
+                == 1
+        };
+        assert!(wait(&indexed), "the new owner indexes");
         second.0.store(true, Ordering::SeqCst);
         second.3.join().unwrap().unwrap();
     }

@@ -104,6 +104,7 @@ pub mod resolver;
 mod resource_limits;
 pub mod saved_queries;
 pub mod scan;
+pub mod scan_journal;
 pub mod search;
 pub mod selection;
 pub(crate) mod source;
@@ -406,4 +407,4 @@ pub fn current_time_override_ms() -> Option<i64> {
 
 pub const PARSER_VERSION: u32 = 9;
 pub const EXTRACTION_VERSION: u32 = 1;
-pub const SCHEMA_VERSION: u32 = 36;
+pub const SCHEMA_VERSION: u32 = 37;

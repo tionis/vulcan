@@ -222,6 +222,8 @@ struct IncrementalScanResult {
     requires_fts_rebuild: bool,
     /// `(old_path, new_path)` pairs whose document identity was preserved.
     renamed: Vec<(String, String)>,
+    /// Each changed path and how, for followers of the index owner.
+    journal: Vec<(String, crate::scan_journal::ScanChangeStatus)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -513,6 +515,7 @@ where
                     crate::link_feedback::restore(paths, transaction)?;
                     // Foreign keys are off during a rebuild, so recount every source.
                     crate::graph_confidence::recompute_all(transaction)?;
+                    crate::scan_journal::record_reconcile(transaction)?;
                     crate::cache::advance_note_store_clock(transaction)?;
 
                     Ok(ScanSummary {
@@ -631,6 +634,7 @@ where
                         crate::cache::advance_note_store_clock(transaction)?;
                     }
                     crate::graph_confidence::recompute_dirty(transaction)?;
+                    crate::scan_journal::record(transaction, &result.journal)?;
                     emit_scan_progress(
                         on_progress,
                         ScanProgress {
@@ -1014,6 +1018,7 @@ fn apply_incremental_scan(
         property_catalog_deltas: BTreeMap::new(),
         requires_fts_rebuild: false,
         renamed: Vec::new(),
+        journal: Vec::new(),
     };
     emit_scan_progress(
         on_progress,
@@ -1152,6 +1157,15 @@ fn apply_incremental_scan(
                 result
                     .renamed
                     .push((old_path.clone(), item.file.relative_path.clone()));
+                result.journal.push((
+                    old_path.clone(),
+                    crate::scan_journal::ScanChangeStatus::Deleted,
+                ));
+                // A rename with unchanged content is not reindexed below.
+                result.journal.push((
+                    item.file.relative_path.clone(),
+                    crate::scan_journal::ScanChangeStatus::Updated,
+                ));
                 result.requires_link_resolution = true;
                 result.target_pool_changed = true;
             }
@@ -1240,6 +1254,14 @@ fn apply_incremental_scan(
                         extend_target_keys(&mut result.target_keys, transaction, &id)?;
                     }
                     result.changed_document_ids.push(id);
+                    result.journal.push((
+                        item.file.relative_path.clone(),
+                        if is_new {
+                            crate::scan_journal::ScanChangeStatus::Added
+                        } else {
+                            crate::scan_journal::ScanChangeStatus::Updated
+                        },
+                    ));
                     if is_new {
                         result.summary.added += 1;
                         result.requires_link_resolution = true;
@@ -1283,6 +1305,9 @@ fn apply_incremental_scan(
                 -1,
             );
             delete_document(transaction, &cached.id)?;
+            result
+                .journal
+                .push((path.clone(), crate::scan_journal::ScanChangeStatus::Deleted));
             result.requires_link_resolution = true;
             result.target_pool_changed = true;
             result.requires_property_catalog_refresh = true;
