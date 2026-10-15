@@ -1,0 +1,188 @@
+{
+  "acceptance_gate_result": "not_evaluated",
+  "binary": "/home/eric/vulcan-eval/target/release/vulcan",
+  "binary_sha256": "9a0cf511499719c752dd29dd5691042396a0f76576fe539a30f4df362ac52e7f",
+  "binary_unchanged": true,
+  "commit": "889bed09",
+  "complete_and_valid": true,
+  "fixture": {
+    "acceptance_gate_result": "not_evaluated",
+    "body_bytes_per_record": 4096,
+    "digest_format": "generation-order u64be path-length/path/u64be byte-length/bytes; excludes manifest",
+    "generator_version": 1,
+    "invalid_priority_records": 104,
+    "links": 100000,
+    "missing_status_records": 2000,
+    "payload_files": 10014,
+    "payload_sha256": "ba3b33b62cbbcea1e68628920268cd143416d1216345c5aeb029220c28e9a348",
+    "private_records": 1000,
+    "records": 10000,
+    "seed": 42,
+    "type_counts": {
+      "contact": 3333,
+      "project": 3333,
+      "task": 3334
+    }
+  },
+  "fixture_unchanged": true,
+  "limitations": [
+    "Frontends return different report shapes; equivalence is not checked",
+    "No concurrent writers or external edits during measurement",
+    "Host power, frequency, background load, and OS page cache are uncontrolled"
+  ],
+  "machine": {
+    "architecture": "x86_64",
+    "cpus": 16,
+    "host": "designated evaluation host (Intel Core i7-10700, 31 GiB RAM, Debian 13)",
+    "load_average": [
+      5.50048828125,
+      2.89501953125,
+      1.41943359375
+    ],
+    "platform": "Linux-6.12.111+deb13-amd64-x86_64-with-glibc2.41"
+  },
+  "measurement": "daemon_routing_baseline",
+  "method": {
+    "cli": "process start through exit, default blocking refresh",
+    "concurrency": 1,
+    "http": "loopback GET round trip to one watched serve process",
+    "mcp": "tools/call round trip in one stdio process",
+    "missing_record_check": "Python os.stat of a missing path; an upper bound",
+    "percentiles": "nearest rank over repeated successful requests",
+    "requested_repeated_samples": 10
+  },
+  "missing_record_check_ns": 1235.5949,
+  "operations": {
+    "note_backlinks": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 31.46901202853769,
+        "repeated_ms": {
+          "max": 32.35015401151031,
+          "p50": 31.3329859636724,
+          "p95": 32.35015401151031,
+          "p99": 32.35015401151031,
+          "samples": 10
+        }
+      }
+    },
+    "note_get": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 11.20500301476568,
+        "repeated_ms": {
+          "max": 10.788524989038706,
+          "p50": 10.518786031752825,
+          "p95": 10.788524989038706,
+          "p99": 10.788524989038706,
+          "samples": 10
+        }
+      },
+      "mcp": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 5.562103935517371,
+        "repeated_ms": {
+          "max": 4.176091984845698,
+          "p50": 3.971060970798135,
+          "p95": 4.176091984845698,
+          "p99": 4.176091984845698,
+          "samples": 10
+        }
+      }
+    },
+    "note_info": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 36.64526005741209,
+        "repeated_ms": {
+          "max": 39.07604096457362,
+          "p50": 36.86551400460303,
+          "p95": 39.07604096457362,
+          "p99": 39.07604096457362,
+          "samples": 10
+        }
+      },
+      "mcp": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 10.4714430635795,
+        "repeated_ms": {
+          "max": 10.768502950668335,
+          "p50": 10.492120054550469,
+          "p95": 10.768502950668335,
+          "p99": 10.768502950668335,
+          "samples": 10
+        }
+      }
+    },
+    "note_outline": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 10.372162098065019,
+        "repeated_ms": {
+          "max": 10.309449979104102,
+          "p50": 10.159239056520164,
+          "p95": 10.309449979104102,
+          "p99": 10.309449979104102,
+          "samples": 10
+        }
+      },
+      "mcp": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 3.652791026979685,
+        "repeated_ms": {
+          "max": 3.7223350955173373,
+          "p50": 3.6305919056758285,
+          "p95": 3.7223350955173373,
+          "p99": 3.7223350955173373,
+          "samples": 10
+        }
+      }
+    },
+    "status": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 133.467971929349,
+        "repeated_ms": {
+          "max": 128.99693800136447,
+          "p50": 127.30926705989987,
+          "p95": 128.99693800136447,
+          "p99": 128.99693800136447,
+          "samples": 10
+        }
+      },
+      "mcp": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 128.45705298241228,
+        "repeated_ms": {
+          "max": 142.87982694804668,
+          "p50": 125.69228396750987,
+          "p95": 142.87982694804668,
+          "p99": 142.87982694804668,
+          "samples": 10
+        }
+      }
+    }
+  },
+  "process_floor": {
+    "complete": true,
+    "failures": [],
+    "first_ms": 4.970057983882725,
+    "repeated_ms": {
+      "max": 4.823065013624728,
+      "p50": 4.683558945544064,
+      "p95": 4.823065013624728,
+      "p99": 4.823065013624728,
+      "samples": 10
+    }
+  },
+  "runner_sha256": "f7ed5f429725202aaac4fa4de5b23cd1e7cf362f764faaef65d9e3272e0755e2"
+}
