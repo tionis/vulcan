@@ -1,0 +1,130 @@
+{
+  "acceptance_gate_result": "not_evaluated",
+  "note": "Diagnostic for routed whole-graph reports; the spec's speed criterion names query, status, and note get.",
+  "commit": "767781df",
+  "binary": "/home/eric/vulcan-eval/target/release/vulcan (cargo build --release -p vulcan-cli)",
+  "fixtures": [
+    "~/vulcan-eval-fixtures/mdb-10k/collection (generator v1, seed 42, 10,000 records, 100,000 links)",
+    "~/vulcan-eval-fixtures/mdb-100k/collection (generator v1, seed 42, 100,000 records, 1,000,000 links)"
+  ],
+  "machine": {
+    "host": "designated evaluation host (Intel Core i7-10700, 31 GiB RAM, Debian 13)"
+  },
+  "setup": [
+    "Isolated XDG_CONFIG_HOME and XDG_STATE_HOME; daemon.toml binds 127.0.0.1:0",
+    "Both fixtures scanned, then registered with `vault add --no-sync`",
+    "`daemon start --detach`, then waited until both vaults reported cache state fresh"
+  ],
+  "method": {
+    "cases": [
+      "graph stats",
+      "graph hubs",
+      "graph path public/task/03/record-000003.md public/contact/46/record-000046.md"
+    ],
+    "command": "vulcan --vault <fixture> --route <direct|daemon> --output json <case>",
+    "timing": "wall clock of the whole process; 11 runs per case, the first discarded (it loads the retained graph); per-case p50 and max of 10",
+    "refresh": "default refresh mode: direct runs prove freshness by stat walk; routed runs pass an index barrier",
+    "equivalence": "sha256 of stdout of the second run of each case, compared between direct and daemon"
+  },
+  "results_ms": {
+    "10k": {
+      "outputs_identical": true,
+      "direct": {
+        "per_case": {
+          "graph stats": {
+            "p50": 149.7,
+            "max": 150.1
+          },
+          "graph hubs": {
+            "p50": 101.5,
+            "max": 109.9
+          },
+          "graph path public/task/03/record-000003.md public/contact/46/record-000046.md": {
+            "p50": 84.5,
+            "max": 87.1
+          }
+        },
+        "stdout_sha256": [
+          "43a2cd1dcdf991b1a13e81df80469e61d41426e0df9f010073b969ae94829b68",
+          "1b90730f73ade9d5c2dcccb5cbcbf5fb7cac5e146c2f48b84c84cf63c86fbbf1",
+          "e42489f0e0c38c9590f323289752fec13e0ef7fb107266aa63bf0fe55c60c918"
+        ]
+      },
+      "daemon": {
+        "per_case": {
+          "graph stats": {
+            "p50": 6.3,
+            "max": 6.5
+          },
+          "graph hubs": {
+            "p50": 31.4,
+            "max": 32.4
+          },
+          "graph path public/task/03/record-000003.md public/contact/46/record-000046.md": {
+            "p50": 6.7,
+            "max": 6.9
+          }
+        },
+        "stdout_sha256": [
+          "43a2cd1dcdf991b1a13e81df80469e61d41426e0df9f010073b969ae94829b68",
+          "1b90730f73ade9d5c2dcccb5cbcbf5fb7cac5e146c2f48b84c84cf63c86fbbf1",
+          "e42489f0e0c38c9590f323289752fec13e0ef7fb107266aa63bf0fe55c60c918"
+        ]
+      }
+    },
+    "100k": {
+      "outputs_identical": true,
+      "direct": {
+        "per_case": {
+          "graph stats": {
+            "p50": 1599.6,
+            "max": 1621.2
+          },
+          "graph hubs": {
+            "p50": 1066.5,
+            "max": 1093.1
+          },
+          "graph path public/task/03/record-000003.md public/contact/46/record-000046.md": {
+            "p50": 827.0,
+            "max": 842.4
+          }
+        },
+        "stdout_sha256": [
+          "e5dd37fd045d912cd054f487b096031b02bbcf31517ebb9c0609c62007b12305",
+          "4deed4a34318639c0ad38b4b565560a4bb6d00da81742c6855485f15607edfb5",
+          "e42489f0e0c38c9590f323289752fec13e0ef7fb107266aa63bf0fe55c60c918"
+        ]
+      },
+      "daemon": {
+        "per_case": {
+          "graph stats": {
+            "p50": 6.9,
+            "max": 10.7
+          },
+          "graph hubs": {
+            "p50": 284.0,
+            "max": 295.3
+          },
+          "graph path public/task/03/record-000003.md public/contact/46/record-000046.md": {
+            "p50": 11.2,
+            "max": 11.4
+          }
+        },
+        "stdout_sha256": [
+          "e5dd37fd045d912cd054f487b096031b02bbcf31517ebb9c0609c62007b12305",
+          "4deed4a34318639c0ad38b4b565560a4bb6d00da81742c6855485f15607edfb5",
+          "e42489f0e0c38c9590f323289752fec13e0ef7fb107266aa63bf0fe55c60c918"
+        ]
+      }
+    }
+  },
+  "findings": [
+    "From the retained graph, graph stats answers in 6.9 ms and graph path in 11.2 ms at 100K, against 1,600 and 827 ms direct",
+    "graph hubs takes 284 ms routed against 1,067 ms direct: it lists all 100,000 notes, so carrying and printing the report dominates"
+  ],
+  "limitations": [
+    "The first routed request after a cache change loads the graph, as a direct run does; these timings exclude it",
+    "Equivalence compares one run's stdout per case, not every sample",
+    "Host power, frequency, background load, and OS page cache are uncontrolled"
+  ]
+}
