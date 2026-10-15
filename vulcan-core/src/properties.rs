@@ -13,7 +13,7 @@ use regex::Regex;
 use rusqlite::params_from_iter;
 use rusqlite::types::Type as SqlType;
 use rusqlite::types::Value as SqlValue;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -205,7 +205,7 @@ pub struct NoteRecord {
     pub inline_expressions: Vec<EvaluatedInlineExpression>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoteListItemRecord {
     pub id: String,
     pub text: String,
@@ -222,7 +222,7 @@ pub struct NoteListItemRecord {
     pub symbol: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NoteTaskRecord {
     pub id: String,
     pub list_item_id: String,
@@ -240,7 +240,7 @@ pub struct NoteTaskRecord {
     pub properties: Map<String, Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EvaluatedInlineExpression {
     pub expression: String,
     pub value: Value,

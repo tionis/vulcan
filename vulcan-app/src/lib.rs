@@ -88,6 +88,7 @@ pub mod plugins;
 pub mod properties;
 pub mod publish;
 pub mod pull;
+pub mod routed;
 pub mod scan;
 pub mod serve;
 pub mod site;
