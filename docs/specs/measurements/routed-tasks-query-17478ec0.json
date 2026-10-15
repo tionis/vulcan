@@ -1,0 +1,129 @@
+{
+  "acceptance_gate_result": "not_evaluated",
+  "note": "Diagnostic for routed tasks query; the spec's speed criterion names query, status, and note get.",
+  "commit": "17478ec0",
+  "binary": "/home/eric/vulcan-eval/target/release/vulcan (cargo build --release -p vulcan-cli)",
+  "fixtures": [
+    "~/vulcan-eval-fixtures/mdb-10k/collection (generator v1, seed 42, 10,000 records, 3,334 task records)",
+    "~/vulcan-eval-fixtures/mdb-100k/collection (generator v1, seed 42, 100,000 records, 33,334 task records)"
+  ],
+  "machine": {
+    "host": "designated evaluation host (Intel Core i7-10700, 31 GiB RAM, Debian 13)"
+  },
+  "setup": [
+    "Isolated XDG_CONFIG_HOME and XDG_STATE_HOME; daemon.toml binds 127.0.0.1:0",
+    "Both fixtures scanned, then registered with `vault add --no-sync`",
+    "`daemon start --detach`, then waited until both vaults reported cache state fresh"
+  ],
+  "method": {
+    "cases": [
+      "tasks query 'not done'",
+      "tasks query 'not done\\nlimit 20'",
+      "tasks query 'done\\ngroup by status'"
+    ],
+    "command": "vulcan --vault <fixture> --route <direct|daemon> --output json <case>",
+    "timing": "wall clock of the whole process; 11 runs per case, the first discarded; per-case p50 and max of 10",
+    "equivalence": "sha256 of stdout of the second run of each case, compared between direct and daemon"
+  },
+  "results_ms": {
+    "10k": {
+      "outputs_identical": true,
+      "direct": {
+        "per_case": {
+          "tasks query not done": {
+            "p50": 350.6,
+            "max": 355.7
+          },
+          "tasks query not done \\n limit 20": {
+            "p50": 334.3,
+            "max": 344.5
+          },
+          "tasks query done \\n group by status": {
+            "p50": 350.8,
+            "max": 355.1
+          }
+        },
+        "stdout_sha256": [
+          "b4b06150b89fc6a6e79b107c5c039665dcaab11d17a8dca712278115f933db05",
+          "014cd5a1265593f36340459850473e28320f0adb3277e3805d6c3b1d9044ecde",
+          "cb45647754f5b50898cfae986d78921e1026068c32a2d0e54f1233f792ad8fcc"
+        ]
+      },
+      "daemon": {
+        "per_case": {
+          "tasks query not done": {
+            "p50": 171.1,
+            "max": 174.6
+          },
+          "tasks query not done \\n limit 20": {
+            "p50": 115.2,
+            "max": 121.8
+          },
+          "tasks query done \\n group by status": {
+            "p50": 161.6,
+            "max": 164.4
+          }
+        },
+        "stdout_sha256": [
+          "b4b06150b89fc6a6e79b107c5c039665dcaab11d17a8dca712278115f933db05",
+          "014cd5a1265593f36340459850473e28320f0adb3277e3805d6c3b1d9044ecde",
+          "cb45647754f5b50898cfae986d78921e1026068c32a2d0e54f1233f792ad8fcc"
+        ]
+      }
+    },
+    "100k": {
+      "outputs_identical": true,
+      "direct": {
+        "per_case": {
+          "tasks query not done": {
+            "p50": 3707.2,
+            "max": 3732.5
+          },
+          "tasks query not done \\n limit 20": {
+            "p50": 3534.9,
+            "max": 3572.1
+          },
+          "tasks query done \\n group by status": {
+            "p50": 3697.9,
+            "max": 3700.6
+          }
+        },
+        "stdout_sha256": [
+          "16d20ddb20a82a7c3715802145b222b4899b85da256a5c40d59eb3f55e418849",
+          "014cd5a1265593f36340459850473e28320f0adb3277e3805d6c3b1d9044ecde",
+          "a6be2db01f7ca0088acf59fd5da68debeb6ddf03dcd7f52897b9a25d339d4475"
+        ]
+      },
+      "daemon": {
+        "per_case": {
+          "tasks query not done": {
+            "p50": 1674.5,
+            "max": 1740.4
+          },
+          "tasks query not done \\n limit 20": {
+            "p50": 1180.5,
+            "max": 1219.6
+          },
+          "tasks query done \\n group by status": {
+            "p50": 1582.1,
+            "max": 1609.1
+          }
+        },
+        "stdout_sha256": [
+          "16d20ddb20a82a7c3715802145b222b4899b85da256a5c40d59eb3f55e418849",
+          "014cd5a1265593f36340459850473e28320f0adb3277e3805d6c3b1d9044ecde",
+          "a6be2db01f7ca0088acf59fd5da68debeb6ddf03dcd7f52897b9a25d339d4475"
+        ]
+      }
+    }
+  },
+  "findings": [
+    "Routed tasks queries return identical output in about 45% of the direct time at 100K (not done: 1,675 against 3,707 ms)",
+    "Even `limit 20` takes 1,180 ms routed: each request still checks every note for a TaskNotes task, collects the 33,334 task notes from the session, and rebuilds task rows. Retaining task rows between requests is the remaining step"
+  ],
+  "limitations": [
+    "Measured right after a release build; load may have been elevated",
+    "Equivalence compares one run's stdout per case, not every sample",
+    "Host power, frequency, background load, and OS page cache are uncontrolled"
+  ]
+}
