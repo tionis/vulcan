@@ -50,7 +50,7 @@ Use this skill when the task depends on metadata, frontmatter, tags, paths, or p
   by both frontmatter and an inline field is a list.
 - If the result set is surprising, inspect the filter first before adding more conditions.
 - When running many queries or searches against a large vault that a running daemon hosts
-  (`vulcan vault add` plus `vulcan daemon start`), set `VULCAN_ROUTE=auto` or pass `--route auto`:
+  (`vulcan vault add` plus `vulcan daemon start`), set `VULCAN_ROUTE=auto`, pass `--route auto`, or make it the device default with `vulcan device config set-route auto`:
   `query` (DSL, JSON, or DQL), keyword `search`, `ls`, `tasks query`, and `graph stats|hubs|path` are answered by the daemon after it
   confirms every earlier change is indexed, and print exactly what a direct run prints. `auto`
   runs the read directly whenever the daemon cannot answer; `--route daemon` fails with

@@ -40,6 +40,30 @@ pub enum LoginMode {
     Never,
 }
 
+/// Where routable CLI reads run by default (Roadmap 10.5); `--route` and
+/// `VULCAN_ROUTE` override it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ClientRoute {
+    Direct,
+    Daemon,
+    Auto,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientSection {
+    /// Absent means `direct`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<ClientRoute>,
+}
+
+impl ClientSection {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TransportSection {
@@ -124,6 +148,8 @@ pub struct DeviceConfig {
     pub version: u32,
     #[serde(default)]
     pub transport: TransportSection,
+    #[serde(default, skip_serializing_if = "ClientSection::is_default")]
+    pub client: ClientSection,
     #[serde(default, rename = "forge", skip_serializing_if = "Vec::is_empty")]
     pub forges: Vec<ForgeEntry>,
 }
@@ -133,6 +159,7 @@ impl Default for DeviceConfig {
         Self {
             version: DEVICE_CONFIG_VERSION,
             transport: TransportSection::default(),
+            client: ClientSection::default(),
             forges: Vec::new(),
         }
     }
@@ -288,6 +315,18 @@ impl DeviceConfigStore {
     ) -> Result<DeviceConfigReport, AppError> {
         self.edit(dry_run, |config| {
             config.transport.default = policy;
+            Ok(())
+        })
+    }
+
+    /// Sets, or with `None` clears, the default route for routable reads.
+    pub fn set_client_route(
+        &self,
+        route: Option<ClientRoute>,
+        dry_run: bool,
+    ) -> Result<DeviceConfigReport, AppError> {
+        self.edit(dry_run, |config| {
+            config.client.route = route;
             Ok(())
         })
     }
@@ -564,5 +603,39 @@ mod tests {
             std::os::unix::fs::symlink(&target, store.path()).unwrap();
             assert!(store.load().is_err());
         }
+    }
+
+    #[test]
+    fn client_route_round_trips_and_clears() {
+        let (_dir, store) = store();
+        assert_eq!(store.load().unwrap().client.route, None);
+        let report = store
+            .set_client_route(Some(ClientRoute::Auto), true)
+            .unwrap();
+        assert!(report.dry_run && report.changed);
+        assert!(!store.path().exists(), "a dry run writes nothing");
+        store
+            .set_client_route(Some(ClientRoute::Auto), false)
+            .unwrap();
+        let text = fs::read_to_string(store.path()).unwrap();
+        assert!(
+            text.contains("[client]") && text.contains("route = \"auto\""),
+            "{text}"
+        );
+        assert_eq!(store.load().unwrap().client.route, Some(ClientRoute::Auto));
+        store.set_client_route(None, false).unwrap();
+        let text = fs::read_to_string(store.path()).unwrap();
+        assert!(
+            !text.contains("[client]"),
+            "an unset route leaves no section: {text}"
+        );
+        fs::write(
+            store.path(),
+            "version = 1\n[client]\nroute = \"sometimes\"\n",
+        )
+        .unwrap();
+        assert!(store.load().is_err(), "unknown routes are refused");
+        fs::write(store.path(), "version = 1\n[client]\nmode = \"auto\"\n").unwrap();
+        assert!(store.load().is_err(), "unknown fields are refused");
     }
 }

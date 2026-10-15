@@ -4773,6 +4773,21 @@ pub enum DeviceConfigCommand {
         #[arg(long, help = "Validate without saving")]
         dry_run: bool,
     },
+    #[command(
+        about = "Set where routable reads run by default: direct, daemon, or auto",
+        long_about = "Set this device's default for routable reads (`query`, keyword `search`, `ls`, `tasks query`, and `graph stats|hubs|path`). `direct` reads the vault's cache in the command's own process; `daemon` asks the running daemon and fails when it cannot answer; `auto` asks the daemon when it hosts the vault and runs directly otherwise. `--route` and `VULCAN_ROUTE` override it for one command or shell."
+    )]
+    SetRoute {
+        #[arg(value_enum, help = "direct, daemon, or auto")]
+        route: RouteMode,
+        #[arg(long, help = "Validate without saving")]
+        dry_run: bool,
+    },
+    #[command(about = "Clear the default route, so routable reads run directly")]
+    ClearRoute {
+        #[arg(long, help = "Validate without saving")]
+        dry_run: bool,
+    },
     #[command(about = "Remove a forge host entry")]
     RemoveForge {
         #[arg(help = "Hostname of the entry to remove")]
@@ -9221,12 +9236,13 @@ ancestor `.vulcan/` vault."
         global = true,
         value_enum,
         env = "VULCAN_ROUTE",
-        help = "Where routable reads run: direct, daemon, or auto [default: direct]",
-        long_help = "Where routable reads (currently `query` with a DSL or JSON query) run. \
-`direct` (the default) reads the vault's cache in this process. `daemon` asks the running \
-daemon, which answers from its retained index after confirming every earlier change is \
-indexed, and fails when it cannot. `auto` asks the daemon when it hosts the vault and runs \
-directly otherwise. Writes always run directly."
+        help = "Where routable reads run: direct, daemon, or auto [default: device config, else direct]",
+        long_help = "Where routable reads (`query`, keyword `search`, `ls`, `tasks query`, and \
+`graph stats|hubs|path`) run. `direct` reads the vault's cache in this process. `daemon` asks \
+the running daemon, which answers from its retained index after confirming every earlier change \
+is indexed, and fails when it cannot. `auto` asks the daemon when it hosts the vault and runs \
+directly otherwise. Without this flag or VULCAN_ROUTE, the device's `[client] route` applies \
+(`vulcan device config set-route`), else `direct`. Writes always run directly."
     )]
     pub route: Option<RouteMode>,
 

@@ -9956,6 +9956,7 @@ fn routed_queries_print_what_direct_queries_print() {
         "from notes where status = active",
     ];
     let direct = vulcan(&[&["--route", "direct"], &query[..]].concat());
+    let direct_query = direct.clone();
     let auto = vulcan(&[&["--route", "auto"], &query[..]].concat());
     assert!(auto.status.success(), "{auto:?}");
     assert_eq!(auto.stdout, direct.stdout);
@@ -9975,6 +9976,44 @@ fn routed_queries_print_what_direct_queries_print() {
         parse_stdout_json_bytes(&required.stdout)["code"],
         "daemon_unavailable"
     );
+
+    // The device's `[client] route` applies without a flag or variable, and
+    // both override it.
+    let set = vulcan(&[
+        "--output",
+        "json",
+        "device",
+        "config",
+        "set-route",
+        "daemon",
+    ]);
+    assert!(set.status.success(), "{set:?}");
+    assert_eq!(
+        parse_stdout_json_bytes(&set.stdout)["config"]["client"]["route"],
+        "daemon"
+    );
+    let configured = vulcan(&query);
+    assert_eq!(
+        parse_stdout_json_bytes(&configured.stdout)["code"],
+        "daemon_unavailable",
+        "{configured:?}"
+    );
+    let flagged = vulcan(&[&["--route", "direct"], &query[..]].concat());
+    assert_eq!(flagged.stdout, direct_query.stdout);
+    let variable = ProcessCommand::new(assert_cmd::cargo::cargo_bin("vulcan"))
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_STATE_HOME", &state_home)
+        .env("VULCAN_ROUTE", "direct")
+        .args(["--vault", vault])
+        .args(query)
+        .output()
+        .expect("vulcan should run");
+    assert_eq!(variable.stdout, direct_query.stdout);
+    // Commands that are not routable ignore it.
+    assert!(vulcan(&["--output", "json", "status"]).status.success());
+    let cleared = vulcan(&["--output", "json", "device", "config", "clear-route"]);
+    assert!(cleared.status.success(), "{cleared:?}");
+    assert_eq!(vulcan(&query).stdout, direct_query.stdout);
 }
 
 fn parse_stdout_json_bytes(stdout: &[u8]) -> Value {

@@ -13363,6 +13363,63 @@
                 "subcommands": []
               },
               {
+                "about": "Set where routable reads run by default: direct, daemon, or auto",
+                "name": "set-route",
+                "options": [
+                  {
+                    "help": "direct, daemon, or auto",
+                    "id": "route",
+                    "long": null,
+                    "possible_values": [
+                      "direct",
+                      "daemon",
+                      "auto"
+                    ],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "ROUTE"
+                    ]
+                  },
+                  {
+                    "help": "Validate without saving",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Clear the default route, so routable reads run directly",
+                "name": "clear-route",
+                "options": [
+                  {
+                    "help": "Validate without saving",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
                 "about": "Remove a forge host entry",
                 "name": "remove-forge",
                 "options": [
@@ -21690,7 +21747,7 @@
         ]
       },
       {
-        "help": "Where routable reads run: direct, daemon, or auto [default: direct]",
+        "help": "Where routable reads run: direct, daemon, or auto [default: device config, else direct]",
         "id": "route",
         "long": "route",
         "possible_values": [

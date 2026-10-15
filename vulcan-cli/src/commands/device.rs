@@ -215,6 +215,10 @@ fn handle_device_config(cli: &Cli, command: &DeviceConfigCommand) -> Result<(), 
             },
             *dry_run,
         ),
+        DeviceConfigCommand::SetRoute { route, dry_run } => {
+            store.set_client_route(Some(crate::routing::client_route(*route)), *dry_run)
+        }
+        DeviceConfigCommand::ClearRoute { dry_run } => store.set_client_route(None, *dry_run),
         DeviceConfigCommand::RemoveForge { host, dry_run } => store.remove_forge(host, *dry_run),
     }
     .map_err(CliError::operation)?;
@@ -237,6 +241,15 @@ fn handle_device_config(cli: &Cli, command: &DeviceConfigCommand) -> Result<(), 
         match report.config.transport.default {
             vulcan_app::device_config::TransportPolicy::DeviceKey => "device-key",
             vulcan_app::device_config::TransportPolicy::Ambient => "ambient",
+        }
+    );
+    println!(
+        "Default route: {}",
+        match report.config.client.route {
+            None => "direct (not set)",
+            Some(vulcan_app::device_config::ClientRoute::Direct) => "direct",
+            Some(vulcan_app::device_config::ClientRoute::Daemon) => "daemon",
+            Some(vulcan_app::device_config::ClientRoute::Auto) => "auto",
         }
     );
     for entry in &report.config.forges {

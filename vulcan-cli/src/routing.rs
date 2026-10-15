@@ -8,6 +8,7 @@
 //! A routed command defers this process's own cache refresh until it knows
 //! the read runs here.
 
+use vulcan_app::device_config::ClientRoute;
 use vulcan_app::routed::dql::DqlRequest;
 use vulcan_app::routed::graph::{GraphAnswer, GraphRequest};
 use vulcan_app::routed::ls::LsRequest;
@@ -28,8 +29,45 @@ use vulcan_daemon::routed_reads::{
 use crate::cli::{Command, GraphCommand, RouteMode, SearchMode, TasksCommand};
 use crate::{Cli, CliError};
 
+/// The route for a routable command: `--route` or `VULCAN_ROUTE`, else the
+/// device's `[client] route`, else `direct`. Only routable commands read the
+/// device configuration, and only without a flag or variable.
 fn route_mode(cli: &Cli) -> RouteMode {
-    cli.route.unwrap_or(RouteMode::Direct)
+    cli.route.unwrap_or_else(device_route)
+}
+
+/// The device's `[client] route`. An unreadable `device.toml` routes
+/// directly, which is always correct, and says so once.
+fn device_route() -> RouteMode {
+    static ROUTE: std::sync::OnceLock<RouteMode> = std::sync::OnceLock::new();
+    *ROUTE.get_or_init(|| {
+        let loaded = vulcan_app::device_config::DeviceConfigStore::user_default()
+            .and_then(|store| store.load());
+        match loaded {
+            Ok(config) => config.client.route.map_or(RouteMode::Direct, route_mode_of),
+            Err(error) => {
+                eprintln!("warning: ignoring the device route: {error}");
+                RouteMode::Direct
+            }
+        }
+    })
+}
+
+fn route_mode_of(route: ClientRoute) -> RouteMode {
+    match route {
+        ClientRoute::Direct => RouteMode::Direct,
+        ClientRoute::Daemon => RouteMode::Daemon,
+        ClientRoute::Auto => RouteMode::Auto,
+    }
+}
+
+/// The device configuration value for `mode`.
+pub(crate) fn client_route(mode: RouteMode) -> ClientRoute {
+    match mode {
+        RouteMode::Direct => ClientRoute::Direct,
+        RouteMode::Daemon => ClientRoute::Daemon,
+        RouteMode::Auto => ClientRoute::Auto,
+    }
 }
 
 /// Whether the command is a read the daemon can answer.
@@ -58,7 +96,7 @@ fn is_routable(command: &Command) -> bool {
 
 /// Whether the command's cache refresh waits for the routing decision.
 pub(crate) fn defers_refresh(cli: &Cli) -> bool {
-    route_mode(cli) != RouteMode::Direct && is_routable(&cli.command)
+    is_routable(&cli.command) && route_mode(cli) != RouteMode::Direct
 }
 
 /// The daemon's answer to `request`, or `None` when it should run here.

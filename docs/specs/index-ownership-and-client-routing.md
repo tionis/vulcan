@@ -222,8 +222,8 @@ A routed error carries the same error code and message as the direct path, plus 
    100K against 165 ms direct. A term that matches every note takes about 490 ms either way,
    because ranking every match dominates.
 4. **CLI routing modes.** Done: `--route` and `VULCAN_ROUTE`, discovery through the runtime record
-   and registry, deferred refresh and read lock, and the fallback rules. `[client] route` device
-   configuration remains. Measured on the reference host
+   and registry, deferred refresh and read lock, and the fallback rules, and the device's
+   `[client] route` in `device.toml` (`vulcan device config set-route`). Measured on the reference host
    ([record](measurements/routed-query-501b24cc.json)): routed `query` p95 is 12.1 ms at 100K
    (direct 1,165 ms) with identical output, and `auto` with no daemon stays within 0.43 ms of
    `direct`, so the `query` and `auto` speed criteria under [Acceptance](#acceptance) pass.
