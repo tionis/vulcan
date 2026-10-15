@@ -122,6 +122,21 @@ pub struct FilesystemHint {
     pub self_generated_transactions: BTreeSet<String>,
     pub safety_rescan: bool,
     pub watcher_errors: Vec<String>,
+    /// Freshness barriers whose marker files this batch observed: every
+    /// change before them has reached this hint or an earlier one.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub barriers: BTreeSet<u64>,
+}
+
+impl FilesystemHint {
+    /// A hint that carries only barriers, no observed change.
+    #[must_use]
+    pub fn barrier_only(&self) -> bool {
+        self.event_count == 0
+            && self.paths.is_empty()
+            && !self.safety_rescan
+            && self.watcher_errors.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,7 +182,10 @@ impl ObservationEvent {
             Self::FilesystemHint(event) => {
                 let mut event = event.clone();
                 event.paths.retain(|path| filter.accepts(path));
-                if event.paths.is_empty() && !event.safety_rescan && event.watcher_errors.is_empty()
+                if event.paths.is_empty()
+                    && !event.safety_rescan
+                    && event.watcher_errors.is_empty()
+                    && event.barriers.is_empty()
                 {
                     None
                 } else {
@@ -433,6 +451,7 @@ mod tests {
             self_generated_transactions: BTreeSet::new(),
             safety_rescan: false,
             watcher_errors: vec![],
+            barriers: BTreeSet::new(),
         })
     }
 

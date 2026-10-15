@@ -859,6 +859,7 @@ mod tests {
                     self_generated_transactions: BTreeSet::new(),
                     safety_rescan: false,
                     watcher_errors: vec![],
+                    barriers: BTreeSet::new(),
                 },
             ))
             .unwrap();

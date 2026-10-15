@@ -167,10 +167,17 @@ and run directly. In `daemon` mode they say so instead of silently running direc
 The daemon must answer at least as freshly as direct execution would at the moment the client sent
 the request:
 
-- The request carries the client's send time. Before executing, the daemon proves the store fresh
-  (`prove_note_store_fresh`) or waits for a scan generation that started after the send time, using
-  the tracker's barrier. Failing both, it runs an incremental scan under the write lock, as the
-  direct auto-refresh does.
+- **Index barrier.** Proving the store fresh by walking the vault costs about 150 ms at 100K
+  notes, most of a routed read's gain, so the daemon uses its watcher instead. Before executing,
+  it writes a marker file (`.vulcan/.index-barrier-<id>`). The watcher reports it in order with
+  every earlier change and flushes its batch at once; the index consumer then indexes whatever is
+  pending (skipping the quiet period) and releases the barrier
+  (`vulcan_daemon::scan_runtime::request_index_barrier`). Every change made before the request
+  is then indexed. A barrier with nothing pending returns without scanning.
+- **Only an index owner can vouch.** A daemon that follows another process's index releases
+  barriers in the `following` state. It cannot answer a routed read then: `auto` runs the read
+  directly and `daemon` reports the vault as unavailable. A barrier that times out (a polling
+  fallback watcher, for example) is handled the same way.
 - `--refresh` flags keep their meaning. A routed `--refresh off` does not wait for freshness.
 
 ### Errors

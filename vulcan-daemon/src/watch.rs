@@ -108,6 +108,8 @@ impl From<ObservationError> for DaemonWatchError {
 
 #[derive(Debug, Default)]
 struct WatchBatch {
+    /// Freshness barriers observed in this batch; their batch flushes at once.
+    barriers: BTreeSet<u64>,
     first_dirty: Option<Instant>,
     last_dirty: Option<Instant>,
     event_count: usize,
@@ -222,7 +224,15 @@ where
                 })
                 .map_err(|error| error.to_string())
         },
-        |metadata| {
+        |metadata, _barriers| {
+            // Barriers concern the index; a batch of only barriers is no change.
+            if metadata.event_count == 0
+                && metadata.paths.is_empty()
+                && !metadata.safety_rescan
+                && metadata.watcher_errors.is_empty()
+            {
+                return Ok(());
+            }
             supervisor
                 .enqueue_watch(registration.id.as_str(), &registration.path, metadata)
                 .map(|_| ())
@@ -293,6 +303,7 @@ pub(crate) fn consume_sync_observations_with_stop(
             )?;
         }
         match subscription.recv_timeout(WATCH_POLL_INTERVAL) {
+            Ok(ObservationEvent::FilesystemHint(event)) if event.barrier_only() => {}
             Ok(ObservationEvent::FilesystemHint(event)) => {
                 supervisor.enqueue_watch(
                     registration.id.as_str(),
@@ -340,7 +351,7 @@ where
         || stop.is_cancelled(),
         true,
         marker_transaction,
-        |metadata| {
+        |metadata, barriers| {
             sequence = sequence.saturating_add(1);
             hub.publish(&ObservationEvent::FilesystemHint(FilesystemHint {
                 sequence,
@@ -353,6 +364,7 @@ where
                     .collect(),
                 safety_rescan: metadata.safety_rescan,
                 watcher_errors: metadata.watcher_errors,
+                barriers,
             }))?;
             Ok(())
         },
@@ -370,7 +382,7 @@ fn observe_vault_batches<S, M, B>(
 where
     S: Fn() -> bool,
     M: Fn() -> Result<Option<String>, String>,
-    B: FnMut(SyncWatchMetadata) -> Result<(), DaemonWatchError>,
+    B: FnMut(SyncWatchMetadata, BTreeSet<u64>) -> Result<(), DaemonWatchError>,
 {
     validate_options(options)?;
     let (sender, receiver) = mpsc::channel::<(WatchSource, notify::Result<Event>)>();
@@ -421,11 +433,14 @@ where
             }
         }
         if batch.is_ready(Instant::now(), debounce, max_dirty) {
+            let barriers = std::mem::take(&mut batch.barriers);
             let metadata = batch.take_metadata();
-            if suppress_unchanged_error_batch(&metadata, &mut last_error_only, Instant::now()) {
+            if barriers.is_empty()
+                && suppress_unchanged_error_batch(&metadata, &mut last_error_only, Instant::now())
+            {
                 continue;
             }
-            on_batch(metadata)?;
+            on_batch(metadata, barriers)?;
         }
     }
 }
@@ -554,6 +569,17 @@ impl WatchBatch {
         if matches!(event.kind, EventKind::Access(_)) && !safety_rescan {
             return false;
         }
+        if matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_)) {
+            let barriers = event
+                .paths
+                .iter()
+                .filter_map(|path| index_barrier_id(paths, path))
+                .collect::<Vec<_>>();
+            if !barriers.is_empty() {
+                self.barriers.extend(barriers);
+                return true;
+            }
+        }
         let relevant_paths = event
             .paths
             .iter()
@@ -612,6 +638,9 @@ impl WatchBatch {
         debounce: Duration,
         max_dirty: Duration,
     ) -> Option<Duration> {
+        if !self.barriers.is_empty() {
+            return Some(Duration::ZERO);
+        }
         let first_dirty = self.first_dirty?;
         let debounce_remaining = self
             .last_dirty
@@ -627,12 +656,13 @@ impl WatchBatch {
     }
 
     fn is_ready(&self, now: Instant, debounce: Duration, max_dirty: Duration) -> bool {
-        self.first_dirty.is_some_and(|first| {
-            now.saturating_duration_since(first) >= max_dirty
-                || self
-                    .last_dirty
-                    .is_some_and(|last| now.saturating_duration_since(last) >= debounce)
-        })
+        !self.barriers.is_empty()
+            || self.first_dirty.is_some_and(|first| {
+                now.saturating_duration_since(first) >= max_dirty
+                    || self
+                        .last_dirty
+                        .is_some_and(|last| now.saturating_duration_since(last) >= debounce)
+            })
     }
 
     fn take_metadata(&mut self) -> SyncWatchMetadata {
@@ -694,6 +724,27 @@ fn error_paths_are_symlinks(error: &notify::Error) -> bool {
         && error.paths.iter().all(|path| {
             std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink())
         })
+}
+
+/// Marker files under `.vulcan/` that request a freshness barrier.
+pub(crate) const INDEX_BARRIER_PREFIX: &str = ".index-barrier-";
+
+/// The barrier a marker file at `path` requests, if it is one.
+fn index_barrier_id(paths: &VaultPaths, path: &Path) -> Option<u64> {
+    let relative = relative_watch_path(paths, path)?;
+    let mut components = relative.components();
+    let (Some(first), Some(name), None) = (components.next(), components.next(), components.next())
+    else {
+        return None;
+    };
+    if first.as_os_str() != ".vulcan" {
+        return None;
+    }
+    name.as_os_str()
+        .to_str()?
+        .strip_prefix(INDEX_BARRIER_PREFIX)?
+        .parse()
+        .ok()
 }
 
 fn relative_watch_path(paths: &VaultPaths, path: &Path) -> Option<PathBuf> {

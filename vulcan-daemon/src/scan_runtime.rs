@@ -83,7 +83,12 @@ impl ScanCompletion {
 struct ScanTrackerState {
     requested_generation: u64,
     completion: Option<ScanCompletion>,
+    /// Completed freshness barriers awaiting their requester, oldest first.
+    barriers: std::collections::BTreeMap<u64, ScanCompletion>,
 }
+
+/// Completed barriers kept for requesters; older ones are dropped.
+const MAX_COMPLETED_BARRIERS: usize = 256;
 
 #[derive(Debug)]
 pub struct VaultScanTracker {
@@ -110,6 +115,7 @@ impl VaultScanTracker {
             state: Mutex::new(ScanTrackerState {
                 requested_generation,
                 completion,
+                barriers: std::collections::BTreeMap::new(),
             }),
             changed: Condvar::new(),
             status_path: Some(path),
@@ -165,6 +171,45 @@ impl VaultScanTracker {
             .completion
             .clone()
             .ok_or(ScanBarrierError::Timeout { generation })
+    }
+
+    /// Mark `barriers` reached: every change observed before them is in the
+    /// current completion (or this consumer follows another owner).
+    fn complete_barriers(&self, barriers: &BTreeSet<u64>) {
+        let mut state = self.state.lock().expect("scan tracker lock");
+        let completion = state
+            .completion
+            .clone()
+            .unwrap_or_else(ScanCompletion::unknown);
+        for barrier in barriers {
+            state.barriers.insert(*barrier, completion.clone());
+        }
+        while state.barriers.len() > MAX_COMPLETED_BARRIERS {
+            state.barriers.pop_first();
+        }
+        self.changed.notify_all();
+    }
+
+    /// Wait until `barrier` is reached, returning the completion it reached.
+    pub fn wait_for_barrier(
+        &self,
+        barrier: u64,
+        timeout: Duration,
+    ) -> Result<ScanCompletion, ScanBarrierError> {
+        let state = self.state.lock().map_err(|_| ScanBarrierError::Poisoned)?;
+        let (mut state, result) = self
+            .changed
+            .wait_timeout_while(state, timeout, |state| {
+                !state.barriers.contains_key(&barrier)
+            })
+            .map_err(|_| ScanBarrierError::Poisoned)?;
+        if result.timed_out() {
+            return Err(ScanBarrierError::BarrierTimeout { barrier });
+        }
+        state
+            .barriers
+            .remove(&barrier)
+            .ok_or(ScanBarrierError::BarrierTimeout { barrier })
     }
 
     fn complete(&self, completion: &ScanCompletion) -> Result<(), String> {
@@ -239,6 +284,8 @@ fn persist_scan_completion(path: &Path, completion: &ScanCompletion) -> Result<(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScanBarrierError {
     Timeout { generation: u64 },
+    BarrierTimeout { barrier: u64 },
+    Io(String),
     Poisoned,
 }
 
@@ -251,6 +298,13 @@ impl Display for ScanBarrierError {
                     "scan generation {generation} did not complete before timeout"
                 )
             }
+            Self::BarrierTimeout { barrier } => {
+                write!(
+                    formatter,
+                    "index barrier {barrier} was not reached before timeout"
+                )
+            }
+            Self::Io(error) => write!(formatter, "index barrier could not be requested: {error}"),
             Self::Poisoned => formatter.write_str("scan tracker lock is poisoned"),
         }
     }
@@ -305,12 +359,17 @@ pub fn consume_index_observations_with_stop(
             if let Some(report) = follower.poll() {
                 publish_followed(hub, tracker, Some(&report))?;
             }
-            // File system hints are the owner's to act on.
+            // File system hints are the owner's to act on. Barriers complete
+            // at once in the following state: this consumer cannot vouch.
             let _ = subscription.take_reconciliation_required();
-            if let Err(std::sync::mpsc::RecvTimeoutError::Disconnected) =
-                subscription.recv_timeout(FOLLOW_POLL)
-            {
-                return Err("vault observation channel closed unexpectedly".to_string());
+            match subscription.recv_timeout(FOLLOW_POLL) {
+                Ok(ObservationEvent::FilesystemHint(event)) if !event.barriers.is_empty() => {
+                    tracker.complete_barriers(&event.barriers);
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("vault observation channel closed unexpectedly".to_string());
+                }
+                _ => {}
             }
             continue;
         }
@@ -328,7 +387,18 @@ pub fn consume_index_observations_with_stop(
             .min(INDEX_WAIT_POLL);
         match subscription.recv_timeout(timeout) {
             Ok(ObservationEvent::FilesystemHint(event)) => {
-                pending.merge_hint(tracker.mark_dirty()?, event.paths, event.safety_rescan);
+                let barriers = event.barriers.clone();
+                if !event.barrier_only() {
+                    pending.merge_hint(tracker.mark_dirty()?, event.paths, event.safety_rescan);
+                }
+                // Every change observed before a barrier is in this hint or an
+                // earlier one: index what is pending now, then release it.
+                if !barriers.is_empty() {
+                    if pending.is_dirty() {
+                        run_incremental_scan(vault, hub, tracker, &mut pending)?;
+                    }
+                    tracker.complete_barriers(&barriers);
+                }
             }
             Ok(ObservationEvent::PostScan(_)) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
             }
@@ -337,6 +407,27 @@ pub fn consume_index_observations_with_stop(
             }
         }
     }
+}
+
+/// Request a freshness barrier on the vault an index consumer watches, and
+/// wait until every change made before this call is indexed. Writes a marker
+/// file the watcher reports in order with every earlier change; the consumer
+/// indexes what is pending and releases the barrier. The completion says how:
+/// `fresh` after an owned scan, `following` when another process owns the
+/// index and this consumer cannot vouch, or `error`.
+pub fn request_index_barrier(
+    vault: &Path,
+    tracker: &VaultScanTracker,
+    timeout: Duration,
+) -> Result<ScanCompletion, ScanBarrierError> {
+    let barrier = u64::try_from(ulid::Ulid::new().0 & u128::from(u64::MAX)).unwrap_or_default();
+    let marker = vault
+        .join(".vulcan")
+        .join(format!("{}{barrier}", crate::watch::INDEX_BARRIER_PREFIX));
+    fs::write(&marker, b"").map_err(|error| ScanBarrierError::Io(error.to_string()))?;
+    let result = tracker.wait_for_barrier(barrier, timeout);
+    let _ = fs::remove_file(&marker);
+    result
 }
 
 /// Publish the owner's scan as this consumer's: a post-scan event naming its
@@ -395,6 +486,10 @@ impl PendingScan {
         self.last_dirty = Some(now);
         self.changed_paths.extend(paths);
         self.safety_rescan |= safety_rescan;
+    }
+
+    fn is_dirty(&self) -> bool {
+        self.first_dirty.is_some()
     }
 
     fn merge_reconciliation(&mut self, generation: u64) {
@@ -571,6 +666,7 @@ mod tests {
             self_generated_transactions: BTreeSet::new(),
             safety_rescan: false,
             watcher_errors: vec![],
+            barriers: BTreeSet::new(),
         }))
         .unwrap();
         let second = tracker
@@ -676,6 +772,7 @@ mod tests {
             self_generated_transactions: BTreeSet::new(),
             safety_rescan: false,
             watcher_errors: vec![],
+            barriers: BTreeSet::new(),
         }))
         .unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -689,6 +786,143 @@ mod tests {
         }
         stop.cancel();
         worker.join().unwrap().unwrap();
+    }
+
+    /// A freshness barrier through the real watcher, hub, and consumer: a
+    /// note written just before the request is indexed when it returns, with
+    /// the consumer's default quiet period (250 ms) otherwise still pending.
+    #[test]
+    fn index_barriers_return_after_every_earlier_change_is_indexed() {
+        let temporary = tempdir().unwrap();
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&vault).unwrap();
+        fs::write(vault.join("First.md"), "# First\n").unwrap();
+        let paths = VaultPaths::new(&vault);
+        initialize_vulcan_dir(&paths).unwrap();
+        let hub = VaultObservationHub::default();
+        let subscription = hub
+            .subscribe(
+                ObservationConsumerId::parse("index").unwrap(),
+                ObservationConsumerPolicy {
+                    kind: ObservationConsumerKind::Index,
+                    queue_capacity: 64,
+                    quiet_period_ms: 250,
+                    maximum_dirty_ms: 2_000,
+                    filter: ObservationFilter::default(),
+                },
+            )
+            .unwrap();
+        let tracker = Arc::new(VaultScanTracker::default());
+        let stop = Arc::new(ShutdownSignal::default());
+        let observer = {
+            let (stop, vault, hub) = (Arc::clone(&stop), vault.clone(), hub.clone());
+            thread::spawn(move || {
+                crate::watch::observe_vault_with_stop(
+                    &vault,
+                    &crate::watch::DaemonWatchOptions::default(),
+                    &hub,
+                    || Ok(None),
+                    &stop,
+                )
+            })
+        };
+        let consumer = {
+            let (tracker, stop, vault, hub) = (
+                Arc::clone(&tracker),
+                Arc::clone(&stop),
+                vault.clone(),
+                hub.clone(),
+            );
+            thread::spawn(move || {
+                consume_index_observations_with_stop(&vault, &hub, &subscription, &tracker, &stop)
+            })
+        };
+        tracker
+            .wait_for_generation(1, Duration::from_secs(10))
+            .unwrap();
+        let indexed = |name: &str| {
+            load_note_index(&paths)
+                .unwrap()
+                .values()
+                .any(|note| note.document_path == name)
+        };
+        for round in 0..5 {
+            let name = format!("Note{round}.md");
+            fs::write(vault.join(&name), "# Note\n").unwrap();
+            let completion =
+                request_index_barrier(&vault, &tracker, Duration::from_secs(10)).expect("barrier");
+            assert_eq!(completion.state, CacheFreshnessState::Fresh, "{round}");
+            assert!(indexed(&name), "{name} is indexed when its barrier returns");
+        }
+        // With nothing pending, a barrier returns without scanning again.
+        let before = tracker.status().generation;
+        let completion =
+            request_index_barrier(&vault, &tracker, Duration::from_secs(10)).expect("barrier");
+        assert_eq!(completion.generation, before);
+
+        stop.cancel();
+        consumer.join().unwrap().unwrap();
+        observer.join().unwrap().unwrap();
+        assert!(
+            !vault.join(".vulcan").read_dir().unwrap().any(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(crate::watch::INDEX_BARRIER_PREFIX)
+            }),
+            "barrier markers are removed"
+        );
+    }
+
+    /// A consumer following another index owner releases barriers at once
+    /// in the following state: it cannot vouch for freshness.
+    #[test]
+    fn a_following_consumer_releases_barriers_without_vouching() {
+        use vulcan_core::index_owner::{IndexOwnerKind, IndexOwnerLease};
+        let temporary = tempdir().unwrap();
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&vault).unwrap();
+        let paths = VaultPaths::new(&vault);
+        initialize_vulcan_dir(&paths).unwrap();
+        let _owner = IndexOwnerLease::try_acquire(&paths, IndexOwnerKind::Watch)
+            .unwrap()
+            .unwrap();
+        let hub = VaultObservationHub::default();
+        let subscription = subscription(&hub);
+        let tracker = Arc::new(VaultScanTracker::default());
+        let stop = Arc::new(ShutdownSignal::default());
+        let consumer = {
+            let (tracker, stop, vault, hub) = (
+                Arc::clone(&tracker),
+                Arc::clone(&stop),
+                vault.clone(),
+                hub.clone(),
+            );
+            thread::spawn(move || {
+                consume_index_observations_with_stop(&vault, &hub, &subscription, &tracker, &stop)
+            })
+        };
+        tracker
+            .wait_for_generation(1, Duration::from_secs(10))
+            .unwrap();
+        hub.publish(&ObservationEvent::FilesystemHint(FilesystemHint {
+            sequence: 1,
+            event_count: 0,
+            untagged_events: 0,
+            paths: BTreeSet::new(),
+            self_generated_transactions: BTreeSet::new(),
+            safety_rescan: false,
+            watcher_errors: vec![],
+            barriers: BTreeSet::from([7]),
+        }))
+        .unwrap();
+        let completion = tracker
+            .wait_for_barrier(7, Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(completion.state, CacheFreshnessState::Following);
+        stop.cancel();
+        consumer.join().unwrap().unwrap();
     }
 
     #[test]
