@@ -220,8 +220,8 @@ pub use graph::{
     GraphConfidenceBreakdown, GraphDeadEndsReport, GraphExportEdge, GraphExportNode,
     GraphExportReport, GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphNodeScore,
     GraphOrphanCommunityHint, GraphPathHop, GraphPathReport, GraphQueryError, LineContext,
-    LinkConfidence, NamedCount, NoteIdentity, NoteMatchKind, NoteReference, OutgoingLinkRecord,
-    OutgoingLinksReport, ResolutionStatus,
+    LinkConfidence, LoadedGraph, NamedCount, NoteIdentity, NoteMatchKind, NoteReference,
+    OutgoingLinkRecord, OutgoingLinksReport, ResolutionStatus,
 };
 pub use history::{
     create_checkpoint, list_checkpoints, query_change_report, query_graph_trends, ChangeAnchor,

@@ -1,7 +1,7 @@
 use crate::permissions::{PermissionError, PermissionFilter, PermissionGuard};
 use crate::VaultPaths;
 use rusqlite::{params, params_from_iter, Connection};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -294,7 +294,7 @@ pub struct NoteIdentity {
     pub aliases: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GraphPathReport {
     pub from_path: String,
     pub to_path: String,
@@ -302,7 +302,7 @@ pub struct GraphPathReport {
     pub hops: Vec<GraphPathHop>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GraphPathHop {
     pub source: String,
     pub target: String,
@@ -310,7 +310,7 @@ pub struct GraphPathHop {
     pub confidence_score: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GraphNodeScore {
     pub document_path: String,
     pub inbound: usize,
@@ -319,7 +319,7 @@ pub struct GraphNodeScore {
     pub confidence: GraphConfidenceBreakdown,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GraphHubsReport {
     pub notes: Vec<GraphNodeScore>,
 }
@@ -389,13 +389,13 @@ pub struct GraphCommunitiesReport {
     pub persisted: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NamedCount {
     pub name: String,
     pub count: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GraphAnalyticsReport {
     pub note_count: usize,
     pub attachment_count: usize,
@@ -408,7 +408,7 @@ pub struct GraphAnalyticsReport {
     pub top_properties: Vec<NamedCount>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum LinkConfidence {
     Extracted,
@@ -435,7 +435,7 @@ impl LinkConfidence {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphConfidenceBreakdown {
     pub extracted: usize,
     pub inferred: usize,
@@ -453,10 +453,23 @@ impl GraphConfidenceBreakdown {
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
+/// The resolved links among a note set, by note index (the set's path
+/// order). Compact so a host can retain it: about 30 bytes per link rather
+/// than two owned ids and a map entry.
 struct GraphAdjacency {
-    edges: Vec<(String, String)>,
-    counts: HashMap<String, (usize, usize)>,
-    confidence: HashMap<(String, String), (LinkConfidence, f64)>,
+    /// Each note's id, by index.
+    ids: Vec<String>,
+    /// Note index by id.
+    index: HashMap<String, u32>,
+    /// One per link, ordered by source path, target path, and byte offset.
+    edges: Vec<(u32, u32)>,
+    /// Each edge's pair confidence: the preferred confidence over every link
+    /// between its source and target, folded in edge order.
+    edge_confidence: Vec<(LinkConfidence, f64)>,
+    /// `edges[offsets[i]..offsets[i + 1]]` are note `i`'s outgoing edges.
+    offsets: Vec<u32>,
+    /// (inbound, outbound) edge counts by note index.
+    counts: Vec<(u32, u32)>,
 }
 
 impl GraphAdjacency {
@@ -467,12 +480,7 @@ impl GraphAdjacency {
     /// without joins and endpoints matched against `notes`, which also
     /// applies a permission-scoped universe.
     fn load_for(connection: &Connection, notes: &IndexedNoteSet) -> Result<Self, GraphQueryError> {
-        let index = notes
-            .notes
-            .iter()
-            .enumerate()
-            .map(|(position, note)| (note.id.as_str(), position))
-            .collect::<HashMap<_, _>>();
+        let index = note_index(notes);
         let mut statement = connection.prepare(
             "SELECT source_document_id, resolved_target_id, byte_offset, confidence,
                     confidence_score
@@ -495,40 +503,123 @@ impl GraphAdjacency {
             ));
         }
         links.sort_unstable_by_key(|&(source, target, offset, ..)| (source, target, offset));
+        Ok(Self::from_sorted_links(
+            notes,
+            index,
+            links
+                .into_iter()
+                .map(|(source, target, _, confidence, score)| (source, target, confidence, score)),
+        ))
+    }
 
-        let mut edges = Vec::with_capacity(links.len());
-        let mut counts = HashMap::<String, (usize, usize)>::new();
-        let mut confidence = HashMap::<(String, String), (LinkConfidence, f64)>::new();
-        for (source, target, _, edge_confidence, score) in links {
-            let source_id = notes.notes[source].id.clone();
-            let target_id = notes.notes[target].id.clone();
-            counts.entry(source_id.clone()).or_insert((0, 0)).1 += 1;
-            counts.entry(target_id.clone()).or_insert((0, 0)).0 += 1;
-            confidence
-                .entry((source_id.clone(), target_id.clone()))
-                .and_modify(|existing| prefer_edge_confidence(existing, (edge_confidence, score)))
-                .or_insert((edge_confidence, score));
-            edges.push((source_id, target_id));
+    /// Build from links already in edge order.
+    fn from_sorted_links(
+        notes: &IndexedNoteSet,
+        index: HashMap<String, u32>,
+        links: impl Iterator<Item = (u32, u32, LinkConfidence, f64)>,
+    ) -> Self {
+        let note_count = notes.notes.len();
+        let mut edges = Vec::new();
+        let mut edge_confidence: Vec<(LinkConfidence, f64)> = Vec::new();
+        let mut counts = vec![(0u32, 0u32); note_count];
+        let mut pair_start = 0usize;
+        for (source, target, confidence, score) in links {
+            counts[source as usize].1 += 1;
+            counts[target as usize].0 += 1;
+            if edges.last() == Some(&(source, target)) {
+                let mut folded = edge_confidence[pair_start];
+                prefer_edge_confidence(&mut folded, (confidence, score));
+                edge_confidence[pair_start] = folded;
+            } else {
+                pair_start = edges.len();
+                edge_confidence.push((confidence, score));
+                edges.push((source, target));
+                continue;
+            }
+            edge_confidence.push(edge_confidence[pair_start]);
+            edges.push((source, target));
         }
-        Ok(Self {
+        // A pair's later edges copied the fold so far; give every edge of a
+        // pair the pair's final confidence.
+        let mut start = 0;
+        while start < edges.len() {
+            let mut end = start + 1;
+            while end < edges.len() && edges[end] == edges[start] {
+                end += 1;
+            }
+            let folded = edge_confidence[start];
+            edge_confidence[start..end].fill(folded);
+            start = end;
+        }
+        let mut offsets = vec![0u32; note_count + 1];
+        for &(source, _) in &edges {
+            offsets[source as usize + 1] += 1;
+        }
+        for position in 0..note_count {
+            offsets[position + 1] += offsets[position];
+        }
+        Self {
+            ids: notes.notes.iter().map(|note| note.id.clone()).collect(),
+            index,
             edges,
+            edge_confidence,
+            offsets,
             counts,
-            confidence,
+        }
+    }
+
+    /// The adjacency restricted to `notes`, a subset of this one's notes in
+    /// the same (path) order.
+    fn restricted_to(&self, notes: &IndexedNoteSet) -> Self {
+        let index = note_index(notes);
+        let remap = self
+            .ids
+            .iter()
+            .map(|id| index.get(id).copied())
+            .collect::<Vec<_>>();
+        let links = self
+            .edges
+            .iter()
+            .zip(&self.edge_confidence)
+            .filter_map(|(&(source, target), &(confidence, score))| {
+                Some((
+                    remap[source as usize]?,
+                    remap[target as usize]?,
+                    confidence,
+                    score,
+                ))
+            })
+            .collect::<Vec<_>>();
+        Self::from_sorted_links(notes, index, links.into_iter())
+    }
+
+    fn position(&self, note_id: &str) -> Option<u32> {
+        self.index.get(note_id).copied()
+    }
+
+    /// Every edge as (source id, target id), in edge order.
+    fn edge_ids(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.edges.iter().map(|&(source, target)| {
+            (
+                self.ids[source as usize].as_str(),
+                self.ids[target as usize].as_str(),
+            )
         })
     }
 
     fn inbound_count(&self, note_id: &str) -> usize {
-        self.counts.get(note_id).map_or(0, |(inbound, _)| *inbound)
+        self.position(note_id)
+            .map_or(0, |position| self.counts[position as usize].0 as usize)
     }
 
     fn outbound_count(&self, note_id: &str) -> usize {
-        self.counts
-            .get(note_id)
-            .map_or(0, |(_, outbound)| *outbound)
+        self.position(note_id)
+            .map_or(0, |position| self.counts[position as usize].1 as usize)
     }
 
     fn is_orphan(&self, note_id: &str) -> bool {
-        self.counts.get(note_id).copied().unwrap_or((0, 0)) == (0, 0)
+        self.position(note_id)
+            .is_none_or(|position| self.counts[position as usize] == (0, 0))
     }
 
     fn total_resolved_links(&self) -> usize {
@@ -536,44 +627,94 @@ impl GraphAdjacency {
     }
 
     fn edge_confidence(&self, source_id: &str, target_id: &str) -> (LinkConfidence, f64) {
-        self.confidence
-            .get(&(source_id.to_string(), target_id.to_string()))
-            .copied()
-            .unwrap_or((LinkConfidence::Extracted, 1.0))
+        let (Some(source), Some(target)) = (self.position(source_id), self.position(target_id))
+        else {
+            return (LinkConfidence::Extracted, 1.0);
+        };
+        self.edges
+            .binary_search(&(source, target))
+            .map_or((LinkConfidence::Extracted, 1.0), |found| {
+                self.edge_confidence[found]
+            })
     }
 
     fn confidence_breakdown(&self) -> GraphConfidenceBreakdown {
         let mut breakdown = GraphConfidenceBreakdown::default();
-        for (source_id, target_id) in &self.edges {
-            breakdown.add(self.edge_confidence(source_id, target_id).0);
+        for &(confidence, _) in &self.edge_confidence {
+            breakdown.add(confidence);
         }
         breakdown
     }
 
+    /// The reference [`Self::shortest_path_ids`] is tested against.
+    #[cfg(test)]
     fn directed(&self) -> HashMap<String, Vec<String>> {
         let mut adjacency = HashMap::<String, Vec<String>>::new();
-        for (source_id, target_id) in &self.edges {
+        for (source_id, target_id) in self.edge_ids() {
             adjacency
-                .entry(source_id.clone())
+                .entry(source_id.to_string())
                 .or_default()
-                .push(target_id.clone());
+                .push(target_id.to_string());
         }
         adjacency
     }
 
     fn undirected(&self) -> HashMap<String, BTreeSet<String>> {
         let mut adjacency = HashMap::<String, BTreeSet<String>>::new();
-        for (source_id, target_id) in &self.edges {
+        for (source_id, target_id) in self.edge_ids() {
             adjacency
-                .entry(source_id.clone())
+                .entry(source_id.to_string())
                 .or_default()
-                .insert(target_id.clone());
+                .insert(target_id.to_string());
             adjacency
-                .entry(target_id.clone())
+                .entry(target_id.to_string())
                 .or_default()
-                .insert(source_id.clone());
+                .insert(source_id.to_string());
         }
         adjacency
+    }
+
+    /// A shortest directed path from `start` to `goal` by note index,
+    /// exploring each note's targets in edge order (as [`shortest_path`] does
+    /// over [`Self::directed`]).
+    fn shortest_path_ids(&self, start: &str, goal: &str) -> Option<Vec<String>> {
+        if start == goal {
+            return Some(vec![start.to_string()]);
+        }
+        let start_position = self.position(start)?;
+        let goal_position = self.position(goal)?;
+        let mut queue = VecDeque::from([start_position]);
+        let mut predecessor = vec![u32::MAX; self.ids.len()];
+        let mut visited = vec![false; self.ids.len()];
+        visited[start_position as usize] = true;
+        while let Some(current) = queue.pop_front() {
+            let current_index = current as usize;
+            let range =
+                self.offsets[current_index] as usize..self.offsets[current_index + 1] as usize;
+            for &(_, neighbor) in &self.edges[range] {
+                if visited[neighbor as usize] {
+                    continue;
+                }
+                visited[neighbor as usize] = true;
+                predecessor[neighbor as usize] = current;
+                if neighbor == goal_position {
+                    let mut path = vec![self.ids[goal_position as usize].clone()];
+                    let mut cursor = goal_position;
+                    while predecessor[cursor as usize] != u32::MAX {
+                        let previous = predecessor[cursor as usize];
+                        path.push(self.ids[previous as usize].clone());
+                        if previous == start_position {
+                            break;
+                        }
+                        cursor = previous;
+                    }
+                    path.reverse();
+                    return Some(path);
+                }
+                queue.push_back(neighbor);
+            }
+        }
+        None
     }
 
     fn hubs(&self, notes: &[IndexedNote], min_degree: usize) -> Vec<GraphNodeScore> {
@@ -599,8 +740,8 @@ impl GraphAdjacency {
     /// edges. A self-link counts once for its node.
     fn node_confidence_breakdowns(&self) -> HashMap<&str, GraphConfidenceBreakdown> {
         let mut breakdowns = HashMap::<&str, GraphConfidenceBreakdown>::new();
-        for (source_id, target_id) in &self.edges {
-            let confidence = self.edge_confidence(source_id, target_id).0;
+        for ((source_id, target_id), &(confidence, _)) in self.edge_ids().zip(&self.edge_confidence)
+        {
             breakdowns.entry(source_id).or_default().add(confidence);
             if target_id != source_id {
                 breakdowns.entry(target_id).or_default().add(confidence);
@@ -608,6 +749,21 @@ impl GraphAdjacency {
         }
         breakdowns
     }
+}
+
+/// Note index by id, in the set's order.
+fn note_index(notes: &IndexedNoteSet) -> HashMap<String, u32> {
+    notes
+        .notes
+        .iter()
+        .enumerate()
+        .map(|(position, note)| {
+            (
+                note.id.clone(),
+                u32::try_from(position).expect("fewer than 2^32 notes"),
+            )
+        })
+        .collect()
 }
 
 fn confidence_rank(confidence: LinkConfidence) -> u8 {
@@ -998,6 +1154,51 @@ pub fn query_backlinks_with_filter(
     })
 }
 
+/// The notes and resolved links whole-graph reports read, loaded once. A
+/// host may keep one for as long as the cache state it was loaded from is
+/// unchanged (see `NoteStoreSnapshot::state_key`).
+pub struct LoadedGraph {
+    notes: IndexedNoteSet,
+    adjacency: GraphAdjacency,
+    scoped: bool,
+}
+
+impl LoadedGraph {
+    /// The readable notes, restricted by `filter`, and the links among them.
+    pub fn load(
+        connection: &Connection,
+        filter: Option<&PermissionFilter>,
+    ) -> Result<Self, GraphQueryError> {
+        let notes = filtered_note_set(connection, filter)?;
+        let adjacency = filtered_graph_adjacency(connection, &notes)?;
+        Ok(Self {
+            notes,
+            adjacency,
+            scoped: filter.is_some(),
+        })
+    }
+
+    /// A shortest link path between two notes.
+    pub fn path_report(&self, from: &str, to: &str) -> Result<GraphPathReport, GraphQueryError> {
+        build_graph_path_report(&self.notes, &self.adjacency, from, to)
+    }
+
+    /// The most connected notes.
+    #[must_use]
+    pub fn hubs_report(&self) -> GraphHubsReport {
+        build_graph_hubs_report(&self.notes, &self.adjacency)
+    }
+
+    /// Vault-wide graph statistics; tag, property, and document counts come
+    /// from `connection`, which must read the same cache state.
+    pub fn analytics_report(
+        &self,
+        connection: &Connection,
+    ) -> Result<GraphAnalyticsReport, GraphQueryError> {
+        build_graph_analytics_report(connection, &self.notes, &self.adjacency, self.scoped)
+    }
+}
+
 pub fn query_graph_path(
     paths: &VaultPaths,
     from_identifier: &str,
@@ -1013,9 +1214,7 @@ pub fn query_graph_path_with_filter(
     filter: Option<&PermissionFilter>,
 ) -> Result<GraphPathReport, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
-    let notes = filtered_note_set(&connection, filter)?;
-    let adjacency = filtered_graph_adjacency(&connection, &notes)?;
-    build_graph_path_report(&notes, &adjacency, from_identifier, to_identifier)
+    LoadedGraph::load(&connection, filter)?.path_report(from_identifier, to_identifier)
 }
 
 pub fn query_graph_hubs(paths: &VaultPaths) -> Result<GraphHubsReport, GraphQueryError> {
@@ -1027,9 +1226,7 @@ pub fn query_graph_hubs_with_filter(
     filter: Option<&PermissionFilter>,
 ) -> Result<GraphHubsReport, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
-    let notes = filtered_note_set(&connection, filter)?;
-    let adjacency = filtered_graph_adjacency(&connection, &notes)?;
-    Ok(build_graph_hubs_report(&notes, &adjacency))
+    Ok(LoadedGraph::load(&connection, filter)?.hubs_report())
 }
 
 pub fn query_graph_moc_candidates(paths: &VaultPaths) -> Result<GraphMocReport, GraphQueryError> {
@@ -1125,9 +1322,7 @@ pub fn query_graph_analytics_with_filter(
     filter: Option<&PermissionFilter>,
 ) -> Result<GraphAnalyticsReport, GraphQueryError> {
     let connection = open_existing_cache(paths)?;
-    let notes = filtered_note_set(&connection, filter)?;
-    let adjacency = filtered_graph_adjacency(&connection, &notes)?;
-    build_graph_analytics_report(&connection, &notes, &adjacency, filter.is_some())
+    LoadedGraph::load(&connection, filter)?.analytics_report(&connection)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1175,16 +1370,16 @@ pub fn export_graph_with_filter(
         })
         .collect();
     let edges = adjacency
-        .edges
-        .iter()
-        .filter_map(|(src_id, tgt_id)| {
-            let src = id_to_path.get(src_id.as_str())?;
-            let tgt = id_to_path.get(tgt_id.as_str())?;
+        .edge_ids()
+        .zip(&adjacency.edge_confidence)
+        .filter_map(|((src_id, tgt_id), &(confidence, confidence_score))| {
+            let src = id_to_path.get(src_id)?;
+            let tgt = id_to_path.get(tgt_id)?;
             Some(GraphExportEdge {
                 source: (*src).to_string(),
                 target: (*tgt).to_string(),
-                confidence: adjacency.edge_confidence(src_id, tgt_id).0,
-                confidence_score: adjacency.edge_confidence(src_id, tgt_id).1,
+                confidence,
+                confidence_score,
             })
         })
         .collect();
@@ -1202,13 +1397,14 @@ fn build_graph_path_report(
 ) -> Result<GraphPathReport, GraphQueryError> {
     let from = notes.resolve(from_identifier)?;
     let to = notes.resolve(to_identifier)?;
-    let directed = adjacency.directed();
     let path_by_id = notes
         .notes
         .iter()
         .map(|note| (note.id.as_str(), note.path.as_str()))
         .collect::<HashMap<_, _>>();
-    let path_ids = shortest_path(&directed, &from.id, &to.id).unwrap_or_default();
+    let path_ids = adjacency
+        .shortest_path_ids(&from.id, &to.id)
+        .unwrap_or_default();
     let path = path_ids
         .iter()
         .cloned()
@@ -1432,14 +1628,14 @@ fn build_graph_communities_report(
         let mut internal_edges = 0usize;
         let mut boundary_by_note = HashMap::<String, usize>::new();
         let mut external_counts = HashMap::<usize, usize>::new();
-        for (source_id, target_id) in &adjacency.edges {
+        for (source_id, target_id) in adjacency.edge_ids() {
             let source_inside = member_set.contains(source_id);
             let target_inside = member_set.contains(target_id);
             if source_inside && target_inside {
                 internal_edges += 1;
             } else if source_inside || target_inside {
                 let boundary_id = if source_inside { source_id } else { target_id };
-                *boundary_by_note.entry(boundary_id.clone()).or_default() += 1;
+                *boundary_by_note.entry(boundary_id.to_string()).or_default() += 1;
                 let other_id = if source_inside { target_id } else { source_id };
                 if let Some(other_raw) = assignments.get(other_id) {
                     if let Some(other_stable) = stable_id_by_raw.get(other_raw) {
@@ -1555,11 +1751,10 @@ fn build_graph_communities_report(
             continue;
         };
         let cross = adjacency
-            .edges
-            .iter()
+            .edge_ids()
             .filter(|(source_id, target_id)| {
-                (source_id == &note.id || target_id == &note.id)
-                    && assignments.get(source_id) != assignments.get(target_id)
+                (*source_id == note.id || *target_id == note.id)
+                    && assignments.get(*source_id) != assignments.get(*target_id)
             })
             .count();
         if cross > 0 {
@@ -1622,28 +1817,7 @@ fn detect_graph_communities_partitioned(
             .cloned()
             .collect::<Vec<_>>();
         let component_set = IndexedNoteSet::build(component_notes);
-        let component_adjacency = GraphAdjacency {
-            edges: adjacency
-                .edges
-                .iter()
-                .filter(|(source, target)| component.contains(source) && component.contains(target))
-                .cloned()
-                .collect(),
-            counts: adjacency
-                .counts
-                .iter()
-                .filter(|(document_id, _)| component.contains(*document_id))
-                .map(|(document_id, counts)| (document_id.clone(), *counts))
-                .collect(),
-            confidence: adjacency
-                .confidence
-                .iter()
-                .filter(|((source, target), _)| {
-                    component.contains(source) && component.contains(target)
-                })
-                .map(|(edge, confidence)| (edge.clone(), *confidence))
-                .collect(),
-        };
+        let component_adjacency = adjacency.restricted_to(&component_set);
         let local = detect_graph_communities_unpartitioned(&component_set, &component_adjacency);
         let mut remap = HashMap::<usize, usize>::new();
         for (document_id, local_community) in local {
@@ -2299,6 +2473,7 @@ fn top_property_counts_for_ids(
         .map_err(GraphQueryError::from)
 }
 
+#[cfg(test)]
 fn shortest_path(
     adjacency: &HashMap<String, Vec<String>>,
     start: &str,
@@ -2894,9 +3069,47 @@ mod tests {
         ORDER BY source.path, target.path, links.byte_offset
     ";
 
+    /// The former adjacency, with owned ids: the reference the compact one
+    /// must describe.
+    #[derive(Debug, PartialEq)]
+    struct ReferenceAdjacency {
+        edges: Vec<(String, String)>,
+        counts: HashMap<String, (usize, usize)>,
+        confidence: HashMap<(String, String), (LinkConfidence, f64)>,
+    }
+
+    impl GraphAdjacency {
+        fn as_reference(&self) -> ReferenceAdjacency {
+            let mut reference = ReferenceAdjacency {
+                edges: Vec::new(),
+                counts: HashMap::new(),
+                confidence: HashMap::new(),
+            };
+            for ((source, target), &confidence) in self.edge_ids().zip(&self.edge_confidence) {
+                reference
+                    .counts
+                    .entry(source.to_string())
+                    .or_insert((0, 0))
+                    .1 += 1;
+                reference
+                    .counts
+                    .entry(target.to_string())
+                    .or_insert((0, 0))
+                    .0 += 1;
+                reference
+                    .confidence
+                    .insert((source.to_string(), target.to_string()), confidence);
+                reference
+                    .edges
+                    .push((source.to_string(), target.to_string()));
+            }
+            reference
+        }
+    }
+
     // The former loader, joined and sorted by path in SQL, then filtered to
     // the universe: the reference `GraphAdjacency::load_for` must equal.
-    fn reference_load(connection: &Connection) -> GraphAdjacency {
+    fn reference_load(connection: &Connection) -> ReferenceAdjacency {
         let mut edges = Vec::new();
         let mut counts = HashMap::<String, (usize, usize)>::new();
         let mut statement = connection.prepare(NOTE_EDGES_SQL).unwrap();
@@ -2924,7 +3137,7 @@ mod tests {
             edges.push((source_id, target_id));
         }
 
-        GraphAdjacency {
+        ReferenceAdjacency {
             edges,
             counts,
             confidence,
@@ -2932,9 +3145,9 @@ mod tests {
     }
 
     fn reference_filter(
-        adjacency: GraphAdjacency,
+        adjacency: ReferenceAdjacency,
         allowed_ids: &HashSet<String>,
-    ) -> GraphAdjacency {
+    ) -> ReferenceAdjacency {
         let mut edges = Vec::new();
         let mut counts = HashMap::<String, (usize, usize)>::new();
         let mut confidence = HashMap::new();
@@ -2953,7 +3166,7 @@ mod tests {
             }
             edges.push((source_id, target_id));
         }
-        GraphAdjacency {
+        ReferenceAdjacency {
             edges,
             counts,
             confidence,
@@ -3021,34 +3234,37 @@ mod tests {
             let expected = reference_filter(reference_load(&connection), &allowed_note_ids(&notes));
             let indexed = GraphAdjacency::load_for(&connection, &notes).unwrap();
             assert!(!expected.edges.is_empty());
-            assert_eq!(indexed, expected, "scoped={}", scope.is_some());
+            assert_eq!(
+                indexed.as_reference(),
+                expected,
+                "scoped={}",
+                scope.is_some()
+            );
+            // Paths by note index explore targets as the directed map did.
+            for from in &notes.notes {
+                for to in &notes.notes {
+                    assert_eq!(
+                        indexed.shortest_path_ids(&from.id, &to.id),
+                        shortest_path(&indexed.directed(), &from.id, &to.id),
+                        "{} -> {}",
+                        from.path,
+                        to.path
+                    );
+                }
+            }
+            // A restriction to a subset equals loading the subset.
+            let subset = IndexedNoteSet::build(notes.notes.iter().skip(1).cloned().collect());
+            assert_eq!(
+                indexed.restricted_to(&subset).as_reference(),
+                GraphAdjacency::load_for(&connection, &subset)
+                    .unwrap()
+                    .as_reference()
+            );
         }
     }
 
     #[test]
     fn hub_confidence_breakdowns_match_a_per_note_count_over_every_edge() {
-        let edge = |source: &str, target: &str| (source.to_string(), target.to_string());
-        let edges = vec![
-            edge("a", "b"),
-            edge("a", "b"),
-            edge("a", "c"),
-            edge("b", "a"),
-            edge("c", "c"),
-        ];
-        let mut counts = HashMap::<String, (usize, usize)>::new();
-        for (source, target) in &edges {
-            counts.entry(source.clone()).or_insert((0, 0)).1 += 1;
-            counts.entry(target.clone()).or_insert((0, 0)).0 += 1;
-        }
-        let confidence = HashMap::from([
-            (edge("a", "c"), (LinkConfidence::Inferred, 0.5)),
-            (edge("b", "a"), (LinkConfidence::Ambiguous, 0.2)),
-        ]);
-        let adjacency = GraphAdjacency {
-            edges,
-            counts,
-            confidence,
-        };
         let note = |id: &str| IndexedNote {
             id: id.to_string(),
             path: format!("{id}.md"),
@@ -3056,11 +3272,25 @@ mod tests {
             aliases: Vec::new(),
         };
         let notes = ["a", "b", "c", "lonely"].map(note);
+        let set = IndexedNoteSet::build(notes.to_vec());
+        let extracted = (LinkConfidence::Extracted, 1.0);
+        let adjacency = GraphAdjacency::from_sorted_links(
+            &set,
+            note_index(&set),
+            [
+                (0, 1, extracted.0, extracted.1),
+                (0, 1, extracted.0, extracted.1),
+                (0, 2, LinkConfidence::Inferred, 0.5),
+                (1, 0, LinkConfidence::Ambiguous, 0.2),
+                (2, 2, extracted.0, extracted.1),
+            ]
+            .into_iter(),
+        );
         for score in adjacency.hubs(&notes, 0) {
             let id = score.document_path.trim_end_matches(".md");
             // Every edge touching the note, a self-link once.
             let mut expected = GraphConfidenceBreakdown::default();
-            for (source, target) in &adjacency.edges {
+            for (source, target) in adjacency.edge_ids() {
                 if source == id || target == id {
                     expected.add(adjacency.edge_confidence(source, target).0);
                 }
@@ -3262,18 +3492,23 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let note_set = IndexedNoteSet::build(notes);
-        let mut adjacency = GraphAdjacency::default();
-        for community in 0..10 {
+        let mut links = Vec::new();
+        for community in 0..10u32 {
             let base = community * 50;
             for offset in 0..50 {
                 for step in 1..=4 {
-                    adjacency.edges.push((
-                        format!("n{}", base + offset),
-                        format!("n{}", base + ((offset + step) % 50)),
+                    links.push((
+                        base + offset,
+                        base + ((offset + step) % 50),
+                        LinkConfidence::Extracted,
+                        1.0,
                     ));
                 }
             }
         }
+        links.sort_by_key(|&(source, target, ..)| (source, target));
+        let adjacency =
+            GraphAdjacency::from_sorted_links(&note_set, note_index(&note_set), links.into_iter());
         let started = std::time::Instant::now();
         let assignments = detect_graph_communities(&note_set, &adjacency);
         let elapsed = started.elapsed();
