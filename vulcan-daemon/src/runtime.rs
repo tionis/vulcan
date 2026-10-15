@@ -27,6 +27,11 @@ use vulcan_core::VaultPaths;
 use vulcan_sync::{GitCliEngine, GitEngine, SyncJobTrigger};
 
 const RUNTIME_STOP_POLL: Duration = Duration::from_millis(50);
+/// The first delay before restarting a consumer that exited.
+const CONSUMER_RESTART_MIN: Duration = Duration::from_secs(1);
+/// The longest delay between restarts of a consumer that keeps exiting; a
+/// consumer that ran at least this long starts its backoff over.
+const CONSUMER_RESTART_MAX: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SyncTriggerRuntimeOptions {
@@ -113,11 +118,40 @@ struct WatcherTask {
     observer: JoinHandle<Result<(), DaemonWatchError>>,
     index: Option<IndexConsumerTask>,
     sync: Option<SyncConsumerTask>,
+    index_restart: ConsumerRestart,
+    sync_restart: ConsumerRestart,
+}
+
+/// Paces restarts of one consumer that exited, so a consumer that keeps
+/// failing (a sync consumer on a vault that is not a Git repository) backs
+/// off instead of restarting every registry refresh.
+#[derive(Debug, Default)]
+struct ConsumerRestart {
+    failures: u32,
+    not_before: Option<Instant>,
+}
+
+impl ConsumerRestart {
+    fn record_exit(&mut self, ran_for: Duration, now: Instant) {
+        if ran_for >= CONSUMER_RESTART_MAX {
+            self.failures = 0;
+        }
+        self.failures = self.failures.saturating_add(1);
+        let delay = CONSUMER_RESTART_MIN
+            .saturating_mul(1 << (self.failures - 1).min(16))
+            .min(CONSUMER_RESTART_MAX);
+        self.not_before = Some(now + delay);
+    }
+
+    fn ready(&self, now: Instant) -> bool {
+        self.not_before.is_none_or(|not_before| now >= not_before)
+    }
 }
 
 struct IndexConsumerTask {
     stop: Arc<ShutdownSignal>,
     handle: JoinHandle<Result<(), DaemonWatchError>>,
+    started: Instant,
     tracker: Arc<VaultScanTracker>,
     /// Withdraws the vault from routed reads when the consumer stops.
     _routed: RoutedRegistration,
@@ -138,6 +172,7 @@ impl Drop for RoutedRegistration {
 struct SyncConsumerTask {
     stop: Arc<ShutdownSignal>,
     handle: JoinHandle<Result<(), DaemonWatchError>>,
+    started: Instant,
 }
 
 /// Reconciles daemon watcher ownership with the device-local registry and adds
@@ -319,9 +354,11 @@ fn reconcile_watchers(
     let config = registry.poll()?;
     let desired = desired_observers(&config.vaults, catalog)?;
     let mut failed_this_cycle = BTreeSet::new();
+    let now = Instant::now();
+    reap_exited_consumers(watchers, supervisor, now)?;
     let finished = watchers
         .iter()
-        .filter(|(_, task)| watcher_finished(task))
+        .filter(|(_, task)| task.observer.is_finished())
         .map(|(id, _)| id.clone())
         .collect::<Vec<_>>();
     for id in finished {
@@ -376,20 +413,15 @@ fn reconcile_watchers(
         let Some(task) = watchers.get_mut(id) else {
             continue;
         };
-        let should_sync = sync_consumer_enabled(registration);
-        if should_sync && task.sync.is_none() {
-            task.sync = Some(spawn_sync_consumer(
-                registration.clone(),
-                &task.hub,
-                Arc::clone(supervisor),
-                state_store.clone(),
-                watch_options,
-            )?);
-        } else if !should_sync {
-            if let Some(sync) = task.sync.take() {
-                stop_sync_consumer(sync);
-            }
-        }
+        ensure_consumers(
+            task,
+            registration,
+            supervisor,
+            state_store,
+            watch_options,
+            routed,
+            now,
+        )?;
         // A changed permission ceiling applies to routed reads at once.
         if task.registration.permissions_profile != registration.permissions_profile {
             if let Some(index) = &task.index {
@@ -404,6 +436,98 @@ fn reconcile_watchers(
             }
         }
         task.registration = registration.clone();
+    }
+    Ok(())
+}
+
+/// Starts the consumers `registration` wants that are not running, unless
+/// one is backing off after exiting, and stops a sync consumer it no longer
+/// wants.
+fn ensure_consumers(
+    task: &mut WatcherTask,
+    registration: &WikiRegistration,
+    supervisor: &Arc<SyncSupervisor>,
+    state_store: &SyncStateStore,
+    watch_options: DaemonWatchOptions,
+    routed: &RoutedReadRegistry,
+    now: Instant,
+) -> Result<(), SyncTriggerRuntimeError> {
+    if registration.capabilities().markdown_index
+        && task.index.is_none()
+        && task.index_restart.ready(now)
+    {
+        task.index = Some(spawn_index_consumer(
+            registration.clone(),
+            &task.hub,
+            state_store.root(),
+            watch_options,
+            routed,
+        )?);
+    }
+    let should_sync = sync_consumer_enabled(registration);
+    if should_sync && task.sync.is_none() && task.sync_restart.ready(now) {
+        task.sync = Some(spawn_sync_consumer(
+            registration.clone(),
+            &task.hub,
+            Arc::clone(supervisor),
+            state_store.clone(),
+            watch_options,
+        )?);
+    } else if !should_sync {
+        if let Some(sync) = task.sync.take() {
+            stop_sync_consumer(sync);
+        }
+        task.sync_restart = ConsumerRestart::default();
+    }
+    Ok(())
+}
+
+/// Joins consumers that exited and schedules their restart. A consumer
+/// restarts alone; the observer and the other consumer keep running, so the
+/// index stays warm and routable while a failing sync consumer backs off.
+fn reap_exited_consumers(
+    watchers: &mut BTreeMap<String, WatcherTask>,
+    supervisor: &SyncSupervisor,
+    now: Instant,
+) -> Result<(), SupervisorError> {
+    for task in watchers.values_mut() {
+        if task.observer.is_finished() {
+            continue;
+        }
+        if task
+            .index
+            .as_ref()
+            .is_some_and(|index| index.handle.is_finished())
+        {
+            if let Some(index) = task.index.take() {
+                let ran_for = index.started.elapsed();
+                // Dropping the task withdraws the vault from routed reads.
+                drop(join_task("index observation consumer", index.handle));
+                task.index_restart.record_exit(ran_for, now);
+            }
+        }
+        if task
+            .sync
+            .as_ref()
+            .is_some_and(|sync| sync.handle.is_finished())
+        {
+            if let Some(sync) = task.sync.take() {
+                let ran_for = sync.started.elapsed();
+                let detail = join_task("sync observation consumer", sync.handle);
+                task.sync_restart.record_exit(ran_for, now);
+                if sync_consumer_enabled(&task.registration) {
+                    supervisor.enqueue_watch(
+                        task.registration.id.as_str(),
+                        &task.registration.path,
+                        SyncWatchMetadata {
+                            safety_rescan: true,
+                            watcher_errors: vec![detail],
+                            ..SyncWatchMetadata::default()
+                        },
+                    )?;
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -476,6 +600,8 @@ fn spawn_watcher(
         observer,
         index,
         sync,
+        index_restart: ConsumerRestart::default(),
+        sync_restart: ConsumerRestart::default(),
     })
 }
 
@@ -529,6 +655,7 @@ fn spawn_index_consumer(
     Ok(IndexConsumerTask {
         stop,
         handle,
+        started: Instant::now(),
         tracker,
         _routed: routed,
     })
@@ -562,7 +689,11 @@ fn spawn_sync_consumer(
             &thread_stop,
         )
     });
-    Ok(SyncConsumerTask { stop, handle })
+    Ok(SyncConsumerTask {
+        stop,
+        handle,
+        started: Instant::now(),
+    })
 }
 
 fn enqueue_periodic_reconciliation(
@@ -651,18 +782,6 @@ fn stop_sync_consumer(task: SyncConsumerTask) {
 fn stop_index_consumer(task: IndexConsumerTask) {
     task.stop.cancel();
     let _ = task.handle.join();
-}
-
-fn watcher_finished(task: &WatcherTask) -> bool {
-    task.observer.is_finished()
-        || task
-            .index
-            .as_ref()
-            .is_some_and(|index| index.handle.is_finished())
-        || task
-            .sync
-            .as_ref()
-            .is_some_and(|sync| sync.handle.is_finished())
 }
 
 fn join_task(label: &str, handle: JoinHandle<Result<(), DaemonWatchError>>) -> String {
@@ -817,6 +936,97 @@ mod tests {
         stop_watcher(knowledge_watcher);
         assert!(knowledge_path.join(".vulcan/cache.db").exists());
         assert!(!files_path.join(".vulcan").exists());
+    }
+
+    #[test]
+    fn consumer_restarts_back_off_and_reset_after_a_long_run() {
+        let start = Instant::now();
+        let mut restart = ConsumerRestart::default();
+        assert!(restart.ready(start));
+        let mut delays = Vec::new();
+        for _ in 0..12 {
+            restart.record_exit(Duration::ZERO, start);
+            delays.push(restart.not_before.unwrap() - start);
+        }
+        assert_eq!(delays[0], CONSUMER_RESTART_MIN);
+        assert_eq!(delays[1], CONSUMER_RESTART_MIN * 2);
+        assert_eq!(delays[2], CONSUMER_RESTART_MIN * 4);
+        assert_eq!(*delays.last().unwrap(), CONSUMER_RESTART_MAX);
+        assert!(!restart.ready(start));
+        assert!(restart.ready(start + CONSUMER_RESTART_MAX));
+        restart.record_exit(CONSUMER_RESTART_MAX, start);
+        assert_eq!(restart.not_before, Some(start + CONSUMER_RESTART_MIN));
+    }
+
+    /// A sync consumer that cannot start (the vault is not a Git
+    /// repository) used to restart the whole watcher, index consumer
+    /// included, every registry refresh.
+    #[test]
+    fn a_failing_sync_consumer_restarts_alone_with_backoff() {
+        let temporary = tempdir().expect("temporary directory");
+        let vault = temporary.path().join("vault");
+        std::fs::create_dir(&vault).expect("vault");
+        std::fs::write(vault.join("Home.md"), "# Home\n").expect("note");
+        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+        registry
+            .add(
+                &AddWikiRequest {
+                    profile: None,
+                    id: WikiId::parse("notes").unwrap(),
+                    path: vault,
+                    groups: vec![],
+                    git_dir: None,
+                    permissions_profile: None,
+                    sync_backend: None,
+                    platform_profile: None,
+                },
+                false,
+            )
+            .unwrap();
+        let supervisor = Arc::new(SyncSupervisor::at(temporary.path().join("jobs.json")).unwrap());
+        let state_store = SyncStateStore::at(temporary.path().join("state"));
+        let routed = RoutedReadRegistry::default();
+        let mut watchers = BTreeMap::new();
+        let mut catalog = VaultRuntimeCatalog::default();
+        let reconcile = |watchers: &mut BTreeMap<String, WatcherTask>,
+                         catalog: &mut VaultRuntimeCatalog| {
+            reconcile_watchers(
+                &registry,
+                &supervisor,
+                &state_store,
+                DaemonWatchOptions::default(),
+                watchers,
+                catalog,
+                &routed,
+            )
+            .unwrap();
+        };
+        reconcile(&mut watchers, &mut catalog);
+        let task = &watchers["notes"];
+        let tracker = Arc::clone(&task.index.as_ref().unwrap().tracker);
+        tracker
+            .wait_for_generation(1, Duration::from_secs(5))
+            .unwrap();
+        let observer = task.observer.thread().id();
+        let index = task.index.as_ref().unwrap().handle.thread().id();
+
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(100));
+            reconcile(&mut watchers, &mut catalog);
+        }
+        let task = &watchers["notes"];
+        assert_eq!(task.observer.thread().id(), observer);
+        assert_eq!(task.index.as_ref().unwrap().handle.thread().id(), index);
+        assert_eq!(tracker.status().generation, 1, "no repeated startup scans");
+        assert!(routed.get("notes").is_some(), "reads stay routable");
+        // Restarts at about 0 s, 1 s, and 3 s rather than one per refresh.
+        assert!(
+            (1..=3).contains(&task.sync_restart.failures),
+            "{} sync restarts",
+            task.sync_restart.failures
+        );
+        stop_all_watchers(&mut watchers);
     }
 
     #[test]
