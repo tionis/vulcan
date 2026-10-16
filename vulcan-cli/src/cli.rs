@@ -5654,6 +5654,8 @@ pub enum DaemonCommand {
     SemanticStatus,
     #[command(about = "Show the latest daemon conflict-worker pass")]
     ConflictStatus,
+    #[command(about = "Show each registered vault's batched auto-commit state")]
+    AutoCommitStatus,
     #[command(about = "Show configured notification sinks and pending deliveries")]
     AlertStatus,
     #[command(about = "Run final syncs and request graceful daemon shutdown")]
@@ -5807,6 +5809,28 @@ pub enum DaemonConfigCommand {
     },
     #[command(about = "Disable the daemon conflict-resolution worker")]
     ClearConflictWorker {
+        #[arg(long, help = "Report without writing daemon configuration")]
+        dry_run: bool,
+    },
+    #[command(
+        about = "Let batched auto-commits of these wikis use the semantic agent",
+        long_about = "Let batched auto-commits of these wikis send their changes to the daemon's semantic agent for grouping and commit messages. A vault asks for this with `[git] batch_messages = \"agent\"`; this device-local consent is also required, so a synced vault setting cannot send content to a provider by itself. Replaces any earlier list."
+    )]
+    SetAutoCommitAgent {
+        #[arg(
+            long,
+            required = true,
+            help = "Registered wiki ID; repeat for each wiki"
+        )]
+        wiki: Vec<String>,
+        #[arg(
+            long,
+            help = "Validate and report without writing daemon configuration"
+        )]
+        dry_run: bool,
+    },
+    #[command(about = "Stop batched auto-commits from using the semantic agent")]
+    ClearAutoCommitAgent {
         #[arg(long, help = "Report without writing daemon configuration")]
         dry_run: bool,
     },

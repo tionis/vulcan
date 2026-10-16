@@ -5141,3 +5141,41 @@ fn editor_config_defaults_and_layered_overrides() {
     assert_eq!(editor.diagnostic_delay_ms, 50, "the local file wins");
     assert!(editor.semantic_tokens);
 }
+
+#[test]
+fn git_batch_settings_default_to_per_write_commits_and_accept_overrides() {
+    let defaults = GitConfig::default();
+    assert_eq!(defaults.strategy, GitCommitStrategy::PerWrite);
+    assert_eq!(
+        defaults.batch_interval_seconds,
+        DEFAULT_GIT_BATCH_INTERVAL_SECONDS
+    );
+    assert_eq!(defaults.batch_messages, GitBatchMessages::Template);
+
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let paths = VaultPaths::new(temp_dir.path());
+    fs::create_dir_all(paths.vulcan_dir()).expect("config directory");
+    fs::write(
+        paths.config_file(),
+        "[git]\nauto_commit = true\nstrategy = \"batched\"\nbatch_interval_seconds = 120\nbatch_messages = \"agent\"\n",
+    )
+    .expect("config should be written");
+    let loaded = load_vault_config(&paths);
+    assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+    assert_eq!(loaded.config.git.strategy, GitCommitStrategy::Batched);
+    assert_eq!(loaded.config.git.batch_interval_seconds, 120);
+    assert_eq!(loaded.config.git.batch_messages, GitBatchMessages::Agent);
+    // Settings serialized before these fields existed still parse.
+    let legacy: GitConfig = serde_json::from_value(serde_json::json!({
+        "auto_commit": true,
+        "trigger": "mutation",
+        "message": "vulcan {action}: {files}",
+        "scope": "vulcan-only",
+    }))
+    .expect("legacy git settings");
+    assert_eq!(legacy.strategy, GitCommitStrategy::PerWrite);
+    assert_eq!(
+        legacy.batch_interval_seconds,
+        DEFAULT_GIT_BATCH_INTERVAL_SECONDS
+    );
+}

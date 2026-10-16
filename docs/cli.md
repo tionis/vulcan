@@ -930,6 +930,27 @@ Behavior:
 - `trigger = "mutation"` commits successful mutating commands.
 - `trigger = "scan"` also allows `scan` and `watch` to auto-commit external changes after they are indexed.
 - `--no-commit` suppresses auto-commit for one invocation even when the vault config enables it.
+- A vault registered on this device with the Git sync backend (`vulcan vault add` without `--no-sync`) is captured by sync's hidden-ref snapshots instead. Its per-write commits stand down with a warning, so automatic capture never lands twice. Manual `vulcan git commit` still works.
+
+### Batched auto-commits
+
+`strategy = "batched"` stops individual commands from committing. The daemon commits whatever has accumulated instead:
+
+```toml
+[git]
+auto_commit = true
+strategy = "batched"          # default "per-write"
+batch_interval_seconds = 300  # 30 to 86400; out-of-range values are clamped
+batch_messages = "template"   # "template", "deterministic", or "agent"
+```
+
+- A batch opens with the first change after the previous batch and is committed one interval later, once edits have paused. A vault that never pauses is committed one interval later regardless. Changes left from before the daemon started are committed one interval after it starts.
+- Batches run only while the daemon runs, and only for vaults registered with `--no-sync`. A vault that syncs with Git has no batch consumer; sync owns its capture.
+- `template` makes one commit with the `message` template (`{action}` is `batch`). `deterministic` makes one commit per top-level folder, with one more for each file at the vault root. `agent` asks the daemon's semantic agent to group the changes and write the messages.
+- The agent only groups and describes the changes; it never changes their bytes. Every changed path must appear exactly once in its plan. If the agent is unavailable, refuses, returns an invalid plan, or the batch is larger than 200 paths or 1 MiB of patches, the batch is committed with `deterministic` groups and the status records why.
+- Agent messages need both the vault's `batch_messages = "agent"` and this device's consent: `vulcan daemon config set-auto-commit-agent --wiki <id>` (`clear-auto-commit-agent` revokes it). The agent is the one configured with `vulcan daemon config set-agent semantic`, and the vault's permission profile must allow its endpoint. Without consent, batches fall back to `deterministic`.
+- Batches leave alone any path you staged yourself, and they wait while a merge, rebase, cherry-pick, revert, or bisect is in progress, while paths are unmerged, or while `HEAD` is detached. `exclude` applies, and `.vulcan/` is never committed.
+- `vulcan daemon auto-commit-status` shows each registered vault's capture owner, its `[git]` batch settings, whether agent messages are allowed, and the latest batch outcome.
 
 ### `note`
 

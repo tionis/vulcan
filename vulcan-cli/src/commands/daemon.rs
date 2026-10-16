@@ -16,6 +16,9 @@ use vulcan_app::obsidian_companion::{
 };
 use vulcan_core::verbosity::{Verbosity, VERBOSITY_ENV};
 use vulcan_daemon::alert_delivery::{alert_delivery_status, AlertDeliveryStatus};
+use vulcan_daemon::auto_commit_worker::{
+    auto_commit_status_report, AutoCommitCaptureOwner, AutoCommitStatusReport,
+};
 use vulcan_daemon::conflict_worker::{load_conflict_worker_status, ConflictWorkerStatus};
 use vulcan_daemon::credentials::CompanionCredentialStore;
 use vulcan_daemon::daemon_host::DAEMON_READINESS_TIMEOUT;
@@ -29,9 +32,10 @@ use vulcan_daemon::process::{
     DaemonNotificationDiscoveryState, DaemonProcessContext, DaemonStatusReport,
 };
 use vulcan_daemon::registry::{
-    DaemonAgentConfig, DaemonAgentKind, DaemonCommandNotificationConfig, DaemonConfig,
-    DaemonConflictWorkerConfig, DaemonSemanticWorkerConfig, DaemonWebhookFormat,
-    DaemonWebhookNotificationConfig, NetworkNotificationMode, WikiId,
+    DaemonAgentConfig, DaemonAgentKind, DaemonAutoCommitAgentConfig,
+    DaemonCommandNotificationConfig, DaemonConfig, DaemonConflictWorkerConfig,
+    DaemonSemanticWorkerConfig, DaemonWebhookFormat, DaemonWebhookNotificationConfig,
+    NetworkNotificationMode, WikiId,
 };
 use vulcan_daemon::semantic_worker::{load_semantic_worker_status, SemanticWorkerStatus};
 use vulcan_daemon::service::{
@@ -108,6 +112,12 @@ pub(crate) fn handle_daemon_command(cli: &Cli, command: &DaemonCommand) -> Resul
                     CliError::operation("the conflict worker has not completed a pass")
                 })?;
             print_conflict_worker_status(cli.output, &status)
+        }
+        DaemonCommand::AutoCommitStatus => {
+            let status =
+                auto_commit_status_report(&context.registry, context.sync_state_store().root())
+                    .map_err(CliError::operation)?;
+            print_auto_commit_status(cli.output, &status)
         }
         DaemonCommand::AlertStatus => {
             let config = context.registry.load().map_err(CliError::operation)?;
@@ -276,6 +286,53 @@ fn print_semantic_worker_status(
             println!("{}: skipped ({detail})", entry.wiki_id);
         } else if let Some(error) = &entry.error {
             println!("{}: error ({error})", entry.wiki_id);
+        }
+    }
+    Ok(())
+}
+
+fn print_auto_commit_status(
+    output: OutputFormat,
+    status: &AutoCommitStatusReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(status);
+    }
+    for vault in &status.vaults {
+        let mode = match (&vault.capture_owner, vault.auto_commit, vault.strategy) {
+            (AutoCommitCaptureOwner::GitSync, _, _) => "Git sync captures changes".to_string(),
+            (_, false, _) => "auto-commit off".to_string(),
+            (_, true, vulcan_core::GitCommitStrategy::PerWrite) => "per-write commits".to_string(),
+            (_, true, vulcan_core::GitCommitStrategy::Batched) => format!(
+                "batched every {} s, {:?} messages{}",
+                vault.batch_interval_seconds,
+                vault.batch_messages,
+                if vault.agent_consent {
+                    ", agent allowed"
+                } else {
+                    ""
+                }
+            ),
+        };
+        println!("{}: {mode}", vault.wiki_id);
+        if let Some(latest) = &vault.latest {
+            if let Some(report) = &latest.report {
+                println!(
+                    "  last batch: {:?}, {} commit(s){}",
+                    report.status,
+                    report.commits.len(),
+                    report
+                        .fallback
+                        .as_deref()
+                        .map(|reason| format!("; fell back: {reason}"))
+                        .unwrap_or_default()
+                );
+            } else if let Some(error) = &latest.error {
+                println!("  last batch failed: {error}");
+            }
+        }
+        if let Some(error) = &vault.error {
+            println!("  status unreadable: {error}");
         }
     }
     Ok(())
@@ -522,7 +579,9 @@ fn handle_config(
         DaemonConfigCommand::SetSemanticWorker { .. }
         | DaemonConfigCommand::ClearSemanticWorker { .. }
         | DaemonConfigCommand::SetConflictWorker { .. }
-        | DaemonConfigCommand::ClearConflictWorker { .. } => {
+        | DaemonConfigCommand::ClearConflictWorker { .. }
+        | DaemonConfigCommand::SetAutoCommitAgent { .. }
+        | DaemonConfigCommand::ClearAutoCommitAgent { .. } => {
             unreachable!("worker configuration is dispatched above")
         }
         DaemonConfigCommand::SetNotifications { .. }
@@ -598,6 +657,20 @@ fn handle_worker_config(
         ),
         DaemonConfigCommand::ClearConflictWorker { dry_run } => {
             context.registry.clear_conflict_worker(*dry_run)
+        }
+        DaemonConfigCommand::SetAutoCommitAgent { wiki, dry_run } => {
+            context.registry.set_auto_commit_agent(
+                DaemonAutoCommitAgentConfig {
+                    wikis: match parse_worker_wikis(wiki) {
+                        Ok(wikis) => wikis,
+                        Err(error) => return Some(Err(error)),
+                    },
+                },
+                *dry_run,
+            )
+        }
+        DaemonConfigCommand::ClearAutoCommitAgent { dry_run } => {
+            context.registry.clear_auto_commit_agent(*dry_run)
         }
         _ => return None,
     };

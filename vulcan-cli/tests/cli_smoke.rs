@@ -19172,6 +19172,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan sync semantic-plan"));
     assert!(git_skill.contains("--group-by hunk"));
     assert!(git_skill.contains("vulcan daemon status"));
+    assert!(git_skill.contains("vulcan daemon auto-commit-status"));
+    assert!(git_skill.contains("vulcan daemon config set-auto-commit-agent --wiki <id>"));
     assert!(git_skill.contains("vulcan daemon companion --reveal-token"));
     assert!(git_skill.contains("vulcan daemon companion install [<wiki>] --dry-run"));
     assert!(git_skill.contains("reference Obsidian companion"));
@@ -40138,4 +40140,125 @@ fn editor_helix_merges_reports_and_removes_its_configuration() {
         "theme = \"onedark\""
     );
     assert!(helix.join("config.toml.vulcan-backup").exists());
+}
+
+#[test]
+fn auto_commit_stands_down_for_git_sync_and_reports_batched_vaults() {
+    let temporary = TempDir::new().expect("temp dir");
+    let config_home = temporary.path().join("config");
+    fs::create_dir(&config_home).expect("config home");
+    let config_home = config_home.to_str().expect("utf-8 config home").to_string();
+    let synced = temporary.path().join("synced");
+    let plain = temporary.path().join("plain");
+    for (vault, git_config) in [
+        (&synced, "[git]\nauto_commit = true\n"),
+        (
+            &plain,
+            "[git]\nauto_commit = true\nstrategy = \"batched\"\nbatch_interval_seconds = 5\nbatch_messages = \"agent\"\n",
+        ),
+    ] {
+        fs::create_dir_all(vault.join(".vulcan")).expect("vault");
+        init_git_repo(vault);
+        fs::write(vault.join("Home.md"), "# Home\n").expect("note");
+        fs::write(vault.join(".gitignore"), ".vulcan/\n").expect("ignore");
+        commit_all(vault, "Initial");
+        fs::write(vault.join(".vulcan/config.toml"), git_config).expect("git config");
+    }
+    cargo_vulcan_with_xdg_config(&config_home)
+        .args(["vault", "add", "synced"])
+        .arg(&synced)
+        .arg("--no-device-key")
+        .assert()
+        .success();
+    cargo_vulcan_with_xdg_config(&config_home)
+        .args(["vault", "add", "plain"])
+        .arg(&plain)
+        .arg("--no-sync")
+        .assert()
+        .success();
+
+    // Git sync owns capture for `synced`, so its per-write commit stands down.
+    cargo_vulcan_with_xdg_config(&config_home)
+        .arg("--vault")
+        .arg(&synced)
+        .args(["note", "create", "Fresh"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "Git sync for `synced` captures this vault's changes",
+        ));
+    assert_eq!(
+        run_git_stdout(&synced, &["rev-list", "--count", "HEAD"]),
+        "1"
+    );
+    // A batched vault leaves the commit to the daemon.
+    cargo_vulcan_with_xdg_config(&config_home)
+        .arg("--vault")
+        .arg(&plain)
+        .args(["note", "create", "Fresh"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("auto-commit").not());
+    assert_eq!(
+        run_git_stdout(&plain, &["rev-list", "--count", "HEAD"]),
+        "1"
+    );
+
+    let consent = parse_stdout_json(
+        &cargo_vulcan_with_xdg_config(&config_home)
+            .args([
+                "--output",
+                "json",
+                "daemon",
+                "config",
+                "set-auto-commit-agent",
+                "--wiki",
+                "plain",
+            ])
+            .assert()
+            .success(),
+    );
+    assert_eq!(
+        consent["auto_commit_agent"]["wikis"],
+        serde_json::json!(["plain"])
+    );
+    let status = parse_stdout_json(
+        &cargo_vulcan_with_xdg_config(&config_home)
+            .args(["--output", "json", "daemon", "auto-commit-status"])
+            .assert()
+            .success(),
+    );
+    assert_eq!(status["version"], 1);
+    let vaults = status["vaults"].as_array().expect("vault list");
+    let entry = |id: &str| {
+        vaults
+            .iter()
+            .find(|vault| vault["wiki_id"] == id)
+            .expect("registered vault")
+            .clone()
+    };
+    assert_eq!(entry("synced")["capture_owner"], "git_sync");
+    assert_eq!(entry("synced")["strategy"], "per-write");
+    let plain_status = entry("plain");
+    assert_eq!(plain_status["capture_owner"], "auto_commit");
+    assert_eq!(plain_status["strategy"], "batched");
+    assert_eq!(plain_status["batch_messages"], "agent");
+    // Intervals below the supported minimum are raised to it.
+    assert_eq!(plain_status["batch_interval_seconds"], 30);
+    assert_eq!(plain_status["agent_consent"], true);
+    assert!(plain_status.get("latest").is_none());
+
+    let cleared = parse_stdout_json(
+        &cargo_vulcan_with_xdg_config(&config_home)
+            .args([
+                "--output",
+                "json",
+                "daemon",
+                "config",
+                "clear-auto-commit-agent",
+            ])
+            .assert()
+            .success(),
+    );
+    assert!(cleared.get("auto_commit_agent").is_none());
 }

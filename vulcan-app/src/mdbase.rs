@@ -1264,8 +1264,9 @@ fn apply_mdbase_write_timed(
     }
 
     let config = load_write_config(paths)?;
-    let should_commit =
-        !options.no_commit && config.git.auto_commit && config.git.trigger == GitTrigger::Mutation;
+    let should_commit = !options.no_commit
+        && crate::commit::AutoCommitPolicy::from_config(paths, &config.git, GitTrigger::Mutation)
+            .is_enabled();
     if should_commit {
         guard.check_git().map_err(AppError::operation)?;
     }

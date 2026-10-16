@@ -1,5 +1,8 @@
 //! Registry-driven lifecycle and periodic trigger coordination.
 
+use crate::auto_commit_worker::{
+    consume_auto_commit_observations_with_stop, sync_owns_capture, AutoCommitContext,
+};
 use crate::observation::{
     ObservationConsumerId, ObservationConsumerKind, ObservationConsumerPolicy, ObservationError,
     ObservationFilter, VaultObservationHub,
@@ -118,8 +121,10 @@ struct WatcherTask {
     observer: JoinHandle<Result<(), DaemonWatchError>>,
     index: Option<IndexConsumerTask>,
     sync: Option<SyncConsumerTask>,
+    auto_commit: Option<SyncConsumerTask>,
     index_restart: ConsumerRestart,
     sync_restart: ConsumerRestart,
+    auto_commit_restart: ConsumerRestart,
 }
 
 /// Paces restarts of one consumer that exited, so a consumer that keeps
@@ -196,6 +201,7 @@ where
         should_stop,
         None,
         &RoutedReadRegistry::default(),
+        &AutoCommitContext::default(),
     )
 }
 
@@ -208,6 +214,7 @@ pub(crate) fn run_sync_trigger_runtime_with_stop(
     options: &SyncTriggerRuntimeOptions,
     stop: &ShutdownSignal,
     routed: &RoutedReadRegistry,
+    auto_commit: &AutoCommitContext,
 ) -> Result<(), SyncTriggerRuntimeError> {
     run_sync_trigger_runtime(
         registry,
@@ -217,9 +224,11 @@ pub(crate) fn run_sync_trigger_runtime_with_stop(
         || stop.is_cancelled(),
         Some(stop),
         routed,
+        auto_commit,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_sync_trigger_runtime<S>(
     registry: &WikiRegistry,
     supervisor: &Arc<SyncSupervisor>,
@@ -228,11 +237,22 @@ fn run_sync_trigger_runtime<S>(
     should_stop: S,
     stop: Option<&ShutdownSignal>,
     routed: &RoutedReadRegistry,
+    auto_commit: &AutoCommitContext,
 ) -> Result<(), SyncTriggerRuntimeError>
 where
     S: Fn() -> bool,
 {
     validate_options(options)?;
+    let consumers = Consumers {
+        supervisor,
+        state_store,
+        watch: options.watch,
+        routed,
+        auto_commit: AutoCommitContext {
+            registry: Some(registry.clone()),
+            ..auto_commit.clone()
+        },
+    };
     let registry_refresh = Duration::from_millis(options.registry_refresh_ms);
     let remote_poll = Duration::from_millis(options.remote_poll_ms);
     let mut watchers = BTreeMap::<String, WatcherTask>::new();
@@ -262,15 +282,9 @@ where
         last_wall = wall;
         last_monotonic = now;
         if now >= next_registry_refresh {
-            if let Err(error) = reconcile_watchers(
-                registry,
-                supervisor,
-                state_store,
-                options.watch,
-                &mut watchers,
-                &mut vault_catalog,
-                routed,
-            ) {
+            if let Err(error) =
+                reconcile_watchers(registry, &consumers, &mut watchers, &mut vault_catalog)
+            {
                 stop_all_watchers(&mut watchers);
                 return Err(error);
             }
@@ -342,15 +356,24 @@ fn sync_consumer_enabled(registration: &WikiRegistration) -> bool {
             .is_none_or(|backend| backend == "git")
 }
 
+/// What starting a vault's consumers needs, shared by every vault.
+struct Consumers<'a> {
+    supervisor: &'a Arc<SyncSupervisor>,
+    state_store: &'a SyncStateStore,
+    watch: DaemonWatchOptions,
+    routed: &'a RoutedReadRegistry,
+    auto_commit: AutoCommitContext,
+}
+
 fn reconcile_watchers(
     registry: &WikiRegistry,
-    supervisor: &Arc<SyncSupervisor>,
-    state_store: &SyncStateStore,
-    watch_options: DaemonWatchOptions,
+    consumers: &Consumers<'_>,
     watchers: &mut BTreeMap<String, WatcherTask>,
     catalog: &mut VaultRuntimeCatalog,
-    routed: &RoutedReadRegistry,
 ) -> Result<(), SyncTriggerRuntimeError> {
+    let Consumers {
+        supervisor, routed, ..
+    } = *consumers;
     let config = registry.poll()?;
     let desired = desired_observers(&config.vaults, catalog)?;
     let mut failed_this_cycle = BTreeSet::new();
@@ -397,31 +420,14 @@ fn reconcile_watchers(
 
     for (id, registration) in &desired {
         if !watchers.contains_key(id) && !failed_this_cycle.contains(id) {
-            watchers.insert(
-                id.clone(),
-                spawn_watcher(
-                    registration.clone(),
-                    Arc::clone(supervisor),
-                    state_store.clone(),
-                    watch_options,
-                    routed,
-                )?,
-            );
+            watchers.insert(id.clone(), spawn_watcher(registration.clone(), consumers)?);
         }
     }
     for (id, registration) in &desired {
         let Some(task) = watchers.get_mut(id) else {
             continue;
         };
-        ensure_consumers(
-            task,
-            registration,
-            supervisor,
-            state_store,
-            watch_options,
-            routed,
-            now,
-        )?;
+        ensure_consumers(task, registration, consumers, now)?;
         // A changed permission ceiling applies to routed reads at once.
         if task.registration.permissions_profile != registration.permissions_profile {
             if let Some(index) = &task.index {
@@ -446,12 +452,16 @@ fn reconcile_watchers(
 fn ensure_consumers(
     task: &mut WatcherTask,
     registration: &WikiRegistration,
-    supervisor: &Arc<SyncSupervisor>,
-    state_store: &SyncStateStore,
-    watch_options: DaemonWatchOptions,
-    routed: &RoutedReadRegistry,
+    consumers: &Consumers<'_>,
     now: Instant,
 ) -> Result<(), SyncTriggerRuntimeError> {
+    let Consumers {
+        supervisor,
+        state_store,
+        watch: watch_options,
+        routed,
+        ..
+    } = *consumers;
     if registration.capabilities().markdown_index
         && task.index.is_none()
         && task.index_restart.ready(now)
@@ -478,6 +488,19 @@ fn ensure_consumers(
             stop_sync_consumer(sync);
         }
         task.sync_restart = ConsumerRestart::default();
+    }
+    let should_auto_commit = !sync_owns_capture(registration);
+    if should_auto_commit && task.auto_commit.is_none() && task.auto_commit_restart.ready(now) {
+        task.auto_commit = Some(spawn_auto_commit_consumer(
+            registration.clone(),
+            &task.hub,
+            consumers,
+        )?);
+    } else if !should_auto_commit {
+        if let Some(auto_commit) = task.auto_commit.take() {
+            stop_sync_consumer(auto_commit);
+        }
+        task.auto_commit_restart = ConsumerRestart::default();
     }
     Ok(())
 }
@@ -528,6 +551,20 @@ fn reap_exited_consumers(
                 }
             }
         }
+        if task
+            .auto_commit
+            .as_ref()
+            .is_some_and(|auto_commit| auto_commit.handle.is_finished())
+        {
+            if let Some(auto_commit) = task.auto_commit.take() {
+                let ran_for = auto_commit.started.elapsed();
+                eprintln!(
+                    "{}",
+                    join_task("auto-commit observation consumer", auto_commit.handle)
+                );
+                task.auto_commit_restart.record_exit(ran_for, now);
+            }
+        }
     }
     Ok(())
 }
@@ -543,11 +580,12 @@ fn watcher_registration_changed(current: &WikiRegistration, desired: &WikiRegist
 
 fn spawn_watcher(
     registration: WikiRegistration,
-    supervisor: Arc<SyncSupervisor>,
-    state_store: SyncStateStore,
-    options: DaemonWatchOptions,
-    routed: &RoutedReadRegistry,
+    consumers: &Consumers<'_>,
 ) -> Result<WatcherTask, SyncTriggerRuntimeError> {
+    let supervisor = Arc::clone(consumers.supervisor);
+    let state_store = consumers.state_store.clone();
+    let options = consumers.watch;
+    let routed = consumers.routed;
     let hub = VaultObservationHub::default();
     let observer_stop = Arc::new(ShutdownSignal::new(false));
     let thread_stop = Arc::clone(&observer_stop);
@@ -593,6 +631,9 @@ fn spawn_watcher(
     let sync = sync_consumer_enabled(&registration)
         .then(|| spawn_sync_consumer(registration.clone(), &hub, supervisor, state_store, options))
         .transpose()?;
+    let auto_commit = (!sync_owns_capture(&registration))
+        .then(|| spawn_auto_commit_consumer(registration.clone(), &hub, consumers))
+        .transpose()?;
     Ok(WatcherTask {
         registration,
         hub,
@@ -600,8 +641,48 @@ fn spawn_watcher(
         observer,
         index,
         sync,
+        auto_commit,
         index_restart: ConsumerRestart::default(),
         sync_restart: ConsumerRestart::default(),
+        auto_commit_restart: ConsumerRestart::default(),
+    })
+}
+
+fn spawn_auto_commit_consumer(
+    registration: WikiRegistration,
+    hub: &VaultObservationHub,
+    consumers: &Consumers<'_>,
+) -> Result<SyncConsumerTask, ObservationError> {
+    let subscription = hub.subscribe(
+        ObservationConsumerId::parse(format!("auto-commit-{}", registration.id))?,
+        ObservationConsumerPolicy {
+            kind: ObservationConsumerKind::AutoCommit,
+            queue_capacity: 64,
+            quiet_period_ms: consumers.watch.debounce_ms,
+            maximum_dirty_ms: consumers.watch.max_dirty_ms,
+            filter: ObservationFilter::default(),
+        },
+    )?;
+    let context = consumers.auto_commit.clone();
+    let state_root = consumers.state_store.root().to_path_buf();
+    // Edits count as paused once the watcher's own dirty bound has passed.
+    let quiet = Duration::from_millis(consumers.watch.max_dirty_ms);
+    let stop = Arc::new(ShutdownSignal::default());
+    let thread_stop = Arc::clone(&stop);
+    let handle = thread::spawn(move || {
+        consume_auto_commit_observations_with_stop(
+            &registration,
+            &context,
+            &state_root,
+            &subscription,
+            quiet,
+            &thread_stop,
+        )
+    });
+    Ok(SyncConsumerTask {
+        stop,
+        handle,
+        started: Instant::now(),
     })
 }
 
@@ -749,6 +830,9 @@ fn stop_all_watchers(watchers: &mut BTreeMap<String, WatcherTask>) {
 }
 
 fn stop_watcher(task: WatcherTask) {
+    if let Some(auto_commit) = task.auto_commit {
+        stop_sync_consumer(auto_commit);
+    }
     if let Some(sync) = task.sync {
         stop_sync_consumer(sync);
     }
@@ -761,6 +845,13 @@ fn stop_watcher(task: WatcherTask) {
 
 fn join_watcher(task: WatcherTask) -> String {
     let mut details = Vec::new();
+    if let Some(auto_commit) = task.auto_commit {
+        auto_commit.stop.cancel();
+        details.push(join_task(
+            "auto-commit observation consumer",
+            auto_commit.handle,
+        ));
+    }
     if let Some(sync) = task.sync {
         sync.stop.cancel();
         details.push(join_task("sync observation consumer", sync.handle));
@@ -795,6 +886,20 @@ fn join_task(label: &str, handle: JoinHandle<Result<(), DaemonWatchError>>) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_consumers<'a>(
+        supervisor: &'a Arc<SyncSupervisor>,
+        state_store: &'a SyncStateStore,
+        routed: &'a RoutedReadRegistry,
+    ) -> Consumers<'a> {
+        Consumers {
+            supervisor,
+            state_store,
+            watch: DaemonWatchOptions::default(),
+            routed,
+            auto_commit: AutoCommitContext::default(),
+        }
+    }
     use crate::registry::{AddWikiRequest, ManagedDirectoryProfile, UpdateWikiRequest, WikiId};
     use std::path::PathBuf;
     use std::process::Command;
@@ -878,10 +983,7 @@ mod tests {
         let state_store = SyncStateStore::at(temporary.path().join("state"));
         let watcher = spawn_watcher(
             registration,
-            supervisor,
-            state_store.clone(),
-            DaemonWatchOptions::default(),
-            &RoutedReadRegistry::default(),
+            &test_consumers(&supervisor, &state_store, &RoutedReadRegistry::default()),
         )
         .unwrap();
         assert!(watcher.index.is_none());
@@ -909,18 +1011,12 @@ mod tests {
         let state_store = SyncStateStore::at(temporary.path().join("state"));
         let knowledge_watcher = spawn_watcher(
             knowledge,
-            Arc::clone(&supervisor),
-            state_store.clone(),
-            DaemonWatchOptions::default(),
-            &RoutedReadRegistry::default(),
+            &test_consumers(&supervisor, &state_store, &RoutedReadRegistry::default()),
         )
         .unwrap();
         let files_watcher = spawn_watcher(
             files,
-            supervisor,
-            state_store,
-            DaemonWatchOptions::default(),
-            &RoutedReadRegistry::default(),
+            &test_consumers(&supervisor, &state_store, &RoutedReadRegistry::default()),
         )
         .unwrap();
         assert!(knowledge_watcher.index.is_some());
@@ -992,12 +1088,9 @@ mod tests {
                          catalog: &mut VaultRuntimeCatalog| {
             reconcile_watchers(
                 &registry,
-                &supervisor,
-                &state_store,
-                DaemonWatchOptions::default(),
+                &test_consumers(&supervisor, &state_store, &routed),
                 watchers,
                 catalog,
-                &routed,
             )
             .unwrap();
         };
@@ -1094,17 +1187,18 @@ mod tests {
         let mut catalog = VaultRuntimeCatalog::default();
         reconcile_watchers(
             &registry,
-            &supervisor,
-            &state_store,
-            DaemonWatchOptions::default(),
+            &test_consumers(&supervisor, &state_store, &RoutedReadRegistry::default()),
             &mut watchers,
             &mut catalog,
-            &RoutedReadRegistry::default(),
         )
         .unwrap();
         assert_eq!(watchers.len(), 2);
         assert!(watchers["git-notes"].sync.is_none());
         assert!(watchers["plain"].sync.is_none());
+        // Git sync owns capture for the Git-backed vault, even while paused;
+        // the vault without sync gets the batched auto-commit consumer.
+        assert!(watchers["git-notes"].auto_commit.is_none());
+        assert!(watchers["plain"].auto_commit.is_some());
         let initial = watchers["git-notes"]
             .index
             .as_ref()
@@ -1169,12 +1263,9 @@ mod tests {
             .unwrap();
         reconcile_watchers(
             &registry,
-            &supervisor,
-            &state_store,
-            DaemonWatchOptions::default(),
+            &test_consumers(&supervisor, &state_store, &RoutedReadRegistry::default()),
             &mut watchers,
             &mut catalog,
-            &RoutedReadRegistry::default(),
         )
         .unwrap();
         assert_eq!(watchers["git-notes"].observer.thread().id(), observer_id);

@@ -230,6 +230,36 @@ pub enum GitScope {
     All,
 }
 
+/// When automatic commits are made. `per-write` commits after each Vulcan
+/// mutation or scan (see [`GitTrigger`]); `batched` leaves commits to the
+/// daemon, which commits accumulated working-tree changes on an interval.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GitCommitStrategy {
+    #[default]
+    PerWrite,
+    Batched,
+}
+
+/// How a batched commit is split and described. `template` makes one commit
+/// with the `message` template, `deterministic` makes one commit per top-level
+/// folder, and `agent` asks the daemon's semantic agent to group and describe
+/// the changes, falling back to `deterministic` when it cannot.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GitBatchMessages {
+    #[default]
+    Template,
+    Deterministic,
+    Agent,
+}
+
+pub const DEFAULT_GIT_BATCH_INTERVAL_SECONDS: u64 = 300;
+
+const fn default_git_batch_interval_seconds() -> u64 {
+    DEFAULT_GIT_BATCH_INTERVAL_SECONDS
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitConfig {
     pub auto_commit: bool,
@@ -238,6 +268,12 @@ pub struct GitConfig {
     pub scope: GitScope,
     #[serde(default)]
     pub exclude: Vec<String>,
+    #[serde(default)]
+    pub strategy: GitCommitStrategy,
+    #[serde(default = "default_git_batch_interval_seconds")]
+    pub batch_interval_seconds: u64,
+    #[serde(default)]
+    pub batch_messages: GitBatchMessages,
 }
 
 const fn default_sync_max_deleted_paths() -> usize {
@@ -301,6 +337,9 @@ impl Default for GitConfig {
             message: "vulcan {action}: {files}".to_string(),
             scope: GitScope::VulcanOnly,
             exclude: Vec::new(),
+            strategy: GitCommitStrategy::PerWrite,
+            batch_interval_seconds: DEFAULT_GIT_BATCH_INTERVAL_SECONDS,
+            batch_messages: GitBatchMessages::Template,
         }
     }
 }
@@ -4431,6 +4470,15 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
         if let Some(exclude) = git.exclude {
             config.git.exclude = exclude;
+        }
+        if let Some(strategy) = git.strategy {
+            config.git.strategy = strategy;
+        }
+        if let Some(interval) = git.batch_interval_seconds {
+            config.git.batch_interval_seconds = interval;
+        }
+        if let Some(messages) = git.batch_messages {
+            config.git.batch_messages = messages;
         }
     }
     if let Some(sync) = overrides.sync {

@@ -203,6 +203,12 @@ Top-level vault configuration not covered by a more specific section.
 - `git.auto_commit` — type: `boolean`; target: `shared|local`; default: `false`
   Edit `git.auto_commit` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
   Example: `vulcan config set git.auto_commit <value>`
+- `git.batch_interval_seconds` — type: `integer`; target: `shared|local`; default: `300`
+  Edit `git.batch_interval_seconds` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
+  Example: `vulcan config set git.batch_interval_seconds <value>`
+- `git.batch_messages` — type: `string`; target: `shared|local`; default: `template`
+  Edit `git.batch_messages` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
+  Example: `vulcan config set git.batch_messages <value>`
 - `git.exclude` — type: `array`; target: `shared|local`; default: `[0 items]`
   Edit `git.exclude` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
   Example: `vulcan config set git.exclude <value>`
@@ -212,6 +218,9 @@ Top-level vault configuration not covered by a more specific section.
 - `git.scope` — type: `string`; target: `shared|local`; default: `vulcan-only`
   Edit `git.scope` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
   Example: `vulcan config set git.scope <value>`
+- `git.strategy` — type: `string`; target: `shared|local`; default: `per-write`
+  Edit `git.strategy` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
+  Example: `vulcan config set git.strategy <value>`
 - `git.trigger` — type: `string`; target: `shared|local`; default: `mutation`
   Edit `git.trigger` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
   Example: `vulcan config set git.trigger <value>`

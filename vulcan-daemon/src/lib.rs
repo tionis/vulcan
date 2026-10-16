@@ -8,6 +8,7 @@
 
 pub mod alert_delivery;
 pub mod alerts;
+pub mod auto_commit_worker;
 pub mod clone;
 pub mod companion;
 pub mod conflict_worker;

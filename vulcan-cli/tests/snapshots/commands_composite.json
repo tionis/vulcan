@@ -13724,6 +13724,12 @@
             "subcommands": []
           },
           {
+            "about": "Show each registered vault's batched auto-commit state",
+            "name": "auto-commit-status",
+            "options": [],
+            "subcommands": []
+          },
+          {
             "about": "Show configured notification sinks and pending deliveries",
             "name": "alert-status",
             "options": [],
@@ -14147,6 +14153,59 @@
               {
                 "about": "Disable the daemon conflict-resolution worker",
                 "name": "clear-conflict-worker",
+                "options": [
+                  {
+                    "help": "Report without writing daemon configuration",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Let batched auto-commits of these wikis use the semantic agent",
+                "name": "set-auto-commit-agent",
+                "options": [
+                  {
+                    "help": "Registered wiki ID; repeat for each wiki",
+                    "id": "wiki",
+                    "long": "wiki",
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "WIKI"
+                    ]
+                  },
+                  {
+                    "help": "Validate and report without writing daemon configuration",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Stop batched auto-commits from using the semantic agent",
+                "name": "clear-auto-commit-agent",
                 "options": [
                   {
                     "help": "Report without writing daemon configuration",

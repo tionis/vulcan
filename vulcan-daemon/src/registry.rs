@@ -192,6 +192,11 @@ pub struct DaemonConfig {
     pub semantic_worker: Option<DaemonSemanticWorkerConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conflict_worker: Option<DaemonConflictWorkerConfig>,
+    /// Wikis whose batched auto-commits may send their changes to the
+    /// semantic agent. Device-local consent: a vault's own `[git]` setting
+    /// can ask for agent messages but cannot grant itself the agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_commit_agent: Option<DaemonAutoCommitAgentConfig>,
     #[serde(default, skip_serializing_if = "DaemonNotificationConfig::is_default")]
     pub notifications: DaemonNotificationConfig,
     #[serde(default, rename = "vault")]
@@ -212,6 +217,7 @@ impl Default for DaemonConfig {
             semantic_agent: None,
             semantic_worker: None,
             conflict_worker: None,
+            auto_commit_agent: None,
             notifications: DaemonNotificationConfig::default(),
             vaults: Vec::new(),
             mcp_remotes: Vec::new(),
@@ -355,6 +361,18 @@ pub struct DaemonSemanticWorkerConfig {
     pub maximum_wait_seconds: u64,
     #[serde(default = "default_semantic_poll_seconds")]
     pub poll_seconds: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonAutoCommitAgentConfig {
+    pub wikis: Vec<WikiId>,
+}
+
+impl DaemonAutoCommitAgentConfig {
+    #[must_use]
+    pub fn allows(&self, wiki: &WikiId) -> bool {
+        self.wikis.contains(wiki)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -994,6 +1012,25 @@ impl WikiRegistry {
         })
     }
 
+    pub fn set_auto_commit_agent(
+        &self,
+        agent: DaemonAutoCommitAgentConfig,
+        dry_run: bool,
+    ) -> Result<DaemonConfig, RegistryError> {
+        self.mutate(dry_run, |config| {
+            validate_auto_commit_agent_config(&agent)?;
+            config.auto_commit_agent = Some(agent);
+            Ok(config.clone())
+        })
+    }
+
+    pub fn clear_auto_commit_agent(&self, dry_run: bool) -> Result<DaemonConfig, RegistryError> {
+        self.mutate(dry_run, |config| {
+            config.auto_commit_agent = None;
+            Ok(config.clone())
+        })
+    }
+
     pub fn set_conflict_worker(
         &self,
         worker: DaemonConflictWorkerConfig,
@@ -1150,6 +1187,9 @@ fn validate_daemon_config(config: &DaemonConfig) -> Result<(), RegistryError> {
     }
     if let Some(worker) = &config.conflict_worker {
         validate_conflict_worker_config(worker)?;
+    }
+    if let Some(agent) = &config.auto_commit_agent {
+        validate_auto_commit_agent_config(agent)?;
     }
     validate_worker_profiles(config)?;
     validate_notification_config(&config.notifications)?;
@@ -1351,6 +1391,22 @@ fn remove_notification_sink(config: &mut DaemonNotificationConfig, name: &str) -
     config.webhooks.retain(|sink| sink.name != name);
     config.commands.retain(|sink| sink.name != name);
     before != config.webhooks.len() + config.commands.len()
+}
+
+fn validate_auto_commit_agent_config(
+    agent: &DaemonAutoCommitAgentConfig,
+) -> Result<(), RegistryError> {
+    if agent.wikis.is_empty() {
+        return Err(RegistryError::InvalidDaemonSetting(
+            "auto-commit agent consent requires at least one explicit wiki".to_string(),
+        ));
+    }
+    if agent.wikis.iter().collect::<BTreeSet<_>>().len() != agent.wikis.len() {
+        return Err(RegistryError::InvalidDaemonSetting(
+            "auto-commit agent wiki IDs must be unique".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_semantic_worker_config(
@@ -2359,6 +2415,45 @@ profile = "files_only"
             registry.find_by_path(temporary.path()),
             Err(RegistryError::UnregisteredPath(_))
         ));
+    }
+
+    #[test]
+    fn auto_commit_agent_consent_is_previewed_validated_and_clearable() {
+        let temporary = tempdir().expect("temporary directory");
+        let registry = WikiRegistry::at(temporary.path().join("config/daemon.toml"));
+        let consent = DaemonAutoCommitAgentConfig {
+            wikis: vec![WikiId::parse("personal").expect("wiki ID")],
+        };
+        let previewed = registry
+            .set_auto_commit_agent(consent.clone(), true)
+            .expect("preview auto-commit agent consent");
+        assert_eq!(previewed.auto_commit_agent.as_ref(), Some(&consent));
+        assert!(registry
+            .load()
+            .expect("load after preview")
+            .auto_commit_agent
+            .is_none());
+        registry
+            .set_auto_commit_agent(consent.clone(), false)
+            .expect("set auto-commit agent consent");
+        let loaded = registry.load().expect("load consent");
+        assert!(loaded
+            .auto_commit_agent
+            .as_ref()
+            .is_some_and(|agent| agent.allows(&consent.wikis[0])));
+        for invalid in [
+            DaemonAutoCommitAgentConfig { wikis: vec![] },
+            DaemonAutoCommitAgentConfig {
+                wikis: vec![consent.wikis[0].clone(), consent.wikis[0].clone()],
+            },
+        ] {
+            assert!(registry.set_auto_commit_agent(invalid, true).is_err());
+        }
+        assert!(registry
+            .clear_auto_commit_agent(false)
+            .expect("clear consent")
+            .auto_commit_agent
+            .is_none());
     }
 
     #[test]

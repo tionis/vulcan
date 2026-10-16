@@ -255,6 +255,279 @@ pub fn auto_commit(
     })
 }
 
+/// What a batched commit may take from the working tree, read without
+/// changing the repository.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BatchCommitCandidates {
+    /// `HEAD` when the batch was read, or `None` on an unborn branch.
+    pub head: Option<String>,
+    /// Changed, deleted, and untracked paths outside the exclusions.
+    pub paths: Vec<String>,
+    /// Paths with staged changes. They belong to whoever staged them, so a
+    /// batch neither commits nor unstages them.
+    pub left_staged: Vec<String>,
+    /// Why no batch may be committed now, such as a merge in progress.
+    pub blocked: Option<String>,
+}
+
+/// One commit of a batch: its message and the paths it records.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BatchCommitGroup {
+    pub message: String,
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct BatchCommitRecord {
+    pub sha: String,
+    pub message: String,
+    pub files: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum BatchCommitOutcome {
+    Committed {
+        commits: Vec<BatchCommitRecord>,
+    },
+    /// The working tree or `HEAD` moved after the groups were planned.
+    Changed {
+        current: BatchCommitCandidates,
+    },
+    Blocked {
+        reason: String,
+    },
+}
+
+/// Reads the paths a batched commit would record. Exclusions follow the
+/// `[git]` configuration, and `.vulcan/` is never committed.
+pub fn batch_commit_candidates(
+    vault_root: &Path,
+    config: &GitConfig,
+) -> Result<BatchCommitCandidates, GitError> {
+    ensure_git_repo(vault_root)?;
+    let head = run_git_output(vault_root, |command| {
+        command.args(["rev-parse", "-q", "--verify", "HEAD"]);
+    })?;
+    let head = head
+        .status
+        .success()
+        .then(|| String::from_utf8(head.stdout))
+        .transpose()?
+        .map(|sha| sha.trim().to_string());
+    let blocked = batch_commit_blocker(vault_root)?;
+    let status = git_status(vault_root)?;
+    let staged = status.staged.iter().cloned().collect::<BTreeSet<_>>();
+    let paths = status
+        .unstaged
+        .iter()
+        .chain(&status.untracked)
+        .filter(|path| !staged.contains(*path))
+        .filter_map(|path| validate_git_path(path).ok())
+        .filter(|path| !path.is_empty() && !path_is_excluded(path, &config.exclude))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    Ok(BatchCommitCandidates {
+        head,
+        paths,
+        left_staged: staged.into_iter().collect(),
+        blocked,
+    })
+}
+
+/// Reports work in progress that a batched commit must not interleave with:
+/// a merge, rebase, cherry-pick, revert, or bisect, unmerged paths, or a
+/// detached `HEAD`.
+fn batch_commit_blocker(vault_root: &Path) -> Result<Option<String>, GitError> {
+    let git_dir = PathBuf::from(
+        run_git_capture(vault_root, |command| {
+            command.args(["rev-parse", "--absolute-git-dir"]);
+        })?
+        .trim(),
+    );
+    for (marker, operation) in [
+        ("MERGE_HEAD", "a merge"),
+        ("rebase-merge", "a rebase"),
+        ("rebase-apply", "a rebase or patch application"),
+        ("CHERRY_PICK_HEAD", "a cherry-pick"),
+        ("REVERT_HEAD", "a revert"),
+        ("BISECT_LOG", "a bisect"),
+    ] {
+        if git_dir.join(marker).exists() {
+            return Ok(Some(format!("{operation} is in progress")));
+        }
+    }
+    let branch = run_git_output(vault_root, |command| {
+        command.args(["symbolic-ref", "-q", "HEAD"]);
+    })?;
+    if !branch.status.success() {
+        return Ok(Some("HEAD is detached".to_string()));
+    }
+    let unmerged = run_git_capture(vault_root, |command| {
+        command.args(["diff", "--name-only", "--diff-filter=U"]);
+    })?;
+    if !unmerged.trim().is_empty() {
+        return Ok(Some("the repository has unmerged paths".to_string()));
+    }
+    Ok(None)
+}
+
+/// Commits `groups` in order under the repository mutation lock, after
+/// checking that the working tree still matches `planned`. Each commit records
+/// only its own paths, so paths someone else staged stay staged. If a commit
+/// fails, the paths not yet committed are unstaged again and earlier commits
+/// of the batch are kept.
+pub fn commit_batch_groups(
+    vault_root: &Path,
+    config: &GitConfig,
+    planned: &BatchCommitCandidates,
+    groups: &[BatchCommitGroup],
+) -> Result<BatchCommitOutcome, GitError> {
+    let _repository_lock = acquire_repository_mutation_lock(vault_root)?;
+    let current = batch_commit_candidates(vault_root, config)?;
+    if let Some(reason) = current.blocked {
+        return Ok(BatchCommitOutcome::Blocked { reason });
+    }
+    if current.head != planned.head || current.paths != planned.paths {
+        return Ok(BatchCommitOutcome::Changed { current });
+    }
+    let planned_paths = planned.paths.iter().collect::<BTreeSet<_>>();
+    let mut grouped = BTreeSet::new();
+    for group in groups {
+        if group.paths.is_empty() {
+            return Err(GitError::CommandFailed(
+                "a batched commit group has no paths".to_string(),
+            ));
+        }
+        for path in &group.paths {
+            if !planned_paths.contains(path) || !grouped.insert(path) {
+                return Err(GitError::CommandFailed(format!(
+                    "batched commit groups must name each planned path once; `{path}` was not"
+                )));
+            }
+        }
+    }
+    if grouped.len() != planned_paths.len() {
+        return Err(GitError::CommandFailed(
+            "batched commit groups must cover every planned path".to_string(),
+        ));
+    }
+    if groups.is_empty() {
+        return Ok(BatchCommitOutcome::Committed {
+            commits: Vec::new(),
+        });
+    }
+    run_git(vault_root, "stage batched changes", |command| {
+        command.arg("add").arg("--all").arg("--");
+        for path in &planned.paths {
+            command.arg(path);
+        }
+    })?;
+    let mut commits = Vec::with_capacity(groups.len());
+    for (position, group) in groups.iter().enumerate() {
+        let result = run_git(vault_root, "create batched commit", |command| {
+            command
+                .arg("commit")
+                .arg("-m")
+                .arg(&group.message)
+                .arg("--");
+            for path in &group.paths {
+                command.arg(path);
+            }
+        })
+        .and_then(|()| {
+            run_git_capture(vault_root, |command| {
+                command.args(["rev-parse", "HEAD"]);
+            })
+        });
+        match result {
+            Ok(sha) => commits.push(BatchCommitRecord {
+                sha: sha.trim().to_string(),
+                message: group.message.clone(),
+                files: group.paths.clone(),
+            }),
+            Err(error) => {
+                let remaining = groups[position..]
+                    .iter()
+                    .flat_map(|group| group.paths.iter())
+                    .collect::<Vec<_>>();
+                // Leave the uncommitted paths as they were before the batch:
+                // changed in the work tree, not staged.
+                let _ = run_git(vault_root, "unstage uncommitted batch paths", |command| {
+                    command.args(["reset", "-q", "--"]);
+                    for path in &remaining {
+                        command.arg(path);
+                    }
+                });
+                return Err(error);
+            }
+        }
+    }
+    Ok(BatchCommitOutcome::Committed { commits })
+}
+
+/// The patch of each candidate path against `HEAD`, in candidate order, or
+/// `None` once the patches together exceed `max_bytes`. Untracked files show
+/// as additions; binary files show as Git's one-line binary notice.
+pub fn batch_commit_patches(
+    vault_root: &Path,
+    candidates: &BatchCommitCandidates,
+    max_bytes: usize,
+) -> Result<Option<Vec<(String, String)>>, GitError> {
+    let untracked = git_status(vault_root)?
+        .untracked
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let mut total = 0_usize;
+    let mut patches = Vec::with_capacity(candidates.paths.len());
+    for path in &candidates.paths {
+        let patch = if candidates.head.is_none() || untracked.contains(path) {
+            addition_patch(vault_root, path, max_bytes.saturating_sub(total))?
+        } else {
+            render_git_path_diff(vault_root, path, false)?
+        };
+        total = total.saturating_add(patch.len());
+        if total > max_bytes {
+            return Ok(None);
+        }
+        patches.push((path.clone(), patch));
+    }
+    Ok(Some(patches))
+}
+
+/// A unified-diff-style addition of a new file, naming only its
+/// vault-relative path. Content beyond `limit` bytes is not read, so the
+/// caller's byte bound applies before the whole file is loaded.
+fn addition_patch(vault_root: &Path, path: &str, limit: usize) -> Result<String, GitError> {
+    use std::io::Read;
+
+    let mut bytes = Vec::new();
+    fs::File::open(vault_root.join(path))
+        .map_err(GitError::Io)?
+        .take(limit.saturating_add(1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(GitError::Io)?;
+    if bytes.contains(&0) {
+        return Ok(format!("Binary file {path} added\n"));
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let mut addition = format!("--- /dev/null\n+++ b/{path}\n");
+    for line in text.lines() {
+        addition.push('+');
+        addition.push_str(line);
+        addition.push('\n');
+    }
+    Ok(addition)
+}
+
+/// The commit message `template` produces for `files`, as per-write
+/// auto-commits render it.
+#[must_use]
+pub fn render_auto_commit_message(template: &str, action: &str, files: &[String]) -> String {
+    render_commit_message(template, action, files)
+}
+
 pub fn git_log(
     vault_root: &Path,
     file_path: &str,
@@ -779,6 +1052,266 @@ mod tests {
     fn commit_all(vault_root: &Path, message: &str) {
         run_git_ok(vault_root, &["add", "."]);
         run_git_ok(vault_root, &["commit", "-m", message]);
+    }
+
+    fn batch_config() -> GitConfig {
+        GitConfig {
+            auto_commit: true,
+            exclude: vec!["Private".to_string()],
+            ..GitConfig::default()
+        }
+    }
+
+    fn git_stdout(vault_root: &Path, args: &[&str]) -> String {
+        run_git_capture(vault_root, |command| {
+            command.args(args);
+        })
+        .expect("git output")
+    }
+
+    fn batch_fixture() -> TempDir {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let root = temp_dir.path();
+        init_git_repo(root);
+        fs::create_dir_all(root.join("Projects")).expect("projects");
+        fs::create_dir_all(root.join("Private")).expect("private");
+        fs::write(root.join("Home.md"), "home\n").expect("home");
+        fs::write(root.join("Gone.md"), "gone\n").expect("gone");
+        fs::write(root.join("Staged.md"), "staged\n").expect("staged");
+        commit_all(root, "Initial");
+        fs::write(root.join("Home.md"), "home edited\n").expect("home edit");
+        fs::remove_file(root.join("Gone.md")).expect("delete");
+        fs::write(root.join("Projects/Plan.md"), "plan\n").expect("new note");
+        fs::write(root.join("Private/Diary.md"), "secret\n").expect("excluded");
+        fs::write(root.join("Staged.md"), "staged by hand\n").expect("staged edit");
+        run_git_ok(root, &["add", "Staged.md"]);
+        temp_dir
+    }
+
+    #[test]
+    fn batch_candidates_leave_staged_and_excluded_paths_alone() {
+        let temp_dir = batch_fixture();
+        let candidates =
+            batch_commit_candidates(temp_dir.path(), &batch_config()).expect("candidates");
+
+        assert_eq!(
+            candidates.paths,
+            ["Gone.md", "Home.md", "Projects/Plan.md"].map(String::from)
+        );
+        assert_eq!(candidates.left_staged, ["Staged.md".to_string()]);
+        assert!(candidates.blocked.is_none());
+        assert!(candidates.head.is_some());
+    }
+
+    #[test]
+    fn batch_groups_commit_in_order_and_keep_manual_staging() {
+        let temp_dir = batch_fixture();
+        let root = temp_dir.path();
+        let config = batch_config();
+        let planned = batch_commit_candidates(root, &config).expect("candidates");
+        let groups = [
+            BatchCommitGroup {
+                message: "Plan the project".to_string(),
+                paths: vec!["Projects/Plan.md".to_string()],
+            },
+            BatchCommitGroup {
+                message: "Tidy the home note".to_string(),
+                paths: vec!["Gone.md".to_string(), "Home.md".to_string()],
+            },
+        ];
+
+        let BatchCommitOutcome::Committed { commits } =
+            commit_batch_groups(root, &config, &planned, &groups).expect("commit")
+        else {
+            panic!("batch should commit");
+        };
+        assert_eq!(commits.len(), 2);
+        assert_eq!(
+            git_stdout(root, &["log", "--format=%s", "-3"]),
+            "Tidy the home note\nPlan the project\nInitial\n"
+        );
+        assert_eq!(
+            git_stdout(root, &["show", "--name-only", "--format=", "HEAD"]),
+            "Gone.md\nHome.md\n"
+        );
+        let status = git_status(root).expect("status");
+        assert_eq!(status.staged, ["Staged.md".to_string()]);
+        assert_eq!(status.untracked, ["Private/Diary.md".to_string()]);
+        assert_eq!(
+            git_stdout(root, &["diff", "--cached", "--", "Staged.md"])
+                .lines()
+                .last(),
+            Some("+staged by hand")
+        );
+    }
+
+    #[test]
+    fn batch_commit_refuses_a_plan_the_work_tree_has_outgrown() {
+        let temp_dir = batch_fixture();
+        let root = temp_dir.path();
+        let config = batch_config();
+        let planned = batch_commit_candidates(root, &config).expect("candidates");
+        fs::write(root.join("Late.md"), "late\n").expect("late edit");
+
+        let outcome = commit_batch_groups(
+            root,
+            &config,
+            &planned,
+            &[BatchCommitGroup {
+                message: "batch".to_string(),
+                paths: planned.paths.clone(),
+            }],
+        )
+        .expect("outcome");
+        let BatchCommitOutcome::Changed { current } = outcome else {
+            panic!("a changed work tree should be reported");
+        };
+        assert!(current.paths.contains(&"Late.md".to_string()));
+        assert_eq!(git_stdout(root, &["rev-list", "--count", "HEAD"]), "1\n");
+    }
+
+    #[test]
+    fn batch_commit_rejects_groups_that_do_not_cover_the_plan_exactly() {
+        let temp_dir = batch_fixture();
+        let root = temp_dir.path();
+        let config = batch_config();
+        let planned = batch_commit_candidates(root, &config).expect("candidates");
+        for groups in [
+            vec![BatchCommitGroup {
+                message: "partial".to_string(),
+                paths: vec!["Home.md".to_string()],
+            }],
+            vec![BatchCommitGroup {
+                message: "foreign".to_string(),
+                paths: vec![
+                    "Gone.md".to_string(),
+                    "Home.md".to_string(),
+                    "Projects/Plan.md".to_string(),
+                    "Staged.md".to_string(),
+                ],
+            }],
+        ] {
+            assert!(commit_batch_groups(root, &config, &planned, &groups).is_err());
+        }
+        assert_eq!(git_stdout(root, &["rev-list", "--count", "HEAD"]), "1\n");
+        assert_eq!(
+            git_status(root).expect("status").staged,
+            ["Staged.md".to_string()]
+        );
+    }
+
+    #[test]
+    fn batch_commit_waits_out_merges_and_detached_heads() {
+        let temp_dir = batch_fixture();
+        let root = temp_dir.path();
+        let config = batch_config();
+        let git_dir = PathBuf::from(git_stdout(root, &["rev-parse", "--absolute-git-dir"]).trim());
+        let head = git_stdout(root, &["rev-parse", "HEAD"]);
+        fs::write(git_dir.join("MERGE_HEAD"), &head).expect("merge marker");
+        let candidates = batch_commit_candidates(root, &config).expect("candidates");
+        assert_eq!(
+            candidates.blocked.as_deref(),
+            Some("a merge is in progress")
+        );
+        let outcome = commit_batch_groups(root, &config, &candidates, &[]).expect("outcome");
+        assert!(matches!(outcome, BatchCommitOutcome::Blocked { .. }));
+        fs::remove_file(git_dir.join("MERGE_HEAD")).expect("clear merge");
+
+        run_git_ok(root, &["checkout", "-q", "--detach"]);
+        assert_eq!(
+            batch_commit_candidates(root, &config)
+                .expect("candidates")
+                .blocked
+                .as_deref(),
+            Some("HEAD is detached")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_batch_commit_unstages_the_paths_it_did_not_commit() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = batch_fixture();
+        let root = temp_dir.path();
+        let hook = PathBuf::from(git_stdout(root, &["rev-parse", "--absolute-git-dir"]).trim())
+            .join("hooks/commit-msg");
+        fs::create_dir_all(hook.parent().expect("hooks directory")).expect("hooks");
+        fs::write(&hook, "#!/bin/sh\n! grep -q refuse \"$1\"\n").expect("hook");
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).expect("hook mode");
+        let config = batch_config();
+        let planned = batch_commit_candidates(root, &config).expect("candidates");
+        let groups = [
+            BatchCommitGroup {
+                message: "Plan the project".to_string(),
+                paths: vec!["Projects/Plan.md".to_string()],
+            },
+            BatchCommitGroup {
+                message: "refuse this one".to_string(),
+                paths: vec!["Gone.md".to_string(), "Home.md".to_string()],
+            },
+        ];
+
+        assert!(commit_batch_groups(root, &config, &planned, &groups).is_err());
+        assert_eq!(
+            git_stdout(root, &["log", "--format=%s", "-1"]),
+            "Plan the project\n"
+        );
+        let status = git_status(root).expect("status");
+        assert_eq!(status.staged, ["Staged.md".to_string()]);
+        assert_eq!(status.unstaged, ["Gone.md", "Home.md"].map(String::from));
+    }
+
+    #[test]
+    fn batch_patches_name_only_vault_paths_and_respect_their_budget() {
+        let temp_dir = batch_fixture();
+        let root = temp_dir.path();
+        let candidates = batch_commit_candidates(root, &batch_config()).expect("candidates");
+        let patches = batch_commit_patches(root, &candidates, 64 * 1024)
+            .expect("patches")
+            .expect("within budget");
+
+        let by_path = patches
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert!(by_path["Home.md"].contains("+home edited"));
+        assert!(by_path["Gone.md"].contains("-gone"));
+        assert_eq!(
+            by_path["Projects/Plan.md"],
+            "--- /dev/null\n+++ b/Projects/Plan.md\n+plan\n"
+        );
+        let root_text = root.to_string_lossy();
+        assert!(by_path
+            .values()
+            .all(|patch| !patch.contains(root_text.as_ref())));
+        assert!(batch_commit_patches(root, &candidates, 16)
+            .expect("patches")
+            .is_none());
+    }
+
+    #[test]
+    fn batch_commit_works_on_an_unborn_branch() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let root = temp_dir.path();
+        init_git_repo(root);
+        fs::write(root.join("First.md"), "first\n").expect("first note");
+        let config = batch_config();
+        let planned = batch_commit_candidates(root, &config).expect("candidates");
+        assert!(planned.head.is_none());
+
+        let outcome = commit_batch_groups(
+            root,
+            &config,
+            &planned,
+            &[BatchCommitGroup {
+                message: "First note".to_string(),
+                paths: planned.paths.clone(),
+            }],
+        )
+        .expect("commit");
+        assert!(
+            matches!(outcome, BatchCommitOutcome::Committed { ref commits } if commits.len() == 1)
+        );
     }
 
     #[test]

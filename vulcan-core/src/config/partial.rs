@@ -112,6 +112,9 @@ pub(super) struct PartialGitConfig {
     pub(super) message: Option<String>,
     pub(super) scope: Option<GitScope>,
     pub(super) exclude: Option<Vec<String>>,
+    pub(super) strategy: Option<GitCommitStrategy>,
+    pub(super) batch_interval_seconds: Option<u64>,
+    pub(super) batch_messages: Option<GitBatchMessages>,
 }
 
 #[derive(Debug, Deserialize, Default)]

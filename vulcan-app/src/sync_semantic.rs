@@ -1492,6 +1492,26 @@ fn plan_agent_groups(
     Ok((groups, Some(identity)))
 }
 
+/// Checks an agent's grouping of `changed_paths` by the rules semantic
+/// planning applies: every path exactly once, no other path, bounded labels,
+/// and messages without reserved trailers. Paths come back sorted within each
+/// commit and messages trimmed; commit order is the agent's.
+pub fn validate_semantic_agent_commits(
+    identity: &SemanticAgentIdentity,
+    changed_paths: &[String],
+    output: SemanticAgentOutput,
+) -> Result<Vec<SemanticAgentCommit>, AppError> {
+    validate_agent_identity(identity)?;
+    Ok(validate_agent_output(changed_paths, output)?
+        .into_iter()
+        .map(|group| SemanticAgentCommit {
+            group: group.group,
+            message: group.message,
+            paths: group.paths,
+        })
+        .collect())
+}
+
 fn validate_agent_identity(identity: &SemanticAgentIdentity) -> Result<(), AppError> {
     for (field, value) in [
         ("provider", identity.provider.as_str()),

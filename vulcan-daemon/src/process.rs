@@ -572,6 +572,17 @@ fn daemon_worker_registrations(
     let trigger_supervisor = Arc::clone(supervisor);
     let trigger_state_store = Arc::clone(state_store);
     let trigger_routed = routed_reads.clone();
+    let auto_commit = crate::auto_commit_worker::AutoCommitContext {
+        registry: Some(context.registry.clone()),
+        gate: Some(Arc::new(HostedWorkerGate::new(
+            Arc::clone(scheduler),
+            runtime.clone(),
+            "worker.auto-commit",
+        ))),
+        agent: agents.semantic.clone(),
+        agent_unavailable: agents.semantic_unavailable.clone(),
+        ..crate::auto_commit_worker::AutoCommitContext::default()
+    };
     registrations.push(ServiceRegistration::new(
         trigger_definition,
         move |service| {
@@ -583,6 +594,7 @@ fn daemon_worker_registrations(
                 &SyncTriggerRuntimeOptions::default(),
                 service.stop(),
                 &trigger_routed,
+                &auto_commit,
             )
             .map_err(|error| error.to_string())
         },
