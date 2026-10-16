@@ -5261,13 +5261,15 @@ Implemented on the daemon's loopback listener beside the companion routes (`docs
 - [x] `GET /{id}/query?dsl=...` or `POST /{id}/query` with JSON body — ad hoc query
 
 **Write endpoints:**
-- [ ] `POST /{id}/notes` — create a note (body: `{ "path": "...", "content": "..." }`)
-- [ ] `PATCH /{id}/notes/{path}` — update properties or content
-- [ ] `DELETE /{id}/notes/{path}` — delete a note
-- [ ] `POST /{id}/move` — move/rename with link rewriting (`{ "source": "...", "destination": "..." }`)
+
+Implemented over the shared CLI/MCP workflows behind the host's mutation gate, each with a required `Idempotency-Key` (a replay returns the stored response; a reused key for another request, or one whose outcome is unknown, answers 409). `PUT /{id}/notes/{path}` replaces content, `PATCH` is find-and-replace, and `POST /{id}/append/{path}` appends; the body of `POST /{id}/notes` uses `body` like `note create`. Bulk `update` and `vectors/index` remain.
+- [x] `POST /{id}/notes` — create a note (body: `{ "path": "...", "content": "..." }`)
+- [x] `PATCH /{id}/notes/{path}` — update properties or content
+- [x] `DELETE /{id}/notes/{path}` — delete a note
+- [x] `POST /{id}/move` — move/rename with link rewriting (`{ "source": "...", "destination": "..." }`)
 - [ ] `POST /{id}/update` — bulk property update (`{ "where": [...], "set": { "key": "value" } }`)
-- [ ] `POST /{id}/inbox` — quick capture (like `vulcan inbox`)
-- [ ] `POST /{id}/scan` — trigger incremental rescan
+- [x] `POST /{id}/inbox` — quick capture (like `vulcan inbox`)
+- [x] `POST /{id}/scan` — trigger incremental rescan
 - [ ] `POST /{id}/vectors/index` — trigger embedding indexing
 
 **Daemon management:**

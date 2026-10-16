@@ -72,6 +72,7 @@ pub const REST_VAULT_SEGMENTS: &[&str] = &[
     "mdbase",
     "history",
     "diff",
+    "append",
     "move",
     "inbox",
     "scan",
@@ -84,13 +85,35 @@ pub(crate) fn routes() -> Router<CompanionHttpState> {
         .route("/health", get(health))
         .route("/openapi.json", get(openapi))
         .route("/{id}/search", get(serve_route))
-        .route("/{id}/notes", get(serve_route))
+        .route(
+            "/{id}/notes",
+            get(serve_route).post(crate::rest_writes::create_note),
+        )
         .route("/{id}/query", get(serve_route))
         .route("/{id}/related", get(serve_route))
         .route("/{id}/bases/eval", get(serve_route))
         .route("/{id}/dataview/{route}", get(serve_route))
         .route("/{id}/mdbase/{route}", get(serve_route))
-        .route("/{id}/notes/{*path}", get(note_get))
+        .route(
+            "/{id}/notes/{*path}",
+            get(note_get)
+                .put(crate::rest_writes::set_note)
+                .patch(crate::rest_writes::patch_note)
+                .delete(crate::rest_writes::delete_note),
+        )
+        .route(
+            "/{id}/append/{*path}",
+            axum::routing::post(crate::rest_writes::append_note),
+        )
+        .route(
+            "/{id}/inbox",
+            axum::routing::post(crate::rest_writes::inbox),
+        )
+        .route(
+            "/{id}/move",
+            axum::routing::post(crate::rest_writes::move_note),
+        )
+        .route("/{id}/scan", axum::routing::post(crate::rest_writes::scan))
         .route("/{id}/info/{*path}", get(note_info))
         .route("/{id}/links/{*path}", get(links))
         .route("/{id}/backlinks/{*path}", get(backlinks))
@@ -103,8 +126,8 @@ pub(crate) fn routes() -> Router<CompanionHttpState> {
 
 /// A REST failure, in the companion error shape.
 pub(crate) struct RestError {
-    status: StatusCode,
-    error: CompanionError,
+    pub(crate) status: StatusCode,
+    pub(crate) error: CompanionError,
 }
 
 impl RestError {
@@ -830,6 +853,79 @@ fn native_route_documents(path_parameter: &Value) -> Vec<(&'static str, &'static
     ]
 }
 
+/// The write operations, each requiring an `Idempotency-Key`.
+fn add_write_documents(paths: &mut serde_json::Map<String, Value>, id_parameter: &Value) {
+    let key = json!({
+        "name": "Idempotency-Key", "in": "header", "required": true,
+        "schema": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "description": "Retrying with the same key and request returns the original response; reusing it for another request is refused"
+    });
+    let path_parameter = json!({
+        "name": "path", "in": "path", "required": true, "schema": { "type": "string" }
+    });
+    for (route, method, summary, with_path) in [
+        (
+            "/{id}/notes",
+            "post",
+            "Create a note (`vulcan note create`): `path`, `body`, `template`, `frontmatter`",
+            false,
+        ),
+        (
+            "/{id}/notes/{path}",
+            "put",
+            "Replace a note's content (`vulcan note set`): `content`, `preserve_frontmatter`",
+            true,
+        ),
+        (
+            "/{id}/notes/{path}",
+            "patch",
+            "Find and replace in a note (`vulcan note patch`): `find`, `replace`, `all`, selectors",
+            true,
+        ),
+        (
+            "/{id}/notes/{path}",
+            "delete",
+            "Delete a note (`vulcan note delete`); `dry_run` previews",
+            true,
+        ),
+        (
+            "/{id}/append/{path}",
+            "post",
+            "Append to a note (`vulcan note append`): `text`, `mode`, `heading`",
+            true,
+        ),
+        (
+            "/{id}/inbox",
+            "post",
+            "Quick capture (`vulcan inbox`): `text`",
+            false,
+        ),
+        (
+            "/{id}/move",
+            "post",
+            "Move a note and rewrite its links: `source`, `destination`, `dry_run`",
+            false,
+        ),
+        ("/{id}/scan", "post", "Rescan the vault: `full`", false),
+    ] {
+        let mut parameters = vec![id_parameter.clone(), key.clone()];
+        if with_path {
+            parameters.push(path_parameter.clone());
+        }
+        let operation = json!({
+            "summary": summary,
+            "parameters": parameters,
+            "requestBody": { "content": { "application/json": { "schema": { "type": "object" } } } },
+            "responses": {
+                "200": { "description": "The CLI's JSON report" },
+                "409": { "description": "The key was used for another request, or an earlier outcome is unknown" }
+            }
+        });
+        let entry = paths.entry(route.to_string()).or_insert_with(|| json!({}));
+        entry[method] = operation;
+    }
+}
+
 /// `GET /openapi.json`: the REST routes as an `OpenAPI` 3.1 document.
 async fn openapi() -> Json<Value> {
     Json(openapi_document())
@@ -861,6 +957,7 @@ pub fn openapi_document() -> Value {
             }}),
         );
     }
+    add_write_documents(&mut paths, &id_parameter);
     for (route, summary) in [
         ("/health", "Daemon health and the vaults it serves"),
         ("/vaults", "Registered vaults visible to the caller"),
@@ -1006,6 +1103,10 @@ mod tests {
             ingress_shutdown: None,
             routed_reads: Some(routed),
             api_tokens: Some(api_tokens),
+            write_gate: None,
+            idempotency: Some(Arc::new(crate::rest_idempotency::IdempotencyStore::at(
+                temporary.path().join("rest-state"),
+            ))),
         };
         Served {
             temporary,
@@ -1235,6 +1336,239 @@ mod tests {
         }
     }
 
+    async fn send(
+        served: &Served,
+        bearer: &str,
+        method: Method,
+        uri: &str,
+        key: Option<&str>,
+        body: Value,
+    ) -> (StatusCode, Value) {
+        let mut request = HttpRequest::builder()
+            .method(method)
+            .uri(uri)
+            .header(AUTHORIZATION, format!("Bearer {bearer}"))
+            .header(crate::http::PROTOCOL_VERSION_HEADER, "1")
+            .header(axum::http::header::CONTENT_TYPE, "application/json");
+        if let Some(key) = key {
+            request = request.header(crate::http::IDEMPOTENCY_KEY_HEADER, key);
+        }
+        let response = crate::http::companion_router(served.state.clone())
+            .oneshot(request.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rest_writes_need_a_key_and_replay_it_without_writing_twice() {
+        let served = served();
+        let device = device(&served);
+        let root = served.temporary.path().join("notes");
+        let create = json!({ "path": "Inbox/Idea", "body": "A fresh idea.\n" });
+
+        let (status, missing_key) = send(
+            &served,
+            &device,
+            Method::POST,
+            "/notes/notes",
+            None,
+            create.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{missing_key}");
+        let (status, created) = send(
+            &served,
+            &device,
+            Method::POST,
+            "/notes/notes",
+            Some("create-1"),
+            create.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{created}");
+        assert_eq!(created["path"], "Inbox/Idea.md");
+        assert!(std::fs::read_to_string(root.join("Inbox/Idea.md"))
+            .unwrap()
+            .contains("A fresh idea."));
+        // A retry with the same key replays the answer without creating twice;
+        // the same key for a different request is refused.
+        let (status, replayed) = send(
+            &served,
+            &device,
+            Method::POST,
+            "/notes/notes",
+            Some("create-1"),
+            create.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(replayed, created);
+        let (status, reused) = send(
+            &served,
+            &device,
+            Method::POST,
+            "/notes/notes",
+            Some("create-1"),
+            json!({ "path": "Inbox/Other" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{reused}");
+        assert!(!root.join("Inbox/Other.md").exists());
+
+        // The restricted registration may not write.
+        let (status, denied) = send(
+            &served,
+            &served.token,
+            Method::POST,
+            "/projects/notes",
+            Some("create-2"),
+            json!({ "path": "Projects/New" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{denied}");
+        assert!(!served
+            .temporary
+            .path()
+            .join("projects/Projects/New.md")
+            .exists());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rest_writes_run_the_cli_workflows_and_reads_see_them() {
+        let served = served();
+        let device = device(&served);
+        let root = served.temporary.path().join("notes");
+        let (status, created) = send(
+            &served,
+            &device,
+            Method::POST,
+            "/notes/notes",
+            Some("create-1"),
+            json!({ "path": "Inbox/Idea", "body": "A fresh idea.\n" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{created}");
+        let (status, set) = send(
+            &served,
+            &device,
+            Method::PUT,
+            "/notes/notes/Inbox/Idea.md",
+            Some("set-1"),
+            json!({ "content": "# Idea\n\nRevised idea.\n" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{set}");
+        let (status, patched) = send(
+            &served,
+            &device,
+            Method::PATCH,
+            "/notes/notes/Inbox/Idea.md",
+            Some("patch-1"),
+            json!({ "find": "Revised", "replace": "Patched" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{patched}");
+        let (status, appended) = send(
+            &served,
+            &device,
+            Method::POST,
+            "/notes/append/Inbox/Idea.md",
+            Some("append-1"),
+            json!({ "text": "One more line." }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{appended}");
+        let idea = std::fs::read_to_string(root.join("Inbox/Idea.md")).unwrap();
+        assert!(
+            idea.contains("Patched idea.") && idea.contains("One more line."),
+            "{idea}"
+        );
+        let (status, route_note) = send(
+            &served,
+            &device,
+            Method::PATCH,
+            "/notes/notes/Inbox/Idea.md",
+            Some("patch-2"),
+            json!({ "note": "Projects/Plan.md", "find": "a", "replace": "b" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{route_note}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rest_moves_captures_deletes_and_scans_reach_the_index() {
+        let served = served();
+        let device = device(&served);
+        let root = served.temporary.path().join("notes");
+        // A move rewrites the links to the note.
+        let (status, moved) = send(
+            &served,
+            &device,
+            Method::POST,
+            "/notes/move",
+            Some("move-1"),
+            json!({ "source": "Projects/Goals.md", "destination": "Projects/Archive/Goals.md" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{moved}");
+        assert!(root.join("Projects/Archive/Goals.md").exists());
+        let plan = std::fs::read_to_string(root.join("Projects/Plan.md")).unwrap();
+        // The link is rewritten in the vault's link style: the shortest
+        // unique form of the new location.
+        assert!(
+            !plan.contains("[[Projects/Goals]]") && plan.contains("[[Goals]]"),
+            "{plan}"
+        );
+        assert_eq!(moved["rewritten_files"][0]["path"], "Projects/Plan.md");
+
+        let (status, captured) = send(
+            &served,
+            &device,
+            Method::POST,
+            "/notes/inbox",
+            Some("inbox-1"),
+            json!({ "text": "Call the plumber" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{captured}");
+        let inbox = captured["path"].as_str().unwrap();
+        assert!(std::fs::read_to_string(root.join(inbox))
+            .unwrap()
+            .contains("Call the plumber"));
+
+        let (status, deleted) = send(
+            &served,
+            &device,
+            Method::DELETE,
+            "/notes/notes/Projects/Archive/Goals.md",
+            Some("delete-1"),
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{deleted}");
+        assert!(!root.join("Projects/Archive/Goals.md").exists());
+
+        let (status, scanned) = send(
+            &served,
+            &device,
+            Method::POST,
+            "/notes/scan",
+            Some("scan-1"),
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{scanned}");
+        // Reads see the writes.
+        let (status, found) = get(&served, &device, "/notes/search?q=plumber").await;
+        assert_eq!(status, StatusCode::OK, "{found}");
+        assert_eq!(hit_paths(&found), [inbox.to_string()]);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn health_and_openapi_describe_the_rest_surface() {
         let served = served();
@@ -1266,6 +1600,19 @@ mod tests {
             document["components"]["securitySchemes"]["bearer"]["scheme"],
             "bearer"
         );
+        for (route, method) in [
+            ("/{id}/notes", "post"),
+            ("/{id}/notes/{path}", "put"),
+            ("/{id}/notes/{path}", "patch"),
+            ("/{id}/notes/{path}", "delete"),
+            ("/{id}/notes/{path}", "get"),
+            ("/{id}/move", "post"),
+        ] {
+            assert!(
+                document["paths"][route].get(method).is_some(),
+                "{method} {route}"
+            );
+        }
         // Every documented per-vault route is one a vault token can reach.
         for route in document["paths"].as_object().unwrap().keys() {
             let concrete = route.replace("{id}", "projects").replace("{path}", "A.md");

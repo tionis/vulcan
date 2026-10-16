@@ -116,18 +116,34 @@ commit IDs only (4 to 64 digits), so no ref expression or option-like text reach
 
 ### Writes
 
-Writes enter the host's mutation gate for the vault and repository, exactly as hosted MCP writes
-do, and participate in auto-commit like the CLI commands they mirror. Every write takes an
-`Idempotency-Key` header scoped to the principal. Replaying a key returns the original result, and a
-key reused with a different request is rejected with 409. After a timeout the outcome is reported as
-unknown, never retried by the daemon.
+Writes run the shared workflows the CLI and MCP use (`vulcan_app::mcp_notes`, `inbox`, `browse`
+moves, `mcp_scan`), so they check the profile, refresh the cache, and auto-commit like the CLI.
+Each waits for the host's mutation permit for its vault and repository (`HostedWorkerGate`'s file
+write gate, which unlike the Git workers' gate does not require Git permission), so REST writes
+serialize with hosted MCP writes and daemon workers.
 
-- `POST /{id}/notes`: create a note (`{"path": ..., "content": ...}`).
-- `PATCH /{id}/notes/{path}`: replace content or set properties.
-- `DELETE /{id}/notes/{path}`: delete a note.
-- `POST /{id}/move`: move or rename with link rewriting (`{"source": ..., "destination": ...}`).
-- `POST /{id}/inbox`: quick capture (`{"text": ...}`).
-- `POST /{id}/scan`: trigger an incremental scan.
+Every write needs an `Idempotency-Key` header (1 to 128 visible ASCII characters), scoped to the
+principal and vault. The key's record is written as pending before the workflow runs and completed
+with the response after; a replay of the same method, path, query, and body returns the stored
+response, a different request under the same key is refused with 409, and so is a key whose
+outcome was never recorded (the daemon stopped mid-write), so an ambiguous write is never run
+twice. Records live under `daemon/rest-idempotency/` in the state directory, one file per key, and
+are pruned after a day. A response timeout ends only the caller's wait; the write still records
+its outcome for a later replay.
+
+- `POST /{id}/notes`: create a note (`path`, `body`, `template`, `frontmatter`).
+- `PUT /{id}/notes/{path}`: replace content (`content`, `preserve_frontmatter`). A PUT confirms
+  the replacement by itself.
+- `PATCH /{id}/notes/{path}`: find and replace (`find`, `replace`, `all`, selectors).
+- `DELETE /{id}/notes/{path}`: delete a note; confirms by itself, `dry_run` previews.
+- `POST /{id}/append/{path}`: append (`text`, `mode`, `heading`).
+- `POST /{id}/inbox`: quick capture (`text`), checked against write access to the inbox note.
+- `POST /{id}/move`: move or rename with link rewriting (`source`, `destination`, `dry_run`). The
+  profile must allow refactoring the note and writing every file the move changes; a dry run
+  plans the move first and its changed files are checked before anything is written.
+- `POST /{id}/scan`: an incremental scan, or a full one with `full`.
+
+Every body accepts `no_commit`. Route-given fields (`note`, `confirm`) are refused in the body.
 
 ## Delivery
 

@@ -51,6 +51,19 @@ impl HostedWorkerGate {
         VaultGate {
             host: self,
             registration,
+            requires_git: true,
+        }
+    }
+
+    /// The gate for file writes to one registered vault, such as REST note
+    /// writes: like [`Self::for_registration`], but the profile need not
+    /// grant Git, since the writes themselves do not use it.
+    #[must_use]
+    pub fn for_file_writes<'a>(&'a self, registration: &'a WikiRegistration) -> VaultGate<'a> {
+        VaultGate {
+            host: self,
+            registration,
+            requires_git: false,
         }
     }
 }
@@ -62,6 +75,7 @@ impl HostedWorkerGate {
 pub struct VaultGate<'a> {
     host: &'a HostedWorkerGate,
     registration: &'a WikiRegistration,
+    requires_git: bool,
 }
 
 impl VaultGate<'_> {
@@ -118,7 +132,13 @@ impl MutationGate for VaultGate<'_> {
             resolve_permission_profile(&paths, Some(self.profile()))
                 .map(|selection| ProfilePermissionGuard::new(&paths, selection))
                 .map_err(|error| error.to_string())
-                .and_then(|guard| guard.check_git().map_err(|error| error.to_string()))
+                .and_then(|guard| {
+                    if self.requires_git {
+                        guard.check_git().map_err(|error| error.to_string())
+                    } else {
+                        Ok(())
+                    }
+                })
                 .map_err(MutationScheduleError::Revalidation)
         };
         let permit = self
@@ -239,5 +259,13 @@ mod tests {
         let revoked = registration(vault.path(), Some("nogit"));
         let error = gate.for_registration(&revoked).enter().unwrap_err();
         assert!(error.to_string().contains("revalidation"), "{error}");
+        // File writes need no Git, so the same profile may enter for them,
+        // and they still serialize with hosted writers.
+        let guard = gate.for_file_writes(&revoked).enter().unwrap();
+        let blocked = runtime.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_millis(200), acquire_writer()).await
+        });
+        assert!(blocked.is_err(), "hosted writer ran during a REST write");
+        drop(guard);
     }
 }

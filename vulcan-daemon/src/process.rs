@@ -371,6 +371,11 @@ where
     // it behind required-service startup so every successful authenticated
     // probe observes the corresponding service-health snapshot.
     let routed_reads = crate::routed_reads::RoutedReadRegistry::default();
+    let runtime = tokio::runtime::Handle::current();
+    let scheduler = Arc::new(
+        MutationScheduler::new(MutationSchedulerConfig::default())
+            .expect("default daemon scheduler limits are valid"),
+    );
     let state = CompanionHttpState {
         registry: Arc::new(context.registry.clone()),
         supervisor: Arc::clone(&supervisor),
@@ -384,12 +389,15 @@ where
         api_tokens: Some(Arc::new(crate::api_tokens::ApiTokenStore::at(
             &context.state_root,
         ))),
+        write_gate: Some(Arc::new(crate::worker_gate::HostedWorkerGate::new(
+            Arc::clone(&scheduler),
+            runtime.clone(),
+            "http.rest",
+        ))),
+        idempotency: Some(Arc::new(crate::rest_idempotency::IdempotencyStore::at(
+            &context.state_root,
+        ))),
     };
-    let runtime = tokio::runtime::Handle::current();
-    let scheduler = Arc::new(
-        MutationScheduler::new(MutationSchedulerConfig::default())
-            .expect("default daemon scheduler limits are valid"),
-    );
     let mut registrations = daemon_worker_registrations(
         context,
         &config,

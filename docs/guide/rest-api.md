@@ -65,6 +65,38 @@ Errors are JSON objects with `kind` and `detail`: 400 for an invalid request, 40
 revoked token, 403 when the profile denies the operation, 404 for an unknown vault or note, and 503
 when the daemon does not index the vault (a files-only directory, or while it is starting).
 
+## Writes
+
+Writes take a JSON body and an `Idempotency-Key` header. Pick a fresh key for each new write and
+reuse it only to retry that same request: a retry returns the original response instead of writing
+twice. If the daemon stopped before it recorded a write's outcome, the key is refused with 409;
+check the vault before writing again with a new key.
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Vulcan-Protocol-Version: 1" \
+  -H "Idempotency-Key: $(uuidgen)" -H "Content-Type: application/json" \
+  -d '{"path": "Inbox/Idea", "body": "A fresh idea."}' \
+  http://127.0.0.1:3210/notes/notes
+```
+
+| Route | Answers like | Body |
+| --- | --- | --- |
+| `POST /{id}/notes` | `vulcan note create` | `path`, `body`, `template`, `frontmatter` |
+| `PUT /{id}/notes/{path}` | `vulcan note set` | `content`, `preserve_frontmatter` |
+| `PATCH /{id}/notes/{path}` | `vulcan note patch` | `find`, `replace`, `all`, and the `note get` selectors |
+| `DELETE /{id}/notes/{path}` | `vulcan note delete` | optional `dry_run` |
+| `POST /{id}/append/{path}` | `vulcan note append` | `text`, `mode`, `heading` |
+| `POST /{id}/inbox` | `vulcan inbox` | `text` |
+| `POST /{id}/move` | `vulcan refactor move` | `source`, `destination`, `dry_run` |
+| `POST /{id}/scan` | `vulcan scan` | `full` |
+
+Every write body also accepts `no_commit`. Writes run under the profile like reads, so a read-only
+profile cannot write, and a move needs permission to refactor the note and to write every file whose
+links it rewrites. Writes wait their turn with the daemon's other writers to the same vault, then
+refresh the index and auto-commit as the CLI would.
+
+## History
+
 History and diffs read Git directly, so they also work for vaults the daemon does not index. They
 need a profile that allows Git. Whole-vault history and uncommitted diffs name every changed file,
 so they also need a profile that reads every note; a restricted profile can still ask for one file

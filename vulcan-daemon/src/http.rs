@@ -60,6 +60,10 @@ pub struct CompanionHttpState {
     pub routed_reads: Option<crate::routed_reads::RoutedReadRegistry>,
     /// Per-vault API tokens; `None` accepts only the companion credential.
     pub api_tokens: Option<Arc<crate::api_tokens::ApiTokenStore>>,
+    /// The mutation gate REST writes wait on; `None` runs them ungated.
+    pub write_gate: Option<Arc<crate::worker_gate::HostedWorkerGate>>,
+    /// Idempotency records for REST writes; `None` refuses REST writes.
+    pub idempotency: Option<Arc<crate::rest_idempotency::IdempotencyStore>>,
 }
 
 impl CompanionHttpState {
@@ -304,7 +308,7 @@ fn cors_response(mut response: Response, origin: Option<&str>) -> Response {
         &mut response,
         origin,
         "authorization, content-type, idempotency-key, vulcan-protocol-version",
-        "GET, POST, DELETE, OPTIONS",
+        "GET, POST, PUT, PATCH, DELETE, OPTIONS",
     );
     response
 }
@@ -1030,6 +1034,8 @@ mod tests {
             api_tokens: Some(Arc::new(crate::api_tokens::ApiTokenStore::at(
                 temporary.path().join("api-state"),
             ))),
+            write_gate: None,
+            idempotency: None,
         };
         (temporary, state)
     }
