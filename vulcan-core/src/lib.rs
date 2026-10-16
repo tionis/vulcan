@@ -105,6 +105,7 @@ mod resource_limits;
 pub mod saved_queries;
 pub mod scan;
 pub mod scan_journal;
+pub mod schedules;
 pub mod search;
 pub mod selection;
 pub(crate) mod source;
