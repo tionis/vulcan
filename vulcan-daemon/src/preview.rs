@@ -23,7 +23,10 @@ use vulcan_core::paths::secure_read;
 use vulcan_core::{watch_vault_until, VaultPaths, WatchOptions};
 
 const LIVE_RELOAD_INTERVAL: Duration = Duration::from_millis(350);
-const WATCH_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
+/// Bounds a watcher that never becomes ready. A loaded machine can take
+/// several seconds to register a recursive watch, so this is generous: it
+/// only has to tell a stuck start from a slow one.
+const WATCH_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// What a preview serves and how it rebuilds. Implementations wrap a finite
 /// builder; the session owns serving, live reload, and rebuild scheduling.
