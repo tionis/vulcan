@@ -1433,7 +1433,8 @@ pub enum ScopedBranchAdvance {
     Advanced {
         kept: Vec<String>,
     },
-    /// Uncommitted unscoped files the advance would overwrite.
+    /// Uncommitted unscoped files the advance would overwrite; empty when
+    /// Git refused because a file changed after the paths were classified.
     BlockedDirty(Vec<String>),
     BlockedStaged,
     Stale,
@@ -2386,6 +2387,56 @@ impl GitCliEngine {
         command.args(DEVICE_LOCAL_VULCAN_PATHS);
         ensure_success(operation, self.execute(command)?)?;
         Ok(())
+    }
+
+    /// `target` with each kept path restored to its old entry (`None` when
+    /// the old commit lacked it), so a checkout to it leaves those paths alone.
+    fn tree_with_kept_entries(
+        &self,
+        repository: &GitRepository,
+        target: &GitOid,
+        kept: &[(String, Option<GitPathObject>)],
+    ) -> Result<GitOid, GitEngineError> {
+        if kept.is_empty() {
+            return self.tree_oid(repository, target);
+        }
+        let zero = match repository.object_format {
+            GitObjectFormat::Sha256 => "0".repeat(64),
+            _ => "0".repeat(40),
+        };
+        let mut input = Vec::new();
+        for (path, old) in kept {
+            let line = match old {
+                Some(object) => format!("{} {}\t", object.mode, object.oid.as_str()),
+                None => format!("0 {zero}\t"),
+            };
+            input.extend_from_slice(line.as_bytes());
+            input.extend_from_slice(path.as_bytes());
+            input.push(0);
+        }
+        let scratch = tempfile::tempdir_in(&repository.git_dir)?;
+        let index_path = scratch.path().join("index");
+        self.index_output(
+            repository,
+            &index_path,
+            "seed a branch checkout tree",
+            ["read-tree", target.as_str()],
+        )?;
+        let mut command = self.index_command(repository, &index_path)?;
+        command.args(["update-index", "-z", "--index-info"]);
+        ensure_success(
+            "keep local scoped paths",
+            self.execute_with_input(command, "keep local scoped paths", &input)?,
+        )?;
+        GitOid::parse(
+            self.index_capture(
+                repository,
+                &index_path,
+                "write a branch checkout tree",
+                ["write-tree"],
+            )?
+            .trim(),
+        )
     }
 
     /// Blob IDs of the worktree's bytes at `paths` through Git's clean
@@ -5453,8 +5504,7 @@ impl GitEngine for GitCliEngine {
             .collect::<Vec<_>>();
         let local_bytes = self.worktree_blob_oids(repository, &work_tree, &paths)?;
         let index = self.index_blob_oids(repository, &paths)?;
-        let (mut write, mut remove, mut kept, mut blocked) =
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut kept, mut kept_entries, mut blocked) = (Vec::new(), Vec::new(), Vec::new());
         for change in &changes {
             let old = change.expected.as_ref().map(|object| &object.oid);
             let new = change.target.as_ref().map(|object| &object.oid);
@@ -5466,13 +5516,9 @@ impl GitEngine for GitCliEngine {
                 if index.get(&change.path).cloned().flatten().as_ref() != old {
                     return Ok(ScopedBranchAdvance::BlockedStaged);
                 }
-                if new.is_some() {
-                    write.push(format!(":(literal){}", change.path));
-                } else {
-                    remove.push(format!(":(literal){}", change.path));
-                }
             } else if scope.contains(&change.path) {
                 kept.push(change.path.clone());
+                kept_entries.push((change.path.clone(), change.expected.clone()));
             } else {
                 blocked.push(change.path.clone());
             }
@@ -5480,17 +5526,31 @@ impl GitEngine for GitCliEngine {
         if !blocked.is_empty() {
             return Ok(ScopedBranchAdvance::BlockedDirty(blocked));
         }
-        if !write.is_empty() {
-            let mut command = self.repository_command(repository);
-            command.args(["checkout", target.as_str(), "--"]);
-            command.args(&write);
-            ensure_success("update branch files", self.execute(command)?)?;
-        }
-        if !remove.is_empty() {
-            let mut command = self.repository_command(repository);
-            command.args(["rm", "-q", "--"]);
-            command.args(&remove);
-            ensure_success("remove branch files", self.execute(command)?)?;
+        // Git writes the worktree itself: a two-way merge to a tree in which
+        // kept paths still hold the old commit's entries refuses, inside one
+        // process, any file that changed since the classification above.
+        let checkout = self.tree_with_kept_entries(repository, target, &kept_entries)?;
+        let mut refresh = self.repository_command(repository);
+        refresh.args(["update-index", "-q", "--refresh"]);
+        let _ = self.execute(refresh)?;
+        let mut command = self.repository_command(repository);
+        command.args([
+            "read-tree",
+            "-m",
+            "-u",
+            expected.as_str(),
+            checkout.as_str(),
+        ]);
+        let output = self.execute(command)?;
+        if !output.status.success() {
+            let stderr = bounded_lossy(&output.stderr);
+            if stderr.contains("not uptodate")
+                || stderr.contains("would be overwritten")
+                || stderr.contains("would be removed")
+            {
+                return Ok(ScopedBranchAdvance::BlockedDirty(Vec::new()));
+            }
+            return Err(command_failed("update branch files", &output));
         }
         Ok(
             match self.advance_checked_out_branch(repository, branch, expected, target)? {
@@ -7627,6 +7687,78 @@ mod tests {
         assert!(engine
             .worktree_matches_tree(&repository, &target)
             .expect("compare"));
+    }
+
+    #[test]
+    fn scoped_branch_advance_writes_through_git_and_keeps_local_scoped_bytes() {
+        let (_temporary, writer, engine, repository, _) = scoped_fixture();
+        fs::write(writer.join("old.sh"), "echo old\n").expect("old script");
+        let head = commit_all(&writer, "old script");
+        fs::write(writer.join("wiki/Note.md"), "note v2\n").expect("note");
+        fs::write(writer.join("wiki/Added.md"), "added upstream\n").expect("added note");
+        fs::write(writer.join("run.sh"), "echo v2\n").expect("script");
+        fs::remove_file(writer.join("old.sh")).expect("remove old script");
+        let target = commit_all(&writer, "upstream work");
+        run_git(&writer, &["reset", "--quiet", "--hard", head.as_str()]);
+        fs::write(writer.join("wiki/Note.md"), "note local\n").expect("local note");
+        fs::write(writer.join("wiki/Added.md"), "added locally\n").expect("local file");
+        let branch = GitRefName::parse("refs/heads/main").expect("branch");
+        let scope = repository.worktree_scope.clone().expect("scope");
+
+        let outcome = engine
+            .advance_branch_scoped(&repository, &scope, &branch, &head, &target)
+            .expect("scoped advance");
+
+        assert_eq!(
+            outcome,
+            ScopedBranchAdvance::Advanced {
+                kept: vec!["wiki/Added.md".to_string(), "wiki/Note.md".to_string()]
+            }
+        );
+        assert_eq!(engine.head_commit(&repository).expect("head"), Some(target));
+        assert_eq!(
+            fs::read_to_string(writer.join("run.sh")).expect("script"),
+            "echo v2\n"
+        );
+        assert!(!writer.join("old.sh").exists());
+        assert_eq!(
+            fs::read_to_string(writer.join("wiki/Note.md")).expect("note"),
+            "note local\n"
+        );
+        assert_eq!(
+            fs::read_to_string(writer.join("wiki/Added.md")).expect("added"),
+            "added locally\n"
+        );
+        assert_eq!(
+            run_git_capture(&writer, &["status", "--porcelain"]),
+            "M wiki/Added.md\n M wiki/Note.md",
+            "kept paths are local modifications of the new commit; nothing is staged"
+        );
+    }
+
+    #[test]
+    fn scoped_branch_advance_defers_over_dirty_unscoped_files() {
+        let (_temporary, writer, engine, repository, head) = scoped_fixture();
+        fs::write(writer.join("run.sh"), "echo v2\n").expect("script");
+        let target = commit_all(&writer, "upstream work");
+        run_git(&writer, &["reset", "--quiet", "--hard", head.as_str()]);
+        fs::write(writer.join("run.sh"), "echo uncommitted\n").expect("dirty script");
+        let branch = GitRefName::parse("refs/heads/main").expect("branch");
+        let scope = repository.worktree_scope.clone().expect("scope");
+
+        let outcome = engine
+            .advance_branch_scoped(&repository, &scope, &branch, &head, &target)
+            .expect("scoped advance");
+
+        assert_eq!(
+            outcome,
+            ScopedBranchAdvance::BlockedDirty(vec!["run.sh".to_string()])
+        );
+        assert_eq!(engine.head_commit(&repository).expect("head"), Some(head));
+        assert_eq!(
+            fs::read_to_string(writer.join("run.sh")).expect("script"),
+            "echo uncommitted\n"
+        );
     }
 
     #[test]

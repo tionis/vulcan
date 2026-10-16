@@ -6669,6 +6669,7 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 - [x] Scope-aware engine: scoped capture with unscoped paths from the published branch tip, scoped comparison, and scoped application through a two-way merge so unscoped files are never written from live; app resolution, proposal, retention, and semantic workflows use the same scope.
 - [x] Namespace 4 plus scope and published-branch trailers on path-scoped live commits; scope-mismatch refusal unless this device's branch is strictly newer; local candidates aligned to the remote's unscoped content before merging.
 - [x] Path-by-path branch fast-forward that keeps uncommitted scoped bytes and defers over dirty unscoped files; semantic planning refuses unscoped differences.
+- [x] Let Git perform the fast-forward's worktree write (two-way `read-tree -m -u` to a tree keeping local scoped entries), so a file edited after classification makes the advance defer instead of being overwritten.
 - [x] Record scope provenance on resolution, conflict-record, and epoch commits as well, so a tip written by those workflows is also checked; align local candidates before epoch reconciliation too.
 ---
 

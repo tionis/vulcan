@@ -1958,6 +1958,11 @@ fn try_scoped_fast_forward(
                 )
             });
         }
+        ScopedBranchAdvance::BlockedDirty(paths) if paths.is_empty() => {
+            lane.action = GitBranchSyncAction::Deferred;
+            lane.detail =
+                Some("a file changed while updating the branch; retrying next cycle".to_string());
+        }
         ScopedBranchAdvance::BlockedDirty(paths) => {
             lane.action = GitBranchSyncAction::Deferred;
             lane.detail = Some(format!(
