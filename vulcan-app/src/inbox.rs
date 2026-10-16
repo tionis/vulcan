@@ -53,9 +53,59 @@ pub fn plan_inbox_capture(
     Ok((path, updated))
 }
 
+/// Captures `text` into the configured inbox note, creating it when it does
+/// not exist, and returns the note's vault-relative path. The caller checks
+/// write access, refreshes the cache, and auto-commits.
+pub fn write_inbox_capture(
+    paths: &VaultPaths,
+    text: &str,
+    permission_profile: Option<&str>,
+    verbosity: vulcan_core::Verbosity,
+) -> Result<String, AppError> {
+    let relative_path = inbox_path(&vulcan_core::load_vault_config(paths).config.inbox)?;
+    let absolute_path = paths.vault_root().join(&relative_path);
+    if let Some(parent) = absolute_path.parent() {
+        std::fs::create_dir_all(parent).map_err(AppError::operation)?;
+    }
+    let existing = crate::notes::read_note_for_update(paths, &relative_path)?;
+    let (_, updated) = plan_inbox_capture(paths, existing.as_deref().unwrap_or_default(), text)?;
+    crate::notes::write_note_content(
+        paths,
+        &relative_path,
+        existing.as_deref(),
+        &updated,
+        "inbox",
+        permission_profile,
+        verbosity,
+    )?;
+    Ok(relative_path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writing_a_capture_creates_the_inbox_note_and_appends_to_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(dir.path());
+        vulcan_core::paths::initialize_vulcan_dir(&paths).unwrap();
+        std::fs::write(
+            paths.config_file(),
+            "[inbox]\npath = \"Capture/Inbox\"\nformat = \"- {text}\"\ntimestamp = false\n",
+        )
+        .unwrap();
+        let path =
+            write_inbox_capture(&paths, "first", None, vulcan_core::Verbosity::Quiet).unwrap();
+        assert_eq!(path, "Capture/Inbox.md");
+        write_inbox_capture(&paths, "second", None, vulcan_core::Verbosity::Quiet).unwrap();
+        let text = std::fs::read_to_string(dir.path().join("Capture/Inbox.md")).unwrap();
+        assert!(
+            text.contains("- first") && text.contains("- second"),
+            "{text}"
+        );
+        assert!(text.find("- first") < text.find("- second"));
+    }
 
     #[test]
     fn captures_under_the_configured_heading() {
