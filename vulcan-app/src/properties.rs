@@ -87,7 +87,13 @@ pub fn update_properties_where(
             .into_iter()
             .collect::<Vec<_>>();
         crate::commit::AutoCommitPolicy::for_mutation(paths, no_commit)
-            .commit(paths, "update", &changed_files, permission_profile, verbosity)
+            .commit(
+                paths,
+                "update",
+                &changed_files,
+                permission_profile,
+                verbosity,
+            )
             .map_err(AppError::operation)?;
     }
     Ok(reports)
