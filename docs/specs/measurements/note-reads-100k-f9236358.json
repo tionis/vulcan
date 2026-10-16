@@ -1,0 +1,161 @@
+{
+  "acceptance_gate_result": "not_evaluated",
+  "binary": "/home/eric/vulcan-eval/target/release/vulcan",
+  "binary_sha256": "123ed2cf3b76f63e55f9d1c33bd6699caa3a693326c8a398092d7cc91419bdff",
+  "binary_unchanged": true,
+  "commit": "f9236358",
+  "complete_and_valid": true,
+  "fixture": {
+    "acceptance_gate_result": "not_evaluated",
+    "body_bytes_per_record": 4096,
+    "digest_format": "generation-order u64be path-length/path/u64be byte-length/bytes; excludes manifest",
+    "generator_version": 1,
+    "invalid_priority_records": 1031,
+    "links": 1000000,
+    "missing_status_records": 20000,
+    "payload_files": 100014,
+    "payload_sha256": "b934b38bb58223d523aba60a8b4e346c553deee93828d3d52c0570dca9166d5f",
+    "private_records": 10000,
+    "records": 100000,
+    "seed": 42,
+    "type_counts": {
+      "contact": 33333,
+      "project": 33333,
+      "task": 33334
+    }
+  },
+  "fixture_unchanged": true,
+  "limitations": [
+    "Frontends return different report shapes; equivalence is not checked",
+    "No concurrent writers or external edits during measurement",
+    "Host power, frequency, background load, and OS page cache are uncontrolled"
+  ],
+  "machine": {
+    "architecture": "x86_64",
+    "cpus": 16,
+    "load_average": [
+      2.84521484375,
+      2.67822265625,
+      1.4111328125
+    ],
+    "platform": "Linux-6.12.111+deb13-amd64-x86_64-with-glibc2.41"
+  },
+  "measurement": "daemon_routing_baseline",
+  "method": {
+    "cli": "process start through exit, default blocking refresh",
+    "concurrency": 1,
+    "http": "loopback GET round trip to one watched serve process",
+    "mcp": "tools/call round trip in one stdio process",
+    "missing_record_check": "Python os.stat of a missing path; an upper bound",
+    "percentiles": "nearest rank over repeated successful requests",
+    "requested_repeated_samples": 10
+  },
+  "missing_record_check_ns": 1228.4778,
+  "operations": {
+    "note_backlinks": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 114.65643404517323,
+        "repeated_ms": {
+          "max": 116.12736200913787,
+          "p50": 113.65483596455306,
+          "p95": 116.12736200913787,
+          "p99": 116.12736200913787,
+          "samples": 10
+        }
+      }
+    },
+    "note_get": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 8.947366965003312,
+        "repeated_ms": {
+          "max": 8.625130984000862,
+          "p50": 8.521726937033236,
+          "p95": 8.625130984000862,
+          "p99": 8.625130984000862,
+          "samples": 10
+        }
+      },
+      "mcp": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 6.174808950163424,
+        "repeated_ms": {
+          "max": 2.1471939980983734,
+          "p50": 2.097656950354576,
+          "p95": 2.1471939980983734,
+          "p99": 2.1471939980983734,
+          "samples": 10
+        }
+      }
+    },
+    "note_info": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 118.94117400515825,
+        "repeated_ms": {
+          "max": 119.52011100947857,
+          "p50": 116.11017596442252,
+          "p95": 119.52011100947857,
+          "p99": 119.52011100947857,
+          "samples": 10
+        }
+      },
+      "mcp": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 5.418765009380877,
+        "repeated_ms": {
+          "max": 5.36497903522104,
+          "p50": 4.964657011441886,
+          "p95": 5.36497903522104,
+          "p99": 5.36497903522104,
+          "samples": 10
+        }
+      }
+    },
+    "note_outline": {
+      "cli": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 8.385043009184301,
+        "repeated_ms": {
+          "max": 8.332898956723511,
+          "p50": 8.134627947583795,
+          "p95": 8.332898956723511,
+          "p99": 8.332898956723511,
+          "samples": 10
+        }
+      },
+      "mcp": {
+        "complete": true,
+        "failures": [],
+        "first_ms": 1.8855780363082886,
+        "repeated_ms": {
+          "max": 1.8691410077735782,
+          "p50": 1.8126270733773708,
+          "p95": 1.8691410077735782,
+          "p99": 1.8691410077735782,
+          "samples": 10
+        }
+      }
+    }
+  },
+  "process_floor": {
+    "complete": true,
+    "failures": [],
+    "first_ms": 5.011933972127736,
+    "repeated_ms": {
+      "max": 4.990370944142342,
+      "p50": 4.7428939724341035,
+      "p95": 4.990370944142342,
+      "p99": 4.990370944142342,
+      "samples": 10
+    }
+  },
+  "runner_sha256": "f7ed5f429725202aaac4fa4de5b23cd1e7cf362f764faaef65d9e3272e0755e2"
+}

@@ -1,0 +1,69 @@
+{
+  "binary": "/home/eric/vulcan-eval/target/release/vulcan",
+  "cases": [
+    "note info public/task/03/record-000003.md",
+    "note backlinks public/contact/46/record-000046.md",
+    "note links public/task/03/record-000003.md",
+    "backlinks public/contact/46/record-000046.md"
+  ],
+  "commit": "12f7cab7",
+  "fixture": "/home/eric/vulcan-eval-fixtures/mdb-100k",
+  "limitations": [
+    "Host power, frequency, background load, and OS page cache are uncontrolled",
+    "One fixture size (100K)"
+  ],
+  "machine": "designated evaluation host (Intel Core i7-10700, 31 GiB RAM, Debian 13)",
+  "measurement": "routed_note_reads",
+  "method": {
+    "command": "vulcan --vault <fixture> --route <direct|daemon> --output json <case>",
+    "refresh": "default refresh: direct runs prove freshness by stat walk; routed runs pass an index barrier",
+    "setup": "isolated XDG config and state; `vault add --no-sync`; daemon bound to 127.0.0.1:0; waited for cache state fresh",
+    "timing": "wall clock of the whole process; 11 runs per case and route, the first discarded"
+  },
+  "results_ms": {
+    "backlinks public/contact/46/record-000046.md": {
+      "daemon": {
+        "max": 7.7,
+        "p50": 7.4
+      },
+      "direct": {
+        "max": 118.1,
+        "p50": 114.1
+      },
+      "outputs_identical": true
+    },
+    "note backlinks public/contact/46/record-000046.md": {
+      "daemon": {
+        "max": 7.8,
+        "p50": 7.7
+      },
+      "direct": {
+        "max": 117.5,
+        "p50": 113.4
+      },
+      "outputs_identical": true
+    },
+    "note info public/task/03/record-000003.md": {
+      "daemon": {
+        "max": 11.3,
+        "p50": 11.0
+      },
+      "direct": {
+        "max": 129.1,
+        "p50": 117.7
+      },
+      "outputs_identical": true
+    },
+    "note links public/task/03/record-000003.md": {
+      "daemon": {
+        "max": 7.7,
+        "p50": 7.5
+      },
+      "direct": {
+        "max": 123.0,
+        "p50": 114.6
+      },
+      "outputs_identical": true
+    }
+  }
+}

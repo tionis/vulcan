@@ -161,6 +161,13 @@ and run directly. In `daemon` mode they say so instead of silently running direc
 - The candidate operations are `query` (including DQL), `ls`, `search`, `status`, `note get`,
   `note info`, `note outline`, `note backlinks`, `tasks query`, and `graph stats|path|hubs`. Each
   is added only with a parity test, a retained-state assertion, and a measurement.
+- `note info`, `note links`/`links`, and `note backlinks`/`backlinks` with a named note are routed
+  (`POST /{id}/ops/note`, `vulcan_app::routed::note`). Like keyword search, their retained state is
+  the watcher-proven freshness: the index barrier replaces the client's freshness proof, which was
+  about two thirds of their direct cost at 100K notes once name resolution was fixed directly.
+  `note get` and `note outline` read the note file itself, skip that proof, and take about 8 ms
+  directly, so they are not routed. Without a note name the CLI may pick one interactively, so
+  those invocations run directly.
 
 ### Freshness
 
