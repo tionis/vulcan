@@ -2030,7 +2030,10 @@ fn hydrate_note_records(
         if let Some(aliases) = alias_map.remove(doc_id.as_str()) {
             note.aliases = aliases;
         }
-        if let Some(inlinks) = inlink_map.remove(doc_id.as_str()) {
+        if let Some(mut inlinks) = inlink_map.remove(doc_id.as_str()) {
+            // Ordered by source, so the order does not depend on how the
+            // links were stored or which index read them.
+            inlinks.sort_unstable();
             note.inlinks = inlinks;
         }
         if let Some(mut list_items) = list_item_map.remove(doc_id.as_str()) {
@@ -3423,6 +3426,26 @@ fn sort_key_rank(key: &SortKey) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A note's incoming links are ordered by source, whatever order their
+    /// rows were written in: here the later source sorts first.
+    #[test]
+    fn incoming_links_are_ordered_by_source() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temp_dir.path());
+        crate::initialize_vulcan_dir(&paths).unwrap();
+        std::fs::write(temp_dir.path().join("Target.md"), "target\n").unwrap();
+        std::fs::write(temp_dir.path().join("Zed.md"), "[[Target]]\n").unwrap();
+        crate::scan_vault(&paths, crate::ScanMode::Full).unwrap();
+        std::fs::write(temp_dir.path().join("Alpha.md"), "[[Target]]\n").unwrap();
+        crate::scan_vault(&paths, crate::ScanMode::Incremental).unwrap();
+        let notes = load_note_index(&paths).unwrap();
+        let target = notes
+            .values()
+            .find(|note| note.document_path == "Target.md")
+            .unwrap();
+        assert_eq!(target.inlinks, vec!["[[Alpha]]", "[[Zed]]"]);
+    }
 
     /// Incoming-link hydration reads only schema v38's covering indexes.
     #[test]
