@@ -2175,6 +2175,26 @@ fn resolve_among_every_note(
         .resolve(identifier)
 }
 
+/// The candidate query of [`load_resolution_candidates`]. Its five `?`
+/// parameters follow the scope's own.
+fn resolution_candidate_sql(cte: &str, clause: &str) -> String {
+    // `+` keeps SQLite from walking the extension index over every note and
+    // testing each against the candidates: the plan must start from the few
+    // candidate IDs. (At 100K notes the extension scan cost about 20 ms per
+    // resolution, and `note info` resolves three times.)
+    format!(
+        "{cte}SELECT documents.id, documents.path, documents.filename FROM documents
+         WHERE +documents.extension = 'md'{clause} AND documents.id IN (
+             SELECT id FROM documents WHERE path = ? COLLATE NOCASE
+             UNION SELECT id FROM documents
+                 WHERE path = ? COLLATE NOCASE AND path GLOB '*.md'
+             UNION SELECT id FROM documents WHERE filename = ? COLLATE NOCASE
+             UNION SELECT id FROM documents WHERE filename = ? COLLATE NOCASE
+             UNION SELECT document_id FROM aliases WHERE alias_text = ? COLLATE NOCASE)
+         ORDER BY documents.path"
+    )
+}
+
 /// The indexed notes through which `identifier` can resolve, in `path` order:
 /// those whose path, path without `.md`, file name, file name with `.md`, or
 /// alias equals it ignoring ASCII case. These are exactly the entries
@@ -2193,17 +2213,7 @@ fn load_resolution_candidates(
     let (cte, clause) = scope.map_or((String::new(), String::new()), |scope| {
         (scope.cte.clone(), scope.clause.clone())
     });
-    let sql = format!(
-        "{cte}SELECT documents.id, documents.path, documents.filename FROM documents
-         WHERE documents.extension = 'md'{clause} AND documents.id IN (
-             SELECT id FROM documents WHERE path = ? COLLATE NOCASE
-             UNION SELECT id FROM documents
-                 WHERE path = ? COLLATE NOCASE AND path GLOB '*.md'
-             UNION SELECT id FROM documents WHERE filename = ? COLLATE NOCASE
-             UNION SELECT id FROM documents WHERE filename = ? COLLATE NOCASE
-             UNION SELECT document_id FROM aliases WHERE alias_text = ? COLLATE NOCASE)
-         ORDER BY documents.path"
-    );
+    let sql = resolution_candidate_sql(&cte, &clause);
     let mut values: Vec<Option<String>> = scope
         .map(|scope| scope.params.iter().cloned().map(Some).collect())
         .unwrap_or_default();
@@ -2746,6 +2756,67 @@ mod tests {
             .unwrap()
             .join(" ");
         assert!(plan.contains("idx_documents_path_nocase"), "{plan}");
+    }
+
+    #[test]
+    fn note_resolution_starts_from_its_candidates_not_every_note() {
+        let temp = TempDir::new().unwrap();
+        let paths = VaultPaths::new(temp.path());
+        fs::create_dir_all(paths.vulcan_dir()).unwrap();
+        fs::write(
+            paths.config_file(),
+            "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\"] }\n",
+        )
+        .unwrap();
+        fs::create_dir_all(temp.path().join("Public")).unwrap();
+        for index in 0..50 {
+            fs::write(temp.path().join(format!("Public/Note{index}.md")), "Note\n").unwrap();
+        }
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        // No `ANALYZE` statistics, as in a vault's cache: SQLite's default
+        // estimates are what led it to walk the extension index.
+        let connection = open_existing_cache(&paths).unwrap();
+        let guard = ProfilePermissionGuard::new(
+            &paths,
+            crate::resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+        );
+        let scoped = guard
+            .read_filter()
+            .document_scope_sql("_resolve_permission");
+        assert!(!scoped.clause.is_empty(), "the scope restricts reads");
+        for (cte, clause, params) in [
+            (String::new(), String::new(), Vec::new()),
+            (scoped.cte, scoped.clause, scoped.params),
+        ] {
+            let sql = format!(
+                "EXPLAIN QUERY PLAN {}",
+                resolution_candidate_sql(&cte, &clause)
+            );
+            let mut values = params.into_iter().map(Some).collect::<Vec<_>>();
+            values.extend(std::iter::repeat_n(Some("note1".to_string()), 5));
+            let plan = connection
+                .prepare(&sql)
+                .unwrap()
+                .query_map(params_from_iter(values.iter()), |row| {
+                    row.get::<_, String>(3)
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+                .join(" | ");
+            // The outer loop reads the candidates by ID; a scope may still
+            // compute its allowed set in a subquery of its own.
+            assert!(
+                plan.starts_with(
+                    "SEARCH documents USING INDEX sqlite_autoindex_documents_1 (id=?)"
+                ),
+                "{plan}"
+            );
+        }
+        assert_eq!(
+            resolve_note_reference(&paths, "Note1").unwrap().path,
+            "Public/Note1.md"
+        );
     }
 
     #[test]
