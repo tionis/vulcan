@@ -91,6 +91,7 @@ pub mod publish;
 pub mod pull;
 pub mod routed;
 pub mod scan;
+pub mod schedules;
 pub mod serve;
 pub mod site;
 pub mod sync;
