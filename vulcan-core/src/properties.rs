@@ -1039,6 +1039,18 @@ pub fn load_task_note_index_with_plan_in(
     paths: &VaultPaths,
     scope: NoteIndexReadScope<'_>,
 ) -> Result<(HashMap<String, NoteRecord>, crate::plan::QueryPlanExplain), PropertyError> {
+    load_task_note_index_prefiltered(store, paths, scope, true)
+}
+
+/// [`load_task_note_index_with_plan_in`], finding `TaskNotes` tasks among
+/// the notes [`tasknote_candidate_paths`] selects when `prefilter` is set,
+/// and among every readable note otherwise.
+pub(crate) fn load_task_note_index_prefiltered(
+    store: &dyn crate::note_store::NoteStore,
+    paths: &VaultPaths,
+    scope: NoteIndexReadScope<'_>,
+    prefilter: bool,
+) -> Result<(HashMap<String, NoteRecord>, crate::plan::QueryPlanExplain), PropertyError> {
     let lookup = store.lookup(scope, None)?;
     let mut task_paths = {
         let database = lookup
@@ -1054,20 +1066,44 @@ pub fn load_task_note_index_with_plan_in(
         task_paths
     };
     let config = crate::load_vault_config(paths).config;
-    task_paths.extend(
-        lookup
-            .notes()
-            .filter(|note| {
-                extract_tasknote(
-                    &note.document_path,
-                    &note.file_name,
-                    &note.properties,
-                    &config.tasknotes,
-                )
-                .is_some()
-            })
-            .map(|note| note.document_path.clone()),
-    );
+    let is_tasknote = |note: &NoteRecord| {
+        extract_tasknote(
+            &note.document_path,
+            &note.file_name,
+            &note.properties,
+            &config.tasknotes,
+        )
+        .is_some()
+    };
+    let candidates = if prefilter {
+        let database = lookup
+            .database()
+            .expect("the indexed lookup shares its connection");
+        tasknote_candidate_paths(database.connection(), &config.tasknotes)?
+    } else {
+        None
+    };
+    if let Some(candidates) = candidates {
+        // Only candidates' stored records load: checking every note's
+        // properties cost about 700 ms at 100K notes.
+        let readable = candidates
+            .into_iter()
+            .filter(|path| lookup.contains(path))
+            .collect::<Vec<_>>();
+        lookup.prefetch_stored(readable.iter().map(String::as_str));
+        task_paths.extend(readable.into_iter().filter(|path| {
+            lookup
+                .note_arc_at(path)
+                .is_some_and(|note| is_tasknote(&note))
+        }));
+    } else {
+        task_paths.extend(
+            lookup
+                .notes()
+                .filter(|note| is_tasknote(note))
+                .map(|note| note.document_path.clone()),
+        );
+    }
     let planned = crate::plan::execute_note_plan(
         paths,
         &lookup,
@@ -1082,6 +1118,65 @@ pub fn load_task_note_index_with_plan_in(
         },
     )?;
     Ok((lookup.into_hydrated_index()?, planned.explain))
+}
+
+/// Paths of the notes whose stored properties can identify a `TaskNotes`
+/// task under `config`: a superset of them, so the exact check still runs
+/// on each. `None` when no cheap condition is known. Identification reads
+/// the stored properties (`properties.canonical_json`), so a task tag must
+/// occur in that JSON text ignoring ASCII case, and an identifying property
+/// key must occur quoted. Text JSON would escape is not searched for.
+pub(crate) fn tasknote_candidate_paths(
+    connection: &rusqlite::Connection,
+    config: &crate::config::TaskNotesConfig,
+) -> Result<Option<HashSet<String>>, PropertyError> {
+    let verbatim = |text: &str| !text.chars().any(|ch| ch == '"' || ch == '\\' || ch < ' ');
+    let (condition, needles) = match config.identification_method {
+        crate::config::TaskNotesIdentificationMethod::Tag => {
+            let tag = config
+                .task_tag
+                .trim()
+                .trim_start_matches('#')
+                .to_ascii_lowercase();
+            if tag.is_empty() || !verbatim(&tag) {
+                return Ok(None);
+            }
+            ("instr(lower(properties.canonical_json), ?1) > 0", vec![tag])
+        }
+        crate::config::TaskNotesIdentificationMethod::Property => {
+            let keys = match &config.task_property_name {
+                Some(name) => vec![name.clone()],
+                None => vec![
+                    config.field_mapping.status.clone(),
+                    config.field_mapping.priority.clone(),
+                ],
+            };
+            if keys.iter().any(|key| !verbatim(key)) {
+                return Ok(None);
+            }
+            let needles = keys
+                .iter()
+                .map(|key| format!("\"{key}\""))
+                .collect::<Vec<_>>();
+            let condition = if needles.len() == 1 {
+                "instr(properties.canonical_json, ?1) > 0"
+            } else {
+                "instr(properties.canonical_json, ?1) > 0 AND instr(properties.canonical_json, ?2) > 0"
+            };
+            (condition, needles)
+        }
+    };
+    let mut statement = connection.prepare(&format!(
+        "SELECT documents.path FROM properties
+         JOIN documents ON documents.id = properties.document_id
+         WHERE {condition}"
+    ))?;
+    let paths = statement
+        .query_map(rusqlite::params_from_iter(needles.iter()), |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<Result<HashSet<_>, _>>()?;
+    Ok(Some(paths))
 }
 
 /// The read scope an index was loaded with, for hydrating its entries.

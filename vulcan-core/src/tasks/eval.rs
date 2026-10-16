@@ -849,6 +849,86 @@ mod tests {
         }
     }
 
+    /// The candidate prefilter finds exactly the `TaskNotes` tasks the full
+    /// check finds, for every identification setting, including tags that
+    /// differ in case or arrive as a delimited string, near misses, keys
+    /// without values, excluded folders, and text the prefilter cannot
+    /// search for.
+    #[test]
+    fn tasknote_prefilter_finds_what_checking_every_note_finds() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).unwrap();
+        fs::create_dir_all(vault_root.join("Archive")).unwrap();
+        for (name, text) in [
+            ("Upper.md", "---\ntags: [Task, other]\n---\nbody\n"),
+            ("Delimited.md", "---\ntags: \"#task, other\"\n---\n"),
+            ("NearMiss.md", "---\ntags: [tasks]\ntitle: task\n---\n"),
+            ("Kind.md", "---\nkind: Task\n---\n"),
+            ("KindOther.md", "---\nkind: note\n---\n"),
+            (
+                "StatusPriority.md",
+                "---\nstatus: open\npriority: high\n---\n",
+            ),
+            ("StatusOnly.md", "---\nstatus: open\n---\n"),
+            ("Markdown.md", "- [ ] a checkbox task\n"),
+            (
+                "Archive/Excluded.md",
+                "---\ntags: [task]\nkind: task\n---\n",
+            ),
+            ("Quoted.md", "---\ntags: ['ta\"sk']\n---\n"),
+            ("Plain.md", "no properties\n"),
+        ] {
+            fs::write(vault_root.join(name), text).unwrap();
+        }
+        let paths = VaultPaths::new(&vault_root);
+        for (config, narrows) in [
+            ("", true),
+            ("[tasknotes]\ntask_tag = \"#Task\"\n", true),
+            ("[tasknotes]\nexcluded_folders = [\"Archive\"]\n", true),
+            (
+                "[tasknotes]\nidentification_method = \"property\"\ntask_property_name = \"kind\"\ntask_property_value = \"task\"\n",
+                true,
+            ),
+            (
+                "[tasknotes]\nidentification_method = \"property\"\ntask_property_name = \"kind\"\n",
+                true,
+            ),
+            ("[tasknotes]\nidentification_method = \"property\"\n", true),
+            ("[tasknotes]\ntask_tag = \"ta\\\"sk\"\n", false),
+        ] {
+            fs::write(vault_root.join(".vulcan/config.toml"), config).unwrap();
+            scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+            let store = crate::note_store::DirectNoteStore::new(&paths);
+            let load = |prefilter| {
+                let mut keys = crate::properties::load_task_note_index_prefiltered(
+                    &store,
+                    &paths,
+                    crate::properties::NoteIndexReadScope::Filter(None),
+                    prefilter,
+                )
+                .unwrap()
+                .0
+                .into_keys()
+                .collect::<Vec<_>>();
+                keys.sort();
+                keys
+            };
+            let checked = load(false);
+            assert_eq!(load(true), checked, "{config}");
+            assert!(checked.len() > 1, "{config}: {checked:?}");
+            let database = crate::CacheDatabase::open(&paths).unwrap();
+            let tasknotes = crate::load_vault_config(&paths).config.tasknotes;
+            assert_eq!(
+                crate::properties::tasknote_candidate_paths(database.connection(), &tasknotes)
+                    .unwrap()
+                    .is_some(),
+                narrows,
+                "{config}"
+            );
+        }
+    }
+
     fn task_texts(result: &TasksQueryResult) -> Vec<String> {
         result
             .tasks
