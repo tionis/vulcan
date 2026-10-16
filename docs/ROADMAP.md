@@ -6660,10 +6660,13 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 - [x] The daemon treats branch-ref changes in the Git directory as sync triggers for Git-synced wikis (both modes).
 - [x] Update the `sync-workflow` skill and the sync guide.
 
-#### 12.23.2 Path-scoped worktree sync (designed, not scheduled)
+#### 12.23.2 Path-scoped worktree sync
 
-- [ ] `sync.worktree = "paths"` with literal path prefixes as specified: live = published branch tip plus the scoped worktree paths, outside-scope merges take the newer published tip, scoped application/verification, a fast-forward checkout for unscoped files, the scope read from committed configuration and recorded per snapshot, and a namespace bump for switching from `"all"`. Build when a wiki needs uncommitted note sync next to code.
-
+- [x] Shared `sync.worktree = "paths"` and `sync.paths` (literal, normalized prefixes; `.vulcan/device-names` implicit; local values ignored) with a stable scope hash.
+- [x] Scope-aware engine: scoped capture with unscoped paths from the published branch tip, scoped comparison, and scoped application through a two-way merge so unscoped files are never written from live; app resolution, proposal, retention, and semantic workflows use the same scope.
+- [x] Namespace 4 plus scope and published-branch trailers on path-scoped live commits; scope-mismatch refusal unless this device's branch is strictly newer; local candidates aligned to the remote's unscoped content before merging.
+- [x] Path-by-path branch fast-forward that keeps uncommitted scoped bytes and defers over dirty unscoped files; semantic planning refuses unscoped differences.
+- [ ] Record scope provenance on resolution, conflict-record, and epoch commits as well, so a tip written by those workflows is also checked.
 ---
 
 ## Phase 13: WebUI — Admin and Browse

@@ -1,4 +1,4 @@
-use crate::{detached_recovery_ref, local_recovery_ref_namespaces};
+use crate::{detached_recovery_ref, local_recovery_ref_namespaces, GitWorktreeScope};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -499,7 +499,20 @@ pub trait GitEngine: Send + Sync {
         request: &GitCaptureRequest,
     ) -> Result<GitCapture, GitEngineError>;
 
+    /// Builds a tree holding `outside`'s entries outside `scope` and
+    /// `scoped`'s entries inside it. Both are trees or commits. Uses a scratch
+    /// index, so no index or worktree state is touched.
+    fn overlay_scoped_tree(
+        &self,
+        repository: &GitRepository,
+        scope: &GitWorktreeScope,
+        outside: &GitOid,
+        scoped: &GitOid,
+    ) -> Result<GitOid, GitEngineError>;
+
     /// Hashes a stable worktree snapshot into a tree without creating a commit or ref.
+    /// With a worktree scope, only scoped paths come from the worktree and the
+    /// rest from `base`, so comparing against `base` compares the scope.
     fn snapshot_worktree_tree(
         &self,
         repository: &GitRepository,
@@ -804,6 +817,19 @@ pub trait GitEngine: Send + Sync {
         expected: &GitOid,
         target: &GitOid,
     ) -> Result<BranchAdvanceOutcome, GitEngineError>;
+
+    /// Fast-forwards the checked-out branch from `expected` to `target`,
+    /// writing each changed path whose worktree bytes still equal
+    /// `expected`'s. A changed unscoped path with other uncommitted bytes
+    /// blocks the advance; a changed scoped path keeps its local bytes.
+    fn advance_branch_scoped(
+        &self,
+        repository: &GitRepository,
+        scope: &GitWorktreeScope,
+        branch: &GitRefName,
+        expected: &GitOid,
+        target: &GitOid,
+    ) -> Result<ScopedBranchAdvance, GitEngineError>;
 
     fn plan_tree_application(
         &self,
@@ -1160,9 +1186,20 @@ pub struct GitRepository {
     pub work_tree: Option<PathBuf>,
     pub layout: GitRepositoryLayout,
     pub object_format: GitObjectFormat,
+    /// Path-scoped synchronization reads and writes the worktree only inside
+    /// this scope; `None` covers the whole worktree. Discovery never sets it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_scope: Option<GitWorktreeScope>,
 }
 
 impl GitRepository {
+    /// Restricts worktree capture, comparison, and application to `scope`.
+    #[must_use]
+    pub fn with_worktree_scope(mut self, scope: Option<GitWorktreeScope>) -> Self {
+        self.worktree_scope = scope;
+        self
+    }
+
     fn require_work_tree(&self) -> Result<&Path, GitEngineError> {
         self.work_tree
             .as_deref()
@@ -1382,6 +1419,23 @@ pub enum BranchAdvanceOutcome {
     /// A staged entry differs from both sides on a path the target changes.
     BlockedStaged,
     /// The branch or `HEAD` no longer identifies the expected revision.
+    Stale,
+}
+
+/// The outcome of fast-forwarding the checked-out branch in path-scoped
+/// synchronization, where scoped paths may legitimately hold uncommitted
+/// bytes that arrived through live.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScopedBranchAdvance {
+    /// The branch moved. Paths whose worktree still held the old commit's
+    /// bytes now hold the new ones; `kept` lists scoped paths whose
+    /// uncommitted local bytes were left in place.
+    Advanced {
+        kept: Vec<String>,
+    },
+    /// Uncommitted unscoped files the advance would overwrite.
+    BlockedDirty(Vec<String>),
+    BlockedStaged,
     Stale,
 }
 
@@ -2311,17 +2365,200 @@ impl GitCliEngine {
         index_path: &Path,
         operation: &'static str,
     ) -> Result<(), GitEngineError> {
-        let mut command = self.index_command(repository, index_path)?;
         // Add the worktree without device-local state, then remove any that a
         // commit tracked from the alternate index below.
-        command.args(["add", "-A", "--", "."]);
-        command.args(DEVICE_LOCAL_CAPTURE_EXCLUDES);
-        ensure_success(operation, self.execute(command)?)?;
+        if let Some(scope) = &repository.worktree_scope {
+            let pathspecs = self.present_scope_pathspecs(repository, index_path, scope)?;
+            if !pathspecs.is_empty() {
+                let mut command = self.index_command(repository, index_path)?;
+                command.args(["add", "-A", "--"]);
+                command.args(pathspecs);
+                ensure_success(operation, self.execute(command)?)?;
+            }
+        } else {
+            let mut command = self.index_command(repository, index_path)?;
+            command.args(["add", "-A", "--", "."]);
+            command.args(DEVICE_LOCAL_CAPTURE_EXCLUDES);
+            ensure_success(operation, self.execute(command)?)?;
+        }
         let mut command = self.index_command(repository, index_path)?;
         command.args(["update-index", "--force-remove", "--"]);
         command.args(DEVICE_LOCAL_VULCAN_PATHS);
         ensure_success(operation, self.execute(command)?)?;
         Ok(())
+    }
+
+    /// Blob IDs of the worktree's bytes at `paths` through Git's clean
+    /// filters; `None` for a missing path. Symbolic links hash their target.
+    fn worktree_blob_oids(
+        &self,
+        repository: &GitRepository,
+        work_tree: &Path,
+        paths: &[String],
+    ) -> Result<BTreeMap<String, Option<GitOid>>, GitEngineError> {
+        let mut oids = BTreeMap::new();
+        let mut files = Vec::new();
+        for path in paths {
+            match std::fs::symlink_metadata(work_tree.join(path)) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    let target = std::fs::read_link(work_tree.join(path))?;
+                    let target = target.to_string_lossy().into_owned();
+                    let mut command = self.repository_command(repository);
+                    command.args(["hash-object", "--stdin"]);
+                    let output = ensure_success(
+                        "hash a symbolic link",
+                        self.execute_with_input(
+                            command,
+                            "hash a symbolic link",
+                            target.as_bytes(),
+                        )?,
+                    )?;
+                    let oid = decode_stdout("hash a symbolic link", output.stdout)?;
+                    oids.insert(path.clone(), Some(GitOid::parse(oid.trim())?));
+                }
+                Ok(metadata) if metadata.is_file() && !path.contains('\n') => {
+                    files.push(path.clone());
+                }
+                // Directories, unreadable entries, and unhashable names never
+                // equal a blob, so they count as local changes.
+                Ok(_) => {
+                    oids.insert(path.clone(), Some(GitOid(String::new())));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    oids.insert(path.clone(), None);
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        if !files.is_empty() {
+            let mut input = files.join("\n").into_bytes();
+            input.push(b'\n');
+            let mut command = self.repository_command(repository);
+            command.args(["hash-object", "--stdin-paths"]);
+            let output = ensure_success(
+                "hash worktree files",
+                self.execute_with_input(command, "hash worktree files", &input)?,
+            )?;
+            let stdout = decode_stdout("hash worktree files", output.stdout)?;
+            for (path, oid) in files.iter().zip(stdout.lines()) {
+                oids.insert(path.clone(), Some(GitOid::parse(oid.trim())?));
+            }
+        }
+        Ok(oids)
+    }
+
+    /// Stage-zero blob IDs of the normal index at `paths`.
+    fn index_blob_oids(
+        &self,
+        repository: &GitRepository,
+        paths: &[String],
+    ) -> Result<BTreeMap<String, Option<GitOid>>, GitEngineError> {
+        let mut oids = paths
+            .iter()
+            .map(|path| (path.clone(), None))
+            .collect::<BTreeMap<_, _>>();
+        if paths.is_empty() {
+            return Ok(oids);
+        }
+        let mut command = self.repository_command(repository);
+        command.args(["ls-files", "-s", "-z", "--"]);
+        command.args(paths.iter().map(|path| format!(":(literal){path}")));
+        let output = ensure_success("read index entries", self.execute(command)?)?;
+        for record in nul_fields("read index entries", &output.stdout)? {
+            let Some((metadata, path)) = record.split_once('\t') else {
+                continue;
+            };
+            let mut fields = metadata.split(' ');
+            let (_mode, oid, stage) = (fields.next(), fields.next(), fields.next());
+            if stage == Some("0") {
+                if let (Some(slot), Some(oid)) = (oids.get_mut(path), oid) {
+                    *slot = Some(GitOid::parse(oid)?);
+                }
+            }
+        }
+        Ok(oids)
+    }
+
+    /// The scope's capture pathspecs, without entries that match nothing in
+    /// the worktree or the index: `git add` rejects such a pathspec.
+    fn present_scope_pathspecs(
+        &self,
+        repository: &GitRepository,
+        index_path: &Path,
+        scope: &GitWorktreeScope,
+    ) -> Result<Vec<String>, GitEngineError> {
+        let work_tree = repository.require_work_tree()?;
+        let mut command = self.index_command(repository, index_path)?;
+        command.args(["ls-files", "-z", "--"]);
+        command.args(scope.pathspecs());
+        let indexed = ensure_success("list scoped index entries", self.execute(command)?)?;
+        let indexed = nul_fields("list scoped index entries", &indexed.stdout)?;
+        let mut pathspecs = scope
+            .entries()
+            .iter()
+            .filter(|entry| {
+                std::fs::symlink_metadata(work_tree.join(entry.as_str())).is_ok()
+                    || indexed.iter().any(|path| {
+                        path == *entry
+                            || path
+                                .strip_prefix(entry.as_str())
+                                .is_some_and(|rest| rest.starts_with('/'))
+                    })
+            })
+            .map(|entry| format!(":(literal){entry}"))
+            .collect::<Vec<_>>();
+        if !pathspecs.is_empty() {
+            pathspecs.extend(
+                scope
+                    .capture_pathspecs()
+                    .into_iter()
+                    .filter(|pathspec| pathspec.starts_with(":(exclude")),
+            );
+        }
+        Ok(pathspecs)
+    }
+
+    /// The published tip of the checked-out branch, whose tree supplies
+    /// everything outside the scope of a path-scoped capture.
+    fn scoped_capture_outside(&self, repository: &GitRepository) -> Result<GitOid, GitEngineError> {
+        let unsupported = |detail: &str| {
+            GitEngineError::UnsupportedRepository {
+            detail: format!(
+                "path-scoped sync takes everything outside sync.paths from the checked-out branch's published commits, but {detail}"
+            ),
+        }
+        };
+        let branch = self
+            .head_reference(repository)?
+            .ok_or_else(|| unsupported("HEAD is detached"))?;
+        let upstream = self
+            .branch_upstream(repository, &branch)?
+            .ok_or_else(|| unsupported("the branch has no upstream"))?;
+        let head = self
+            .head_commit(repository)?
+            .ok_or_else(|| unsupported("the branch has no commits"))?;
+        let tracking = self
+            .read_ref(repository, &upstream.tracking_ref)?
+            .ok_or_else(|| unsupported("the branch was never pushed; run `git push -u` once"))?;
+        if head == tracking {
+            return Ok(tracking);
+        }
+        self.merge_base(repository, &head, &tracking)?
+            .ok_or_else(|| unsupported("the branch shares no history with its upstream"))
+    }
+
+    /// The tree a scoped application materializes: `target` inside the
+    /// scope and `expected` everywhere else. Unscoped `target`.
+    fn scoped_application_target(
+        &self,
+        repository: &GitRepository,
+        expected: &GitOid,
+        target: &GitOid,
+    ) -> Result<GitOid, GitEngineError> {
+        match &repository.worktree_scope {
+            Some(scope) => self.overlay_scoped_tree(repository, scope, expected, target),
+            None => Ok(target.clone()),
+        }
     }
 
     /// Tracked paths of the captured `tree` that a `.gitignore` changed since
@@ -2622,9 +2859,18 @@ impl GitCliEngine {
         index_path: &Path,
     ) -> Result<bool, GitEngineError> {
         self.heal_racy_sync_index(repository, index_path)?;
+        let pathspecs = repository.worktree_scope.as_ref().map_or_else(
+            || {
+                WORKTREE_CAPTURE_PATHS
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            },
+            GitWorktreeScope::capture_pathspecs,
+        );
         let mut command = self.index_command(repository, index_path)?;
         command.args(["diff-files", "--quiet", "--"]);
-        command.args(WORKTREE_CAPTURE_PATHS);
+        command.args(&pathspecs);
         let tracked = self.execute(command)?;
         if !tracked.status.success() {
             if tracked.status.code() == Some(1) {
@@ -2634,7 +2880,7 @@ impl GitCliEngine {
         }
         let mut command = self.index_command(repository, index_path)?;
         command.args(["ls-files", "--others", "--exclude-standard", "--"]);
-        command.args(WORKTREE_CAPTURE_PATHS);
+        command.args(&pathspecs);
         let output = ensure_success("list untracked worktree paths", self.execute(command)?)?;
         Ok(
             decode_stdout("list untracked worktree paths", output.stdout)?
@@ -2973,6 +3219,7 @@ impl GitEngine for GitCliEngine {
             work_tree,
             layout,
             object_format,
+            worktree_scope: None,
         })
     }
 
@@ -3931,8 +4178,14 @@ impl GitEngine for GitCliEngine {
         request: &GitCaptureRequest,
     ) -> Result<GitCapture, GitEngineError> {
         let reuse_clean_base = request.base.is_some() && request.base == request.target_before;
-        let tree_capture =
+        let mut tree_capture =
             self.capture_worktree_tree_inner(repository, request.base.as_ref(), reuse_clean_base)?;
+        if let Some(scope) = &repository.worktree_scope {
+            let outside = self.scoped_capture_outside(repository)?;
+            let tree = self.overlay_scoped_tree(repository, scope, &outside, &tree_capture.tree)?;
+            tree_capture.reused_base &= tree == tree_capture.tree;
+            tree_capture.tree = tree;
+        }
         let tree = tree_capture.tree;
 
         if let Some(base) = request.base.as_ref().filter(|_| request.link.is_none()) {
@@ -3963,6 +4216,62 @@ impl GitEngine for GitCliEngine {
         })
     }
 
+    fn overlay_scoped_tree(
+        &self,
+        repository: &GitRepository,
+        scope: &GitWorktreeScope,
+        outside: &GitOid,
+        scoped: &GitOid,
+    ) -> Result<GitOid, GitEngineError> {
+        let zero = match repository.object_format {
+            GitObjectFormat::Sha256 => "0".repeat(64),
+            _ => "0".repeat(40),
+        };
+        let mut input = Vec::new();
+        for entry in self.tree_entries(repository, outside)? {
+            if scope.contains(&entry.path) {
+                input.extend_from_slice(format!("0 {zero}\t").as_bytes());
+                input.extend_from_slice(entry.path.as_bytes());
+                input.push(0);
+            }
+        }
+        for entry in self.tree_entries(repository, scoped)? {
+            if scope.contains(&entry.path) {
+                input.extend_from_slice(
+                    format!("{} {}\t", entry.mode, entry.oid.as_str()).as_bytes(),
+                );
+                input.extend_from_slice(entry.path.as_bytes());
+                input.push(0);
+            }
+        }
+        if input.is_empty() {
+            return self.tree_oid(repository, outside);
+        }
+        let scratch = tempfile::tempdir_in(&repository.git_dir)?;
+        let index_path = scratch.path().join("index");
+        self.index_output(
+            repository,
+            &index_path,
+            "seed a scoped tree",
+            ["read-tree", outside.as_str()],
+        )?;
+        let mut command = self.index_command(repository, &index_path)?;
+        command.args(["update-index", "-z", "--index-info"]);
+        ensure_success(
+            "overlay scoped entries",
+            self.execute_with_input(command, "overlay scoped entries", &input)?,
+        )?;
+        GitOid::parse(
+            self.index_capture(
+                repository,
+                &index_path,
+                "write a scoped tree",
+                ["write-tree"],
+            )?
+            .trim(),
+        )
+    }
+
     fn snapshot_worktree_tree(
         &self,
         repository: &GitRepository,
@@ -3977,6 +4286,12 @@ impl GitEngine for GitCliEngine {
         expected: &GitOid,
     ) -> Result<bool, GitEngineError> {
         repository.require_work_tree()?;
+        if repository.worktree_scope.is_some() {
+            // Refreshing would hash every unscoped file; capturing the scope
+            // over `expected` compares exactly the scoped paths.
+            let tree = self.snapshot_worktree_tree_inner(repository, Some(expected))?;
+            return Ok(tree == self.tree_oid(repository, expected)?);
+        }
         let index_path = repository.sync_index();
         let reused = self.prepare_sync_index(
             repository,
@@ -5117,6 +5432,75 @@ impl GitEngine for GitCliEngine {
         Ok(BranchAdvanceOutcome::Advanced)
     }
 
+    fn advance_branch_scoped(
+        &self,
+        repository: &GitRepository,
+        scope: &GitWorktreeScope,
+        branch: &GitRefName,
+        expected: &GitOid,
+        target: &GitOid,
+    ) -> Result<ScopedBranchAdvance, GitEngineError> {
+        let work_tree = repository.require_work_tree()?.to_path_buf();
+        if self.head_reference(repository)?.as_ref() != Some(branch)
+            || self.read_ref(repository, branch)?.as_ref() != Some(expected)
+        {
+            return Ok(ScopedBranchAdvance::Stale);
+        }
+        let changes = self.tree_application_paths(repository, expected, target)?;
+        let paths = changes
+            .iter()
+            .map(|change| change.path.clone())
+            .collect::<Vec<_>>();
+        let local_bytes = self.worktree_blob_oids(repository, &work_tree, &paths)?;
+        let index = self.index_blob_oids(repository, &paths)?;
+        let (mut write, mut remove, mut kept, mut blocked) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for change in &changes {
+            let old = change.expected.as_ref().map(|object| &object.oid);
+            let new = change.target.as_ref().map(|object| &object.oid);
+            let current = local_bytes.get(&change.path).cloned().flatten();
+            if current.as_ref() == new {
+                continue;
+            }
+            if current.as_ref() == old {
+                if index.get(&change.path).cloned().flatten().as_ref() != old {
+                    return Ok(ScopedBranchAdvance::BlockedStaged);
+                }
+                if new.is_some() {
+                    write.push(format!(":(literal){}", change.path));
+                } else {
+                    remove.push(format!(":(literal){}", change.path));
+                }
+            } else if scope.contains(&change.path) {
+                kept.push(change.path.clone());
+            } else {
+                blocked.push(change.path.clone());
+            }
+        }
+        if !blocked.is_empty() {
+            return Ok(ScopedBranchAdvance::BlockedDirty(blocked));
+        }
+        if !write.is_empty() {
+            let mut command = self.repository_command(repository);
+            command.args(["checkout", target.as_str(), "--"]);
+            command.args(&write);
+            ensure_success("update branch files", self.execute(command)?)?;
+        }
+        if !remove.is_empty() {
+            let mut command = self.repository_command(repository);
+            command.args(["rm", "-q", "--"]);
+            command.args(&remove);
+            ensure_success("remove branch files", self.execute(command)?)?;
+        }
+        Ok(
+            match self.advance_checked_out_branch(repository, branch, expected, target)? {
+                BranchAdvanceOutcome::Advanced => ScopedBranchAdvance::Advanced { kept },
+                BranchAdvanceOutcome::BlockedStaged => ScopedBranchAdvance::BlockedStaged,
+                BranchAdvanceOutcome::Stale => ScopedBranchAdvance::Stale,
+            },
+        )
+    }
+
     fn plan_tree_application(
         &self,
         repository: &GitRepository,
@@ -5124,7 +5508,9 @@ impl GitEngine for GitCliEngine {
         target: &GitOid,
     ) -> Result<GitTreeApplyPlan, GitEngineError> {
         repository.require_work_tree()?;
-        let paths = self.tree_application_paths(repository, expected_worktree, target)?;
+        let scoped_target =
+            self.scoped_application_target(repository, expected_worktree, target)?;
+        let paths = self.tree_application_paths(repository, expected_worktree, &scoped_target)?;
         let mut additions = 0;
         let mut updates = 0;
         let mut deletions = 0;
@@ -5156,6 +5542,8 @@ impl GitEngine for GitCliEngine {
     ) -> Result<GitTreeApplyPlan, GitEngineError> {
         repository.require_work_tree()?;
         let plan = self.plan_tree_application(repository, expected_worktree, target)?;
+        // Path-scoped application leaves every unscoped path as it was.
+        let target = &self.scoped_application_target(repository, expected_worktree, target)?;
         let index_path = repository.sync_index();
         self.prepare_sync_index(
             repository,
@@ -5205,12 +5593,31 @@ impl GitEngine for GitCliEngine {
         // The verified index already holds `expected_worktree` with fresh stat
         // data. Keeping it lets `read-tree -u` touch only the changed paths;
         // rebuilding it from the tree would rewrite every file in the vault.
-        self.index_output(
-            repository,
-            &index_path,
-            "apply the accepted sync tree",
-            ["read-tree", "--reset", "-u", target.as_str()],
-        )?;
+        if repository.worktree_scope.is_some() {
+            // Unscoped entries came from `expected` without stat data; a
+            // two-way merge leaves every path `expected` and `target` share
+            // untouched, where `--reset` would rewrite them from the index.
+            let expected_tree = self.tree_oid(repository, expected_worktree)?;
+            self.index_output(
+                repository,
+                &index_path,
+                "apply the accepted sync tree",
+                [
+                    "read-tree",
+                    "-m",
+                    "-u",
+                    expected_tree.as_str(),
+                    target.as_str(),
+                ],
+            )?;
+        } else {
+            self.index_output(
+                repository,
+                &index_path,
+                "apply the accepted sync tree",
+                ["read-tree", "--reset", "-u", target.as_str()],
+            )?;
+        }
         self.add_worktree_to_index(repository, &index_path, "verify the applied sync tree")?;
         let applied_tree = GitOid::parse(
             self.index_capture(
@@ -7079,6 +7486,170 @@ mod tests {
         (temporary, remote, writer)
     }
 
+    /// A pushed checkout with a scoped note and an unscoped script, opened
+    /// through a repository scoped to `wiki`.
+    fn scoped_fixture() -> (
+        tempfile::TempDir,
+        PathBuf,
+        GitCliEngine,
+        GitRepository,
+        GitOid,
+    ) {
+        let (temporary, _remote, writer) = init_branch_remote();
+        fs::create_dir(writer.join("wiki")).expect("wiki directory");
+        fs::write(writer.join("wiki/Note.md"), "note v1\n").expect("note");
+        fs::write(writer.join("run.sh"), "echo v1\n").expect("script");
+        let head = commit_all(&writer, "content");
+        run_git(&writer, &["push", "--quiet", "origin", "main"]);
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(&writer)
+            .expect("repository")
+            .with_worktree_scope(Some(GitWorktreeScope::new(["wiki"]).expect("scope")));
+        (temporary, writer, engine, repository, head)
+    }
+
+    fn blob_at(writer: &Path, revision: &GitOid, path: &str) -> String {
+        run_git_capture(writer, &["show", &format!("{}:{path}", revision.as_str())])
+    }
+
+    #[test]
+    fn scoped_capture_takes_unscoped_paths_from_the_published_branch() {
+        let (_temporary, writer, engine, repository, head) = scoped_fixture();
+        fs::write(writer.join("wiki/Note.md"), "note local\n").expect("note edit");
+        fs::write(writer.join("wiki/New.md"), "new\n").expect("new note");
+        fs::write(writer.join("run.sh"), "echo half-finished\n").expect("script edit");
+        fs::write(writer.join("Scratch.md"), "untracked\n").expect("unscoped file");
+        let local_ref = GitRefName::parse("refs/vulcan/sync/test/local").expect("ref");
+
+        let capture = engine
+            .capture_worktree(
+                &repository,
+                &GitCaptureRequest {
+                    base: Some(head.clone()),
+                    target_ref: local_ref,
+                    target_before: None,
+                    message: "vulcan sync snapshot\n".to_string(),
+                    link: None,
+                },
+            )
+            .expect("scoped capture");
+
+        assert!(capture.created);
+        assert_eq!(
+            blob_at(&writer, &capture.commit, "wiki/Note.md"),
+            "note local"
+        );
+        assert_eq!(blob_at(&writer, &capture.commit, "wiki/New.md"), "new");
+        assert_eq!(blob_at(&writer, &capture.commit, "run.sh"), "echo v1");
+        let paths = engine
+            .tree_entries(&repository, &capture.commit)
+            .expect("entries")
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect::<Vec<_>>();
+        assert!(!paths.contains(&"Scratch.md".to_string()));
+        assert!(engine
+            .worktree_matches_tree(&repository, &capture.commit)
+            .expect("compare"));
+
+        fs::write(writer.join("run.sh"), "echo another edit\n").expect("script edit");
+        assert!(
+            engine
+                .worktree_matches_tree(&repository, &capture.commit)
+                .expect("compare"),
+            "unscoped edits are outside the comparison"
+        );
+        fs::write(writer.join("wiki/Note.md"), "note again\n").expect("note edit");
+        assert!(!engine
+            .worktree_matches_tree(&repository, &capture.commit)
+            .expect("compare"));
+    }
+
+    #[test]
+    fn scoped_application_writes_only_scoped_paths() {
+        let (_temporary, writer, engine, repository, head) = scoped_fixture();
+        fs::write(writer.join("run.sh"), "echo uncommitted\n").expect("script edit");
+        let expected = engine
+            .snapshot_worktree_tree(&repository, Some(&head))
+            .expect("snapshot");
+        let expected = engine
+            .create_commit(
+                &repository,
+                &expected,
+                std::slice::from_ref(&head),
+                "expected\n",
+            )
+            .expect("expected commit");
+        let note = engine
+            .write_blob(&repository, b"note remote\n")
+            .expect("note blob");
+        let script = engine
+            .write_blob(&repository, b"echo committed elsewhere\n")
+            .expect("script blob");
+        let entry = |path: &str, oid: &GitOid| GitTreeEntry {
+            path: path.to_string(),
+            oid: oid.clone(),
+            mode: "100644".to_string(),
+            kind: "blob".to_string(),
+        };
+        let target_tree = engine
+            .tree_with_entries(
+                &repository,
+                Some(&head),
+                &[entry("wiki/Note.md", &note), entry("run.sh", &script)],
+            )
+            .expect("target tree");
+        let target = engine
+            .create_commit(
+                &repository,
+                &target_tree,
+                std::slice::from_ref(&expected),
+                "target\n",
+            )
+            .expect("target commit");
+
+        let plan = engine
+            .apply_tree(&repository, &expected, &target)
+            .expect("scoped application");
+
+        assert_eq!(plan.updates, 1);
+        assert_eq!(plan.paths[0].path, "wiki/Note.md");
+        assert_eq!(
+            fs::read_to_string(writer.join("wiki/Note.md")).expect("note"),
+            "note remote\n"
+        );
+        assert_eq!(
+            fs::read_to_string(writer.join("run.sh")).expect("script"),
+            "echo uncommitted\n",
+            "unscoped uncommitted work survives application"
+        );
+        assert!(engine
+            .worktree_matches_tree(&repository, &target)
+            .expect("compare"));
+    }
+
+    #[test]
+    fn scoped_capture_needs_a_published_branch() {
+        let (_temporary, writer, engine, repository, head) = scoped_fixture();
+        run_git(&writer, &["checkout", "--quiet", "--detach"]);
+
+        let error = engine
+            .capture_worktree(
+                &repository,
+                &GitCaptureRequest {
+                    base: Some(head),
+                    target_ref: GitRefName::parse("refs/vulcan/sync/test/local").expect("ref"),
+                    target_before: None,
+                    message: "vulcan sync snapshot\n".to_string(),
+                    link: None,
+                },
+            )
+            .expect_err("no published branch");
+
+        assert!(error.to_string().contains("detached"), "{error}");
+    }
+
     const OBSERVED_LIVE: &str = "refs/heads/__vulcan-sync/live";
     const OBSERVED_REGISTRATIONS: &str = "refs/heads/__vulcan-sync/registrations";
     const OBSERVED_MIRROR: &str = "refs/vulcan/registrations";
@@ -8434,6 +9005,7 @@ mod tests {
             work_tree: Some(PathBuf::from("/storage/wiki")),
             layout: GitRepositoryLayout::Detached,
             object_format: GitObjectFormat::Sha1,
+            worktree_scope: None,
         };
 
         assert_eq!(

@@ -1504,12 +1504,15 @@ Shared deterministic merge and whole-tree validation policy, plus a device-local
 - `sync.merge_policy.version` — type: `integer`; target: `shared`; default: `1`
   Define the versioned shared ordered path/type rules used for deterministic Git conflict handling.
   Example: `vulcan config set sync.merge_policy.version <value>`
+- `sync.paths` — type: `array`; target: `shared|local`; default: `[2 items]`
+  Edit `sync.paths` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
+  Example: `vulcan config set sync.paths <value>`
 - `sync.tree_validation.max_deleted_paths` — type: `integer`; target: `shared`; default: `100`
   Define shared whole-tree safety ceilings checked before an automatically resolved Git merge is published.
   Example: `vulcan config set sync.tree_validation.max_deleted_paths <value>`
 - `sync.tree_validation.max_deleted_percent` — type: `integer`; target: `shared`; default: `25`
   Define shared whole-tree safety ceilings checked before an automatically resolved Git merge is published. A result is rejected only when it exceeds both the path-count and percentage ceilings.
   Example: `vulcan config set sync.tree_validation.max_deleted_percent <value>`
-- `sync.worktree` — type: `enum`; target: `shared|local`; default: `all`; values: `all: snapshot the worktree`, `none: synchronize commits only`
+- `sync.worktree` — type: `enum`; target: `shared|local`; default: `all`; values: `all: snapshot the worktree`, `none: synchronize commits only`, `paths: snapshot sync.paths only`
   Edit `sync.worktree` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
   Example: `vulcan config set sync.worktree <value>`

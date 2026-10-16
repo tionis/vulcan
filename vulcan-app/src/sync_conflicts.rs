@@ -927,9 +927,7 @@ fn resolve_live_sync_conflict(
     }
 
     let engine = vulcan_sync::GitCliEngine::default();
-    let repository = engine
-        .discover_repository(&work_tree)
-        .map_err(AppError::operation)?;
+    let repository = crate::sync::discover_scoped_repository(&engine, paths, &work_tree)?;
     verify_preserved_conflict_refs(&engine, &repository, &record)?;
     if existing_resolution.is_none() {
         if let Some(group_ids) =
@@ -1209,9 +1207,7 @@ fn resolve_conflict_groups_with_state_store(
     }
 
     let engine = vulcan_sync::GitCliEngine::default();
-    let repository = engine
-        .discover_repository(&context.vault)
-        .map_err(AppError::operation)?;
+    let repository = crate::sync::discover_scoped_repository(&engine, paths, &context.vault)?;
     verify_preserved_conflict_refs(&engine, &repository, record)?;
     let safety = engine
         .safety_state(&repository)

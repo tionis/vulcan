@@ -324,6 +324,10 @@ pub struct SyncConfig {
     /// Shared mode; a device may only narrow it to `none`.
     #[serde(default, skip_serializing_if = "WorktreeSyncMode::is_all")]
     pub worktree: WorktreeSyncMode,
+    /// Repository-relative path prefixes synchronized from the worktree
+    /// when `worktree` is `paths`. Shared only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
     #[serde(
         default = "defaults::default_true",
         skip_serializing_if = "sync_branch_push_is_default"
@@ -344,6 +348,7 @@ impl Default for SyncConfig {
             agent_auto_accept: false,
             tree_validation: SyncTreeValidationConfig::default(),
             worktree: WorktreeSyncMode::default(),
+            paths: Vec::new(),
             branch_push: true,
         }
     }
@@ -2889,21 +2894,32 @@ fn remove_local_shared_sync_policy(
     path: &Path,
     diagnostics: &mut Vec<ConfigDiagnostic>,
 ) {
-    let (policy, validation, widened) =
-        config.sync.as_mut().map_or((false, false, false), |sync| {
-            (
-                sync.merge_policy.take().is_some(),
-                sync.tree_validation.take().is_some(),
-                sync.worktree
-                    .take_if(|worktree| worktree.syncs_live())
-                    .is_some(),
-            )
-        });
+    let (policy, validation, widened, scope) =
+        config
+            .sync
+            .as_mut()
+            .map_or((false, false, false, false), |sync| {
+                (
+                    sync.merge_policy.take().is_some(),
+                    sync.tree_validation.take().is_some(),
+                    sync.worktree
+                        .take_if(|worktree| worktree.syncs_live())
+                        .is_some(),
+                    sync.paths.take().is_some(),
+                )
+            });
     if widened {
         diagnostics.push(ConfigDiagnostic {
             kind: ConfigDiagnosticKind::Message,
             path: path.to_path_buf(),
-            message: "ignored local sync.worktree = \"all\": a device may only narrow worktree synchronization to \"none\"".to_string(),
+            message: "ignored local sync.worktree: a device may only narrow worktree synchronization to \"none\"".to_string(),
+        });
+    }
+    if scope {
+        diagnostics.push(ConfigDiagnostic {
+            kind: ConfigDiagnosticKind::Message,
+            path: path.to_path_buf(),
+            message: "ignored local sync.paths: every device must synchronize the same paths, so the scope is repository-level shared configuration".to_string(),
         });
     }
     if policy {
@@ -4533,6 +4549,9 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
         if let Some(worktree) = sync.worktree {
             config.sync.worktree = worktree;
+        }
+        if let Some(paths) = sync.paths {
+            config.sync.paths = paths;
         }
         if let Some(branch_push) = sync.branch_push {
             config.sync.branch_push = branch_push;

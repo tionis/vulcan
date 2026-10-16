@@ -19,6 +19,7 @@ mod platform;
 pub mod process;
 mod racy_index;
 mod refs;
+mod scope;
 mod structured_merge;
 mod sync;
 mod tree_ignore;
@@ -43,7 +44,7 @@ pub use git::{
     GitRepositoryRequirements, GitReservedNamesPolicy, GitResolvedPath, GitSafetyState,
     GitSymlinkPolicy, GitTimestampPolicy, GitTreeApplyAction, GitTreeApplyPath, GitTreeApplyPlan,
     GitTreeEntry, GitUnattendedRepositoryState, GitVersion, MergeBranchOutcome, PullFastForward,
-    PullRebase, RebaseOutcome,
+    PullRebase, RebaseOutcome, ScopedBranchAdvance,
 };
 pub use lock::{RepositoryLock, RepositoryLockError};
 pub use merge_policy::{
@@ -69,10 +70,11 @@ pub use refs::{
     remote_conflict_proposal_resolution_ref, remote_conflict_ref, remote_device_ref,
     remote_epoch_ref, remote_registration_ref, semantic_proposal_ref, sync_profile_key,
     DEFAULT_REMOTE_LIVE_REF, LOCAL_FORGE_DESCRIPTOR_MIRROR_REF, LOCAL_RECOVERY_REF_NAMESPACES,
-    LOCAL_REGISTRATION_MIRROR_ROOT, LOCAL_VULCAN_REF_ROOT, REMOTE_CONFLICT_BRANCH_ROOT,
-    REMOTE_DEVICE_BRANCH_ROOT, REMOTE_EPOCH_BRANCH_ROOT, REMOTE_FORGE_DESCRIPTOR_REF,
-    REMOTE_REGISTRATION_BRANCH_ROOT, VULCAN_REF_NAMESPACE_VERSION,
+    LOCAL_REGISTRATION_MIRROR_ROOT, LOCAL_VULCAN_REF_ROOT, PATH_SCOPED_REF_NAMESPACE_VERSION,
+    REMOTE_CONFLICT_BRANCH_ROOT, REMOTE_DEVICE_BRANCH_ROOT, REMOTE_EPOCH_BRANCH_ROOT,
+    REMOTE_FORGE_DESCRIPTOR_REF, REMOTE_REGISTRATION_BRANCH_ROOT, VULCAN_REF_NAMESPACE_VERSION,
 };
+pub use scope::{GitWorktreeScope, GitWorktreeScopeError};
 pub use sync::{
     classify_git_sync_error, find_git_live_epoch, git_live_epoch_id, git_published_branch_tip,
     merge_carried_path, sync_conflict_id, sync_git_once, sync_git_once_with_control,

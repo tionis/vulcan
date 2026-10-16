@@ -92,7 +92,8 @@ name = "{{folder_name}}"   # note stem; examples: index, README, readme, {{folde
 #
 # Shared sync mode; config.local.toml may only narrow worktree to "none".
 # [sync]
-# worktree = "all" # all: snapshot the worktree | none: synchronize commits only
+# worktree = "all" # all: snapshot the worktree | none: synchronize commits only | paths: snapshot sync.paths only
+# paths = ["wiki", "Home.md"] # shared only: repository-relative files or directories for worktree = "paths"
 # branch_push = true # publish local commits to the branch upstream (local may override)
 #
 # Shared merge policy example. Rules are evaluated in order and must include a fallback.

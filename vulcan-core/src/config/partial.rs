@@ -124,6 +124,7 @@ pub(super) struct PartialSyncConfig {
     pub(super) agent_auto_accept: Option<bool>,
     pub(super) tree_validation: Option<SyncTreeValidationConfig>,
     pub(super) worktree: Option<WorktreeSyncMode>,
+    pub(super) paths: Option<Vec<String>>,
     pub(super) branch_push: Option<bool>,
 }
 

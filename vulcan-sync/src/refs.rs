@@ -1,6 +1,9 @@
 use crate::{GitEngineError, GitRefName, GitRemote};
 
 pub const VULCAN_REF_NAMESPACE_VERSION: u32 = 3;
+/// Written only by path-scoped live commits, so readers that predate path
+/// scopes refuse them instead of treating unscoped paths as worktree content.
+pub const PATH_SCOPED_REF_NAMESPACE_VERSION: u32 = 4;
 pub const DEFAULT_REMOTE_LIVE_REF: &str = "refs/heads/__vulcan-sync/live";
 pub const REMOTE_EPOCH_BRANCH_ROOT: &str = "refs/heads/__vulcan-sync/epochs";
 pub const REMOTE_DEVICE_BRANCH_ROOT: &str = "refs/heads/__vulcan-sync/devices";

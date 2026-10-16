@@ -5120,19 +5120,34 @@ fn sync_worktree_mode_is_shared_and_local_config_may_only_narrow_it() {
 }
 
 #[test]
-fn sync_worktree_paths_mode_is_not_accepted_yet() {
+fn sync_paths_are_shared_configuration() {
     let temporary = TempDir::new().expect("temporary directory");
     let paths = VaultPaths::new(temporary.path());
     fs::create_dir(paths.vulcan_dir()).expect("Vulcan directory");
-    fs::write(paths.config_file(), "[sync]\nworktree = \"paths\"\n").expect("shared config");
+    fs::write(
+        paths.config_file(),
+        "[sync]\nworktree = \"paths\"\npaths = [\"wiki\", \"Home.md\"]\n",
+    )
+    .expect("shared config");
+    fs::write(
+        paths.local_config_file(),
+        "[sync]\nworktree = \"paths\"\npaths = [\"elsewhere\"]\n",
+    )
+    .expect("local config");
 
     let loaded = load_vault_config(&paths);
 
-    assert_eq!(loaded.config.sync.worktree, WorktreeSyncMode::All);
-    assert!(loaded
-        .diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.kind == ConfigDiagnosticKind::ParseFailure));
+    assert_eq!(loaded.config.sync.worktree, WorktreeSyncMode::Paths);
+    assert_eq!(loaded.config.sync.paths, ["wiki", "Home.md"]);
+    for ignored in ["ignored local sync.paths", "ignored local sync.worktree"] {
+        assert!(
+            loaded
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains(ignored)),
+            "{ignored}"
+        );
+    }
 }
 
 #[test]

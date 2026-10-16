@@ -6,13 +6,14 @@ use crate::{
     GitPlatformProfile, GitPushResult, GitRefMirror, GitRefName, GitRefPush, GitReference,
     GitRemote, GitRepository, GitRepositoryRequirements, GitResolvedPath, GitSafetyState,
     GitTreeApplyPlan, MergeAutomation, MergeBranchOutcome, MergeFileKind, MergePolicy,
-    MergeResolution, PullFastForward, PullRebase, RebaseOutcome, SyncAction, SyncBackend,
-    SyncCapabilities, SyncCapability, SyncConflict, SyncContext, SyncError, SyncErrorCategory,
-    SyncOperation, SyncOperationMode, SyncOutcome, SyncPlan, SyncProgress, SyncReport,
-    SyncResolutionState, SyncState, SyncStatus, DEFAULT_REMOTE_LIVE_REF,
+    MergeResolution, PullFastForward, PullRebase, RebaseOutcome, ScopedBranchAdvance, SyncAction,
+    SyncBackend, SyncCapabilities, SyncCapability, SyncConflict, SyncContext, SyncError,
+    SyncErrorCategory, SyncOperation, SyncOperationMode, SyncOutcome, SyncPlan, SyncProgress,
+    SyncReport, SyncResolutionState, SyncState, SyncStatus, DEFAULT_REMOTE_LIVE_REF,
     GIT_PLATFORM_PREFLIGHT_VERSION, LOCAL_REGISTRATION_MIRROR_ROOT,
     REMOTE_REGISTRATION_BRANCH_ROOT, SYNC_CONTRACT_VERSION, VULCAN_REF_NAMESPACE_VERSION,
 };
+use crate::{GitWorktreeScope, PATH_SCOPED_REF_NAMESPACE_VERSION};
 use serde::{Deserialize, Serialize, Serializer};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::error::Error;
@@ -149,6 +150,8 @@ pub struct GitSyncOptions {
     /// Whether cycles synchronize the worktree through live or only the
     /// checked-out branch's committed history.
     pub worktree: WorktreeSyncMode,
+    /// The scoped paths when `worktree` is `Paths`; ignored otherwise.
+    pub scope: Option<GitWorktreeScope>,
     /// Whether cycles publish local commits to the branch upstream.
     pub branch_push: bool,
 }
@@ -163,12 +166,15 @@ pub enum WorktreeSyncMode {
     /// Synchronize committed history only: live is never read or written.
     /// The worktree is still captured for this device's safety head.
     None,
+    /// Snapshot only the scoped paths; live holds everything else as the
+    /// checked-out branch published it.
+    Paths,
 }
 
 impl WorktreeSyncMode {
     #[must_use]
     pub const fn syncs_live(self) -> bool {
-        matches!(self, Self::All)
+        matches!(self, Self::All | Self::Paths)
     }
 
     #[must_use]
@@ -192,6 +198,7 @@ impl Default for GitSyncOptions {
             platform: GitPlatformProfile::native(),
             remote_observation: GitRemoteObservation::Query,
             worktree: WorktreeSyncMode::All,
+            scope: None,
             branch_push: true,
         }
     }
@@ -355,7 +362,11 @@ impl GitSyncRefs {
     pub fn for_options(options: &GitSyncOptions) -> Result<Self, GitSyncError> {
         let profile = sync_profile_key(&options.remote, &options.live_ref);
         Ok(Self {
-            namespace_version: VULCAN_REF_NAMESPACE_VERSION,
+            namespace_version: if options.worktree == WorktreeSyncMode::Paths {
+                PATH_SCOPED_REF_NAMESPACE_VERSION
+            } else {
+                VULCAN_REF_NAMESPACE_VERSION
+            },
             live: options.live_ref.clone(),
             local: local_sync_ref(&profile, "local")?,
             fetched: local_sync_ref(&profile, "remotes")?,
@@ -789,7 +800,14 @@ pub enum GitSyncError {
     Cancelled,
     Observer(GitSyncObserverError),
     PlatformIncompatible(GitPlatformPreflight),
-    RetryLimit { attempts: usize },
+    RetryLimit {
+        attempts: usize,
+    },
+    /// Remote live was written with a different path scope by a device whose
+    /// branch is at least as new; this device must catch up first.
+    ScopeMismatch {
+        detail: String,
+    },
     Io(std::io::Error),
 }
 
@@ -823,6 +841,7 @@ impl Display for GitSyncError {
                 formatter,
                 "synchronization did not converge after {attempts} attempts; local snapshots remain preserved"
             ),
+            Self::ScopeMismatch { detail } => formatter.write_str(detail),
             Self::Io(error) => Display::fmt(error, formatter),
         }
     }
@@ -837,7 +856,8 @@ impl Error for GitSyncError {
             Self::Locked
             | Self::Cancelled
             | Self::PlatformIncompatible(_)
-            | Self::RetryLimit { .. } => None,
+            | Self::RetryLimit { .. }
+            | Self::ScopeMismatch { .. } => None,
         }
     }
 }
@@ -1063,6 +1083,7 @@ fn git_report_to_backend_report(report: GitSyncReport) -> SyncReport {
 pub fn classify_git_sync_error(error: &GitSyncError) -> SyncError {
     let (category, retryable) = match error {
         GitSyncError::Locked
+        | GitSyncError::ScopeMismatch { .. }
         | GitSyncError::Git(
             GitEngineError::WorktreeChanged | GitEngineError::CommandTimedOut { .. },
         ) => (SyncErrorCategory::Busy, true),
@@ -1131,7 +1152,9 @@ pub fn sync_git_once_with_control(
     })?;
     let installation = engine.installation()?;
     require_git_version(&installation)?;
-    let repository = engine.discover_repository(vault_path)?;
+    let repository = engine
+        .discover_repository(vault_path)?
+        .with_worktree_scope(options_scope(options)?);
     let refs = GitSyncRefs::for_options(options)?;
     let safety = engine.safety_state(&repository)?;
     let requirements = engine.repository_requirements(&repository, vault_path)?;
@@ -1505,13 +1528,24 @@ fn capture_local_worktree(
         None => engine.head_commit(&report.repository)?,
     };
     let link = missing_branch_link(engine, report, tracking, base.as_ref())?;
+    let published = if report.repository.worktree_scope.is_some() {
+        git_published_branch_tip(engine, &report.repository)?
+    } else {
+        None
+    };
     Ok(engine.capture_worktree(
         &report.repository,
         &GitCaptureRequest {
             base: base.clone(),
             target_ref: report.refs.local.clone(),
             target_before,
-            message: snapshot_message(&report.refs, options, base.as_ref(), link.as_ref()),
+            message: snapshot_message(
+                &report.refs,
+                options,
+                base.as_ref(),
+                link.as_ref(),
+                published.as_ref(),
+            ),
             link,
         },
     )?)
@@ -1766,7 +1800,11 @@ fn pull_branch_lane(
             report.branch = Some(lane);
             return Ok(());
         }
-        if try_adopt_upstream(engine, report, &branch, &head, &fetched, capture, &mut lane)? {
+        // Path-scoped worktrees receive unscoped bytes only from the branch,
+        // so adopting through the index alone would leave them stale.
+        if report.repository.worktree_scope.is_none()
+            && try_adopt_upstream(engine, report, &branch, &head, &fetched, capture, &mut lane)?
+        {
             report.branch = Some(lane);
             return Ok(());
         }
@@ -1792,7 +1830,9 @@ fn pull_branch_lane(
             return Ok(());
         }
     };
-    if try_branch_fast_forward(engine, report, &branch, &fetched, config, &mut lane)? {
+    if try_scoped_fast_forward(engine, report, &branch, &fetched, config, &mut lane)?
+        || try_branch_fast_forward(engine, report, &branch, &fetched, config, &mut lane)?
+    {
         report.branch = Some(lane);
         return Ok(());
     }
@@ -1864,6 +1904,9 @@ fn adopt_upstream_after_application(
     report: &mut GitSyncReport,
     accepted: &GitOid,
 ) -> Result<(), GitSyncError> {
+    if report.repository.worktree_scope.is_some() {
+        return Ok(());
+    }
     let Some(mut lane) = report
         .branch
         .take_if(|lane| lane.action == GitBranchSyncAction::Deferred)
@@ -1880,6 +1923,68 @@ fn adopt_upstream_after_application(
     }
     report.branch = Some(lane);
     Ok(())
+}
+
+/// Path-scoped fast-forward: scoped paths may hold uncommitted bytes that
+/// arrived through live, which would make `merge --ff-only` refuse every
+/// advance touching them. Returns true when the lane is complete.
+fn try_scoped_fast_forward(
+    engine: &dyn GitEngine,
+    report: &mut GitSyncReport,
+    branch: &GitRefName,
+    fetched: &GitOid,
+    config: BranchPullConfig,
+    lane: &mut GitBranchSync,
+) -> Result<bool, GitSyncError> {
+    let Some(scope) = report.repository.worktree_scope.clone() else {
+        return Ok(false);
+    };
+    let Some(head) = lane.before.clone() else {
+        return Ok(false);
+    };
+    if config.fast_forward == PullFastForward::Never
+        || !engine.is_ancestor(&report.repository, &head, fetched)?
+    {
+        return Ok(false);
+    }
+    match engine.advance_branch_scoped(&report.repository, &scope, branch, &head, fetched)? {
+        ScopedBranchAdvance::Advanced { kept } => {
+            record_branch_move(engine, report, lane, GitBranchSyncAction::FastForwarded)?;
+            lane.detail = (!kept.is_empty()).then(|| {
+                format!(
+                    "kept uncommitted local bytes of {} scoped path(s) the new commits change: {}",
+                    kept.len(),
+                    preview_paths(&kept)
+                )
+            });
+        }
+        ScopedBranchAdvance::BlockedDirty(paths) => {
+            lane.action = GitBranchSyncAction::Deferred;
+            lane.detail = Some(format!(
+                "uncommitted changes outside sync.paths would be overwritten: {}; retrying next cycle",
+                preview_paths(&paths)
+            ));
+        }
+        ScopedBranchAdvance::BlockedStaged => {
+            lane.action = GitBranchSyncAction::Deferred;
+            lane.detail = Some(
+                "staged changes conflict with the upstream branch; retrying next cycle".to_string(),
+            );
+        }
+        ScopedBranchAdvance::Stale => {
+            lane.action = GitBranchSyncAction::Failed;
+            lane.detail = Some("the branch moved while fast-forwarding it".to_string());
+        }
+    }
+    Ok(true)
+}
+
+fn preview_paths(paths: &[String]) -> String {
+    let mut preview = paths.iter().take(5).cloned().collect::<Vec<_>>().join(", ");
+    if paths.len() > 5 {
+        let _ = write!(preview, " and {} more", paths.len() - 5);
+    }
+    preview
 }
 
 /// Attempts the fast-forward step of a branch pull. Returns true when the
@@ -3168,6 +3273,9 @@ fn reconcile(
     };
     let remote = ensure_remote_tip(engine, options, report, fetched_before, &remote_tip)?;
     require_supported_remote_namespace(engine, &report.repository, &remote)?;
+    if capture.commit != remote {
+        require_compatible_scope(engine, report, &remote)?;
+    }
     control.emit(GitSyncPhase::Fetched, report, None)?;
     if capture.commit == remote {
         return Ok(Some((remote, GitSyncOutcome::UpToDate, false)));
@@ -3224,7 +3332,7 @@ fn require_supported_remote_namespace(
     if versions.next().is_some() || version == 0 {
         return Err(unsupported_remote_namespace());
     }
-    if version > VULCAN_REF_NAMESPACE_VERSION {
+    if version > PATH_SCOPED_REF_NAMESPACE_VERSION {
         return Err(GitSyncError::Git(GitEngineError::UnsupportedRepository {
             detail: format!(
                 "remote live declares unsupported Vulcan ref namespace version `{version}`; upgrade Vulcan before reconciling this vault"
@@ -3713,6 +3821,47 @@ fn fetch_epoch_archive(
     Ok(archived)
 }
 
+/// Path-scoped merges compare only scoped paths: the local candidate takes
+/// every unscoped path from the remote tip first, so the two sides never
+/// differ outside the scope. The next snapshot restores this device's own
+/// published content there. `None` when nothing needs normalizing.
+fn normalize_scoped_capture(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    report: &GitSyncReport,
+    capture: &crate::GitCapture,
+    remote: &GitOid,
+) -> Result<Option<crate::GitCapture>, GitSyncError> {
+    let Some(scope) = &report.repository.worktree_scope else {
+        return Ok(None);
+    };
+    let tree = engine.overlay_scoped_tree(&report.repository, scope, remote, &capture.commit)?;
+    if tree == capture.tree {
+        return Ok(None);
+    }
+    let published = git_published_branch_tip(engine, &report.repository)?;
+    let message = format!(
+        "vulcan live scope alignment\n\n{}{}",
+        sync_trailers(
+            &report.refs,
+            options,
+            &format!("{}+{remote}", capture.commit)
+        ),
+        scope_trailers(options, published.as_ref())
+    );
+    let commit = engine.create_commit(
+        &report.repository,
+        &tree,
+        std::slice::from_ref(&capture.commit),
+        &message,
+    )?;
+    Ok(Some(crate::GitCapture {
+        commit,
+        tree,
+        created: true,
+    }))
+}
+
 fn merge_divergence(
     engine: &dyn GitEngine,
     options: &GitSyncOptions,
@@ -3724,6 +3873,8 @@ fn merge_divergence(
     control.check()?;
     control.emit(GitSyncPhase::Merging, report, None)?;
     report.automatic_resolutions.clear();
+    let normalized = normalize_scoped_capture(engine, options, report, capture, remote)?;
+    let capture = normalized.as_ref().unwrap_or(capture);
     let mut merge = engine.merge_commits(&report.repository, remote, &capture.commit)?;
     let tree = resolve_merge_candidate_tree(
         engine,
@@ -3761,11 +3912,22 @@ fn merge_divergence(
             detail: "the clean merge report omitted its tree".to_string(),
         })
     })?;
+    let published = if report.repository.worktree_scope.is_some() {
+        git_published_branch_tip(engine, &report.repository)?
+    } else {
+        None
+    };
     let merged = engine.create_commit(
         &report.repository,
         &tree,
         &[remote.clone(), capture.commit.clone()],
-        &merge_message(&report.refs, options, remote, &capture.commit),
+        &merge_message(
+            &report.refs,
+            options,
+            remote,
+            &capture.commit,
+            published.as_ref(),
+        ),
     )?;
     require_accepted_platform(engine, options, report, &merged)?;
     engine.update_ref(&report.repository, &report.refs.pending, &merged)?;
@@ -5002,14 +5164,90 @@ fn snapshot_message(
     options: &GitSyncOptions,
     source: Option<&GitOid>,
     link: Option<&GitOid>,
+    published: Option<&GitOid>,
 ) -> String {
     let link = link.map_or_else(String::new, |link| {
         format!("Vulcan-Sync-Branch-Link: {link}\n")
     });
     format!(
-        "vulcan live snapshot\n\n{}{link}",
-        sync_trailers(refs, options, source.map_or("unborn", GitOid::as_str))
+        "vulcan live snapshot\n\n{}{link}{}",
+        sync_trailers(refs, options, source.map_or("unborn", GitOid::as_str)),
+        scope_trailers(options, published)
     )
+}
+
+/// Path-scoped provenance: the scope identity and the published branch tip
+/// whose tree supplied every unscoped path. Empty in the other modes.
+fn scope_trailers(options: &GitSyncOptions, published: Option<&GitOid>) -> String {
+    let Some(scope) = options
+        .scope
+        .as_ref()
+        .filter(|_| options.worktree == WorktreeSyncMode::Paths)
+    else {
+        return String::new();
+    };
+    let published =
+        published.map_or_else(String::new, |tip| format!("{SCOPE_TIP_TRAILER}: {tip}\n"));
+    format!("{SCOPE_TRAILER}: {}\n{published}", scope.hash())
+}
+
+const SCOPE_TRAILER: &str = "Vulcan-Sync-Scope";
+const SCOPE_TIP_TRAILER: &str = "Vulcan-Sync-Scope-Branch";
+
+/// The scope a cycle runs with: required in path-scoped mode, absent otherwise.
+fn options_scope(options: &GitSyncOptions) -> Result<Option<GitWorktreeScope>, GitSyncError> {
+    match (options.worktree, &options.scope) {
+        (WorktreeSyncMode::Paths, Some(scope)) => Ok(Some(scope.clone())),
+        (WorktreeSyncMode::Paths, None) => {
+            Err(GitSyncError::Git(GitEngineError::UnsupportedRepository {
+                detail: "path-scoped sync (sync.worktree = \"paths\") needs sync.paths".to_string(),
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Refuses to reconcile with a live tip written under a different path scope
+/// (or none) unless this device's published branch is strictly newer than
+/// the one that tip records, so a device with stale configuration never
+/// rewrites paths another device still synchronizes from its worktree.
+fn require_compatible_scope(
+    engine: &dyn GitEngine,
+    report: &GitSyncReport,
+    remote: &GitOid,
+) -> Result<(), GitSyncError> {
+    let message = engine.commit_metadata(&report.repository, remote)?.message;
+    let remote_scope = trailer(&message, SCOPE_TRAILER);
+    let ours = report
+        .repository
+        .worktree_scope
+        .as_ref()
+        .map(GitWorktreeScope::hash);
+    if remote_scope.is_none() || remote_scope == ours.as_deref() {
+        // Unscoped history (or Vulcan commits without provenance) may always
+        // be adopted: switching to path scopes starts from it.
+        return Ok(());
+    }
+    let mismatch = |reason: &str| {
+        GitSyncError::ScopeMismatch {
+        detail: format!(
+            "remote live was written with a different sync.paths scope than this device uses, and {reason}; sync again once this device's branch includes the configuration change"
+        ),
+    }
+    };
+    let Some(theirs) =
+        trailer(&message, SCOPE_TIP_TRAILER).and_then(|tip| GitOid::parse(tip.trim()).ok())
+    else {
+        return Err(mismatch("it records no published branch"));
+    };
+    let Some(ours) = git_published_branch_tip(engine, &report.repository)? else {
+        return Err(mismatch("this device has no published branch"));
+    };
+    if ours != theirs && engine.is_ancestor(&report.repository, &theirs, &ours)? {
+        Ok(())
+    } else {
+        Err(mismatch("its branch is at least as new as this device's"))
+    }
 }
 
 fn merge_message(
@@ -5017,10 +5255,12 @@ fn merge_message(
     options: &GitSyncOptions,
     remote: &GitOid,
     local: &GitOid,
+    published: Option<&GitOid>,
 ) -> String {
     format!(
-        "vulcan live merge\n\n{}",
-        sync_trailers(refs, options, &format!("{remote}+{local}"))
+        "vulcan live merge\n\n{}{}",
+        sync_trailers(refs, options, &format!("{remote}+{local}")),
+        scope_trailers(options, published)
     )
 }
 
@@ -5917,7 +6157,7 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
                 "-p",
                 accepted.as_str(),
                 "-m",
-                "future writer\n\nVulcan-Ref-Namespace: 4",
+                "future writer\n\nVulcan-Ref-Namespace: 5",
             ],
         );
         run_git(
@@ -5935,7 +6175,7 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
             .expect_err("unknown remote namespace must block reconciliation");
         assert!(error
             .to_string()
-            .contains("unsupported Vulcan ref namespace version `4`"));
+            .contains("unsupported Vulcan ref namespace version `5`"));
         let repository = engine.discover_repository(&writer).expect("repository");
         assert_eq!(
             engine
@@ -8303,6 +8543,223 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
             assert!(report.branch.as_ref().is_some_and(|lane| !lane.pushed));
             assert_eq!(remote_ref_tip(&remote, "refs/heads/main"), published);
         }
+    }
+
+    fn scoped(paths: &[&str]) -> GitSyncOptions {
+        GitSyncOptions {
+            worktree: WorktreeSyncMode::Paths,
+            scope: Some(GitWorktreeScope::new(paths).expect("scope")),
+            ..GitSyncOptions::default()
+        }
+    }
+
+    /// A pushed branch holding a scoped note and an unscoped script, and a
+    /// second clone of it.
+    fn setup_scoped_devices() -> (TempDir, PathBuf, PathBuf, PathBuf) {
+        let (temporary, remote, writer) = setup_tracked_branch();
+        fs::create_dir(writer.join("wiki")).expect("wiki directory");
+        fs::write(writer.join("wiki/Note.md"), "note v1\n").expect("note");
+        fs::write(writer.join("run.sh"), "echo v1\n").expect("script");
+        commit_all(&writer, "content");
+        run_git(&writer, &["push", "--quiet", "origin", "main"]);
+        let reader = clone_reader(&temporary, &remote, &writer);
+        (temporary, remote, writer, reader)
+    }
+
+    fn live_blob(remote: &Path, path: &str) -> String {
+        git_stdout(
+            remote,
+            &["show", &format!("{DEFAULT_REMOTE_LIVE_REF}:{path}")],
+        )
+    }
+
+    #[test]
+    fn path_scoped_sync_carries_scoped_edits_but_not_unscoped_ones() {
+        let (_temporary, remote, writer, reader) = setup_scoped_devices();
+        let engine = GitCliEngine::default();
+        fs::write(writer.join("wiki/Note.md"), "note from writer\n").expect("note edit");
+        fs::write(writer.join("run.sh"), "echo half-finished\n").expect("script edit");
+
+        let written = sync_git_once(&engine, &writer, &scoped(&["wiki"])).expect("writer sync");
+
+        assert_eq!(written.outcome, GitSyncOutcome::Bootstrapped);
+        assert_eq!(
+            written.refs.namespace_version,
+            PATH_SCOPED_REF_NAMESPACE_VERSION
+        );
+        assert_eq!(live_blob(&remote, "wiki/Note.md"), "note from writer");
+        assert_eq!(live_blob(&remote, "run.sh"), "echo v1");
+        let message = git_stdout(
+            &remote,
+            &["log", "-1", "--format=%B", DEFAULT_REMOTE_LIVE_REF],
+        );
+        assert!(message.contains("Vulcan-Ref-Namespace: 4"), "{message}");
+        assert!(message.contains("Vulcan-Sync-Scope: "), "{message}");
+
+        fs::write(reader.join("run.sh"), "echo reader edit\n").expect("reader script");
+        let read = sync_git_once(&engine, &reader, &scoped(&["wiki"])).expect("reader sync");
+
+        assert_eq!(read.outcome, GitSyncOutcome::Pulled);
+        assert_eq!(
+            fs::read_to_string(reader.join("wiki/Note.md")).expect("note"),
+            "note from writer\n"
+        );
+        assert_eq!(
+            fs::read_to_string(reader.join("run.sh")).expect("script"),
+            "echo reader edit\n",
+            "unscoped uncommitted work stays local"
+        );
+    }
+
+    #[test]
+    fn path_scoped_divergence_merges_scoped_paths_only() {
+        let (_temporary, remote, writer, reader) = setup_scoped_devices();
+        let engine = GitCliEngine::default();
+        sync_git_once(&engine, &writer, &scoped(&["wiki"])).expect("bootstrap");
+        sync_git_once(&engine, &reader, &scoped(&["wiki"])).expect("reader joins");
+        fs::write(writer.join("wiki/A.md"), "from writer\n").expect("writer note");
+        fs::write(writer.join("run.sh"), "echo writer\n").expect("writer script");
+        sync_git_once(&engine, &writer, &scoped(&["wiki"])).expect("writer sync");
+        fs::write(reader.join("wiki/B.md"), "from reader\n").expect("reader note");
+        fs::write(reader.join("run.sh"), "echo reader\n").expect("reader script");
+
+        let merged = sync_git_once(&engine, &reader, &scoped(&["wiki"])).expect("reader merge");
+
+        assert_eq!(merged.outcome, GitSyncOutcome::Merged);
+        assert!(reader.join("wiki/A.md").exists() && reader.join("wiki/B.md").exists());
+        assert_eq!(
+            fs::read_to_string(reader.join("run.sh")).expect("script"),
+            "echo reader\n"
+        );
+        assert_eq!(live_blob(&remote, "run.sh"), "echo v1");
+        assert_eq!(live_blob(&remote, "wiki/A.md"), "from writer");
+        assert_eq!(live_blob(&remote, "wiki/B.md"), "from reader");
+    }
+
+    #[test]
+    fn path_scoped_branch_lane_updates_unscoped_files_and_keeps_scoped_edits() {
+        let (temporary, remote, writer, reader) = setup_scoped_devices();
+        let engine = GitCliEngine::default();
+        sync_git_once(&engine, &reader, &scoped(&["wiki"])).expect("bootstrap");
+        let other = temporary.path().join("agent");
+        run_git(
+            temporary.path(),
+            &[
+                "clone",
+                "--quiet",
+                "-b",
+                "main",
+                remote.to_str().expect("remote path"),
+                other.to_str().expect("clone path"),
+            ],
+        );
+        run_git(&other, &["config", "user.name", "Vulcan Test"]);
+        run_git(&other, &["config", "user.email", "vulcan@example.invalid"]);
+        fs::write(other.join("wiki/Note.md"), "note committed elsewhere\n").expect("note");
+        fs::write(other.join("run.sh"), "echo v2\n").expect("script");
+        commit_all(&other, "agent work");
+        run_git(&other, &["push", "--quiet", "origin", "main"]);
+        fs::write(reader.join("wiki/Note.md"), "note edited locally\n").expect("local note");
+
+        let report = sync_git_once(&engine, &reader, &scoped(&["wiki"])).expect("sync");
+
+        let (action, detail) = branch_action(&report);
+        assert_eq!(action, GitBranchSyncAction::FastForwarded);
+        assert!(detail.is_some_and(|detail| detail.contains("wiki/Note.md")));
+        assert_eq!(
+            fs::read_to_string(reader.join("run.sh")).expect("script"),
+            "echo v2\n"
+        );
+        assert_eq!(
+            fs::read_to_string(reader.join("wiki/Note.md")).expect("note"),
+            "note edited locally\n"
+        );
+        assert_eq!(live_blob(&remote, "run.sh"), "echo v2");
+        assert_eq!(live_blob(&remote, "wiki/Note.md"), "note edited locally");
+        let _ = writer;
+    }
+
+    #[test]
+    fn path_scoped_branch_lane_defers_over_dirty_unscoped_files() {
+        let (temporary, remote, _writer, reader) = setup_scoped_devices();
+        let engine = GitCliEngine::default();
+        fs::write(reader.join("run.sh"), "echo uncommitted\n").expect("dirty script");
+        let other = temporary.path().join("agent");
+        run_git(
+            temporary.path(),
+            &[
+                "clone",
+                "--quiet",
+                "-b",
+                "main",
+                remote.to_str().expect("remote path"),
+                other.to_str().expect("clone path"),
+            ],
+        );
+        run_git(&other, &["config", "user.name", "Vulcan Test"]);
+        run_git(&other, &["config", "user.email", "vulcan@example.invalid"]);
+        fs::write(other.join("run.sh"), "echo v2\n").expect("script");
+        commit_all(&other, "agent work");
+        run_git(&other, &["push", "--quiet", "origin", "main"]);
+
+        let report = sync_git_once(&engine, &reader, &scoped(&["wiki"])).expect("sync");
+
+        let (action, detail) = branch_action(&report);
+        assert_eq!(action, GitBranchSyncAction::Deferred);
+        assert!(detail.is_some_and(|detail| detail.contains("run.sh")));
+        assert_eq!(
+            fs::read_to_string(reader.join("run.sh")).expect("script"),
+            "echo uncommitted\n"
+        );
+    }
+
+    #[test]
+    fn devices_with_different_scopes_do_not_merge_each_other() {
+        let (_temporary, _remote, writer, reader) = setup_scoped_devices();
+        let engine = GitCliEngine::default();
+        fs::write(writer.join("wiki/Note.md"), "scoped edit\n").expect("writer edit");
+        sync_git_once(&engine, &writer, &scoped(&["wiki"])).expect("bootstrap");
+        fs::write(reader.join("Home.md"), "reader home\n").expect("reader edit");
+
+        let wider = sync_git_once(&engine, &reader, &scoped(&["wiki", "Home.md"]))
+            .expect_err("same branch, different scope");
+        assert!(
+            matches!(wider, GitSyncError::ScopeMismatch { .. }),
+            "{wider}"
+        );
+        assert!(classify_git_sync_error(&wider).retryable);
+
+        let unscoped = sync_git_once(&engine, &reader, &GitSyncOptions::default())
+            .expect_err("a whole-worktree device must not adopt a scoped live");
+        assert!(
+            matches!(unscoped, GitSyncError::ScopeMismatch { .. }),
+            "{unscoped}"
+        );
+    }
+
+    #[test]
+    fn a_newer_branch_may_change_the_scope() {
+        let (_temporary, remote, writer, reader) = setup_scoped_devices();
+        let engine = GitCliEngine::default();
+        fs::write(writer.join("wiki/Note.md"), "scoped edit\n").expect("writer edit");
+        sync_git_once(&engine, &writer, &scoped(&["wiki"])).expect("bootstrap");
+        fs::write(reader.join("run.sh"), "echo scope change\n").expect("config stand-in");
+        commit_all(&reader, "widen the scope");
+        run_git(&reader, &["push", "--quiet", "origin", "main"]);
+        fs::write(reader.join("Home.md"), "reader home\n").expect("newly scoped edit");
+
+        let report = sync_git_once(&engine, &reader, &scoped(&["wiki", "Home.md"]))
+            .expect("the device with the newer branch may change the scope");
+
+        assert_eq!(report.outcome, GitSyncOutcome::Merged);
+        assert_eq!(live_blob(&remote, "Home.md"), "reader home");
+        assert_eq!(live_blob(&remote, "wiki/Note.md"), "scoped edit");
+        let stale = sync_git_once(&engine, &writer, &scoped(&["wiki"]))
+            .expect_err("the old scope must not overwrite the new one");
+        assert!(
+            matches!(stale, GitSyncError::ScopeMismatch { .. }),
+            "{stale}"
+        );
     }
 
     #[test]

@@ -831,6 +831,7 @@ mod tests {
                 work_tree: Some(temporary.path().to_path_buf()),
                 layout: vulcan_sync::GitRepositoryLayout::Colocated,
                 object_format: vulcan_sync::GitObjectFormat::Sha1,
+                worktree_scope: None,
             },
             local_snapshot: None,
             local_tree: None,

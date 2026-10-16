@@ -176,8 +176,33 @@ A device can opt out of worktree synchronization alone with `worktree = "none"` 
 `.vulcan/config.local.toml`; it cannot turn a shared `"none"` back into `"all"`. `branch_push` may be
 set in either file. Conflict resolution, checkpoints, retention, and semantic history apply only to
 the default mode and refuse here; earlier live state is left untouched for when the mode switches
-back. Path-scoped worktree synchronization (snapshot only some paths) is designed but not built;
-see [Roadmap 12.23](../ROADMAP.md#1223-worktree-sync-modes).
+back.
+
+## Notes by path, everything else by commit
+
+Between the two, a repository can snapshot only some paths, for example the notes of a wiki that
+also holds code:
+
+```toml
+# .vulcan/config.toml (shared, committed)
+[sync]
+worktree = "paths"
+paths = ["wiki", "Home.md", ".obsidian"]   # files or directories, relative to the repository root
+```
+
+Edits inside these paths sync like the default mode, including from Obsidian on a phone where
+nobody commits. Everything else reaches other devices only through commits: live takes those paths
+from your branch as it was last pushed, and sync never writes them from live. When new commits
+arrive, sync updates every file you have not changed locally. A note you are editing keeps your
+version, and the cycle mentions it. An uncommitted change to a file outside the paths holds the
+branch back until you commit or discard it.
+
+Every device must use the same `paths`, so they are shared configuration only. To change them,
+commit the new list and push. A device whose branch does not include that commit yet stops with a
+scope mismatch instead of reverting the others, and continues once its branch catches up. Semantic
+history works, but only for changes inside the paths. Paths cannot include `.vulcan` configuration,
+and `.vulcan/device-names` is always included. A repository switching from `"all"` simply starts
+over: the first path-scoped snapshot replaces everything outside the paths with the pushed branch.
 
 ## Conflicts and recovery
 

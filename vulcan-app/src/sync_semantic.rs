@@ -425,6 +425,31 @@ pub struct SemanticRejectReport {
     pub record_retained: bool,
 }
 
+/// Path-scoped live history only ever records scoped worktree bytes; any
+/// other difference between source and target is branch history this device
+/// has not caught up with, which semantic commits must never revert.
+fn require_scoped_changes(
+    repository: &vulcan_sync::GitRepository,
+    changed_paths: &[String],
+) -> Result<(), AppError> {
+    let Some(scope) = &repository.worktree_scope else {
+        return Ok(());
+    };
+    let outside = changed_paths
+        .iter()
+        .filter(|path| !scope.contains(path))
+        .take(5)
+        .cloned()
+        .collect::<Vec<_>>();
+    if outside.is_empty() {
+        return Ok(());
+    }
+    Err(AppError::operation(format!(
+        "the live target differs from the semantic source outside sync.paths ({}); sync until live records the current branch before planning semantic history",
+        outside.join(", ")
+    )))
+}
+
 pub fn create_semantic_plan(
     paths: &VaultPaths,
     options: &SemanticPlanOptions,
@@ -498,9 +523,7 @@ fn create_semantic_plan_internal(
 ) -> Result<SemanticPlanReport, AppError> {
     let vault = crate::sync_state::sync_work_tree(paths.vault_root())?;
     let engine = GitCliEngine::default();
-    let repository = engine
-        .discover_repository(&vault)
-        .map_err(AppError::operation)?;
+    let repository = crate::sync::discover_scoped_repository(&engine, paths, &vault)?;
     let source = engine
         .resolve_revision(&repository, &options.from)
         .map_err(AppError::operation)?;
@@ -513,6 +536,7 @@ fn create_semantic_plan_internal(
     let changed_paths = engine
         .changed_paths(&repository, &source, &target)
         .map_err(AppError::operation)?;
+    require_scoped_changes(&repository, &changed_paths)?;
     let (groups, agent_identity) = match provider {
         Some(provider) => plan_agent_groups(
             &engine,

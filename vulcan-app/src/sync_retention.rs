@@ -184,9 +184,7 @@ pub fn plan_sync_retention(
     options.policy.validate()?;
     let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
     let engine = vulcan_sync::GitCliEngine::default();
-    let repository = engine
-        .discover_repository(&vault)
-        .map_err(AppError::operation)?;
+    let repository = crate::sync::discover_scoped_repository(&engine, paths, &vault)?;
     let refs = GitSyncRefs::for_options(&GitSyncOptions {
         remote: options.remote.clone(),
         live_ref: options.live_ref.clone(),
@@ -348,9 +346,7 @@ pub fn apply_sync_retention(
     }
     let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
     let engine = vulcan_sync::GitCliEngine::default();
-    let repository = engine
-        .discover_repository(&vault)
-        .map_err(AppError::operation)?;
+    let repository = crate::sync::discover_scoped_repository(&engine, paths, &vault)?;
     let _lock = vulcan_sync::RepositoryLock::acquire(&repository.git_dir)?;
     let plan = plan_sync_retention(paths, options)?;
     let epoch_rollover = if rollover && plan.active_epoch.rollover_required {

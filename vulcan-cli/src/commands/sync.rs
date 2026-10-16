@@ -3652,10 +3652,8 @@ fn print_sync_report(
                 sync_outcome_message(report.sync.outcome, report.sync.remote.as_str())
             };
             println!("{outcome}");
-            if !report.sync.worktree.syncs_live() {
-                println!(
-                    "Worktree: not synchronized (sync.worktree = \"none\"); only commits travel."
-                );
+            if let Some(line) = worktree_mode_message(&report.sync) {
+                println!("{line}");
             }
             if let Some(branch) = &report.sync.branch {
                 if let Some(line) = branch_lane_message(branch) {
@@ -3719,6 +3717,27 @@ fn print_sync_report(
                 );
             }
             Ok(())
+        }
+    }
+}
+
+fn worktree_mode_message(report: &GitSyncReport) -> Option<String> {
+    match report.worktree {
+        vulcan_app::sync::WorktreeSyncMode::All => None,
+        vulcan_app::sync::WorktreeSyncMode::None => Some(
+            "Worktree: not synchronized (sync.worktree = \"none\"); only commits travel."
+                .to_string(),
+        ),
+        vulcan_app::sync::WorktreeSyncMode::Paths => {
+            let scope = report
+                .repository
+                .worktree_scope
+                .as_ref()
+                .map(|scope| scope.entries().join(", "))
+                .unwrap_or_default();
+            Some(format!(
+                "Worktree: synchronizing {scope}; everything else travels only through commits."
+            ))
         }
     }
 }

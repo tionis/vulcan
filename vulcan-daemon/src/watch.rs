@@ -1314,6 +1314,7 @@ mod tests {
             work_tree: Some(PathBuf::from("/side")),
             layout: vulcan_sync::GitRepositoryLayout::Colocated,
             object_format: vulcan_sync::GitObjectFormat::Sha1,
+            worktree_scope: None,
         };
         let event = |path: &str| change(PathBuf::from(path));
         for path in [

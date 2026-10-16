@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 39
+version: 40
 metadata:
   vulcan:
     managed: true
@@ -367,6 +367,22 @@ by `worktree: "none"` in the JSON report or the `Worktree: not synchronized` lin
   `sync doctor` reports `sync.worktree` instead of live ref checks.
 - Do not switch a repository's mode unprompted. A device may opt itself out with `worktree = "none"`
   in `.vulcan/config.local.toml`; it cannot widen a shared `"none"`.
+
+## Path-scoped repositories
+
+`sync.worktree = "paths"` with a shared `sync.paths` list (`worktree: "paths"` in reports) syncs
+uncommitted edits only inside those paths. Everything else reaches other devices only through
+commits and is never written from live.
+
+- Commit and push changes outside `sync.paths` yourself. An uncommitted change there defers the
+  branch lane (`deferred`, naming the paths) whenever incoming commits touch the same file.
+- A `fast-forwarded` branch lane whose detail says it kept local bytes of scoped paths is expected:
+  live carries those notes, so do not commit, reset, or stash them to "fix" the status.
+- A retryable `ScopeMismatch` error means remote live was written with different `sync.paths` by a
+  device whose branch is at least as new. Let the branch lane pull (sync again); never edit
+  `sync.paths` locally to match, since `config.local.toml` values are ignored.
+- Semantic planning refuses targets that differ outside the paths; sync until live includes the
+  current branch first.
 
 ## Review preserved conflicts
 

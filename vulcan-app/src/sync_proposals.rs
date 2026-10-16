@@ -2137,9 +2137,7 @@ fn prepare_manual_resolution_scope(
         ..
     } = prepare_resolution_scope(paths, conflict_id, proposal_options, state_store, false)?;
     let engine = vulcan_sync::GitCliEngine::default();
-    let repository = engine
-        .discover_repository(&vault)
-        .map_err(AppError::operation)?;
+    let repository = crate::sync::discover_scoped_repository(&engine, paths, &vault)?;
     let (vault_lock, lock) = acquire_proposal_apply_locks(paths, &repository)?;
     let conflict_store = SyncConflictStore::from_state_store(state_store);
     if conflict_store
@@ -2377,9 +2375,7 @@ pub fn create_resolution_proposal_with_provider_for_target(
         .as_deref()
         .ok_or_else(|| AppError::operation("agent resolution requires one merge base"))?;
     let engine = vulcan_sync::GitCliEngine::default();
-    let repository = engine
-        .discover_repository(&vault)
-        .map_err(AppError::operation)?;
+    let repository = crate::sync::discover_scoped_repository(&engine, paths, &vault)?;
     // Serialize the pre-generation checks, then release the repository
     // lock across the unbounded provider network call: holding it would
     // stall every other sync transaction for minutes. The post-generation
@@ -3105,9 +3101,7 @@ pub fn approve_resolution_proposal_with_state_store(
     validate_proposal_inputs(&record, &proposal)?;
     ensure_proposal_not_rejected(state_store, &proposal)?;
     let engine = vulcan_sync::GitCliEngine::default();
-    let repository = engine
-        .discover_repository(&vault)
-        .map_err(AppError::operation)?;
+    let repository = crate::sync::discover_scoped_repository(&engine, paths, &vault)?;
     verify_preserved_conflict_refs(&engine, &repository, &record)?;
     let resolved_paths = revalidate_proposal_tree(&engine, &repository, &record, &proposal, false)?;
     revalidate_proposal_whole_tree(paths, &engine, &repository, &proposal)?;

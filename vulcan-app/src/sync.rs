@@ -506,6 +506,17 @@ fn doctor_git_vault_with_optional_state(
 
     if options.worktree.syncs_live() {
         doctor_refs(&engine, &repository, options, &mut report);
+        if let Some(scope) = &options.scope {
+            doctor_check(
+                &mut report,
+                "sync.worktree",
+                SyncDoctorSeverity::Info,
+                format!(
+                    "path-scoped (sync.worktree = \"paths\"): live holds {} from the worktree and everything else from the published branch",
+                    scope.entries().join(", ")
+                ),
+            );
+        }
     } else {
         doctor_check(
             &mut report,
@@ -2209,7 +2220,7 @@ pub fn configured_git_sync_options_for_profile(
 ) -> Result<GitSyncOptions, AppError> {
     let config = load_sync_config(paths, profile == SyncContentProfile::Knowledge)?;
     let mut effective = options.clone();
-    if let Some(policy) = config.sync.merge_policy {
+    if let Some(policy) = config.sync.merge_policy.clone() {
         effective.merge_policy = policy;
     }
     if config.sync.merge_automation == vulcan_sync::MergeAutomation::RequireReview
@@ -2221,6 +2232,9 @@ pub fn configured_git_sync_options_for_profile(
     // committed history only keeps it, and so does a configured `none`.
     if !config.sync.worktree.syncs_live() {
         effective.worktree = WorktreeSyncMode::None;
+    } else if effective.worktree.syncs_live() {
+        effective.worktree = config.sync.worktree;
+        effective.scope = worktree_scope_from_config(&config)?;
     }
     effective.branch_push = options.branch_push && config.sync.branch_push;
     effective
@@ -2228,6 +2242,33 @@ pub fn configured_git_sync_options_for_profile(
         .validate()
         .map_err(AppError::operation)?;
     Ok(effective)
+}
+
+fn worktree_scope_from_config(
+    config: &VaultConfig,
+) -> Result<Option<vulcan_sync::GitWorktreeScope>, AppError> {
+    if config.sync.worktree != WorktreeSyncMode::Paths {
+        return Ok(None);
+    }
+    vulcan_sync::GitWorktreeScope::new(&config.sync.paths)
+        .map(Some)
+        .map_err(AppError::operation)
+}
+
+/// Discovers the repository holding `path` with the path scope the vault's
+/// configuration selects, so resolution and maintenance workflows read and
+/// write the worktree exactly as a sync cycle does.
+pub(crate) fn discover_scoped_repository(
+    engine: &dyn GitEngine,
+    paths: &VaultPaths,
+    path: &Path,
+) -> Result<vulcan_sync::GitRepository, AppError> {
+    let repository = engine
+        .discover_repository(path)
+        .map_err(AppError::operation)?;
+    let work_tree = crate::sync_state::sync_work_tree(paths.vault_root())?;
+    let config = load_sync_config(&sync_vault_paths(paths, &work_tree), false)?;
+    Ok(repository.with_worktree_scope(worktree_scope_from_config(&config)?))
 }
 
 /// Refuses a workflow that reads or publishes the live ref when the vault
@@ -3126,7 +3167,7 @@ mod tests {
     use super::*;
     use std::fs;
     use std::io::Write;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
     use tempfile::tempdir;
     use vulcan_core::{initialize_vulcan_dir, properties::load_note_index, scan_vault, ScanMode};
@@ -6748,6 +6789,137 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             check.code == "sync.worktree" && check.severity == SyncDoctorSeverity::Info
         }));
         assert!(!doctor.checks.iter().any(|check| check.code == "git.remote"));
+    }
+
+    /// A pushed path-scoped vault (`wiki` in scope, `run.sh` outside it) and
+    /// a second clone. Returns the remote, writer, and reader.
+    fn path_scoped_vault_pair(temporary: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        let remote = temporary.join("remote.git");
+        git(
+            temporary,
+            &[
+                "init",
+                "--quiet",
+                "--bare",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        let writer = temporary.join("writer");
+        fs::create_dir_all(writer.join(".vulcan")).expect("vault directory");
+        fs::create_dir_all(writer.join("wiki")).expect("wiki directory");
+        git(
+            &writer,
+            &["-c", "init.defaultBranch=main", "init", "--quiet"],
+        );
+        for (key, value) in [
+            ("user.name", "Vulcan Test"),
+            ("user.email", "vulcan@example.invalid"),
+        ] {
+            git(&writer, &["config", key, value]);
+        }
+        git(
+            &writer,
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        fs::write(writer.join(".gitignore"), ".vulcan/cache.db*\n").expect("ignore file");
+        fs::write(
+            writer.join(".vulcan/config.toml"),
+            "[sync]\nworktree = \"paths\"\npaths = [\"wiki\"]\n",
+        )
+        .expect("shared config");
+        fs::write(writer.join("wiki/Note.md"), "base\n").expect("note");
+        fs::write(writer.join("run.sh"), "echo v1\n").expect("script");
+        git(&writer, &["add", "--all"]);
+        git(&writer, &["commit", "--quiet", "-m", "initial"]);
+        git(&writer, &["push", "--quiet", "-u", "origin", "main"]);
+        let reader = temporary.join("reader");
+        git(
+            temporary,
+            &[
+                "clone",
+                "--quiet",
+                remote.to_str().expect("remote path"),
+                reader.to_str().expect("reader path"),
+            ],
+        );
+        for (key, value) in [
+            ("user.name", "Vulcan Test"),
+            ("user.email", "vulcan@example.invalid"),
+        ] {
+            git(&reader, &["config", key, value]);
+        }
+        (remote, writer, reader)
+    }
+
+    #[test]
+    fn path_scoped_sync_and_resolution_leave_unscoped_work_alone() {
+        let temporary = tempdir().expect("temporary directory");
+        let (remote, writer, reader) = path_scoped_vault_pair(temporary.path());
+        let writer_store = SyncStateStore::at(temporary.path().join("writer-state"));
+        let reader_store = SyncStateStore::at(temporary.path().join("reader-state"));
+        let options = GitSyncOptions::default();
+
+        fs::write(writer.join("wiki/Note.md"), "writer\n").expect("writer note");
+        let written =
+            sync_git_vault_with_state_store(&VaultPaths::new(&writer), &options, &writer_store)
+                .expect("writer sync");
+        assert_eq!(written.sync.worktree, WorktreeSyncMode::Paths);
+        fs::write(reader.join("wiki/Note.md"), "reader\n").expect("reader note");
+        fs::write(reader.join("run.sh"), "echo reader wip\n").expect("reader script");
+        let conflicted =
+            sync_git_vault_with_state_store(&VaultPaths::new(&reader), &options, &reader_store)
+                .expect("reader sync");
+        assert_eq!(conflicted.sync.outcome, GitSyncOutcome::Conflicted);
+        let conflict_id = conflicted
+            .conflict_record
+            .as_ref()
+            .expect("conflict record")
+            .id
+            .clone();
+
+        crate::sync_conflicts::resolve_sync_conflict_with_state_store(
+            &VaultPaths::new(&reader),
+            &conflict_id,
+            &crate::sync_conflicts::ResolveSyncConflictOptions {
+                side: crate::sync_conflicts::SyncConflictResolutionSide::Local,
+                group_ids: Vec::new(),
+                remote: vulcan_sync::GitRemote::parse("origin").expect("remote"),
+                live_ref: vulcan_sync::GitRefName::parse("refs/heads/__vulcan-sync/live")
+                    .expect("live ref"),
+                dry_run: false,
+            },
+            &reader_store,
+        )
+        .expect("resolve with the local side");
+
+        assert_eq!(
+            fs::read_to_string(reader.join("wiki/Note.md")).expect("note"),
+            "reader\n"
+        );
+        assert_eq!(
+            fs::read_to_string(reader.join("run.sh")).expect("script"),
+            "echo reader wip\n",
+            "resolution never touches unscoped files"
+        );
+        assert_eq!(
+            git_stdout(&remote, &["show", "refs/heads/__vulcan-sync/live:run.sh"]),
+            "echo v1"
+        );
+        sync_git_vault_with_state_store(&VaultPaths::new(&writer), &options, &writer_store)
+            .expect("writer receives the resolution");
+        assert_eq!(
+            fs::read_to_string(writer.join("wiki/Note.md")).expect("note"),
+            "reader\n"
+        );
+        assert_eq!(
+            fs::read_to_string(writer.join("run.sh")).expect("script"),
+            "echo v1\n"
+        );
     }
 
     #[test]
