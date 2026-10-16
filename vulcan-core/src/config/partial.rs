@@ -123,6 +123,8 @@ pub(super) struct PartialSyncConfig {
     pub(super) merge_automation: Option<MergeAutomation>,
     pub(super) agent_auto_accept: Option<bool>,
     pub(super) tree_validation: Option<SyncTreeValidationConfig>,
+    pub(super) worktree: Option<WorktreeSyncMode>,
+    pub(super) branch_push: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]

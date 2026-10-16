@@ -153,6 +153,32 @@ devices that were still editing the file. The same applies to any tracked path y
 global excludes file. Files added with `git add --force` despite an existing rule stay tracked. Devices still
 on an older Vulcan version delete their copy instead; Obsidian recreates the layout.
 
+## Committed history only
+
+Notes edited where nobody commits suit the default mode, which snapshots the whole worktree. A
+repository that also holds code, or whose authors commit their own work, can synchronize only
+committed history instead:
+
+```toml
+# .vulcan/config.toml (shared, committed)
+[sync]
+worktree = "none"     # default "all"
+# branch_push = false # optional: fetch and fast-forward, but push yourself
+```
+
+Each `vulcan sync run` then backs this device's worktree up to its private safety head (never
+applied anywhere), fetches the checked-out branch, fast-forwards it when the incoming commits do not
+touch files you are editing, falls back to your pull configuration when it diverged, and pushes your
+commits. The hidden live branch is never created or read, so half-finished edits stay where they
+are. The daemon also notices new commits, since it watches the Git directory's `HEAD` and branch refs.
+
+A device can opt out of worktree synchronization alone with `worktree = "none"` in
+`.vulcan/config.local.toml`; it cannot turn a shared `"none"` back into `"all"`. `branch_push` may be
+set in either file. Conflict resolution, checkpoints, retention, and semantic history apply only to
+the default mode and refuse here; earlier live state is left untouched for when the mode switches
+back. Path-scoped worktree synchronization (snapshot only some paths) is designed but not built;
+see [Roadmap 12.23](../ROADMAP.md#1223-worktree-sync-modes).
+
 ## Conflicts and recovery
 
 A conflicting sync preserves the immutable candidates and may publish a safe projection. The accepted remote bytes remain provisionally at the original path, clean paths continue synchronizing, and no conflict artifacts are written into the vault. The immutable conflict-record ref is also published to the remote so the record and both candidate histories remain Git-reachable.

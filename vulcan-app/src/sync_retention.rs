@@ -180,6 +180,7 @@ pub fn plan_sync_retention(
     paths: &VaultPaths,
     options: &SyncRetentionPlanOptions,
 ) -> Result<SyncRetentionPlanReport, AppError> {
+    crate::sync::require_worktree_sync(paths, "sync retention")?;
     options.policy.validate()?;
     let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
     let engine = vulcan_sync::GitCliEngine::default();
@@ -335,6 +336,7 @@ pub fn apply_sync_retention(
     rollover: bool,
     expire_epoch_archives: bool,
 ) -> Result<SyncRetentionApplyReport, AppError> {
+    crate::sync::require_worktree_sync(paths, "sync retention")?;
     if dry_run {
         return Ok(retention_apply_report(
             true,

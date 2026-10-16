@@ -3089,6 +3089,7 @@ pub fn approve_resolution_proposal_with_state_store(
     cancellation: &SyncCancellationToken,
     state_store: &SyncStateStore,
 ) -> Result<ApproveResolutionProposalReport, AppError> {
+    crate::sync::require_worktree_sync(paths, "conflict resolution")?;
     cancellation_check(cancellation)?;
     let vault = crate::sync_state::sync_work_tree(paths.vault_root())?;
     let repository_key = repository_state_key(&vault);

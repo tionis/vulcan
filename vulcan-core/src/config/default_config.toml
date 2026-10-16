@@ -90,6 +90,11 @@ name = "{{folder_name}}"   # note stem; examples: index, README, readme, {{folde
 # merge_automation = "allow_policy" # allow_policy | require_review
 # agent_auto_accept = false # local-only; still requires an explicit auto-accept request
 #
+# Shared sync mode; config.local.toml may only narrow worktree to "none".
+# [sync]
+# worktree = "all" # all: snapshot the worktree | none: synchronize commits only
+# branch_push = true # publish local commits to the branch upstream (local may override)
+#
 # Shared merge policy example. Rules are evaluated in order and must include a fallback.
 # [sync.merge_policy]
 # version = 1

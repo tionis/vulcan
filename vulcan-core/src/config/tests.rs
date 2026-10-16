@@ -5080,6 +5080,62 @@ fn agent_auto_accept_defaults_off_and_only_local_config_can_enable_it() {
 }
 
 #[test]
+fn sync_worktree_mode_is_shared_and_local_config_may_only_narrow_it() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let paths = VaultPaths::new(temporary.path());
+    fs::create_dir(paths.vulcan_dir()).expect("Vulcan directory");
+    let defaults = load_vault_config(&paths).config.sync;
+    assert_eq!(defaults.worktree, WorktreeSyncMode::All);
+    assert!(defaults.branch_push);
+
+    fs::write(
+        paths.local_config_file(),
+        "[sync]\nworktree = \"none\"\nbranch_push = false\n",
+    )
+    .expect("local config");
+    let narrowed = load_vault_config(&paths).config.sync;
+    assert_eq!(narrowed.worktree, WorktreeSyncMode::None);
+    assert!(!narrowed.branch_push);
+
+    fs::write(
+        paths.config_file(),
+        "[sync]\nworktree = \"none\"\nbranch_push = false\n",
+    )
+    .expect("shared config");
+    fs::write(
+        paths.local_config_file(),
+        "[sync]\nworktree = \"all\"\nbranch_push = true\n",
+    )
+    .expect("widening local config");
+    let loaded = load_vault_config(&paths);
+    assert_eq!(loaded.config.sync.worktree, WorktreeSyncMode::None);
+    assert!(
+        loaded.config.sync.branch_push,
+        "branch publication is a per-device choice"
+    );
+    assert!(loaded
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.message.contains("ignored local sync.worktree")));
+}
+
+#[test]
+fn sync_worktree_paths_mode_is_not_accepted_yet() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let paths = VaultPaths::new(temporary.path());
+    fs::create_dir(paths.vulcan_dir()).expect("Vulcan directory");
+    fs::write(paths.config_file(), "[sync]\nworktree = \"paths\"\n").expect("shared config");
+
+    let loaded = load_vault_config(&paths);
+
+    assert_eq!(loaded.config.sync.worktree, WorktreeSyncMode::All);
+    assert!(loaded
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.kind == ConfigDiagnosticKind::ParseFailure));
+}
+
+#[test]
 fn sync_policy_config_validation_rejects_unsupported_or_invalid_contracts() {
     for contents in [
         r#"[sync.merge_policy]

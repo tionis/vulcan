@@ -52,6 +52,7 @@ pub fn create_sync_checkpoint(
     paths: &VaultPaths,
     options: &SyncCheckpointOptions,
 ) -> Result<SyncCheckpointReport, AppError> {
+    crate::sync::require_worktree_sync(paths, "sync checkpoints")?;
     let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
     let engine = crate::sync_transport::git_engine(paths);
     let repository = engine
@@ -153,8 +154,39 @@ fn checkpoint_report(
 
 #[cfg(test)]
 mod tests {
-    use super::{checkpoint_ref, SyncCheckpointKind};
+    use super::{
+        checkpoint_ref, create_sync_checkpoint, SyncCheckpointKind, SyncCheckpointOptions,
+    };
     use ulid::Ulid;
+    use vulcan_core::VaultPaths;
+    use vulcan_sync::{GitRefName, GitRemote, DEFAULT_REMOTE_LIVE_REF};
+
+    #[test]
+    fn checkpoints_refuse_committed_history_only_vaults() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        std::fs::create_dir(temporary.path().join(".vulcan")).expect("Vulcan directory");
+        std::fs::write(
+            temporary.path().join(".vulcan/config.toml"),
+            "[sync]\nworktree = \"none\"\n",
+        )
+        .expect("shared config");
+
+        let error = create_sync_checkpoint(
+            &VaultPaths::new(temporary.path()),
+            &SyncCheckpointOptions {
+                kind: SyncCheckpointKind::Recovery,
+                remote: GitRemote::parse("origin").expect("remote"),
+                live_ref: GitRefName::parse(DEFAULT_REMOTE_LIVE_REF).expect("live ref"),
+                dry_run: true,
+            },
+        )
+        .expect_err("no live ref to checkpoint");
+
+        assert!(
+            error.to_string().contains("committed history only"),
+            "{error}"
+        );
+    }
 
     #[test]
     fn checkpoint_refs_are_kind_scoped_and_valid() {

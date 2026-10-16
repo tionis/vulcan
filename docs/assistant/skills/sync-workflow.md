@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 38
+version: 39
 metadata:
   vulcan:
     managed: true
@@ -349,6 +349,24 @@ Caveats: `rebase.autostash` is neutralized (automation never stashes implicitly)
 push remotes (`branch.<name>.pushremote`, `remote.pushdefault`) are not honored — the pull
 upstream receives the push; long-lived staged changes keep `pull.rebase` users deferred until
 they commit.
+
+## Committed-history-only repositories
+
+A shared `sync.worktree = "none"` in `.vulcan/config.toml` makes sync move only committed history:
+each cycle backs this device's whole worktree up to its private safety head, then fetches,
+fast-forwards (dirty files the incoming commits do not touch are fine), and pushes the checked-out
+branch. Live is never read or written, so uncommitted edits stay on this device. Recognize the mode
+by `worktree: "none"` in the JSON report or the `Worktree: not synchronized` line.
+
+- Commit your own work in such a repository; nothing else carries it to other devices. Sync then
+  publishes the commits (unless `sync.branch_push = false`, in which case push deliberately).
+- A paused cycle with reason `branch_paused` means the branch diverged past `pull.ff=only` or an
+  interactive rebase was requested; reconcile with ordinary Git. A cycle without a checked-out branch
+  or upstream fails as unsupported configuration; push the branch once with `git push -u`.
+- Conflict resolution, checkpoints, retention, and semantic history refuse in this mode, and
+  `sync doctor` reports `sync.worktree` instead of live ref checks.
+- Do not switch a repository's mode unprompted. A device may opt itself out with `worktree = "none"`
+  in `.vulcan/config.local.toml`; it cannot widen a shared `"none"`.
 
 ## Review preserved conflicts
 

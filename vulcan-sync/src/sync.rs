@@ -146,6 +146,35 @@ pub struct GitSyncOptions {
     pub merge_automation: MergeAutomation,
     pub platform: GitPlatformProfile,
     pub remote_observation: GitRemoteObservation,
+    /// Whether cycles synchronize the worktree through live or only the
+    /// checked-out branch's committed history.
+    pub worktree: WorktreeSyncMode,
+    /// Whether cycles publish local commits to the branch upstream.
+    pub branch_push: bool,
+}
+
+/// What a cycle synchronizes besides the checked-out branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WorktreeSyncMode {
+    /// Snapshot the whole worktree into live and apply accepted live trees.
+    #[default]
+    All,
+    /// Synchronize committed history only: live is never read or written.
+    /// The worktree is still captured for this device's safety head.
+    None,
+}
+
+impl WorktreeSyncMode {
+    #[must_use]
+    pub const fn syncs_live(self) -> bool {
+        matches!(self, Self::All)
+    }
+
+    #[must_use]
+    pub const fn is_all(&self) -> bool {
+        matches!(self, Self::All)
+    }
 }
 
 impl Default for GitSyncOptions {
@@ -162,6 +191,8 @@ impl Default for GitSyncOptions {
             merge_automation: MergeAutomation::default(),
             platform: GitPlatformProfile::native(),
             remote_observation: GitRemoteObservation::Query,
+            worktree: WorktreeSyncMode::All,
+            branch_push: true,
         }
     }
 }
@@ -466,6 +497,9 @@ pub enum GitAutomaticValidationCheck {
 pub enum GitSyncPauseReason {
     HeadMoved,
     OperationInProgress,
+    /// Committed-history-only synchronization stopped because the branch
+    /// lane paused; `detail` names the reason.
+    BranchPaused,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -481,6 +515,8 @@ pub struct GitSyncPause {
     pub actual_head_ref: Option<GitRefName>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub operation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -546,6 +582,9 @@ pub struct GitSyncReport {
     pub installation: GitInstallation,
     pub repository: GitRepository,
     pub remote: GitRemote,
+    /// Omitted for the default whole-worktree mode.
+    #[serde(skip_serializing_if = "WorktreeSyncMode::is_all")]
+    pub worktree: WorktreeSyncMode,
     /// This installation's device ID, which names its backup ref.
     pub device_id: GitSyncDeviceId,
     pub refs: GitSyncRefs,
@@ -715,6 +754,7 @@ impl GitSyncReport {
             installation,
             repository,
             remote: options.remote.clone(),
+            worktree: options.worktree,
             device_id: options.device_id.clone(),
             refs,
             safety: repository_preflight.0,
@@ -978,6 +1018,10 @@ fn git_report_to_backend_report(report: GitSyncReport) -> SyncReport {
                 "Git {} operation is in progress",
                 pause.operation.as_deref().unwrap_or("unknown")
             ),
+            GitSyncPauseReason::BranchPaused => format!(
+                "branch lane paused: {}",
+                pause.detail.as_deref().unwrap_or("unknown reason")
+            ),
         }),
     };
     SyncReport {
@@ -1124,7 +1168,7 @@ pub fn sync_git_once_with_control(
             .as_ref()
             .map(|revision| engine.worktree_matches_tree(&report.repository, revision))
             .transpose()?;
-        report.preview = Some(GitSyncPreview {
+        report.preview = options.worktree.syncs_live().then(|| GitSyncPreview {
             file_state: preview_file_state(
                 report.local_before.as_ref(),
                 report.remote_before.as_ref(),
@@ -1311,6 +1355,8 @@ struct AttemptRemote {
     device: Option<ObservedTip>,
     /// Live tip and registration refs, observed only in query mode.
     live: Option<(Option<GitOid>, Option<Vec<GitReference>>)>,
+    /// Registration refs observed without live, when live is not synchronized.
+    registrations: Option<Vec<GitReference>>,
     /// Branch upstream resolution, consumed by the branch lane.
     upstream: Option<Result<Option<GitBranchUpstream>, GitEngineError>>,
     /// Exact upstream branch tip when the upstream lives on the sync remote.
@@ -1366,7 +1412,9 @@ fn observe_attempt_remote(
     let upstream = upstream.or_else(|| resolve_branch_upstream(engine, report));
     let upstream_ref = sync_remote_upstream(options, upstream.as_ref())
         .map(|upstream| (upstream.remote.clone(), upstream.merge_ref.clone()));
-    let query_live = options.remote_observation == GitRemoteObservation::Query;
+    let syncs_live = options.worktree.syncs_live();
+    let query_live = syncs_live && options.remote_observation == GitRemoteObservation::Query;
+    let query_registrations = query_live || !syncs_live;
     let registrations = GitRefName::parse(REMOTE_REGISTRATION_BRANCH_ROOT)?;
     let mut references = vec![&report.refs.device];
     if query_live {
@@ -1379,17 +1427,22 @@ fn observe_attempt_remote(
         &report.repository,
         &options.remote,
         &references,
-        query_live.then_some(&registrations),
+        query_registrations.then_some(&registrations),
     )?;
     let mut tips = tips.into_iter();
     let device = tips.next().flatten();
-    let live = query_live.then(|| (tips.next().flatten(), registration_tips));
+    let (live, registrations) = if query_live {
+        (Some((tips.next().flatten(), registration_tips)), None)
+    } else {
+        (None, registration_tips)
+    };
     let upstream_tip = upstream_ref
         .map(|(remote, reference)| (remote, reference, ObservedTip(tips.next().flatten())));
     Ok(AttemptRemote {
         observed: true,
         device: Some(ObservedTip(device)),
         live,
+        registrations,
         upstream,
         upstream_tip,
         ..AttemptRemote::default()
@@ -1945,11 +1998,20 @@ fn preview_remote_refs(
     let upstream_ref = upstream
         .filter(|upstream| upstream.remote == options.remote)
         .map(|upstream| &upstream.merge_ref);
-    let mut references = vec![&report.refs.live];
+    let syncs_live = options.worktree.syncs_live();
+    let mut references = Vec::new();
+    if syncs_live {
+        references.push(&report.refs.live);
+    }
     references.extend(upstream_ref);
+    if references.is_empty() {
+        return Ok(None);
+    }
     let (tips, _) = engine.remote_refs(&report.repository, &options.remote, &references, None)?;
     let mut tips = tips.into_iter();
-    report.remote_before = tips.next().flatten();
+    if syncs_live {
+        report.remote_before = tips.next().flatten();
+    }
     Ok(upstream_ref.map(|_| ObservedTip(tips.next().flatten())))
 }
 
@@ -2040,6 +2102,7 @@ fn preview_branch_pull(
 /// that moved first reports Rejected for the next cycle's pull to incorporate.
 fn push_branch_lane(
     engine: &dyn GitEngine,
+    options: &GitSyncOptions,
     report: &mut GitSyncReport,
 ) -> Result<(), GitSyncError> {
     let healthy = report.branch.as_ref().is_some_and(|lane| {
@@ -2052,7 +2115,7 @@ fn push_branch_lane(
                 | GitBranchSyncAction::Adopted
         )
     });
-    if !healthy {
+    if !healthy || !options.branch_push {
         return Ok(());
     }
     let lane = report.branch.as_mut().expect("healthy branch lane");
@@ -2101,6 +2164,9 @@ fn run_attempt(
     control: &mut AttemptControl<'_>,
 ) -> Result<AttemptResult, GitSyncError> {
     control.check()?;
+    if !options.worktree.syncs_live() {
+        return run_branch_only_attempt(engine, options, report, control);
+    }
 
     // Capture and publish before any pull, merge, or rebase can rewrite the
     // checkout. If the branch lane moves the tree, publish a fresh safety
@@ -2193,6 +2259,113 @@ fn run_attempt(
     report.accepted = Some(accepted);
     control.emit(GitSyncPhase::Completed, report, None)?;
     Ok(AttemptResult::Finished)
+}
+
+/// One committed-history-only attempt: capture the worktree for this device's
+/// safety head, then pull and push the checked-out branch. Live is never
+/// queried, fetched, pushed, or applied.
+fn run_branch_only_attempt(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    report: &mut GitSyncReport,
+    control: &mut AttemptControl<'_>,
+) -> Result<AttemptResult, GitSyncError> {
+    let local = engine.read_ref(&report.repository, &report.refs.local)?;
+    let mut remote = AttemptRemote::default();
+    let Some(capture) = capture_and_publish_device_backup(
+        engine,
+        options,
+        report,
+        control,
+        &mut remote,
+        local.clone(),
+    )?
+    else {
+        return Ok(AttemptResult::Retry);
+    };
+    if pull_branch_and_refresh_device_backup(
+        engine,
+        options,
+        report,
+        control,
+        &mut remote,
+        capture,
+        local,
+    )?
+    .is_none()
+    {
+        return Ok(AttemptResult::Retry);
+    }
+    report.registration_tips = remote.registrations.take();
+    if let Some(pause) = sync_pause(engine, report)? {
+        report.pause = Some(pause);
+        report.outcome = GitSyncOutcome::Paused;
+        control.emit(GitSyncPhase::Paused, report, None)?;
+        return Ok(AttemptResult::Finished);
+    }
+    let lane = report.branch.as_ref();
+    match lane.map(|lane| lane.action) {
+        None => {
+            return Err(branch_only_unsupported(
+                "HEAD is detached or the repository has no worktree",
+            ));
+        }
+        Some(GitBranchSyncAction::Skipped) => {
+            let detail = lane
+                .and_then(|lane| lane.detail.as_deref())
+                .unwrap_or("the branch lane was skipped");
+            return Err(branch_only_unsupported(detail));
+        }
+        // Without a file lane the branch lane is the whole cycle.
+        Some(GitBranchSyncAction::Failed) => {
+            return Err(GitSyncError::Git(GitEngineError::CommandFailed {
+                operation: "fetch or pull the checked-out branch",
+                exit_code: None,
+                stderr: lane
+                    .and_then(|lane| lane.detail.clone())
+                    .unwrap_or_default(),
+            }));
+        }
+        Some(GitBranchSyncAction::Paused) => {
+            report.pause = Some(GitSyncPause {
+                reason: GitSyncPauseReason::BranchPaused,
+                expected_head: report.head_before.clone(),
+                actual_head: report.head_before.clone(),
+                expected_head_ref: report.head_ref_before.clone(),
+                actual_head_ref: report.head_ref_before.clone(),
+                operation: None,
+                detail: lane.and_then(|lane| lane.detail.clone()),
+            });
+            report.outcome = GitSyncOutcome::Paused;
+            control.emit(GitSyncPhase::Paused, report, None)?;
+            return Ok(AttemptResult::Finished);
+        }
+        Some(_) => {}
+    }
+    let lane = lane.expect("branch lane");
+    report.outcome = if matches!(
+        lane.action,
+        GitBranchSyncAction::FastForwarded
+            | GitBranchSyncAction::Merged
+            | GitBranchSyncAction::Rebased
+            | GitBranchSyncAction::Adopted
+    ) {
+        GitSyncOutcome::Pulled
+    } else if lane.pushed {
+        GitSyncOutcome::Pushed
+    } else {
+        GitSyncOutcome::UpToDate
+    };
+    control.emit(GitSyncPhase::Completed, report, None)?;
+    Ok(AttemptResult::Finished)
+}
+
+fn branch_only_unsupported(detail: &str) -> GitSyncError {
+    GitSyncError::Git(GitEngineError::UnsupportedRepository {
+        detail: format!(
+            "committed-history sync (sync.worktree = \"none\") needs a checked-out branch whose upstream exists on the remote: {detail}"
+        ),
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2315,7 +2488,7 @@ fn pull_branch_and_refresh_device_backup(
 ) -> Result<Option<crate::GitCapture>, GitSyncError> {
     control.check()?;
     pull_branch_lane(engine, report, remote, &capture.commit)?;
-    push_branch_lane(engine, report)?;
+    push_branch_lane(engine, options, report)?;
     let may_have_rewritten_worktree = report.branch.as_ref().is_some_and(|branch| {
         matches!(
             branch.action,
@@ -2799,6 +2972,7 @@ fn sync_pause(
             expected_head_ref: report.head_ref_before.clone(),
             actual_head_ref,
             operation: None,
+            detail: None,
         }));
     }
     let safety = engine.safety_state(&report.repository)?;
@@ -2810,6 +2984,7 @@ fn sync_pause(
             expected_head_ref: report.head_ref_before.clone(),
             actual_head_ref,
             operation: Some(operation),
+            detail: None,
         }));
     }
     Ok(None)
@@ -7938,8 +8113,196 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
                 expected_head_ref: Some(GitRefName::parse("refs/heads/main").expect("main ref"),),
                 actual_head_ref: Some(GitRefName::parse("refs/heads/main").expect("main ref")),
                 operation: None,
+                detail: None,
             })
         );
+    }
+
+    fn commits_only() -> GitSyncOptions {
+        GitSyncOptions {
+            worktree: WorktreeSyncMode::None,
+            ..GitSyncOptions::default()
+        }
+    }
+
+    fn remote_ref_tip(remote: &Path, reference: &str) -> String {
+        git_stdout(
+            remote,
+            &["for-each-ref", "--format=%(objectname)", reference],
+        )
+    }
+
+    #[test]
+    fn committed_history_only_propagates_commits_but_not_uncommitted_edits() {
+        let (temporary, remote, writer) = setup_tracked_branch();
+        let reader = clone_reader(&temporary, &remote, &writer);
+        let engine = GitCliEngine::default();
+        fs::write(writer.join("script.sh"), "echo committed\n").expect("committed file");
+        commit_all(&writer, "add script");
+        fs::write(writer.join("Home.md"), "half-finished edit\n").expect("uncommitted edit");
+        fs::write(writer.join("Draft.md"), "untracked draft\n").expect("untracked file");
+
+        let pushed = sync_git_once(&engine, &writer, &commits_only()).expect("writer sync");
+
+        assert_eq!(pushed.outcome, GitSyncOutcome::Pushed);
+        assert_eq!(pushed.worktree, WorktreeSyncMode::None);
+        assert!(pushed.branch.as_ref().is_some_and(|lane| lane.pushed));
+        assert!(pushed.accepted.is_none() && pushed.remote_before.is_none());
+        assert_eq!(
+            remote_ref_tip(&remote, "refs/heads/main"),
+            git_stdout(&writer, &["rev-parse", "HEAD"])
+        );
+        assert!(
+            remote_ref_tip(&remote, DEFAULT_REMOTE_LIVE_REF).is_empty(),
+            "committed-history sync must never create live"
+        );
+        let backup = pushed.device_backup.as_ref().expect("device safety head");
+        assert_eq!(
+            git_stdout(
+                &remote,
+                &["show", &format!("{}:Draft.md", backup.published_revision)]
+            ),
+            "untracked draft",
+            "the safety head still backs up uncommitted work"
+        );
+
+        let pulled = sync_git_once(&engine, &reader, &commits_only()).expect("reader sync");
+
+        assert_eq!(pulled.outcome, GitSyncOutcome::Pulled);
+        assert_eq!(
+            fs::read_to_string(reader.join("script.sh")).expect("pulled commit"),
+            "echo committed\n"
+        );
+        assert_eq!(
+            fs::read_to_string(reader.join("Home.md")).expect("reader note"),
+            "initial\n"
+        );
+        assert!(!reader.join("Draft.md").exists());
+
+        let steady = sync_git_once(&engine, &reader, &commits_only()).expect("steady sync");
+        assert_eq!(steady.outcome, GitSyncOutcome::UpToDate);
+        assert!(pushed.pause.is_none() && steady.pause.is_none());
+    }
+
+    #[test]
+    fn committed_history_only_fast_forwards_past_unrelated_dirty_files() {
+        let (temporary, remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        fs::write(writer.join("Other.md"), "tracked\n").expect("other note");
+        commit_all(&writer, "other");
+        run_git(&writer, &["push", "--quiet", "origin", "main"]);
+        fs::write(writer.join("Other.md"), "dirty local edit\n").expect("dirty edit");
+        advance_remote_branch(&temporary, &remote, "advanced\n");
+
+        let report = sync_git_once(&engine, &writer, &commits_only()).expect("sync");
+
+        assert_eq!(report.outcome, GitSyncOutcome::Pulled);
+        assert_eq!(
+            fs::read_to_string(writer.join("Home.md")).expect("pulled note"),
+            "advanced\n"
+        );
+        assert_eq!(
+            fs::read_to_string(writer.join("Other.md")).expect("dirty note"),
+            "dirty local edit\n"
+        );
+    }
+
+    #[test]
+    fn committed_history_only_pauses_when_the_branch_lane_pauses() {
+        let (temporary, remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        run_git(&writer, &["config", "pull.ff", "only"]);
+        fs::write(writer.join("Local.md"), "local\n").expect("local note");
+        commit_all(&writer, "local");
+        advance_remote_branch(&temporary, &remote, "advanced\n");
+
+        let report = sync_git_once(&engine, &writer, &commits_only()).expect("sync");
+
+        assert_eq!(report.outcome, GitSyncOutcome::Paused);
+        let pause = report.pause.expect("pause");
+        assert_eq!(pause.reason, GitSyncPauseReason::BranchPaused);
+        assert!(pause
+            .detail
+            .is_some_and(|detail| detail.contains("pull.ff=only")));
+    }
+
+    #[test]
+    fn committed_history_only_fails_when_the_branch_lane_fails() {
+        let (temporary, remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        fs::write(writer.join("Local.md"), "local\n").expect("local note");
+        commit_all(&writer, "local");
+        advance_remote_branch(&temporary, &remote, "advanced\n");
+        run_git(&writer, &["config", "pull.ff", "bogus"]);
+
+        let error = sync_git_once(&engine, &writer, &commits_only())
+            .expect_err("a failed branch lane fails the cycle");
+
+        assert!(error.to_string().contains("pull.ff"), "{error}");
+        assert!(classify_git_sync_error(&error).retryable);
+    }
+
+    #[test]
+    fn committed_history_only_requires_an_upstream() {
+        let (_temporary, remote, writer) = setup_remote_and_writer();
+        let engine = GitCliEngine::default();
+
+        let error = sync_git_once(&engine, &writer, &commits_only())
+            .expect_err("nothing to synchronize without an upstream");
+
+        assert!(
+            matches!(&error, GitSyncError::Git(GitEngineError::UnsupportedRepository { detail })
+                if detail.contains("sync.worktree") && detail.contains("no upstream")),
+            "{error}"
+        );
+        assert!(remote_ref_tip(&remote, DEFAULT_REMOTE_LIVE_REF).is_empty());
+    }
+
+    #[test]
+    fn committed_history_only_preview_skips_live() {
+        let (_temporary, _remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        fs::write(writer.join("Local.md"), "local\n").expect("local note");
+        commit_all(&writer, "local");
+
+        let report = sync_git_once(
+            &engine,
+            &writer,
+            &GitSyncOptions {
+                dry_run: true,
+                ..commits_only()
+            },
+        )
+        .expect("preview");
+
+        assert_eq!(report.outcome, GitSyncOutcome::Planned);
+        assert!(report.preview.is_none() && report.remote_before.is_none());
+        assert_eq!(branch_action(&report).0, GitBranchSyncAction::Planned);
+    }
+
+    #[test]
+    fn disabled_branch_push_keeps_local_commits_local() {
+        let (_temporary, remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        let published = remote_ref_tip(&remote, "refs/heads/main");
+        fs::write(writer.join("Local.md"), "local\n").expect("local note");
+        commit_all(&writer, "local");
+
+        for worktree in [WorktreeSyncMode::All, WorktreeSyncMode::None] {
+            let report = sync_git_once(
+                &engine,
+                &writer,
+                &GitSyncOptions {
+                    worktree,
+                    branch_push: false,
+                    ..GitSyncOptions::default()
+                },
+            )
+            .expect("sync");
+
+            assert!(report.branch.as_ref().is_some_and(|lane| !lane.pushed));
+            assert_eq!(remote_ref_tip(&remote, "refs/heads/main"), published);
+        }
     }
 
     #[test]

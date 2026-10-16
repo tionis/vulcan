@@ -26,7 +26,7 @@ pub use vulcan_sync::{
     GitSyncAction, GitSyncConflict, GitSyncDeviceId, GitSyncObserver, GitSyncObserverError,
     GitSyncOptions, GitSyncOutcome, GitSyncPause, GitSyncPauseReason, GitSyncPhase,
     GitSyncPreviewFileState, GitSyncProgress, GitSyncRefs, GitSyncReport,
-    GitUnattendedRepositoryState, SyncCancellationToken,
+    GitUnattendedRepositoryState, SyncCancellationToken, WorktreeSyncMode,
 };
 
 /// Controls whether a finite file synchronization cycle composes Markdown
@@ -504,7 +504,16 @@ fn doctor_git_vault_with_optional_state(
         ),
     }
 
-    doctor_refs(&engine, &repository, options, &mut report);
+    if options.worktree.syncs_live() {
+        doctor_refs(&engine, &repository, options, &mut report);
+    } else {
+        doctor_check(
+            &mut report,
+            "sync.worktree",
+            SyncDoctorSeverity::Info,
+            "committed history only (sync.worktree = \"none\"): sync moves the checked-out branch and this device's backup; live ref checks do not apply",
+        );
+    }
     doctor_platform_tree(&engine, &repository, options, &mut report);
     doctor_device_files(&engine, &repository, paths, options, &mut report);
     doctor_repository_lock(&repository, &mut report);
@@ -1946,9 +1955,10 @@ fn refresh_cache_after_sync(
     sync: &GitSyncReport,
     options: &GitSyncOptions,
 ) -> (Option<ScanSummary>, Option<String>) {
-    let should_refresh = !options.dry_run
-        && sync.actions.contains(&GitSyncAction::WorktreeApplied)
-        && paths.cache_db().is_file();
+    // Committed-history-only cycles change files only by moving the branch.
+    let files_changed = sync.actions.contains(&GitSyncAction::WorktreeApplied)
+        || (!sync.worktree.syncs_live() && sync.outcome == GitSyncOutcome::Pulled);
+    let should_refresh = !options.dry_run && files_changed && paths.cache_db().is_file();
     // The vault tree is already applied and verified; a cache refresh
     // failure must not report the successful sync as failed or retain a
     // misleading recovery journal. The rebuildable cache stays stale until
@@ -1997,10 +2007,13 @@ fn supersede_obsolete_conflicts(
             engine, paths, options, sync, &store, journal, &frontier,
         ));
     }
+    // Without live there is no frontier: conflicts retained from an earlier
+    // whole-worktree period stay as they are until that mode resumes.
     if matches!(
         sync.outcome,
         GitSyncOutcome::Paused | GitSyncOutcome::Planned
-    ) {
+    ) || !sync.worktree.syncs_live()
+    {
         return Ok(false);
     }
     let current_revision = sync
@@ -2204,11 +2217,31 @@ pub fn configured_git_sync_options_for_profile(
     {
         effective.merge_automation = vulcan_sync::MergeAutomation::RequireReview;
     }
+    // Either layer may only narrow: a caller that already asked for
+    // committed history only keeps it, and so does a configured `none`.
+    if !config.sync.worktree.syncs_live() {
+        effective.worktree = WorktreeSyncMode::None;
+    }
+    effective.branch_push = options.branch_push && config.sync.branch_push;
     effective
         .merge_policy
         .validate()
         .map_err(AppError::operation)?;
     Ok(effective)
+}
+
+/// Refuses a workflow that reads or publishes the live ref when the vault
+/// synchronizes committed history only. `workflow` names it for the message.
+pub fn require_worktree_sync(paths: &VaultPaths, workflow: &str) -> Result<(), AppError> {
+    let work_tree = crate::sync_state::sync_work_tree(paths.vault_root())?;
+    let config = load_sync_config(&sync_vault_paths(paths, &work_tree), false)?;
+    if config.sync.worktree.syncs_live() {
+        Ok(())
+    } else {
+        Err(AppError::operation(format!(
+            "{workflow} works on the live ref, but this repository synchronizes committed history only (sync.worktree = \"none\")"
+        )))
+    }
 }
 
 pub(crate) fn load_validated_sync_config(paths: &VaultPaths) -> Result<VaultConfig, AppError> {
@@ -3643,6 +3676,36 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         )
         .expect("caller ceiling");
         assert_eq!(configured.merge_automation, MergeAutomation::RequireReview);
+    }
+
+    #[test]
+    fn configured_sync_mode_and_branch_push_only_narrow_caller_options() {
+        let temporary = tempdir().expect("temporary directory");
+        fs::create_dir(temporary.path().join(".vulcan")).expect("Vulcan directory");
+        let paths = VaultPaths::new(temporary.path());
+        let defaults = configured_git_sync_options(&paths, &GitSyncOptions::default())
+            .expect("default options");
+        assert_eq!(defaults.worktree, WorktreeSyncMode::All);
+        assert!(defaults.branch_push);
+
+        let caller = GitSyncOptions {
+            worktree: WorktreeSyncMode::None,
+            branch_push: false,
+            ..GitSyncOptions::default()
+        };
+        let kept = configured_git_sync_options(&paths, &caller).expect("caller options");
+        assert_eq!(kept.worktree, WorktreeSyncMode::None);
+        assert!(!kept.branch_push);
+
+        fs::write(
+            temporary.path().join(".vulcan/config.toml"),
+            "[sync]\nworktree = \"none\"\nbranch_push = false\n",
+        )
+        .expect("shared config");
+        let configured = configured_git_sync_options(&paths, &GitSyncOptions::default())
+            .expect("configured options");
+        assert_eq!(configured.worktree, WorktreeSyncMode::None);
+        assert!(!configured.branch_push);
     }
 
     #[test]
@@ -6611,6 +6674,80 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             .checks
             .iter()
             .any(|check| check.code.starts_with("cache.")));
+    }
+
+    #[test]
+    fn configured_committed_history_only_sync_never_publishes_live() {
+        let temporary = tempdir().expect("temporary directory");
+        let remote = temporary.path().join("remote.git");
+        git(
+            temporary.path(),
+            &[
+                "init",
+                "--quiet",
+                "--bare",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        let vault = temporary.path().join("vault");
+        fs::create_dir_all(vault.join(".vulcan")).expect("vault directory");
+        git(
+            &vault,
+            &["-c", "init.defaultBranch=main", "init", "--quiet"],
+        );
+        git(&vault, &["config", "user.name", "Vulcan Test"]);
+        git(&vault, &["config", "user.email", "vulcan@example.invalid"]);
+        git(
+            &vault,
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        fs::write(vault.join(".gitignore"), ".vulcan/cache.db*\n").expect("ignore file");
+        fs::write(
+            vault.join(".vulcan/config.toml"),
+            "[sync]\nworktree = \"none\"\n",
+        )
+        .expect("shared config");
+        fs::write(vault.join("Home.md"), "home\n").expect("home note");
+        git(&vault, &["add", "--all"]);
+        git(&vault, &["commit", "--quiet", "-m", "initial"]);
+        git(&vault, &["push", "--quiet", "-u", "origin", "main"]);
+        fs::write(vault.join("script.sh"), "echo hi\n").expect("script");
+        git(&vault, &["add", "script.sh"]);
+        git(&vault, &["commit", "--quiet", "-m", "script"]);
+        fs::write(vault.join("Home.md"), "uncommitted\n").expect("uncommitted edit");
+        let paths = VaultPaths::new(&vault);
+        let store = SyncStateStore::at(temporary.path().join("state"));
+
+        let report = sync_git_vault_with_state_store(&paths, &GitSyncOptions::default(), &store)
+            .expect("committed-history sync");
+
+        assert_eq!(report.sync.outcome, GitSyncOutcome::Pushed);
+        assert_eq!(report.sync.worktree, WorktreeSyncMode::None);
+        assert!(report.state.retained.is_none());
+        assert_eq!(
+            git_stdout(&remote, &["rev-parse", "refs/heads/main"]),
+            git_stdout(&vault, &["rev-parse", "HEAD"])
+        );
+        assert!(git_stdout(
+            &remote,
+            &[
+                "for-each-ref",
+                "--format=%(refname)",
+                vulcan_sync::DEFAULT_REMOTE_LIVE_REF
+            ]
+        )
+        .is_empty());
+
+        let doctor = doctor_git_vault_with_state_store(&paths, &GitSyncOptions::default(), &store);
+        assert!(doctor.checks.iter().any(|check| {
+            check.code == "sync.worktree" && check.severity == SyncDoctorSeverity::Info
+        }));
+        assert!(!doctor.checks.iter().any(|check| check.code == "git.remote"));
     }
 
     #[test]

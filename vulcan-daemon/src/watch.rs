@@ -16,7 +16,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use vulcan_app::sync_state::SyncStateStore;
 use vulcan_core::VaultPaths;
-use vulcan_sync::{GitCliEngine, GitEngine, GitEngineError, SyncJobTrigger};
+use vulcan_sync::{GitCliEngine, GitEngine, GitEngineError, GitRepository, SyncJobTrigger};
 
 const WATCH_POLL_INTERVAL: Duration = Duration::from_millis(50);
 // Content comparison reads the whole worktree. Use it only as a fallback,
@@ -124,6 +124,9 @@ struct WatchBatch {
 enum WatchSource {
     Native,
     Polling,
+    /// The checked-out branch's refs in the Git directory, which the
+    /// worktree watchers ignore. Commits change nothing else.
+    GitRefs,
 }
 
 struct RegisteredWatchers {
@@ -213,6 +216,7 @@ where
 
     observe_vault_batches(
         &registration.path,
+        Some(&repository),
         options,
         should_stop,
         wakeable,
@@ -347,6 +351,7 @@ where
     let mut sequence = 0_u64;
     observe_vault_batches(
         path,
+        None,
         options,
         || stop.is_cancelled(),
         true,
@@ -373,6 +378,7 @@ where
 
 fn observe_vault_batches<S, M, B>(
     path: &Path,
+    branch_refs: Option<&GitRepository>,
     options: &DaemonWatchOptions,
     should_stop: S,
     wakeable: bool,
@@ -387,6 +393,16 @@ where
     validate_options(options)?;
     let (sender, receiver) = mpsc::channel::<(WatchSource, notify::Result<Event>)>();
     let _watchers = register_watchers(path, &sender, WATCH_FALLBACK_POLL_INTERVAL)?;
+    // Best effort: without it, commits still sync on the next worktree
+    // change, notification, or periodic reconciliation.
+    // Native events name canonical paths (macOS reports `/private/var`).
+    let branch_refs = branch_refs.map(|repository| GitRepository {
+        git_dir: canonical_or_original(&repository.git_dir),
+        common_dir: canonical_or_original(&repository.common_dir),
+        ..repository.clone()
+    });
+    let branch_refs = branch_refs.as_ref();
+    let _ref_watcher = branch_refs.and_then(|repository| register_ref_watcher(repository, &sender));
     drop(sender);
 
     let paths = VaultPaths::new(path);
@@ -417,6 +433,13 @@ where
             receiver.recv_timeout(batch.next_timeout(now, debounce, max_dirty))
         };
         match message {
+            Ok((WatchSource::GitRefs, Ok(event))) => {
+                if branch_refs.is_some_and(|repository| touches_branch_refs(repository, &event)) {
+                    batch.push_ref_change(Instant::now());
+                }
+            }
+            // A failed ref watch only delays commits to the next trigger.
+            Ok((WatchSource::GitRefs, Err(_))) | Err(mpsc::RecvTimeoutError::Timeout) => {}
             Ok((_, Ok(event))) => {
                 let now = Instant::now();
                 batch.push_event(&paths, &event, now, &marker_transaction);
@@ -427,7 +450,6 @@ where
                 Instant::now(),
                 format!("{} watcher: {error}", source.label()),
             ),
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 return Err(DaemonWatchError::ChannelClosed);
             }
@@ -488,6 +510,57 @@ fn register_watchers(
     finish_watcher_registration(path, sender, fallback_poll_interval, native)
 }
 
+/// Watches the Git directory's `HEAD`, `packed-refs`, and `refs/heads/`
+/// without recursing into objects or other private state.
+fn register_ref_watcher(
+    repository: &GitRepository,
+    sender: &mpsc::Sender<(WatchSource, notify::Result<Event>)>,
+) -> Option<RecommendedWatcher> {
+    let ref_sender = WatchEventSender {
+        sender: Some(sender.clone()),
+        thread: std::thread::current(),
+    };
+    let mut watcher = notify::recommended_watcher(move |event| {
+        ref_sender.send(WatchSource::GitRefs, event);
+    })
+    .ok()?;
+    watcher
+        .watch(&repository.git_dir, RecursiveMode::NonRecursive)
+        .ok()?;
+    if repository.common_dir != repository.git_dir {
+        let _ = watcher.watch(&repository.common_dir, RecursiveMode::NonRecursive);
+    }
+    let heads = repository.common_dir.join("refs").join("heads");
+    if heads.is_dir() {
+        let _ = watcher.watch(&heads, RecursiveMode::Recursive);
+    }
+    Some(watcher)
+}
+
+fn canonical_or_original(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Whether an event in the Git directory may have moved a branch or `HEAD`.
+/// Lock files, `FETCH_HEAD`, the index, and other private state do not.
+fn touches_branch_refs(repository: &GitRepository, event: &Event) -> bool {
+    if matches!(event.kind, EventKind::Access(_)) {
+        return false;
+    }
+    let heads = repository.common_dir.join("refs").join("heads");
+    event.paths.iter().any(|path| {
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "lock")
+        {
+            return false;
+        }
+        *path == repository.git_dir.join("HEAD")
+            || *path == repository.common_dir.join("packed-refs")
+            || path.starts_with(&heads)
+    })
+}
+
 fn finish_watcher_registration(
     path: &Path,
     sender: &mpsc::Sender<(WatchSource, notify::Result<Event>)>,
@@ -536,6 +609,7 @@ impl WatchSource {
         match self {
             Self::Native => "native",
             Self::Polling => "polling",
+            Self::GitRefs => "Git ref",
         }
     }
 }
@@ -611,6 +685,13 @@ impl WatchBatch {
             }
         }
         true
+    }
+
+    /// A branch or `HEAD` change: schedules a cycle without naming paths.
+    fn push_ref_change(&mut self, now: Instant) {
+        self.mark_dirty(now);
+        self.event_count = self.event_count.saturating_add(1);
+        self.untagged_events = self.untagged_events.saturating_add(1);
     }
 
     fn push_watcher_error(&mut self, now: Instant, error: String) {
@@ -1223,6 +1304,79 @@ mod tests {
             }
         }
         panic!("native watcher did not detect the content change");
+    }
+
+    #[test]
+    fn branch_ref_events_are_limited_to_head_packed_refs_and_heads() {
+        let repository = GitRepository {
+            git_dir: PathBuf::from("/repo/.git/worktrees/side"),
+            common_dir: PathBuf::from("/repo/.git"),
+            work_tree: Some(PathBuf::from("/side")),
+            layout: vulcan_sync::GitRepositoryLayout::Colocated,
+            object_format: vulcan_sync::GitObjectFormat::Sha1,
+        };
+        let event = |path: &str| change(PathBuf::from(path));
+        for path in [
+            "/repo/.git/worktrees/side/HEAD",
+            "/repo/.git/packed-refs",
+            "/repo/.git/refs/heads/main",
+            "/repo/.git/refs/heads/topic/nested",
+        ] {
+            assert!(touches_branch_refs(&repository, &event(path)), "{path}");
+        }
+        for path in [
+            "/repo/.git/HEAD",
+            "/repo/.git/worktrees/side/FETCH_HEAD",
+            "/repo/.git/worktrees/side/index",
+            "/repo/.git/refs/heads/main.lock",
+            "/repo/.git/refs/remotes/origin/main",
+            "/repo/.git/refs/vulcan/sync/local",
+        ] {
+            assert!(!touches_branch_refs(&repository, &event(path)), "{path}");
+        }
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    fn ref_watcher_reports_a_new_commit() {
+        let temporary = tempdir().expect("temporary directory");
+        let root = temporary.path().canonicalize().expect("canonical vault");
+        let git = |arguments: &[&str]| {
+            let output = Command::new("git")
+                .args(arguments)
+                .current_dir(&root)
+                .output()
+                .expect("run git");
+            assert!(output.status.success(), "{arguments:?}: {output:?}");
+        };
+        git(&["-c", "init.defaultBranch=main", "init", "--quiet"]);
+        git(&["config", "user.name", "Vulcan Test"]);
+        git(&["config", "user.email", "vulcan@example.invalid"]);
+        git(&["commit", "--quiet", "--allow-empty", "-m", "initial"]);
+        let repository = GitCliEngine::default()
+            .discover_repository(&root)
+            .expect("repository");
+        let (sender, receiver) = mpsc::channel();
+        let Some(_watcher) = register_ref_watcher(&repository, &sender) else {
+            eprintln!("native watcher unavailable in this environment");
+            return;
+        };
+
+        git(&["commit", "--quiet", "--allow-empty", "-m", "second"]);
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if let Ok((source, Ok(event))) = receiver.recv_timeout(Duration::from_millis(50)) {
+                assert_eq!(source, WatchSource::GitRefs);
+                if touches_branch_refs(&repository, &event) {
+                    let mut batch = WatchBatch::default();
+                    batch.push_ref_change(Instant::now());
+                    assert_eq!(batch.take_metadata().event_count, 1);
+                    return;
+                }
+            }
+        }
+        panic!("the ref watcher did not report the commit");
     }
 
     #[test]

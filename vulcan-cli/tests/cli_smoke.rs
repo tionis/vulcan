@@ -19223,6 +19223,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         .expect("sync workflow skill should be readable");
     assert!(sync_skill.contains("name: sync-workflow"));
     assert!(sync_skill.contains("vault add --no-sync"));
+    assert!(sync_skill.contains("sync.worktree = \"none\""));
+    assert!(sync_skill.contains("branch_paused"));
     assert!(sync_skill.contains("selective materialization remains Roadmap 12.20 work"));
     assert!(sync_skill.contains("vulcan device show --output json"));
     assert!(sync_skill.contains("vulcan device init --dry-run"));

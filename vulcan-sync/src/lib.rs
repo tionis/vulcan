@@ -84,5 +84,6 @@ pub use sync::{
     GitSyncError, GitSyncObserver, GitSyncObserverError, GitSyncOptions, GitSyncOutcome,
     GitSyncPause, GitSyncPauseReason, GitSyncPhase, GitSyncPreview, GitSyncPreviewFileState,
     GitSyncProgress, GitSyncRefs, GitSyncReport, IgnoreGitSyncProgress, SyncCancellationToken,
+    WorktreeSyncMode,
 };
 pub use tree_ignore::{tree_ignores, worktree_ignores, OBSIDIAN_DEVICE_FILES};

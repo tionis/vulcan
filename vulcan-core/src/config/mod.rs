@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use toml::Value as TomlValue;
-use vulcan_sync::{MergeAutomation, MergePolicy};
+use vulcan_sync::{MergeAutomation, MergePolicy, WorktreeSyncMode};
 
 const DEFAULT_CONFIG_TEMPLATE: &str = include_str!("default_config.toml");
 
@@ -311,7 +311,7 @@ impl SyncTreeValidationConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merge_policy: Option<MergePolicy>,
@@ -321,6 +321,32 @@ pub struct SyncConfig {
     pub agent_auto_accept: bool,
     #[serde(default)]
     pub tree_validation: SyncTreeValidationConfig,
+    /// Shared mode; a device may only narrow it to `none`.
+    #[serde(default, skip_serializing_if = "WorktreeSyncMode::is_all")]
+    pub worktree: WorktreeSyncMode,
+    #[serde(
+        default = "defaults::default_true",
+        skip_serializing_if = "sync_branch_push_is_default"
+    )]
+    pub branch_push: bool,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference.
+fn sync_branch_push_is_default(value: &bool) -> bool {
+    *value
+}
+
+impl Default for SyncConfig {
+    fn default() -> Self {
+        Self {
+            merge_policy: None,
+            merge_automation: MergeAutomation::default(),
+            agent_auto_accept: false,
+            tree_validation: SyncTreeValidationConfig::default(),
+            worktree: WorktreeSyncMode::default(),
+            branch_push: true,
+        }
+    }
 }
 
 impl SyncConfig {
@@ -2863,12 +2889,23 @@ fn remove_local_shared_sync_policy(
     path: &Path,
     diagnostics: &mut Vec<ConfigDiagnostic>,
 ) {
-    let (policy, validation) = config.sync.as_mut().map_or((false, false), |sync| {
-        (
-            sync.merge_policy.take().is_some(),
-            sync.tree_validation.take().is_some(),
-        )
-    });
+    let (policy, validation, widened) =
+        config.sync.as_mut().map_or((false, false, false), |sync| {
+            (
+                sync.merge_policy.take().is_some(),
+                sync.tree_validation.take().is_some(),
+                sync.worktree
+                    .take_if(|worktree| worktree.syncs_live())
+                    .is_some(),
+            )
+        });
+    if widened {
+        diagnostics.push(ConfigDiagnostic {
+            kind: ConfigDiagnosticKind::Message,
+            path: path.to_path_buf(),
+            message: "ignored local sync.worktree = \"all\": a device may only narrow worktree synchronization to \"none\"".to_string(),
+        });
+    }
     if policy {
         diagnostics.push(ConfigDiagnostic {
             kind: ConfigDiagnosticKind::Message,
@@ -4493,6 +4530,12 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
         if let Some(tree_validation) = sync.tree_validation {
             config.sync.tree_validation = tree_validation;
+        }
+        if let Some(worktree) = sync.worktree {
+            config.sync.worktree = worktree;
+        }
+        if let Some(branch_push) = sync.branch_push {
+            config.sync.branch_push = branch_push;
         }
     }
     if let Some(editor) = overrides.editor {

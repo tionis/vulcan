@@ -867,6 +867,16 @@ pub fn resolve_sync_conflict_with_state_store(
     options: &ResolveSyncConflictOptions,
     state_store: &SyncStateStore,
 ) -> Result<ResolveSyncConflictReport, AppError> {
+    crate::sync::require_worktree_sync(paths, "conflict resolution")?;
+    resolve_live_sync_conflict(paths, conflict_id, options, state_store)
+}
+
+fn resolve_live_sync_conflict(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    options: &ResolveSyncConflictOptions,
+    state_store: &SyncStateStore,
+) -> Result<ResolveSyncConflictReport, AppError> {
     let work_tree = crate::sync_state::sync_work_tree(paths.vault_root())?;
     let repository_key = crate::sync_state::repository_state_key(&work_tree);
     let context = ResolutionContext {

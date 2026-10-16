@@ -6646,6 +6646,24 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 - [ ] Auto-adopting a remote's published forge settings: **not planned**. The descriptor decides where a user-wide forge login is sent, so adoption stays an explicit `sync forge init --adopt`. Revisit only with the signed registry, and never auto-adopt `oauth_client_id`.
 - Accepted risk: `device replace` and `devices revoke` are verified by tests with fakes only, not against a live forge.
 
+### 12.23 Worktree sync modes
+
+**Goal:** Let a repository that holds code, or whose authors commit their own work, synchronize without snapshotting uncommitted edits to every device. Motivated by Grimoire, an agent-first dev wiki with scripts and config, which syncs committed history only.
+
+**Design contract:** `docs/specs/git-sync-architecture.md` ("Worktree sync modes").
+
+#### 12.23.1 Committed-history-only mode
+
+- [x] Shared `sync.worktree = "all" | "none"` with local narrowing to `"none"` only (a local `"all"` under a shared `"none"` is diagnosed and ignored), and `sync.branch_push` (default `true`, local wins). Tests for defaults, overrides, and the rejected widening.
+- [x] A `"none"` cycle captures the worktree and publishes the device safety head, runs the branch lane, and never touches live; outcome, pause reason `branch_paused`, and unsupported-configuration failures follow the branch lane. `branch_push = false` skips the push in both modes. Integration tests with two clones: commits propagate, uncommitted edits do not, the live ref is never created, and dirty unrelated files do not block fast-forwards.
+- [x] Live-ref workflows report the mode instead of acting; the CLI and doctor explain it.
+- [x] The daemon treats branch-ref changes in the Git directory as sync triggers for Git-synced wikis (both modes).
+- [x] Update the `sync-workflow` skill and the sync guide.
+
+#### 12.23.2 Path-scoped worktree sync (designed, not scheduled)
+
+- [ ] `sync.worktree = "paths"` with literal path prefixes as specified: live = published branch tip plus the scoped worktree paths, outside-scope merges take the newer published tip, scoped application/verification, a fast-forward checkout for unscoped files, the scope read from committed configuration and recorded per snapshot, and a namespace bump for switching from `"all"`. Build when a wiki needs uncommitted note sync next to code.
+
 ---
 
 ## Phase 13: WebUI — Admin and Browse

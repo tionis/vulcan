@@ -130,6 +130,7 @@ pub fn run_semantic_auto_gated(
     reconcile_remote: bool,
     gate: &dyn crate::execution::MutationGate,
 ) -> Result<SemanticAutoReport, AppError> {
+    crate::sync::require_worktree_sync(paths, "semantic history")?;
     run_with_engine(
         paths,
         options,

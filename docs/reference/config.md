@@ -1491,6 +1491,9 @@ Shared deterministic merge and whole-tree validation policy, plus a device-local
 - `sync.agent_auto_accept` — type: `boolean`; target: `local`; default: `false`
   Allow an explicitly requested agent proposal to enter the normal approval transaction automatically on this device. The default is false.
   Example: `vulcan config set sync.agent_auto_accept <value>`
+- `sync.branch_push` — type: `boolean`; target: `shared|local`; default: `true`
+  Edit `sync.branch_push` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
+  Example: `vulcan config set sync.branch_push <value>`
 - `sync.merge_automation` — type: `enum`; target: `local`; default: `allow_policy`; values: `allow_policy`, `require_review`
   Set the device-local ceiling to allow shared policy automation or require review for every Git conflict.
   Example: `vulcan config set sync.merge_automation <value>`
@@ -1507,3 +1510,6 @@ Shared deterministic merge and whole-tree validation policy, plus a device-local
 - `sync.tree_validation.max_deleted_percent` — type: `integer`; target: `shared`; default: `25`
   Define shared whole-tree safety ceilings checked before an automatically resolved Git merge is published. A result is rejected only when it exceeds both the path-count and percentage ceilings.
   Example: `vulcan config set sync.tree_validation.max_deleted_percent <value>`
+- `sync.worktree` — type: `enum`; target: `shared|local`; default: `all`; values: `all: snapshot the worktree`, `none: synchronize commits only`
+  Edit `sync.worktree` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
+  Example: `vulcan config set sync.worktree <value>`

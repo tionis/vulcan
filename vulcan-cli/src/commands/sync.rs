@@ -3652,6 +3652,11 @@ fn print_sync_report(
                 sync_outcome_message(report.sync.outcome, report.sync.remote.as_str())
             };
             println!("{outcome}");
+            if !report.sync.worktree.syncs_live() {
+                println!(
+                    "Worktree: not synchronized (sync.worktree = \"none\"); only commits travel."
+                );
+            }
             if let Some(branch) = &report.sync.branch {
                 if let Some(line) = branch_lane_message(branch) {
                     println!("{line}");
@@ -3685,23 +3690,7 @@ fn print_sync_report(
                 }
             }
             if let Some(pause) = &report.sync.pause {
-                let detail = match pause.reason {
-                    vulcan_app::sync::GitSyncPauseReason::HeadMoved => format!(
-                        "HEAD moved from {} to {}",
-                        pause
-                            .expected_head
-                            .as_ref()
-                            .map_or("unborn", |oid| oid.as_str()),
-                        pause
-                            .actual_head
-                            .as_ref()
-                            .map_or("unborn", |oid| oid.as_str())
-                    ),
-                    vulcan_app::sync::GitSyncPauseReason::OperationInProgress => format!(
-                        "Git {} operation is in progress",
-                        pause.operation.as_deref().unwrap_or("unknown")
-                    ),
-                };
+                let detail = sync_pause_message(pause);
                 println!("Paused: {detail}. Captured work remains reachable.");
             }
             if let Some(refresh) = &report.cache_refresh {
@@ -3731,6 +3720,30 @@ fn print_sync_report(
             }
             Ok(())
         }
+    }
+}
+
+fn sync_pause_message(pause: &vulcan_app::sync::GitSyncPause) -> String {
+    match pause.reason {
+        vulcan_app::sync::GitSyncPauseReason::HeadMoved => format!(
+            "HEAD moved from {} to {}",
+            pause
+                .expected_head
+                .as_ref()
+                .map_or("unborn", |oid| oid.as_str()),
+            pause
+                .actual_head
+                .as_ref()
+                .map_or("unborn", |oid| oid.as_str())
+        ),
+        vulcan_app::sync::GitSyncPauseReason::OperationInProgress => format!(
+            "Git {} operation is in progress",
+            pause.operation.as_deref().unwrap_or("unknown")
+        ),
+        vulcan_app::sync::GitSyncPauseReason::BranchPaused => format!(
+            "branch lane paused: {}",
+            pause.detail.as_deref().unwrap_or("unknown reason")
+        ),
     }
 }
 
@@ -3769,6 +3782,9 @@ fn sync_outcome_message(outcome: GitSyncOutcome, remote: &str) -> String {
 
 fn sync_preview_message(report: &GitSyncReport) -> String {
     let branch = branch_preview_message(report.branch.as_ref());
+    if !report.worktree.syncs_live() {
+        return format!("{branch}; worktree not synchronized (committed history only)");
+    }
     let files = report.preview.as_ref().map_or_else(
         || "file state unavailable".to_string(),
         |preview| match preview.file_state {

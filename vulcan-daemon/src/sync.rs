@@ -20,7 +20,7 @@ use vulcan_core::{
 };
 use vulcan_sync::{
     GitBranchSync, GitBranchSyncAction, GitCliEngine, GitRemoteObservation, GitSyncObserver,
-    SyncError, SyncErrorCategory, SyncJobState, SyncState, SyncStatus,
+    SyncError, SyncErrorCategory, SyncJobState, SyncState, SyncStatus, WorktreeSyncMode,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -283,7 +283,11 @@ fn execute_claimed_job(
             ) {
                 None
             } else {
-                report.sync.branch.as_ref().and_then(branch_lane_error)
+                report
+                    .sync
+                    .branch
+                    .as_ref()
+                    .and_then(|branch| branch_lane_error(branch, report.sync.worktree))
             };
             let status = job_status_from_report(&report, error.as_ref());
             let state = match report.sync.outcome {
@@ -470,7 +474,13 @@ impl GitSyncObserver for SupervisorProgressObserver<'_> {
     }
 }
 
-fn branch_lane_error(branch: &GitBranchSync) -> Option<SyncError> {
+fn branch_lane_error(branch: &GitBranchSync, worktree: WorktreeSyncMode) -> Option<SyncError> {
+    // Committed-history-only cycles have no file lane to report on.
+    let converged = if worktree.syncs_live() {
+        "file synchronization converged, but "
+    } else {
+        ""
+    };
     let name = branch
         .branch
         .as_str()
@@ -478,12 +488,12 @@ fn branch_lane_error(branch: &GitBranchSync) -> Option<SyncError> {
         .unwrap_or(branch.branch.as_str());
     let detail = if branch.action == GitBranchSyncAction::Failed {
         format!(
-            "file synchronization converged, but branch `{name}` failed: {}",
+            "{converged}branch `{name}` failed: {}",
             branch.detail.as_deref().unwrap_or("unknown reason")
         )
     } else {
         let detail = branch.push_detail.as_deref()?;
-        format!("file synchronization converged, but branch `{name}` push failed: {detail}")
+        format!("{converged}branch `{name}` push failed: {detail}")
     };
     Some(SyncError::new(SyncErrorCategory::Repository, detail, true))
 }
@@ -1031,12 +1041,15 @@ mod tests {
 
     #[test]
     fn branch_lane_failures_become_retryable_terminal_job_errors() {
-        let pull = branch_lane_error(&branch_lane_for_test(
-            GitBranchSyncAction::Failed,
-            Some("unsupported pull.ff value `bogus`"),
-            false,
-            None,
-        ))
+        let pull = branch_lane_error(
+            &branch_lane_for_test(
+                GitBranchSyncAction::Failed,
+                Some("unsupported pull.ff value `bogus`"),
+                false,
+                None,
+            ),
+            WorktreeSyncMode::All,
+        )
         .expect("pull error");
         assert_eq!(pull.category, SyncErrorCategory::Repository);
         assert!(pull.retryable);
@@ -1045,23 +1058,38 @@ mod tests {
             "file synchronization converged, but branch `main` failed: unsupported pull.ff value `bogus`"
         );
 
-        let push = branch_lane_error(&branch_lane_for_test(
-            GitBranchSyncAction::Merged,
-            None,
-            false,
-            Some("remote advanced first"),
-        ))
+        let push = branch_lane_error(
+            &branch_lane_for_test(
+                GitBranchSyncAction::Merged,
+                None,
+                false,
+                Some("remote advanced first"),
+            ),
+            WorktreeSyncMode::All,
+        )
         .expect("push error");
         assert_eq!(
             push.message,
             "file synchronization converged, but branch `main` push failed: remote advanced first"
         );
-        assert!(branch_lane_error(&branch_lane_for_test(
-            GitBranchSyncAction::UpToDate,
-            None,
-            false,
-            None,
-        ))
+        let commits_only = branch_lane_error(
+            &branch_lane_for_test(
+                GitBranchSyncAction::Failed,
+                Some("could not read from remote"),
+                false,
+                None,
+            ),
+            WorktreeSyncMode::None,
+        )
+        .expect("commits-only error");
+        assert_eq!(
+            commits_only.message,
+            "branch `main` failed: could not read from remote"
+        );
+        assert!(branch_lane_error(
+            &branch_lane_for_test(GitBranchSyncAction::UpToDate, None, false, None,),
+            WorktreeSyncMode::All
+        )
         .is_none());
     }
 

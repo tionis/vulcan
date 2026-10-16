@@ -480,6 +480,7 @@ pub fn create_semantic_plan_with_provider_and_state_store(
     cancellation: &SyncCancellationToken,
     store: &SyncStateStore,
 ) -> Result<SemanticPlanReport, AppError> {
+    crate::sync::require_worktree_sync(paths, "semantic history")?;
     if !options.agent {
         return Err(AppError::operation(
             "a semantic planning provider may only be used with agent mode enabled",
