@@ -33,6 +33,9 @@ use crate::scan_runtime::{request_index_barrier, CacheFreshnessState, VaultScanT
 
 /// How long a read waits for its index barrier before declining.
 const BARRIER_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a REST read waits for its barrier. Unlike a routed CLI read it
+/// has no direct fallback, so it waits longer, within the request deadline.
+const REST_BARRIER_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// A vault the daemon can answer routed reads for.
 pub struct RoutedVault {
@@ -79,7 +82,7 @@ impl RoutedVault {
     /// rather than declined.
     pub(crate) fn rest_read_guard(&self) -> Result<ProfilePermissionGuard, RoutedReadError> {
         let completion =
-            request_index_barrier(self.paths.vault_root(), &self.tracker, BARRIER_TIMEOUT)
+            request_index_barrier(self.paths.vault_root(), &self.tracker, REST_BARRIER_TIMEOUT)
                 .map_err(|error| RoutedReadError::Unavailable(error.to_string()))?;
         if completion.state != CacheFreshnessState::Fresh {
             return Err(RoutedReadError::Unavailable(format!(

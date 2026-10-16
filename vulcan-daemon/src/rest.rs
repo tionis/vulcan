@@ -1072,6 +1072,17 @@ mod tests {
                 &routed,
             ));
         }
+        // Requests start once each vault's first scan is done, as they would
+        // against a daemon that has finished starting; slow runners take a
+        // while to get there.
+        for id in ["notes", "projects"] {
+            routed
+                .get(id)
+                .expect("served vault")
+                .tracker
+                .wait_for_generation(1, std::time::Duration::from_secs(60))
+                .expect("first scan");
+        }
         let api_tokens = Arc::new(crate::api_tokens::ApiTokenStore::at(
             temporary.path().join("api-state"),
         ));
