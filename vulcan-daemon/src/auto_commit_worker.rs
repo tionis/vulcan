@@ -400,6 +400,28 @@ pub fn run_direct_batch(
     dry_run: bool,
     verbosity: Verbosity,
 ) -> Result<BatchedCommitReport, String> {
+    run_batch_with(
+        registry,
+        paths,
+        permission_profile,
+        dry_run,
+        verbosity,
+        &Ungated,
+        &SyncCancellationToken::default(),
+    )
+}
+
+/// [`run_direct_batch`] behind `gate` and stopped by `cancellation`, as a
+/// scheduled `batch-commit` runs it.
+pub(crate) fn run_batch_with(
+    registry: &WikiRegistry,
+    paths: &VaultPaths,
+    permission_profile: Option<&str>,
+    dry_run: bool,
+    verbosity: Verbosity,
+    gate: &dyn MutationGate,
+    cancellation: &SyncCancellationToken,
+) -> Result<BatchedCommitReport, String> {
     let config = load_vault_config(paths).config.git;
     let daemon = match registry.load() {
         Ok(daemon) => Some(daemon),
@@ -447,7 +469,6 @@ pub fn run_direct_batch(
             }
         }
     };
-    let cancellation = SyncCancellationToken::default();
     let profile = permission_profile.map(str::to_string).or_else(|| {
         registration.map(|registration| {
             registration
@@ -471,8 +492,8 @@ pub fn run_direct_batch(
                 }
             }),
             permission_profile: profile.as_deref(),
-            gate: &Ungated,
-            cancellation: &cancellation,
+            gate,
+            cancellation,
             verbosity,
             dry_run,
         },

@@ -1,7 +1,7 @@
 ---
 name: configuration-and-permissions
-description: Configure Vulcan safely, manage device-local wiki registrations and groups, inspect settings, manage permission profiles, and understand trust boundaries. Use when the user asks about registered vaults, config, permissions, profiles, access control, sandboxing, trust, setup, or why a command/tool is denied.
-version: 32
+description: Configure Vulcan safely, manage device-local wiki registrations and groups, inspect settings, manage permission profiles, schedule vault jobs, and understand trust boundaries. Use when the user asks about registered vaults, config, permissions, profiles, access control, sandboxing, trust, scheduled or recurring jobs, setup, or why a command/tool is denied.
+version: 33
 tools:
   - config_show
   - config_get
@@ -37,23 +37,24 @@ permission profiles, or diagnoses permission and trust failures.
 11. Use `vulcan daemon companion --output json` for non-secret local-client connection metadata. `--reveal-token` is an explicit bearer-authority transfer and its output belongs only in device-local client storage, never shared configuration or synchronized plugin data.
 12. The reference Obsidian companion requires Obsidian 1.11.4+ and stores the bearer token through native `SecretStorage`; its ordinary plugin data contains only allowlisted non-secret endpoint/wiki/trigger preferences. Keep the daemon loopback-only and use the registration's permission profile as the authority boundary.
 13. Preview companion installation with `vulcan daemon companion install [<wiki>] --dry-run`, then apply after checking the registered vault and managed files. First install seeds only the non-secret endpoint/wiki preferences; upgrades preserve `data.json`, and pairing still requires the explicit token handoff into Obsidian `SecretStorage`.
-14. For interactive Templater creation-rule setup, use `vulcan config edit`: its structured folder and regex rule editors can add/remove rows, and folder fields suggest current vault directories without rejecting manually entered paths.
-15. Realtime sync notification setup has no device-local import command or daemon setting. The
+14. Scheduled jobs live in shared `.vulcan/config.toml` under `[[schedules.jobs]]` (`[schedules] version = 1`); a `[schedules]` table in `config.local.toml` is ignored. Each job names a built-in `target` (`scan` or `batch-commit`), the exact device IDs in `nodes` that run it (from `vulcan device show`), a `trigger` (`every = "15m"` or `cron = "..."` with a required IANA `timezone`), and an `authority` permission profile. Check with `vulcan schedule list` (where each job runs, whether it is authorized, next and last runs), preview a run with `vulcan schedule run <id> --dry-run`, and toggle with `vulcan schedule enable|disable <id> --dry-run` first. The daemon runs due jobs; `vulcan schedule run <id>` runs one now without it.
+15. For interactive Templater creation-rule setup, use `vulcan config edit`: its structured folder and regex rule editors can add/remove rows, and folder fields suggest current vault directories without rejecting manually entered paths.
+16. Realtime sync notification setup has no device-local import command or daemon setting. The
     daemon discovers `notification.json` from the repository's exact
     `refs/vulcan/notifications` ref. The registration's effective profile must allow Git and
     network access to the advertised endpoint origin before the daemon connects.
-16. Operational sync alerts are a separate daemon-owned concern. Warning/error logs are always on.
+17. Operational sync alerts are a separate daemon-owned concern. Warning/error logs are always on.
     Preview `vulcan daemon config set-notifications --desktop true --dry-run`, apply it, and restart
     the daemon to opt into native desktop delivery. This setting contains no credential and a
     desktop delivery failure never changes the retained sync result. Enabling it reconciles the
     current retained terminal job into the durable alert ledger once; successful delivery prevents
     repeat alerts on later restarts.
-17. Add remote alerts with `daemon config set-notification-webhook <name> --url <url>
+18. Add remote alerts with `daemon config set-notification-webhook <name> --url <url>
     --format json|ntfy [--token-env <name>] --dry-run`, or an absolute shell-free local bridge with
     `set-notification-command <name> --program <path> [--arg <literal>]... --dry-run`. Restart after
     applying configuration and inspect the secret-minimal queue with `daemon alert-status`. Remove
     either kind with `daemon config remove-notification-sink <name> --dry-run`.
-18. Read `vulcan help mcp-remotes` and manage hosted-client MCP exposure with `vulcan mcp remote init/list/show/set/run/remove`.
+19. Read `vulcan help mcp-remotes` and manage hosted-client MCP exposure with `vulcan mcp remote init/list/show/set/run/remove`.
     Definitions live in device-global daemon configuration and reference registered wikis plus
     vault-defined permission profiles; they never live in synced `.vulcan/config.toml`. Inspect and
     revoke the separate durable approval state with `vulcan mcp connections list/show/revoke`.
@@ -68,6 +69,7 @@ permission profiles, or diagnoses permission and trust failures.
 
 - Device-key transport policy, known forge hosts, and the default route for routable reads (`[client] route`: direct, daemon, or auto) live in the device-global `device.toml` (`vulcan device config show|set-transport|set-forge|remove-forge|set-route|clear-route`), never in vault config. It holds only non-secret values: an OAuth client ID is public, and a token is named by environment variable, never stored.
 - Do not put private credentials in shared `.vulcan/config.toml`; use local config or environment variables.
+- A scheduled job's `authority` must stay within the device's ceiling for the vault (the registration's permission profile); a job asking for more fails authorization rather than running with less. Do not widen a registration's profile just to let a job run, and do not list a device in `nodes` unless the user wants that device to run the job. Missed runs coalesce into one, and runs never overlap, so do not add duplicate jobs to "catch up".
 - Never put a provider key in `daemon.toml` or a CLI argument. `daemon config set-agent --api-key-env` accepts the environment-variable name only. For an installed Linux/macOS service, use a mode-`0600` `$XDG_CONFIG_HOME/vulcan/daemon.env` containing literal `NAME=value` records when ordinary environment inheritance is unavailable; never put this file in a vault.
 - Notification webhooks follow the same credential rule: store only `--token-env <name>` in
   `daemon.toml`. URLs must use HTTPS (loopback HTTP is accepted for local bridges) and cannot carry

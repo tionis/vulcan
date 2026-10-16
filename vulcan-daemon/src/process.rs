@@ -645,6 +645,35 @@ fn daemon_worker_registrations(
         },
     ));
 
+    let schedules_definition = worker_definition(
+        "worker.schedules",
+        true,
+        false,
+        &[],
+        optional_worker_restart(),
+    )?;
+    let schedules_registry = context.registry.clone();
+    let schedules_state_root = context.state_root.clone();
+    let schedules_device = context.device_identity.device_id().ok().flatten();
+    let schedules_gate = Arc::new(HostedWorkerGate::new(
+        Arc::clone(scheduler),
+        runtime.clone(),
+        "worker.schedules",
+    ));
+    registrations.push(ServiceRegistration::new(
+        schedules_definition,
+        move |service| {
+            service.ready()?;
+            crate::scheduler::run_scheduler_service(
+                &schedules_registry,
+                &schedules_state_root,
+                schedules_device.clone(),
+                Some(&schedules_gate),
+                service.stop(),
+            )
+        },
+    ));
+
     let mut conflict_definition = worker_definition(
         "worker.conflict",
         config.conflict_worker.is_some() && agents.resolution.is_some(),
@@ -1811,7 +1840,7 @@ mod tests {
         });
 
         let status = wait_until_running(&context, &result_receiver);
-        assert_eq!(status.services.len(), 8);
+        assert_eq!(status.services.len(), 9);
         assert!(status.services.iter().any(|service| {
             service.id.as_str() == "listener.test-ingress"
                 && service.state == crate::host::ServiceLifecycleState::Ready
@@ -2077,7 +2106,11 @@ mod tests {
         let status = wait_until_running(&context, &result_receiver);
         assert_eq!(status.registered_wikis.len(), 1);
         assert_eq!(status.wiki_statuses.len(), 1);
-        assert_eq!(status.services.len(), 7);
+        assert_eq!(status.services.len(), 8);
+        assert!(status
+            .services
+            .iter()
+            .any(|service| service.id.as_str() == "worker.schedules"));
         assert!(status.services.iter().any(|service| {
             service.id.as_str() == "listener.companion"
                 && service.state == crate::host::ServiceLifecycleState::Ready

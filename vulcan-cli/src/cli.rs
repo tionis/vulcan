@@ -6148,6 +6148,52 @@ pub enum VaultCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum ScheduleCommand {
+    #[command(about = "List the vault's jobs, where they run, and their next and last runs")]
+    List,
+    #[command(about = "Show one job with its definition, placement, and last outcomes")]
+    Show {
+        #[arg(help = "Job ID")]
+        id: String,
+    },
+    #[command(about = "Show a job's next occurrences in UTC and its own time zone")]
+    Next {
+        #[arg(help = "Job ID")]
+        id: String,
+        #[arg(long, default_value_t = 5, help = "How many occurrences to show")]
+        count: usize,
+    },
+    #[command(about = "Show a job's recorded runs, newest first")]
+    History {
+        #[arg(help = "Job ID")]
+        id: String,
+        #[arg(long, default_value_t = 20, help = "How many runs to show")]
+        limit: usize,
+    },
+    #[command(about = "Run a job once, now, without the daemon")]
+    Run {
+        #[arg(help = "Job ID")]
+        id: String,
+        #[arg(long, help = "Authorize the job without running it")]
+        dry_run: bool,
+    },
+    #[command(about = "Enable a job in the shared config")]
+    Enable {
+        #[arg(help = "Job ID")]
+        id: String,
+        #[arg(long, help = "Report the change without writing config.toml")]
+        dry_run: bool,
+    },
+    #[command(about = "Disable a job in the shared config")]
+    Disable {
+        #[arg(help = "Job ID")]
+        id: String,
+        #[arg(long, help = "Report the change without writing config.toml")]
+        dry_run: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum VaultTokenCommand {
     #[command(about = "Create an API token for one registered wiki and print it once")]
     Create {
@@ -8329,6 +8375,14 @@ pub enum Command {
     Vault {
         #[command(subcommand)]
         command: VaultCommand,
+    },
+    #[command(
+        about = "Inspect and run the vault's scheduled jobs",
+        long_about = "Inspect and run the jobs the vault schedules in `[[schedules.jobs]]` of .vulcan/config.toml. The daemon runs a job on the devices its `nodes` list, on its trigger; `vulcan schedule run` runs one now without the daemon. Every run is authorized first: under repository trust a job's `authority` profile must stay within this device's ceiling for the vault."
+    )]
+    Schedule {
+        #[command(subcommand)]
+        command: ScheduleCommand,
     },
     #[command(
         about = "Execute JavaScript inside the Vulcan runtime sandbox",

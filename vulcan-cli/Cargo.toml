@@ -23,6 +23,7 @@ vectors = ["vulcan-app/vectors", "vulcan-core/vectors", "vulcan-daemon/vectors"]
 web = ["vulcan-app/web", "vulcan-core/web", "vulcan-daemon/web"]
 
 [dependencies]
+chrono = { workspace = true, features = ["clock"] }
 clap.workspace = true
 clap_complete.workspace = true
 base64.workspace = true

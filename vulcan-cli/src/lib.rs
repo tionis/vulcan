@@ -438,16 +438,16 @@ pub use cli::{
     PeriodicOpenArgs, PeriodicSubcommand, PluginCommand, PluginEventArg, PluginSandboxArg,
     PropertySortArg, PublishCommand, PullCommand, QueryEngineArg, QueryFormatArg, RefactorCommand,
     RefreshMode, RenderArgs, RenderMode, RepairCommand, SavedCommand, SavedCreateCommand,
-    SearchBackendArg, SearchMode, SearchSortArg, SemanticGroupingArg, SiteCommand, SkillCommand,
-    SuggestCommand, SuggestLinkStatusArg, SyncCheckpointKindArg, SyncCommand, SyncConflictSideArg,
-    SyncDeviceCommand, SyncForgeCommand, SyncScheduleCommand, SyncSelectionArgs, SyncTargetArgs,
-    SyncTransportCommand, TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand,
-    TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg,
-    TemplateRenderArgs, TemplateSubcommand, TermuxNetworkArg, TextBundleCommand, ToolCommand,
-    ToolInitTemplateArg, TransportPolicyArg, TrustCommand, UpdateChannelArg, UpdateChannelArgs,
-    UpdateCommand, UpdateNetworkArg, UpdatePolicyArgs, UpdateScheduleCommand, VaultCommand,
-    VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode, WikiPackageCommand,
-    WikiSourceLocatorsArg,
+    ScheduleCommand, SearchBackendArg, SearchMode, SearchSortArg, SemanticGroupingArg, SiteCommand,
+    SkillCommand, SuggestCommand, SuggestLinkStatusArg, SyncCheckpointKindArg, SyncCommand,
+    SyncConflictSideArg, SyncDeviceCommand, SyncForgeCommand, SyncScheduleCommand,
+    SyncSelectionArgs, SyncTargetArgs, SyncTransportCommand, TagSortArg, TasksCommand,
+    TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg,
+    TasksViewCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TermuxNetworkArg,
+    TextBundleCommand, ToolCommand, ToolInitTemplateArg, TransportPolicyArg, TrustCommand,
+    UpdateChannelArg, UpdateChannelArgs, UpdateCommand, UpdateNetworkArg, UpdatePolicyArgs,
+    UpdateScheduleCommand, VaultCommand, VectorQueueCommand, VectorsCommand, WebCommand,
+    WebFetchMode, WikiPackageCommand, WikiSourceLocatorsArg,
 };
 use vulcan_core::Verbosity;
 
@@ -6631,6 +6631,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Command::Devices { .. } => unreachable!("devices handled before vault resolution"),
         Command::Daemon { ref command } => commands::daemon::handle_daemon_command(cli, command),
         Command::Vault { ref command } => commands::vault::handle_vault_command(cli, command),
+        Command::Schedule { ref command } => {
+            commands::schedule::handle_schedule_command(cli, &paths, command)
+        }
         Command::Run {
             ref script,
             script_mode,

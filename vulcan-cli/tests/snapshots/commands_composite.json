@@ -15190,6 +15190,191 @@
         ]
       },
       {
+        "about": "Inspect and run the vault's scheduled jobs",
+        "name": "schedule",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "List the vault's jobs, where they run, and their next and last runs",
+            "name": "list",
+            "options": [],
+            "subcommands": []
+          },
+          {
+            "about": "Show one job with its definition, placement, and last outcomes",
+            "name": "show",
+            "options": [
+              {
+                "help": "Job ID",
+                "id": "id",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "ID"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Show a job's next occurrences in UTC and its own time zone",
+            "name": "next",
+            "options": [
+              {
+                "help": "Job ID",
+                "id": "id",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "ID"
+                ]
+              },
+              {
+                "help": "How many occurrences to show",
+                "id": "count",
+                "long": "count",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "COUNT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Show a job's recorded runs, newest first",
+            "name": "history",
+            "options": [
+              {
+                "help": "Job ID",
+                "id": "id",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "ID"
+                ]
+              },
+              {
+                "help": "How many runs to show",
+                "id": "limit",
+                "long": "limit",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "LIMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Run a job once, now, without the daemon",
+            "name": "run",
+            "options": [
+              {
+                "help": "Job ID",
+                "id": "id",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "ID"
+                ]
+              },
+              {
+                "help": "Authorize the job without running it",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Enable a job in the shared config",
+            "name": "enable",
+            "options": [
+              {
+                "help": "Job ID",
+                "id": "id",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "ID"
+                ]
+              },
+              {
+                "help": "Report the change without writing config.toml",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Disable a job in the shared config",
+            "name": "disable",
+            "options": [
+              {
+                "help": "Job ID",
+                "id": "id",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "ID"
+                ]
+              },
+              {
+                "help": "Report the change without writing config.toml",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
         "about": "Execute JavaScript inside the Vulcan runtime sandbox",
         "after_help": "The JS runtime exposes the full vault API: query notes, search, read/write frontmatter,\ncall web APIs, and run DQL — all from a sandboxed rquickjs context.\n\nSandbox levels:\n  strict   default — no filesystem or network access beyond vault APIs\n  fs       allow filesystem access (read/write outside the vault)\n  net      allow outbound HTTP requests\n  none     no restrictions\n\nExamples:\n  vulcan run                                     Start interactive REPL\n  vulcan run -e 'dql(\"from notes limit 5\")'     Evaluate a DQL snippet\n  vulcan run -e 'notes({limit:3}).map(n=>n.path)' Inspect note paths\n  vulcan run script.js                           Execute a script file\n  vulcan run --eval-file prelude.js              Load a file then open REPL\n  vulcan run --sandbox net -e 'web.search(\"rust async\")'  Web search\n  vulcan run --no-startup                        Skip startup.js even if trusted\n  cat query.js | vulcan run                      Pipe a script via stdin",
         "name": "run",

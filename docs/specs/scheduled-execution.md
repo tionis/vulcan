@@ -1,7 +1,9 @@
 # Vault-owned schedules and execution trust
 
-Status: planned implementation contract for Roadmap 10.8, 12.17.6, 15.7, and 19.10.
-No commands or scheduling configuration in this document are claimed to ship today.
+Status: implementation contract for Roadmap 10.8, 12.17.6, 15.7, and 19.10. Schema v1 below is
+frozen and shipped with repository trust (`vulcan_core::schedules`, `vulcan_app::schedules`, the
+daemon's `worker.schedules`, and `vulcan schedule`); trusted-commit, App targets, and the registry
+extensions remain planned. User guide: `docs/guide/schedules.md`.
 
 ## Scope and ownership
 
@@ -60,10 +62,10 @@ execution trust checks. The schedule service requires the daemon and never start
 implicitly. External cron/native timers can invoke existing finite commands, but are not a
 second owner of the same daemon schedule or an escape from execution trust.
 
-## Schema v1 proposal (for review)
+## Schema v1
 
-Status: proposed, not frozen. This section turns the contract above into the concrete first
-slice. Nothing here ships until it is reviewed and frozen.
+Status: frozen 2026-10-16 after review, and implemented. This section turns the contract above into
+the concrete first slice.
 
 ### Where jobs live
 
@@ -96,7 +98,8 @@ limits = { max_runtime_seconds = 600, retries = 0 }
   `vulcan git batch-commit` pass). `outline-publish` and `site-build` follow once their inputs
   are classified as execution configuration. App jobs (`{ app = ..., job = ... }`) come with
   Phase 19.10 and use the same fields.
-- **`nodes`** selects devices by their key-derived device ID. A device runs a job only when its own
+- **`nodes`** selects devices by their key-derived device ID (`vdev1_...`; letters, digits, `-`,
+  and `_`). A device runs a job only when its own
   ID is listed. Several IDs mean independent runs on each, not a shared queue.
 - **`authority`** is a permission profile, capped by the registration's ceiling. A synced change
   can choose a narrower profile, never a wider one than the device allows.
@@ -132,8 +135,15 @@ and outside sync:
 - `watermarks(job_id, revision, last_scheduled_utc)`, never pruned while the job exists;
 - history pruned to the newest 200 occurrences per job, or 30 days.
 
-An occurrence found `dispatched` after a crash is retried only if its target is idempotent, and
-otherwise reported as `interrupted`.
+An occurrence found `dispatched` after a crash is retried only if its target is idempotent and the
+job has retries left, and otherwise reported as `interrupted`. A failed run is retried after 30
+seconds within the same budget. A revision is activated (its watermark set) when the scheduler
+first sees it, so a new or changed job never runs occurrences from before then. Manual runs are
+recorded with `manual = 1` and leave the watermark alone. The scheduler rereads registrations and
+vault configuration at least every 30 seconds; a run whose job is disabled, removed, reassigned,
+or changed, or that exceeds `max_runtime_seconds`, is asked to stop through its cancellation
+token. `scan` cannot stop mid-scan and `batch-commit` stops at its next check, so both finish
+their current step.
 
 ### Commands
 

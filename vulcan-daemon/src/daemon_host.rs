@@ -16,12 +16,14 @@ use tokio::net::TcpListener;
 use tokio::runtime::Handle;
 
 const SERVICE_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
-pub(crate) const DAEMON_SERVICE_REGISTRATION_LIMIT: usize = 8;
+/// The base daemon has eight services (with the schedule worker) plus at most
+/// one host-provided ingress service; the rest is headroom.
+pub(crate) const DAEMON_SERVICE_REGISTRATION_LIMIT: usize = 10;
 
 /// Outlasts the sequential per-service startup budget for the complete daemon
 /// graph, with an additional ten seconds for process setup and readiness
 /// polling outside the host supervisor.
-pub const DAEMON_READINESS_TIMEOUT: Duration = Duration::from_secs(100);
+pub const DAEMON_READINESS_TIMEOUT: Duration = Duration::from_secs(120);
 
 const _: () = assert!(
     DAEMON_READINESS_TIMEOUT.as_secs()

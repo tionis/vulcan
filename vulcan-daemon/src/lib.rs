@@ -63,6 +63,7 @@ pub mod rest_writes;
 pub mod routed_reads;
 pub mod runtime;
 pub mod scan_runtime;
+pub mod scheduler;
 pub mod semantic_worker;
 pub mod service;
 pub mod shutdown;

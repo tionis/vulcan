@@ -28,6 +28,7 @@ pub(crate) mod query;
 pub(crate) mod refactor;
 pub(crate) mod render;
 pub(crate) mod runtime;
+pub(crate) mod schedule;
 pub(crate) mod skill;
 pub(crate) mod status;
 pub(crate) mod sync;

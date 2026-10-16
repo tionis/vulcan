@@ -1,0 +1,883 @@
+//! The daemon's one schedule service (Roadmap 10.8): runs each registered
+//! vault's `[[schedules.jobs]]` that name this device, on their triggers.
+//!
+//! The service decides when; each run is a finite workflow that direct mode
+//! can also start (`vulcan schedule run`). [`Scheduler::tick`] is a pure step
+//! over an injected instant, so coalescing, overlap, retries, reassignment,
+//! and restarts are tested without real time. See
+//! `docs/specs/scheduled-execution.md`.
+
+use crate::registry::{WikiRegistration, WikiRegistry};
+use crate::shutdown::ShutdownSignal;
+use crate::worker_gate::HostedWorkerGate;
+use chrono::{DateTime, TimeZone, Utc};
+use serde::Serialize;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
+use vulcan_app::execution::{MutationGate, Ungated};
+use vulcan_app::schedules::{authorize_execution, OccurrenceKey, OccurrenceState, ScheduleLedger};
+use vulcan_app::sync::SyncCancellationToken;
+use vulcan_core::schedules::{load_schedules, ScheduleJob, ScheduleTarget};
+use vulcan_core::{VaultPaths, Verbosity};
+
+/// How often the service rereads registrations and vault schedules while it
+/// waits, which bounds how late a configuration change takes effect.
+const RELOAD_INTERVAL: Duration = Duration::from_secs(30);
+/// How long a failed run waits before its retry.
+const RETRY_DELAY_MS: i64 = 30_000;
+/// How often finished history is pruned.
+const PRUNE_INTERVAL_MS: i64 = 60 * 60 * 1_000;
+
+/// What a run needs beyond its job: where it runs and under what limits.
+pub struct RunContext<'a> {
+    pub registry: &'a WikiRegistry,
+    pub paths: &'a VaultPaths,
+    /// The device's permission ceiling for this vault.
+    pub ceiling: Option<&'a str>,
+    pub gate: &'a dyn MutationGate,
+    pub cancellation: &'a SyncCancellationToken,
+}
+
+/// Authorizes and runs `job` once, as a scheduled occurrence or a manual
+/// `vulcan schedule run`. Returns a one-line summary of what it did.
+pub fn run_job(job: &ScheduleJob, context: &RunContext<'_>) -> Result<String, String> {
+    let (authorization, profile) = authorize_execution(context.paths, job, context.ceiling)
+        .map_err(|error| error.to_string())?;
+    if context.cancellation.is_cancelled() {
+        return Err("cancelled before it started".to_string());
+    }
+    match &job.target {
+        ScheduleTarget::Scan { full } => {
+            let guard = vulcan_core::ProfilePermissionGuard::new(context.paths, profile);
+            vulcan_core::PermissionGuard::check_index(&guard).map_err(|error| error.to_string())?;
+            let _permit = context.gate.enter().map_err(|error| error.to_string())?;
+            let summary = vulcan_app::scan::scan_vault_with_automation(
+                context.paths,
+                if *full {
+                    vulcan_core::ScanMode::Full
+                } else {
+                    vulcan_core::ScanMode::Incremental
+                },
+                &vulcan_app::commit::AutoCommitPolicy::for_scan(context.paths, false),
+                Some(&authorization.profile),
+                Verbosity::Quiet,
+                |_| {},
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(format!(
+                "scanned: {} added, {} updated, {} deleted",
+                summary.added, summary.updated, summary.deleted
+            ))
+        }
+        ScheduleTarget::BatchCommit => {
+            let report = crate::auto_commit_worker::run_batch_with(
+                context.registry,
+                context.paths,
+                Some(&authorization.profile),
+                false,
+                Verbosity::Quiet,
+                context.gate,
+                context.cancellation,
+            )?;
+            Ok(format!(
+                "batch {:?}: {} commit(s){}",
+                report.status,
+                report.commits.len(),
+                report
+                    .detail
+                    .map(|detail| format!(" ({detail})"))
+                    .unwrap_or_default()
+            ))
+        }
+    }
+}
+
+/// The ledger key of a registered vault.
+#[must_use]
+pub fn vault_key(registration: &WikiRegistration) -> String {
+    registration.registration_id.to_string()
+}
+
+/// A run in progress.
+struct Running {
+    revision: String,
+    /// Which attempt this is, from 1, and how many retries the job allows.
+    attempt: i64,
+    retries: u8,
+    cancellation: SyncCancellationToken,
+    handle: JoinHandle<()>,
+}
+
+/// Why a job does not run here now, as status reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobPlacement {
+    Runs,
+    Disabled,
+    NotThisDevice,
+    Blocked,
+}
+
+/// Whether `job` runs on the device `device_id` (none without an identity).
+#[must_use]
+pub fn job_placement(job: &ScheduleJob, device_id: Option<&str>) -> JobPlacement {
+    if !job.enabled {
+        JobPlacement::Disabled
+    } else if device_id.is_some_and(|device| job.runs_on(device)) {
+        JobPlacement::Runs
+    } else {
+        JobPlacement::NotThisDevice
+    }
+}
+
+/// A run's slot, occurrence, and outcome, sent when its thread finishes.
+type FinishedRun = ((String, String), OccurrenceKey, Result<String, String>);
+
+/// The scheduler's state between ticks.
+pub struct Scheduler {
+    ledger: ScheduleLedger,
+    device_id: Option<String>,
+    running: BTreeMap<(String, String), Running>,
+    /// Failed or interrupted occurrences waiting for a retry, by job: the
+    /// occurrence, the attempt it will be, and when it may start.
+    retry_at: BTreeMap<(String, String), (OccurrenceKey, i64, i64)>,
+    finished: mpsc::Receiver<FinishedRun>,
+    finished_sender: mpsc::Sender<FinishedRun>,
+    last_prune_ms: i64,
+    recovered: bool,
+}
+
+/// One vault as the scheduler sees it on a tick.
+pub struct ScheduledVault {
+    pub registration: WikiRegistration,
+    pub jobs: Vec<ScheduleJob>,
+}
+
+/// Reads every registration's schedules.
+#[must_use]
+pub fn scheduled_vaults(registrations: &[WikiRegistration]) -> Vec<ScheduledVault> {
+    registrations
+        .iter()
+        .map(|registration| ScheduledVault {
+            jobs: load_schedules(&VaultPaths::new(&registration.path)).jobs,
+            registration: registration.clone(),
+        })
+        .collect()
+}
+
+impl Scheduler {
+    pub fn open(state_root: &Path, device_id: Option<String>) -> Result<Self, String> {
+        let (finished_sender, finished) = mpsc::channel();
+        Ok(Self {
+            ledger: ScheduleLedger::open(state_root).map_err(|error| error.to_string())?,
+            device_id,
+            running: BTreeMap::new(),
+            retry_at: BTreeMap::new(),
+            finished,
+            finished_sender,
+            last_prune_ms: 0,
+            recovered: false,
+        })
+    }
+
+    /// One step at `now`: record finished runs, recover interrupted ones on
+    /// the first tick, cancel runs whose job changed, and dispatch every due
+    /// occurrence of a job this device runs. Returns when the next occurrence
+    /// is due, if any.
+    #[allow(clippy::too_many_lines)]
+    pub fn tick(
+        &mut self,
+        now: DateTime<Utc>,
+        vaults: &[ScheduledVault],
+        registry: &WikiRegistry,
+        gate: Option<&Arc<HostedWorkerGate>>,
+    ) -> Option<DateTime<Utc>> {
+        let now_ms = now.timestamp_millis();
+        self.collect_finished(now_ms);
+        if !self.recovered {
+            self.recover(vaults, now_ms);
+            self.recovered = true;
+        }
+        if now_ms - self.last_prune_ms >= PRUNE_INTERVAL_MS {
+            if let Err(error) = self.ledger.prune(now_ms) {
+                eprintln!("cannot prune schedule history: {error}");
+            }
+            self.last_prune_ms = now_ms;
+        }
+        // A run whose job was removed, disabled, reassigned, or changed is
+        // asked to stop; it keeps its own definition until it does.
+        let wanted = vaults
+            .iter()
+            .flat_map(|vault| {
+                let key = vault_key(&vault.registration);
+                vault
+                    .jobs
+                    .iter()
+                    .filter(|job| self.placement(job) == JobPlacement::Runs)
+                    .map(move |job| ((key.clone(), job.id.clone()), job.revision.clone()))
+            })
+            .collect::<BTreeMap<_, _>>();
+        for (key, running) in &self.running {
+            if wanted.get(key) != Some(&running.revision) {
+                running.cancellation.cancel();
+            }
+        }
+        let mut next: Option<DateTime<Utc>> = None;
+        for vault in vaults {
+            let vault_id = vault_key(&vault.registration);
+            for job in &vault.jobs {
+                if self.placement(job) != JobPlacement::Runs {
+                    continue;
+                }
+                let slot = (vault_id.clone(), job.id.clone());
+                let watermark = match self.ledger.watermark(&vault_id, job, now_ms) {
+                    Ok(watermark) => watermark,
+                    Err(error) => {
+                        eprintln!("schedule `{}`: {error}", job.id);
+                        continue;
+                    }
+                };
+                let watermark = Utc.timestamp_millis_opt(watermark).single().unwrap_or(now);
+                if let Some(upcoming) = job.trigger.next_after(watermark.max(now)) {
+                    next = Some(next.map_or(upcoming, |next| next.min(upcoming)));
+                }
+                if self.running.contains_key(&slot) {
+                    // At most one follow-up: the latest due occurrence runs
+                    // once this one finishes.
+                    continue;
+                }
+                if let Some((key, attempt, at_ms)) = self.retry_at.get(&slot).cloned() {
+                    if key.revision != job.revision {
+                        // The definition changed; its retry belongs to the old one.
+                        self.retry_at.remove(&slot);
+                    } else if now_ms >= at_ms {
+                        self.retry_at.remove(&slot);
+                        if let Err(error) = self.ledger.retry(&key, now_ms) {
+                            eprintln!("schedule `{}`: {error}", job.id);
+                            continue;
+                        }
+                        self.start(slot, key, attempt, job, &vault.registration, registry, gate);
+                        continue;
+                    } else {
+                        continue;
+                    }
+                }
+                let Some(occurrence) = job.due(watermark, now) else {
+                    continue;
+                };
+                let key = OccurrenceKey {
+                    vault: vault_id.clone(),
+                    job_id: job.id.clone(),
+                    revision: job.revision.clone(),
+                    scheduled_ms: occurrence.timestamp_millis(),
+                    manual: false,
+                };
+                match self.ledger.claim(&key, now_ms) {
+                    Ok(true) => self.start(slot, key, 1, job, &vault.registration, registry, gate),
+                    Ok(false) => {}
+                    Err(error) => eprintln!("schedule `{}`: {error}", job.id),
+                }
+            }
+        }
+        next
+    }
+
+    /// Whether `job` runs on this device.
+    #[must_use]
+    pub fn placement(&self, job: &ScheduleJob) -> JobPlacement {
+        job_placement(job, self.device_id.as_deref())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn start(
+        &mut self,
+        slot: (String, String),
+        key: OccurrenceKey,
+        attempt: i64,
+        job: &ScheduleJob,
+        registration: &WikiRegistration,
+        registry: &WikiRegistry,
+        gate: Option<&Arc<HostedWorkerGate>>,
+    ) {
+        let cancellation = SyncCancellationToken::default();
+        let thread_cancellation = cancellation.clone();
+        let retries = job.limits.retries;
+        let job = job.clone();
+        let registration = registration.clone();
+        let registry = registry.clone();
+        let gate = gate.cloned();
+        let sender = self.finished_sender.clone();
+        let revision = key.revision.clone();
+        let thread_key = key;
+        let thread_slot = slot.clone();
+        let handle = thread::spawn(move || {
+            let paths = VaultPaths::new(&registration.path);
+            let finished = Arc::new(AtomicBool::new(false));
+            // Cooperative runtime limit: past it, the run is asked to stop.
+            let limit = Duration::from_secs(job.limits.max_runtime_seconds);
+            let watchdog = {
+                let finished = Arc::clone(&finished);
+                let cancellation = thread_cancellation.clone();
+                thread::spawn(move || {
+                    let deadline = std::time::Instant::now() + limit;
+                    while !finished.load(Ordering::Acquire) {
+                        if std::time::Instant::now() >= deadline {
+                            cancellation.cancel();
+                            return;
+                        }
+                        thread::sleep(Duration::from_millis(200));
+                    }
+                })
+            };
+            let vault_gate = gate
+                .as_ref()
+                .map(|gate| gate.for_file_writes(&registration));
+            let gate: &dyn MutationGate = match vault_gate.as_ref() {
+                Some(gate) => gate,
+                None => &Ungated,
+            };
+            let result = run_job(
+                &job,
+                &RunContext {
+                    registry: &registry,
+                    paths: &paths,
+                    ceiling: registration.permissions_profile.as_deref(),
+                    gate,
+                    cancellation: &thread_cancellation,
+                },
+            );
+            finished.store(true, Ordering::Release);
+            let _ = watchdog.join();
+            let result = if thread_cancellation.is_cancelled() {
+                Err(match result {
+                    Ok(summary) => format!("cancelled after it finished: {summary}"),
+                    Err(error) => format!("cancelled: {error}"),
+                })
+            } else {
+                result
+            };
+            let _ = sender.send((thread_slot, thread_key, result));
+        });
+        self.running.insert(
+            slot,
+            Running {
+                revision,
+                attempt,
+                retries,
+                cancellation,
+                handle,
+            },
+        );
+    }
+
+    fn collect_finished(&mut self, now_ms: i64) {
+        while let Ok((slot, key, result)) = self.finished.try_recv() {
+            if let Some(running) = self.running.remove(&slot) {
+                let cancelled = running.cancellation.is_cancelled();
+                let _ = running.handle.join();
+                let (state, outcome) = match &result {
+                    Ok(summary) => (OccurrenceState::Succeeded, summary.clone()),
+                    Err(error) if cancelled => (OccurrenceState::Cancelled, error.clone()),
+                    Err(error) => (OccurrenceState::Failed, error.clone()),
+                };
+                if let Err(error) = self.ledger.finish(&key, state, &outcome, now_ms) {
+                    eprintln!("schedule `{}`: {error}", key.job_id);
+                }
+                if state == OccurrenceState::Failed && running.attempt <= i64::from(running.retries)
+                {
+                    self.retry_at
+                        .insert(slot, (key, running.attempt + 1, now_ms + RETRY_DELAY_MS));
+                }
+            }
+        }
+    }
+
+    /// Occurrences a previous run left dispatched: retried when their target
+    /// is idempotent and retries remain, otherwise marked interrupted.
+    fn recover(&mut self, vaults: &[ScheduledVault], now_ms: i64) {
+        for vault in vaults {
+            let vault_id = vault_key(&vault.registration);
+            let Ok(unfinished) = self.ledger.unfinished(&vault_id) else {
+                continue;
+            };
+            for (key, attempt) in unfinished {
+                let job = vault
+                    .jobs
+                    .iter()
+                    .find(|job| job.id == key.job_id && job.revision == key.revision);
+                let retryable = job.is_some_and(|job| {
+                    !key.manual
+                        && job.target.idempotent()
+                        && attempt <= i64::from(job.limits.retries)
+                        && self.placement(job) == JobPlacement::Runs
+                });
+                if retryable {
+                    self.retry_at.insert(
+                        (vault_id.clone(), key.job_id.clone()),
+                        (key, attempt + 1, now_ms),
+                    );
+                } else if let Err(error) = self.ledger.finish(
+                    &key,
+                    OccurrenceState::Interrupted,
+                    "the daemon stopped before this run recorded an outcome",
+                    now_ms,
+                ) {
+                    eprintln!("schedule `{}`: {error}", key.job_id);
+                }
+            }
+        }
+    }
+
+    /// Asks every run to stop and waits for them.
+    pub fn shutdown(mut self, now: DateTime<Utc>) {
+        for running in self.running.values() {
+            running.cancellation.cancel();
+        }
+        while !self.running.is_empty() {
+            thread::sleep(Duration::from_millis(50));
+            self.collect_finished(now.timestamp_millis());
+        }
+    }
+
+    /// Whether a run of `job_id` in `vault` is in progress.
+    #[must_use]
+    pub fn is_running(&self, vault: &str, job_id: &str) -> bool {
+        self.running
+            .contains_key(&(vault.to_string(), job_id.to_string()))
+    }
+}
+
+/// The supervised service: ticks on the real clock until `stop`.
+pub fn run_scheduler_service(
+    registry: &WikiRegistry,
+    state_root: &Path,
+    device_id: Option<String>,
+    gate: Option<&Arc<HostedWorkerGate>>,
+    stop: &ShutdownSignal,
+) -> Result<(), String> {
+    let mut scheduler = Scheduler::open(state_root, device_id)?;
+    while !stop.is_cancelled() {
+        let registrations = registry.poll().map_err(|error| error.to_string())?.vaults;
+        let vaults = scheduled_vaults(&registrations);
+        let now = Utc::now();
+        let next = scheduler.tick(now, &vaults, registry, gate);
+        let wait = next
+            .and_then(|next| (next - Utc::now()).to_std().ok())
+            .unwrap_or(RELOAD_INTERVAL)
+            .min(RELOAD_INTERVAL)
+            .max(Duration::from_millis(200));
+        // Finished runs are recorded on the next tick; wake soon while any run.
+        let wait = if scheduler.running.is_empty() {
+            wait
+        } else {
+            wait.min(Duration::from_secs(1))
+        };
+        stop.wait_timeout(wait);
+    }
+    scheduler.shutdown(Utc::now());
+    Ok(())
+}
+
+/// An occurrence's instant in UTC and in the job's own time zone (UTC for
+/// interval jobs).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OccurrenceTimes {
+    pub utc: String,
+    pub local: String,
+    pub timezone: String,
+}
+
+#[must_use]
+pub fn occurrence_times(job: &ScheduleJob, instant: DateTime<Utc>) -> OccurrenceTimes {
+    let timezone = match &job.trigger {
+        vulcan_core::schedules::time::Trigger::Cron { timezone, .. } => *timezone,
+        vulcan_core::schedules::time::Trigger::Every { .. } => chrono_tz::UTC,
+    };
+    OccurrenceTimes {
+        utc: instant.to_rfc3339(),
+        local: instant.with_timezone(&timezone).to_rfc3339(),
+        timezone: timezone.name().to_string(),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AuthorizationStatus {
+    pub allowed: bool,
+    pub policy: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct JobStatus {
+    #[serde(flatten)]
+    pub job: ScheduleJob,
+    pub placement: JobPlacement,
+    pub authorization: AuthorizationStatus,
+    /// A run is recorded as dispatched and has not finished.
+    pub running: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next: Option<OccurrenceTimes>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_success: Option<vulcan_app::schedules::OccurrenceRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_failure: Option<vulcan_app::schedules::OccurrenceRecord>,
+}
+
+pub const SCHEDULE_STATUS_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ScheduleStatusReport {
+    pub version: u32,
+    pub vault: String,
+    /// This device's ID, which `nodes` must list for a job to run here.
+    pub device_id: Option<String>,
+    pub blocked: bool,
+    pub diagnostics: Vec<vulcan_core::schedules::ScheduleDiagnostic>,
+    pub jobs: Vec<JobStatus>,
+}
+
+/// The vault's jobs as this device sees them: where each runs, whether the
+/// authorizer accepts it, its next run, and its last outcomes.
+pub fn schedule_status(
+    paths: &VaultPaths,
+    vault: &str,
+    ceiling: Option<&str>,
+    device_id: Option<&str>,
+    state_root: &Path,
+    now: DateTime<Utc>,
+) -> Result<ScheduleStatusReport, String> {
+    let set = load_schedules(paths);
+    let ledger = ScheduleLedger::open(state_root).map_err(|error| error.to_string())?;
+    let unfinished = ledger
+        .unfinished(vault)
+        .map_err(|error| error.to_string())?;
+    let mut jobs = Vec::with_capacity(set.jobs.len());
+    for job in &set.jobs {
+        let authorization = match authorize_execution(paths, job, ceiling) {
+            Ok((authorization, _)) => AuthorizationStatus {
+                allowed: true,
+                policy: authorization.policy,
+                error: None,
+            },
+            Err(error) => AuthorizationStatus {
+                allowed: false,
+                policy: "repository-trust",
+                error: Some(error.to_string()),
+            },
+        };
+        let job_placement = job_placement(job, device_id);
+        let next = (job_placement == JobPlacement::Runs)
+            .then(|| job.trigger.next_after(now))
+            .flatten()
+            .map(|instant| occurrence_times(job, instant));
+        jobs.push(JobStatus {
+            placement: job_placement,
+            authorization,
+            running: unfinished.iter().any(|(key, _)| key.job_id == job.id),
+            next,
+            last_success: ledger
+                .last_finished(vault, &job.id, true)
+                .map_err(|error| error.to_string())?,
+            last_failure: ledger
+                .last_finished(vault, &job.id, false)
+                .map_err(|error| error.to_string())?,
+            job: job.clone(),
+        });
+    }
+    Ok(ScheduleStatusReport {
+        version: SCHEDULE_STATUS_VERSION,
+        vault: vault.to_string(),
+        device_id: device_id.map(str::to_string),
+        blocked: set.blocked,
+        diagnostics: set.diagnostics,
+        jobs,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ManualRunReport {
+    pub job_id: String,
+    pub revision: String,
+    pub dry_run: bool,
+    pub policy: &'static str,
+    pub profile: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+}
+
+/// Runs `job` once, now, outside its schedule, recording it in the ledger as
+/// a manual occurrence that leaves the schedule's watermark alone. A dry run
+/// only authorizes it.
+pub fn run_manually(
+    job: &ScheduleJob,
+    context: &RunContext<'_>,
+    state_root: &Path,
+    vault: &str,
+    dry_run: bool,
+) -> Result<ManualRunReport, String> {
+    let (authorization, _) = authorize_execution(context.paths, job, context.ceiling)
+        .map_err(|error| error.to_string())?;
+    let mut report = ManualRunReport {
+        job_id: job.id.clone(),
+        revision: job.revision.clone(),
+        dry_run,
+        policy: authorization.policy,
+        profile: authorization.profile,
+        outcome: None,
+    };
+    if dry_run {
+        return Ok(report);
+    }
+    let mut ledger = ScheduleLedger::open(state_root).map_err(|error| error.to_string())?;
+    let now_ms = Utc::now().timestamp_millis();
+    let key = OccurrenceKey {
+        vault: vault.to_string(),
+        job_id: job.id.clone(),
+        revision: job.revision.clone(),
+        scheduled_ms: now_ms,
+        manual: true,
+    };
+    ledger
+        .claim(&key, now_ms)
+        .map_err(|error| error.to_string())?;
+    let result = run_job(job, context);
+    let finished = Utc::now().timestamp_millis();
+    let (state, outcome) = match &result {
+        Ok(summary) => (OccurrenceState::Succeeded, summary.clone()),
+        Err(error) => (OccurrenceState::Failed, error.clone()),
+    };
+    ledger
+        .finish(&key, state, &outcome, finished)
+        .map_err(|error| error.to_string())?;
+    report.outcome = Some(result?);
+    Ok(report)
+}
+
+/// The ledger path, for status readers.
+#[must_use]
+pub fn ledger_path(state_root: &Path) -> PathBuf {
+    ScheduleLedger::path(state_root)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::registry::{AddWikiRequest, WikiId};
+    use vulcan_app::schedules::OccurrenceRecord;
+
+    struct Fixture {
+        _temporary: tempfile::TempDir,
+        registry: WikiRegistry,
+        vault: PathBuf,
+        state: PathBuf,
+    }
+
+    fn fixture(jobs: &str, ceiling: Option<&str>) -> Fixture {
+        let temporary = tempfile::tempdir().unwrap();
+        let vault = temporary.path().join("vault");
+        std::fs::create_dir_all(vault.join(".vulcan")).unwrap();
+        std::fs::write(vault.join("Home.md"), "# Home\n").unwrap();
+        std::fs::write(
+            vault.join(".vulcan/config.toml"),
+            format!(
+                "[permissions.profiles.no_index]\nread = \"all\"\nindex = \"deny\"\n\n[schedules]\nversion = 1\n{jobs}"
+            ),
+        )
+        .unwrap();
+        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+        registry
+            .add(
+                &AddWikiRequest {
+                    profile: None,
+                    id: WikiId::parse("notes").unwrap(),
+                    path: vault.clone(),
+                    groups: vec![],
+                    git_dir: None,
+                    permissions_profile: ceiling.map(str::to_string),
+                    sync_backend: Some("none".to_string()),
+                    platform_profile: None,
+                },
+                false,
+            )
+            .unwrap();
+        Fixture {
+            state: temporary.path().join("state"),
+            _temporary: temporary,
+            registry,
+            vault,
+        }
+    }
+
+    fn job(id: &str, nodes: &str, extra: &str) -> String {
+        format!(
+            "[[schedules.jobs]]\nid = \"{id}\"\ntarget = {{ builtin = \"scan\" }}\nnodes = [{nodes}]\ntrigger = {{ every = \"1m\" }}\nauthority = \"unrestricted\"\n{extra}\n"
+        )
+    }
+
+    fn at(seconds: i64) -> DateTime<Utc> {
+        Utc.timestamp_opt(1_800_000_000 + seconds, 0).unwrap()
+    }
+
+    /// Ticks at `now` until no run is in progress, as the service would.
+    fn settle(scheduler: &mut Scheduler, fixture: &Fixture, now: DateTime<Utc>) {
+        let vaults = scheduled_vaults(&fixture.registry.load().unwrap().vaults);
+        scheduler.tick(now, &vaults, &fixture.registry, None);
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !scheduler.running.is_empty() {
+            assert!(std::time::Instant::now() < deadline, "a run never finished");
+            thread::sleep(Duration::from_millis(20));
+            scheduler.collect_finished(now.timestamp_millis());
+        }
+    }
+
+    fn history(fixture: &Fixture, job: &str) -> Vec<OccurrenceRecord> {
+        let key = vault_key(&fixture.registry.load().unwrap().vaults[0]);
+        ScheduleLedger::open(&fixture.state)
+            .unwrap()
+            .history(&key, job, 50)
+            .unwrap()
+    }
+
+    #[test]
+    fn due_occurrences_run_once_and_downtime_coalesces() {
+        let fixture = fixture(
+            &[
+                job("rescan", "\"device-a\"", ""),
+                job("off", "\"device-a\"", "enabled = false"),
+                job("elsewhere", "\"device-b\"", ""),
+            ]
+            .concat(),
+            None,
+        );
+        let mut scheduler = Scheduler::open(&fixture.state, Some("device-a".to_string())).unwrap();
+        // The first sight of a job activates it; nothing earlier runs.
+        settle(&mut scheduler, &fixture, at(30));
+        assert!(history(&fixture, "rescan").is_empty());
+
+        settle(&mut scheduler, &fixture, at(65));
+        let runs = history(&fixture, "rescan");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].state, OccurrenceState::Succeeded, "{runs:?}");
+        assert_eq!(runs[0].scheduled_ms, at(60).timestamp_millis());
+        assert!(
+            fixture.vault.join(".vulcan/cache.db").exists(),
+            "it scanned"
+        );
+
+        settle(&mut scheduler, &fixture, at(70));
+        assert_eq!(history(&fixture, "rescan").len(), 1, "never twice");
+
+        // Ten minutes down: one run, for the latest missed occurrence.
+        settle(&mut scheduler, &fixture, at(665));
+        let runs = history(&fixture, "rescan");
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].scheduled_ms, at(660).timestamp_millis());
+        // A clock that jumps back repeats nothing.
+        settle(&mut scheduler, &fixture, at(400));
+        assert_eq!(history(&fixture, "rescan").len(), 2);
+
+        assert!(history(&fixture, "off").is_empty());
+        assert!(history(&fixture, "elsewhere").is_empty());
+        assert!(
+            Scheduler::open(&fixture.state, None)
+                .unwrap()
+                .placement(&load_schedules(&VaultPaths::new(&fixture.vault)).jobs[0])
+                == JobPlacement::NotThisDevice,
+            "a device without an identity runs nothing"
+        );
+    }
+
+    #[test]
+    fn a_failing_run_is_recorded_and_retried_within_its_limit() {
+        // The job asks for a profile that cannot index, so its scan fails.
+        let fixture = fixture(
+            &job("rescan", "\"device-a\"", "limits = { retries = 1 }")
+                .replace("authority = \"unrestricted\"", "authority = \"no_index\""),
+            None,
+        );
+        let mut scheduler = Scheduler::open(&fixture.state, Some("device-a".to_string())).unwrap();
+        settle(&mut scheduler, &fixture, at(0));
+        settle(&mut scheduler, &fixture, at(61));
+        let runs = history(&fixture, "rescan");
+        assert_eq!(runs[0].state, OccurrenceState::Failed);
+        assert!(
+            runs[0].outcome.as_deref().unwrap().contains("index"),
+            "{runs:?}"
+        );
+        // Retried once, after the retry delay, as the same occurrence.
+        settle(&mut scheduler, &fixture, at(61 + 31));
+        let runs = history(&fixture, "rescan");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].attempt, 2);
+        assert_eq!(runs[0].state, OccurrenceState::Failed);
+        settle(&mut scheduler, &fixture, at(61 + 100));
+        let first = history(&fixture, "rescan")
+            .into_iter()
+            .find(|run| run.scheduled_ms == at(60).timestamp_millis())
+            .unwrap();
+        assert_eq!(first.attempt, 2, "no retries remain");
+    }
+
+    #[test]
+    fn a_job_cannot_exceed_the_device_ceiling() {
+        let fixture = fixture(&job("rescan", "\"device-a\"", ""), Some("readonly"));
+        let mut scheduler = Scheduler::open(&fixture.state, Some("device-a".to_string())).unwrap();
+        settle(&mut scheduler, &fixture, at(0));
+        settle(&mut scheduler, &fixture, at(61));
+        let runs = history(&fixture, "rescan");
+        assert_eq!(runs[0].state, OccurrenceState::Failed);
+        assert!(runs[0]
+            .outcome
+            .as_deref()
+            .unwrap()
+            .contains("exceeds this device's ceiling"));
+    }
+
+    #[test]
+    fn a_restart_retries_idempotent_runs_and_marks_others_interrupted() {
+        let fixture = fixture(
+            &[
+                job("retried", "\"device-a\"", "limits = { retries = 1 }"),
+                job("plain", "\"device-a\"", ""),
+            ]
+            .concat(),
+            None,
+        );
+        let vault = vault_key(&fixture.registry.load().unwrap().vaults[0]);
+        let jobs = load_schedules(&VaultPaths::new(&fixture.vault)).jobs;
+        {
+            let mut ledger = ScheduleLedger::open(&fixture.state).unwrap();
+            for job in &jobs {
+                ledger
+                    .watermark(&vault, job, at(0).timestamp_millis())
+                    .unwrap();
+                assert!(ledger
+                    .claim(
+                        &OccurrenceKey {
+                            vault: vault.clone(),
+                            job_id: job.id.clone(),
+                            revision: job.revision.clone(),
+                            scheduled_ms: at(60).timestamp_millis(),
+                            manual: false,
+                        },
+                        at(60).timestamp_millis(),
+                    )
+                    .unwrap());
+            }
+        }
+        // A new scheduler finds both left dispatched.
+        let mut scheduler = Scheduler::open(&fixture.state, Some("device-a".to_string())).unwrap();
+        settle(&mut scheduler, &fixture, at(90));
+        settle(&mut scheduler, &fixture, at(91));
+        let retried = history(&fixture, "retried");
+        assert_eq!(retried[0].state, OccurrenceState::Succeeded, "{retried:?}");
+        assert_eq!(retried[0].attempt, 2);
+        let plain = history(&fixture, "plain");
+        assert_eq!(plain[0].state, OccurrenceState::Interrupted, "{plain:?}");
+    }
+}

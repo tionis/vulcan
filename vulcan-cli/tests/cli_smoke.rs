@@ -19451,6 +19451,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(permission_skill.contains("hosts configured remotes"));
     assert!(permission_skill.contains("remote set --add-wiki <id>"));
     assert!(permission_skill.contains("vulcan daemon config show"));
+    assert!(permission_skill.contains("vulcan schedule run <id> --dry-run"));
+    assert!(permission_skill.contains("`[[schedules.jobs]]`"));
     assert!(permission_skill.contains("set-conflict-worker --wiki <id>"));
     assert!(permission_skill.contains("vulcan daemon companion --output json"));
     assert!(permission_skill.contains("synchronized plugin data"));
@@ -40400,4 +40402,103 @@ fn vault_tokens_are_created_once_listed_without_secrets_and_revoked() {
         .args(["vault", "token", "create", "missing"])
         .assert()
         .failure();
+}
+
+#[test]
+fn schedule_commands_list_preview_run_and_toggle_vault_jobs() {
+    let temporary = TempDir::new().expect("temp dir");
+    let config_home = temporary.path().join("config");
+    fs::create_dir(&config_home).expect("config home");
+    let config_home = config_home.to_str().expect("utf-8 config home").to_string();
+    let vault = temporary.path().join("vault");
+    fs::create_dir_all(vault.join(".vulcan")).expect("vault");
+    fs::write(vault.join("Home.md"), "# Home\n").expect("note");
+    let json = |args: &[&str]| {
+        parse_stdout_json(
+            &cargo_vulcan_with_xdg_config(&config_home)
+                .arg("--vault")
+                .arg(&vault)
+                .args(["--output", "json", "schedule"])
+                .args(args)
+                .assert()
+                .success(),
+        )
+    };
+    let device = parse_stdout_json(
+        &cargo_vulcan_with_xdg_config(&config_home)
+            .args(["--output", "json", "device", "init"])
+            .assert()
+            .success(),
+    );
+    let device_id = device["device_id"]
+        .as_str()
+        .or_else(|| device["identity"]["device_id"].as_str())
+        .unwrap_or_else(|| panic!("device id in {device}"))
+        .to_string();
+    fs::write(
+        vault.join(".vulcan/config.toml"),
+        format!(
+            "[schedules]\nversion = 1\n\n[[schedules.jobs]]\nid = \"rescan\"\ntarget = {{ builtin = \"scan\" }}\nnodes = [\"{device_id}\"]\ntrigger = {{ cron = \"30 2 * * *\", timezone = \"Europe/Berlin\" }}\nauthority = \"unrestricted\"\n\n[[schedules.jobs]]\nid = \"elsewhere\"\ntarget = {{ builtin = \"batch-commit\" }}\nnodes = [\"another-device\"]\ntrigger = {{ every = \"15m\" }}\nauthority = \"unrestricted\"\n\n[[schedules.jobs]]\nid = \"broken\"\ntarget = {{ builtin = \"rss\" }}\nnodes = [\"another-device\"]\ntrigger = {{ every = \"15m\" }}\nauthority = \"unrestricted\"\n"
+        ),
+    )
+    .expect("schedules");
+
+    let listed = json(&["list"]);
+    assert_eq!(listed["device_id"], device_id.as_str());
+    let jobs = listed["jobs"].as_array().expect("jobs");
+    assert_eq!(jobs.len(), 2);
+    let rescan = jobs
+        .iter()
+        .find(|job| job["id"] == "rescan")
+        .expect("rescan");
+    assert_eq!(rescan["placement"], "runs");
+    assert_eq!(rescan["authorization"]["allowed"], true);
+    assert_eq!(rescan["next"]["timezone"], "Europe/Berlin");
+    assert!(rescan["next"]["local"]
+        .as_str()
+        .unwrap()
+        .contains("T02:30:00"));
+    let elsewhere = jobs
+        .iter()
+        .find(|job| job["id"] == "elsewhere")
+        .expect("other");
+    assert_eq!(elsewhere["placement"], "not_this_device");
+    assert_eq!(listed["diagnostics"][0]["job"], "broken");
+
+    let next = json(&["next", "rescan", "--count", "3"]);
+    assert_eq!(next["occurrences"].as_array().map(Vec::len), Some(3));
+
+    let preview = json(&["run", "rescan", "--dry-run"]);
+    assert_eq!(preview["policy"], "repository-trust");
+    assert!(preview.get("outcome").is_none());
+    let ran = json(&["run", "rescan"]);
+    assert!(
+        ran["outcome"].as_str().unwrap().contains("scanned"),
+        "{ran}"
+    );
+    assert!(vault.join(".vulcan/cache.db").exists());
+    let history = json(&["history", "rescan"]);
+    assert_eq!(history[0]["manual"], true);
+    assert_eq!(history[0]["state"], "succeeded");
+
+    let disabled = json(&["disable", "rescan"]);
+    assert_eq!(disabled["enabled"], false);
+    let listed = json(&["list"]);
+    let rescan = listed["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|job| job["id"] == "rescan")
+        .unwrap()
+        .clone();
+    assert_eq!(rescan["placement"], "disabled");
+    assert!(json(&["enable", "rescan", "--dry-run"])["dry_run"] == true);
+
+    cargo_vulcan_with_xdg_config(&config_home)
+        .arg("--vault")
+        .arg(&vault)
+        .args(["schedule", "run", "broken"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown target"));
 }
