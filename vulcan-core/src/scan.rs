@@ -684,8 +684,9 @@ pub enum NoteStoreFreshness {
 /// fingerprint and expected parser version match its `note_query` row. Uses
 /// the scan's own discovery, so ignore rules and file kinds agree. Two
 /// writes within one timestamp tick that keep a file's size and inode are
-/// indistinguishable ([`crate::fingerprint`]); off Unix there are no
-/// fingerprints and the store is never proven fresh.
+/// indistinguishable ([`crate::fingerprint::scan_fingerprint`]); on Windows
+/// the proof trusts what the scan trusts there, and on platforms without
+/// scan fingerprints the store is never proven fresh.
 pub fn prove_note_store_fresh(paths: &VaultPaths) -> Result<NoteStoreFreshness, ScanError> {
     let stale = |reason: &str| Ok(NoteStoreFreshness::Stale(reason.to_string()));
     if !paths.cache_db().exists() {
@@ -852,7 +853,7 @@ fn watched_inventory(
             })?,
             file_mtime: system_time_to_millis(metadata.modified()?, &absolute_path)?,
             file_ctime: file_ctime_millis(&metadata, &absolute_path)?,
-            stat_fingerprint: crate::fingerprint::stat_fingerprint(&metadata),
+            stat_fingerprint: crate::fingerprint::scan_fingerprint(&metadata),
             absolute_path,
         });
         // A native write signal is evidence even when size and timestamp were
@@ -1667,7 +1668,7 @@ fn discover_files(vault_root: &Path) -> Result<Vec<DiscoveredFile>, ScanError> {
                     file_size,
                     file_mtime,
                     file_ctime: file_ctime_millis(&metadata, path).unwrap_or(file_mtime),
-                    stat_fingerprint: crate::fingerprint::stat_fingerprint(&metadata),
+                    stat_fingerprint: crate::fingerprint::scan_fingerprint(&metadata),
                 });
 
             ignore::WalkState::Continue
@@ -5351,7 +5352,7 @@ mod tests {
         assert_eq!(note_query_drift(&paths), Vec::<String>::new());
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn freshness_proofs_imply_no_op_scans() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
@@ -5393,16 +5394,22 @@ mod tests {
 
         fs::write(vault_root.join("Home.md"), "# Home\nedited\n").unwrap();
         settle("edit");
-        let note = vault_root.join("Home.md");
-        let mtime = fs::metadata(&note).unwrap().modified().unwrap();
-        fs::write(&note, "# Home\nEDITED\n").unwrap();
-        fs::File::options()
-            .write(true)
-            .open(&note)
-            .unwrap()
-            .set_modified(mtime)
-            .unwrap();
-        settle("same-size edit with a restored mtime");
+        // Unix change times reveal a same-size edit that restores the
+        // modification time; Windows records none, and its scan trusts
+        // size and write time as the proof does.
+        #[cfg(unix)]
+        {
+            let note = vault_root.join("Home.md");
+            let mtime = fs::metadata(&note).unwrap().modified().unwrap();
+            fs::write(&note, "# Home\nEDITED\n").unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&note)
+                .unwrap()
+                .set_modified(mtime)
+                .unwrap();
+            settle("same-size edit with a restored mtime");
+        }
         fs::write(vault_root.join("Added.md"), "new\n").unwrap();
         settle("add");
         fs::remove_file(vault_root.join("Added.md")).unwrap();
