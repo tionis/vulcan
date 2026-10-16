@@ -1802,6 +1802,21 @@ fn collect_bookmarked_paths(value: &Value, paths: &mut HashSet<String>) {
     }
 }
 
+/// Incoming wikilinks to the notes in a JSON id list, with each source's path
+/// and extension; schema v38 covers it with indexes. Without statistics the
+/// planner reads the wide `note_query` rows through the primary key, so the
+/// covering index is named.
+fn inlink_sql(permission_cte: &str, permission_clause: &str) -> String {
+    format!(
+        "{permission_cte}SELECT links.resolved_target_id, note_query.path, note_query.extension
+         FROM links
+         JOIN note_query INDEXED BY idx_note_query_document_path_extension
+           ON note_query.document_id = links.source_document_id
+         WHERE links.link_kind = 'wikilink'
+           AND links.resolved_target_id IN (SELECT value FROM json_each(?)){permission_clause}"
+    )
+}
+
 #[allow(clippy::too_many_lines)]
 fn hydrate_note_records(
     connection: &rusqlite::Connection,
@@ -1871,14 +1886,7 @@ fn hydrate_note_records(
             filter.note_query_scope_sql("_inlink_source_permission", "note_query.document_id")
         })
         .unwrap_or_default();
-    let inlink_sql = format!(
-        "{}SELECT links.resolved_target_id, note_query.path, note_query.extension
-         FROM links
-         JOIN note_query ON note_query.document_id = links.source_document_id
-         WHERE links.link_kind = 'wikilink'
-           AND links.resolved_target_id IN (SELECT value FROM json_each(?)){}",
-        permission_sql.cte, permission_sql.clause,
-    );
+    let inlink_sql = inlink_sql(&permission_sql.cte, &permission_sql.clause);
     let inlink_params = permission_sql
         .params
         .into_iter()
@@ -3415,6 +3423,35 @@ fn sort_key_rank(key: &SortKey) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Incoming-link hydration reads only schema v38's covering indexes.
+    #[test]
+    fn incoming_link_hydration_reads_covering_indexes() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temp_dir.path());
+        crate::initialize_vulcan_dir(&paths).unwrap();
+        std::fs::write(temp_dir.path().join("A.md"), "[[B]]\n").unwrap();
+        std::fs::write(temp_dir.path().join("B.md"), "[[A]]\n").unwrap();
+        crate::scan_vault(&paths, crate::ScanMode::Full).unwrap();
+        let database = crate::CacheDatabase::open(&paths).unwrap();
+        let plan = database
+            .connection()
+            .prepare(&format!("EXPLAIN QUERY PLAN {}", inlink_sql("", "")))
+            .unwrap()
+            .query_map(["[\"id\"]"], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n");
+        assert!(
+            plan.contains("COVERING INDEX idx_links_target_kind_source"),
+            "{plan}"
+        );
+        assert!(
+            plan.contains("COVERING INDEX idx_note_query_document_path_extension"),
+            "{plan}"
+        );
+    }
     use crate::permissions::{PathPermission, ResourceSpecifier};
     use crate::{file_metadata::FileMetadataResolver, parse_document, scan_vault, ScanMode};
     use std::fs;

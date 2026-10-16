@@ -207,6 +207,11 @@ impl MigrationRegistry {
                 "journal each scan's changes for index followers",
                 schema::apply_schema_v37,
             ),
+            Migration::new(
+                38,
+                "cover incoming-link hydration with indexes",
+                schema::apply_schema_v38,
+            ),
         ])
     }
 
