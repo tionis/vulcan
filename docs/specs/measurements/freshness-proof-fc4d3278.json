@@ -1,0 +1,89 @@
+{
+  "acceptance_gate_result": "not_evaluated",
+  "note": "Diagnostic for the direct freshness proof every cache-reading command runs first.",
+  "commits": {
+    "before": "15c33519",
+    "after": "fc4d3278"
+  },
+  "binary": "cargo build --release -p vulcan-cli at each commit",
+  "fixtures": [
+    "~/vulcan-eval-fixtures/mdb-10k/collection (generator v1, seed 42, 10,000 records)",
+    "~/vulcan-eval-fixtures/mdb-100k/collection (generator v1, seed 42, 100,000 records)"
+  ],
+  "machine": {
+    "host": "designated evaluation host (Intel Core i7-10700, 31 GiB RAM, Debian 13)"
+  },
+  "method": {
+    "command": "vulcan --vault <fixture> --refresh <blocking|off> --output json note info public/task/03/record-000003.md",
+    "timing": "wall clock of the whole process; 16 runs, the first discarded; p50 of 15, two interleaved rounds per binary",
+    "proof_cost": "refresh=blocking minus refresh=off on an unchanged vault, where the proof finds the cache fresh",
+    "stage_profile": "a temporary instrumented build (not committed) timed the proof's stages at 100K: index rows 44 ms, parallel walk 74 ms, compare 10 ms, run one after the other"
+  },
+  "results_ms": {
+    "10k before refresh=blocking": {
+      "p50": [
+        36.8,
+        36.7
+      ],
+      "stdout_sha256": "09c8dd34766b65044f2f4bcaa02e06f1ab22dfd667418775f7bd36f42deea506"
+    },
+    "10k before refresh=off": {
+      "p50": [
+        17.7,
+        17.7
+      ],
+      "stdout_sha256": "09c8dd34766b65044f2f4bcaa02e06f1ab22dfd667418775f7bd36f42deea506"
+    },
+    "10k fc4d3278 refresh=blocking": {
+      "p50": [
+        30.5,
+        30.6
+      ],
+      "stdout_sha256": "09c8dd34766b65044f2f4bcaa02e06f1ab22dfd667418775f7bd36f42deea506"
+    },
+    "10k fc4d3278 refresh=off": {
+      "p50": [
+        17.5,
+        17.4
+      ],
+      "stdout_sha256": "09c8dd34766b65044f2f4bcaa02e06f1ab22dfd667418775f7bd36f42deea506"
+    },
+    "100k before refresh=blocking": {
+      "p50": [
+        228.3,
+        227.6
+      ],
+      "stdout_sha256": "59ed923adcfd139f1dd7905719baea1f22af22e9f3aedc399fa050c6bf726e96"
+    },
+    "100k before refresh=off": {
+      "p50": [
+        73.0,
+        72.9
+      ],
+      "stdout_sha256": "59ed923adcfd139f1dd7905719baea1f22af22e9f3aedc399fa050c6bf726e96"
+    },
+    "100k fc4d3278 refresh=blocking": {
+      "p50": [
+        179.1,
+        177.1
+      ],
+      "stdout_sha256": "59ed923adcfd139f1dd7905719baea1f22af22e9f3aedc399fa050c6bf726e96"
+    },
+    "100k fc4d3278 refresh=off": {
+      "p50": [
+        71.8,
+        72.3
+      ],
+      "stdout_sha256": "59ed923adcfd139f1dd7905719baea1f22af22e9f3aedc399fa050c6bf726e96"
+    }
+  },
+  "findings": [
+    "At 100K the proof fell from about 155 ms (228 - 73) to about 106 ms (178 - 72); at 10K from 19 to 13 ms",
+    "Output is identical; the remaining cost is mostly the parallel walk, which every file's stat requires",
+    "A daemon-hosted vault avoids the proof altogether through routed reads (`--route auto`), whose index barrier vouches for freshness"
+  ],
+  "limitations": [
+    "Single host; no concurrent writers",
+    "Host power, frequency, background load, and OS page cache are uncontrolled"
+  ]
+}
