@@ -1767,7 +1767,10 @@ mod tests {
         }
         assert_eq!(health["vaults"][0]["healthy"], true, "{health}");
         assert_eq!(health["healthy"], true);
-        assert_eq!(health["vaults"][0]["cache"]["state"], "fresh");
+        // `/health` reports the cache as it is, without an index barrier, so a
+        // watcher event that lands after the first scan shows as `dirty`.
+        let cache_state = health["vaults"][0]["cache"]["state"].as_str().unwrap();
+        assert!(matches!(cache_state, "fresh" | "dirty"), "{health}");
 
         let (status, one) = get(&served, &served.token, "/projects/health").await;
         assert_eq!(status, StatusCode::OK, "{one}");
