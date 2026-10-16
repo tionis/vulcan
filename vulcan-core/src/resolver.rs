@@ -14,6 +14,7 @@ pub struct ResolverDocument {
 /// Pre-computed document with normalized paths for fast lookup.
 struct IndexedDoc {
     id: String,
+    path: String,
     directory: String,
 }
 
@@ -81,6 +82,7 @@ impl ResolverIndex {
 
             docs.push(IndexedDoc {
                 id: document.id.clone(),
+                path: document.path.clone(),
                 directory,
             });
         }
@@ -173,7 +175,7 @@ impl ResolverIndex {
         let target_name_lower = target_name.to_ascii_lowercase();
         let target_lower = target.to_ascii_lowercase();
         let source_dir = source_directory(source_path);
-        let mut scored: Vec<(usize, &str)> = Vec::new();
+        let mut scored: Vec<(usize, &IndexedDoc)> = Vec::new();
 
         // 1. Exact path match → score 0 (instant HashMap lookup).
         if let Some(&idx) = self.by_path.get(&target_normalized) {
@@ -188,7 +190,7 @@ impl ResolverIndex {
             for &idx in indices {
                 let doc = &self.docs[idx];
                 let distance = folder_distance_precomputed(&source_dir, &doc.directory);
-                scored.push((2 + distance, &doc.id));
+                scored.push((2 + distance, doc));
             }
         }
         // Also check suffix without extension.
@@ -198,7 +200,7 @@ impl ResolverIndex {
                 for &idx in indices {
                     let doc = &self.docs[idx];
                     let distance = folder_distance_precomputed(&source_dir, &doc.directory);
-                    scored.push((2 + distance, &doc.id));
+                    scored.push((2 + distance, doc));
                 }
             }
         }
@@ -212,7 +214,7 @@ impl ResolverIndex {
                 } else {
                     10 + folder_distance_precomputed(&source_dir, &doc.directory)
                 };
-                scored.push((score, &doc.id));
+                scored.push((score, doc));
             }
         }
 
@@ -221,29 +223,35 @@ impl ResolverIndex {
             for &idx in indices {
                 let doc = &self.docs[idx];
                 let distance = folder_distance_precomputed(&source_dir, &doc.directory);
-                scored.push((20 + distance, &doc.id));
+                scored.push((20 + distance, doc));
             }
         }
 
         // Deduplicate by document id (a doc could match via multiple paths).
-        scored.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(b.1)));
-        scored.dedup_by(|a, b| a.1 == b.1);
+        // Ties are listed by path, which unlike ids is the same in every
+        // cache.
+        scored.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then_with(|| a.1.path.cmp(&b.1.path))
+                .then_with(|| a.1.id.cmp(&b.1.id))
+        });
+        scored.dedup_by(|a, b| a.1.id == b.1.id);
 
         match scored.first() {
             None => LinkResolutionResult {
                 resolved_target_id: None,
                 problem: Some(LinkResolutionProblem::Unresolved),
             },
-            Some(&(best_score, best_id)) => {
+            Some(&(best_score, best)) => {
                 let tied: Vec<String> = scored
                     .iter()
                     .filter(|(score, _)| *score == best_score)
-                    .map(|(_, id)| (*id).to_string())
+                    .map(|(_, doc)| doc.id.clone())
                     .collect();
 
                 if tied.len() == 1 {
                     LinkResolutionResult {
-                        resolved_target_id: Some(best_id.to_string()),
+                        resolved_target_id: Some(best.id.clone()),
                         problem: None,
                     }
                 } else {
@@ -441,7 +449,6 @@ fn resolve_absolute(documents: &[ResolverDocument], target: &str) -> LinkResolut
     let matches = documents
         .iter()
         .filter(|document| matches_exact_path(document, &normalized))
-        .map(|document| document.id.clone())
         .collect::<Vec<_>>();
 
     finalize_matches(matches)
@@ -463,7 +470,6 @@ fn resolve_relative(
     let matches = documents
         .iter()
         .filter(|document| matches_exact_path(document, &normalized))
-        .map(|document| document.id.clone())
         .collect::<Vec<_>>();
 
     finalize_matches(matches)
@@ -511,21 +517,27 @@ fn resolve_shortest(
                 continue;
             };
 
-        scored.push((score, document.id.clone()));
+        scored.push((score, document.path.as_str(), document.id.clone()));
     }
 
-    scored.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+    // Ties are listed by path, which unlike ids is the same in every cache.
+    scored.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.cmp(right.1))
+            .then_with(|| left.2.cmp(&right.2))
+    });
 
     match scored.first() {
         None => LinkResolutionResult {
             resolved_target_id: None,
             problem: Some(LinkResolutionProblem::Unresolved),
         },
-        Some((best_score, best_id)) => {
+        Some((best_score, _, best_id)) => {
             let tied = scored
                 .iter()
-                .filter(|(score, _)| score == best_score)
-                .map(|(_, id)| id.clone())
+                .filter(|(score, _, _)| score == best_score)
+                .map(|(_, _, id)| id.clone())
                 .collect::<Vec<_>>();
 
             if tied.len() == 1 {
@@ -554,7 +566,14 @@ fn matches_exact_path(document: &ResolverDocument, target: &str) -> bool {
     document_path == target || document_path_no_ext == target
 }
 
-fn finalize_matches(matches: Vec<String>) -> LinkResolutionResult {
+/// The result for the documents a path matched exactly; several are
+/// listed by path.
+fn finalize_matches(mut documents: Vec<&ResolverDocument>) -> LinkResolutionResult {
+    documents.sort_by(|left, right| left.path.cmp(&right.path).then(left.id.cmp(&right.id)));
+    let matches = documents
+        .into_iter()
+        .map(|document| document.id.clone())
+        .collect::<Vec<_>>();
     match matches.as_slice() {
         [] => LinkResolutionResult {
             resolved_target_id: None,
@@ -902,6 +921,50 @@ mod tests {
             result.problem,
             Some(LinkResolutionProblem::Ambiguous(_))
         ));
+    }
+
+    /// Ambiguous matches are listed by path, which every cache agrees on,
+    /// not by document id, which differs between caches of one vault.
+    #[test]
+    fn ambiguous_matches_are_listed_by_path() {
+        let document = |id: &str, path: &str| ResolverDocument {
+            id: id.to_string(),
+            path: path.to_string(),
+            filename: "Note".to_string(),
+            aliases: Vec::new(),
+        };
+        // Ids sort the opposite way to paths.
+        let documents = vec![
+            document("z-later", "alpha/Note.md"),
+            document("a-earlier", "beta/Note.md"),
+            document("m-middle", "gamma/Note.md"),
+        ];
+        let link = ResolverLink {
+            source_document_id: "source".to_string(),
+            source_path: "source.md".to_string(),
+            target_path_candidate: Some("Note".to_string()),
+            link_kind: LinkKind::Wikilink,
+        };
+        let expected = vec![
+            "z-later".to_string(),
+            "a-earlier".to_string(),
+            "m-middle".to_string(),
+        ];
+        for reversed in [false, true] {
+            let mut documents = documents.clone();
+            if reversed {
+                documents.reverse();
+            }
+            for result in [
+                resolve_link(&documents, &link, LinkResolutionMode::Shortest),
+                ResolverIndex::build(&documents).resolve(&link, LinkResolutionMode::Shortest),
+            ] {
+                assert_eq!(
+                    result.problem,
+                    Some(LinkResolutionProblem::Ambiguous(expected.clone()))
+                );
+            }
+        }
     }
 
     #[test]
