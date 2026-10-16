@@ -883,6 +883,41 @@ fn join_task(label: &str, handle: JoinHandle<Result<(), DaemonWatchError>>) -> S
     }
 }
 
+/// A real observer and consumers for one registration, stopped on drop: lets
+/// tests elsewhere in the crate exercise a served vault end to end.
+#[cfg(test)]
+pub(crate) struct TestWatcher(Option<WatcherTask>);
+
+#[cfg(test)]
+impl Drop for TestWatcher {
+    fn drop(&mut self) {
+        if let Some(task) = self.0.take() {
+            stop_watcher(task);
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn watch_for_tests(
+    registration: WikiRegistration,
+    state_root: &std::path::Path,
+    routed: &RoutedReadRegistry,
+) -> TestWatcher {
+    let supervisor =
+        Arc::new(SyncSupervisor::at(state_root.join("jobs.json")).expect("test supervisor"));
+    let state_store = SyncStateStore::at(state_root.join("state"));
+    let consumers = Consumers {
+        supervisor: &supervisor,
+        state_store: &state_store,
+        watch: DaemonWatchOptions::default(),
+        routed,
+        auto_commit: AutoCommitContext::default(),
+    };
+    TestWatcher(Some(
+        spawn_watcher(registration, &consumers).expect("test watcher"),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

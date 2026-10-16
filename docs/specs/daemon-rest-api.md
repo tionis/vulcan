@@ -4,8 +4,8 @@ Status: accepted design for Roadmap 10.2 (tokens) and 10.3 (REST API), plus the 
 endpoints that build on it.
 Scope: per-vault API tokens, request principals, and the HTTP routes the daemon serves for
 knowledge reads, history, and writes.
-Non-goals: Phase 17 identities and delegable grants, non-loopback listeners and TLS, vector routes
-(they embed queries with a client-side provider), and a second implementation of any CLI workflow.
+Non-goals: Phase 17 identities and delegable grants, non-loopback listeners and TLS, and a second
+implementation of any CLI workflow.
 
 ## One listener, one namespace
 
@@ -21,7 +21,7 @@ beside them, and they reuse the same transport policy:
 - request bodies are limited to 1 MiB, and requests have a 30-second deadline.
 
 Responses use the CLI's `--output json` shapes. Errors use the companion error object
-(`{"kind": ..., "message": ...}`) with an HTTP status: 400 invalid request, 401 missing or invalid
+(`{"version": 1, "kind": ..., "detail": ...}`) with an HTTP status: 400 invalid request, 401 missing or invalid
 credential, 403 denied by the principal or its permission profile, 404 unknown vault or path, 409
 conflict, 503 the vault is not served right now (for example, its index consumer is not running).
 
@@ -80,15 +80,24 @@ vault-relative and may contain `/`.
 
 ### Reads
 
-Reads run over the daemon's retained state after an index barrier, so changes made before the
-request are indexed. They use the shared `vulcan_app::routed` operations, so results match the CLI.
+Reads run on a blocking thread after an index barrier, so changes made before the request are
+indexed, under the registration's profile. Their responses are the CLI's JSON reports.
 
-- `GET /{id}/search?q=...&limit=...`: keyword search (`vulcan search`).
-- `GET /{id}/notes?where=...&sort=...&limit=...`: property query (`vulcan query`).
-- `GET /{id}/notes/{path}`: one note's content and metadata (`vulcan note get` plus `note info`).
-- `GET /{id}/links/{path}` and `GET /{id}/backlinks/{path}`: outgoing and incoming links.
-- `GET /{id}/graph/stats`, `GET /{id}/graph/hubs`, `GET /{id}/graph/path?from=...&to=...`.
-- `GET /{id}/query?dql=...`: a Dataview query (`vulcan dataview query`).
+- **Mounted `vulcan serve` routes.** The single-vault serve router answers these per vault, with its
+  query parameters and the retained note-store session: `GET /{id}/search`, `/{id}/notes` (property
+  query), `/{id}/query` (query DSL or `QueryAst` JSON), `/{id}/related`, `/{id}/bases/eval`,
+  `/{id}/dataview/{inline|query|query-js|eval}`, and `/{id}/mdbase/{query|read|types|contracts|schema|views|view}`.
+  The serve envelope's `result` is returned as the body; its failures become companion errors with
+  the same status.
+- `GET /{id}/notes/{path}`: one note, as `vulcan note get` reads it, with its section, heading,
+  block, line, and match selectors.
+- `GET /{id}/info/{path}`: a note's metadata, as `vulcan note info` reports it.
+- `GET /{id}/links/{path}` and `GET /{id}/backlinks/{path}`: outgoing and incoming links, filtered
+  by the profile.
+- `GET /{id}/graph/stats`, `/{id}/graph/hubs`, and `/{id}/graph/path?from=...&to=...`: from the
+  daemon's retained graph, the same one routed CLI graph reports use.
+
+A registered vault the daemon does not index (files-only, or while the daemon starts) answers 503.
 
 ### History (11.2)
 

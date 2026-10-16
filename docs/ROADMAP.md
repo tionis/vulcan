@@ -5229,7 +5229,7 @@ permissions_profile = "readonly"  # clamp all API requests for this vault to a n
 - [x] Give every local installation a stable device ULID and every registration a stable local ULID; define a later migration path to an optional shared wiki identity without making shared identity a prerequisite for ordinary local usage
 - [x] Auth tokens stored outside vault content — avoids coupling auth to the data it protects
   - The store is owner-only and refused if it is a symlink, oversized, or readable by others, like the companion credential. The daemon resolves a bearer to the device principal (companion credential) or a vault principal (API token). A vault principal reaches only its own vault's REST routes plus `GET /capabilities`, `/health`, `/vaults` (listing only its vault), and `/openapi.json`; sync administration, routed `ops`, jobs, events, and shutdown answer 404.
-- [ ] Token-authenticated daemon requests resolve to a vault plus a named permission profile; all endpoint authorization and result filtering reuse the existing `PermissionGuard` / `PermissionFilter` layer instead of adding daemon-specific policy logic
+- [x] Token-authenticated daemon requests resolve to a vault plus a named permission profile; all endpoint authorization and result filtering reuse the existing `PermissionGuard` / `PermissionFilter` layer instead of adding daemon-specific policy logic
 - [ ] Vault auto-discovery: optionally scan a directory for vaults (e.g., `scan_dir = "/home/user/vaults"`)
 - [ ] Keep a future remote/catalog discovery adapter separate from the local registry. Prefer listing eligible Forgejo repositories or reading a small catalog of descriptors; do not make a metadata monorepo, Git submodules, credentials, local paths, pending operations, or wiki contents part of the initial registry contract
 - [ ] Add JSON output and `describe` coverage for the complete `vault` group, including stable identifiers and explicit fields that distinguish missing, unindexed, paused, conflicted, and healthy registrations
@@ -5239,24 +5239,26 @@ permissions_profile = "readonly"  # clamp all API requests for this vault to a n
 
 All endpoints are namespaced by vault ID: `/{vault_id}/...`
 
-- [ ] Every daemon route goes through the permission-profile layer from Phase 9.19.13; denied write/refactor/git/network/config operations return explicit authorization errors, and read/query/search routes apply `PermissionFilter` so restricted callers only see allowed content
-- [ ] `GET /openapi.json` — machine-readable OpenAPI document for the daemon REST surface, including a standard HTTP Bearer auth security scheme, path/query/body schemas, and the fact that requests are constrained by the selected permission profile
+- [x] Every daemon route goes through the permission-profile layer from Phase 9.19.13; denied write/refactor/git/network/config operations return explicit authorization errors, and read/query/search routes apply `PermissionFilter` so restricted callers only see allowed content
+- [x] `GET /openapi.json` — machine-readable OpenAPI document for the daemon REST surface, including a standard HTTP Bearer auth security scheme, path/query/body schemas, and the fact that requests are constrained by the selected permission profile
 
 **Read endpoints** (map 1:1 to existing CLI commands):
-- [ ] `GET /{id}/search?q=...` — full-text and hybrid search
-- [ ] `GET /{id}/notes?where=...&sort=...` — property query
-- [ ] `GET /{id}/notes/{path}` — single note metadata + content
-- [ ] `GET /{id}/links/{path}` — outgoing links
-- [ ] `GET /{id}/backlinks/{path}` — inbound links
-- [ ] `GET /{id}/graph/stats` — graph analytics
-- [ ] `GET /{id}/graph/path?from=...&to=...` — shortest path
-- [ ] `GET /{id}/graph/hubs`, `/dead-ends`, `/components` — graph analysis
+
+Implemented on the daemon's loopback listener beside the companion routes (`docs/specs/daemon-rest-api.md`, user guide `docs/guide/rest-api.md`). Reads pass an index barrier and run under the registration's profile. The `vulcan serve` routes are mounted per vault (`search`, `notes`, `query`, `related`, `bases/eval`, `dataview/*`, `mdbase/*`); note get and info, links, backlinks, and the retained graph (`stats`, `hubs`, `path`) are added. Deviations: `bases/eval?file=` replaces `/bases/{file}`, the query route takes `dsl` or `json` by GET, metadata is `GET /{id}/info/{path}`, and a vault the daemon does not index answers 503.
+- [x] `GET /{id}/search?q=...` — full-text and hybrid search
+- [x] `GET /{id}/notes?where=...&sort=...` — property query
+- [x] `GET /{id}/notes/{path}` — single note metadata + content
+- [x] `GET /{id}/links/{path}` — outgoing links
+- [x] `GET /{id}/backlinks/{path}` — inbound links
+- [x] `GET /{id}/graph/stats` — graph analytics
+- [x] `GET /{id}/graph/path?from=...&to=...` — shortest path
+- [ ] `GET /{id}/graph/hubs`, `/dead-ends`, `/components` — graph analysis (`hubs` done; `dead-ends` and `components` remain)
 - [ ] `GET /{id}/vectors/neighbors?q=...` — vector similarity
 - [ ] `GET /{id}/vectors/related?note=...` — related notes
 - [ ] `GET /{id}/vectors/models` — list embedding models
-- [ ] `GET /{id}/bases/{file}` — evaluate a bases view
+- [x] `GET /{id}/bases/{file}` — evaluate a bases view
 - [ ] `GET /{id}/doctor` — vault diagnostics
-- [ ] `GET /{id}/query?dsl=...` or `POST /{id}/query` with JSON body — ad hoc query
+- [x] `GET /{id}/query?dsl=...` or `POST /{id}/query` with JSON body — ad hoc query
 
 **Write endpoints:**
 - [ ] `POST /{id}/notes` — create a note (body: `{ "path": "...", "content": "..." }`)
@@ -5270,9 +5272,9 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
 
 **Daemon management:**
 - [ ] `GET /capabilities` — protocol version, supported command/report schema versions, optional sync/agent features, and transport capabilities for CLI and companion-client negotiation
-- [ ] `GET /health` — daemon health, vault statuses
-- [ ] `GET /vaults` — list registered vaults with status
-- [ ] Auth: standard HTTP `Authorization: Bearer <token>` authentication for daemon clients; validate the token against the stored argon2 hash and resolve it to the vault's configured permission profile
+- [x] `GET /health` — daemon health, vault statuses
+- [x] `GET /vaults` — list registered vaults with status
+- [x] Auth: standard HTTP `Authorization: Bearer <token>` authentication for daemon clients; validate the token against the stored argon2 hash and resolve it to the vault's configured permission profile
 
 ### 10.4 Per-vault watcher
 

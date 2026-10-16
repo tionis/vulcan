@@ -161,6 +161,7 @@ pub fn companion_router(state: CompanionHttpState) -> Router {
         )
         .route("/events", get(events))
         .route("/shutdown", post(shutdown))
+        .merge(crate::rest::routes())
         .layer(Extension(Arc::new(SnapshotHub::default())))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
         .layer(middleware::from_fn_with_state(

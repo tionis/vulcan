@@ -62,6 +62,45 @@ impl RoutedVault {
 }
 
 impl RoutedVault {
+    /// The retained note-store session REST reads are served from.
+    pub(crate) fn session(&self) -> &NoteStoreSession {
+        &self.session
+    }
+
+    /// The retained graph REST graph reports are served from.
+    pub(crate) fn graph(&self) -> &RetainedGraph {
+        &self.graph
+    }
+
+    /// The guard a REST read runs under: the registration's own profile
+    /// (`unrestricted` when it sets none), after an index barrier so every
+    /// change made before the request is indexed. Unlike a routed CLI read
+    /// there is no direct fallback, so a narrowing registration is applied
+    /// rather than declined.
+    pub(crate) fn rest_read_guard(&self) -> Result<ProfilePermissionGuard, RoutedReadError> {
+        let completion =
+            request_index_barrier(self.paths.vault_root(), &self.tracker, BARRIER_TIMEOUT)
+                .map_err(|error| RoutedReadError::Unavailable(error.to_string()))?;
+        if completion.state != CacheFreshnessState::Fresh {
+            return Err(RoutedReadError::Unavailable(format!(
+                "the daemon cannot vouch for the index ({:?})",
+                completion.state
+            )));
+        }
+        let profile = resolve_permission_profile(
+            &self.paths,
+            Some(
+                self.permissions_profile
+                    .as_deref()
+                    .unwrap_or("unrestricted"),
+            ),
+        )
+        .map_err(|error| RoutedReadError::Failed(error.to_string()))?;
+        Ok(ProfilePermissionGuard::new(&self.paths, profile))
+    }
+}
+
+impl RoutedVault {
     /// Run `read` over the retained session, or the cache directly while
     /// the session has no snapshot.
     fn with_store<T>(
