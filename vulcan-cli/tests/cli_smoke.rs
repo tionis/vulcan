@@ -2334,7 +2334,13 @@ metadata:
         .success();
     let run_json = parse_stdout_json(&run_assert);
     assert_eq!(run_json["name"], "skill_env_echo_tool_run");
-    assert_eq!(run_json["result"]["success"], true);
+    // The whole report says why a host run failed (exit status, stderr,
+    // timeout), which a bare `false` does not.
+    assert_eq!(
+        run_json["result"]["success"], true,
+        "{}",
+        run_json["result"]
+    );
     assert_eq!(run_json["result"]["stdout"], "alpha");
     assert_eq!(run_json["result"]["timed_out"], false);
     assert_eq!(run_json["result"]["invocation"]["kind"], "exec");
@@ -33486,7 +33492,8 @@ fn mcp_http_transport_watcher_indexes_new_notes_while_serving() {
     let session = McpHttpSession::start(&vault_root, "/mcp", None, &[]);
     fs::write(vault_root.join("Watched.md"), "# Watched\n").expect("note should be written");
     let connection = Connection::open(vault_root.join(".vulcan/cache.db")).expect("cache open");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    // Loaded CI runners have taken over 20 s to start and index.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
         let indexed: i64 = connection
             .query_row(

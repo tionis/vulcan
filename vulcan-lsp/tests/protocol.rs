@@ -274,6 +274,16 @@ impl Client {
         self.wait_for(|notification| notification.method == "vulcan/indexChanged")
     }
 
+    /// Wait until the server reports an index change that names `path`.
+    fn index_changed_for(&mut self, path: &str) -> Notification {
+        self.wait_for(|notification| {
+            notification.method == "vulcan/indexChanged"
+                && notification.params["paths"]
+                    .as_array()
+                    .is_some_and(|paths| paths.iter().any(|changed| changed == path))
+        })
+    }
+
     fn open(&mut self, path: &str, text: &str) {
         let uri = self.uri(path);
         self.notify(
@@ -483,6 +493,9 @@ fn saving_indexes_the_file_and_refreshes_open_diagnostics() {
         "textDocument/didClose",
         json!({ "textDocument": { "uri": client.uri("Later.md") } }),
     );
+    // The watcher may still be indexing the write it observed; the cache
+    // settles to fresh.
+    client.settle();
     let status = client.request("vulcan/status", json!({}));
     assert_eq!(status["cache"], "fresh");
     assert_eq!(status["protocolVersion"], 1);
@@ -598,7 +611,9 @@ fn client_watching_and_renames_index_reported_paths() {
         "workspace/didChangeWatchedFiles",
         json!({ "changes": [{ "uri": client.uri("Later.md"), "type": 1 }] }),
     );
-    let changed = client.index_changed();
+    // An unrelated index change may arrive first; await the one reporting
+    // the new note.
+    let changed = client.index_changed_for("Later.md");
     assert_eq!(changed.params["paths"], json!(["Later.md"]));
     client.diagnostics_until("Home.md", <[Value]>::is_empty);
 
@@ -609,7 +624,7 @@ fn client_watching_and_renames_index_reported_paths() {
         "workspace/didRenameFiles",
         json!({ "files": [{ "oldUri": client.uri("Old.md"), "newUri": client.uri("New.md") }] }),
     );
-    let changed = client.index_changed();
+    let changed = client.index_changed_for("New.md");
     assert_eq!(changed.params["summary"]["deleted"], 0);
     assert_eq!(changed.params["summary"]["added"], 0);
     client.diagnostics_until("Home.md", |diagnostics| diagnostics.len() == 1);
