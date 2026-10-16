@@ -495,20 +495,12 @@ pub(crate) fn handle_update_command(
     let guard = selected_permission_guard(cli, paths)?;
     let selection = resolve_bulk_note_selection(filters, stdin)?;
     let note_paths = match &selection {
-        BulkNoteSelection::Filters(filters) => query_notes_with_filter(
+        BulkNoteSelection::Filters(filters) => vulcan_app::properties::select_notes_matching(
             paths,
-            &NoteQuery {
-                filters: filters.clone(),
-                sort_by: Some("file.path".to_string()),
-                sort_descending: false,
-            },
+            filters,
             Some(&guard.read_filter()),
         )
-        .map_err(CliError::operation)?
-        .notes
-        .into_iter()
-        .map(|note| note.document_path)
-        .collect::<Vec<_>>(),
+        .map_err(CliError::operation)?,
         BulkNoteSelection::Paths(note_paths) => note_paths.clone(),
     };
     for path in &note_paths {
@@ -552,20 +544,12 @@ pub(crate) fn handle_unset_command(
     let guard = selected_permission_guard(cli, paths)?;
     let selection = resolve_bulk_note_selection(filters, stdin)?;
     let note_paths = match &selection {
-        BulkNoteSelection::Filters(filters) => query_notes_with_filter(
+        BulkNoteSelection::Filters(filters) => vulcan_app::properties::select_notes_matching(
             paths,
-            &NoteQuery {
-                filters: filters.clone(),
-                sort_by: Some("file.path".to_string()),
-                sort_descending: false,
-            },
+            filters,
             Some(&guard.read_filter()),
         )
-        .map_err(CliError::operation)?
-        .notes
-        .into_iter()
-        .map(|note| note.document_path)
-        .collect::<Vec<_>>(),
+        .map_err(CliError::operation)?,
         BulkNoteSelection::Paths(note_paths) => note_paths.clone(),
     };
     for path in &note_paths {

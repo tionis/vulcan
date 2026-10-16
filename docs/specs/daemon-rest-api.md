@@ -100,6 +100,7 @@ indexed, under the registration's profile. Their responses are the CLI's JSON re
   by the profile.
 - `GET /{id}/graph/stats`, `/{id}/graph/hubs`, and `/{id}/graph/path?from=...&to=...`: from the
   daemon's retained graph, the same one routed CLI graph reports use.
+- `GET /{id}/graph/dead-ends` and `/{id}/graph/components`: from the cache, filtered by the profile.
 
 A registered vault the daemon does not index (files-only, or while the daemon starts) answers 503.
 
@@ -146,6 +147,9 @@ its outcome for a later replay.
   profile must allow refactoring the note and writing every file the move changes; a dry run
   plans the move first and its changed files are checked before anything is written.
 - `POST /{id}/scan`: an incremental scan, or a full one with `full`.
+- `POST /{id}/update`: `where` filters (at least one), `set` properties, and `unset` properties,
+  through `vulcan_app::properties::update_properties_where`. The notes are selected once, before
+  any change, and the changes are applied in order and auto-committed together.
 
 Every body accepts `no_commit`. Route-given fields (`note`, `confirm`) are refused in the body.
 

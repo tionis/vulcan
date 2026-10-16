@@ -5252,7 +5252,7 @@ Implemented on the daemon's loopback listener beside the companion routes (`docs
 - [x] `GET /{id}/backlinks/{path}` — inbound links
 - [x] `GET /{id}/graph/stats` — graph analytics
 - [x] `GET /{id}/graph/path?from=...&to=...` — shortest path
-- [ ] `GET /{id}/graph/hubs`, `/dead-ends`, `/components` — graph analysis (`hubs` done; `dead-ends` and `components` remain)
+- [x] `GET /{id}/graph/hubs`, `/dead-ends`, `/components` — graph analysis
 - [ ] `GET /{id}/vectors/neighbors?q=...` — vector similarity
 - [ ] `GET /{id}/vectors/related?note=...` — related notes
 - [ ] `GET /{id}/vectors/models` — list embedding models
@@ -5262,12 +5262,13 @@ Implemented on the daemon's loopback listener beside the companion routes (`docs
 
 **Write endpoints:**
 
-Implemented over the shared CLI/MCP workflows behind the host's mutation gate, each with a required `Idempotency-Key` (a replay returns the stored response; a reused key for another request, or one whose outcome is unknown, answers 409). `PUT /{id}/notes/{path}` replaces content, `PATCH` is find-and-replace, and `POST /{id}/append/{path}` appends; the body of `POST /{id}/notes` uses `body` like `note create`. Bulk `update` and `vectors/index` remain.
+Implemented over the shared CLI/MCP workflows behind the host's mutation gate, each with a required `Idempotency-Key` (a replay returns the stored response; a reused key for another request, or one whose outcome is unknown, answers 409). `PUT /{id}/notes/{path}` replaces content, `PATCH` is find-and-replace, and `POST /{id}/append/{path}` appends; the body of `POST /{id}/notes` uses `body` like `note create`. `vectors/index` remains.
 - [x] `POST /{id}/notes` — create a note (body: `{ "path": "...", "content": "..." }`)
 - [x] `PATCH /{id}/notes/{path}` — update properties or content
 - [x] `DELETE /{id}/notes/{path}` — delete a note
 - [x] `POST /{id}/move` — move/rename with link rewriting (`{ "source": "...", "destination": "..." }`)
-- [ ] `POST /{id}/update` — bulk property update (`{ "where": [...], "set": { "key": "value" } }`)
+- [x] `POST /{id}/update` — bulk property update (`{ "where": [...], "set": { "key": "value" } }`)
+  - Also takes `unset`. Selection and auto-commit moved from the CLI into `vulcan_app::properties` (`select_notes_matching`, `update_properties_where`), which the CLI's `--where` selection now uses.
 - [x] `POST /{id}/inbox` — quick capture (like `vulcan inbox`)
 - [x] `POST /{id}/scan` — trigger incremental rescan
 - [ ] `POST /{id}/vectors/index` — trigger embedding indexing

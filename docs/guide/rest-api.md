@@ -52,6 +52,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -H "Vulcan-Protocol-Version: 1" \
 | `GET /{id}/info/{path}` | `vulcan note info` |
 | `GET /{id}/links/{path}`, `GET /{id}/backlinks/{path}` | `vulcan links`, `vulcan backlinks` |
 | `GET /{id}/graph/stats`, `/graph/hubs`, `/graph/path?from=...&to=...` | `vulcan graph stats|hubs|path` |
+| `GET /{id}/graph/dead-ends`, `/graph/components` | `vulcan graph dead-ends|components` |
 | `GET /{id}/mdbase/...` | the `vulcan serve` mdbase routes |
 | `GET /{id}/history?limit=...` | `vulcan git log` |
 | `GET /{id}/history/{path}` | `vulcan note history`; with `?at=<commit>`, the file's content at that commit |
@@ -89,6 +90,7 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Vulcan-Protocol-Version: 1
 | `POST /{id}/append/{path}` | `vulcan note append` | `text`, `mode`, `heading` |
 | `POST /{id}/inbox` | `vulcan inbox` | `text` |
 | `POST /{id}/move` | `vulcan refactor move` | `source`, `destination`, `dry_run` |
+| `POST /{id}/update` | `vulcan note update` and `note unset` | `where` (one or more filters), `set` (properties to write), `unset` (properties to remove), `dry_run` |
 | `POST /{id}/scan` | `vulcan scan` | `full` |
 
 Every write body also accepts `no_commit`. Writes run under the profile like reads, so a read-only

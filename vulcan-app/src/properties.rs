@@ -16,6 +16,83 @@ use vulcan_core::{
     PermissionGuard, ProfilePermissionGuard, RefactorFileReport, ScanMode, VaultPaths,
 };
 
+/// The notes matching `filters`, in path order, among those `read_filter`
+/// lets the caller read: the selection `vulcan note update --where` uses.
+pub fn select_notes_matching(
+    paths: &VaultPaths,
+    filters: &[String],
+    read_filter: Option<&vulcan_core::PermissionFilter>,
+) -> Result<Vec<String>, AppError> {
+    Ok(vulcan_core::query_notes_with_filter(
+        paths,
+        &vulcan_core::NoteQuery {
+            filters: filters.to_vec(),
+            sort_by: Some("file.path".to_string()),
+            sort_descending: false,
+        },
+        read_filter,
+    )
+    .map_err(AppError::operation)?
+    .notes
+    .into_iter()
+    .map(|note| note.document_path)
+    .collect())
+}
+
+/// One property change of [`update_properties_where`]: set `key` to the
+/// YAML-compatible `value`, or remove it when `value` is `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropertyChange {
+    pub key: String,
+    pub value: Option<String>,
+}
+
+/// Applies `changes` in order to the notes matching `filters` under
+/// `permission_profile`, then auto-commits once. The notes are selected
+/// once, before any change, so a change cannot alter which notes the next
+/// one applies to.
+pub fn update_properties_where(
+    paths: &VaultPaths,
+    filters: &[String],
+    changes: &[PropertyChange],
+    dry_run: bool,
+    no_commit: bool,
+    permission_profile: Option<&str>,
+    verbosity: Verbosity,
+) -> Result<Vec<BulkMutationReport>, AppError> {
+    let guard = ProfilePermissionGuard::new(
+        paths,
+        resolve_permission_profile(paths, permission_profile).map_err(AppError::operation)?,
+    );
+    let note_paths = select_notes_matching(paths, filters, Some(&guard.read_filter()))?;
+    let mut reports = Vec::with_capacity(changes.len());
+    for change in changes {
+        let mut report = apply_bulk_property_mutation(
+            paths,
+            &note_paths,
+            &change.key,
+            change.value.as_deref(),
+            dry_run,
+            permission_profile,
+            verbosity,
+        )?;
+        report.filters = filters.to_vec();
+        reports.push(report);
+    }
+    if !dry_run {
+        let changed_files = reports
+            .iter()
+            .flat_map(|report| report.files.iter().map(|file| file.path.clone()))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        crate::commit::AutoCommitPolicy::for_mutation(paths, no_commit)
+            .commit(paths, "update", &changed_files, permission_profile, verbosity)
+            .map_err(AppError::operation)?;
+    }
+    Ok(reports)
+}
+
 /// Plan and apply a bulk property set or unset while routing mdbase records
 /// through their validated, crash-safe batch transaction.
 pub fn apply_bulk_property_mutation(
@@ -351,5 +428,80 @@ mod tests {
         assert_eq!(outbox.len(), 1);
         assert_eq!(outbox[0].operation, "update");
         assert_eq!(outbox[0].paths[0].path, "tasks/one.md");
+    }
+}
+
+#[cfg(test)]
+mod update_where_tests {
+    use super::*;
+    use vulcan_core::{initialize_vulcan_dir, scan_vault};
+
+    #[test]
+    fn matching_notes_are_selected_once_and_changed_in_order() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).unwrap();
+        std::fs::write(
+            temporary.path().join("A.md"),
+            "---\nstatus: draft\npriority: high\n---\nA\n",
+        )
+        .unwrap();
+        std::fs::write(
+            temporary.path().join("B.md"),
+            "---\nstatus: draft\n---\nB\n",
+        )
+        .unwrap();
+        std::fs::write(temporary.path().join("C.md"), "---\nstatus: done\n---\nC\n").unwrap();
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        let changes = [
+            PropertyChange {
+                key: "status".to_string(),
+                value: Some("done".to_string()),
+            },
+            PropertyChange {
+                key: "priority".to_string(),
+                value: None,
+            },
+        ];
+        let filters = ["status = draft".to_string()];
+
+        let preview = update_properties_where(
+            &paths,
+            &filters,
+            &changes,
+            true,
+            true,
+            None,
+            Verbosity::Quiet,
+        )
+        .unwrap();
+        assert_eq!(preview.len(), 2);
+        assert!(std::fs::read_to_string(temporary.path().join("A.md"))
+            .unwrap()
+            .contains("draft"));
+
+        let reports = update_properties_where(
+            &paths,
+            &filters,
+            &changes,
+            false,
+            true,
+            None,
+            Verbosity::Quiet,
+        )
+        .unwrap();
+        // The second change still applies to the notes the filter selected
+        // before the first one changed their status.
+        assert_eq!(reports[0].files.len(), 2);
+        assert_eq!(reports[1].files.len(), 1);
+        let a = std::fs::read_to_string(temporary.path().join("A.md")).unwrap();
+        assert!(a.contains("status: done") && !a.contains("priority"), "{a}");
+        assert!(std::fs::read_to_string(temporary.path().join("B.md"))
+            .unwrap()
+            .contains("status: done"));
+        assert_eq!(
+            select_notes_matching(&paths, &filters, None).unwrap(),
+            Vec::<String>::new()
+        );
     }
 }

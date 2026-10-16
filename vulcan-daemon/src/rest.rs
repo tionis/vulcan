@@ -74,6 +74,7 @@ pub const REST_VAULT_SEGMENTS: &[&str] = &[
     "history",
     "diff",
     "append",
+    "update",
     "move",
     "inbox",
     "scan",
@@ -116,6 +117,10 @@ pub(crate) fn routes() -> Router<CompanionHttpState> {
             axum::routing::post(crate::rest_writes::move_note),
         )
         .route("/{id}/scan", axum::routing::post(crate::rest_writes::scan))
+        .route(
+            "/{id}/update",
+            axum::routing::post(crate::rest_writes::update),
+        )
         .route("/{id}/info/{*path}", get(note_info))
         .route("/{id}/links/{*path}", get(links))
         .route("/{id}/backlinks/{*path}", get(backlinks))
@@ -495,6 +500,21 @@ async fn graph(
                 ))
             }
         },
+        "dead-ends" | "components" => {
+            let dead_ends = report == "dead-ends";
+            return read_vault(&state, &principal, &id, move |vault, guard| {
+                let filter = restricting_filter(guard);
+                if dead_ends {
+                    vulcan_core::query_graph_dead_ends_with_filter(&vault.paths, filter.as_ref())
+                        .map(|report| json!(report))
+                } else {
+                    vulcan_core::query_graph_components_with_filter(&vault.paths, filter.as_ref())
+                        .map(|report| json!(report))
+                }
+                .map_err(|error| RestError::from_message(error.to_string()))
+            })
+            .await;
+        }
         other => {
             return Err(RestError::new(
                 StatusCode::NOT_FOUND,
@@ -867,6 +887,12 @@ fn native_route_documents(path_parameter: &Value) -> Vec<(&'static str, &'static
         ),
         ("/{id}/graph/stats", "Graph analytics", vec![]),
         ("/{id}/graph/hubs", "The most connected notes", vec![]),
+        ("/{id}/graph/dead-ends", "Notes without outgoing links", vec![]),
+        (
+            "/{id}/graph/components",
+            "Connected components of the link graph",
+            vec![],
+        ),
         (
             "/{id}/history",
             "Recent commits, as `vulcan git log` lists them (needs a profile that reads every note)",
@@ -951,6 +977,12 @@ fn add_write_documents(paths: &mut serde_json::Map<String, Value>, id_parameter:
             "/{id}/inbox",
             "post",
             "Quick capture (`vulcan inbox`): `text`",
+            false,
+        ),
+        (
+            "/{id}/update",
+            "post",
+            "Set or remove properties on matching notes: `where`, `set`, `unset`, `dry_run`",
             false,
         ),
         (
@@ -1634,6 +1666,83 @@ mod tests {
         let (status, found) = get(&served, &device, "/notes/search?q=plumber").await;
         assert_eq!(status, StatusCode::OK, "{found}");
         assert_eq!(hit_paths(&found), [inbox.to_string()]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bulk_updates_and_graph_reports_answer_like_the_cli() {
+        let served = served();
+        let device = device(&served);
+        let root = served.temporary.path().join("notes");
+        for (path, status) in [
+            ("Tasks/One", "draft"),
+            ("Tasks/Two", "draft"),
+            ("Tasks/Three", "done"),
+        ] {
+            let (status_code, created) = send(
+                &served,
+                &device,
+                Method::POST,
+                "/notes/notes",
+                Some(&format!("create-{path}")),
+                json!({ "path": path, "frontmatter": { "status": status, "priority": "high" } }),
+            )
+            .await;
+            assert_eq!(status_code, StatusCode::OK, "{created}");
+        }
+        let (status, missing_filter) = send(
+            &served,
+            &device,
+            Method::POST,
+            "/notes/update",
+            Some("update-0"),
+            json!({ "where": [], "set": { "status": "done" } }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{missing_filter}");
+        let (status, updated) = send(
+            &served,
+            &device,
+            Method::POST,
+            "/notes/update",
+            Some("update-1"),
+            json!({ "where": ["status = draft"], "set": { "status": "done" }, "unset": ["priority"] }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{updated}");
+        assert_eq!(updated["changes"][0]["files"].as_array().unwrap().len(), 2);
+        let one = std::fs::read_to_string(root.join("Tasks/One.md")).unwrap();
+        assert!(
+            one.contains("status: done") && !one.contains("priority"),
+            "{one}"
+        );
+        let three = std::fs::read_to_string(root.join("Tasks/Three.md")).unwrap();
+        assert!(
+            three.contains("priority"),
+            "the unmatched note keeps its properties"
+        );
+        let (status, denied) = send(
+            &served,
+            &served.token,
+            Method::POST,
+            "/projects/update",
+            Some("update-2"),
+            json!({ "where": ["file.name = Plan"], "set": { "status": "done" } }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{denied}");
+
+        let (status, dead_ends) = get(&served, &device, "/notes/graph/dead-ends").await;
+        assert_eq!(status, StatusCode::OK, "{dead_ends}");
+        let direct = vulcan_core::query_graph_dead_ends_with_filter(
+            &vulcan_core::VaultPaths::new(&root),
+            None,
+        )
+        .unwrap();
+        assert_eq!(dead_ends, json!(direct));
+        let (status, components) = get(&served, &device, "/notes/graph/components").await;
+        assert_eq!(status, StatusCode::OK, "{components}");
+        let (status, _) = get(&served, &device, "/notes/graph/unknown").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -541,6 +541,87 @@ pub(crate) async fn move_note(
     .await
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateArgs {
+    /// Property filters, as `vulcan note update --where` takes them.
+    #[serde(rename = "where")]
+    filters: Vec<String>,
+    /// Properties to set; non-string JSON values are written as YAML text.
+    #[serde(default)]
+    set: serde_json::Map<String, Value>,
+    /// Properties to remove.
+    #[serde(default)]
+    unset: Vec<String>,
+    #[serde(default)]
+    dry_run: bool,
+    #[serde(default)]
+    no_commit: bool,
+}
+
+/// `POST /{id}/update`: set or remove properties on every note matching a
+/// filter (`vulcan note update` and `note unset`).
+pub(crate) async fn update(
+    State(state): State<CompanionHttpState>,
+    Extension(principal): Extension<Principal>,
+    Path(id): Path<String>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    write_vault(
+        &state,
+        &principal,
+        &id,
+        &method,
+        &uri,
+        &headers,
+        &body,
+        Box::new(|request| {
+            let args: UpdateArgs = arguments(request.body, &[])?;
+            if args.filters.is_empty() {
+                return Err(RestError::new(
+                    StatusCode::BAD_REQUEST,
+                    "`where` needs at least one filter; a bulk update never applies to every note implicitly",
+                ));
+            }
+            let mut changes = args
+                .set
+                .into_iter()
+                .map(|(key, value)| vulcan_app::properties::PropertyChange {
+                    key,
+                    value: Some(match value {
+                        Value::String(text) => text,
+                        other => other.to_string(),
+                    }),
+                })
+                .collect::<Vec<_>>();
+            changes.extend(args.unset.into_iter().map(|key| {
+                vulcan_app::properties::PropertyChange { key, value: None }
+            }));
+            if changes.is_empty() {
+                return Err(RestError::new(
+                    StatusCode::BAD_REQUEST,
+                    "an update needs `set` or `unset`",
+                ));
+            }
+            let reports = vulcan_app::properties::update_properties_where(
+                request.paths,
+                &args.filters,
+                &changes,
+                args.dry_run,
+                args.no_commit,
+                Some(request.profile),
+                Verbosity::Quiet,
+            )
+            .map_err(|error| RestError::from_message(error.to_string()))?;
+            Ok(json!({ "dry_run": args.dry_run, "changes": reports }))
+        }),
+    )
+    .await
+}
+
 /// `POST /{id}/scan`: an incremental (or with `full`, a full) scan.
 pub(crate) async fn scan(
     State(state): State<CompanionHttpState>,
