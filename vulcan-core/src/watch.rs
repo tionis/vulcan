@@ -1484,21 +1484,23 @@ mod tests {
                     .unwrap();
                 std::thread::sleep(Duration::from_millis(100));
             }
-            std::thread::sleep(Duration::from_millis(400));
+            std::thread::sleep(Duration::from_millis(1_400));
         });
+        // The events are 100 ms apart and the debounce is 1 s, so a loaded
+        // runner that oversleeps the gap still lands both in one batch.
         let stop = AtomicBool::new(false);
         let start = Instant::now();
         let mut reports = 0;
         watch_vault_until_with_registered_watcher(
             &paths,
-            WatchOptions { debounce_ms: 250 },
-            || stop.load(Ordering::Acquire) || start.elapsed() > Duration::from_secs(3),
+            WatchOptions { debounce_ms: 1_000 },
+            || stop.load(Ordering::Acquire) || start.elapsed() > Duration::from_secs(15),
             |report| {
                 if report.startup {
                     started.send(()).unwrap();
                 } else {
                     assert_eq!(report.event_count, 2);
-                    assert!(start.elapsed() >= Duration::from_millis(350));
+                    assert!(start.elapsed() >= Duration::from_millis(1_100));
                     reports += 1;
                     stop.store(true, Ordering::Release);
                 }
