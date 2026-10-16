@@ -73,7 +73,11 @@ vault-relative and may contain `/`.
 ### Daemon
 
 - `GET /capabilities`: protocol version and feature flags, extended with `rest` route groups.
-- `GET /health`: daemon status and, per visible vault, whether it is served and its cache state.
+- `GET /health`: per visible vault, whether it is served, its cache freshness and last scan error,
+  and each observer and consumer (`observer`, `index`, `sync`, `auto-commit`) with whether it runs,
+  its restart count, and its last exit error. `healthy` is true when every wanted component runs and
+  no cache error is recorded. `GET /{id}/health` reports one vault. The trigger runtime records
+  exits when it reaps them and publishes which components run after each reconcile pass.
 - `GET /vaults`: registered vaults visible to the principal.
 - `GET /openapi.json`: an OpenAPI 3.1 document for the REST routes, with an HTTP bearer security
   scheme and a note that each request is constrained by the principal's permission profile.

@@ -5280,9 +5280,10 @@ Implemented over the shared CLI/MCP workflows behind the host's mutation gate, e
 
 ### 10.4 Per-vault watcher
 
-- [ ] Each registered vault gets shared filesystem observation through the per-vault runtime in 10.7.3; adapt `watch_vault_until` and the existing sync watcher without giving each consumer a separate recursive watcher
-- [ ] Watcher refreshes the cache automatically; expose freshness and reconciliation failures, and provide an explicit freshness barrier for requests requiring a completed scan rather than promising instantaneous freshness after external edits
-- [ ] Watcher errors are surfaced via `/health` and `/{id}/health` endpoints
+- [x] Each registered vault gets shared filesystem observation through the per-vault runtime in 10.7.3; adapt `watch_vault_until` and the existing sync watcher without giving each consumer a separate recursive watcher
+- [x] Watcher refreshes the cache automatically; expose freshness and reconciliation failures, and provide an explicit freshness barrier for requests requiring a completed scan rather than promising instantaneous freshness after external edits
+- [x] Watcher errors are surfaced via `/health` and `/{id}/health` endpoints
+  - Delivered by 10.7.3 (one observer per vault feeding index, sync, and auto-commit consumers, each restarted alone with backoff) and the REST API: the index barrier is the explicit freshness barrier, cache freshness and scan errors come from the scan tracker, and a watcher-health registry records each observer and consumer exit with its error and restart count. `GET /health` and `GET /{id}/health` report them with a `healthy` summary.
 - [x] Graceful shutdown: authenticated daemon stop or foreground Ctrl-C signals the HTTP service, trigger runtime, sync worker, and all watcher threads to terminate before removing the owned runtime record
 - [x] Before graceful stop, enqueue one retained final sync for every active Git-backed wiki, bound the drain to 30 seconds with cooperative cancellation, handle service-manager termination signals, and reconcile immediately after detecting resume from suspend
 

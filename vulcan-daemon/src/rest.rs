@@ -59,6 +59,7 @@ const VAULT_PRINCIPAL_DAEMON_ROUTES: &[&str] =
 
 /// The first path segment after `/{id}/` of every per-vault REST route.
 pub const REST_VAULT_SEGMENTS: &[&str] = &[
+    "health",
     "search",
     "notes",
     "info",
@@ -84,6 +85,7 @@ pub(crate) fn routes() -> Router<CompanionHttpState> {
     Router::new()
         .route("/health", get(health))
         .route("/openapi.json", get(openapi))
+        .route("/{id}/health", get(vault_health))
         .route("/{id}/search", get(serve_route))
         .route(
             "/{id}/notes",
@@ -726,6 +728,7 @@ async fn health(
 ) -> Result<Json<Value>, RestError> {
     let registry = Arc::clone(&state.registry);
     let routed = state.routed_reads.clone();
+    let watcher_health = state.watcher_health.clone();
     let vaults = tokio::task::spawn_blocking(move || {
         registry.poll().map(|config| {
             config
@@ -733,14 +736,7 @@ async fn health(
                 .into_iter()
                 .filter(|wiki| principal.sees_wiki(wiki.id.as_str()))
                 .map(|wiki| {
-                    let served = routed
-                        .as_ref()
-                        .and_then(|routed| routed.get(wiki.id.as_str()));
-                    json!({
-                        "id": wiki.id.as_str(),
-                        "served": served.is_some(),
-                        "cache": served.map(|vault| vault.tracker.status().state),
-                    })
+                    vault_health_report(wiki.id.as_str(), routed.as_ref(), watcher_health.as_ref())
                 })
                 .collect::<Vec<_>>()
         })
@@ -748,11 +744,68 @@ async fn health(
     .await
     .map_err(|error| RestError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
     .map_err(|error| RestError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    let healthy = vaults
+        .iter()
+        .all(|vault| vault["healthy"].as_bool().unwrap_or(false));
     Ok(Json(json!({
         "ok": true,
+        "healthy": healthy,
         "protocol_version": crate::companion::COMPANION_PROTOCOL_VERSION,
         "vaults": vaults,
     })))
+}
+
+/// One vault's health: whether the daemon serves it, its cache state and
+/// last scan error, and each observer and consumer with its last exit.
+fn vault_health_report(
+    id: &str,
+    routed: Option<&crate::routed_reads::RoutedReadRegistry>,
+    watcher_health: Option<&crate::watcher_health::WatcherHealthRegistry>,
+) -> Value {
+    let served = routed.and_then(|routed| routed.get(id));
+    let watcher = watcher_health.and_then(|health| health.get(id));
+    let cache = served.as_ref().map(|vault| vault.tracker.status());
+    let cache_ok = cache.as_ref().is_none_or(|cache| {
+        cache.error.is_none()
+            && !matches!(cache.state, crate::scan_runtime::CacheFreshnessState::Error)
+    });
+    json!({
+        "id": id,
+        "served": served.is_some(),
+        "healthy": cache_ok && watcher.as_ref().is_some_and(crate::watcher_health::VaultWatcherHealth::healthy),
+        "cache": cache,
+        "watcher": watcher,
+    })
+}
+
+/// `GET /{id}/health`: one vault's watcher and cache health.
+async fn vault_health(
+    State(state): State<CompanionHttpState>,
+    Extension(principal): Extension<Principal>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, RestError> {
+    if !principal.sees_wiki(&id) {
+        return Err(RestError::new(
+            StatusCode::NOT_FOUND,
+            format!("unknown vault `{id}`"),
+        ));
+    }
+    let registered = state
+        .registry
+        .poll()
+        .map(|config| config.vaults.iter().any(|wiki| wiki.id.as_str() == id))
+        .map_err(|error| RestError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    if !registered {
+        return Err(RestError::new(
+            StatusCode::NOT_FOUND,
+            format!("unknown vault `{id}`"),
+        ));
+    }
+    Ok(Json(vault_health_report(
+        &id,
+        state.routed_reads.as_ref(),
+        state.watcher_health.as_ref(),
+    )))
 }
 
 /// The mounted `vulcan serve` routes, documented from their own query
@@ -1025,6 +1078,7 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
         let routed = crate::routed_reads::RoutedReadRegistry::default();
+        let health = crate::watcher_health::WatcherHealthRegistry::default();
         let mut watchers = Vec::new();
         for (id, profile) in [("notes", None), ("projects", Some("projects_only"))] {
             let vault = temporary.path().join(id);
@@ -1070,6 +1124,7 @@ mod tests {
                 registration,
                 &temporary.path().join(format!("state-{id}")),
                 &routed,
+                &health,
             ));
         }
         // Requests start once each vault's first scan is done, as they would
@@ -1113,6 +1168,7 @@ mod tests {
             shutdown: None,
             ingress_shutdown: None,
             routed_reads: Some(routed),
+            watcher_health: Some(health),
             api_tokens: Some(api_tokens),
             write_gate: None,
             idempotency: Some(Arc::new(crate::rest_idempotency::IdempotencyStore::at(
@@ -1593,6 +1649,25 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(ids, ["projects"]);
         assert_eq!(health["vaults"][0]["served"], true);
+        let components = &health["vaults"][0]["watcher"]["components"];
+        for component in ["observer", "index", "auto-commit"] {
+            assert_eq!(
+                components[component]["running"], true,
+                "{component}: {health}"
+            );
+        }
+        assert_eq!(health["vaults"][0]["healthy"], true, "{health}");
+        assert_eq!(health["healthy"], true);
+        assert_eq!(health["vaults"][0]["cache"]["state"], "fresh");
+
+        let (status, one) = get(&served, &served.token, "/projects/health").await;
+        assert_eq!(status, StatusCode::OK, "{one}");
+        assert_eq!(one["id"], "projects");
+        assert_eq!(one["watcher"]["components"]["index"]["running"], true);
+        let (status, _) = get(&served, &served.token, "/notes/health").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = get(&served, &device(&served), "/missing/health").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
 
         let (status, document) = get(&served, &served.token, "/openapi.json").await;
         assert_eq!(status, StatusCode::OK);

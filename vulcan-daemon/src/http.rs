@@ -58,6 +58,8 @@ pub struct CompanionHttpState {
     pub ingress_shutdown: Option<Arc<ShutdownSignal>>,
     /// Vaults this daemon answers routed reads for; `None` disables them.
     pub routed_reads: Option<crate::routed_reads::RoutedReadRegistry>,
+    /// Live observer and consumer health, reported by `/health`.
+    pub watcher_health: Option<crate::watcher_health::WatcherHealthRegistry>,
     /// Per-vault API tokens; `None` accepts only the companion credential.
     pub api_tokens: Option<Arc<crate::api_tokens::ApiTokenStore>>,
     /// The mutation gate REST writes wait on; `None` runs them ungated.
@@ -1031,6 +1033,7 @@ mod tests {
             shutdown: None,
             ingress_shutdown: None,
             routed_reads: None,
+            watcher_health: None,
             api_tokens: Some(Arc::new(crate::api_tokens::ApiTokenStore::at(
                 temporary.path().join("api-state"),
             ))),

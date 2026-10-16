@@ -57,7 +57,8 @@ curl -s -H "Authorization: Bearer $TOKEN" -H "Vulcan-Protocol-Version: 1" \
 | `GET /{id}/history/{path}` | `vulcan note history`; with `?at=<commit>`, the file's content at that commit |
 | `GET /{id}/diff?path=...` | `vulcan git diff` (uncommitted changes) |
 | `GET /{id}/diff/{path}?from=<commit>&to=<commit>` | one file between two commits, or from a commit to the working tree when `to` is left out |
-| `GET /health` | which vaults the daemon serves, and their cache state |
+| `GET /health` | each visible vault: whether it is served, its cache state and last scan error, and each watcher component (`observer`, `index`, `sync`, `auto-commit`) with whether it runs, how often it restarted, and its last error; `healthy` summarizes |
+| `GET /{id}/health` | the same for one vault |
 | `GET /vaults` | registered vaults visible to the token |
 | `GET /openapi.json` | an OpenAPI 3.1 description of these routes |
 

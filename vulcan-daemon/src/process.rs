@@ -371,6 +371,7 @@ where
     // it behind required-service startup so every successful authenticated
     // probe observes the corresponding service-health snapshot.
     let routed_reads = crate::routed_reads::RoutedReadRegistry::default();
+    let watcher_health = crate::watcher_health::WatcherHealthRegistry::default();
     let runtime = tokio::runtime::Handle::current();
     let scheduler = Arc::new(
         MutationScheduler::new(MutationSchedulerConfig::default())
@@ -386,6 +387,7 @@ where
         shutdown: Some(Arc::clone(&stop)),
         ingress_shutdown: Some(Arc::clone(&ingress_stop)),
         routed_reads: Some(routed_reads.clone()),
+        watcher_health: Some(watcher_health.clone()),
         api_tokens: Some(Arc::new(crate::api_tokens::ApiTokenStore::at(
             &context.state_root,
         ))),
@@ -407,6 +409,7 @@ where
         &runtime,
         &scheduler,
         &routed_reads,
+        &watcher_health,
     )?;
     registrations.extend(
         additional_services(context, &config, &scheduler)
@@ -484,6 +487,7 @@ fn daemon_worker_registrations(
     runtime: &tokio::runtime::Handle,
     scheduler: &Arc<MutationScheduler>,
     routed_reads: &crate::routed_reads::RoutedReadRegistry,
+    watcher_health: &crate::watcher_health::WatcherHealthRegistry,
 ) -> Result<Vec<ServiceRegistration>, DaemonProcessError> {
     validate_worker_agents(config, agents)?;
     let alert_enabled = config.notifications.desktop
@@ -583,6 +587,7 @@ fn daemon_worker_registrations(
     let trigger_supervisor = Arc::clone(supervisor);
     let trigger_state_store = Arc::clone(state_store);
     let trigger_routed = routed_reads.clone();
+    let trigger_health = watcher_health.clone();
     let auto_commit = crate::auto_commit_worker::AutoCommitContext {
         registry: Some(context.registry.clone()),
         gate: Some(Arc::new(HostedWorkerGate::new(
@@ -606,6 +611,7 @@ fn daemon_worker_registrations(
                 service.stop(),
                 &trigger_routed,
                 &auto_commit,
+                &trigger_health,
             )
             .map_err(|error| error.to_string())
         },

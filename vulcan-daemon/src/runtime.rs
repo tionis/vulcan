@@ -19,6 +19,7 @@ use crate::watch::{
     consume_sync_observations_with_stop, observe_vault_with_stop, DaemonWatchError,
     DaemonWatchOptions,
 };
+use crate::watcher_health::WatcherHealthRegistry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -202,11 +203,13 @@ where
         None,
         &RoutedReadRegistry::default(),
         &AutoCommitContext::default(),
+        &WatcherHealthRegistry::default(),
     )
 }
 
 /// [`run_sync_trigger_runtime_until`] stopped by `stop`, publishing each
 /// indexed vault in `routed` while its index consumer runs.
+#[allow(clippy::too_many_arguments)] // Each is a distinct shared runtime handle.
 pub(crate) fn run_sync_trigger_runtime_with_stop(
     registry: &WikiRegistry,
     supervisor: &Arc<SyncSupervisor>,
@@ -215,6 +218,7 @@ pub(crate) fn run_sync_trigger_runtime_with_stop(
     stop: &ShutdownSignal,
     routed: &RoutedReadRegistry,
     auto_commit: &AutoCommitContext,
+    health: &WatcherHealthRegistry,
 ) -> Result<(), SyncTriggerRuntimeError> {
     run_sync_trigger_runtime(
         registry,
@@ -225,6 +229,7 @@ pub(crate) fn run_sync_trigger_runtime_with_stop(
         Some(stop),
         routed,
         auto_commit,
+        health,
     )
 }
 
@@ -238,6 +243,7 @@ fn run_sync_trigger_runtime<S>(
     stop: Option<&ShutdownSignal>,
     routed: &RoutedReadRegistry,
     auto_commit: &AutoCommitContext,
+    health: &WatcherHealthRegistry,
 ) -> Result<(), SyncTriggerRuntimeError>
 where
     S: Fn() -> bool,
@@ -252,6 +258,7 @@ where
             registry: Some(registry.clone()),
             ..auto_commit.clone()
         },
+        health: health.clone(),
     };
     let registry_refresh = Duration::from_millis(options.registry_refresh_ms);
     let remote_poll = Duration::from_millis(options.remote_poll_ms);
@@ -363,6 +370,7 @@ struct Consumers<'a> {
     watch: DaemonWatchOptions,
     routed: &'a RoutedReadRegistry,
     auto_commit: AutoCommitContext,
+    health: WatcherHealthRegistry,
 }
 
 fn reconcile_watchers(
@@ -378,7 +386,7 @@ fn reconcile_watchers(
     let desired = desired_observers(&config.vaults, catalog)?;
     let mut failed_this_cycle = BTreeSet::new();
     let now = Instant::now();
-    reap_exited_consumers(watchers, supervisor, now)?;
+    reap_exited_consumers(watchers, supervisor, &consumers.health, now)?;
     let finished = watchers
         .iter()
         .filter(|(_, task)| task.observer.is_finished())
@@ -388,6 +396,9 @@ fn reconcile_watchers(
         if let Some(task) = watchers.remove(&id) {
             let registration = task.registration.clone();
             let detail = join_watcher(task);
+            consumers
+                .health
+                .exited(registration.id.as_str(), "observer", &detail);
             if sync_consumer_enabled(&registration) {
                 supervisor.enqueue_watch(
                     registration.id.as_str(),
@@ -443,7 +454,53 @@ fn reconcile_watchers(
         }
         task.registration = registration.clone();
     }
+    publish_watcher_health(watchers, &desired, &consumers.health);
     Ok(())
+}
+
+/// Publishes which observers and consumers run now. Exits and their errors
+/// were recorded when they were reaped.
+fn publish_watcher_health(
+    watchers: &BTreeMap<String, WatcherTask>,
+    desired: &BTreeMap<String, WikiRegistration>,
+    health: &WatcherHealthRegistry,
+) {
+    health.retain(&desired.keys().cloned().collect());
+    for (id, registration) in desired {
+        publish_task_health(id, registration, watchers.get(id), health);
+    }
+}
+
+fn publish_task_health(
+    id: &str,
+    registration: &WikiRegistration,
+    task: Option<&WatcherTask>,
+    health: &WatcherHealthRegistry,
+) {
+    let Some(task) = task else {
+        health.observe(id, "observer", Some(false));
+        return;
+    };
+    health.observe(id, "observer", Some(!task.observer.is_finished()));
+    let wanted = |want: bool, running: bool| want.then_some(running);
+    health.observe(
+        id,
+        "index",
+        wanted(
+            registration.capabilities().markdown_index,
+            task.index.is_some(),
+        ),
+    );
+    health.observe(
+        id,
+        "sync",
+        wanted(sync_consumer_enabled(registration), task.sync.is_some()),
+    );
+    health.observe(
+        id,
+        "auto-commit",
+        wanted(!sync_owns_capture(registration), task.auto_commit.is_some()),
+    );
 }
 
 /// Starts the consumers `registration` wants that are not running, unless
@@ -511,9 +568,11 @@ fn ensure_consumers(
 fn reap_exited_consumers(
     watchers: &mut BTreeMap<String, WatcherTask>,
     supervisor: &SyncSupervisor,
+    health: &WatcherHealthRegistry,
     now: Instant,
 ) -> Result<(), SupervisorError> {
     for task in watchers.values_mut() {
+        let wiki_id = task.registration.id.to_string();
         if task.observer.is_finished() {
             continue;
         }
@@ -525,7 +584,8 @@ fn reap_exited_consumers(
             if let Some(index) = task.index.take() {
                 let ran_for = index.started.elapsed();
                 // Dropping the task withdraws the vault from routed reads.
-                drop(join_task("index observation consumer", index.handle));
+                let detail = join_task("index observation consumer", index.handle);
+                health.exited(&wiki_id, "index", &detail);
                 task.index_restart.record_exit(ran_for, now);
             }
         }
@@ -537,6 +597,7 @@ fn reap_exited_consumers(
             if let Some(sync) = task.sync.take() {
                 let ran_for = sync.started.elapsed();
                 let detail = join_task("sync observation consumer", sync.handle);
+                health.exited(&wiki_id, "sync", &detail);
                 task.sync_restart.record_exit(ran_for, now);
                 if sync_consumer_enabled(&task.registration) {
                     supervisor.enqueue_watch(
@@ -558,10 +619,9 @@ fn reap_exited_consumers(
         {
             if let Some(auto_commit) = task.auto_commit.take() {
                 let ran_for = auto_commit.started.elapsed();
-                eprintln!(
-                    "{}",
-                    join_task("auto-commit observation consumer", auto_commit.handle)
-                );
+                let detail = join_task("auto-commit observation consumer", auto_commit.handle);
+                eprintln!("{detail}");
+                health.exited(&wiki_id, "auto-commit", &detail);
                 task.auto_commit_restart.record_exit(ran_for, now);
             }
         }
@@ -634,7 +694,7 @@ fn spawn_watcher(
     let auto_commit = (!sync_owns_capture(&registration))
         .then(|| spawn_auto_commit_consumer(registration.clone(), &hub, consumers))
         .transpose()?;
-    Ok(WatcherTask {
+    let task = WatcherTask {
         registration,
         hub,
         observer_stop,
@@ -645,7 +705,14 @@ fn spawn_watcher(
         index_restart: ConsumerRestart::default(),
         sync_restart: ConsumerRestart::default(),
         auto_commit_restart: ConsumerRestart::default(),
-    })
+    };
+    publish_task_health(
+        task.registration.id.as_str(),
+        &task.registration,
+        Some(&task),
+        &consumers.health,
+    );
+    Ok(task)
 }
 
 fn spawn_auto_commit_consumer(
@@ -902,6 +969,7 @@ pub(crate) fn watch_for_tests(
     registration: WikiRegistration,
     state_root: &std::path::Path,
     routed: &RoutedReadRegistry,
+    health: &WatcherHealthRegistry,
 ) -> TestWatcher {
     let supervisor =
         Arc::new(SyncSupervisor::at(state_root.join("jobs.json")).expect("test supervisor"));
@@ -912,6 +980,7 @@ pub(crate) fn watch_for_tests(
         watch: DaemonWatchOptions::default(),
         routed,
         auto_commit: AutoCommitContext::default(),
+        health: health.clone(),
     };
     TestWatcher(Some(
         spawn_watcher(registration, &consumers).expect("test watcher"),
@@ -933,6 +1002,7 @@ mod tests {
             watch: DaemonWatchOptions::default(),
             routed,
             auto_commit: AutoCommitContext::default(),
+            health: WatcherHealthRegistry::default(),
         }
     }
     use crate::registry::{AddWikiRequest, ManagedDirectoryProfile, UpdateWikiRequest, WikiId};
@@ -1119,15 +1189,10 @@ mod tests {
         let routed = RoutedReadRegistry::default();
         let mut watchers = BTreeMap::new();
         let mut catalog = VaultRuntimeCatalog::default();
+        let consumers = test_consumers(&supervisor, &state_store, &routed);
         let reconcile = |watchers: &mut BTreeMap<String, WatcherTask>,
                          catalog: &mut VaultRuntimeCatalog| {
-            reconcile_watchers(
-                &registry,
-                &test_consumers(&supervisor, &state_store, &routed),
-                watchers,
-                catalog,
-            )
-            .unwrap();
+            reconcile_watchers(&registry, &consumers, watchers, catalog).unwrap();
         };
         reconcile(&mut watchers, &mut catalog);
         let task = &watchers["notes"];
@@ -1154,6 +1219,17 @@ mod tests {
             "{} sync restarts",
             task.sync_restart.failures
         );
+        // The failures are visible, and the healthy parts stay healthy.
+        let health = consumers.health.get("notes").expect("vault health");
+        let sync = &health.components["sync"];
+        assert!(sync.restarts >= 1, "{sync:?}");
+        assert!(sync
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("sync observation consumer")));
+        assert!(health.components["observer"].running);
+        assert!(health.components["index"].running);
+        assert!(!health.components.contains_key("auto-commit"));
         stop_all_watchers(&mut watchers);
     }
 
