@@ -156,6 +156,7 @@ pub fn companion_router(state: CompanionHttpState) -> Router {
         .route("/{id}/sync/semantic-plans", post(create_semantic_plan))
         .route("/{id}/ops/query", post(routed_query))
         .route("/{id}/ops/search", post(routed_search))
+        .route("/{id}/ops/note", post(routed_note_read))
         .route("/{id}/ops/ls", post(routed_ls))
         .route("/{id}/ops/dql", post(routed_dql))
         .route("/{id}/ops/tasks-query", post(routed_tasks_query))
@@ -441,6 +442,7 @@ async fn capabilities(State(state): State<CompanionHttpState>) -> Json<Companion
             CompanionOperation::RoutedDql,
             CompanionOperation::RoutedTasksQuery,
             CompanionOperation::RoutedGraph,
+            CompanionOperation::RoutedNoteRead,
         ]);
     }
     Json(capabilities)
@@ -495,6 +497,17 @@ async fn routed_ls(
 }
 
 /// A routed keyword `search` answered from the vault's fresh cache.
+async fn routed_note_read(
+    State(state): State<CompanionHttpState>,
+    Path(id): Path<String>,
+    body: Result<
+        Json<crate::routed_reads::RoutedNoteRead>,
+        axum::extract::rejection::JsonRejection,
+    >,
+) -> Response {
+    answer_routed(&state, &id, body, crate::routed_reads::routed_note_read).await
+}
+
 async fn routed_search(
     State(state): State<CompanionHttpState>,
     Path(id): Path<String>,
@@ -1716,6 +1729,10 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&json!("routed_search")));
+        assert!(capabilities["operations"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("routed_note_read")));
 
         let search = |mode: SearchMode| SearchQuery {
             text: "dashboard".to_string(),

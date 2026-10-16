@@ -78,6 +78,9 @@ pub enum CompanionOperation {
     RoutedDql,
     /// `POST /{id}/ops/tasks-query`: a routed Tasks query.
     RoutedTasksQuery,
+    /// `POST /{id}/ops/note`: a routed single-note read (info, links,
+    /// backlinks).
+    RoutedNoteRead,
     /// `POST /{id}/ops/graph`: a routed whole-graph report.
     RoutedGraph,
 }

@@ -1342,6 +1342,14 @@ pub fn request_routed_ls(
 
 /// Ask the running daemon to answer a keyword `search` for the vault at
 /// `vault_root`. Costs one file check when no daemon runs.
+pub fn request_routed_note_read(
+    context: &DaemonProcessContext,
+    vault_root: &Path,
+    read: &crate::routed_reads::RoutedNoteRead,
+) -> Result<vulcan_app::routed::note::NoteReadAnswer, RoutedClientError> {
+    request_routed(context, vault_root, "note", read)
+}
+
 pub fn request_routed_search(
     context: &DaemonProcessContext,
     vault_root: &Path,

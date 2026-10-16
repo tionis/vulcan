@@ -37,11 +37,25 @@ pub(crate) fn handle_backlinks_command(
     stdout_is_tty: bool,
     use_stdout_color: bool,
 ) -> Result<(), CliError> {
-    let _read_guard = consistent_read_guard(paths)?;
-    let note = resolve_note_argument(paths, note, interactive_note_selection, "note")?;
-    let read_filter = selected_read_permission_filter(cli, paths)?;
-    let report = query_backlinks_with_filter(paths, &note, read_filter.as_ref())
-        .map_err(CliError::operation)?;
+    let routed = match note {
+        Some(note) => crate::routing::route_note_read(
+            cli,
+            paths,
+            vulcan_app::routed::note::NoteReadRequest::Backlinks {
+                note: note.to_string(),
+            },
+        )?,
+        None => None,
+    };
+    let report = if let Some(vulcan_app::routed::note::NoteReadAnswer::Backlinks(report)) = routed {
+        report
+    } else {
+        let _read_guard = consistent_read_guard(paths)?;
+        let note = resolve_note_argument(paths, note, interactive_note_selection, "note")?;
+        let read_filter = selected_read_permission_filter(cli, paths)?;
+        query_backlinks_with_filter(paths, &note, read_filter.as_ref())
+            .map_err(CliError::operation)?
+    };
     let export = crate::resolve_cli_export(export)?;
     crate::print_backlinks_report(
         cli.output,
@@ -64,11 +78,24 @@ pub(crate) fn handle_links_command(
     stdout_is_tty: bool,
     use_stdout_color: bool,
 ) -> Result<(), CliError> {
-    let _read_guard = consistent_read_guard(paths)?;
-    let note = resolve_note_argument(paths, note, interactive_note_selection, "note")?;
-    let read_filter = selected_read_permission_filter(cli, paths)?;
-    let report =
-        query_links_with_filter(paths, &note, read_filter.as_ref()).map_err(CliError::operation)?;
+    let routed = match note {
+        Some(note) => crate::routing::route_note_read(
+            cli,
+            paths,
+            vulcan_app::routed::note::NoteReadRequest::Links {
+                note: note.to_string(),
+            },
+        )?,
+        None => None,
+    };
+    let report = if let Some(vulcan_app::routed::note::NoteReadAnswer::Links(report)) = routed {
+        report
+    } else {
+        let _read_guard = consistent_read_guard(paths)?;
+        let note = resolve_note_argument(paths, note, interactive_note_selection, "note")?;
+        let read_filter = selected_read_permission_filter(cli, paths)?;
+        query_links_with_filter(paths, &note, read_filter.as_ref()).map_err(CliError::operation)?
+    };
     let export = crate::resolve_cli_export(export)?;
     crate::print_links_report(
         cli.output,

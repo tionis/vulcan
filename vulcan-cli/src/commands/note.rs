@@ -35,6 +35,7 @@ use vulcan_app::notes::{
     NotePatchCommandReport as NotePatchReport, NotePatchRequest as AppNotePatchRequest,
     NoteReadMode, NoteSetCommandReport as NoteSetReport, NoteSetRequest as AppNoteSetRequest,
 };
+use vulcan_app::routed::note::{NoteReadAnswer, NoteReadRequest};
 use vulcan_app::templates::parse_template_var_bindings;
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::Verbosity;
@@ -475,6 +476,13 @@ pub(crate) fn handle_note_command(
             crate::print_move_summary(cli.output, &summary)
         }
         NoteCommand::Info { note } => {
+            if let Some(NoteReadAnswer::Info(report)) = crate::routing::route_note_read(
+                cli,
+                paths,
+                NoteReadRequest::Info { note: note.clone() },
+            )? {
+                return print_note_info_report(cli.output, &report);
+            }
             check_read_note_access(cli, paths, note)?;
             let report = run_note_info_command(paths, note)?;
             print_note_info_report(cli.output, &report)
@@ -492,11 +500,27 @@ pub(crate) fn handle_note_command(
             print_note_history_report(cli.output, &report)
         }
         NoteCommand::Links { note, export } => {
-            let read_filter = selected_read_permission_filter(cli, paths)?;
-            let note =
-                resolve_note_argument(paths, note.as_deref(), interactive_note_selection, "note")?;
-            let report = query_links_with_filter(paths, &note, read_filter.as_ref())
-                .map_err(CliError::operation)?;
+            let routed = match note {
+                Some(note) => crate::routing::route_note_read(
+                    cli,
+                    paths,
+                    NoteReadRequest::Links { note: note.clone() },
+                )?,
+                None => None,
+            };
+            let report = if let Some(NoteReadAnswer::Links(report)) = routed {
+                report
+            } else {
+                let read_filter = selected_read_permission_filter(cli, paths)?;
+                let note = resolve_note_argument(
+                    paths,
+                    note.as_deref(),
+                    interactive_note_selection,
+                    "note",
+                )?;
+                query_links_with_filter(paths, &note, read_filter.as_ref())
+                    .map_err(CliError::operation)?
+            };
             let export = crate::resolve_cli_export(export)?;
             crate::print_links_report(
                 cli.output,
@@ -509,11 +533,27 @@ pub(crate) fn handle_note_command(
             Ok(())
         }
         NoteCommand::Backlinks { note, export } => {
-            let read_filter = selected_read_permission_filter(cli, paths)?;
-            let note =
-                resolve_note_argument(paths, note.as_deref(), interactive_note_selection, "note")?;
-            let report = query_backlinks_with_filter(paths, &note, read_filter.as_ref())
-                .map_err(CliError::operation)?;
+            let routed = match note {
+                Some(note) => crate::routing::route_note_read(
+                    cli,
+                    paths,
+                    NoteReadRequest::Backlinks { note: note.clone() },
+                )?,
+                None => None,
+            };
+            let report = if let Some(NoteReadAnswer::Backlinks(report)) = routed {
+                report
+            } else {
+                let read_filter = selected_read_permission_filter(cli, paths)?;
+                let note = resolve_note_argument(
+                    paths,
+                    note.as_deref(),
+                    interactive_note_selection,
+                    "note",
+                )?;
+                query_backlinks_with_filter(paths, &note, read_filter.as_ref())
+                    .map_err(CliError::operation)?
+            };
             let export = crate::resolve_cli_export(export)?;
             crate::print_backlinks_report(
                 cli.output,

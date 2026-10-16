@@ -9,6 +9,7 @@
 pub mod dql;
 pub mod graph;
 pub mod ls;
+pub mod note;
 pub mod query;
 pub mod search;
 pub mod tasks;

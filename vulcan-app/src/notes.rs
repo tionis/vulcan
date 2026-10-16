@@ -295,7 +295,7 @@ pub struct NoteGetReport {
     pub display_lines: Vec<vulcan_core::NoteSelectedLine>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct NoteInfoReport {
     pub path: String,
     pub matched_by: NoteMatchKind,

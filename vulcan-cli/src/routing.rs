@@ -26,7 +26,7 @@ use vulcan_daemon::routed_reads::{
     RoutedDql, RoutedGraph, RoutedLs, RoutedQuery, RoutedSearch, RoutedTasksQuery,
 };
 
-use crate::cli::{Command, GraphCommand, RouteMode, SearchMode, TasksCommand};
+use crate::cli::{Command, GraphCommand, NoteCommand, RouteMode, SearchMode, TasksCommand};
 use crate::{Cli, CliError};
 
 /// The route for a routable command: `--route` or `VULCAN_ROUTE`, else the
@@ -89,7 +89,16 @@ fn is_routable(command: &Command) -> bool {
         | Command::Graph {
             command:
                 GraphCommand::Stats { .. } | GraphCommand::Hubs { .. } | GraphCommand::Path { .. },
+        }
+        | Command::Note {
+            command: NoteCommand::Info { .. },
         } => true,
+        // One named note; without a name the CLI may pick one interactively.
+        Command::Links { note, .. }
+        | Command::Backlinks { note, .. }
+        | Command::Note {
+            command: NoteCommand::Links { note, .. } | NoteCommand::Backlinks { note, .. },
+        } => note.is_some(),
         _ => false,
     }
 }
@@ -215,6 +224,38 @@ pub(crate) fn route_search(
             },
         )
     })
+}
+
+/// The daemon's answer to a single-note read when this command routes, or
+/// `None` after running the cache refresh routing deferred, so the caller
+/// reads directly.
+pub(crate) fn route_note_read(
+    cli: &Cli,
+    paths: &VaultPaths,
+    request: vulcan_app::routed::note::NoteReadRequest,
+) -> Result<Option<vulcan_app::routed::note::NoteReadAnswer>, CliError> {
+    if !defers_refresh(cli) {
+        return Ok(None);
+    }
+    let answer = route(cli, paths, |context, refresh| {
+        vulcan_daemon::process::request_routed_note_read(
+            context,
+            paths.vault_root(),
+            &vulcan_daemon::routed_reads::RoutedNoteRead {
+                request,
+                permissions: cli.permissions.clone(),
+                refresh,
+            },
+        )
+    })?;
+    if answer.is_none() {
+        let use_stderr_color = crate::resolve_use_color(
+            cli.color,
+            std::io::IsTerminal::is_terminal(&std::io::stderr()),
+        );
+        crate::maybe_auto_refresh_command_cache(paths, cli, use_stderr_color)?;
+    }
+    Ok(answer)
 }
 
 /// Ask the daemon with `ask` (given whether the caller wants a fresh

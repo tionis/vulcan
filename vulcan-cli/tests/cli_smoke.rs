@@ -9774,7 +9774,7 @@ fn routed_queries_print_what_direct_queries_print() {
         thread::sleep(std::time::Duration::from_millis(100));
     }
 
-    let cases: [&[&str]; 27] = [
+    let cases: [&[&str]; 33] = [
         &[
             "--output",
             "json",
@@ -9883,6 +9883,12 @@ fn routed_queries_print_what_direct_queries_print() {
             "Home",
             "Projects/Alpha",
         ],
+        &["--output", "json", "note", "info", "Home"],
+        &["note", "info", "Projects/Alpha"],
+        &["--output", "json", "note", "backlinks", "Projects/Alpha"],
+        &["note", "links", "Home"],
+        &["--output", "json", "backlinks", "Projects/Alpha"],
+        &["links", "Home"],
     ];
     for case in cases {
         let direct = vulcan(&[&["--route", "direct"], case].concat());

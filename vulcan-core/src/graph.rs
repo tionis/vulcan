@@ -77,7 +77,7 @@ impl From<PermissionError> for GraphQueryError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NoteMatchKind {
     Path,
@@ -85,7 +85,7 @@ pub enum NoteMatchKind {
     Alias,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResolutionStatus {
     External,
@@ -93,21 +93,21 @@ pub enum ResolutionStatus {
     Unresolved,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LineContext {
     pub line: usize,
     pub column: usize,
     pub text: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutgoingLinksReport {
     pub note_path: String,
     pub matched_by: NoteMatchKind,
     pub links: Vec<OutgoingLinkRecord>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutgoingLinkRecord {
     pub raw_text: String,
     pub link_kind: String,
@@ -120,14 +120,14 @@ pub struct OutgoingLinkRecord {
     pub context: Option<LineContext>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BacklinksReport {
     pub note_path: String,
     pub matched_by: NoteMatchKind,
     pub backlinks: Vec<BacklinkRecord>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BacklinkRecord {
     pub source_path: String,
     pub raw_text: String,
