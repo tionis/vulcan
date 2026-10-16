@@ -381,6 +381,9 @@ where
         shutdown: Some(Arc::clone(&stop)),
         ingress_shutdown: Some(Arc::clone(&ingress_stop)),
         routed_reads: Some(routed_reads.clone()),
+        api_tokens: Some(Arc::new(crate::api_tokens::ApiTokenStore::at(
+            &context.state_root,
+        ))),
     };
     let runtime = tokio::runtime::Handle::current();
     let scheduler = Arc::new(

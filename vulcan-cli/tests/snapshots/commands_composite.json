@@ -15086,6 +15086,106 @@
               }
             ],
             "subcommands": []
+          },
+          {
+            "about": "Manage API tokens for the daemon REST API",
+            "name": "token",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "Create an API token for one registered wiki and print it once",
+                "name": "create",
+                "options": [
+                  {
+                    "help": "Registered wiki ID",
+                    "id": "id",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "ID"
+                    ]
+                  },
+                  {
+                    "help": "Label to tell the token apart, such as the client that uses it",
+                    "id": "label",
+                    "long": "label",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "LABEL"
+                    ]
+                  },
+                  {
+                    "help": "Validate without creating or revealing a token",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "List API tokens without their secrets",
+                "name": "list",
+                "options": [
+                  {
+                    "help": "Only tokens of this registered wiki",
+                    "id": "id",
+                    "long": null,
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "ID"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Revoke one API token by its ID",
+                "name": "revoke",
+                "options": [
+                  {
+                    "help": "Token ID from `vault token list`",
+                    "id": "token_id",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "TOKEN_ID"
+                    ]
+                  },
+                  {
+                    "help": "Report the token without revoking it",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              }
+            ]
           }
         ]
       },

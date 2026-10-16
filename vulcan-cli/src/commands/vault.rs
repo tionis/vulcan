@@ -151,6 +151,7 @@ pub(crate) fn handle_vault_command(cli: &Cli, command: &VaultCommand) -> Result<
                 &SetupSteps::default(),
             )
         }
+        VaultCommand::Token(command) => handle_token_command(cli, &registry, command),
         VaultCommand::Remove { id, dry_run } => {
             let wiki = registry
                 .remove(&parse_id(id)?, *dry_run)
@@ -165,6 +166,142 @@ pub(crate) fn handle_vault_command(cli: &Cli, command: &VaultCommand) -> Result<
             )
         }
     }
+}
+
+/// A token in a listing, with the wiki it serves now.
+#[derive(Debug, serde::Serialize)]
+struct TokenListing {
+    #[serde(flatten)]
+    token: vulcan_daemon::api_tokens::ApiTokenSummary,
+    /// The registration this token was issued for no longer exists.
+    orphaned: bool,
+}
+
+fn handle_token_command(
+    cli: &Cli,
+    registry: &WikiRegistry,
+    command: &crate::cli::VaultTokenCommand,
+) -> Result<(), CliError> {
+    use crate::cli::VaultTokenCommand;
+    use vulcan_daemon::api_tokens::ApiTokenStore;
+
+    let context = vulcan_daemon::process::DaemonProcessContext::user_default()
+        .map_err(CliError::operation)?;
+    let store = ApiTokenStore::at(&context.state_root);
+    match command {
+        VaultTokenCommand::Create { id, label, dry_run } => {
+            let wiki = registry.show(&parse_id(id)?).map_err(CliError::operation)?;
+            let created = store
+                .create(
+                    wiki.registration.registration_id,
+                    wiki.registration.id.as_str(),
+                    label.as_deref(),
+                    *dry_run,
+                )
+                .map_err(CliError::operation)?;
+            if cli.output == OutputFormat::Json {
+                return print_json(&created);
+            }
+            match &created.token {
+                Some(token) => {
+                    println!(
+                        "Created API token {} for `{}`.",
+                        created.summary.id, wiki.registration.id
+                    );
+                    println!("{token}");
+                    println!(
+                        "This is the only time the token is shown; store it in the client now."
+                    );
+                }
+                None => println!("Would create an API token for `{}`.", wiki.registration.id),
+            }
+            Ok(())
+        }
+        VaultTokenCommand::List { id } => list_tokens(cli, registry, &store, id.as_deref()),
+        VaultTokenCommand::Revoke { token_id, dry_run } => {
+            let id = ulid::Ulid::from_string(token_id).map_err(|error| {
+                CliError::operation(format!("invalid API token ID `{token_id}`: {error}"))
+            })?;
+            let revoked = store.revoke(id, *dry_run).map_err(CliError::operation)?;
+            if cli.output == OutputFormat::Json {
+                return print_json(&serde_json::json!({
+                    "revoked": revoked,
+                    "dry_run": dry_run,
+                }));
+            }
+            if *dry_run {
+                println!(
+                    "Would revoke API token {} for `{}`.",
+                    revoked.id, revoked.wiki_id
+                );
+            } else {
+                println!(
+                    "Revoked API token {} for `{}`.",
+                    revoked.id, revoked.wiki_id
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+fn list_tokens(
+    cli: &Cli,
+    registry: &WikiRegistry,
+    store: &vulcan_daemon::api_tokens::ApiTokenStore,
+    id: Option<&str>,
+) -> Result<(), CliError> {
+    use vulcan_daemon::api_tokens::ApiTokenSummary;
+
+    let registrations = registry.load().map_err(CliError::operation)?.vaults;
+    let only = id.map(parse_id).transpose()?;
+    let tokens = store
+        .list()
+        .map_err(CliError::operation)?
+        .iter()
+        .map(|record| {
+            let current = registrations
+                .iter()
+                .find(|wiki| wiki.registration_id == record.registration_id);
+            let mut token = ApiTokenSummary::from(record);
+            if let Some(current) = current {
+                token.wiki_id = current.id.to_string();
+            }
+            TokenListing {
+                token,
+                orphaned: current.is_none(),
+            }
+        })
+        .filter(|listing| {
+            only.as_ref()
+                .is_none_or(|id| listing.token.wiki_id == id.as_str())
+        })
+        .collect::<Vec<_>>();
+    if cli.output == OutputFormat::Json {
+        return print_json(&tokens);
+    }
+    if tokens.is_empty() {
+        println!("No API tokens.");
+    }
+    for listing in &tokens {
+        println!(
+            "{} {}{}{}",
+            listing.token.id,
+            listing.token.wiki_id,
+            listing
+                .token
+                .label
+                .as_deref()
+                .map(|label| format!(" ({label})"))
+                .unwrap_or_default(),
+            if listing.orphaned {
+                " [registration removed]"
+            } else {
+                ""
+            }
+        );
+    }
+    Ok(())
 }
 
 fn print_recovery(output: OutputFormat, report: &RecoverWikiGitReport) -> Result<(), CliError> {

@@ -12,6 +12,7 @@ use crate::http_policy::{
     HeaderText, RequestAudit,
 };
 use crate::registry::{WikiId, WikiRegistry};
+use crate::rest::Principal;
 use crate::shutdown::ShutdownSignal;
 use crate::supervisor::SyncSupervisor;
 #[cfg(test)]
@@ -57,6 +58,8 @@ pub struct CompanionHttpState {
     pub ingress_shutdown: Option<Arc<ShutdownSignal>>,
     /// Vaults this daemon answers routed reads for; `None` disables them.
     pub routed_reads: Option<crate::routed_reads::RoutedReadRegistry>,
+    /// Per-vault API tokens; `None` accepts only the companion credential.
+    pub api_tokens: Option<Arc<crate::api_tokens::ApiTokenStore>>,
 }
 
 impl CompanionHttpState {
@@ -220,7 +223,7 @@ async fn authorize_request(
 
 async fn authorize_request_inner(
     state: &CompanionHttpState,
-    request: Request,
+    mut request: Request,
     next: Next,
     origin: Option<&str>,
     origin_valid: bool,
@@ -254,12 +257,27 @@ async fn authorize_request_inner(
         );
     }
 
-    if !is_events && !has_authorization(request.headers(), &state.credential) {
-        return api_error(
-            StatusCode::UNAUTHORIZED,
-            CompanionErrorKind::PermissionDenied,
-            "missing or invalid companion bearer credential",
-        );
+    if !is_events {
+        let principal = match resolve_principal(state, request.headers()).await {
+            Ok(principal) => principal,
+            Err(response) => return response,
+        };
+        if let Principal::Vault { wiki_id, .. } = &principal {
+            if !crate::rest::vault_principal_reaches(
+                request.method(),
+                request.uri().path(),
+                wiki_id,
+            ) {
+                // Not found rather than forbidden: a token cannot probe
+                // which other routes or vaults exist.
+                return api_error(
+                    StatusCode::NOT_FOUND,
+                    CompanionErrorKind::NotFound,
+                    "no such route for this API token",
+                );
+            }
+        }
+        request.extensions_mut().insert(principal);
     }
 
     let mutation = matches!(*request.method(), Method::POST | Method::DELETE);
@@ -296,8 +314,68 @@ fn has_protocol_version(headers: &HeaderMap) -> bool {
         .is_some_and(|value| value.as_bytes() == b"1")
 }
 
-fn has_authorization(headers: &HeaderMap, credential: &CompanionCredential) -> bool {
-    bearer_token(headers).is_some_and(|token| credential.authorizes(token))
+/// The principal a request's bearer credential proves: the companion
+/// credential acts for the device, an API token for its registration.
+async fn resolve_principal(
+    state: &CompanionHttpState,
+    headers: &HeaderMap,
+) -> Result<Principal, Response> {
+    let unauthorized = || {
+        api_error(
+            StatusCode::UNAUTHORIZED,
+            CompanionErrorKind::PermissionDenied,
+            "missing or invalid bearer credential",
+        )
+    };
+    let Some(token) = bearer_token(headers) else {
+        return Err(unauthorized());
+    };
+    if state.credential.authorizes(token) {
+        return Ok(Principal::Device);
+    }
+    let Some(store) = state
+        .api_tokens
+        .clone()
+        .filter(|_| crate::api_tokens::looks_like_api_token(token))
+    else {
+        return Err(unauthorized());
+    };
+    let token = token.to_string();
+    let registry = Arc::clone(&state.registry);
+    let resolved = tokio::task::spawn_blocking(move || {
+        let Some(record) = store
+            .authenticate(&token)
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(None);
+        };
+        let registration = registry
+            .load()
+            .map_err(|error| error.to_string())?
+            .vaults
+            .into_iter()
+            .find(|wiki| wiki.registration_id == record.registration_id);
+        Ok::<_, String>(registration.map(|wiki| Principal::Vault {
+            wiki_id: wiki.id.to_string(),
+            registration_id: wiki.registration_id,
+            token_id: record.id,
+        }))
+    })
+    .await;
+    match resolved {
+        Ok(Ok(Some(principal))) => Ok(principal),
+        Ok(Ok(None)) => Err(unauthorized()),
+        Ok(Err(detail)) => Err(api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            CompanionErrorKind::Internal,
+            format!("cannot check the API token: {detail}"),
+        )),
+        Err(error) => Err(api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            CompanionErrorKind::Internal,
+            format!("API token check failed: {error}"),
+        )),
+    }
 }
 
 fn idempotency_key(headers: &HeaderMap) -> Result<&str, ApiError> {
@@ -492,10 +570,12 @@ async fn shutdown(State(state): State<CompanionHttpState>) -> Result<Json<Value>
 
 async fn list_vaults(
     State(state): State<CompanionHttpState>,
+    Extension(principal): Extension<Principal>,
     query: Result<Query<VaultListQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let Query(query) = query.map_err(request_rejection)?;
-    let result = blocking(move || state.service().list_wikis(query.group.as_deref())).await?;
+    let mut result = blocking(move || state.service().list_wikis(query.group.as_deref())).await?;
+    result.retain(|wiki| principal.sees_wiki(wiki.registration.id.as_str()));
     Ok(Json(serde_json::to_value(result).map_err(json_error)?))
 }
 
@@ -946,6 +1026,9 @@ mod tests {
             shutdown: None,
             ingress_shutdown: None,
             routed_reads: None,
+            api_tokens: Some(Arc::new(crate::api_tokens::ApiTokenStore::at(
+                temporary.path().join("api-state"),
+            ))),
         };
         (temporary, state)
     }
@@ -958,6 +1041,126 @@ mod tests {
             .header(PROTOCOL_VERSION_HEADER, "1")
             .body(Body::empty())
             .expect("request")
+    }
+
+    fn token_request(token: &str, method: Method, uri: &str) -> HttpRequest<Body> {
+        HttpRequest::builder()
+            .method(method)
+            .uri(uri)
+            .header(AUTHORIZATION, format!("Bearer {token}"))
+            .header(PROTOCOL_VERSION_HEADER, "1")
+            .body(Body::empty())
+            .expect("request")
+    }
+
+    #[tokio::test]
+    async fn api_tokens_reach_only_their_own_vault_and_stop_when_revoked() {
+        let (temporary, state) = fixture();
+        let other = temporary.path().join("other");
+        std::fs::create_dir(&other).expect("other vault");
+        state
+            .registry
+            .add(
+                &AddWikiRequest {
+                    profile: None,
+                    id: WikiId::parse("other").expect("wiki id"),
+                    path: other,
+                    groups: vec![],
+                    git_dir: None,
+                    permissions_profile: None,
+                    sync_backend: Some("none".to_string()),
+                    platform_profile: None,
+                },
+                false,
+            )
+            .expect("register other wiki");
+        let notes = state
+            .registry
+            .show(&WikiId::parse("notes").unwrap())
+            .unwrap()
+            .registration;
+        let store = state.api_tokens.clone().unwrap();
+        let created = store
+            .create(notes.registration_id, "notes", Some("test"), false)
+            .unwrap();
+        let token = created.token.clone().unwrap();
+        let router = companion_router(state.clone());
+
+        let listed = router
+            .clone()
+            .oneshot(token_request(&token, Method::GET, "/vaults"))
+            .await
+            .unwrap();
+        assert_eq!(listed.status(), StatusCode::OK);
+        let listed = body_json(listed).await;
+        let ids = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|wiki| wiki["id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["notes"]);
+        // The companion credential still sees every vault.
+        let all = body_json(
+            router
+                .clone()
+                .oneshot(request(&state, Method::GET, "/vaults"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(all.as_array().unwrap().len(), 2);
+
+        for (method, uri) in [
+            (Method::GET, "/notes/sync/status"),
+            (Method::POST, "/notes/sync/pause"),
+            (Method::GET, "/other/sync/status"),
+            (Method::GET, "/other/search"),
+            (Method::POST, "/shutdown"),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(token_request(&token, method.clone(), uri))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {uri}");
+        }
+        let forged = format!("{}x", &token[..token.len() - 1]);
+        let response = router
+            .clone()
+            .oneshot(token_request(&forged, Method::GET, "/vaults"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        store.revoke(created.summary.id, false).unwrap();
+        let response = router
+            .clone()
+            .oneshot(token_request(&token, Method::GET, "/vaults"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn a_token_of_a_removed_registration_is_refused() {
+        let (_temporary, state) = fixture();
+        let notes_id = WikiId::parse("notes").unwrap();
+        let notes = state.registry.show(&notes_id).unwrap().registration;
+        let token = state
+            .api_tokens
+            .clone()
+            .unwrap()
+            .create(notes.registration_id, "notes", None, false)
+            .unwrap()
+            .token
+            .unwrap();
+        state.registry.remove(&notes_id, false).unwrap();
+        let response = companion_router(state)
+            .oneshot(token_request(&token, Method::GET, "/vaults"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     async fn body_json(response: Response) -> Value {

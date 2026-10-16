@@ -5212,10 +5212,12 @@ permissions_profile = "readonly"  # clamp all API requests for this vault to a n
 ```
 
 - [x] Vault registry config at `~/.config/vulcan/daemon.toml` (XDG_CONFIG_HOME respected), with synchronous atomic/locked access usable before the daemon runtime exists
-- [ ] Each vault entry: `id` (short name, URL-safe), `path`, `token` (argon2 hashed), optional `permissions_profile` (defaults to `unrestricted`, can point at any named profile from Phase 9.19.13)
+- [x] Each vault entry: `id` (short name, URL-safe), `path`, `token` (argon2 hashed), optional `permissions_profile` (defaults to `unrestricted`, can point at any named profile from Phase 9.19.13)
+  - Tokens are not fields of the registration: `vault list`/`show` JSON would expose them. They live in `daemon/api-tokens.json` in the state directory, any number per vault, bound to the registration ID. They are hashed with BLAKE3, not argon2: the secrets are 256 random bits, so a slow password hash adds per-request cost without adding resistance (`docs/specs/daemon-rest-api.md`).
 - [x] Add the top-level `vulcan vault` group as the canonical human and automation surface for managed wikis; keep daemon process configuration under `vulcan daemon config` rather than mixing lifecycle and wiki-management commands
 - [x] `vulcan vault add <id> <path>` — register an existing materialized vault without changing its files; support repeatable `--group <name>`, optional device-local Git-directory metadata, configured sync backend, JSON output, and `--dry-run`
-- [ ] Add per-vault daemon bearer-token generation/hashing when authenticated daemon routes are implemented; token material is not required for local registration or direct sync
+- [x] Add per-vault daemon bearer-token generation/hashing when authenticated daemon routes are implemented; token material is not required for local registration or direct sync
+  - `vulcan vault token create <wiki> [--label] [--dry-run]` prints `vat_<id>_<secret>` once; `vault token list [<wiki>]` shows IDs, labels, and orphaned tokens without secrets; `vault token revoke <id> [--dry-run]`. Tokens of a removed registration stop working, and re-adding a wiki with the same ID does not revive them.
 - [x] `vulcan vault list [--group <name>]` — list registered wikis with IDs, paths, local availability, index presence, Git presence, and configured sync backend
 - [ ] Extend `vulcan vault list` with retained live daemon/job/conflict health once those runtime states exist
 - [x] `vulcan vault show <id>` — report stable registration identity and device-local path, group, permission-profile, sync, availability, index, and Git metadata
@@ -5225,7 +5227,8 @@ permissions_profile = "readonly"  # clamp all API requests for this vault to a n
 - [x] Let direct `vulcan sync run --group <name>` and `--all` execute several independent wiki cycles with per-wiki results and explicit aggregate success/conflict/failure counts; never claim cross-repository atomicity
 - [ ] Let the daemon enqueue the same selected wiki/group/all operation as independent retained jobs once scheduling exists
 - [x] Give every local installation a stable device ULID and every registration a stable local ULID; define a later migration path to an optional shared wiki identity without making shared identity a prerequisite for ordinary local usage
-- [ ] Auth tokens stored outside vault content — avoids coupling auth to the data it protects
+- [x] Auth tokens stored outside vault content — avoids coupling auth to the data it protects
+  - The store is owner-only and refused if it is a symlink, oversized, or readable by others, like the companion credential. The daemon resolves a bearer to the device principal (companion credential) or a vault principal (API token). A vault principal reaches only its own vault's REST routes plus `GET /capabilities`, `/health`, `/vaults` (listing only its vault), and `/openapi.json`; sync administration, routed `ops`, jobs, events, and shutdown answer 404.
 - [ ] Token-authenticated daemon requests resolve to a vault plus a named permission profile; all endpoint authorization and result filtering reuse the existing `PermissionGuard` / `PermissionFilter` layer instead of adding daemon-specific policy logic
 - [ ] Vault auto-discovery: optionally scan a directory for vaults (e.g., `scan_dir = "/home/user/vaults"`)
 - [ ] Keep a future remote/catalog discovery adapter separate from the local registry. Prefer listing eligible Forgejo repositories or reading a small catalog of descriptors; do not make a metadata monorepo, Git submodules, credentials, local paths, pending operations, or wiki contents part of the initial registry contract

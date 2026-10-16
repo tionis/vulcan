@@ -6139,6 +6139,40 @@ pub enum VaultCommand {
         #[arg(long, help = "Validate and report without writing registry state")]
         dry_run: bool,
     },
+    #[command(
+        subcommand,
+        about = "Manage API tokens for the daemon REST API",
+        long_about = "Manage per-vault API tokens for the daemon REST API. A token reaches only its own vault's REST routes, under the registration's permission profile, and never sync administration. Tokens are stored hashed outside vault content; the secret is shown once, at creation."
+    )]
+    Token(VaultTokenCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum VaultTokenCommand {
+    #[command(about = "Create an API token for one registered wiki and print it once")]
+    Create {
+        #[arg(help = "Registered wiki ID")]
+        id: String,
+        #[arg(
+            long,
+            help = "Label to tell the token apart, such as the client that uses it"
+        )]
+        label: Option<String>,
+        #[arg(long, help = "Validate without creating or revealing a token")]
+        dry_run: bool,
+    },
+    #[command(about = "List API tokens without their secrets")]
+    List {
+        #[arg(help = "Only tokens of this registered wiki")]
+        id: Option<String>,
+    },
+    #[command(about = "Revoke one API token by its ID")]
+    Revoke {
+        #[arg(help = "Token ID from `vault token list`")]
+        token_id: String,
+        #[arg(long, help = "Report the token without revoking it")]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]

@@ -8,6 +8,7 @@
 
 pub mod alert_delivery;
 pub mod alerts;
+pub mod api_tokens;
 pub mod auto_commit_worker;
 pub mod clone;
 pub mod companion;
@@ -56,6 +57,7 @@ pub mod observation;
 pub mod preview;
 pub mod process;
 pub mod registry;
+pub mod rest;
 pub mod routed_reads;
 pub mod runtime;
 pub mod scan_runtime;

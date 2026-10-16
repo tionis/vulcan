@@ -40335,3 +40335,59 @@ fn git_batch_commit_previews_commits_and_honors_capture_ownership() {
         "3"
     );
 }
+
+#[test]
+fn vault_tokens_are_created_once_listed_without_secrets_and_revoked() {
+    let temporary = TempDir::new().expect("temp dir");
+    let config_home = temporary.path().join("config");
+    fs::create_dir(&config_home).expect("config home");
+    let config_home = config_home.to_str().expect("utf-8 config home").to_string();
+    let vault = temporary.path().join("vault");
+    fs::create_dir_all(&vault).expect("vault");
+    cargo_vulcan_with_xdg_config(&config_home)
+        .args(["vault", "add", "notes"])
+        .arg(&vault)
+        .arg("--no-sync")
+        .assert()
+        .success();
+    let json = |args: &[&str]| {
+        parse_stdout_json(
+            &cargo_vulcan_with_xdg_config(&config_home)
+                .args(["--output", "json", "vault", "token"])
+                .args(args)
+                .assert()
+                .success(),
+        )
+    };
+
+    let preview = json(&["create", "notes", "--dry-run"]);
+    assert_eq!(preview["dry_run"], true);
+    assert!(preview.get("token").is_none());
+    assert_eq!(json(&["list"]), serde_json::json!([]));
+
+    let created = json(&["create", "notes", "--label", "phone"]);
+    let token = created["token"].as_str().expect("token shown once");
+    assert!(token.starts_with("vat_"));
+    let id = created["id"].as_str().expect("token id").to_string();
+    let listed = json(&["list"]);
+    assert_eq!(listed[0]["id"], id.as_str());
+    assert_eq!(listed[0]["wiki_id"], "notes");
+    assert_eq!(listed[0]["label"], "phone");
+    assert_eq!(listed[0]["orphaned"], false);
+    let listing_text = listed.to_string();
+    assert!(!listing_text.contains(token.rsplit_once('_').unwrap().1));
+    assert!(!listing_text.contains("blake3"));
+
+    cargo_vulcan_with_xdg_config(&config_home)
+        .args(["vault", "remove", "notes"])
+        .assert()
+        .success();
+    assert_eq!(json(&["list"])[0]["orphaned"], true);
+    let revoked = json(&["revoke", &id]);
+    assert_eq!(revoked["revoked"]["id"], id.as_str());
+    assert_eq!(json(&["list"]), serde_json::json!([]));
+    cargo_vulcan_with_xdg_config(&config_home)
+        .args(["vault", "token", "create", "missing"])
+        .assert()
+        .failure();
+}
