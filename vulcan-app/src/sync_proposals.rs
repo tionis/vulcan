@@ -3718,13 +3718,14 @@ fn prepare_proposal_resolution(
             &tree,
             &parents,
             &format!(
-                "vulcan conflict proposal resolution\n\nVulcan-Conflict: {}\nVulcan-Proposal: {}\nVulcan-Resolution-Provider: {}\nVulcan-Resolution-Model: {}\nVulcan-Sync-Version: 2\nVulcan-Sync-Device: {device_id}\nVulcan-Sync-Policy: {}:{}\nVulcan-Sync-Source: {remote}+{local}\nVulcan-Sync-Semantic: false\n",
+                "vulcan conflict proposal resolution\n\nVulcan-Conflict: {}\nVulcan-Proposal: {}\nVulcan-Resolution-Provider: {}\nVulcan-Resolution-Model: {}\nVulcan-Sync-Version: 2\nVulcan-Sync-Device: {device_id}\nVulcan-Sync-Policy: {}:{}\nVulcan-Sync-Source: {remote}+{local}\nVulcan-Sync-Semantic: false\n{}",
                 record.id,
                 proposal.proposal_id,
                 proposal.provider,
                 proposal.model,
                 record.policy_version,
                 record.policy_hash,
+                crate::sync::scoped_live_trailers(engine, repository)?,
             ),
         )
         .map_err(AppError::operation)?;

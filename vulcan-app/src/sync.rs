@@ -2255,6 +2255,23 @@ fn worktree_scope_from_config(
         .map_err(AppError::operation)
 }
 
+/// Namespace and scope provenance a path-scoped live commit written outside
+/// a sync cycle carries; empty for a repository without a worktree scope,
+/// whose resolution commits keep their historical trailers.
+pub(crate) fn scoped_live_trailers(
+    engine: &dyn GitEngine,
+    repository: &vulcan_sync::GitRepository,
+) -> Result<String, AppError> {
+    if repository.worktree_scope.is_none() {
+        return Ok(String::new());
+    }
+    Ok(format!(
+        "Vulcan-Ref-Namespace: {}\n{}",
+        vulcan_sync::git_ref_namespace_version(repository),
+        vulcan_sync::git_scope_trailers(engine, repository).map_err(AppError::operation)?
+    ))
+}
+
 /// Discovers the repository holding `path` with the path scope the vault's
 /// configuration selects, so resolution and maintenance workflows read and
 /// write the worktree exactly as a sync cycle does.
@@ -6881,6 +6898,22 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             .expect("conflict record")
             .id
             .clone();
+        let live_message = |remote: &Path| {
+            git_stdout(
+                remote,
+                &["log", "-1", "--format=%B", "refs/heads/__vulcan-sync/live"],
+            )
+        };
+        for trailer in [
+            "Vulcan-Ref-Namespace: 4",
+            "Vulcan-Sync-Scope: ",
+            "Vulcan-Sync-Scope-Branch: ",
+        ] {
+            assert!(
+                live_message(&remote).contains(trailer),
+                "the preserved conflict record carries `{trailer}`"
+            );
+        }
 
         crate::sync_conflicts::resolve_sync_conflict_with_state_store(
             &VaultPaths::new(&reader),
@@ -6896,6 +6929,16 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             &reader_store,
         )
         .expect("resolve with the local side");
+        for trailer in [
+            "Vulcan-Ref-Namespace: 4",
+            "Vulcan-Sync-Scope: ",
+            "Vulcan-Sync-Scope-Branch: ",
+        ] {
+            assert!(
+                live_message(&remote).contains(trailer),
+                "the resolution carries `{trailer}`"
+            );
+        }
 
         assert_eq!(
             fs::read_to_string(reader.join("wiki/Note.md")).expect("note"),

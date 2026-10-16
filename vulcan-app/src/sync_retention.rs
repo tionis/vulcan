@@ -12,7 +12,7 @@ use vulcan_core::VaultPaths;
 use vulcan_sync::{
     find_git_live_epoch, git_live_epoch_id, git_published_branch_tip, local_epoch_ref,
     remote_epoch_ref, GitEngine, GitOid, GitPushResult, GitRefCreateResult, GitRefDeleteResult,
-    GitRefName, GitReference, GitRemote, GitSyncOptions, GitSyncRefs, VULCAN_REF_NAMESPACE_VERSION,
+    GitRefName, GitReference, GitRemote, GitSyncOptions, GitSyncRefs,
 };
 
 pub const SYNC_RETENTION_PLAN_VERSION: u32 = 2;
@@ -504,26 +504,29 @@ fn rollover_live_epoch(
         &local_archive_ref,
         &remote_archive_ref,
     )?;
+    let published = git_published_branch_tip(engine, repository).map_err(AppError::operation)?;
+    let namespace = vulcan_sync::git_ref_namespace_version(repository);
+    let scope = vulcan_sync::git_scope_trailers_for(repository, published.as_ref());
     let root = engine
         .create_reproducible_commit(
             repository,
             &previous_tree,
             &[],
             &format!(
-                "vulcan live epoch root\n\nVulcan-Sync-Version: 2\nVulcan-Ref-Namespace: {VULCAN_REF_NAMESPACE_VERSION}\nVulcan-Sync-Epoch: {epoch_id}\nVulcan-Sync-Previous-Epoch: {previous}\nVulcan-Sync-Epoch-Archive: {remote_archive_ref}\nVulcan-Sync-Profile: {profile}\nVulcan-Sync-Semantic: false\n"
+                "vulcan live epoch root\n\nVulcan-Sync-Version: 2\nVulcan-Ref-Namespace: {namespace}\nVulcan-Sync-Epoch: {epoch_id}\nVulcan-Sync-Previous-Epoch: {previous}\nVulcan-Sync-Epoch-Archive: {remote_archive_ref}\nVulcan-Sync-Profile: {profile}\nVulcan-Sync-Semantic: false\n{scope}"
             ),
         )
         .map_err(AppError::operation)?;
     // Epoch roots stay parentless; a reproducible same-tree commit keeps the
     // published branch an ancestor of live across the rollover.
-    let live = match git_published_branch_tip(engine, repository).map_err(AppError::operation)? {
+    let live = match published {
         Some(branch) => engine
             .create_reproducible_commit(
                 repository,
                 &previous_tree,
                 &[root.clone(), branch.clone()],
                 &format!(
-                    "vulcan live snapshot\n\nVulcan-Sync-Version: 2\nVulcan-Ref-Namespace: {VULCAN_REF_NAMESPACE_VERSION}\nVulcan-Sync-Profile: {profile}\nVulcan-Sync-Source: {root}\nVulcan-Sync-Semantic: false\nVulcan-Sync-Branch-Link: {branch}\n"
+                    "vulcan live snapshot\n\nVulcan-Sync-Version: 2\nVulcan-Ref-Namespace: {namespace}\nVulcan-Sync-Profile: {profile}\nVulcan-Sync-Source: {root}\nVulcan-Sync-Semantic: false\nVulcan-Sync-Branch-Link: {branch}\n{scope}"
                 ),
             )
             .map_err(AppError::operation)?,

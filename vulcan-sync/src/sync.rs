@@ -3681,6 +3681,8 @@ fn reconcile_epoch_root(
             epoch.id, bridge_parent
         ),
     )?;
+    let normalized = normalize_scoped_capture(engine, options, report, capture, &bridge)?;
+    let capture = normalized.as_ref().unwrap_or(capture);
     let mut merge = engine.merge_commits(&report.repository, &bridge, &capture.commit)?;
     let tree = resolve_merge_candidate_tree(
         engine,
@@ -3713,10 +3715,11 @@ fn reconcile_epoch_root(
         &tree,
         std::slice::from_ref(&remote_live),
         &format!(
-            "vulcan live epoch reconciliation\n\n{}Vulcan-Sync-Rebased-Epoch: {}\nVulcan-Sync-Rebased-From: {}\n",
+            "vulcan live epoch reconciliation\n\n{}Vulcan-Sync-Rebased-Epoch: {}\nVulcan-Sync-Rebased-From: {}\n{}",
             sync_trailers(&report.refs, options, capture.commit.as_str()),
             epoch.id,
-            bridge_parent
+            bridge_parent,
+            git_scope_trailers(engine, &report.repository)?
         ),
     )?;
     require_accepted_platform(engine, options, report, &rebased)?;
@@ -5117,12 +5120,13 @@ fn preserve_conflict_refs(
         &tree,
         &[remote.clone(), local.clone()],
         &format!(
-            "vulcan preserved conflict\n\nVulcan-Conflict: {id}\n{base_trailer}{}",
+            "vulcan preserved conflict\n\nVulcan-Conflict: {id}\n{base_trailer}{}{}",
             sync_trailers(
                 &refs,
                 options,
                 &format!("{remote}+{local};policy={policy_hash}"),
-            )
+            ),
+            git_scope_trailers(engine, repository)?
         ),
     )?;
     preserve_exact_ref(engine, repository, &record_ref, &provenance_revision)?;
@@ -5179,16 +5183,53 @@ fn snapshot_message(
 /// Path-scoped provenance: the scope identity and the published branch tip
 /// whose tree supplied every unscoped path. Empty in the other modes.
 fn scope_trailers(options: &GitSyncOptions, published: Option<&GitOid>) -> String {
-    let Some(scope) = options
-        .scope
-        .as_ref()
-        .filter(|_| options.worktree == WorktreeSyncMode::Paths)
-    else {
+    scope_trailer_lines(
+        options
+            .scope
+            .as_ref()
+            .filter(|_| options.worktree == WorktreeSyncMode::Paths),
+        published,
+    )
+}
+
+fn scope_trailer_lines(scope: Option<&GitWorktreeScope>, published: Option<&GitOid>) -> String {
+    let Some(scope) = scope else {
         return String::new();
     };
     let published =
         published.map_or_else(String::new, |tip| format!("{SCOPE_TIP_TRAILER}: {tip}\n"));
     format!("{SCOPE_TRAILER}: {}\n{published}", scope.hash())
+}
+
+/// The ref namespace version a live commit for `repository` declares.
+#[must_use]
+pub fn git_ref_namespace_version(repository: &GitRepository) -> u32 {
+    if repository.worktree_scope.is_some() {
+        PATH_SCOPED_REF_NAMESPACE_VERSION
+    } else {
+        VULCAN_REF_NAMESPACE_VERSION
+    }
+}
+
+/// Scope provenance for a live commit written outside a sync cycle (conflict
+/// resolution, proposal approval, epoch rollover): the scope hash and the
+/// published branch tip. Empty for a repository without a worktree scope.
+pub fn git_scope_trailers(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+) -> Result<String, GitSyncError> {
+    let Some(scope) = &repository.worktree_scope else {
+        return Ok(String::new());
+    };
+    let published = git_published_branch_tip(engine, repository)?;
+    Ok(scope_trailer_lines(Some(scope), published.as_ref()))
+}
+
+/// [`git_scope_trailers`] with an explicit published tip, for reproducible
+/// commits that must not depend on when they were created.
+#[must_use]
+pub fn git_scope_trailers_for(repository: &GitRepository, published: Option<&GitOid>) -> String {
+    scope_trailer_lines(repository.worktree_scope.as_ref(), published)
 }
 
 const SCOPE_TRAILER: &str = "Vulcan-Sync-Scope";

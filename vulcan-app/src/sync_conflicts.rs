@@ -1640,12 +1640,13 @@ fn resolve_sync_conflict_group_batch(
             &tree,
             std::slice::from_ref(current),
             &format!(
-                "vulcan conflict batch resolution\n\nVulcan-Conflict: {}\nVulcan-Conflict-Batch: {batch_id}\nVulcan-Conflict-Selection: {}\n{method_trailer}\nVulcan-Sync-Version: 2\nVulcan-Sync-Device: {}\nVulcan-Sync-Policy: {}:{}\nVulcan-Sync-Source: {current}\nVulcan-Sync-Semantic: false\n",
+                "vulcan conflict batch resolution\n\nVulcan-Conflict: {}\nVulcan-Conflict-Batch: {batch_id}\nVulcan-Conflict-Selection: {}\n{method_trailer}\nVulcan-Sync-Version: 2\nVulcan-Sync-Device: {}\nVulcan-Sync-Policy: {}:{}\nVulcan-Sync-Source: {current}\nVulcan-Sync-Semantic: false\n{}",
                 record.id,
                 conflict_group_selection_digest(group_ids),
                 device_id.as_str(),
                 record.policy_version,
                 record.policy_hash,
+                crate::sync::scoped_live_trailers(engine, repository)?,
             ),
         )
         .map_err(AppError::operation)?;
@@ -2827,14 +2828,15 @@ fn prepare_resolution(
             &tree,
             &parents,
             &format!(
-                "vulcan conflict resolution\n\nVulcan-Conflict: {}\nVulcan-Resolution-Side: {}\nVulcan-Sync-Version: 2\nVulcan-Sync-Device: {}\nVulcan-Sync-Policy: {}:{}\nVulcan-Sync-Source: {}+{}\nVulcan-Sync-Semantic: false\n",
+                "vulcan conflict resolution\n\nVulcan-Conflict: {}\nVulcan-Resolution-Side: {}\nVulcan-Sync-Version: 2\nVulcan-Sync-Device: {}\nVulcan-Sync-Policy: {}:{}\nVulcan-Sync-Source: {}+{}\nVulcan-Sync-Semantic: false\n{}",
                 record.id,
                 resolution_side_name(options.side),
                 device_id.as_str(),
                 record.policy_version,
                 record.policy_hash,
                 remote,
-                local
+                local,
+                crate::sync::scoped_live_trailers(engine, repository)?,
             ),
         )
         .map_err(AppError::operation)?;

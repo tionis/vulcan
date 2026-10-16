@@ -7622,6 +7622,115 @@ fn sync_advertise_signs_with_a_configured_signer() {
 }
 
 #[test]
+fn path_scoped_epoch_rollover_keeps_scope_provenance_and_reconciles_offline_notes() {
+    let temporary = TempDir::new().expect("temp dir");
+    let state_home = temporary.path().join("state");
+    let remote = temporary.path().join("remote.git");
+    run_git_ok(
+        temporary.path(),
+        &[
+            "init",
+            "--quiet",
+            "--bare",
+            remote.to_str().expect("remote"),
+        ],
+    );
+    let writer = temporary.path().join("writer");
+    fs::create_dir_all(writer.join(".vulcan")).expect("writer");
+    fs::create_dir_all(writer.join("wiki")).expect("wiki");
+    init_git_repo(&writer);
+    run_git_ok(
+        &writer,
+        &["remote", "add", "origin", remote.to_str().expect("remote")],
+    );
+    fs::write(writer.join(".gitignore"), ".vulcan/cache.db*\n").expect("ignore");
+    fs::write(
+        writer.join(".vulcan/config.toml"),
+        "[sync]\nworktree = \"paths\"\npaths = [\"wiki\"]\n",
+    )
+    .expect("config");
+    fs::write(writer.join("wiki/Home.md"), "base\n").expect("note");
+    fs::write(writer.join("run.sh"), "echo v1\n").expect("script");
+    commit_all(&writer, "Base");
+    run_git_ok(&writer, &["push", "--quiet", "-u", "origin", "main"]);
+    let sync = |vault: &std::path::Path| {
+        Command::cargo_bin("vulcan")
+            .expect("binary")
+            .env("XDG_STATE_HOME", &state_home)
+            .arg("--vault")
+            .arg(vault)
+            .args(["--output", "json", "sync", "run"])
+            .assert()
+            .success()
+    };
+    let reader = temporary.path().join("reader");
+    clone_git_repo(temporary.path(), &writer, &reader);
+    run_git_ok(
+        &reader,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            remote.to_str().expect("remote"),
+        ],
+    );
+    fs::write(writer.join("wiki/Writer.md"), "writer note\n").expect("writer note");
+    sync(&writer);
+    sync(&reader);
+    fs::write(writer.join("wiki/Second.md"), "second writer note\n").expect("second note");
+    sync(&writer);
+    fs::write(reader.join("wiki/Reader.md"), "offline note\n").expect("offline note");
+    fs::write(reader.join("run.sh"), "echo reader wip\n").expect("reader script");
+
+    let rollover = Command::cargo_bin("vulcan")
+        .expect("binary")
+        .env("XDG_STATE_HOME", &state_home)
+        .arg("--vault")
+        .arg(&writer)
+        .args([
+            "--output",
+            "json",
+            "sync",
+            "retention-apply",
+            "--live-epoch-max-commits",
+            "1",
+            "--rollover",
+        ])
+        .assert()
+        .success();
+    assert_eq!(parse_stdout_json(&rollover)["epoch_rollover_applied"], true);
+    let live_message =
+        |reference: &str| run_git_stdout(&remote, &["log", "-1", "--format=%B", reference]);
+    let rolled = live_message("refs/heads/__vulcan-sync/live");
+    for trailer in [
+        "Vulcan-Ref-Namespace: 4",
+        "Vulcan-Sync-Scope: ",
+        "Vulcan-Sync-Scope-Branch: ",
+    ] {
+        assert!(
+            rolled.contains(trailer),
+            "rollover tip lacks `{trailer}`: {rolled}"
+        );
+    }
+
+    sync(&reader);
+
+    for note in ["Writer.md", "Second.md", "Reader.md"] {
+        assert!(reader.join("wiki").join(note).exists(), "{note}");
+    }
+    assert_eq!(
+        fs::read_to_string(reader.join("run.sh")).expect("script"),
+        "echo reader wip\n"
+    );
+    let reconciled = live_message("refs/heads/__vulcan-sync/live");
+    assert!(reconciled.contains("Vulcan-Sync-Scope: "), "{reconciled}");
+    assert_eq!(
+        run_git_stdout(&remote, &["show", "refs/heads/__vulcan-sync/live:run.sh"]),
+        "echo v1"
+    );
+}
+
+#[test]
 fn sync_epoch_rollover_reconciles_an_offline_device_without_retaining_old_live_ancestry() {
     let temporary = TempDir::new().expect("temp dir");
     let state_home = temporary.path().join("state");

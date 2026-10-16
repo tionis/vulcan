@@ -77,15 +77,15 @@ pub use refs::{
 pub use scope::{GitWorktreeScope, GitWorktreeScopeError};
 pub use sync::{
     classify_git_sync_error, find_git_live_epoch, git_live_epoch_id, git_published_branch_tip,
-    merge_carried_path, sync_conflict_id, sync_git_once, sync_git_once_with_control,
-    GitAutomaticMergeValidation, GitAutomaticResolution, GitAutomaticResolutionValidation,
-    GitAutomaticValidationCheck, GitBranchSync, GitBranchSyncAction, GitCarriedPath,
-    GitConflictClass, GitConflictClassification, GitConflictProjection, GitConflictRefs,
-    GitConflictScope, GitDeviceBackup, GitDeviceBackupOutcome, GitLiveEpoch, GitRemoteObservation,
-    GitSyncAction, GitSyncBackend, GitSyncConflict, GitSyncDeviceId, GitSyncDeviceIdKind,
-    GitSyncError, GitSyncObserver, GitSyncObserverError, GitSyncOptions, GitSyncOutcome,
-    GitSyncPause, GitSyncPauseReason, GitSyncPhase, GitSyncPreview, GitSyncPreviewFileState,
-    GitSyncProgress, GitSyncRefs, GitSyncReport, IgnoreGitSyncProgress, SyncCancellationToken,
-    WorktreeSyncMode,
+    git_ref_namespace_version, git_scope_trailers, git_scope_trailers_for, merge_carried_path,
+    sync_conflict_id, sync_git_once, sync_git_once_with_control, GitAutomaticMergeValidation,
+    GitAutomaticResolution, GitAutomaticResolutionValidation, GitAutomaticValidationCheck,
+    GitBranchSync, GitBranchSyncAction, GitCarriedPath, GitConflictClass,
+    GitConflictClassification, GitConflictProjection, GitConflictRefs, GitConflictScope,
+    GitDeviceBackup, GitDeviceBackupOutcome, GitLiveEpoch, GitRemoteObservation, GitSyncAction,
+    GitSyncBackend, GitSyncConflict, GitSyncDeviceId, GitSyncDeviceIdKind, GitSyncError,
+    GitSyncObserver, GitSyncObserverError, GitSyncOptions, GitSyncOutcome, GitSyncPause,
+    GitSyncPauseReason, GitSyncPhase, GitSyncPreview, GitSyncPreviewFileState, GitSyncProgress,
+    GitSyncRefs, GitSyncReport, IgnoreGitSyncProgress, SyncCancellationToken, WorktreeSyncMode,
 };
 pub use tree_ignore::{tree_ignores, worktree_ignores, OBSIDIAN_DEVICE_FILES};
