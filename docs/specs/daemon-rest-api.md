@@ -101,7 +101,12 @@ A registered vault the daemon does not index (files-only, or while the daemon st
 
 ### History (11.2)
 
-History needs the profile's Git permission and applies the read filter to every path it names.
+History reads Git, not the cache, so it works for any registered vault with a repository. It needs
+the profile's Git permission and applies the read filter to the path it names. Whole-vault history
+and uncommitted whole-vault diffs need a profile that reads every note, because they name every
+changed file. Commit messages are returned as written and may mention other files; a restricted
+profile that must not learn other paths should not be given Git access. Revisions are hexadecimal
+commit IDs only (4 to 64 digits), so no ref expression or option-like text reaches Git.
 
 - `GET /{id}/history?limit=...`: recent commits (`vulcan git log`).
 - `GET /{id}/history/{path}?limit=...`: commits that touched one file.

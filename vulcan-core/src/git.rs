@@ -538,6 +538,64 @@ pub fn git_log(
     collect_git_log(vault_root, limit, Some(&file_path))
 }
 
+/// A commit ID as callers may name one: 4 to 64 hexadecimal digits. Refusing
+/// anything else keeps option-like or ref-expression input away from Git.
+fn validate_revision(revision: &str) -> Result<&str, GitError> {
+    if (4..=64).contains(&revision.len()) && revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(revision)
+    } else {
+        Err(GitError::CommandFailed(format!(
+            "`{revision}` is not a commit ID; use 4 to 64 hexadecimal digits"
+        )))
+    }
+}
+
+/// The content of vault-relative `file_path` at commit `revision`.
+pub fn git_show_file_at(
+    vault_root: &Path,
+    file_path: &str,
+    revision: &str,
+) -> Result<String, GitError> {
+    ensure_git_repo(vault_root)?;
+    let file_path = validate_git_path(file_path)?;
+    if path_is_excluded(&file_path, &[]) {
+        return Err(GitError::CommandFailed(format!(
+            "refusing to read an internal path: {file_path}"
+        )));
+    }
+    let revision = validate_revision(revision)?;
+    // `./` makes the path relative to the vault, not the repository root.
+    run_git_capture(vault_root, |command| {
+        command.arg("show").arg(format!("{revision}:./{file_path}"));
+    })
+}
+
+/// The diff of vault-relative `file_path` from commit `from` to commit `to`,
+/// or to the working tree when `to` is `None`.
+pub fn git_diff_revisions(
+    vault_root: &Path,
+    file_path: &str,
+    from: &str,
+    to: Option<&str>,
+) -> Result<String, GitError> {
+    ensure_git_repo(vault_root)?;
+    let file_path = validate_git_path(file_path)?;
+    if path_is_excluded(&file_path, &[]) {
+        return Err(GitError::CommandFailed(format!(
+            "refusing to diff an internal path: {file_path}"
+        )));
+    }
+    let from = validate_revision(from)?;
+    let to = to.map(validate_revision).transpose()?;
+    run_git_capture(vault_root, |command| {
+        command.args(["diff", "--no-color", "--relative", from]);
+        if let Some(to) = to {
+            command.arg(to);
+        }
+        command.arg("--").arg(&file_path);
+    })
+}
+
 pub fn git_recent_log(vault_root: &Path, limit: usize) -> Result<Vec<GitLogEntry>, GitError> {
     ensure_git_repo(vault_root)?;
     collect_git_log(vault_root, limit, None)
@@ -1287,6 +1345,42 @@ mod tests {
         assert!(batch_commit_patches(root, &candidates, 16)
             .expect("patches")
             .is_none());
+    }
+
+    #[test]
+    fn files_are_read_and_diffed_at_named_commits_only() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let root = temp_dir.path();
+        init_git_repo(root);
+        fs::write(root.join("Home.md"), "first\n").expect("first");
+        commit_all(root, "First");
+        let first = git_stdout(root, &["rev-parse", "HEAD"]).trim().to_string();
+        fs::write(root.join("Home.md"), "second\n").expect("second");
+        commit_all(root, "Second");
+        let second = git_stdout(root, &["rev-parse", "HEAD"]).trim().to_string();
+
+        assert_eq!(
+            git_show_file_at(root, "Home.md", &first).unwrap(),
+            "first\n"
+        );
+        assert_eq!(
+            git_show_file_at(root, "Home.md", &second[..8]).unwrap(),
+            "second\n"
+        );
+        let diff = git_diff_revisions(root, "Home.md", &first, Some(&second)).unwrap();
+        assert!(diff.contains("-first") && diff.contains("+second"));
+        fs::write(root.join("Home.md"), "third\n").expect("third");
+        let to_work_tree = git_diff_revisions(root, "Home.md", &second, None).unwrap();
+        assert!(to_work_tree.contains("+third"));
+
+        for revision in ["HEAD", "--output=/tmp/x", "main~1", "abc"] {
+            assert!(
+                git_show_file_at(root, "Home.md", revision).is_err(),
+                "{revision}"
+            );
+        }
+        assert!(git_show_file_at(root, "../outside.md", &first).is_err());
+        assert!(git_show_file_at(root, ".vulcan/config.toml", &first).is_err());
     }
 
     #[test]

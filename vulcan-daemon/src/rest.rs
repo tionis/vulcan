@@ -95,6 +95,10 @@ pub(crate) fn routes() -> Router<CompanionHttpState> {
         .route("/{id}/links/{*path}", get(links))
         .route("/{id}/backlinks/{*path}", get(backlinks))
         .route("/{id}/graph/{report}", get(graph))
+        .route("/{id}/history", get(history))
+        .route("/{id}/history/{*path}", get(file_history))
+        .route("/{id}/diff", get(diff))
+        .route("/{id}/diff/{*path}", get(file_diff))
 }
 
 /// A REST failure, in the companion error shape.
@@ -492,6 +496,206 @@ async fn graph(
     .await
 }
 
+/// History and diffs work on any registered vault with Git, indexed or not:
+/// they read Git, not the cache.
+const MAX_HISTORY_LIMIT: usize = 500;
+
+/// Runs `read` on a blocking thread for a registered vault under its
+/// registration's profile, after checking that the profile allows Git.
+async fn read_git<F>(
+    state: &CompanionHttpState,
+    principal: &Principal,
+    id: &str,
+    read: F,
+) -> Result<Json<Value>, RestError>
+where
+    F: FnOnce(&vulcan_core::VaultPaths, &ProfilePermissionGuard) -> Result<Value, RestError>
+        + Send
+        + 'static,
+{
+    if !principal.sees_wiki(id) {
+        return Err(RestError::new(
+            StatusCode::NOT_FOUND,
+            format!("unknown vault `{id}`"),
+        ));
+    }
+    let registry = Arc::clone(&state.registry);
+    let id = id.to_string();
+    tokio::task::spawn_blocking(move || {
+        let config = registry.poll().map_err(|error| {
+            RestError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+        })?;
+        let wiki = config
+            .vaults
+            .into_iter()
+            .find(|wiki| wiki.id.as_str() == id)
+            .ok_or_else(|| {
+                RestError::new(StatusCode::NOT_FOUND, format!("unknown vault `{id}`"))
+            })?;
+        let paths = vulcan_core::VaultPaths::new(&wiki.path);
+        let profile = vulcan_core::resolve_permission_profile(
+            &paths,
+            Some(
+                wiki.permissions_profile
+                    .as_deref()
+                    .unwrap_or("unrestricted"),
+            ),
+        )
+        .map_err(|error| RestError::from_message(error.to_string()))?;
+        let guard = ProfilePermissionGuard::new(&paths, profile);
+        guard
+            .check_git()
+            .map_err(|error| RestError::new(StatusCode::FORBIDDEN, error.to_string()))?;
+        read(&paths, &guard).map(Json)
+    })
+    .await
+    .map_err(|error| RestError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+}
+
+/// Whole-vault history and diffs name every changed file, so they need a
+/// profile that reads every note.
+fn require_unrestricted_read(guard: &ProfilePermissionGuard) -> Result<(), RestError> {
+    if guard.read_filter().path_permission().is_unrestricted() {
+        Ok(())
+    } else {
+        Err(RestError::new(
+            StatusCode::FORBIDDEN,
+            "whole-vault history and diffs need a permission profile that reads every note; ask for one file instead",
+        ))
+    }
+}
+
+fn require_readable(guard: &ProfilePermissionGuard, path: &str) -> Result<(), RestError> {
+    guard
+        .check_read_path(path)
+        .map_err(|error| RestError::new(StatusCode::FORBIDDEN, error.to_string()))
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HistoryQuery {
+    limit: Option<usize>,
+    /// For one file: return its content at this commit instead of its log.
+    at: Option<String>,
+}
+
+fn history_limit(limit: Option<usize>) -> usize {
+    limit.unwrap_or(20).clamp(1, MAX_HISTORY_LIMIT)
+}
+
+/// `GET /{id}/history`: recent commits, as `vulcan git log` lists them.
+async fn history(
+    State(state): State<CompanionHttpState>,
+    Extension(principal): Extension<Principal>,
+    Path(id): Path<String>,
+    query: Result<Query<HistoryQuery>, axum::extract::rejection::QueryRejection>,
+) -> Result<Json<Value>, RestError> {
+    let Query(query) =
+        query.map_err(|error| RestError::new(StatusCode::BAD_REQUEST, error.body_text()))?;
+    if query.at.is_some() {
+        return Err(RestError::new(
+            StatusCode::BAD_REQUEST,
+            "`at` names a commit of one file: use /{id}/history/{path}?at=<commit>",
+        ));
+    }
+    let limit = history_limit(query.limit);
+    read_git(&state, &principal, &id, move |paths, guard| {
+        require_unrestricted_read(guard)?;
+        let entries = vulcan_core::git_recent_log(paths.vault_root(), limit)
+            .map_err(|error| RestError::from_message(error.to_string()))?;
+        Ok(json!({ "limit": limit, "entries": entries }))
+    })
+    .await
+}
+
+/// `GET /{id}/history/{path}`: one file's commits, or with `at`, its content
+/// at that commit.
+async fn file_history(
+    State(state): State<CompanionHttpState>,
+    Extension(principal): Extension<Principal>,
+    Path((id, path)): Path<(String, String)>,
+    query: Result<Query<HistoryQuery>, axum::extract::rejection::QueryRejection>,
+) -> Result<Json<Value>, RestError> {
+    let Query(query) =
+        query.map_err(|error| RestError::new(StatusCode::BAD_REQUEST, error.body_text()))?;
+    let path = vault_relative(&path)?;
+    let limit = history_limit(query.limit);
+    read_git(&state, &principal, &id, move |paths, guard| {
+        require_readable(guard, &path)?;
+        if let Some(revision) = query.at {
+            let content = vulcan_core::git_show_file_at(paths.vault_root(), &path, &revision)
+                .map_err(|error| RestError::from_message(error.to_string()))?;
+            return Ok(json!({ "path": path, "revision": revision, "content": content }));
+        }
+        let entries = vulcan_core::git_log(paths.vault_root(), &path, limit)
+            .map_err(|error| RestError::from_message(error.to_string()))?;
+        Ok(json!({ "path": path, "limit": limit, "entries": entries }))
+    })
+    .await
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DiffQuery {
+    path: Option<String>,
+}
+
+/// `GET /{id}/diff`: uncommitted changes, as `vulcan git diff` shows them.
+async fn diff(
+    State(state): State<CompanionHttpState>,
+    Extension(principal): Extension<Principal>,
+    Path(id): Path<String>,
+    query: Result<Query<DiffQuery>, axum::extract::rejection::QueryRejection>,
+) -> Result<Json<Value>, RestError> {
+    let Query(query) =
+        query.map_err(|error| RestError::new(StatusCode::BAD_REQUEST, error.body_text()))?;
+    let path = query.path.as_deref().map(vault_relative).transpose()?;
+    read_git(&state, &principal, &id, move |paths, guard| {
+        match &path {
+            Some(path) => require_readable(guard, path)?,
+            None => require_unrestricted_read(guard)?,
+        }
+        let diff = vulcan_core::git_diff(paths.vault_root(), path.as_deref())
+            .map_err(|error| RestError::from_message(error.to_string()))?;
+        Ok(json!({ "path": path, "diff": diff }))
+    })
+    .await
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RevisionRangeQuery {
+    from: Option<String>,
+    to: Option<String>,
+}
+
+/// `GET /{id}/diff/{path}?from=<commit>&to=<commit>`: one file between two
+/// commits, or from `from` to the working tree when `to` is absent.
+async fn file_diff(
+    State(state): State<CompanionHttpState>,
+    Extension(principal): Extension<Principal>,
+    Path((id, path)): Path<(String, String)>,
+    query: Result<Query<RevisionRangeQuery>, axum::extract::rejection::QueryRejection>,
+) -> Result<Json<Value>, RestError> {
+    let Query(query) =
+        query.map_err(|error| RestError::new(StatusCode::BAD_REQUEST, error.body_text()))?;
+    let path = vault_relative(&path)?;
+    let Some(from) = query.from else {
+        return Err(RestError::new(
+            StatusCode::BAD_REQUEST,
+            "a file diff needs `from` (and optionally `to`) commits; use /{id}/diff?path= for uncommitted changes",
+        ));
+    };
+    let to = query.to;
+    read_git(&state, &principal, &id, move |paths, guard| {
+        require_readable(guard, &path)?;
+        let diff = vulcan_core::git_diff_revisions(paths.vault_root(), &path, &from, to.as_deref())
+            .map_err(|error| RestError::from_message(error.to_string()))?;
+        Ok(json!({ "path": path, "from": from, "to": to, "diff": diff }))
+    })
+    .await
+}
+
 /// `GET /health`: whether the daemon serves each vault the principal sees.
 async fn health(
     State(state): State<CompanionHttpState>,
@@ -561,25 +765,10 @@ fn serve_route_documents(id_parameter: &Value) -> serde_json::Map<String, Value>
     paths
 }
 
-/// `GET /openapi.json`: the REST routes as an `OpenAPI` 3.1 document.
-async fn openapi() -> Json<Value> {
-    Json(openapi_document())
-}
-
-/// The `OpenAPI` document: the per-vault serve routes with their query
-/// schemas, plus the routes this module adds.
-#[must_use]
-pub fn openapi_document() -> Value {
-    let id_parameter = json!({
-        "name": "id", "in": "path", "required": true,
-        "schema": { "type": "string" }, "description": "Registered wiki ID"
-    });
-    let path_parameter = json!({
-        "name": "path", "in": "path", "required": true,
-        "schema": { "type": "string" }, "description": "Vault-relative note path; may contain `/`"
-    });
-    let mut paths = serve_route_documents(&id_parameter);
-    let native: Vec<(&str, &str, Vec<Value>)> = vec![
+/// The routes this module adds beside the mounted serve routes, with their
+/// summaries and parameters other than `id`.
+fn native_route_documents(path_parameter: &Value) -> Vec<(&'static str, &'static str, Vec<Value>)> {
+    vec![
         (
             "/{id}/notes/{path}",
             "One note, as `vulcan note get` reads it",
@@ -598,10 +787,38 @@ pub fn openapi_document() -> Value {
         (
             "/{id}/backlinks/{path}",
             "Incoming links of a note",
-            vec![path_parameter],
+            vec![path_parameter.clone()],
         ),
         ("/{id}/graph/stats", "Graph analytics", vec![]),
         ("/{id}/graph/hubs", "The most connected notes", vec![]),
+        (
+            "/{id}/history",
+            "Recent commits, as `vulcan git log` lists them (needs a profile that reads every note)",
+            vec![json!({"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": MAX_HISTORY_LIMIT}})],
+        ),
+        (
+            "/{id}/history/{path}",
+            "One file's commits, or with `at`, its content at that commit",
+            vec![
+                json!({"name": "path", "in": "path", "required": true, "schema": {"type": "string"}}),
+                json!({"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": MAX_HISTORY_LIMIT}}),
+                json!({"name": "at", "in": "query", "required": false, "schema": {"type": "string", "pattern": "^[0-9a-fA-F]{4,64}$"}}),
+            ],
+        ),
+        (
+            "/{id}/diff",
+            "Uncommitted changes, for one file or (with a profile that reads every note) the vault",
+            vec![json!({"name": "path", "in": "query", "required": false, "schema": {"type": "string"}})],
+        ),
+        (
+            "/{id}/diff/{path}",
+            "One file's diff between two commits, or from a commit to the working tree",
+            vec![
+                json!({"name": "path", "in": "path", "required": true, "schema": {"type": "string"}}),
+                json!({"name": "from", "in": "query", "required": true, "schema": {"type": "string", "pattern": "^[0-9a-fA-F]{4,64}$"}}),
+                json!({"name": "to", "in": "query", "required": false, "schema": {"type": "string", "pattern": "^[0-9a-fA-F]{4,64}$"}}),
+            ],
+        ),
         (
             "/{id}/graph/path",
             "Shortest link path between two notes",
@@ -610,7 +827,28 @@ pub fn openapi_document() -> Value {
                 json!({"name": "to", "in": "query", "required": true, "schema": {"type": "string"}}),
             ],
         ),
-    ];
+    ]
+}
+
+/// `GET /openapi.json`: the REST routes as an `OpenAPI` 3.1 document.
+async fn openapi() -> Json<Value> {
+    Json(openapi_document())
+}
+
+/// The `OpenAPI` document: the per-vault serve routes with their query
+/// schemas, plus the routes this module adds.
+#[must_use]
+pub fn openapi_document() -> Value {
+    let id_parameter = json!({
+        "name": "id", "in": "path", "required": true,
+        "schema": { "type": "string" }, "description": "Registered wiki ID"
+    });
+    let path_parameter = json!({
+        "name": "path", "in": "path", "required": true,
+        "schema": { "type": "string" }, "description": "Vault-relative note path; may contain `/`"
+    });
+    let mut paths = serve_route_documents(&id_parameter);
+    let native = native_route_documents(&path_parameter);
     for (route, summary, extra) in native {
         let mut parameters = vec![id_parameter.clone()];
         parameters.extend(extra);
@@ -678,7 +916,7 @@ mod tests {
     use tower::ServiceExt;
 
     struct Served {
-        _temporary: tempfile::TempDir,
+        temporary: tempfile::TempDir,
         state: CompanionHttpState,
         _watchers: Vec<crate::runtime::TestWatcher>,
         token: String,
@@ -698,7 +936,7 @@ mod tests {
             std::fs::create_dir_all(vault.join(".vulcan")).unwrap();
             std::fs::write(
                 vault.join(".vulcan/config.toml"),
-                "[permissions.profiles.projects_only]\nread = { allow = [\"folder:Projects/**\"] }\n",
+                "[permissions.profiles.projects_only]\nread = { allow = [\"folder:Projects/**\"] }\ngit = \"allow\"\n\n[permissions.profiles.no_git]\nread = \"all\"\n",
             )
             .unwrap();
             std::fs::write(
@@ -770,7 +1008,7 @@ mod tests {
             api_tokens: Some(api_tokens),
         };
         Served {
-            _temporary: temporary,
+            temporary,
             state,
             _watchers: watchers,
             token,
@@ -876,6 +1114,125 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{query}");
         let (status, missing) = get(&served, &device, "/missing/search?q=x").await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
+    }
+
+    fn git(root: &std::path::Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?} failed");
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    fn commit_vault(root: &std::path::Path) -> String {
+        git(root, &["-c", "init.defaultBranch=main", "init", "-q"]);
+        git(root, &["config", "user.name", "Vulcan Test"]);
+        git(root, &["config", "user.email", "vulcan@example.com"]);
+        std::fs::write(root.join(".gitignore"), ".vulcan/\n").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-q", "-m", "Initial notes"]);
+        git(root, &["rev-parse", "HEAD"]).trim().to_string()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn history_routes_read_git_under_the_registration_profile() {
+        let served = served();
+        let device = device(&served);
+        let root = served.temporary.path();
+        let notes_head = commit_vault(&root.join("notes"));
+        let projects_head = commit_vault(&root.join("projects"));
+        std::fs::write(
+            root.join("projects/Projects/Plan.md"),
+            "# Plan\n\nRevised.\n",
+        )
+        .unwrap();
+
+        let (status, log) = get(&served, &device, "/notes/history?limit=5").await;
+        assert_eq!(status, StatusCode::OK, "{log}");
+        assert_eq!(log["entries"][0]["summary"], "Initial notes");
+        assert_eq!(log["entries"][0]["commit"], notes_head.as_str());
+
+        // The restricted registration cannot list the whole vault's history
+        // or its uncommitted changes, but can read a file it may read.
+        for uri in ["/projects/history", "/projects/diff"] {
+            let (status, denied) = get(&served, &served.token, uri).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {denied}");
+            assert!(denied["detail"]
+                .as_str()
+                .unwrap()
+                .contains("reads every note"));
+        }
+        let (status, file_log) =
+            get(&served, &served.token, "/projects/history/Projects/Plan.md").await;
+        assert_eq!(status, StatusCode::OK, "{file_log}");
+        assert_eq!(file_log["entries"].as_array().unwrap().len(), 1);
+        let (status, at) = get(
+            &served,
+            &served.token,
+            &format!("/projects/history/Projects/Plan.md?at={projects_head}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{at}");
+        assert!(at["content"]
+            .as_str()
+            .unwrap()
+            .contains("The dashboard links"));
+        let (status, _) = get(&served, &served.token, "/projects/history/Private/Diary.md").await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let (status, uncommitted) = get(
+            &served,
+            &served.token,
+            "/projects/diff?path=Projects/Plan.md",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{uncommitted}");
+        assert!(uncommitted["diff"].as_str().unwrap().contains("+Revised."));
+        let (status, range) = get(
+            &served,
+            &served.token,
+            &format!("/projects/diff/Projects/Plan.md?from={projects_head}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{range}");
+        assert!(range["diff"].as_str().unwrap().contains("+Revised."));
+
+        // A profile without Git access gets no history at all.
+        served
+            .state
+            .registry
+            .update(
+                &WikiId::parse("notes").unwrap(),
+                &crate::registry::UpdateWikiRequest {
+                    profile: None,
+                    groups_to_add: vec![],
+                    groups_to_remove: vec![],
+                    permissions_profile: Some(Some("no_git".to_string())),
+                    sync_paused: None,
+                },
+                false,
+            )
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        let (status, denied) = get(&served, &device, "/notes/history").await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{denied}");
+        assert!(denied["detail"].as_str().unwrap().contains("git"));
+
+        for uri in [
+            "/projects/history/Projects/Plan.md?at=HEAD",
+            "/projects/diff/Projects/Plan.md",
+            "/projects/diff/Projects/Plan.md?from=--output=x",
+            "/notes/history?at=abcd",
+        ] {
+            let (status, invalid) = get(&served, &served.token, uri).await;
+            assert!(
+                status == StatusCode::BAD_REQUEST || status == StatusCode::NOT_FOUND,
+                "{uri}: {status} {invalid}"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

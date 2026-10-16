@@ -201,10 +201,10 @@ pub use dynamic_content::{
 pub use folder_notes::{FolderNotePlacement, FolderNotesConfig};
 pub use git::{
     auto_commit, batch_commit_candidates, batch_commit_patches, commit_batch_groups, git_blame,
-    git_commit, git_diff, git_log, git_recent_log, git_repository_layout, git_status, is_git_repo,
-    render_auto_commit_message, AutoCommitReport, BatchCommitCandidates, BatchCommitGroup,
-    BatchCommitOutcome, BatchCommitRecord, GitBlameLine, GitCommitReport, GitError, GitLogEntry,
-    GitRepositoryLayout, GitStatusReport,
+    git_commit, git_diff, git_diff_revisions, git_log, git_recent_log, git_repository_layout,
+    git_show_file_at, git_status, is_git_repo, render_auto_commit_message, AutoCommitReport,
+    BatchCommitCandidates, BatchCommitGroup, BatchCommitOutcome, BatchCommitRecord, GitBlameLine,
+    GitCommitReport, GitError, GitLogEntry, GitRepositoryLayout, GitStatusReport,
 };
 pub use graph::{
     export_graph, export_graph_with_filter, list_note_identities, list_note_identities_with_filter,

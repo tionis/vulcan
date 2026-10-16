@@ -5858,11 +5858,12 @@ semantic checkpoints continue to use the normal branch.
 
 ### 11.2 History API endpoints
 
-- [ ] `GET /{id}/history/{path}` — git log for a specific file (author, date, message, sha)
-- [ ] `GET /{id}/history/{path}/{sha}` — file content at a specific commit
-- [ ] `GET /{id}/diff/{path}?from={sha}&to={sha}` — diff between two versions
-- [ ] `GET /{id}/diff` — uncommitted changes in the vault
-- [ ] `GET /{id}/history` — recent commits across the whole vault
+- [x] `GET /{id}/history/{path}` — git log for a specific file (author, date, message, sha)
+- [x] `GET /{id}/history/{path}/{sha}` — file content at a specific commit
+- [x] `GET /{id}/diff/{path}?from={sha}&to={sha}` — diff between two versions
+- [x] `GET /{id}/diff` — uncommitted changes in the vault
+- [x] `GET /{id}/history` — recent commits across the whole vault
+  - Served by the daemon REST API (`docs/specs/daemon-rest-api.md`). Content at a commit is `GET /{id}/history/{path}?at={sha}`, since paths contain `/`. History reads Git, so it works for vaults the daemon does not index; it needs the profile's Git permission, and whole-vault history and diffs also need a profile that reads every note. Revisions are hexadecimal commit IDs only.
 
 ### 11.3 Branch management (optional)
 

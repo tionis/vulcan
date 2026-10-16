@@ -53,6 +53,10 @@ curl -s -H "Authorization: Bearer $TOKEN" -H "Vulcan-Protocol-Version: 1" \
 | `GET /{id}/links/{path}`, `GET /{id}/backlinks/{path}` | `vulcan links`, `vulcan backlinks` |
 | `GET /{id}/graph/stats`, `/graph/hubs`, `/graph/path?from=...&to=...` | `vulcan graph stats|hubs|path` |
 | `GET /{id}/mdbase/...` | the `vulcan serve` mdbase routes |
+| `GET /{id}/history?limit=...` | `vulcan git log` |
+| `GET /{id}/history/{path}` | `vulcan note history`; with `?at=<commit>`, the file's content at that commit |
+| `GET /{id}/diff?path=...` | `vulcan git diff` (uncommitted changes) |
+| `GET /{id}/diff/{path}?from=<commit>&to=<commit>` | one file between two commits, or from a commit to the working tree when `to` is left out |
 | `GET /health` | which vaults the daemon serves, and their cache state |
 | `GET /vaults` | registered vaults visible to the token |
 | `GET /openapi.json` | an OpenAPI 3.1 description of these routes |
@@ -60,6 +64,12 @@ curl -s -H "Authorization: Bearer $TOKEN" -H "Vulcan-Protocol-Version: 1" \
 Errors are JSON objects with `kind` and `detail`: 400 for an invalid request, 401 for a missing or
 revoked token, 403 when the profile denies the operation, 404 for an unknown vault or note, and 503
 when the daemon does not index the vault (a files-only directory, or while it is starting).
+
+History and diffs read Git directly, so they also work for vaults the daemon does not index. They
+need a profile that allows Git. Whole-vault history and uncommitted diffs name every changed file,
+so they also need a profile that reads every note; a restricted profile can still ask for one file
+it may read. Commits are named by their hexadecimal ID only, not by branch names or `HEAD~1`.
+Commit messages are shown as written and can mention other files.
 
 Reads wait until the daemon has indexed every change made before the request, so a note written a
 moment ago is found. `GET /{id}/related` and `search` with `mode=hybrid` use the vault's own
