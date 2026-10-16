@@ -698,31 +698,20 @@ pub fn prove_note_store_fresh(paths: &VaultPaths) -> Result<NoteStoreFreshness, 
         return stale("an ordinary write batch awaits recovery");
     }
     let config = crate::load_vault_config(paths).config;
-    let database = CacheDatabase::open(paths)?;
-    let connection = database.connection();
-    let signature = serde_json::to_string(&config.property_types)
-        .map_err(|error| ScanError::Io(std::io::Error::other(error)))?;
-    let recorded: Option<String> = connection
-        .query_row(
-            "SELECT value FROM meta WHERE key = 'property_catalog_config'",
-            [],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if recorded.as_ref() != Some(&signature) {
+    // Reading the indexed fingerprints and walking the vault are independent
+    // and take about the same time at 100K notes, so they overlap.
+    let (indexed, discovered) = std::thread::scope(|scope| {
+        let indexed = scope.spawn(|| indexed_fingerprints(paths, &config));
+        let discovered = discover_files(paths.vault_root());
+        let indexed = indexed
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        (indexed, discovered)
+    });
+    let Some(indexed) = indexed? else {
         return stale("configured property types changed");
-    }
-    let mut statement =
-        connection.prepare("SELECT path, stat_fingerprint, parser_version FROM note_query")?;
-    let indexed = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                (row.get::<_, Option<Vec<u8>>>(1)?, row.get::<_, u32>(2)?),
-            ))
-        })?
-        .collect::<Result<HashMap<_, _>, _>>()?;
-    let discovered = discover_files(paths.vault_root())?;
+    };
+    let discovered = discovered?;
     if discovered.len() != indexed.len() {
         return stale("files were added or removed");
     }
@@ -741,6 +730,41 @@ pub fn prove_note_store_fresh(paths: &VaultPaths) -> Result<NoteStoreFreshness, 
         }
     }
     Ok(NoteStoreFreshness::Fresh)
+}
+
+/// Each indexed path's stat fingerprint and parser version, or `None` when
+/// the configured property types differ from the ones the index was built
+/// with.
+#[allow(clippy::type_complexity)]
+fn indexed_fingerprints(
+    paths: &VaultPaths,
+    config: &crate::config::VaultConfig,
+) -> Result<Option<HashMap<String, (Option<Vec<u8>>, u32)>>, ScanError> {
+    let database = CacheDatabase::open(paths)?;
+    let connection = database.connection();
+    let signature = serde_json::to_string(&config.property_types)
+        .map_err(|error| ScanError::Io(std::io::Error::other(error)))?;
+    let recorded: Option<String> = connection
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'property_catalog_config'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if recorded.as_ref() != Some(&signature) {
+        return Ok(None);
+    }
+    let mut statement =
+        connection.prepare("SELECT path, stat_fingerprint, parser_version FROM note_query")?;
+    let indexed = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                (row.get::<_, Option<Vec<u8>>>(1)?, row.get::<_, u32>(2)?),
+            ))
+        })?
+        .collect::<Result<HashMap<_, _>, _>>()?;
+    Ok(Some(indexed))
 }
 
 type ScanInventory = (Vec<DiscoveredFile>, HashMap<String, CachedDocument>);
