@@ -703,6 +703,48 @@ fn sync_device_list_shows_shared_name_and_full_id() {
     );
 }
 
+/// Stops a test's detached daemon when dropped, including when an assertion
+/// fails before the test's own `daemon stop`: `daemon stop` first, then a
+/// kill of the process its runtime record names if the record remains.
+struct DetachedDaemonGuard {
+    config_home: PathBuf,
+    state_home: PathBuf,
+}
+
+impl DetachedDaemonGuard {
+    fn new(config_home: &Path, state_home: &Path) -> Self {
+        Self {
+            config_home: config_home.to_path_buf(),
+            state_home: state_home.to_path_buf(),
+        }
+    }
+}
+
+impl Drop for DetachedDaemonGuard {
+    fn drop(&mut self) {
+        let runtime = self.state_home.join("vulcan/daemon/runtime.json");
+        if !runtime.exists() {
+            return;
+        }
+        let _ = run_daemon_test_command(&self.config_home, &self.state_home, &["stop"]);
+        let Some(pid) = fs::read_to_string(&runtime)
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .and_then(|record| record["pid"].as_u64())
+        else {
+            return;
+        };
+        #[cfg(unix)]
+        let _ = ProcessCommand::new("kill")
+            .args(["-9", &pid.to_string()])
+            .status();
+        #[cfg(windows)]
+        let _ = ProcessCommand::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .status();
+    }
+}
+
 fn run_daemon_test_command(
     config_home: &Path,
     state_home: &Path,
@@ -9780,6 +9822,7 @@ fn daemon_cli_detaches_reports_status_and_stops_gracefully() {
     .expect("daemon config");
     let daemon = |arguments: &[&str]| run_daemon_test_command(&config_home, &state_home, arguments);
 
+    let _daemon = DetachedDaemonGuard::new(&config_home, &state_home);
     let started = successful_process_json(&daemon(&["start", "--detach"]));
     assert_eq!(started["detached"], true);
     assert_eq!(started["status"]["running"], true);
@@ -9869,6 +9912,7 @@ fn routed_queries_print_what_direct_queries_print() {
     ]);
     assert!(registered.status.success(), "{registered:?}");
     let daemon = |arguments: &[&str]| run_daemon_test_command(&config_home, &state_home, arguments);
+    let _daemon = DetachedDaemonGuard::new(&config_home, &state_home);
     successful_process_json(&daemon(&["start", "--detach"]));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
@@ -10187,6 +10231,7 @@ fn foreground_hosts_and_direct_commands_run_beside_and_without_a_resident_daemon
             .success()
     };
 
+    let _daemon = DetachedDaemonGuard::new(&config_home, &state_home);
     let started = successful_process_json(&daemon(&["start", "--detach"]));
     assert_eq!(started["status"]["running"], true);
 
@@ -11188,6 +11233,7 @@ fn daemon_semantic_worker_runs_and_exposes_latest_status() {
         "--poll-seconds",
         "1",
     ]);
+    let _daemon = DetachedDaemonGuard::new(&config_home, &state_home);
     checked(&["start", "--detach"]);
     let worker_status = state_home.join("vulcan/daemon/semantic-worker.json");
     for _ in 0..40 {
@@ -11233,6 +11279,7 @@ fn daemon_conflict_worker_runs_and_exposes_latest_status() {
         "--poll-seconds",
         "1",
     ]));
+    let _daemon = DetachedDaemonGuard::new(&config_home, &state_home);
     successful_process_json(&daemon(&["start", "--detach"]));
     let worker_status = state_home.join("vulcan/daemon/conflict-worker.json");
     for _ in 0..40 {
@@ -40610,4 +40657,29 @@ fn schedule_commands_list_preview_run_and_toggle_vault_jobs() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("unknown target"));
+}
+
+#[test]
+fn a_detached_test_daemon_stops_when_its_guard_drops() {
+    let temporary = TempDir::new().expect("temp dir");
+    let config_home = temporary.path().join("config");
+    let state_home = temporary.path().join("state");
+    let daemon = |arguments: &[&str]| run_daemon_test_command(&config_home, &state_home, arguments);
+    successful_process_json(&daemon(&["config", "set-bind", "127.0.0.1:0"]));
+    let guard = DetachedDaemonGuard::new(&config_home, &state_home);
+    successful_process_json(&daemon(&["start", "--detach"]));
+    let runtime = state_home.join("vulcan/daemon/runtime.json");
+    assert!(runtime.exists(), "the daemon is running");
+    // The test "forgets" to stop it, as a failed assertion would.
+    drop(guard);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while runtime.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the daemon outlived its guard"
+        );
+        thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let status = successful_process_json(&daemon(&["status"]));
+    assert_eq!(status["running"], false);
 }

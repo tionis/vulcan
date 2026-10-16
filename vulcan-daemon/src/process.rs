@@ -438,7 +438,13 @@ where
         pid: record.pid,
     };
     let shutdown_stop = Arc::clone(&stop);
-    let graceful = wait_for_daemon_shutdown(shutdown_stop, Arc::clone(&ingress_stop)).await;
+    let graceful = wait_for_daemon_shutdown(
+        shutdown_stop,
+        Arc::clone(&ingress_stop),
+        context.runtime_path(),
+        record.pid,
+    )
+    .await;
     if graceful {
         host.stop_services(&graceful_shutdown_services()?)?;
         run_final_sync_and_cancel(&state.registry, &state.supervisor, &stop).await;
@@ -895,6 +901,8 @@ fn configured_api_key(
 async fn wait_for_daemon_shutdown(
     stop: Arc<ShutdownSignal>,
     ingress_stop: Arc<ShutdownSignal>,
+    runtime_path: PathBuf,
+    pid: u32,
 ) -> bool {
     tokio::select! {
         () = stop.requested() => {
@@ -905,6 +913,39 @@ async fn wait_for_daemon_shutdown(
             let graceful = stop.begin_shutdown();
             ingress_stop.cancel();
             graceful
+        }
+        () = wait_until_orphaned(runtime_path, pid, ORPHAN_CHECK_INTERVAL) => {
+            eprintln!(
+                "daemon runtime record was removed or now names another process; this daemon is orphaned and stops"
+            );
+            ingress_stop.cancel();
+            stop.cancel();
+            // Its state is gone, so there is nothing to synchronize from.
+            false
+        }
+    }
+}
+
+/// How often a running daemon checks that its runtime record still names it.
+const ORPHAN_CHECK_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Resolves once the runtime record at `path` is gone or names a process
+/// other than `pid`: the daemon's state directory was deleted (as a test's
+/// temporary directory is) or another daemon took over. Read errors other
+/// than absence are not proof, so they wait for the next check.
+async fn wait_until_orphaned(path: PathBuf, pid: u32, interval: Duration) {
+    loop {
+        tokio::time::sleep(interval).await;
+        let check = path.clone();
+        let orphaned = tokio::task::spawn_blocking(move || match read_runtime_record(&check) {
+            Ok(None) => true,
+            Ok(Some(record)) => record.pid != pid,
+            Err(_) => false,
+        })
+        .await
+        .unwrap_or(false);
+        if orphaned {
+            return;
         }
     }
 }
@@ -1780,6 +1821,39 @@ mod tests {
             .recv()
             .expect("daemon result")
             .expect("clean daemon shutdown");
+    }
+
+    #[test]
+    fn a_daemon_notices_when_its_runtime_record_is_gone_or_replaced() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("daemon").join(RUNTIME_FILE);
+        let record = |pid| DaemonRuntimeRecord {
+            version: DAEMON_RUNTIME_VERSION,
+            pid,
+            bind: "127.0.0.1:1".parse().unwrap(),
+            started_unix_ms: 1,
+            credential_id: "0".repeat(24),
+        };
+        let interval = Duration::from_millis(20);
+        let pending = |pid| {
+            runtime.block_on(async {
+                tokio::time::timeout(
+                    Duration::from_millis(150),
+                    wait_until_orphaned(path.clone(), pid, interval),
+                )
+                .await
+                .is_err()
+            })
+        };
+        write_runtime_record(&path, &record(42)).unwrap();
+        assert!(pending(42), "its own record keeps it running");
+        assert!(!pending(7), "a record naming another process orphans it");
+        std::fs::remove_file(&path).unwrap();
+        assert!(!pending(42), "a missing record orphans it");
     }
 
     #[test]
