@@ -16,6 +16,7 @@ use crate::worker_gate::HostedWorkerGate;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use vulcan_app::batch_commit::{
@@ -257,7 +258,9 @@ pub(crate) fn consume_auto_commit_observations_with_stop(
                     | BatchedCommitStatus::Disabled
                     | BatchedCommitStatus::OwnedBySync,
                 ) => clock.committed(),
-                Some(BatchedCommitStatus::Blocked) | None => clock.retry(Instant::now()),
+                Some(BatchedCommitStatus::Blocked | BatchedCommitStatus::Planned) | None => {
+                    clock.retry(Instant::now());
+                }
             }
             if let Err(error) = vulcan_core::durable::replace_json(
                 &status_path,
@@ -332,33 +335,46 @@ fn run_pass(
         Some(gate) => gate,
         None => &Ungated,
     };
+    // Shutdown cancels the batch, including a model call in progress; a
+    // commit already under way finishes first.
     let cancellation = SyncCancellationToken::default();
-    if stop.is_cancelled() {
-        cancellation.cancel();
-    }
-    let result = run_batched_commit(
-        paths,
-        &BatchedCommitOptions {
-            agent,
-            agent_unavailable,
-            capture_owner: Some(if sync_owns_capture(registration) {
-                CaptureOwner::HiddenRefSync {
-                    wiki_id: registration.id.to_string(),
+    let finished = AtomicBool::new(false);
+    let result = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while !finished.load(Ordering::Acquire) {
+                if stop.wait_timeout(Duration::from_millis(200)) {
+                    cancellation.cancel();
+                    return;
                 }
-            } else {
-                CaptureOwner::AutoCommit
-            }),
-            permission_profile: Some(
-                registration
-                    .permissions_profile
-                    .as_deref()
-                    .unwrap_or("unrestricted"),
-            ),
-            gate,
-            cancellation: &cancellation,
-            verbosity: Verbosity::Quiet,
-        },
-    );
+            }
+        });
+        let result = run_batched_commit(
+            paths,
+            &BatchedCommitOptions {
+                agent,
+                agent_unavailable,
+                capture_owner: Some(if sync_owns_capture(registration) {
+                    CaptureOwner::HiddenRefSync {
+                        wiki_id: registration.id.to_string(),
+                    }
+                } else {
+                    CaptureOwner::AutoCommit
+                }),
+                permission_profile: Some(
+                    registration
+                        .permissions_profile
+                        .as_deref()
+                        .unwrap_or("unrestricted"),
+                ),
+                gate,
+                cancellation: &cancellation,
+                verbosity: Verbosity::Quiet,
+                dry_run: false,
+            },
+        );
+        finished.store(true, Ordering::Release);
+        result
+    });
     let (report, error) = match result {
         Ok(report) => (Some(report), None),
         Err(error) => (None, Some(error.to_string())),
@@ -369,6 +385,129 @@ fn run_pass(
         checked_unix_ms: unix_time_ms(),
         report,
         error,
+    }
+}
+
+/// Runs the vault's configured batch once, without the daemon: the entry
+/// point of `vulcan git batch-commit` for cron and timers. Capture ownership
+/// and agent consent come from this device's registry, exactly as for the
+/// daemon's consumer; an unregistered vault has no consent and no owner but
+/// itself. The repository lock serializes it with a running daemon's batches.
+pub fn run_direct_batch(
+    registry: &WikiRegistry,
+    paths: &VaultPaths,
+    permission_profile: Option<&str>,
+    dry_run: bool,
+    verbosity: Verbosity,
+) -> Result<BatchedCommitReport, String> {
+    let config = load_vault_config(paths).config.git;
+    let daemon = match registry.load() {
+        Ok(daemon) => Some(daemon),
+        Err(crate::registry::RegistryError::Io(error))
+            if error.kind() == std::io::ErrorKind::NotFound =>
+        {
+            None
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    let root = fs::canonicalize(paths.vault_root()).map_err(|error| error.to_string())?;
+    let registration = daemon
+        .as_ref()
+        .and_then(|daemon| daemon.vaults.iter().find(|wiki| wiki.path == root));
+    let consent = registration.is_some_and(|registration| {
+        daemon
+            .as_ref()
+            .and_then(|daemon| daemon.auto_commit_agent.as_ref())
+            .is_some_and(|agent| agent.allows(&registration.id))
+    });
+    let mut agent_unavailable = None;
+    let agent = if config.batch_messages != GitBatchMessages::Agent {
+        None
+    } else if !consent {
+        agent_unavailable = Some(registration.map_or_else(
+            || "agent messages need a registered vault with device consent".to_string(),
+            |registration| {
+                format!(
+                    "agent messages are not enabled for `{}` on this device; run `vulcan daemon config set-auto-commit-agent --wiki {}`",
+                    registration.id, registration.id
+                )
+            },
+        ));
+        None
+    } else {
+        match direct_semantic_agent(
+            daemon
+                .as_ref()
+                .and_then(|daemon| daemon.semantic_agent.as_ref()),
+        ) {
+            Ok(agent) => Some(agent),
+            Err(reason) => {
+                agent_unavailable = Some(reason);
+                None
+            }
+        }
+    };
+    let cancellation = SyncCancellationToken::default();
+    let profile = permission_profile.map(str::to_string).or_else(|| {
+        registration.map(|registration| {
+            registration
+                .permissions_profile
+                .clone()
+                .unwrap_or_else(|| "unrestricted".to_string())
+        })
+    });
+    run_batched_commit(
+        paths,
+        &BatchedCommitOptions {
+            agent: agent.as_ref().map(CompanionSemanticAgent::provider),
+            agent_unavailable,
+            capture_owner: registration.map(|registration| {
+                if sync_owns_capture(registration) {
+                    CaptureOwner::HiddenRefSync {
+                        wiki_id: registration.id.to_string(),
+                    }
+                } else {
+                    CaptureOwner::AutoCommit
+                }
+            }),
+            permission_profile: profile.as_deref(),
+            gate: &Ungated,
+            cancellation: &cancellation,
+            verbosity,
+            dry_run,
+        },
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// The device's semantic agent, built from its registry entry as the daemon
+/// builds it, or why there is none.
+fn direct_semantic_agent(
+    config: Option<&crate::registry::DaemonAgentConfig>,
+) -> Result<CompanionSemanticAgent, String> {
+    let Some(config) = config else {
+        return Err(
+            "no semantic agent is configured on this device; run `vulcan daemon config set-agent semantic`"
+                .to_string(),
+        );
+    };
+    #[cfg(feature = "web")]
+    {
+        let api_key = match config.api_key_env.as_deref() {
+            None => None,
+            Some(name) => Some(std::env::var(name).map_err(|_| format!("{name} is not set"))?),
+        };
+        CompanionSemanticAgent::openai_compatible(
+            config.base_url.clone(),
+            config.model.clone(),
+            api_key,
+        )
+        .map_err(|error| error.to_string())
+    }
+    #[cfg(not(feature = "web"))]
+    {
+        let _ = config;
+        Err("the semantic agent requires Vulcan's `web` feature".to_string())
     }
 }
 
@@ -466,6 +605,87 @@ mod tests {
             .fallback
             .as_deref()
             .is_some_and(|reason| reason.contains("set-auto-commit-agent --wiki notes")));
+    }
+
+    /// Answers only once cancelled, like a provider that never responds.
+    struct SilentAgent;
+
+    impl vulcan_app::sync_semantic::SemanticAgentProvider for SilentAgent {
+        fn identity(&self) -> vulcan_app::sync_semantic::SemanticAgentIdentity {
+            vulcan_app::sync_semantic::SemanticAgentIdentity {
+                provider: "silent".to_string(),
+                model: "never".to_string(),
+                prompt_contract_version: 1,
+            }
+        }
+
+        fn propose(
+            &self,
+            _request: &vulcan_app::sync_semantic::SemanticAgentRequest,
+            cancellation: &SyncCancellationToken,
+        ) -> Result<vulcan_app::sync_semantic::SemanticAgentOutput, vulcan_app::AppError> {
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while !cancellation.is_cancelled() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(vulcan_app::AppError::operation(
+                "semantic agent planning was cancelled",
+            ))
+        }
+    }
+
+    #[test]
+    fn shutdown_cancels_a_batch_waiting_on_the_agent() {
+        let temporary = tempfile::tempdir().unwrap();
+        let vault = temporary.path().join("vault");
+        fs::create_dir_all(vault.join(".vulcan")).unwrap();
+        git(&vault, &["-c", "init.defaultBranch=main", "init", "-q"]);
+        git(&vault, &["config", "user.name", "Vulcan Test"]);
+        git(&vault, &["config", "user.email", "vulcan@example.com"]);
+        fs::write(vault.join(".gitignore"), ".vulcan/\n").unwrap();
+        fs::write(vault.join("Home.md"), "home\n").unwrap();
+        fs::write(
+            vault.join(".vulcan/config.toml"),
+            "[git]\nauto_commit = true\nstrategy = \"batched\"\nbatch_messages = \"agent\"\n",
+        )
+        .unwrap();
+        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+        registry
+            .set_auto_commit_agent(
+                crate::registry::DaemonAutoCommitAgentConfig {
+                    wikis: vec![crate::registry::WikiId::parse("notes").unwrap()],
+                },
+                false,
+            )
+            .unwrap();
+        let context = AutoCommitContext {
+            registry: Some(registry),
+            agent: Some(Arc::new(CompanionSemanticAgent::new(SilentAgent))),
+            ..AutoCommitContext::default()
+        };
+        let stop = Arc::new(ShutdownSignal::default());
+        let canceller = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            canceller.cancel();
+        });
+        let paths = VaultPaths::new(&vault);
+        let config = load_vault_config(&paths).config.git;
+        let started = Instant::now();
+        let status = run_pass(
+            &registration(&vault, "none"),
+            &context,
+            &paths,
+            &config,
+            &stop,
+        );
+
+        assert!(started.elapsed() < Duration::from_secs(20));
+        assert!(status
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("cancelled")));
+        assert!(git(&vault, &["status", "--porcelain"]).contains("Home.md"));
     }
 
     #[test]

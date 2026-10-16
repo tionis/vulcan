@@ -4227,6 +4227,17 @@ pub enum GitCommand {
         #[arg(help = "Vault-relative path to blame")]
         path: String,
     },
+    #[command(
+        about = "Commit the vault's accumulated changes as one configured batch",
+        long_about = "Commit the vault's accumulated changes once, as `[git] strategy = \"batched\"` configures and as the daemon would. Use it from cron or a timer when no daemon runs. Paths you staged yourself are left alone, and nothing is committed during a merge, rebase, or detached HEAD. Agent messages need this device's `vulcan daemon config set-auto-commit-agent` consent; otherwise the batch falls back to deterministic groups. A vault registered with Git sync is captured by sync instead and is not committed."
+    )]
+    BatchCommit {
+        #[arg(
+            long,
+            help = "Plan the commits, including any agent call, without committing"
+        )]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Args)]

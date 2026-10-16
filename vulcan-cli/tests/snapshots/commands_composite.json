@@ -9405,6 +9405,27 @@
               }
             ],
             "subcommands": []
+          },
+          {
+            "about": "Commit the vault's accumulated changes as one configured batch",
+            "name": "batch-commit",
+            "options": [
+              {
+                "help": "Plan the commits, including any agent call, without committing",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
           }
         ]
       },

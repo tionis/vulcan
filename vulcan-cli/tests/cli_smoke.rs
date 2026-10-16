@@ -19173,6 +19173,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("--group-by hunk"));
     assert!(git_skill.contains("vulcan daemon status"));
     assert!(git_skill.contains("vulcan daemon auto-commit-status"));
+    assert!(git_skill.contains("vulcan git batch-commit --dry-run"));
     assert!(git_skill.contains("vulcan daemon config set-auto-commit-agent --wiki <id>"));
     assert!(git_skill.contains("vulcan daemon companion --reveal-token"));
     assert!(git_skill.contains("vulcan daemon companion install [<wiki>] --dry-run"));
@@ -40261,4 +40262,76 @@ fn auto_commit_stands_down_for_git_sync_and_reports_batched_vaults() {
             .success(),
     );
     assert!(cleared.get("auto_commit_agent").is_none());
+}
+
+#[test]
+fn git_batch_commit_previews_commits_and_honors_capture_ownership() {
+    let temporary = TempDir::new().expect("temp dir");
+    let config_home = temporary.path().join("config");
+    fs::create_dir(&config_home).expect("config home");
+    let config_home = config_home.to_str().expect("utf-8 config home").to_string();
+    let vault = temporary.path().join("vault");
+    fs::create_dir_all(vault.join(".vulcan")).expect("vault");
+    init_git_repo(&vault);
+    fs::write(vault.join(".gitignore"), ".vulcan/\n").expect("ignore");
+    fs::write(vault.join("Home.md"), "# Home\n").expect("note");
+    commit_all(&vault, "Initial");
+    fs::write(
+        vault.join(".vulcan/config.toml"),
+        "[git]\nauto_commit = true\nstrategy = \"batched\"\nbatch_messages = \"agent\"\n",
+    )
+    .expect("git config");
+    fs::create_dir_all(vault.join("Projects")).expect("projects");
+    fs::write(vault.join("Projects/Plan.md"), "plan\n").expect("plan");
+    fs::write(vault.join("Home.md"), "# Home edited\n").expect("edit");
+    let batch = |extra: &[&str]| {
+        parse_stdout_json(
+            &cargo_vulcan_with_xdg_config(&config_home)
+                .arg("--vault")
+                .arg(&vault)
+                .args(["--output", "json", "git", "batch-commit"])
+                .args(extra)
+                .assert()
+                .success(),
+        )
+    };
+
+    let preview = batch(&["--dry-run"]);
+    assert_eq!(preview["status"], "planned");
+    assert_eq!(preview["used_messages"], "deterministic");
+    assert!(preview["fallback"]
+        .as_str()
+        .is_some_and(|reason| reason.contains("registered vault with device consent")));
+    assert_eq!(preview["planned"][0]["message"], "Update Home.md");
+    assert_eq!(
+        preview["planned"][1]["paths"],
+        serde_json::json!(["Projects/Plan.md"])
+    );
+    assert_eq!(
+        run_git_stdout(&vault, &["rev-list", "--count", "HEAD"]),
+        "1"
+    );
+
+    let committed = batch(&[]);
+    assert_eq!(committed["status"], "committed");
+    assert_eq!(committed["commits"].as_array().map(Vec::len), Some(2));
+    assert_eq!(
+        run_git_stdout(&vault, &["rev-list", "--count", "HEAD"]),
+        "3"
+    );
+    assert_eq!(batch(&[])["status"], "clean");
+
+    cargo_vulcan_with_xdg_config(&config_home)
+        .args(["vault", "add", "notes"])
+        .arg(&vault)
+        .arg("--no-device-key")
+        .assert()
+        .success();
+    fs::write(vault.join("Home.md"), "# Home again\n").expect("edit");
+    let owned = batch(&[]);
+    assert_eq!(owned["status"], "owned_by_sync");
+    assert_eq!(
+        run_git_stdout(&vault, &["rev-list", "--count", "HEAD"]),
+        "3"
+    );
 }

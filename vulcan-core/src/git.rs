@@ -271,7 +271,7 @@ pub struct BatchCommitCandidates {
 }
 
 /// One commit of a batch: its message and the paths it records.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct BatchCommitGroup {
     pub message: String,
     pub paths: Vec<String>,

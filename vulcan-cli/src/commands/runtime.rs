@@ -166,7 +166,63 @@ pub(crate) fn handle_git_command(
             let report = run_git_blame_command(paths, path)?;
             print_git_blame_report(cli.output, &report)
         }
+        GitCommand::BatchCommit { dry_run } => {
+            let registry = vulcan_daemon::registry::WikiRegistry::user_default()
+                .map_err(CliError::operation)?;
+            let report = vulcan_daemon::auto_commit_worker::run_direct_batch(
+                &registry,
+                paths,
+                cli.permissions.as_deref(),
+                *dry_run,
+                cli.verbosity(),
+            )
+            .map_err(CliError::operation)?;
+            print_batched_commit_report(cli.output, &report)
+        }
     }
+}
+
+fn print_batched_commit_report(
+    output: OutputFormat,
+    report: &vulcan_app::batch_commit::BatchedCommitReport,
+) -> Result<(), CliError> {
+    use vulcan_app::batch_commit::BatchedCommitStatus;
+
+    if output == OutputFormat::Json {
+        return crate::output::print_json(report);
+    }
+    match report.status {
+        BatchedCommitStatus::Committed => {
+            for commit in &report.commits {
+                let short = commit.sha.get(..7).unwrap_or(&commit.sha);
+                println!("{short} {} ({} files)", commit.message, commit.files.len());
+            }
+        }
+        BatchedCommitStatus::Planned => {
+            for group in &report.planned {
+                println!(
+                    "would commit: {} ({} files)",
+                    group.message,
+                    group.paths.len()
+                );
+            }
+        }
+        BatchedCommitStatus::Clean => println!("Nothing to commit."),
+        BatchedCommitStatus::Disabled => {
+            println!("This vault does not use batched commits (`[git] strategy = \"batched\"`).");
+        }
+        BatchedCommitStatus::Blocked | BatchedCommitStatus::OwnedBySync => println!(
+            "No commit: {}",
+            report.detail.as_deref().unwrap_or("the batch is blocked")
+        ),
+    }
+    if let Some(reason) = &report.fallback {
+        println!("Used deterministic groups: {reason}");
+    }
+    if !report.left_staged.is_empty() {
+        println!("Left staged by hand: {}", report.left_staged.join(", "));
+    }
+    Ok(())
 }
 
 fn normalize_git_scope_path(path: &str) -> String {

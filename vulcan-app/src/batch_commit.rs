@@ -61,6 +61,8 @@ pub struct BatchedCommitOptions<'a> {
     pub gate: &'a dyn MutationGate,
     pub cancellation: &'a SyncCancellationToken,
     pub verbosity: Verbosity,
+    /// Plan the batch, including any agent call, but change nothing.
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,6 +70,8 @@ pub struct BatchedCommitOptions<'a> {
 pub enum BatchedCommitStatus {
     /// The batch was committed.
     Committed,
+    /// A dry run planned these commits and changed nothing.
+    Planned,
     /// Nothing outside the exclusions and manual staging had changed.
     Clean,
     /// The repository is mid-operation or not committable now.
@@ -94,6 +98,9 @@ pub struct BatchedCommitReport {
     pub fallback: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commits: Vec<BatchCommitRecord>,
+    /// The commits a dry run would make, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub planned: Vec<BatchCommitGroup>,
     /// Paths someone staged by hand, which the batch left alone.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub left_staged: Vec<String>,
@@ -111,6 +118,7 @@ impl BatchedCommitReport {
             agent: None,
             fallback: None,
             commits: Vec::new(),
+            planned: Vec::new(),
             left_staged: Vec::new(),
             detail: None,
         }
@@ -153,6 +161,14 @@ pub fn run_batched_commit(
             return Ok(report);
         }
         if candidates.paths.is_empty() {
+            return Ok(report);
+        }
+        if options.dry_run {
+            report.status = BatchedCommitStatus::Planned;
+            report.used_messages = Some(plan.used);
+            report.agent = plan.agent;
+            report.fallback = plan.fallback;
+            report.planned = plan.groups;
             return Ok(report);
         }
         cancellation_check(options.cancellation)?;
@@ -519,6 +535,7 @@ mod tests {
                 gate: &Ungated,
                 cancellation: &cancellation,
                 verbosity: Verbosity::Quiet,
+                dry_run: false,
             },
         )
         .expect("batched commit")
@@ -701,6 +718,7 @@ mod tests {
                 gate: &Ungated,
                 cancellation: &cancellation,
                 verbosity: Verbosity::Quiet,
+                dry_run: false,
             },
         )
         .expect("owned report");
@@ -730,6 +748,38 @@ mod tests {
             git(temp.path(), &["diff", "--cached", "--name-only"]),
             "Home.md\n"
         );
+    }
+
+    #[test]
+    fn a_dry_run_plans_the_batch_and_changes_nothing() {
+        let temp = vault("deterministic");
+        let before = git(temp.path(), &["status", "--porcelain"]);
+        let cancellation = SyncCancellationToken::default();
+        let report = run_batched_commit(
+            &VaultPaths::new(temp.path()),
+            &BatchedCommitOptions {
+                agent: None,
+                agent_unavailable: None,
+                capture_owner: Some(CaptureOwner::AutoCommit),
+                permission_profile: Some("unrestricted"),
+                gate: &Ungated,
+                cancellation: &cancellation,
+                verbosity: Verbosity::Quiet,
+                dry_run: true,
+            },
+        )
+        .expect("dry run");
+
+        assert_eq!(report.status, BatchedCommitStatus::Planned);
+        assert!(report.commits.is_empty());
+        let messages = report
+            .planned
+            .iter()
+            .map(|group| group.message.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(messages, ["Update Home.md", "Update Projects"]);
+        assert_eq!(log(temp.path()), ["Initial"]);
+        assert_eq!(git(temp.path(), &["status", "--porcelain"]), before);
     }
 
     #[test]

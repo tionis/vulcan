@@ -1,7 +1,7 @@
 ---
 name: git-workflow
 description: Inspect vault changes, review history, create intentional commits, or synchronize a Git-backed vault through Vulcan's hidden live ref.
-version: 65
+version: 66
 tools:
   - git_status
   - git_diff
@@ -96,7 +96,7 @@ A vault can be one directory of a larger Git repository, such as the `docs/` dir
 - Do not write a commit message before inspecting what actually changed.
 - Treat unrelated dirty worktree state as a coordination issue, not something to silently overwrite.
 - Prefer explicit commits over assuming auto-commit covers every workflow.
-- With `[git] strategy = "batched"`, individual commands do not commit; the daemon commits accumulated changes on the vault's interval, and only while it runs. Check `vulcan daemon auto-commit-status` before assuming a change is already committed. A vault registered with the Git sync backend is captured by sync instead: per-write commits stand down with a warning and no batch runs.
+- With `[git] strategy = "batched"`, individual commands do not commit; the daemon commits accumulated changes on the vault's interval, and only while it runs. Check `vulcan daemon auto-commit-status` before assuming a change is already committed. Without a daemon, `vulcan git batch-commit --dry-run` previews the batch and `vulcan git batch-commit` commits it. A vault registered with the Git sync backend is captured by sync instead: per-write commits stand down with a warning and no batch runs.
 - Never stage files just so a batch picks them up: batches leave paths you staged alone, and they wait out merges, rebases, and a detached `HEAD`. Agent-written batch messages need the vault's `batch_messages = "agent"` and this device's `vulcan daemon config set-auto-commit-agent --wiki <id>`; do not grant that consent unless the user wants this vault's changes sent to the configured provider.
 - Do not reset or discard staged state to make synchronization proceed. Knowledge-profile and
   explicit manual sync capture staged worktree bytes without changing the normal index. Unattended

@@ -161,31 +161,73 @@ impl OpenAiCompatibleSemanticProvider {
         })
     }
 
-    fn send(&self, body: &serde_json::Value) -> Result<Vec<u8>, AppError> {
-        let mut builder = self.client.post(self.endpoint.clone()).json(body);
-        if let Some(api_key) = self.api_key.as_deref() {
-            builder = builder.bearer_auth(api_key);
-        }
-        let mut response = builder.send().map_err(AppError::operation)?;
-        let status = response.status();
-        let mut bytes = Vec::new();
-        response
-            .by_ref()
-            .take((MAX_SEMANTIC_AGENT_RESPONSE_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)
-            .map_err(AppError::operation)?;
-        if bytes.len() > MAX_SEMANTIC_AGENT_RESPONSE_BYTES {
-            return Err(AppError::operation(
-                "semantic agent response exceeds its byte limit",
+    /// Sends `body` on a thread of its own and waits for the answer, giving
+    /// up as soon as `cancellation` fires: a blocking HTTP request cannot be
+    /// interrupted, so a cancelled request is abandoned to its own timeout.
+    fn send(
+        &self,
+        body: &serde_json::Value,
+        cancellation: &SyncCancellationToken,
+    ) -> Result<Vec<u8>, AppError> {
+        let client = self.client.clone();
+        let endpoint = self.endpoint.clone();
+        let api_key = self.api_key.clone();
+        let body = body.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(send_semantic_request(
+                &client,
+                endpoint,
+                api_key.as_deref(),
+                &body,
             ));
+        });
+        loop {
+            match receiver.recv_timeout(std::time::Duration::from_millis(100)) {
+                Ok(result) => return result,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    semantic_cancellation_check(cancellation)?;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(AppError::operation(
+                        "the semantic agent request ended without an answer",
+                    ));
+                }
+            }
         }
-        if !status.is_success() {
-            return Err(AppError::operation(format!(
-                "semantic agent provider returned HTTP {status}"
-            )));
-        }
-        Ok(bytes)
     }
+}
+
+#[cfg(feature = "web")]
+fn send_semantic_request(
+    client: &reqwest::blocking::Client,
+    endpoint: reqwest::Url,
+    api_key: Option<&str>,
+    body: &serde_json::Value,
+) -> Result<Vec<u8>, AppError> {
+    let mut builder = client.post(endpoint).json(body);
+    if let Some(api_key) = api_key {
+        builder = builder.bearer_auth(api_key);
+    }
+    let mut response = builder.send().map_err(AppError::operation)?;
+    let status = response.status();
+    let mut bytes = Vec::new();
+    response
+        .by_ref()
+        .take((MAX_SEMANTIC_AGENT_RESPONSE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(AppError::operation)?;
+    if bytes.len() > MAX_SEMANTIC_AGENT_RESPONSE_BYTES {
+        return Err(AppError::operation(
+            "semantic agent response exceeds its byte limit",
+        ));
+    }
+    if !status.is_success() {
+        return Err(AppError::operation(format!(
+            "semantic agent provider returned HTTP {status}"
+        )));
+    }
+    Ok(bytes)
 }
 
 #[cfg(feature = "web")]
@@ -221,7 +263,7 @@ impl SemanticAgentProvider for OpenAiCompatibleSemanticProvider {
                 { "role": "user", "content": input }
             ]
         });
-        let bytes = self.send(&body)?;
+        let bytes = self.send(&body, cancellation)?;
         semantic_cancellation_check(cancellation)?;
         parse_openai_semantic_output(&bytes)
     }
@@ -2269,6 +2311,49 @@ mod tests {
             }],
         };
         assert!(validate_agent_output(&["A.md".to_string()], output).is_err());
+    }
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn a_cancelled_semantic_request_returns_without_waiting_for_the_provider() {
+        use super::{
+            OpenAiCompatibleSemanticProvider, SemanticAgentProvider, SemanticAgentRequest,
+        };
+        use crate::sync::SyncCancellationToken;
+        use std::net::TcpListener;
+        use std::time::{Duration, Instant};
+
+        // A provider that accepts the request and never answers.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("listener address");
+        let _held = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("request");
+            std::thread::sleep(Duration::from_secs(30));
+            drop(stream);
+        });
+        let provider =
+            OpenAiCompatibleSemanticProvider::new(&format!("http://{address}/v1"), "silent", None)
+                .expect("provider");
+        let cancellation = SyncCancellationToken::default();
+        let canceller = cancellation.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            canceller.cancel();
+        });
+
+        let started = Instant::now();
+        let error = provider
+            .propose(
+                &SemanticAgentRequest {
+                    source_revision: "a".to_string(),
+                    target_revision: "b".to_string(),
+                    changes: vec![],
+                },
+                &cancellation,
+            )
+            .expect_err("a cancelled request fails");
+        assert!(error.to_string().contains("cancelled"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 
     #[cfg(feature = "web")]
