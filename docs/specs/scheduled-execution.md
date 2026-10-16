@@ -60,6 +60,96 @@ execution trust checks. The schedule service requires the daemon and never start
 implicitly. External cron/native timers can invoke existing finite commands, but are not a
 second owner of the same daemon schedule or an escape from execution trust.
 
+## Schema v1 proposal (for review)
+
+Status: proposed, not frozen. This section turns the contract above into the concrete first
+slice. Nothing here ships until it is reviewed and frozen.
+
+### Where jobs live
+
+Jobs live in the vault's shared configuration, `.vulcan/config.toml`, under `[[schedules.jobs]]`.
+That file is already vault-visible and kept by the default `.vulcan/.gitignore`, so jobs travel
+with Git and Vulcan file-tree sync like every other shared setting, and `vulcan config` can show
+and edit them. Jobs in `.vulcan/config.local.toml` are rejected with a diagnostic: a device-local
+file must not create or enable a job, because enabling is the vault's decision and the device's
+only say is its ceilings. A separate committed file was considered and rejected, because it would
+need its own gitignore exception, loader, and editor.
+
+```toml
+[schedules]
+version = 1
+
+[[schedules.jobs]]
+id = "nightly-commit"              # stable; 1-64 of [a-z0-9_-]; never reused for another job
+enabled = true
+target = { builtin = "batch-commit" }
+input = {}                         # validated per target; no secrets
+nodes = ["<device id>"]            # exact IDs from `vulcan device show`; at least one
+trigger = { cron = "30 2 * * *", timezone = "Europe/Berlin" }
+# or: trigger = { every = "15m" }  # anchored at the Unix epoch unless `anchor` is given
+authority = "unrestricted"         # permission profile the job runs under
+limits = { max_runtime_seconds = 600, retries = 0 }
+```
+
+- **`target`** names a typed operation. The first built-ins are finite workflows that already
+  exist: `scan` (incremental, or `{ full = true }` in `input`) and `batch-commit` (the
+  `vulcan git batch-commit` pass). `outline-publish` and `site-build` follow once their inputs
+  are classified as execution configuration. App jobs (`{ app = ..., job = ... }`) come with
+  Phase 19.10 and use the same fields.
+- **`nodes`** selects devices by their key-derived device ID. A device runs a job only when its own
+  ID is listed. Several IDs mean independent runs on each, not a shared queue.
+- **`authority`** is a permission profile, capped by the registration's ceiling. A synced change
+  can choose a narrower profile, never a wider one than the device allows.
+- **`limits`**: `max_runtime_seconds` (1 to 86,400, default 3,600) is enforced by cooperative
+  cancellation. `retries` (0 to 5, default 0) applies only to targets that declare themselves
+  idempotent; `scan` and `batch-commit` do.
+- **Definition revision** is the BLAKE3 digest of the job's canonical JSON. A changed definition is
+  a new revision, so its occurrences never collide with the old one's.
+
+### Time
+
+- **Intervals** (`every`, 1 minute to 31 days) fire at `anchor + k × every`.
+- **Cron** is the classic five fields (minute, hour, day of month, month, day of week). Lists,
+  ranges, steps, and `*` are supported; names and `@` shortcuts are not in v1. When both day
+  fields are restricted, either may match, as in Vixie cron. `timezone` is a required IANA name.
+- **DST.** A time inside a spring-forward gap fires at the first valid instant after the gap. A
+  time that repeats in the fall fires once, at its first occurrence.
+- **Missed runs coalesce.** After downtime, suspend, or a forward clock jump, only the most recent
+  missed occurrence runs. A backward jump never repeats an occurrence: a per-job watermark records
+  the latest dispatched instant.
+- **No overlap.** While a job runs, a due occurrence waits as the single pending follow-up; later
+  ones coalesce into it.
+- The scheduler is one supervised daemon service with an injected clock, so all of this is tested
+  without real time.
+
+### State
+
+Occurrences live in `daemon/schedules.sqlite` in the device state directory, outside `cache.db`
+and outside sync:
+
+- `occurrences(job_id, revision, scheduled_utc, state, started_ms, finished_ms, outcome)` with
+  `(job_id, revision, scheduled_utc)` unique, written as `dispatched` before the workflow starts;
+- `watermarks(job_id, revision, last_scheduled_utc)`, never pruned while the job exists;
+- history pruned to the newest 200 occurrences per job, or 30 days.
+
+An occurrence found `dispatched` after a crash is retried only if its target is idempotent, and
+otherwise reported as `interrupted`.
+
+### Commands
+
+`vulcan schedule list`, `show <id>`, `next <id> [--count N]` (the next local and UTC times),
+`history <id>`, `run <id> [--dry-run]` (once, now, through the same authorizer; works without the
+daemon), and `enable <id>` / `disable <id>` (`--dry-run`), which edit the shared configuration.
+All have JSON output. Status shows each job's active and pending revision, whether this device is
+a target, the trust decision, next run, last success or error, and a running job's cancellation.
+
+### Trust staging
+
+v1 ships the scheduler with `repository-trust` and the shared synchronous execution-authorizer
+boundary, which returns the verified execution identity. `trusted-commit` (static
+`allowed_signers`, exact-commit resolution, rollback and fork checks) is the next slice. It
+plugs into the same authorizer without changing scheduler types.
+
 ## Two trust policies, one execution path
 
 `repository-trust` accepts incoming execution definitions as configured, including local
