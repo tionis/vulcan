@@ -31,7 +31,6 @@ use vulcan_core::{load_vault_config, GitBatchMessages, GitConfig, VaultPaths, Ve
 pub const AUTO_COMMIT_STATUS_VERSION: u32 = 1;
 /// How often the consumer rereads `[git]` while it waits.
 const CONFIG_REFRESH: Duration = Duration::from_secs(5);
-const MAX_WAIT: Duration = Duration::from_secs(1);
 
 /// Whether hidden-ref sync owns automatic capture for `registration`. A
 /// registration without a backend predates `--no-sync` and syncs with Git.
@@ -274,10 +273,12 @@ pub(crate) fn consume_auto_commit_observations_with_stop(
             }
             continue;
         }
-        let wait = due
-            .map_or(MAX_WAIT, |due| due.saturating_duration_since(now))
-            .min(MAX_WAIT);
-        match subscription.recv_timeout(wait) {
+        // Wake when the batch comes due or the configuration is reread.
+        let refresh = (config_read + CONFIG_REFRESH).saturating_duration_since(now);
+        let wait = due.map_or(refresh, |due| {
+            due.saturating_duration_since(now).min(refresh)
+        });
+        match subscription.recv_until(Some(wait), || stop.is_cancelled()) {
             Ok(ObservationEvent::FilesystemHint(event)) if event.barrier_only() => {}
             Ok(ObservationEvent::FilesystemHint(event)) => {
                 if !event.paths.is_empty() || event.safety_rescan {

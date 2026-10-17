@@ -20,7 +20,6 @@ const SCAN_STATUS_VERSION: u32 = 1;
 const MAX_SCAN_STATUS_BYTES: u64 = 64 * 1024;
 
 const MAX_SCAN_ERROR_BYTES: usize = 512;
-const INDEX_WAIT_POLL: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -381,11 +380,8 @@ pub fn consume_index_observations_with_stop(
             run_incremental_scan(vault, hub, tracker, &mut pending)?;
             continue;
         }
-        let timeout = pending
-            .next_timeout(now, quiet, maximum)
-            .unwrap_or(INDEX_WAIT_POLL)
-            .min(INDEX_WAIT_POLL);
-        match subscription.recv_timeout(timeout) {
+        let timeout = pending.next_timeout(now, quiet, maximum);
+        match subscription.recv_until(timeout, || stop.is_cancelled()) {
             Ok(ObservationEvent::FilesystemHint(event)) => {
                 let barriers = event.barriers.clone();
                 if !event.barrier_only() {

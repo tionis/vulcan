@@ -306,7 +306,7 @@ pub(crate) fn consume_sync_observations_with_stop(
                 },
             )?;
         }
-        match subscription.recv_timeout(WATCH_POLL_INTERVAL) {
+        match subscription.recv_until(None, || stop.is_cancelled()) {
             Ok(ObservationEvent::FilesystemHint(event)) if event.barrier_only() => {}
             Ok(ObservationEvent::FilesystemHint(event)) => {
                 supervisor.enqueue_watch(

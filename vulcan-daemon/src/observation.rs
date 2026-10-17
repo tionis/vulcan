@@ -6,6 +6,8 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, Weak};
+use std::thread::Thread;
+use std::time::{Duration, Instant};
 
 const MAX_CONSUMERS: usize = 32;
 const MAX_QUEUE_CAPACITY: usize = 1_024;
@@ -221,6 +223,36 @@ struct ConsumerEntry {
     sender: mpsc::SyncSender<ObservationEvent>,
     reconciliation_required: Arc<AtomicBool>,
     dropped_events: Arc<AtomicU64>,
+    waiter: Waiter,
+}
+
+/// The thread parked in [`ObservationSubscription::recv_until`], woken on
+/// each delivery and when the hub goes away.
+type Waiter = Arc<Mutex<Option<Thread>>>;
+
+fn wake(waiter: &Waiter) {
+    if let Some(thread) = waiter.lock().ok().and_then(|thread| thread.clone()) {
+        thread.unpark();
+    }
+}
+
+impl Drop for HubInner {
+    fn drop(&mut self) {
+        // Close every channel before waking its consumer, so that the woken
+        // consumer sees the disconnection rather than parking again.
+        let consumers = std::mem::take(
+            self.consumers
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        let waiters = consumers
+            .into_values()
+            .map(|consumer| consumer.waiter)
+            .collect::<Vec<_>>();
+        for waiter in &waiters {
+            wake(waiter);
+        }
+    }
 }
 
 impl Default for VaultObservationHub {
@@ -256,6 +288,7 @@ impl VaultObservationHub {
         let (sender, receiver) = mpsc::sync_channel(policy.queue_capacity);
         let reconciliation_required = Arc::new(AtomicBool::new(true));
         let dropped_events = Arc::new(AtomicU64::new(0));
+        let waiter = Waiter::default();
         consumers.insert(
             id.clone(),
             ConsumerEntry {
@@ -264,6 +297,7 @@ impl VaultObservationHub {
                 sender,
                 reconciliation_required: Arc::clone(&reconciliation_required),
                 dropped_events: Arc::clone(&dropped_events),
+                waiter: Arc::clone(&waiter),
             },
         );
         Ok(ObservationSubscription {
@@ -273,6 +307,7 @@ impl VaultObservationHub {
             receiver,
             reconciliation_required,
             dropped_events,
+            waiter,
             hub: Arc::downgrade(&self.inner),
         })
     }
@@ -292,7 +327,9 @@ impl VaultObservationHub {
             let Some(event) = event.filtered(&consumer.policy.filter) else {
                 continue;
             };
-            match consumer.sender.try_send(event) {
+            let sent = consumer.sender.try_send(event);
+            wake(&consumer.waiter);
+            match sent {
                 Ok(()) => report.delivered.push(id.clone()),
                 Err(mpsc::TrySendError::Full(_)) => {
                     consumer
@@ -321,6 +358,7 @@ pub struct ObservationSubscription {
     receiver: mpsc::Receiver<ObservationEvent>,
     reconciliation_required: Arc<AtomicBool>,
     dropped_events: Arc<AtomicU64>,
+    waiter: Waiter,
     hub: Weak<HubInner>,
 }
 
@@ -334,6 +372,46 @@ impl ObservationSubscription {
         timeout: std::time::Duration,
     ) -> Result<ObservationEvent, mpsc::RecvTimeoutError> {
         self.receiver.recv_timeout(timeout)
+    }
+
+    /// Waits for the next event without polling: until `timeout` passes
+    /// (forever when `None`) or `stopped` holds, which both report
+    /// `Timeout`. The hub wakes the waiting thread on each delivery and when
+    /// it goes away; whatever makes `stopped` true must wake it too, as
+    /// [`crate::shutdown::ShutdownSignal`] does for registered threads.
+    pub fn recv_until(
+        &self,
+        timeout: Option<Duration>,
+        stopped: impl Fn() -> bool,
+    ) -> Result<ObservationEvent, mpsc::RecvTimeoutError> {
+        if let Ok(mut waiter) = self.waiter.lock() {
+            *waiter = Some(std::thread::current());
+        }
+        let deadline = timeout.map(|timeout| Instant::now() + timeout);
+        loop {
+            match self.receiver.try_recv() {
+                Ok(event) => return Ok(event),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err(mpsc::RecvTimeoutError::Disconnected);
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+            if stopped() {
+                return Err(mpsc::RecvTimeoutError::Timeout);
+            }
+            // A wake that arrived since `try_recv` makes the park return
+            // at once, so no delivery is missed.
+            match deadline {
+                Some(deadline) => {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        return Err(mpsc::RecvTimeoutError::Timeout);
+                    }
+                    std::thread::park_timeout(deadline - now);
+                }
+                None => std::thread::park(),
+            }
+        }
     }
 
     #[must_use]
@@ -554,5 +632,69 @@ mod tests {
                 .fingerprint
         );
         assert_eq!(first.fingerprint.len(), 64);
+    }
+
+    fn subscribed(hub: &VaultObservationHub) -> ObservationSubscription {
+        hub.subscribe(
+            ObservationConsumerId::parse("parked").expect("id"),
+            policy(ObservationConsumerKind::Sync, 4),
+        )
+        .expect("subscribe")
+    }
+
+    #[test]
+    fn a_parked_consumer_wakes_on_delivery_stop_and_hub_drop() {
+        use crate::shutdown::ShutdownSignal;
+        use std::thread;
+
+        // A delivery wakes a consumer that waits without a timeout.
+        let hub = VaultObservationHub::default();
+        let subscription = subscribed(&hub);
+        let consumer = thread::spawn(move || subscription.recv_until(None, || false));
+        thread::sleep(Duration::from_millis(50));
+        hub.publish(&hint(1, "a.md")).expect("publish");
+        assert_eq!(consumer.join().expect("join"), Ok(hint(1, "a.md")));
+
+        // A stop signal wakes it with `Timeout`.
+        let hub = VaultObservationHub::default();
+        let subscription = subscribed(&hub);
+        let stop = Arc::new(ShutdownSignal::default());
+        let thread_stop = Arc::clone(&stop);
+        let consumer = thread::spawn(move || {
+            thread_stop.register_current_thread();
+            subscription.recv_until(None, || thread_stop.is_cancelled())
+        });
+        thread::sleep(Duration::from_millis(50));
+        stop.cancel();
+        assert_eq!(
+            consumer.join().expect("join"),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
+
+        // The hub going away wakes it with `Disconnected`.
+        let hub = VaultObservationHub::default();
+        let subscription = subscribed(&hub);
+        let consumer = thread::spawn(move || subscription.recv_until(None, || false));
+        thread::sleep(Duration::from_millis(50));
+        drop(hub);
+        assert_eq!(
+            consumer.join().expect("join"),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        );
+
+        // A timeout still bounds the wait, and queued events come first.
+        let hub = VaultObservationHub::default();
+        let subscription = subscribed(&hub);
+        let started = Instant::now();
+        assert_eq!(
+            subscription.recv_until(Some(Duration::from_millis(30)), || false),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
+        assert!(started.elapsed() >= Duration::from_millis(30));
+        hub.publish(&hint(2, "b.md")).expect("publish");
+        assert_eq!(
+            subscription.recv_until(Some(Duration::ZERO), || true),
+            Ok(hint(2, "b.md"))
+        );
     }
 }
