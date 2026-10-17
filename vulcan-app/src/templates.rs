@@ -1358,6 +1358,26 @@ pub fn apply_template_insert(
 /// Insert a rendered template into a note. Like every note write, the
 /// blocking `on_note_write` hooks run first and may veto it; the write and
 /// the hooks use `permission_profile`.
+/// Tests that race a template insert against a concurrent edit register a
+/// vault here to learn when an insert into it has read and rendered its
+/// note and is about to write, instead of guessing with a timer.
+#[cfg(test)]
+pub(crate) static INSERT_RENDERED: std::sync::Mutex<
+    Option<(std::path::PathBuf, std::sync::mpsc::Sender<()>)>,
+> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn announce_insert_rendered(paths: &VaultPaths) {
+    let registered = INSERT_RENDERED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((root, sender)) = registered.as_ref() {
+        if root == paths.vault_root() {
+            let _ = sender.send(());
+        }
+    }
+}
+
 pub fn apply_template_insert_with_filter(
     paths: &VaultPaths,
     request: &TemplateInsertRequest,
@@ -1399,6 +1419,8 @@ pub fn apply_template_insert_with_filter(
         .map_err(AppError::operation)?;
     let updated =
         apply_template_insertion_mode(&prepared, request.mode).map_err(AppError::operation)?;
+    #[cfg(test)]
+    announce_insert_rendered(paths);
     write_template_note(
         paths,
         &TemplateNoteWrite {

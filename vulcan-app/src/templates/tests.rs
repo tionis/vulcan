@@ -1640,6 +1640,13 @@ fn template_insert_does_not_publish_companion_when_final_note_changes() {
     let paths = VaultPaths::new(root);
     scan_vault(&paths, ScanMode::Full).expect("scan");
     let lock = vulcan_core::write_lock::acquire_write_lock(&paths).expect("write lock");
+    // Learn when the insert has read and rendered `Home.md`, rather than
+    // guessing with a timer: under load the worker may not have read it yet.
+    let (rendered_tx, rendered_rx) = mpsc::channel();
+    *crate::templates::INSERT_RENDERED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        Some((paths.vault_root().to_path_buf(), rendered_tx));
     let (done_tx, done_rx) = mpsc::channel();
     let worker = std::thread::spawn(move || {
         done_tx
@@ -1655,13 +1662,20 @@ fn template_insert_does_not_publish_companion_when_final_note_changes() {
             ))
             .expect("result");
     });
-    assert!(done_rx.recv_timeout(Duration::from_millis(150)).is_err());
+    rendered_rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the insert rendered the original note");
+    // It now waits for the write lock this test holds.
+    assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err());
     fs::write(root.join("Home.md"), "Concurrent edit\n").expect("concurrent edit");
     drop(lock);
-    done_rx
-        .recv_timeout(Duration::from_secs(5))
-        .expect("worker finished")
-        .expect_err("stale insert");
+    let outcome = done_rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("worker finished");
+    *crate::templates::INSERT_RENDERED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    outcome.expect_err("stale insert");
     worker.join().expect("worker join");
     assert!(!root.join("Side.md").exists());
     assert_eq!(
