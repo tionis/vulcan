@@ -581,6 +581,21 @@ fn keyword_search_hits(
         );
     }
 
+    // A broad term can match most notes. With nothing but the match to
+    // filter on, rank by score alone first and run the full query over just
+    // the winners (see `top_ranked_rowids`).
+    let top_ranked = top_ranked_enabled()
+        && use_fts
+        && sort == SearchSort::Relevance
+        && candidate_limit == limit
+        && limit <= TOP_RANKED_MAX_LIMIT
+        && permission_sql.clause.is_empty()
+        && prepared.path_prefix.is_none()
+        && prepared.tag.is_none()
+        && prepared.has_property.is_none()
+        && prepared.file_terms.is_empty()
+        && prepared.filter_paths.is_none();
+    let fts_query = candidate_query.clone();
     let mut params = permission_sql
         .params
         .into_iter()
@@ -626,43 +641,29 @@ fn keyword_search_hits(
             serde_json::to_string(filter_paths).expect("paths serialize"),
         ));
     }
-    sql.push_str(&permission_sql.clause);
-    sql.push_str(keyword_order_clause(sort, use_fts));
-    sql.push_str(" LIMIT ?");
-    params.push(SqlValue::Integer(candidate_limit));
-
-    let mut statement = connection.prepare(&sql)?;
-    let rows = statement.query_map(params_from_iter(params.iter()), |row| {
-        let heading_path = row.get::<_, String>(2)?;
-        Ok(SearchCandidate {
-            hit: SearchHit {
-                document_path: row.get(0)?,
-                chunk_id: row.get(1)?,
-                heading_path: serde_json::from_str(&heading_path).map_err(|error| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        2,
-                        rusqlite::types::Type::Text,
-                        Box::new(error),
-                    )
-                })?,
-                snippet: row.get(3)?,
-                matched_line: None,
-                section_id: None,
-                line_spans: Vec::new(),
-                rank: row.get(4)?,
-                explain: None,
-            },
-            content: row.get(5)?,
-            document_title: row.get(6)?,
-            aliases: row.get(7)?,
-            headings: row.get(8)?,
-        })
-    })?;
-    let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+    let order_clause = keyword_order_clause(sort, use_fts);
+    let limit_rows = usize::try_from(limit).unwrap_or(usize::MAX);
     let mut section_contexts = SectionContextCache::new(SECTION_CONTEXT_CACHE_BYTES);
-    let mut hits = collect_filtered_batches(rows, limit, |candidates| {
-        filter_search_candidates(connection, candidates, prepared, &mut section_contexts)
-    })?;
+    let ranked = if top_ranked {
+        top_ranked_candidates(connection, &fts_query, limit_rows, query.context_size)?
+    } else {
+        None
+    };
+    let mut hits = if let Some(rows) = ranked {
+        collect_filtered_batches(rows.into_iter(), limit_rows, |candidates| {
+            filter_search_candidates(connection, candidates, prepared, &mut section_contexts)
+        })?
+    } else {
+        sql.push_str(&permission_sql.clause);
+        sql.push_str(order_clause);
+        sql.push_str(" LIMIT ?");
+        params.push(SqlValue::Integer(candidate_limit));
+        let mut statement = connection.prepare(&sql)?;
+        let rows = statement.query_map(params_from_iter(params.iter()), search_candidate_row)?;
+        collect_filtered_batches(rows, limit_rows, |candidates| {
+            filter_search_candidates(connection, candidates, prepared, &mut section_contexts)
+        })?
+    };
 
     if query.explain {
         for (index, hit) in hits.iter_mut().enumerate() {
@@ -679,6 +680,238 @@ fn keyword_search_hits(
         }
     }
     Ok(hits)
+}
+
+fn search_candidate_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SearchCandidate> {
+    let heading_path = row.get::<_, String>(2)?;
+    Ok(SearchCandidate {
+        hit: SearchHit {
+            document_path: row.get(0)?,
+            chunk_id: row.get(1)?,
+            heading_path: serde_json::from_str(&heading_path).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    2,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?,
+            snippet: row.get(3)?,
+            matched_line: None,
+            section_id: None,
+            line_spans: Vec::new(),
+            rank: row.get(4)?,
+            explain: None,
+        },
+        content: row.get(5)?,
+        document_title: row.get(6)?,
+        aliases: row.get(7)?,
+        headings: row.get(8)?,
+    })
+}
+
+/// Largest `--limit` the score-first ranking serves; beyond it the full
+/// query's own sort is no slower.
+const TOP_RANKED_MAX_LIMIT: i64 = 1_000;
+/// A boundary tie group up to this size is ordered by joining it whole;
+/// a larger one is drawn from a walk of notes in path order.
+const TOP_RANKED_TIE_JOIN_MAX: usize = 4_096;
+
+/// Tests compare the score-first ranking with the full query's, and force
+/// each of its tie-breaking strategies.
+#[cfg(test)]
+struct TopRankedTest {
+    disabled: std::cell::Cell<bool>,
+    tie_join_max: std::cell::Cell<Option<usize>>,
+    used: std::cell::Cell<usize>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static TOP_RANKED_TEST: TopRankedTest = const {
+        TopRankedTest {
+            disabled: std::cell::Cell::new(false),
+            tie_join_max: std::cell::Cell::new(None),
+            used: std::cell::Cell::new(0),
+        }
+    };
+}
+
+fn top_ranked_enabled() -> bool {
+    #[cfg(test)]
+    if TOP_RANKED_TEST.with(|test| test.disabled.get()) {
+        return false;
+    }
+    true
+}
+
+fn top_ranked_tie_join_max() -> usize {
+    #[cfg(test)]
+    if let Some(max) = TOP_RANKED_TEST.with(|test| test.tie_join_max.get()) {
+        return max;
+    }
+    TOP_RANKED_TIE_JOIN_MAX
+}
+
+/// The `limit` best keyword candidates for `fts_query` in the keyword order
+/// (score, then note path, then chunk position), as the full query would
+/// return them, or `None` when the index is inconsistent and the full query
+/// should rank instead.
+///
+/// `bm25()` scans every match once per statement before it scores a row, so
+/// one statement scores every match; joining every match to its note only
+/// to break ties is what this avoids. Rows that beat the `limit`-th score
+/// are taken as they are, and only the group tied with it is ordered by
+/// path: whole when small, otherwise by walking notes in path order until
+/// enough of it is found (most notes sharing a term ties them all). A second
+/// statement then reads just the winners, with their snippets but without
+/// `bm25()`, and they are ordered with the scores already computed.
+fn top_ranked_candidates(
+    connection: &Connection,
+    fts_query: &str,
+    limit: usize,
+    context_size: usize,
+) -> Result<Option<Vec<rusqlite::Result<SearchCandidate>>>, SearchError> {
+    let mut statement = connection.prepare(
+        "SELECT rowid, bm25(search_chunks_fts, 10.0, 5.0, 3.0, 2.0)
+         FROM search_chunks_fts WHERE search_chunks_fts MATCH ?",
+    )?;
+    let mut scored = statement
+        .query_map([fts_query], |row| {
+            Ok((row.get::<_, f64>(1)?, row.get::<_, i64>(0)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let selected = select_top_rowids(connection, &mut scored, limit)?;
+    let score_by_rowid = scored
+        .iter()
+        .map(|&(score, rowid)| (rowid, score))
+        .collect::<HashMap<_, _>>();
+    // The winners' columns, as the full query selects them, with the score
+    // filled in from above and the tie-break keys appended.
+    let mut statement = connection.prepare(&format!(
+        "SELECT
+            documents.path,
+            chunks.id,
+            chunks.heading_path,
+            snippet(search_chunks_fts, 0, '[', ']', '…', {context_size}),
+            0.0,
+            search_chunk_content.content,
+            search_chunk_content.document_title,
+            search_chunk_content.aliases,
+            search_chunk_content.headings,
+            search_chunks_fts.rowid,
+            chunks.sequence_index
+        FROM search_chunks_fts
+        JOIN search_chunk_content ON search_chunks_fts.rowid = search_chunk_content.id
+        JOIN chunks ON chunks.id = search_chunk_content.chunk_id
+        JOIN documents ON documents.id = search_chunk_content.document_id
+        WHERE search_chunks_fts MATCH ?
+          AND search_chunks_fts.rowid IN (SELECT value FROM json_each(?))"
+    ))?;
+    let ids = serde_json::to_string(&selected).expect("ids serialize");
+    let mut rows = statement
+        .query_map(rusqlite::params![fts_query, ids], |row| {
+            let mut candidate = search_candidate_row(row)?;
+            let rowid = row.get::<_, i64>(9)?;
+            candidate.hit.rank = score_by_rowid.get(&rowid).copied().unwrap_or_default();
+            Ok((candidate, row.get::<_, i64>(10)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    // Every selected row joins to its chunk and note unless the index is
+    // inconsistent; then let the full query rank rather than return less.
+    if rows.len() != selected.len() {
+        return Ok(None);
+    }
+    #[cfg(test)]
+    TOP_RANKED_TEST.with(|test| test.used.set(test.used.get() + 1));
+    rows.sort_by(|(left, left_sequence), (right, right_sequence)| {
+        left.hit
+            .rank
+            .partial_cmp(&right.hit.rank)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.hit.document_path.cmp(&right.hit.document_path))
+            .then_with(|| left_sequence.cmp(right_sequence))
+    });
+    Ok(Some(
+        rows.into_iter()
+            .map(|(candidate, _)| Ok(candidate))
+            .collect(),
+    ))
+}
+
+/// The row ids of the `limit` best of `scored` (score, row id) in keyword
+/// order: every row that beats the `limit`-th score, then as many of the
+/// rows tied with it as fit, in note path and chunk position order.
+fn select_top_rowids(
+    connection: &Connection,
+    scored: &mut [(f64, i64)],
+    limit: usize,
+) -> Result<Vec<i64>, SearchError> {
+    let mut selected = Vec::with_capacity(limit.min(scored.len()));
+    if scored.len() <= limit {
+        selected.extend(scored.iter().map(|&(_, rowid)| rowid));
+    } else if limit > 0 {
+        scored.select_nth_unstable_by(limit - 1, |left, right| {
+            left.0
+                .partial_cmp(&right.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let boundary = scored[limit - 1].0;
+        let mut tied = HashSet::new();
+        for &(score, rowid) in scored.iter() {
+            match score.partial_cmp(&boundary) {
+                Some(std::cmp::Ordering::Less) => selected.push(rowid),
+                Some(std::cmp::Ordering::Equal) => {
+                    tied.insert(rowid);
+                }
+                _ => {}
+            }
+        }
+        let need = limit - selected.len();
+        if tied.len() == need {
+            selected.extend(tied);
+        } else if tied.len() <= top_ranked_tie_join_max() {
+            let ids =
+                serde_json::to_string(&tied.iter().collect::<Vec<_>>()).expect("ids serialize");
+            let mut statement = connection.prepare(
+                "SELECT search_chunk_content.id
+                 FROM search_chunk_content
+                 JOIN chunks ON chunks.id = search_chunk_content.chunk_id
+                 JOIN documents ON documents.id = search_chunk_content.document_id
+                 WHERE search_chunk_content.id IN (SELECT value FROM json_each(?))
+                 ORDER BY documents.path ASC, chunks.sequence_index ASC
+                 LIMIT ?",
+            )?;
+            let rows = statement
+                .query_map(
+                    rusqlite::params![ids, i64::try_from(need).unwrap_or(i64::MAX)],
+                    |row| row.get::<_, i64>(0),
+                )?
+                .collect::<Result<Vec<_>, _>>()?;
+            selected.extend(rows);
+        } else {
+            // Notes in path order, each note's chunks in position order;
+            // stop as soon as enough of the tie group has been seen.
+            let mut statement = connection.prepare(
+                "SELECT search_chunk_content.id
+                 FROM documents INDEXED BY idx_documents_path
+                 CROSS JOIN chunks ON chunks.document_id = documents.id
+                 CROSS JOIN search_chunk_content
+                    ON search_chunk_content.chunk_id = chunks.id
+                 ORDER BY documents.path ASC, chunks.sequence_index ASC",
+            )?;
+            let mut rows = statement.query([])?;
+            let mut found = 0;
+            while found < need {
+                let Some(row) = rows.next()? else { break };
+                let rowid = row.get::<_, i64>(0)?;
+                if tied.contains(&rowid) {
+                    selected.push(rowid);
+                    found += 1;
+                }
+            }
+        }
+    }
+    Ok(selected)
 }
 
 const SEARCH_CANDIDATE_BATCH_SIZE: usize = 128;
@@ -3358,6 +3591,102 @@ mod tests {
                 assert_eq!(limited.hits, all.hits[..3], "{text} {sort:?}");
             }
         }
+    }
+
+    #[test]
+    fn score_first_ranking_returns_exactly_what_the_full_query_ranks() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        // Identical notes tie on score, so their order is the path order
+        // (bytes: upper case before lower, folders interleaved); notes that
+        // repeat a term score apart; headed notes have several chunks.
+        let mut notes = Vec::new();
+        for index in 0..24 {
+            let folder = ["", "b/", "B/", "a/z/"][index % 4];
+            notes.push((
+                format!("{folder}tie-{:02}.md", 23 - index),
+                "alpha shared words\n".to_string(),
+            ));
+        }
+        for repeat in 1..=8 {
+            notes.push((
+                format!("Score {repeat}.md"),
+                format!("{}shared\n", "alpha ".repeat(repeat)),
+            ));
+        }
+        for index in 0..6 {
+            notes.push((
+                format!("headed/h{index}.md"),
+                "# One\nalpha shared\n\n# Two\nalpha shared\n\n# Three\nbeta only\n".to_string(),
+            ));
+        }
+        for (path, text) in &notes {
+            let path = vault_root.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let search = |text: &str, limit: Option<usize>, explain: bool| {
+            search_vault(
+                &paths,
+                &SearchQuery {
+                    text: text.to_string(),
+                    limit,
+                    explain,
+                    ..SearchQuery::default()
+                },
+            )
+            .expect("search should succeed")
+        };
+        let set = |disabled: bool, tie_join_max: Option<usize>| {
+            TOP_RANKED_TEST.with(|test| {
+                test.disabled.set(disabled);
+                test.tie_join_max.set(tie_join_max);
+            });
+        };
+        let mut compared = 0;
+        for text in [
+            "alpha",
+            "shared",
+            "alpha shared",
+            "alpha OR beta",
+            "words",
+            "absent",
+        ] {
+            for limit in [
+                Some(0),
+                Some(1),
+                Some(3),
+                Some(7),
+                Some(20),
+                Some(45),
+                Some(500),
+            ] {
+                for explain in [false, true] {
+                    set(true, None);
+                    let expected = search(text, limit, explain);
+                    // Joining the tie group whole, then walking notes in path order.
+                    for tie_join_max in [None, Some(0)] {
+                        set(false, tie_join_max);
+                        let actual = search(text, limit, explain);
+                        assert_eq!(
+                            actual, expected,
+                            "{text:?} limit {limit:?} explain {explain} tie join {tie_join_max:?}"
+                        );
+                        compared += 1;
+                    }
+                }
+            }
+        }
+        set(false, None);
+        assert_eq!(compared, 6 * 7 * 2 * 2);
+        assert!(
+            TOP_RANKED_TEST.with(|test| test.used.get()) > 100,
+            "the score-first ranking ran"
+        );
     }
 
     #[test]

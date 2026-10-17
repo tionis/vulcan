@@ -1,0 +1,32 @@
+{
+  "acceptance_gate_result": "not_evaluated",
+  "note": "Diagnostic for the 10.5 broad-search item: score-first ranking of keyword searches whose only filter is the full-text match.",
+  "commit": "the commit that adds this file (parent e04493f6), against e04493f6",
+  "binary": "target/release/vulcan (cargo build --release -p vulcan-cli)",
+  "fixtures": [
+    "mdb-100k/collection from scripts/generate_mdb_fixture.py (generator v1, seed 42, 100,000 records, 1,000,000 links), scanned with `scan --full`"
+  ],
+  "machine": {
+    "host": "development laptop, not the designated evaluation host (Intel Core i7-8650U, 31 GiB RAM, Debian 13)"
+  },
+  "setup": [
+    "Isolated XDG_CONFIG_HOME, XDG_STATE_HOME, XDG_DATA_HOME, and XDG_CACHE_HOME; no daemon"
+  ],
+  "method": {
+    "command": "vulcan --vault <fixture> --output json --refresh off <case>",
+    "timing": "wall clock of the whole process from Python subprocess.run; 8 runs per case, the first discarded",
+    "equivalence": "sha256 of stdout, compared between the two binaries"
+  },
+  "findings": [
+    "bm25() scans the whole match list once per statement before scoring any row (about 170 ms for a term in every note); scoring the rows themselves is cheap.",
+    "The rest of the old cost was joining every match to its chunk and note and sorting by score, path, and position. In the fixture every note has the same text, so 99,982 of 100,000 `benchmark` matches tie and the order is decided by path.",
+    "The new path scores every match in one statement, keeps the rows that beat the limit-th score, orders only the boundary tie group by path (whole when it has at most 4,096 rows, otherwise by walking notes in path order and stopping early), and reads just the winners with snippets but without bm25()."
+  ],
+  "results_ms": {
+    "--limit 20 search benchmark": { "before_p50": 831.0, "after_p50": 316.4, "outputs_identical": true },
+    "--limit 20 search project": { "before_p50": 653.2, "after_p50": 171.7, "outputs_identical": true },
+    "search Task 000027": { "before_p50": 21.9, "after_p50": 21.9, "outputs_identical": true },
+    "search --path-prefix public/project Project 000245": { "before_p50": 21.1, "after_p50": 21.0, "outputs_identical": true, "path": "unchanged: a path prefix keeps the full query" }
+  },
+  "remaining": "About 270 ms of the broad case is the single bm25() statement over every match, which any exact ranking by score needs."
+}
