@@ -123,7 +123,8 @@ the caller's stderr open. Windows OpenSSH does not support it and always runs is
 
 ### Plain `git` (`core.sshCommand`, on by default)
 
-Vulcan's own Git calls always use the device key through the environment. So that plain `git` in the
+Vulcan's own Git calls always use the device key through the environment, including the daemon's
+notification-advertisement discovery, which so shares the sync's connection. So that plain `git` in the
 repository uses it too without any extra step, `bind` also writes the repository-local
 `core.sshCommand`. This is the default; `--no-git-config` opts out, and `--git-config` insists
 (failing instead of skipping).

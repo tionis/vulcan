@@ -632,6 +632,7 @@ fn daemon_worker_registrations(
     )?;
     let notification_registry = context.registry.clone();
     let notification_supervisor = Arc::clone(supervisor);
+    let notification_state_store = Arc::clone(state_store);
     let notification_runtime = runtime.clone();
     registrations.push(ServiceRegistration::new(
         notification_definition,
@@ -641,6 +642,7 @@ fn daemon_worker_registrations(
                 .block_on(run_notification_runtime_until(
                     notification_registry.clone(),
                     Arc::clone(&notification_supervisor),
+                    Arc::clone(&notification_state_store),
                     NotificationRuntimeOptions {
                         verbosity,
                         ..NotificationRuntimeOptions::default()

@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
+use vulcan_app::sync_state::SyncStateStore;
 use vulcan_core::Verbosity;
 use vulcan_core::{
     resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
@@ -109,6 +110,7 @@ struct ListenerTask {
 pub async fn run_notification_runtime_until(
     registry: WikiRegistry,
     supervisor: Arc<SyncSupervisor>,
+    state_store: Arc<SyncStateStore>,
     options: NotificationRuntimeOptions,
     should_stop: Arc<ShutdownSignal>,
 ) -> Result<(), NotificationRuntimeError> {
@@ -122,8 +124,15 @@ pub async fn run_notification_runtime_until(
             stop_all_listeners(&mut listeners).await;
             return Ok(());
         }
-        if let Err(error) =
-            reconcile_listeners(&registry, &supervisor, options, &client, &mut listeners).await
+        if let Err(error) = reconcile_listeners(
+            &registry,
+            &supervisor,
+            &state_store,
+            options,
+            &client,
+            &mut listeners,
+        )
+        .await
         {
             stop_all_listeners(&mut listeners).await;
             return Err(error);
@@ -181,6 +190,7 @@ fn desired_listeners(registrations: Vec<WikiRegistration>) -> BTreeMap<String, W
 async fn reconcile_listeners(
     registry: &WikiRegistry,
     supervisor: &Arc<SyncSupervisor>,
+    state_store: &Arc<SyncStateStore>,
     options: NotificationRuntimeOptions,
     client: &reqwest::Client,
     listeners: &mut BTreeMap<String, ListenerTask>,
@@ -223,6 +233,7 @@ async fn reconcile_listeners(
             spawn_listener(
                 registration,
                 Arc::clone(supervisor),
+                Arc::clone(state_store),
                 options,
                 client.clone(),
                 options.verbosity,
@@ -245,6 +256,7 @@ fn listener_registration_changed(current: &WikiRegistration, desired: &WikiRegis
 fn spawn_listener(
     registration: WikiRegistration,
     supervisor: Arc<SyncSupervisor>,
+    state_store: Arc<SyncStateStore>,
     options: NotificationRuntimeOptions,
     client: reqwest::Client,
     verbosity: Verbosity,
@@ -256,7 +268,15 @@ fn spawn_listener(
     let task_stop = Arc::clone(&stop);
     let task_registration = registration.clone();
     let handle = tokio::spawn(async move {
-        run_listener(task_registration, supervisor, options, client, task_stop).await
+        run_listener(
+            task_registration,
+            supervisor,
+            state_store,
+            options,
+            client,
+            task_stop,
+        )
+        .await
     });
     ListenerTask {
         registration,
@@ -281,6 +301,7 @@ async fn stop_listeners(tasks: Vec<ListenerTask>) {
 async fn run_listener(
     registration: WikiRegistration,
     supervisor: Arc<SyncSupervisor>,
+    state_store: Arc<SyncStateStore>,
     options: NotificationRuntimeOptions,
     client: reqwest::Client,
     stop: Arc<ShutdownSignal>,
@@ -299,7 +320,7 @@ async fn run_listener(
             return Ok(());
         }
         if endpoint.is_none() || Instant::now() >= refresh_at {
-            match refresh_for_registration_interruptible(&registration, &stop).await {
+            match refresh_for_registration_interruptible(&registration, &state_store, &stop).await {
                 RefreshResult::Stopped => return Ok(()),
                 RefreshResult::Advertisement(discovered) => {
                     if options.verbosity.is_verbose() {
@@ -417,10 +438,13 @@ enum RefreshResult {
 
 async fn refresh_for_registration_interruptible(
     registration: &WikiRegistration,
+    state_store: &Arc<SyncStateStore>,
     stop: &Arc<ShutdownSignal>,
 ) -> RefreshResult {
     let registration = registration.clone();
-    let refresh = tokio::task::spawn_blocking(move || refresh_for_registration(&registration));
+    let state_store = Arc::clone(state_store);
+    let refresh =
+        tokio::task::spawn_blocking(move || refresh_for_registration(&registration, &state_store));
     tokio::select! {
         () = wait_until_stopped(stop) => RefreshResult::Stopped,
         result = refresh => match result {
@@ -436,6 +460,7 @@ async fn refresh_for_registration_interruptible(
 
 fn refresh_for_registration(
     registration: &WikiRegistration,
+    state_store: &SyncStateStore,
 ) -> Result<Option<DiscoveredNotificationAdvertisement>, String> {
     let paths = VaultPaths::new(&registration.path);
     let selection = resolve_permission_profile(&paths, registration.permissions_profile.as_deref())
@@ -443,7 +468,15 @@ fn refresh_for_registration(
     let guard = ProfilePermissionGuard::new(&paths, selection);
     guard.check_git().map_err(|error| error.to_string())?;
 
-    let engine = GitCliEngine::default().with_command_timeout(GIT_COMMAND_TIMEOUT);
+    // The vault's device-key transport, as its sync jobs use: plain `git`
+    // would run the `core.sshCommand` wrapper (a second `vulcan` process
+    // per connection, after Git's `-G` probe) and could not share the
+    // sync's SSH connection.
+    let engine = vulcan_app::sync_transport::apply_transport_with_state(
+        GitCliEngine::default().with_command_timeout(GIT_COMMAND_TIMEOUT),
+        &paths,
+        state_store,
+    );
     let repository = engine
         .discover_repository(&registration.path)
         .map_err(|error| error.to_string())?;
@@ -692,6 +725,9 @@ mod tests {
         let runtime = tokio::spawn(run_notification_runtime_until(
             registry,
             Arc::clone(&supervisor),
+            Arc::new(SyncStateStore::at(
+                temporary.path().join("state/sync/repositories"),
+            )),
             NotificationRuntimeOptions {
                 registry_refresh_ms: 10,
                 advertisement_refresh_ms: 60_000,
@@ -787,6 +823,9 @@ mod tests {
         let runtime = tokio::spawn(run_notification_runtime_until(
             registry,
             Arc::clone(&supervisor),
+            Arc::new(SyncStateStore::at(
+                temporary.path().join("state/sync/repositories"),
+            )),
             NotificationRuntimeOptions {
                 registry_refresh_ms: 10,
                 advertisement_refresh_ms: 60_000,
@@ -893,9 +932,57 @@ mod tests {
             sync_paused: false,
         };
 
-        let error = refresh_for_registration(&registration).expect_err("Git must be denied");
+        let state_store = SyncStateStore::at(temporary.path().join("state/sync/repositories"));
+        let error =
+            refresh_for_registration(&registration, &state_store).expect_err("Git must be denied");
         assert!(error.contains("git access"));
         assert!(!error.contains("private"));
+    }
+
+    #[test]
+    fn advertisement_discovery_uses_the_vault_device_key_transport() {
+        let temporary = tempdir().expect("temporary directory");
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&vault).expect("vault directory");
+        run_git(&vault, &["init"]);
+        // Nothing listens here; plain SSH would fail with a connection error.
+        run_git(
+            &vault,
+            &["remote", "add", "origin", "git@127.0.0.1:wiki.git"],
+        );
+        let state_store = SyncStateStore::at(temporary.path().join("state/sync/repositories"));
+        // A binding that cannot be read makes the transport fail closed with
+        // its own message, which only appears when discovery applies it.
+        let canonical = fs::canonicalize(&vault).expect("canonical vault");
+        let key = blake3::hash(canonical.to_string_lossy().as_bytes()).to_hex();
+        let binding = temporary
+            .path()
+            .join("state/sync/vault-local")
+            .join(&key.as_str()[..32]);
+        fs::create_dir_all(&binding).expect("vault-local state");
+        fs::write(binding.join("git-transport.json"), b"not a binding").expect("binding");
+        let registration = WikiRegistration {
+            profile: crate::registry::ManagedDirectoryProfile::Knowledge,
+            profile_version: None,
+            materialization: crate::registry::MaterializationProfile::Full,
+            id: WikiId::parse("alpha").expect("wiki id"),
+            registration_id: ulid::Ulid::new(),
+            path: vault,
+            work_tree: None,
+            groups: Vec::new(),
+            git_dir: None,
+            permissions_profile: None,
+            sync_backend: Some("git".to_string()),
+            platform_profile: None,
+            sync_paused: false,
+        };
+
+        let error = refresh_for_registration(&registration, &state_store)
+            .expect_err("the failing transport must stop discovery");
+        assert!(
+            error.contains("device-key Git transport unavailable"),
+            "{error}"
+        );
     }
 
     fn create_advertised_repository(root: &Path, endpoint: &str) -> std::path::PathBuf {
