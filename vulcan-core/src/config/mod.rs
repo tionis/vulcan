@@ -3133,6 +3133,22 @@ pub fn load_permission_profiles_with_overrides(
     loaded
 }
 
+/// The profiles a device may choose as its own limit for this vault: the
+/// built-ins and the device-local `config.local.toml`. The shared
+/// `config.toml` is synced, so it never contributes.
+#[must_use]
+pub fn load_device_permission_profiles(paths: &VaultPaths) -> PermissionProfilesLoadResult {
+    let mut loaded = load_permission_profiles_base();
+    if let Some(local_config) = load_vulcan_overrides(
+        paths.local_config_file(),
+        "local Vulcan config",
+        &mut loaded.diagnostics,
+    ) {
+        apply_permission_profile_overrides(&mut loaded.profiles, local_config.permissions);
+    }
+    loaded
+}
+
 fn load_permission_profiles_base() -> PermissionProfilesLoadResult {
     let profiles = builtin_permission_profiles();
     let diagnostics = Vec::new();

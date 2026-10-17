@@ -27,6 +27,12 @@ profile (`vulcan vault set notes --permissions-profile <profile>`): reads return
 profile may read, and operations it does not allow fail with 403. A token cannot reach Git sync
 administration, the job and event streams, or other vaults; those answer 404.
 
+That profile is this device's limit for the vault, so it must be a built-in profile or one defined
+in the vault's `.vulcan/config.local.toml`, which is never synced
+(`vulcan config permissions profile create <name> --target local`). A profile defined only in the
+synced `.vulcan/config.toml` is refused, and so is a synced definition that widens the device's,
+so nobody who can push to the vault can raise what its token or the daemon may do.
+
 ## Make a request
 
 Every request carries the token and the protocol version header:

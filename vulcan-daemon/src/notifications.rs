@@ -16,7 +16,7 @@ use tokio::time::Instant;
 use vulcan_app::sync_state::SyncStateStore;
 use vulcan_core::Verbosity;
 use vulcan_core::{
-    resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
+    resolve_device_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
 use vulcan_sync::{
     refresh_notification_advertisement, DiscoveredNotificationAdvertisement, GitCliEngine,
@@ -463,8 +463,9 @@ fn refresh_for_registration(
     state_store: &SyncStateStore,
 ) -> Result<Option<DiscoveredNotificationAdvertisement>, String> {
     let paths = VaultPaths::new(&registration.path);
-    let selection = resolve_permission_profile(&paths, registration.permissions_profile.as_deref())
-        .map_err(|error| error.to_string())?;
+    let selection =
+        resolve_device_permission_profile(&paths, registration.permissions_profile.as_deref())
+            .map_err(|error| error.to_string())?;
     let guard = ProfilePermissionGuard::new(&paths, selection);
     guard.check_git().map_err(|error| error.to_string())?;
 

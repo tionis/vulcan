@@ -16,7 +16,8 @@ use vulcan_app::sync::{
 use vulcan_app::sync_conflicts::list_sync_conflicts;
 use vulcan_app::sync_state::{same_work_tree, SyncStateStore};
 use vulcan_core::{
-    resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
+    resolve_device_permission_profile, resolve_permission_profile, PermissionGuard,
+    ProfilePermissionGuard, VaultPaths,
 };
 use vulcan_sync::{
     GitBranchSync, GitBranchSyncAction, GitCliEngine, GitRemoteObservation, GitSyncObserver,
@@ -377,7 +378,7 @@ fn check_registration_permission(
     paths: &VaultPaths,
     registration: &WikiRegistration,
 ) -> Result<(), SyncError> {
-    resolve_permission_profile(paths, registration.permissions_profile.as_deref())
+    resolve_device_permission_profile(paths, registration.permissions_profile.as_deref())
         .map_err(|error| SyncError::new(SyncErrorCategory::Configuration, error.to_string(), false))
         .and_then(|selection| {
             ProfilePermissionGuard::new(paths, selection)

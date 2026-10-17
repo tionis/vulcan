@@ -34,6 +34,13 @@ A bearer credential resolves to exactly one principal:
 | Companion credential (`vulcan daemon companion`) | Device | Every route and every registered vault | The registration's `permissions_profile` (default `unrestricted`) |
 | API token (`vulcan vault token create`) | Vault | The REST routes of its own vault, `GET /capabilities`, `GET /health`, and `GET /vaults` (listing only its vault) | The registration's `permissions_profile` |
 
+The registration's `permissions_profile` is the device's limit for the vault, so it resolves from
+built-in profiles and the vault's `config.local.toml` only (`resolve_device_permission_profile`).
+A name only the synced `config.toml` defines is refused, as is a synced definition wider than the
+device's or with a different policy hook; workflows that later resolve the same name with the full
+configuration therefore never exceed the device's definition. The same rule applies to named MCP
+remote ceilings and scheduled-job ceilings.
+
 An API token never reaches sync administration (pause, resume, conflict resolution, semantic
 plans), jobs, events, routed `ops`, or shutdown. Those stay device-only. A vault principal that
 names another vault's ID gets 404, so a token cannot probe other registrations.

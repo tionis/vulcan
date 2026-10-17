@@ -20,7 +20,7 @@ use vulcan_app::sync_semantic_auto::{
 };
 use vulcan_app::sync_state::SyncStateStore;
 use vulcan_core::{
-    resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
+    resolve_device_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
 use vulcan_sync::{GitCliEngine, GitEngine, SyncJobState};
 
@@ -244,7 +244,7 @@ fn semantic_change_watcher(
         if registration.sync_paused || !registration.capabilities().semantic_history {
             continue;
         }
-        let permitted = resolve_permission_profile(
+        let permitted = resolve_device_permission_profile(
             &paths,
             Some(
                 registration
@@ -398,7 +398,7 @@ fn run_for_registration(
         .permissions_profile
         .as_deref()
         .unwrap_or("unrestricted");
-    let permission = resolve_permission_profile(&paths, Some(profile))
+    let permission = resolve_device_permission_profile(&paths, Some(profile))
         .map(|selection| ProfilePermissionGuard::new(&paths, selection));
     let result = permission
         .map_err(|error| error.to_string())

@@ -32,7 +32,11 @@ security; Vulcan still authenticates and authorizes each connection.
 The human signs in through IndieAuth, then separately approves a vault, permission
 profile, eligible tool packs, scopes, and expiry on Vulcan's consent page. Packs
 select tools; permission profiles constrain authority. The server ceiling is the
-maximum, not an automatic grant. A ceiling cannot be `unrestricted`.
+maximum, not an automatic grant. A ceiling cannot be `unrestricted`, and it must be a built-in
+profile or one defined in the vault's device-local `.vulcan/config.local.toml`: a profile the
+synced `config.toml` defines, or widens, is refused as a ceiling, so a push to the vault cannot raise
+it. The consent profiles a connection may choose can still come from the synced config, within the
+ceiling.
 
 For writable daily/task workflows, review `daily-wiki-agent` and the explicit pack
 configuration in [ChatGPT MCP setup](chatgpt-mcp.md), also available through

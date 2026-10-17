@@ -578,7 +578,7 @@ where
                 RestError::new(StatusCode::NOT_FOUND, format!("unknown vault `{id}`"))
             })?;
         let paths = vulcan_core::VaultPaths::new(&wiki.path);
-        let profile = vulcan_core::resolve_permission_profile(
+        let profile = vulcan_core::resolve_device_permission_profile(
             &paths,
             Some(
                 wiki.permissions_profile
@@ -1118,7 +1118,7 @@ mod tests {
             std::fs::create_dir_all(vault.join("Private")).unwrap();
             std::fs::create_dir_all(vault.join(".vulcan")).unwrap();
             std::fs::write(
-                vault.join(".vulcan/config.toml"),
+                vault.join(".vulcan/config.local.toml"),
                 "[permissions.profiles.projects_only]\nread = { allow = [\"folder:Projects/**\"] }\ngit = \"allow\"\n\n[permissions.profiles.no_git]\nread = \"all\"\n",
             )
             .unwrap();

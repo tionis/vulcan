@@ -336,6 +336,24 @@ fn run_pass(
         Some(gate) => gate,
         None => &Ungated,
     };
+    // The registration's profile is this device's limit, so it is resolved
+    // from built-ins and local config only.
+    let profile_name = registration
+        .permissions_profile
+        .as_deref()
+        .unwrap_or("unrestricted");
+    let profile = match vulcan_core::resolve_device_permission_profile(paths, Some(profile_name)) {
+        Ok(profile) => profile,
+        Err(error) => {
+            return AutoCommitStatus {
+                version: AUTO_COMMIT_STATUS_VERSION,
+                wiki_id: registration.id.to_string(),
+                checked_unix_ms: unix_time_ms(),
+                report: None,
+                error: Some(error.to_string()),
+            }
+        }
+    };
     // Shutdown cancels the batch, including a model call in progress; a
     // commit already under way finishes first.
     let cancellation = SyncCancellationToken::default();
@@ -361,14 +379,9 @@ fn run_pass(
                 } else {
                     CaptureOwner::AutoCommit
                 }),
-                permission_profile: Some(
-                    registration
-                        .permissions_profile
-                        .as_deref()
-                        .unwrap_or("unrestricted"),
-                ),
+                permission_profile: Some(profile_name),
                 git_config: None,
-                resolved_profile: None,
+                resolved_profile: Some(&profile),
                 plugins: true,
                 gate,
                 cancellation: &cancellation,
@@ -494,6 +507,15 @@ pub(crate) fn run_batch_with(
                 .unwrap_or_else(|| "unrestricted".to_string())
         })
     });
+    // Without a caller's profile, the registration's applies: this device's
+    // limit, resolved from built-ins and local config only.
+    let device_profile = match (permission_profile, registration, &profile) {
+        (None, Some(_), Some(name)) => Some(
+            vulcan_core::resolve_device_permission_profile(paths, Some(name))
+                .map_err(|error| error.to_string())?,
+        ),
+        _ => None,
+    };
     run_batched_commit(
         paths,
         &BatchedCommitOptions {
@@ -510,7 +532,9 @@ pub(crate) fn run_batch_with(
             }),
             permission_profile: profile.as_deref(),
             git_config: trusted.map(|trusted| trusted.git),
-            resolved_profile: trusted.map(|trusted| trusted.profile),
+            resolved_profile: trusted
+                .map(|trusted| trusted.profile)
+                .or(device_profile.as_ref()),
             plugins: trusted.is_none(),
             gate,
             cancellation,

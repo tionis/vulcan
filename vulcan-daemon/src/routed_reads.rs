@@ -25,8 +25,8 @@ use vulcan_core::note_session::NoteStoreSession;
 use vulcan_core::search::{SearchQuery, SearchReport};
 use vulcan_core::tasks::TasksQueryResult;
 use vulcan_core::{
-    resolve_permission_profile, PermissionFilter, PermissionGuard, ProfilePermissionGuard,
-    VaultPaths,
+    resolve_device_permission_profile, resolve_permission_profile, PermissionFilter,
+    PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
 
 use crate::scan_runtime::{request_index_barrier, CacheFreshnessState, VaultScanTracker};
@@ -90,7 +90,7 @@ impl RoutedVault {
                 completion.state
             )));
         }
-        let profile = resolve_permission_profile(
+        let profile = resolve_device_permission_profile(
             &self.paths,
             Some(
                 self.permissions_profile

@@ -24,7 +24,7 @@ use vulcan_app::sync_proposals::{
 };
 use vulcan_app::sync_state::SyncStateStore;
 use vulcan_core::{
-    resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
+    resolve_device_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
 use vulcan_sync::{GitConflictClass, MergeFileKind, SyncJobState};
 
@@ -282,7 +282,7 @@ fn run_for_registration(
             .permissions_profile
             .as_deref()
             .unwrap_or("unrestricted");
-        let result = resolve_permission_profile(&paths, Some(profile))
+        let result = resolve_device_permission_profile(&paths, Some(profile))
             .map(|selection| ProfilePermissionGuard::new(&paths, selection))
             .map_err(|error| error.to_string())
             .and_then(|guard| {

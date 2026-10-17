@@ -4126,6 +4126,12 @@ fn named_consent_persists_and_enforces_a_revocable_grant() {
         "[permissions.profiles.agent]\nread = \"all\"\nwrite = \"all\"\n",
     )
     .expect("approved profile");
+    // The remote's ceiling is this device's own, so it is defined locally.
+    fs::write(
+        paths.local_config_file(),
+        "[permissions.profiles.remote_ceiling]\nread = \"all\"\nwrite = \"all\"\n",
+    )
+    .expect("device ceiling");
     let issuer = Arc::new(
         LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
             public_url: "https://mcp.example.test/personal".to_string(),
@@ -4149,7 +4155,7 @@ fn named_consent_persists_and_enforces_a_revocable_grant() {
             vulcan_daemon::registry::WikiId::parse("personal").expect("wiki"),
             NamedMcpVaultRuntime {
                 paths: paths.clone(),
-                ceiling_profile: "agent".to_string(),
+                ceiling_profile: "remote_ceiling".to_string(),
                 default_profile: "agent".to_string(),
                 eligible_tool_packs: vec!["notes-read".to_string(), "search".to_string()],
             },

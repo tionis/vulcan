@@ -462,7 +462,8 @@ fn validate_profiles(
         ));
     }
     let paths = VaultPaths::new(&registration.path);
-    let ceiling = resolve_permission_profile(&paths, Some(ceiling)).map_err(CliError::operation)?;
+    let ceiling = vulcan_core::resolve_device_permission_profile(&paths, Some(ceiling))
+        .map_err(CliError::operation)?;
     let default = resolve_permission_profile(&paths, Some(default)).map_err(CliError::operation)?;
     let default_grant = PermissionGrant::from_profile(&default.profile);
     let ceiling_grant = PermissionGrant::from_profile(&ceiling.profile);

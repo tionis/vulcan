@@ -15,7 +15,7 @@ use vulcan_app::execution::{
 };
 use vulcan_app::AppError;
 use vulcan_core::{
-    resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
+    resolve_device_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
 use vulcan_sync::{GitCliEngine, GitEngine};
 
@@ -98,7 +98,7 @@ impl VaultGate<'_> {
     }
 
     fn context(&self, paths: &VaultPaths) -> Result<ExecutionContext, String> {
-        let grant = resolve_permission_profile(paths, Some(self.profile()))
+        let grant = resolve_device_permission_profile(paths, Some(self.profile()))
             .map_err(|error| error.to_string())?
             .grant;
         let repository = GitCliEngine::default()
@@ -140,7 +140,7 @@ impl MutationGate for VaultGate<'_> {
         let paths = VaultPaths::new(&self.registration.path);
         let context = self.context(&paths).map_err(AppError::operation)?;
         let revalidate = |_: &ExecutionContext| {
-            resolve_permission_profile(&paths, Some(self.profile()))
+            resolve_device_permission_profile(&paths, Some(self.profile()))
                 .map(|selection| ProfilePermissionGuard::new(&paths, selection))
                 .map_err(|error| error.to_string())
                 .and_then(|guard| {
@@ -173,6 +173,7 @@ mod tests {
     use std::path::Path;
     use std::sync::mpsc;
     use ulid::Ulid;
+    use vulcan_core::resolve_permission_profile;
 
     fn registration(path: &Path, profile: Option<&str>) -> WikiRegistration {
         WikiRegistration {
@@ -264,7 +265,7 @@ mod tests {
         // Authority is checked at entry: a profile without Git access fails.
         std::fs::create_dir_all(vault.path().join(".vulcan")).unwrap();
         std::fs::write(
-            vault.path().join(".vulcan/config.toml"),
+            vault.path().join(".vulcan/config.local.toml"),
             "[permissions.profiles.nogit]\nread = \"all\"\ngit = \"deny\"\n",
         )
         .unwrap();
@@ -279,5 +280,35 @@ mod tests {
         });
         assert!(blocked.is_err(), "hosted writer ran during a REST write");
         drop(guard);
+
+        // A synced edit cannot widen the registration's profile: the local
+        // definition wins for the fields it sets, and widening any other
+        // refuses the worker rather than granting it.
+        std::fs::write(
+            vault.path().join(".vulcan/config.toml"),
+            "[permissions.profiles.nogit]\ngit = \"allow\"\nwrite = \"all\"\n",
+        )
+        .unwrap();
+        let error = gate.for_file_writes(&revoked).enter().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("beyond this device's definition"),
+            "{error}"
+        );
+        // Nor can it supply a profile the device never defined.
+        let synced_only = registration(vault.path(), Some("synced"));
+        std::fs::write(
+            vault.path().join(".vulcan/config.toml"),
+            "[permissions.profiles.synced]\nread = \"all\"\ngit = \"allow\"\n",
+        )
+        .unwrap();
+        let error = gate.for_file_writes(&synced_only).enter().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("only in the vault's synced configuration"),
+            "{error}"
+        );
     }
 }

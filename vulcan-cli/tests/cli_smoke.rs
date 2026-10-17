@@ -9652,6 +9652,43 @@ fn vault_registry_cli_round_trips_without_touching_wiki_files() {
     assert_eq!(show_json["groups"], serde_json::json!(["mobile"]));
     assert_eq!(show_json["permissions_profile"], "readonly");
 
+    // The registration's profile is this device's limit: a profile only the
+    // synced config defines is refused, and one defined locally is accepted.
+    fs::create_dir_all(wiki.join(".vulcan")).expect("vault config directory");
+    fs::write(
+        wiki.join(".vulcan/config.toml"),
+        "[permissions.profiles.agent]\nread = \"all\"\n",
+    )
+    .expect("shared profile");
+    let refused = cargo_vulcan_with_xdg_config(config_home)
+        .args(["vault", "set", "personal", "--permissions-profile", "agent"])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&refused.get_output().stderr).to_string();
+    assert!(
+        stderr.contains("only in the vault's synced configuration"),
+        "{stderr}"
+    );
+    fs::write(
+        wiki.join(".vulcan/config.local.toml"),
+        "[permissions.profiles.agent]\nread = \"all\"\n",
+    )
+    .expect("local profile");
+    cargo_vulcan_with_xdg_config(config_home)
+        .args(["vault", "set", "personal", "--permissions-profile", "agent"])
+        .assert()
+        .success();
+    cargo_vulcan_with_xdg_config(config_home)
+        .args([
+            "vault",
+            "set",
+            "personal",
+            "--permissions-profile",
+            "readonly",
+        ])
+        .assert()
+        .success();
+
     let pause_plan = cargo_vulcan_with_xdg_config(config_home)
         .args(["--output", "json", "sync", "pause", "personal", "--dry-run"])
         .assert()
@@ -19613,6 +19650,9 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(permission_skill.contains("vulcan schedule trust enable|accept|disable"));
     assert!(permission_skill.contains("never from shared `.vulcan/config.toml`"));
     assert!(permission_skill.contains("an offline old device keeps running it until it syncs"));
+    assert!(
+        permission_skill.contains("vulcan config permissions profile create <name> --target local")
+    );
     assert!(permission_skill.contains("set-conflict-worker --wiki <id>"));
     assert!(permission_skill.contains("vulcan daemon companion --output json"));
     assert!(permission_skill.contains("synchronized plugin data"));

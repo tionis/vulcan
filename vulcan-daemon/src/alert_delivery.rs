@@ -19,7 +19,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use vulcan_core::{
-    resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
+    resolve_device_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
 
 const LEDGER_VERSION: u32 = 1;
@@ -514,8 +514,9 @@ fn authorize_sink(
         .find(|registration| registration.id.as_str() == alert.wiki_id)
         .ok_or("registration_unavailable")?;
     let paths = VaultPaths::new(&registration.path);
-    let selection = resolve_permission_profile(&paths, registration.permissions_profile.as_deref())
-        .map_err(|_| "permission_profile_invalid")?;
+    let selection =
+        resolve_device_permission_profile(&paths, registration.permissions_profile.as_deref())
+            .map_err(|_| "permission_profile_invalid")?;
     let guard = ProfilePermissionGuard::new(&paths, selection);
     match sink {
         DeliverySink::Desktop => Ok(()),
@@ -1324,7 +1325,7 @@ mod tests {
         let vault = temporary.path().join("vault");
         fs::create_dir_all(vault.join(".vulcan")).expect("vault config directory");
         fs::write(
-            vault.join(".vulcan/config.toml"),
+            vault.join(".vulcan/config.local.toml"),
             "[permissions.profiles.locked]\nnetwork = \"deny\"\nexecute = \"deny\"\n",
         )
         .expect("permissions");

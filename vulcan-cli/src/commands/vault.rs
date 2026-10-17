@@ -129,6 +129,10 @@ pub(crate) fn handle_vault_command(cli: &Cli, command: &VaultCommand) -> Result<
             } else {
                 permissions_profile.clone().map(Some)
             };
+            if let Some(name) = permissions_profile.as_deref() {
+                let wiki = registry.show(&parse_id(id)?).map_err(CliError::operation)?;
+                check_device_profile(&wiki.registration.path, name)?;
+            }
             let wiki = registry
                 .update(
                     &parse_id(id)?,
@@ -325,6 +329,14 @@ fn print_recovery(output: OutputFormat, report: &RecoverWikiGitReport) -> Result
     Ok(())
 }
 
+/// A registration's profile is this device's limit for the vault, so it must
+/// resolve from built-ins and the vault's `config.local.toml` alone.
+fn check_device_profile(vault: &std::path::Path, name: &str) -> Result<(), CliError> {
+    vulcan_core::resolve_device_permission_profile(&vulcan_core::VaultPaths::new(vault), Some(name))
+        .map(|_| ())
+        .map_err(CliError::operation)
+}
+
 fn handle_add(cli: &Cli, registry: &WikiRegistry, command: &VaultCommand) -> Result<(), CliError> {
     let VaultCommand::Add {
         id,
@@ -343,6 +355,9 @@ fn handle_add(cli: &Cli, registry: &WikiRegistry, command: &VaultCommand) -> Res
     else {
         unreachable!("add handler requires an add command")
     };
+    if let Some(name) = permissions_profile.as_deref() {
+        check_device_profile(path, name)?;
+    }
     let request = AddWikiRequest {
         id: parse_id(id)?,
         path: path.clone(),

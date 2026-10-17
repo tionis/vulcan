@@ -516,22 +516,7 @@ pub fn resolve_device_ceiling(
     paths: &VaultPaths,
     name: &str,
 ) -> Result<ResolvedPermissionProfile, AppError> {
-    let local = local_config(paths)?;
-    vulcan_core::resolve_permission_profile_with_overrides(paths, None, local.as_ref(), Some(name))
-        .map_err(|error| {
-            let shared_only = matches!(error, vulcan_core::PermissionError::UnknownProfile { .. })
-                && vulcan_core::load_permission_profiles(paths)
-                    .profiles
-                    .contains_key(name);
-            if shared_only {
-                AppError::operation(format!(
-                    "device ceiling `{name}` is defined only in the vault's shared configuration; a ceiling must be a built-in profile or defined in {}, so a synced change cannot widen it",
-                    paths.local_config_file().display()
-                ))
-            } else {
-                AppError::operation(error)
-            }
-        })
+    vulcan_core::resolve_device_permission_profile(paths, Some(name)).map_err(AppError::operation)
 }
 
 /// This device's local configuration, if it exists. An unreadable or invalid
@@ -925,7 +910,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("defined only in the vault's shared configuration"),
+                .contains("defined only in the vault's synced configuration"),
             "{error}"
         );
         // `narrow` indexes, which the built-in `readonly` does not allow.
@@ -940,7 +925,9 @@ mod tests {
         assert!(asked.grant.is_subset_of(&redefined.grant));
         let error = authorize_execution(&paths, &narrow, Some("readonly")).unwrap_err();
         assert!(
-            error.to_string().contains("exceeds this device's ceiling"),
+            error
+                .to_string()
+                .contains("beyond this device's definition"),
             "{error}"
         );
 

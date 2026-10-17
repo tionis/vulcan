@@ -153,7 +153,7 @@ fn run_write(
         .permissions_profile
         .clone()
         .unwrap_or_else(|| "unrestricted".to_string());
-    let selection = vulcan_core::resolve_permission_profile(&paths, Some(&profile))
+    let selection = vulcan_core::resolve_device_permission_profile(&paths, Some(&profile))
         .map_err(|error| RestError::from_message(error.to_string()))?;
     let guard = ProfilePermissionGuard::new(&paths, selection);
     let vault_gate = gate.map(|gate| gate.for_file_writes(&wiki));

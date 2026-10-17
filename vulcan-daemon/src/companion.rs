@@ -37,7 +37,7 @@ use vulcan_app::sync_semantic::{
 };
 use vulcan_app::sync_state::SyncStateStore;
 use vulcan_core::{
-    resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
+    resolve_device_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
 use vulcan_sync::DEFAULT_REMOTE_LIVE_REF;
 use vulcan_sync::{GitRefName, GitRemote, SyncJobTrigger, SYNC_CONTRACT_VERSION};
@@ -619,9 +619,10 @@ impl<'a> CompanionService<'a> {
             .permissions_profile
             .as_deref()
             .unwrap_or("unrestricted");
-        let selection = resolve_permission_profile(&paths, Some(profile)).map_err(|error| {
-            CompanionError::new(CompanionErrorKind::PermissionDenied, error.to_string())
-        })?;
+        let selection =
+            resolve_device_permission_profile(&paths, Some(profile)).map_err(|error| {
+                CompanionError::new(CompanionErrorKind::PermissionDenied, error.to_string())
+            })?;
         if let Some(endpoint) = agent.provider.network_endpoint() {
             ProfilePermissionGuard::new(&paths, selection)
                 .check_network(endpoint)
@@ -730,9 +731,10 @@ impl<'a> CompanionService<'a> {
             .permissions_profile
             .as_deref()
             .unwrap_or("unrestricted");
-        let selection = resolve_permission_profile(&paths, Some(profile)).map_err(|error| {
-            CompanionError::new(CompanionErrorKind::PermissionDenied, error.to_string())
-        })?;
+        let selection =
+            resolve_device_permission_profile(&paths, Some(profile)).map_err(|error| {
+                CompanionError::new(CompanionErrorKind::PermissionDenied, error.to_string())
+            })?;
         if let Some(endpoint) = agent.provider.network_endpoint() {
             ProfilePermissionGuard::new(&paths, selection)
                 .check_network(endpoint)
@@ -830,7 +832,7 @@ impl<'a> CompanionService<'a> {
         }
         let paths = VaultPaths::new(&registration.path);
         let selection =
-            resolve_permission_profile(&paths, registration.permissions_profile.as_deref())
+            resolve_device_permission_profile(&paths, registration.permissions_profile.as_deref())
                 .map_err(|error| {
                     CompanionError::new(CompanionErrorKind::PermissionDenied, error.to_string())
                 })?;

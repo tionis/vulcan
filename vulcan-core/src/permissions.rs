@@ -93,6 +93,9 @@ pub enum PermissionError {
     },
     /// The policy could not produce a valid decision; unlike an explicit deny,
     /// this must not be interpreted as a successfully filtered read result.
+    /// A profile a device chose as its own limit, such as a registration's
+    /// profile or an MCP remote's ceiling, that cannot serve as one.
+    DeviceProfileUnavailable { requested: String, reason: String },
     PolicyHookFailed {
         profile: String,
         action: &'static str,
@@ -123,6 +126,10 @@ impl Display for PermissionError {
                 }
                 Ok(())
             }
+            Self::DeviceProfileUnavailable { requested, reason } => write!(
+                formatter,
+                "permission profile `{requested}` cannot be this device's limit: {reason}"
+            ),
             Self::PathDenied {
                 profile,
                 action,
@@ -863,6 +870,60 @@ pub fn resolve_permission_profile(
     resolve_from_loaded(&load_permission_profiles(paths), requested_profile)
 }
 
+/// Resolves a profile that this device chose as its own limit for the vault:
+/// a registration's profile, an MCP remote's ceiling, or a scheduled job's
+/// ceiling. The definition comes from the built-ins and the device-local
+/// `config.local.toml` only, since anyone who can push to the vault can edit
+/// its synced `config.toml`. Workflows that later resolve the same name with
+/// the full configuration stay safe because this also refuses a synced
+/// definition wider than the device's (or with a different policy hook). An
+/// unreadable local file fails closed, because it may be what narrows the
+/// profile.
+pub fn resolve_device_permission_profile(
+    paths: &VaultPaths,
+    requested_profile: Option<&str>,
+) -> Result<ResolvedPermissionProfile, PermissionError> {
+    let requested = requested_profile.unwrap_or("unrestricted");
+    let unavailable = |reason: String| PermissionError::DeviceProfileUnavailable {
+        requested: requested.to_string(),
+        reason,
+    };
+    let device = crate::config::load_device_permission_profiles(paths);
+    if !device.diagnostics.is_empty() {
+        return Err(unavailable(
+            device
+                .diagnostics
+                .iter()
+                .map(|diagnostic| format!("{}: {}", diagnostic.path.display(), diagnostic.message))
+                .collect::<Vec<_>>()
+                .join("; "),
+        ));
+    }
+    let shared = load_permission_profiles(paths);
+    let resolved = match resolve_from_loaded(&device, Some(requested)) {
+        Ok(resolved) => resolved,
+        Err(PermissionError::UnknownProfile { .. }) if shared.profiles.contains_key(requested) => {
+            return Err(unavailable(format!(
+                "it is defined only in the vault's synced configuration; define it in {} instead, which is not synced",
+                paths.local_config_file().display()
+            )));
+        }
+        Err(error) => return Err(error),
+    };
+    if let Ok(effective) = resolve_from_loaded(&shared, Some(requested)) {
+        if !effective.grant.is_subset_of(&resolved.grant)
+            || effective.profile.policy_hook != resolved.profile.policy_hook
+        {
+            return Err(unavailable(format!(
+                "the vault's synced configuration redefines it beyond this device's definition; remove `[permissions.profiles.{requested}]` from {} or match it in {}",
+                paths.config_file().display(),
+                paths.local_config_file().display()
+            )));
+        }
+    }
+    Ok(resolved)
+}
+
 /// Resolves a profile from in-memory shared and local configuration instead
 /// of the files, such as the shared configuration at a signed commit.
 pub fn resolve_permission_profile_with_overrides(
@@ -1357,6 +1418,70 @@ mod tests {
         PermissionProfile,
     };
     use proptest::prelude::*;
+
+    #[test]
+    fn a_device_limit_comes_only_from_built_ins_and_local_config() {
+        use super::resolve_device_permission_profile;
+        use crate::paths::VaultPaths;
+        let vault = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(vault.path());
+        std::fs::create_dir_all(paths.vulcan_dir()).unwrap();
+        let unavailable = |name: &str| match resolve_device_permission_profile(&paths, Some(name)) {
+            Err(PermissionError::DeviceProfileUnavailable { reason, .. }) => reason,
+            other => panic!("expected an unavailable device profile, got {other:?}"),
+        };
+
+        // Built-ins resolve, and so does the default.
+        assert_eq!(
+            resolve_device_permission_profile(&paths, None)
+                .unwrap()
+                .name,
+            "unrestricted"
+        );
+        assert!(resolve_device_permission_profile(&paths, Some("readonly")).is_ok());
+
+        // A synced profile cannot be a device limit.
+        std::fs::write(
+            paths.config_file(),
+            "[permissions.profiles.agent]\nread = \"all\"\nindex = \"allow\"\n",
+        )
+        .unwrap();
+        assert!(unavailable("agent").contains("only in the vault's synced configuration"));
+        assert!(matches!(
+            resolve_device_permission_profile(&paths, Some("missing")),
+            Err(PermissionError::UnknownProfile { .. })
+        ));
+
+        // Defined locally, it is one; a synced definition may narrow it.
+        std::fs::write(
+            paths.local_config_file(),
+            "[permissions.profiles.agent]\nread = \"all\"\nwrite = \"all\"\nindex = \"allow\"\n",
+        )
+        .unwrap();
+        let agent = resolve_device_permission_profile(&paths, Some("agent")).unwrap();
+        assert!(agent.grant.index);
+
+        // A synced definition that widens it, or a built-in, is refused, as
+        // is one that changes its policy hook.
+        std::fs::write(
+            paths.config_file(),
+            "[permissions.profiles.agent]\ngit = \"allow\"\n\n[permissions.profiles.readonly]\nindex = \"allow\"\n",
+        )
+        .unwrap();
+        assert!(unavailable("agent").contains("beyond this device's definition"));
+        assert!(unavailable("readonly").contains("beyond this device's definition"));
+        std::fs::write(
+            paths.config_file(),
+            "[permissions.profiles.readonly]\npolicy_hook = \"/bin/true\"\n",
+        )
+        .unwrap();
+        assert!(unavailable("readonly").contains("beyond this device's definition"));
+
+        // An unreadable local file fails closed, even for a built-in.
+        std::fs::write(paths.config_file(), "").unwrap();
+        std::fs::write(paths.local_config_file(), "not = [toml").unwrap();
+        assert!(unavailable("readonly").contains("failed to parse"));
+    }
 
     fn path_segment_strategy() -> impl Strategy<Value = String> {
         proptest::string::string_regex("[A-Za-z0-9_-]{1,8}")

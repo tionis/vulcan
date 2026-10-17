@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use ulid::Ulid;
-use vulcan_core::{resolve_permission_profile, VaultPaths};
+use vulcan_core::{resolve_device_permission_profile, resolve_permission_profile, VaultPaths};
 
 use crate::mcp_remote::McpRemoteId;
 use crate::mcp_session::McpSessionAuthority;
@@ -159,7 +159,7 @@ impl NamedMcpRuntime {
         let current_profile =
             resolve_permission_profile(&vault.paths, Some(&grant.permission_profile))
                 .map_err(|error| error.to_string())?;
-        let ceiling = resolve_permission_profile(&vault.paths, Some(&vault.ceiling_profile))
+        let ceiling = resolve_device_permission_profile(&vault.paths, Some(&vault.ceiling_profile))
             .map_err(|error| error.to_string())?;
         if !current_profile
             .grant
@@ -232,7 +232,7 @@ impl NamedMcpRuntime {
         let current_profile =
             resolve_permission_profile(&vault.paths, Some(&grant.permission_profile))
                 .map_err(|_| NamedRefreshError::invalid_grant("grant policy is no longer valid"))?;
-        let ceiling = resolve_permission_profile(&vault.paths, Some(&vault.ceiling_profile))
+        let ceiling = resolve_device_permission_profile(&vault.paths, Some(&vault.ceiling_profile))
             .map_err(|_| NamedRefreshError::invalid_grant("grant policy is no longer valid"))?;
         if !current_profile
             .grant
@@ -343,7 +343,7 @@ impl NamedMcpRuntime {
         let current_profile =
             resolve_permission_profile(&vault.paths, Some(&grant.permission_profile))
                 .map_err(|error| error.to_string())?;
-        let ceiling = resolve_permission_profile(&vault.paths, Some(&vault.ceiling_profile))
+        let ceiling = resolve_device_permission_profile(&vault.paths, Some(&vault.ceiling_profile))
             .map_err(|error| error.to_string())?;
         if !current_profile
             .grant
@@ -402,7 +402,7 @@ impl NamedMcpRuntime {
             .map_or(vault.default_profile.as_str(), String::as_str);
         let selected = resolve_permission_profile(&vault.paths, Some(profile_name))
             .map_err(|error| NamedConsentError::bad_request(error.to_string()))?;
-        let ceiling = resolve_permission_profile(&vault.paths, Some(&vault.ceiling_profile))
+        let ceiling = resolve_device_permission_profile(&vault.paths, Some(&vault.ceiling_profile))
             .map_err(|error| NamedConsentError::internal(error.to_string()))?;
         if !selected.grant.is_subset_of(&ceiling.grant) {
             return Err(NamedConsentError::bad_request(
@@ -815,12 +815,20 @@ mod tests {
             .vaults
             .get_mut(&WikiId::parse("personal").expect("wiki ID"))
             .expect("vault");
+        // The ceiling is this device's own; the granted profile is the
+        // vault's, which a synced edit narrows or widens.
         vault.ceiling_profile = "agent".to_string();
-        vault.default_profile = "agent".to_string();
+        vault.default_profile = "worker".to_string();
+        fs::create_dir_all(vault.paths.vulcan_dir()).expect("config directory");
+        fs::write(
+            vault.paths.local_config_file(),
+            "[permissions.profiles.agent]\nread = \"all\"\nwrite = \"all\"\n",
+        )
+        .expect("device ceiling");
         let config_file = vault.paths.config_file().to_path_buf();
         fs::write(
             &config_file,
-            "[permissions.profiles.agent]\nread = \"all\"\nwrite = \"all\"\n",
+            "[permissions.profiles.worker]\nread = \"all\"\nwrite = \"all\"\n",
         )
         .expect("wide profile");
         let instance_id = Ulid::new();
@@ -846,7 +854,7 @@ mod tests {
 
         fs::write(
             &config_file,
-            "[permissions.profiles.agent]\nread = \"all\"\nwrite = \"none\"\n",
+            "[permissions.profiles.worker]\nread = \"all\"\nwrite = \"none\"\n",
         )
         .expect("narrow profile");
         runtime.authorize_token(&token).expect("narrowed approval");
@@ -861,7 +869,7 @@ mod tests {
 
         fs::write(
             &config_file,
-            "[permissions.profiles.agent]\nread = \"all\"\nwrite = \"all\"\n",
+            "[permissions.profiles.worker]\nread = \"all\"\nwrite = \"all\"\n",
         )
         .expect("re-expand profile");
         assert!(runtime.authorize_token(&token).is_err());
