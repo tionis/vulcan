@@ -7,7 +7,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use vulcan_core::{QueryReport, VaultPaths};
-use zip::write::FileOptions;
+use zip::write::SimpleFileOptions;
 
 pub fn write_zip_export(
     paths: &VaultPaths,
@@ -21,7 +21,7 @@ pub fn write_zip_export(
     let attachments = collect_export_attachment_paths(links);
     let file = fs::File::create(output_path).map_err(AppError::operation)?;
     let mut writer = zip::ZipWriter::new(file);
-    let options = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
     for note in notes {
         writer

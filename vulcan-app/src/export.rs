@@ -39,7 +39,7 @@ use vulcan_core::{
     validate_vulcan_overrides_toml, ConfigDiagnostic, ConfigDiagnosticKind, GraphExportReport,
     NoteRecord, ParsedDocument, QueryAst, QueryReport, SelectionPlan, VaultPaths,
 };
-use zip::write::FileOptions;
+use zip::write::SimpleFileOptions;
 
 pub mod outline;
 mod sqlite;
@@ -2538,8 +2538,9 @@ fn write_epub_scaffold(
     tag_pages: &[EpubTagPage],
     nav_nodes: &[EpubNavNode],
 ) -> Result<(), AppError> {
-    let stored = FileOptions::default().compression_method(zip::CompressionMethod::Stored);
-    let deflated = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let stored = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let deflated =
+        SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
     writer
         .start_file("mimetype", stored)
@@ -2609,7 +2610,8 @@ fn write_epub_assets(
     paths: &VaultPaths,
     assets: &[EpubAsset],
 ) -> Result<(), AppError> {
-    let deflated = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let deflated =
+        SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     for asset in assets {
         writer
             .start_file(format!("OEBPS/{}", asset.package_href), deflated)
@@ -2627,7 +2629,8 @@ fn write_epub_documents(
     chapters: &[EpubChapter],
     tag_pages: &[EpubTagPage],
 ) -> Result<(), AppError> {
-    let deflated = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let deflated =
+        SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     for chapter in chapters {
         writer
             .start_file(format!("OEBPS/text/{}", chapter.file_href), deflated)

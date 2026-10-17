@@ -487,9 +487,12 @@ fn observe_zip(path: &Path) -> Result<BTreeMap<String, MdafObservedMember>, Mdaf
     for index in 0..archive.len() {
         let mut file = archive.by_index(index)?;
         let enclosed = file.enclosed_name().ok_or_else(|| {
-            MdafError::InvalidContainer(format!("unsafe ZIP member path: {}", file.name()))
+            MdafError::InvalidContainer(format!(
+                "unsafe ZIP member path: {}",
+                String::from_utf8_lossy(file.name_raw())
+            ))
         })?;
-        let member_path = normalized_member_path(enclosed)?;
+        let member_path = normalized_member_path(&enclosed)?;
         if file.is_dir() {
             continue;
         }
@@ -1284,7 +1287,7 @@ mod tests {
     use crate::exchange::canonical_json;
     use std::io::Cursor;
     use tempfile::TempDir;
-    use zip::write::FileOptions;
+    use zip::write::SimpleFileOptions;
 
     fn write_minimal(root: &Path, native_path: Option<&str>) {
         fs::create_dir_all(root).expect("create artifact");
@@ -1344,7 +1347,8 @@ mod tests {
     fn zip_directory(root: &Path, destination: &Path) {
         let file = File::create(destination).expect("create ZIP");
         let mut writer = zip::ZipWriter::new(file);
-        let options = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         for path in [
             "info.json",
             "text.md",
@@ -1437,7 +1441,7 @@ mod tests {
         {
             let mut writer = zip::ZipWriter::new(&mut bytes);
             writer
-                .start_file("../outside", FileOptions::default())
+                .start_file("../outside", SimpleFileOptions::default())
                 .expect("start unsafe path");
             writer.write_all(b"bad").expect("write unsafe path");
             writer.finish().expect("finish ZIP");

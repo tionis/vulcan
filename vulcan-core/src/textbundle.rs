@@ -318,7 +318,10 @@ fn observe_zip(path: &Path) -> Result<BTreeMap<String, TextBundleMember>, TextBu
     for index in 0..archive.len() {
         let mut file = archive.by_index(index)?;
         let enclosed = file.enclosed_name().ok_or_else(|| {
-            TextBundleError::InvalidContainer(format!("unsafe ZIP path: {}", file.name()))
+            TextBundleError::InvalidContainer(format!(
+                "unsafe ZIP path: {}",
+                String::from_utf8_lossy(file.name_raw())
+            ))
         })?;
         if file.is_dir() {
             continue;
@@ -328,11 +331,11 @@ fn observe_zip(path: &Path) -> Result<BTreeMap<String, TextBundleMember>, TextBu
             if kind != 0 && kind != 0o100_000 {
                 return Err(TextBundleError::InvalidContainer(format!(
                     "non-regular ZIP member is forbidden: {}",
-                    file.name()
+                    String::from_utf8_lossy(file.name_raw())
                 )));
             }
         }
-        let member_path = normalized_member_path(enclosed)?;
+        let member_path = normalized_member_path(&enclosed)?;
         let size = file.size();
         enforce_limits(members.len() + 1, size, &mut total)?;
         if size > 0
@@ -570,7 +573,7 @@ fn diagnostic(
 mod tests {
     use super::*;
     use tempfile::tempdir;
-    use zip::write::FileOptions;
+    use zip::write::SimpleFileOptions;
 
     fn write_fixture(root: &Path) {
         fs::create_dir_all(root.join("assets")).expect("assets");
@@ -592,7 +595,7 @@ mod tests {
         let file = File::create(&zip_path).expect("ZIP");
         let mut zip = zip::ZipWriter::new(file);
         for member in ["info.json", "text.md", "assets/map.png"] {
-            zip.start_file(member, FileOptions::default())
+            zip.start_file(member, SimpleFileOptions::default())
                 .expect("member");
             zip.write_all(&fs::read(root.join(member)).expect("read"))
                 .expect("write");
@@ -630,7 +633,7 @@ mod tests {
         let zip_path = temp.path().join("unsafe.textpack");
         let file = File::create(&zip_path).expect("ZIP");
         let mut zip = zip::ZipWriter::new(file);
-        zip.start_file("../outside", FileOptions::default())
+        zip.start_file("../outside", SimpleFileOptions::default())
             .expect("member");
         zip.write_all(b"bad").expect("write");
         zip.finish().expect("finish");

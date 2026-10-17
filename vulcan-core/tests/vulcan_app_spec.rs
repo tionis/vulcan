@@ -478,7 +478,7 @@ fn signed_fixture_binds_manifest_policy_payloads_and_exact_archive() {
     assert_eq!(archive.len(), names.len());
     for (index, name) in names.iter().enumerate() {
         let mut entry = archive.by_index(index).unwrap();
-        assert_eq!(entry.name(), name);
+        assert_eq!(entry.name().expect("entry name"), name.as_str());
         assert_eq!(entry.compression(), zip::CompressionMethod::Stored);
         let mut bytes = Vec::new();
         entry.read_to_end(&mut bytes).unwrap();

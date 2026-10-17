@@ -23,7 +23,7 @@ use vulcan_core::wiki_package::{
     WIKI_MANIFEST_PATH, WIKI_PACKAGE_FORMAT, WIKI_PACKAGE_VERSION, WIKI_PROVENANCE_PATH,
 };
 use vulcan_core::{ScanMode, VaultPaths};
-use zip::write::FileOptions;
+use zip::write::SimpleFileOptions;
 
 const EXPORT_ACTIVITY: &str = "export";
 
@@ -601,7 +601,8 @@ fn write_zip(
     }
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
         let mut zip = zip::ZipWriter::new(File::create(output)?);
-        let options = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         for (path, bytes) in control {
             zip.start_file(*path, options)?;
             zip.write_all(bytes)?;

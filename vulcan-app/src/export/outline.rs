@@ -14,7 +14,7 @@ use vulcan_core::config::OutlineExcludedTargetPolicyConfig;
 use vulcan_core::folder_notes::FolderNotesConfig;
 use vulcan_core::paths::secure_read_to_string;
 use vulcan_core::{PureJsTransform, PureJsTransformOptions, VaultPaths};
-use zip::write::FileOptions;
+use zip::write::SimpleFileOptions;
 
 pub const SUPPORTED_OUTLINE_VERSION: &str = "1.9.x";
 
@@ -533,7 +533,7 @@ fn write_outline_zip_file(
 ) -> Result<(), AppError> {
     let file = fs::File::create(output_path).map_err(AppError::operation)?;
     let mut writer = zip::ZipWriter::new(file);
-    let options = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     let mut entries = BTreeMap::<String, Vec<u8>>::new();
     for document in &plan.documents {
         entries.insert(
@@ -2268,6 +2268,7 @@ function transform_link(link) {
                     .by_index(index)
                     .expect("archive entry")
                     .name()
+                    .expect("entry name")
                     .to_string()
             })
             .collect::<Vec<_>>();

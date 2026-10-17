@@ -793,7 +793,7 @@ mod tests {
         writer
             .start_file(
                 "vulcan-0.2.0-x86_64-pc-windows-msvc/vulcan.exe",
-                zip::write::FileOptions::default(),
+                zip::write::SimpleFileOptions::default(),
             )
             .expect("start fixture binary");
         writer.write_all(binary).expect("write fixture binary");

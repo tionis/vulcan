@@ -730,6 +730,7 @@ fn write_zip_export_packages_transformed_notes_and_manifest() {
                 .by_index(index)
                 .expect("zip entry")
                 .name()
+                .expect("entry name")
                 .to_string(),
         );
     }
@@ -862,6 +863,7 @@ fn write_epub_export_packages_book_navigation_assets_and_backlinks() {
                 .by_index(index)
                 .expect("archive entry")
                 .name()
+                .expect("entry name")
                 .to_string(),
         );
     }

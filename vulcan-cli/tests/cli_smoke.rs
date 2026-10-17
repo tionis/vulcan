@@ -5047,7 +5047,13 @@ fn evaluated_zip_exports_copy_attachments_linked_from_query_results() {
         let mut zip = ZipArchive::new(fs::File::open(&archive).expect("archive should open"))
             .expect("archive should be a zip");
         (0..zip.len())
-            .map(|index| zip.by_index(index).expect("entry").name().to_string())
+            .map(|index| {
+                zip.by_index(index)
+                    .expect("entry")
+                    .name()
+                    .expect("entry name")
+                    .to_string()
+            })
             .collect::<Vec<_>>()
     };
 
@@ -24417,6 +24423,7 @@ fn export_zip_exclude_callout_skips_hidden_attachments() {
                 .by_index(index)
                 .expect("zip entry should be readable")
                 .name()
+                .expect("entry name")
                 .to_string(),
         );
     }
@@ -24470,6 +24477,7 @@ fn export_zip_metadata_transforms_skip_hidden_metadata_attachments() {
                 .by_index(index)
                 .expect("zip entry should be readable")
                 .name()
+                .expect("entry name")
                 .to_string(),
         );
     }
@@ -24525,6 +24533,7 @@ fn export_zip_replacement_transforms_rewrite_attachment_references() {
                 .by_index(index)
                 .expect("zip entry should be readable")
                 .name()
+                .expect("entry name")
                 .to_string(),
         );
     }
@@ -24586,6 +24595,7 @@ fn export_zip_exclude_heading_skips_hidden_section_attachments() {
                 .by_index(index)
                 .expect("zip entry should be readable")
                 .name()
+                .expect("entry name")
                 .to_string(),
         );
     }
@@ -24631,6 +24641,7 @@ fn export_epub_exclude_callout_filters_backlinks_and_hidden_assets() {
                 .by_index(index)
                 .expect("archive entry should be readable")
                 .name()
+                .expect("entry name")
                 .to_string(),
         );
     }
@@ -24846,6 +24857,7 @@ fn export_zip_includes_notes_attachments_and_manifest() {
                 .by_index(index)
                 .expect("zip entry should be readable")
                 .name()
+                .expect("entry name")
                 .to_string(),
         );
     }
@@ -26075,6 +26087,7 @@ fn export_epub_writes_book_archive_with_nav_and_backlinks() {
             .by_index(index)
             .expect("archive entry should be readable")
             .name()
+            .expect("entry name")
             .to_string();
         if name.starts_with("OEBPS/text/chapter-") {
             chapter_paths.push(name);
@@ -26163,6 +26176,7 @@ fn export_epub_bundles_and_rewrites_referenced_assets() {
                 .by_index(index)
                 .expect("archive entry should be readable")
                 .name()
+                .expect("entry name")
                 .to_string(),
         );
     }
@@ -26411,6 +26425,7 @@ fn export_profiles_list_and_run_named_epub_profile() {
             .by_index(index)
             .expect("archive entry should be readable")
             .name()
+            .expect("entry name")
             .to_string();
         if name.starts_with("OEBPS/text/chapter-") {
             chapter_paths.push(name);

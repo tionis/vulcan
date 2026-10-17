@@ -12,7 +12,7 @@ use vulcan_core::paths::{
 };
 use vulcan_core::textbundle::{inspect_text_bundle, TextBundleInfo, TextBundleRepresentation};
 use vulcan_core::{parse_document, LinkKind, OriginContext, ScanMode, VaultPaths};
-use zip::write::FileOptions;
+use zip::write::SimpleFileOptions;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextBundleImportRequest {
@@ -364,7 +364,8 @@ fn write_textpack_zip(
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
         let file = File::create(output)?;
         let mut zip = zip::ZipWriter::new(file);
-        let options = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         for (path, bytes) in [("info.json", info), ("text.md", text.as_bytes())] {
             zip.start_file(path, options)?;
             zip.write_all(bytes)?;
