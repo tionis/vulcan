@@ -1618,6 +1618,30 @@ impl Drop for RuntimeRecordGuard {
 mod tests {
     use super::*;
 
+    /// The daemon and the direct CLI pick a vault's Git transport through the
+    /// same `vulcan_app::sync_transport` decision; what could differ is
+    /// where each finds the transport binding and the device key. In one
+    /// environment both resolve the same sync state root and identity
+    /// directory, so a bound vault authenticates identically either way.
+    /// (Only paths are computed; nothing is read or written there.)
+    #[test]
+    fn the_daemon_resolves_the_transport_state_the_cli_does() {
+        let (Ok(context), Ok(cli_state), Ok(cli_identity)) = (
+            DaemonProcessContext::user_default(),
+            vulcan_app::sync_state::SyncStateStore::user_default(),
+            DeviceIdentityStore::user_default(),
+        ) else {
+            eprintln!("skipping: no user state or config directory in this environment");
+            return;
+        };
+        let daemon_state = context.sync_state_store();
+        assert_eq!(daemon_state.root(), cli_state.root());
+        assert_eq!(
+            context.device_identity.directory(),
+            cli_identity.directory()
+        );
+    }
+
     /// Waits for the daemon to report itself running. CI runners can be slow
     /// to start one, so this allows a generous deadline but still returns as
     /// soon as the daemon is ready and fails at once if it exits first.

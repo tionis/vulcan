@@ -1330,6 +1330,34 @@ mod tests {
         );
     }
 
+    /// Only an unattended-capable key provider (`file_v1`) may back the
+    /// transport: an identity naming another provider is refused for
+    /// binding, for the device `ssh` command, and for probing, and no other
+    /// key or provider is substituted.
+    #[test]
+    fn an_unsupported_key_provider_is_refused_everywhere() {
+        let fx = fixture("git@forge.example:o/r.git", true);
+        let manifest = fx.dir.path().join("identity").join("identity.json");
+        let text = fs::read_to_string(&manifest).expect("identity manifest");
+        assert!(text.contains("\"file_v1\""), "{text}");
+        fs::write(&manifest, text.replace("\"file_v1\"", "\"hardware_v1\"")).unwrap();
+
+        // The identity manifest itself refuses a provider this version does
+        // not implement; `eligible_key`'s `file_v1` check stands behind it.
+        let error = bind(&fx, GitConfigMode::Auto, false)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("malformed or unsafe"), "{error}");
+        assert_eq!(
+            config_value(&fx),
+            None,
+            "a refused bind writes no Git config"
+        );
+        assert!(device_git_ssh_command(&fx.store).is_err());
+        assert!(device_ssh_argv(&fx.store).is_err());
+        assert!(probe_device_key(&fx.store, "git@forge.example:o/r.git", None).is_err());
+    }
+
     #[test]
     fn a_mismatched_identity_says_whether_to_re_bind() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1575,6 +1603,194 @@ mod tests {
         )
         .unwrap();
         assert_eq!(outcome, ProbeOutcome::Accepted);
+    }
+
+    /// A throwaway OpenSSH server on loopback, authorizing whatever key is
+    /// in its `authorized_keys`; killed on drop.
+    #[cfg(target_os = "linux")]
+    struct LoopbackSshd {
+        child: std::process::Child,
+        port: u16,
+        authorized: PathBuf,
+        known_hosts: PathBuf,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl LoopbackSshd {
+        fn start(dir: &Path) -> Option<Self> {
+            let sshd = Path::new("/usr/sbin/sshd");
+            if !sshd.exists() {
+                return None;
+            }
+            fs::create_dir_all(dir).unwrap();
+            let host_key = dir.join("host_key");
+            run(Command::new("ssh-keygen")
+                .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+                .arg(&host_key));
+            let port = std::net::TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port();
+            let authorized = dir.join("authorized_keys");
+            fs::write(&authorized, "").unwrap();
+            let config = dir.join("sshd_config");
+            fs::write(
+                &config,
+                format!(
+                    "Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nPidFile {}\nAuthorizedKeysFile {}\nStrictModes no\nUsePAM no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPubkeyAuthentication yes\nLogLevel ERROR\n",
+                    host_key.display(),
+                    dir.join("sshd.pid").display(),
+                    authorized.display()
+                ),
+            )
+            .unwrap();
+            let child = Command::new(sshd)
+                .args(["-D", "-e", "-f"])
+                .arg(&config)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .ok()?;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+                if Instant::now() > deadline {
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let public = fs::read_to_string(host_key.with_extension("pub")).unwrap();
+            let known_hosts = dir.join("known_hosts");
+            fs::write(&known_hosts, format!("[127.0.0.1]:{port} {public}")).unwrap();
+            Some(Self {
+                child,
+                port,
+                authorized,
+                known_hosts,
+            })
+        }
+
+        fn authorize(&self, public_key: &str) {
+            fs::write(&self.authorized, format!("{}\n", public_key.trim())).unwrap();
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Drop for LoopbackSshd {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    /// Kills a helper process when dropped.
+    #[cfg(target_os = "linux")]
+    struct Kill(std::process::Child);
+
+    #[cfg(target_os = "linux")]
+    impl Drop for Kill {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn run(command: &mut Command) -> String {
+        let output = command.output().expect("command runs");
+        assert!(
+            output.status.success(),
+            "{command:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    /// The device-key `ssh` against a real server: an agent holding another
+    /// key the server accepts, an ambient `GIT_SSH`, and the user's own
+    /// identities change nothing. Only the device key gets in, so a device
+    /// key's narrow access can never be swapped for the user's. (OpenSSH
+    /// reads `~/.ssh/config` from the account's home, not `$HOME`, so this
+    /// test cannot plant a hostile user config; the command-line options
+    /// that override one are checked by the unit tests above.)
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_real_ssh_uses_only_the_device_key_despite_an_ambient_agent() {
+        let fx = fixture("origin", true);
+        let Some(server) = LoopbackSshd::start(&fx.dir.path().join("sshd")) else {
+            eprintln!("skipping: no /usr/sbin/sshd to run");
+            return;
+        };
+        let remote = bare_remote(fx.dir.path());
+        let repository = remote.strip_prefix("git@forge.example:").unwrap();
+        let user = run(Command::new("id").arg("-un")).trim().to_string();
+        let url = format!("ssh://{user}@127.0.0.1:{}{repository}", server.port);
+
+        // A hostile agent holds a key of its own.
+        let agent_dir = fx.dir.path().join("agent");
+        fs::create_dir_all(&agent_dir).unwrap();
+        let socket = agent_dir.join("socket");
+        let hostile = agent_dir.join("hostile");
+        run(Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+            .arg(&hostile));
+        let agent = Command::new("ssh-agent")
+            .arg("-D")
+            .arg("-a")
+            .arg(&socket)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("ssh-agent");
+        let _agent = Kill(agent);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !socket.exists() {
+            assert!(Instant::now() < deadline, "ssh-agent never listened");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        run(Command::new("ssh-add")
+            .arg(&hostile)
+            .env("SSH_AUTH_SOCK", &socket));
+
+        // The device command as Vulcan binds it, pinned to this server's host
+        // key so nothing reads or writes the user's known_hosts.
+        let command = format!(
+            "{} -o UserKnownHostsFile={} -o GlobalKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes",
+            device_git_ssh_command(&fx.store).unwrap(),
+            server.known_hosts.display()
+        );
+        let ls_remote = || {
+            Command::new("git")
+                .args(["ls-remote", "--heads", &url])
+                .env("GIT_SSH_COMMAND", &command)
+                .env("GIT_SSH", "/bin/false")
+                .env("SSH_AUTH_SOCK", &socket)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .stdin(Stdio::null())
+                .output()
+                .unwrap()
+        };
+
+        // Only the agent's key is authorized: refused, so it was never used.
+        server.authorize(&fs::read_to_string(hostile.with_extension("pub")).unwrap());
+        let refused = ls_remote();
+        assert!(!refused.status.success());
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains("Permission denied"),
+            "{}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+
+        // Only the device key is authorized: it gets in.
+        server.authorize(&fx.store.public_key().unwrap());
+        let listed = ls_remote();
+        assert!(
+            listed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&listed.stderr)
+        );
+        assert!(String::from_utf8_lossy(&listed.stdout).contains("refs/heads/main"));
     }
 
     #[test]
