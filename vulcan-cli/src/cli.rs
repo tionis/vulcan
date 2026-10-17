@@ -3416,6 +3416,16 @@ pub enum ConfigPermissionsProfileCommand {
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
+    #[command(
+        about = "Accept the vault's synced definition of a permission profile for this device",
+        long_about = "Copy the shared `.vulcan/config.toml` definition of a permission profile into this device's `.vulcan/config.local.toml`, which is never synced. A profile this device selects as a limit (`--permissions`, a registration's `--permissions-profile`, an MCP remote ceiling) must be a built-in or defined locally, so a push to the vault cannot widen it; pinning is the review step that accepts what the vault defines. Review the definition with `--dry-run` first. Later synced changes may narrow the pinned profile but not widen it."
+    )]
+    Pin {
+        #[arg(help = "Permission profile name")]
+        name: String,
+        #[arg(long, help = "Preview the config change without writing files")]
+        dry_run: bool,
+    },
     #[command(about = "Delete one permission profile override")]
     Delete {
         #[arg(help = "Permission profile name")]

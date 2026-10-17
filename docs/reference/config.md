@@ -63,6 +63,7 @@ Examples:
         show             Show one effective permission profile
         create           Create one permission profile
         set              Set one permission profile field
+        pin              Accept the vault's synced definition of a permission profile for this device
         delete           Delete one permission profile override
     import           Import compatible Obsidian plugin settings
       core             Import Obsidian core settings

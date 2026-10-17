@@ -243,6 +243,7 @@ Behavior:
 - `vulcan config unset <key> [--target <shared|local>] [--dry-run] [--no-commit]`: remove one config override and prune empty tables.
 - `vulcan config alias list|set|delete ...`: manage `[aliases]` entries without editing raw TOML.
 - `vulcan config permissions profile list|show|create|set|delete ...`: manage `[permissions.profiles.<name>]` entries without hand-writing tables.
+- `vulcan config permissions profile pin <name> [--dry-run]`: copy the shared config's definition of a profile into `.vulcan/config.local.toml`. Profiles this device selects as limits (`--permissions`, `vault set --permissions-profile`, MCP remote ceilings, the schedule ceiling) must be built-in or local, and a shared definition that widens one is refused; pinning is the review step that accepts what the vault defines.
 - `vulcan plugin set|delete ...`: manage full plugin registration metadata under `[plugins.<name>]`, including path, events, sandbox, permission profile, and description.
 - `vulcan config import core [--preview|--dry-run|--apply] [--target <shared|local>] [--no-commit]`: import Obsidian core settings from `.obsidian/app.json`, `.obsidian/templates.json`, and `.obsidian/types.json`.
 - `vulcan config import dataview [--preview|--dry-run|--apply] [--target <shared|local>] [--no-commit]`: import Obsidian Dataview plugin settings.

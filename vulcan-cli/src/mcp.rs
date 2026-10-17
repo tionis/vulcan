@@ -59,7 +59,7 @@ use vulcan_core::{
     discover_indieauth_endpoints, LocalOAuthIssuer, LocalOAuthIssuerConfig, OAuthResourceServer,
     OAuthResourceServerConfig,
 };
-use vulcan_core::{resolve_permission_profile, VaultPaths, WatchOptions};
+use vulcan_core::{VaultPaths, WatchOptions};
 use vulcan_daemon::host::{
     HostSupervisor, RestartPolicy, ServiceDefinition, ServiceId, ServiceLifecycleState,
     ServiceRegistration, ServiceScope,
@@ -2013,8 +2013,8 @@ fn build_mcp_tool_registry_entries(
     requested_profile: Option<&str>,
     selected_tool_packs: &BTreeSet<McpToolPack>,
 ) -> Result<Vec<ToolRegistryEntry>, CliError> {
-    let selection =
-        resolve_permission_profile(paths, requested_profile).map_err(permission_error_to_cli)?;
+    let selection = vulcan_core::resolve_selected_permission_profile(paths, requested_profile)
+        .map_err(permission_error_to_cli)?;
     let mut tools = visible_tool_catalog(selected_tool_packs, &selection.profile)
         .into_iter()
         .map(mcp_tool_registry_entry)

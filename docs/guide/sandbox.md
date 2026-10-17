@@ -45,6 +45,27 @@ Inspect the active runtime permissions from JavaScript with `vulcan.permissions(
 configuration with `vulcan config show` and use `--permissions <profile>` when selecting an
 explicit profile.
 
+### Whose profile it is
+
+A profile you select on this device is your limit, so it must be one this device defines: a
+built-in (`readonly`, `daily-wiki-agent`, `unrestricted`, ...) or a profile in the vault's
+`.vulcan/config.local.toml`, which is never synced. That covers `--permissions`, a registered
+vault's `--permissions-profile`, an MCP remote's ceiling, and the scheduled-job ceiling. Anyone who
+can push to the vault can edit its shared `config.toml`, so a profile defined only there is
+refused, and so is a shared definition that widens this device's (local fields win; widening one
+the local definition leaves unset refuses the profile). A shared edit may still narrow it.
+
+To use a profile the vault defines, review it and accept it for this device:
+
+```bash
+vulcan config permissions profile pin agent --dry-run   # shows the definition it would copy
+vulcan config permissions profile pin agent
+```
+
+Pinning copies the shared definition into `config.local.toml`. Profiles a vault definition names
+for its own use, such as a scheduled job's `authority` or a plugin's profile, still come from the
+shared config, within your limit.
+
 ## Host execution
 
 Host process APIs are deliberately more restrictive:

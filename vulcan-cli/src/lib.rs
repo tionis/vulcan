@@ -578,19 +578,19 @@ use vulcan_core::{
     list_checkpoints, list_saved_reports, load_saved_report, load_vault_config, merge_tags,
     query_change_report, query_notes_with_filter, rebuild_vault_with_progress, rename_alias,
     rename_block_ref, rename_heading, rename_property, repair_fts, resolve_note_reference,
-    resolve_permission_profile, save_saved_report, scan_vault, scan_vault_with_progress,
-    search_vault_with_filter, verify_cache, watch_vault, AutoScanMode, BacklinkRecord,
-    BacklinksReport, BasesEvalReport, BulkMutationReport, CacheVerifyReport, ChangeAnchor,
-    ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, DataviewJsResult,
-    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult,
-    DuplicateSuggestionsReport, LinkSuggestion, LinkSuggestionsReport, MentionSuggestion,
-    MentionSuggestionsReport, MergeCandidate, MoveSummary, NoteQuery, NoteRecord, NotesReport,
-    OutgoingLinkRecord, OutgoingLinksReport, PermissionFilter, PermissionGuard, PluginEvent,
-    ProfilePermissionGuard, QueryReport, RebuildQuery, RebuildReport, RefactorChange,
-    RefactorReport, RepairFtsQuery, RepairFtsReport, ResolvedPermissionProfile, SavedExport,
-    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
-    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
-    SearchReport, SearchSort, SelectionPlan, VaultPaths, WatchOptions, WatchReport,
+    save_saved_report, scan_vault, scan_vault_with_progress, search_vault_with_filter,
+    verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport, BasesEvalReport,
+    BulkMutationReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
+    CheckpointRecord, DataviewJsResult, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue,
+    DoctorReport, DqlQueryResult, DuplicateSuggestionsReport, LinkSuggestion,
+    LinkSuggestionsReport, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
+    MoveSummary, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport,
+    PermissionFilter, PermissionGuard, PluginEvent, ProfilePermissionGuard, QueryReport,
+    RebuildQuery, RebuildReport, RefactorChange, RefactorReport, RepairFtsQuery, RepairFtsReport,
+    ResolvedPermissionProfile, SavedExport, SavedExportFormat, SavedReportDefinition,
+    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
+    ScanSummary, SearchHit, SearchQuery, SearchReport, SearchSort, SelectionPlan, VaultPaths,
+    WatchOptions, WatchReport,
 };
 #[derive(Debug)]
 pub struct CliError {
@@ -716,7 +716,17 @@ pub(crate) fn selected_permission_profile(
     cli: &Cli,
     paths: &VaultPaths,
 ) -> Result<ResolvedPermissionProfile, CliError> {
-    resolve_permission_profile(paths, cli.permissions.as_deref()).map_err(permission_error_to_cli)
+    vulcan_core::resolve_selected_permission_profile(paths, cli.permissions.as_deref())
+        .map_err(permission_error_to_cli)
+}
+
+fn check_selected_permissions(cli: &Cli, paths: &VaultPaths) -> Result<(), CliError> {
+    match vulcan_core::resolve_selected_permission_profile(paths, cli.permissions.as_deref()) {
+        Err(error @ vulcan_core::PermissionError::DeviceProfileUnavailable { .. }) => {
+            Err(permission_error_to_cli(error))
+        }
+        _ => Ok(()),
+    }
 }
 
 pub(crate) fn selected_permission_guard(
@@ -4934,6 +4944,10 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
     }
 
     let paths = VaultPaths::new(vault_discovery.root.clone());
+    // `--permissions` is this caller's ceiling: refuse one the vault's synced
+    // configuration defines or widens before any command resolves it by name.
+    // An unknown name is left to the command, which reports it as before.
+    check_selected_permissions(cli, &paths)?;
     let list_controls = ListOutputControls::from_cli(cli);
     let stdout_is_tty = io::stdout().is_terminal();
     let stderr_is_tty = io::stderr().is_terminal();

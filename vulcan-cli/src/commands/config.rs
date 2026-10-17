@@ -1008,6 +1008,33 @@ fn run_config_permissions_profile(
             *no_commit,
             verbosity,
         ),
+        ConfigPermissionsProfileCommand::Pin { name, dry_run } => {
+            let shared = std::fs::read_to_string(paths.config_file()).unwrap_or_default();
+            let shared = shared.parse::<toml::Table>().map_err(|error| {
+                CliError::operation(format!("failed to parse config.toml: {error}"))
+            })?;
+            let definition = shared
+                .get("permissions")
+                .and_then(|permissions| permissions.get("profiles"))
+                .and_then(|profiles| profiles.get(name.as_str()))
+                .cloned()
+                .ok_or_else(|| {
+                    CliError::operation(format!(
+                        "the vault's shared config.toml does not define permission profile `{name}`"
+                    ))
+                })?;
+            // The local file is never synced or committed.
+            run_config_set_toml(
+                paths,
+                output,
+                &format!("permissions.profiles.{name}"),
+                &definition,
+                config_target(ConfigTargetArg::Local),
+                *dry_run,
+                true,
+                verbosity,
+            )
+        }
         ConfigPermissionsProfileCommand::Delete {
             name,
             target,

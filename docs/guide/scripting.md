@@ -49,7 +49,9 @@ Useful execution options include:
 
 - `--sandbox strict|fs|net|none` to select the capability tier
 - `--timeout <duration>` to override the execution limit for the invocation
-- `--permissions <profile>` as a global option to select the caller's authority ceiling
+- `--permissions <profile>` as a global option to select the caller's authority ceiling. The
+  profile must be a built-in or defined in this device's `.vulcan/config.local.toml`; see
+  [whose profile it is](sandbox.md#whose-profile-it-is)
 
 ## Choosing a sandbox
 

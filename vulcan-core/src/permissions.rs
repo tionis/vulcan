@@ -904,7 +904,7 @@ pub fn resolve_device_permission_profile(
         Ok(resolved) => resolved,
         Err(PermissionError::UnknownProfile { .. }) if shared.profiles.contains_key(requested) => {
             return Err(unavailable(format!(
-                "it is defined only in the vault's synced configuration; define it in {} instead, which is not synced",
+                "it is defined only in the vault's synced configuration; define it in {}, which is not synced, or review the synced definition and accept it with `vulcan config permissions profile pin {requested}`",
                 paths.local_config_file().display()
             )));
         }
@@ -915,13 +915,31 @@ pub fn resolve_device_permission_profile(
             || effective.profile.policy_hook != resolved.profile.policy_hook
         {
             return Err(unavailable(format!(
-                "the vault's synced configuration redefines it beyond this device's definition; remove `[permissions.profiles.{requested}]` from {} or match it in {}",
-                paths.config_file().display(),
-                paths.local_config_file().display()
+                "the vault's synced configuration redefines it beyond this device's definition; remove `[permissions.profiles.{requested}]` from {}, or review it and accept it with `vulcan config permissions profile pin {requested}`",
+                paths.config_file().display()
             )));
         }
     }
     Ok(resolved)
+}
+
+/// Resolves a profile a caller selected on this device, such as
+/// `--permissions <name>`, with the full configuration, after refusing one
+/// that only the synced configuration defines or that it widens (see
+/// [`resolve_device_permission_profile`]). A synced edit can narrow the
+/// selected profile, never widen it. Without a selection the default
+/// `unrestricted` resolves as usual, since nothing can widen it.
+pub fn resolve_selected_permission_profile(
+    paths: &VaultPaths,
+    requested_profile: Option<&str>,
+) -> Result<ResolvedPermissionProfile, PermissionError> {
+    if requested_profile.is_some() {
+        match resolve_device_permission_profile(paths, requested_profile) {
+            Ok(_) | Err(PermissionError::UnknownProfile { .. }) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    resolve_permission_profile(paths, requested_profile)
 }
 
 /// Resolves a profile from in-memory shared and local configuration instead

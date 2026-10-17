@@ -8320,6 +8320,38 @@
                     "subcommands": []
                   },
                   {
+                    "about": "Accept the vault's synced definition of a permission profile for this device",
+                    "name": "pin",
+                    "options": [
+                      {
+                        "help": "Permission profile name",
+                        "id": "name",
+                        "long": null,
+                        "possible_values": [],
+                        "required": true,
+                        "short": null,
+                        "value_names": [
+                          "NAME"
+                        ]
+                      },
+                      {
+                        "help": "Preview the config change without writing files",
+                        "id": "dry_run",
+                        "long": "dry-run",
+                        "possible_values": [
+                          "true",
+                          "false"
+                        ],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "DRY_RUN"
+                        ]
+                      }
+                    ],
+                    "subcommands": []
+                  },
+                  {
                     "about": "Delete one permission profile override",
                     "name": "delete",
                     "options": [

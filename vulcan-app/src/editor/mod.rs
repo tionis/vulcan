@@ -151,8 +151,9 @@ impl EditorSession {
     /// Run under the named permission profile: rendering reads only what it
     /// grants, and every planned write is checked against it.
     pub fn set_permission_profile(&mut self, profile: &str) -> Result<(), AppError> {
-        let selection = vulcan_core::resolve_permission_profile(&self.paths, Some(profile))
-            .map_err(|error| AppError::operation_with_code("permission_denied", error))?;
+        let selection =
+            vulcan_core::resolve_selected_permission_profile(&self.paths, Some(profile))
+                .map_err(|error| AppError::operation_with_code("permission_denied", error))?;
         self.permissions = Some(Arc::new(vulcan_core::ProfilePermissionGuard::new(
             &self.paths,
             selection,
@@ -703,8 +704,9 @@ mod tests {
             ("Projects/Plan.md", "- [ ] Ship\n"),
             ("Private/Diary.md", "- [ ] Secret\n"),
         ]);
+        // A selected profile is this device's own, defined locally.
         std::fs::write(
-            dir.path().join(".vulcan/config.toml"),
+            dir.path().join(".vulcan/config.local.toml"),
             "[permissions.profiles.projects]\nread = { allow = [\"folder:Projects/**\"] }\nwrite = { allow = [\"folder:Projects/**\"] }\n",
         )
         .unwrap();
@@ -747,8 +749,9 @@ mod tests {
                 "---\nmood: secret\n---\n# Diary #hidden\n[[Home]]\n",
             ),
         ]);
+        // A selected profile is this device's own, defined locally.
         std::fs::write(
-            dir.path().join(".vulcan/config.toml"),
+            dir.path().join(".vulcan/config.local.toml"),
             "[permissions.profiles.projects]\nread = { allow = [\"folder:Projects/**\", \"note:Home.md\"] }\n",
         )
         .unwrap();

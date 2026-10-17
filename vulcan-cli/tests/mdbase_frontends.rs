@@ -28,8 +28,10 @@ fn collection(root: &Path) {
     std::fs::create_dir_all(root).unwrap();
     vulcan_core::initialize_vulcan_dir(&VaultPaths::new(root)).unwrap();
     write(&root.join("mdbase.yaml"), "spec_version: \"0.3.0\"\n");
+    // `--permissions` selects this device's own profile, so the fixture
+    // defines it in the device-local config.
     write(
-        &root.join(".vulcan/config.toml"),
+        &root.join(".vulcan/config.local.toml"),
         &format!(
             "[permissions.profiles.{PROFILE}]\nread = {{ allow = [\"*\"], deny = [\"folder:private/**\"] }}\nwrite = \"all\"\nindex = \"allow\"\n"
         ),

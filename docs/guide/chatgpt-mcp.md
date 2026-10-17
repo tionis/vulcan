@@ -137,6 +137,10 @@ vulcan --permissions daily-wiki-agent mcp \
   --tool-pack notes-read,search,status,daily,tasks,index
 ```
 
+`--permissions` names this device's own limit: a built-in such as `daily-wiki-agent`, or a profile
+in the vault's `.vulcan/config.local.toml`. A synced edit to the vault cannot widen it; see
+[whose profile it is](sandbox.md#whose-profile-it-is).
+
 ## Tool Selection Guidance
 
 For daily workflow questions, prefer:

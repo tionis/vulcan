@@ -28,6 +28,33 @@ use zip::ZipArchive;
 
 const FIXED_NOW: &str = "2026-04-04T12:00:00Z";
 
+/// Copies the shared config's `[permissions]` table into the vault's
+/// device-local `config.local.toml`, as `vulcan config permissions profile
+/// pin` does, so a `--permissions` profile the fixture defines in the shared
+/// config is also this device's own.
+fn pin_profiles(vault_root: &Path) {
+    let shared = fs::read_to_string(vault_root.join(".vulcan/config.toml")).unwrap_or_default();
+    let shared: toml::Table = toml::from_str(&shared).expect("shared config parses");
+    let local_path = vault_root.join(".vulcan/config.local.toml");
+    let mut local: toml::Table = fs::read_to_string(&local_path)
+        .ok()
+        .map(|text| toml::from_str(&text).expect("local config parses"))
+        .unwrap_or_default();
+    match shared.get("permissions") {
+        Some(permissions) => {
+            local.insert("permissions".to_string(), permissions.clone());
+        }
+        None => {
+            local.remove("permissions");
+        }
+    }
+    fs::write(
+        local_path,
+        toml::to_string(&local).expect("local config renders"),
+    )
+    .expect("local config writes");
+}
+
 #[test]
 fn tasks_edit_authorizes_read_write_and_execution_before_launch() {
     let dir = TempDir::new().unwrap();
@@ -40,6 +67,7 @@ fn tasks_edit_authorizes_read_write_and_execution_before_launch() {
         "[permissions.profiles.hidden]\nread = { allow = [\"note:mdbase.yaml\"] }\nwrite = \"all\"\nexecute = \"allow\"\n",
         "[permissions.profiles.allowed]\nread = \"all\"\nwrite = \"all\"\nexecute = \"allow\"\n",
     )).unwrap();
+    pin_profiles(&root);
     Command::cargo_bin("vulcan")
         .unwrap()
         .args([
@@ -108,6 +136,7 @@ fn task_cli_collection_constraints_require_full_dependency_authority() {
     fs::write(root.join("mdbase.yaml"), "spec_version: '0.3.0'\n").unwrap();
     fs::write(root.join("_types/task.md"), "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    properties:\n      type: {const: task}\n      title: {type: string}\ncollection:\n  unique: [{field: title, scope: collection}]\n---\n").unwrap();
     fs::write(root.join(".vulcan/config.toml"), "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\", \"note:mdbase.yaml\", \"note:mdbase.lock.yaml\", \"folder:_types/**\", \"folder:_contracts/**\"] }\nwrite = { allow = [\"folder:Public/**\"] }\n").unwrap();
+    pin_profiles(root);
     let public = "---\ntype: task\ntitle: Public task\nstatus: open\ntags: [task]\n---\nBody\n";
     fs::write(root.join("Public/Task.md"), public).unwrap();
     fs::write(
@@ -176,6 +205,7 @@ fn task_cli_readable_controls_do_not_grant_hidden_note_authority() {
     fs::create_dir_all(root.join(".vulcan")).unwrap();
     fs::write(root.join("Inbox.md"), "- [ ] Existing\n").unwrap();
     fs::write(root.join(".vulcan/config.toml"), "tasknotes.tasks_folder = \"Hidden\"\n[permissions.profiles.scoped]\nread = { allow = [\"note:Inbox.md\", \"note:mdbase.yaml\"] }\nwrite = { allow = [\"note:Inbox.md\"] }\n").unwrap();
+    pin_profiles(root);
     Command::cargo_bin("vulcan")
         .unwrap()
         .args([
@@ -268,6 +298,7 @@ fn task_cli_mutations_preserve_selected_routing_authority() {
     fs::create_dir_all(root.join(".vulcan")).unwrap();
     fs::write(root.join("Inbox.md"), "- [ ] Existing\n").unwrap();
     fs::write(root.join(".vulcan/config.toml"), "[permissions.profiles.scoped]\nread = { allow = [\"note:Inbox.md\"] }\nwrite = { allow = [\"note:Inbox.md\"] }\n").unwrap();
+    pin_profiles(root);
     run_scan(root);
     let commands = [
         vec!["add", "New task"],
@@ -2609,6 +2640,7 @@ sandbox = "strict"
 "#,
     )
     .expect("config should write");
+    pin_profiles(&vault_root);
     write_plugin_file(
         &vault_root,
         "lint",
@@ -2933,6 +2965,7 @@ fn properties_command_respects_the_permission_profile() {
         "[permissions.profiles.done]\nread = { allow = [\"note:Done.md\"] }\n",
     )
     .expect("config should be written");
+    pin_profiles(&vault_root);
     run_scan(&vault_root);
 
     let output = Command::cargo_bin("vulcan")
@@ -4649,6 +4682,7 @@ fn write_dynamic_content_vault(vault_root: &Path) {
         "\n[permissions.profiles.public]\nread = { allow = [\"note:Dashboard.md\"] }\nwrite = { allow = [] }\n",
     );
     fs::write(config, contents).expect("config should be written");
+    pin_profiles(vault_root);
 }
 
 fn vulcan_json(vault_root: &Path, args: &[&str]) -> Value {
@@ -9583,6 +9617,87 @@ fn sync_resolve_cli_resumes_a_published_unapplied_resolution() {
 }
 
 #[test]
+fn a_permissions_profile_must_be_this_devices_own_and_pin_accepts_one() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
+    fs::write(vault_root.join("Public.md"), "public\n").expect("note");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[permissions.profiles.scoped]\nread = { allow = [\"note:Public.md\"] }\n",
+    )
+    .expect("shared profile");
+    let run = |arguments: &[&str]| {
+        Command::cargo_bin("vulcan")
+            .expect("binary")
+            .arg("--vault")
+            .arg(&vault_root)
+            .args(arguments)
+            .output()
+            .expect("vulcan runs")
+    };
+    let local = vault_root.join(".vulcan/config.local.toml");
+
+    // Only the synced config defines it: refused, with the way out.
+    let refused = run(&["--permissions", "scoped", "note", "get", "Public"]);
+    assert!(!refused.status.success());
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains("only in the vault's synced configuration")
+            && stderr.contains("vulcan config permissions profile pin scoped"),
+        "{stderr}"
+    );
+
+    // Pinning previews, then copies the synced definition locally.
+    let preview = run(&[
+        "config",
+        "permissions",
+        "profile",
+        "pin",
+        "scoped",
+        "--dry-run",
+    ]);
+    assert!(
+        preview.status.success(),
+        "{}",
+        String::from_utf8_lossy(&preview.stderr)
+    );
+    assert!(!local.exists(), "a dry run writes nothing");
+    let pinned = run(&["config", "permissions", "profile", "pin", "scoped"]);
+    assert!(
+        pinned.status.success(),
+        "{}",
+        String::from_utf8_lossy(&pinned.stderr)
+    );
+    assert!(fs::read_to_string(&local)
+        .expect("local config")
+        .contains("note:Public.md"));
+    let allowed = run(&["--permissions", "scoped", "note", "get", "Public"]);
+    assert!(
+        allowed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&allowed.stderr)
+    );
+    assert!(String::from_utf8_lossy(&allowed.stdout).contains("public"));
+
+    // A later synced edit may not widen it: the pinned fields win, and
+    // widening one it leaves unset refuses the profile.
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[permissions.profiles.scoped]\nread = \"all\"\nwrite = \"all\"\n",
+    )
+    .expect("widened shared profile");
+    let widened = run(&["--permissions", "scoped", "note", "get", "Public"]);
+    assert!(!widened.status.success());
+    assert!(String::from_utf8_lossy(&widened.stderr).contains("beyond this device's definition"));
+
+    // Pinning something the vault does not define fails.
+    let missing = run(&["config", "permissions", "profile", "pin", "absent"]);
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("does not define"));
+}
+
+#[test]
 fn vault_registry_cli_round_trips_without_touching_wiki_files() {
     let temporary = TempDir::new().expect("temp dir should be created");
     let config_home = temporary.path().join("config");
@@ -12418,6 +12533,7 @@ fn web_fetch_save_rejects_denied_and_outside_destinations() {
         "[permissions.profiles.network_only]\nnetwork = \"allow\"\nwrite = \"none\"\n",
     )
     .expect("config");
+    pin_profiles(&vault_root);
     let vault = vault_root.to_str().expect("vault path should be utf-8");
 
     Command::cargo_bin("vulcan")
@@ -12618,6 +12734,7 @@ fn scoped_dql_inlinks_exclude_hidden_sources_but_keep_readable_nonresults() {
     fs::create_dir_all(root.join("Public")).unwrap();
     fs::create_dir_all(root.join("Hidden")).unwrap();
     fs::write(root.join(".vulcan/config.toml"), "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\"], deny = [\"note:Public/Denied.md\"] }\nwrite = \"none\"\n").unwrap();
+    pin_profiles(root);
     fs::write(root.join("Public/Target.md"), "Target\n").unwrap();
     for path in ["Public/Source.md", "Public/Denied.md", "Hidden/Secret.md"] {
         fs::write(root.join(path), "[[Public/Target]]\n").unwrap();
@@ -13471,6 +13588,7 @@ fn tasks_eval_scopes_block_sources_and_results_with_policy_hooks() {
         "[permissions.profiles.guarded]\nread = { allow = [\"tag:visible\"], deny = [\"tag:secret\"] }\n",
         "write = \"none\"\npolicy_hook = \".vulcan/plugins/guard.js\"\n",
     )).unwrap();
+    pin_profiles(&root);
     let hook = root.join(".vulcan/plugins/guard.js");
     fs::write(&hook, "function policy_hook(input) { return ['APolicy.md', 'Private/Dashboard.md'].includes(input.resource) ? 'deny' : 'pass'; }\n").unwrap();
     let xdg = config_home.to_str().unwrap();
@@ -13656,6 +13774,7 @@ fn scoped_task_queries_filter_before_limits_groups_and_backlink_expressions() {
         fs::create_dir_all(root.join(folder)).unwrap();
     }
     fs::write(root.join(".vulcan/config.toml"), "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\"] }\nwrite = \"none\"\n").unwrap();
+    pin_profiles(root);
     fs::write(
         root.join("Hidden/First.md"),
         "- [ ] Hidden task\n[[Public/Target]]\n",
@@ -13720,6 +13839,7 @@ fn tasks_dependency_and_next_reports_apply_policy_scope() {
         "[permissions.profiles.guarded]\nread = { allow = [\"tag:visible\"], deny = [\"tag:secret\"] }\n",
         "write = \"none\"\npolicy_hook = \".vulcan/plugins/guard.js\"\n",
     )).unwrap();
+    pin_profiles(&root);
     let hook = root.join(".vulcan/plugins/guard.js");
     fs::write(&hook, "function policy_hook(input) { return input.resource === 'BPolicy.md' ? 'deny' : 'pass'; }\n").unwrap();
     let xdg = config_home.to_str().unwrap();
@@ -13865,6 +13985,7 @@ fn bases_evaluation_applies_read_and_policy_scope() {
         ),
     )
     .unwrap();
+    pin_profiles(&root);
     let hook = root.join(".vulcan/plugins/guard.js");
     fs::write(
         &hook,
@@ -14021,6 +14142,7 @@ fn tasknote_reports_apply_policy_scope_before_totals() {
         "[permissions.profiles.guarded]\nread = { allow = [\"tag:visible\"], deny = [\"tag:secret\"] }\n",
         "write = \"none\"\npolicy_hook = \".vulcan/plugins/guard.js\"\n",
     )).unwrap();
+    pin_profiles(&root);
     let hook = root.join(".vulcan/plugins/guard.js");
     fs::write(&hook, "function policy_hook(input) { return input.resource === 'Policy.md' ? 'deny' : 'pass'; }\n").unwrap();
     let xdg = config_home.to_str().unwrap();
@@ -16062,6 +16184,7 @@ fn tasks_show_scopes_identifiers_and_source_reads_without_write_grants() {
         "[permissions.profiles.guarded]\nread = { allow = [\"tag:visible\"], deny = [\"tag:secret\"] }\n",
         "write = \"none\"\npolicy_hook = \".vulcan/plugins/guard.js\"\n",
     )).unwrap();
+    pin_profiles(&root);
     let hook = root.join(".vulcan/plugins/guard.js");
     fs::write(&hook, "function policy_hook(input) { return input.resource === 'Policy/Task.md' ? 'deny' : 'pass'; }\n").unwrap();
     let xdg = config_home.to_str().unwrap();
@@ -19650,9 +19773,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(permission_skill.contains("vulcan schedule trust enable|accept|disable"));
     assert!(permission_skill.contains("never from shared `.vulcan/config.toml`"));
     assert!(permission_skill.contains("an offline old device keeps running it until it syncs"));
-    assert!(
-        permission_skill.contains("vulcan config permissions profile create <name> --target local")
-    );
+    assert!(permission_skill.contains("vulcan config permissions profile pin <name> --dry-run"));
     assert!(permission_skill.contains("set-conflict-worker --wiki <id>"));
     assert!(permission_skill.contains("vulcan daemon companion --output json"));
     assert!(permission_skill.contains("synchronized plugin data"));
@@ -20167,6 +20288,7 @@ shell = "deny"
 "#,
     )
     .expect("config should be written");
+    pin_profiles(&vault_root);
 
     let list_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
@@ -23800,6 +23922,7 @@ read = { allow = ["folder:Projects/**"] }
 "#,
     )
     .expect("config should be written");
+    pin_profiles(&vault_root);
     run_scan(&vault_root);
     let export_path = temp_dir.path().join("filtered-search-index.json");
 
@@ -27046,6 +27169,7 @@ fn export_epub_dynamic_content_respects_read_scope() {
         "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\"] }\nwrite = \"none\"\nexecute = \"allow\"\n",
     )
     .unwrap();
+    pin_profiles(&vault_root);
     run_scan(&vault_root);
 
     let export = |profile: Option<&str>, name: &str| {
@@ -27466,6 +27590,7 @@ fn saved_reports_and_automation_exports_respect_read_permissions() {
         "[permissions.profiles.public_only]\nread = { allow = [\"folder:Public/**\"] }\n",
     )
     .expect("config should write");
+    pin_profiles(&vault_root);
     run_scan(&vault_root);
     let vault = vault_root.to_str().expect("vault path should be utf-8");
 
@@ -31481,6 +31606,7 @@ shell = "deny"
 "#,
     )
     .expect("config should write");
+    pin_profiles(&vault_root);
     let filtered = Command::cargo_bin("vulcan")
         .expect("binary should build")
         .args([
@@ -34607,6 +34733,7 @@ shell = "allow"
 "#,
     )
     .expect("config should write");
+    pin_profiles(&vault_root);
     let shell_tool = write_skill_command_tool(
         &vault_root,
         "shell-tool",
@@ -34815,6 +34942,7 @@ fn mcp_note_info_excludes_unreadable_backlinks_and_confidence() {
         "[permissions.profiles.public]\nread = { allow = [\"note:Target.md\", \"note:Public.md\"] }\n",
     )
     .expect("config");
+    pin_profiles(&vault_root);
     fs::write(vault_root.join("Target.md"), "# Target\n[[Public]]\n").expect("target note");
     fs::write(vault_root.join("Public.md"), "[[Target]]\n").expect("public note");
     fs::write(vault_root.join("Private.md"), "[[Target]]\n").expect("private note");
@@ -34863,6 +34991,7 @@ fn mcp_note_delete_preview_hides_unreadable_backlinks() {
         "[permissions.profiles.public]\nread = { allow = [\"note:Target.md\", \"note:Public.md\", \"note:mdbase.yaml\"] }\nwrite = { allow = [\"note:Target.md\"] }\n",
     )
     .expect("config");
+    pin_profiles(&vault_root);
     fs::write(vault_root.join("Target.md"), "# Target\n").expect("target note");
     fs::write(vault_root.join("Public.md"), "[[Target]]\n").expect("public note");
     fs::write(vault_root.join("Private.md"), "[[Target]]\n").expect("private note");
@@ -35362,6 +35491,7 @@ read = { allow = ["folder:Journal/Daily/**"], deny = ["note:Journal/Daily/2026-0
 "#,
     )
     .expect("permission config");
+    pin_profiles(&vault_root);
 
     let mut session = McpSession::start(&vault_root, &["--permissions", "older"]);
     let _ = session.send(serde_json::json!({
@@ -35795,6 +35925,7 @@ fn mcp_web_tools_use_the_shared_permission_checked_workflows() {
         ),
     )
     .expect("web config");
+    pin_profiles(&vault_root);
 
     let mut session = McpSession::start(
         &vault_root,
@@ -36309,6 +36440,7 @@ shell = "deny"
 "#,
     )
     .expect("config should be written");
+    pin_profiles(&vault_root);
     fs::write(vault_root.join("AGENTS.md"), "# Hidden\n").expect("agents file should write");
     fs::create_dir_all(vault_root.join("AI/Prompts")).expect("prompts dir");
     fs::write(
@@ -37370,6 +37502,7 @@ write = "none"
 "#,
     )
     .expect("config should be written");
+    pin_profiles(&vault_root);
 
     let vault = vault_root.to_str().expect("utf-8");
     for arguments in [
@@ -37462,6 +37595,7 @@ shell = "deny"
 "#,
     )
     .expect("config should be written");
+    pin_profiles(&vault_root);
 
     let vault_root_str = vault_root.to_str().expect("utf-8").to_string();
 
@@ -37598,6 +37732,7 @@ read = { allow = ["folder:Projects/**"] }
 "#,
     )
     .expect("config should be written");
+    pin_profiles(&vault_root);
     run_scan(&vault_root);
 
     let assert = Command::cargo_bin("vulcan")
@@ -37698,6 +37833,7 @@ fn task_read_policy_precedes_limits_and_backlink_expressions_in_cli_and_mcp() {
         "[permissions.profiles.baseline]\nread = { allow = [\"tag:visible\"] }\nwrite = \"none\"\n",
         "[permissions.profiles.guarded]\nread = { allow = [\"tag:visible\"] }\nwrite = \"none\"\npolicy_hook = \".vulcan/plugins/guard.js\"\n",
     )).unwrap();
+    pin_profiles(&root);
     let hook = root.join(".vulcan/plugins/guard.js");
     fs::write(&hook, "function policy_hook(input) { return input.action === 'read' && input.resource === 'BPolicy.md' ? 'deny' : 'pass'; }\n").unwrap();
     let xdg = config_home.to_str().unwrap();
@@ -37871,6 +38007,7 @@ policy_hook = ".vulcan/plugins/guard.js"
 "#,
     )
     .expect("config should be written");
+    pin_profiles(&vault_root);
 
     let config_home = temp_dir.path().join("xdg");
     fs::create_dir_all(&config_home).expect("xdg dir should exist");
@@ -38955,6 +39092,7 @@ fn installed_note_skills_route_writes_only_with_config_read_authority() {
     let config = "[permissions.profiles.scoped]\nread = { allow = [\"note:a.md\"] }\nwrite = { allow = [\"note:a.md\"] }\n";
     fs::create_dir_all(root.join(".vulcan")).unwrap();
     fs::write(root.join(".vulcan/config.toml"), config).unwrap();
+    pin_profiles(root);
     run_scan(root);
     for contents in [
         None,
@@ -38996,6 +39134,7 @@ fn installed_note_skills_route_writes_only_with_config_read_authority() {
         ),
     )
     .unwrap();
+    pin_profiles(root);
     Command::cargo_bin("vulcan")
         .unwrap()
         .args([
@@ -39025,6 +39164,7 @@ fn managed_mdbase_cli_write_requires_lockfile_read_authority_even_when_absent() 
     fs::write(root.join("a.md"), "Original\n").unwrap();
     let config = "[permissions.profiles.scoped]\nread = { allow = [\"note:mdbase.yaml\", \"folder:_types/**\", \"folder:_contracts/**\", \"note:a.md\"] }\nwrite = { allow = [\"note:a.md\"] }\n";
     fs::write(root.join(".vulcan/config.toml"), config).unwrap();
+    pin_profiles(root);
     run_scan(root);
     let mut denial = None;
     for contents in [None, Some("SECRET invalid: ["), Some("{}\n")] {
@@ -39069,6 +39209,7 @@ fn managed_mdbase_cli_write_requires_lockfile_read_authority_even_when_absent() 
         ),
     )
     .unwrap();
+    pin_profiles(root);
     Command::cargo_bin("vulcan")
         .unwrap()
         .args([
@@ -39101,6 +39242,7 @@ fn mdbase_cli_checks_control_grants_before_reading_referenced_schema_files() {
     fs::write(root.join("_types/task.md"), "---\nkind: mdbase.type\nname: task\nschema:\n  dialect: json-schema-2020-12\n  ref: ../hidden.yaml\n---\n").unwrap();
     let config = "[permissions.profiles.scoped]\nread = { allow = [\"note:mdbase.yaml\", \"folder:_types/**\", \"folder:_contracts/**\"] }\n";
     fs::write(root.join(".vulcan/config.toml"), config).unwrap();
+    pin_profiles(root);
     let mut denial = None;
     for contents in [None, Some("invalid: [SECRET"), Some("type: object\n")] {
         if let Some(contents) = contents {
@@ -39143,6 +39285,7 @@ fn mdbase_cli_checks_control_grants_before_reading_referenced_schema_files() {
         ),
     )
     .unwrap();
+    pin_profiles(root);
     let result = Command::cargo_bin("vulcan")
         .unwrap()
         .args([
@@ -39733,6 +39876,7 @@ fn mdbase_permission_profiles_scope_every_surface_without_leaks() {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, contents).unwrap();
     }
+    pin_profiles(&root);
     let run = |arguments: &[&str]| {
         let output = Command::cargo_bin("vulcan")
             .unwrap()

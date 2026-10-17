@@ -1200,7 +1200,7 @@ fn permission_profiles_limit_what_the_editor_can_change() {
         ("Private/Diary.md", "- [ ] Secret\n"),
     ]);
     std::fs::write(
-        dir.path().join(".vulcan/config.toml"),
+        dir.path().join(".vulcan/config.local.toml"),
         "[permissions.profiles.projects]\nread = \"all\"\nwrite = { allow = [\"folder:Projects/**\"] }\nindex = \"deny\"\n",
     )
     .unwrap();
