@@ -6834,6 +6834,8 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         ] {
             git(&writer, &["config", key, value]);
         }
+        // Windows runners default to autocrlf; the assertions compare LF bytes.
+        git(&writer, &["config", "core.autocrlf", "false"]);
         git(
             &writer,
             &[
@@ -6860,6 +6862,8 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         git(
             temporary,
             &[
+                "-c",
+                "core.autocrlf=false",
                 "clone",
                 "--quiet",
                 "--branch",
@@ -6874,6 +6878,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         ] {
             git(&reader, &["config", key, value]);
         }
+        git(&reader, &["config", "core.autocrlf", "false"]);
         (remote, writer, reader)
     }
 
