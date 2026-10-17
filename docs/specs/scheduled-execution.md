@@ -158,7 +158,8 @@ a target, the trust decision, next run, last success or error, and a running job
 v1 ships the scheduler with `repository-trust` and the shared synchronous execution-authorizer
 boundary, which returns the verified execution identity. `trusted-commit` (static
 `allowed_signers`, exact-commit resolution, rollback and fork checks) is the next slice. It
-plugs into the same authorizer without changing scheduler types.
+plugs into the same authorizer without changing scheduler types; see
+[Trusted-commit v1](#trusted-commit-v1).
 
 ## Two trust policies, one execution path
 
@@ -205,6 +206,149 @@ local trust reset. First bootstrap, missing/restored security state, key removal
 changes need inspectable handling. Unreachable remotes do not expire accepted authority;
 known revocation blocks new use and cancels affected calls cooperatively. Report unavailable,
 untrusted, stale, conflicted, and blocked states distinctly. No clock-based trust lease is required.
+
+## Trusted-commit v1
+
+Status: frozen 2026-10-17 after review; not yet implemented. Signatures are SSH commit signatures
+only; OpenPGP signatures are not accepted. This section makes the policy above
+concrete for static keys; the sigchain adapter below replaces only where the keys come from.
+
+### Keys and device configuration
+
+An administrator enables the policy per registered vault in the device configuration, which no
+synced file can change:
+
+```toml
+[[vault]]
+id = "mimir"
+# ...
+[vault.execution_trust]
+policy = "trusted-commit"                  # default "repository-trust"
+allowed_signers = "/home/me/.config/vulcan/execution-signers"
+principals = ["admin"]                     # which entries of that file may authorize
+source = "HEAD"                            # ref whose tip is resolved; default HEAD
+```
+
+- **A dedicated role.** The allowed-signers file lists execution signers only. It is a separate
+  file from Git's own `gpg.ssh.allowedSignersFile`, and from the 12.17 registry administrators,
+  so trusting a key for one purpose never trusts it for another. Vulcan refuses the configuration
+  when an entry's key is this device's identity key or a device key the vault's device registry
+  knows, because automatic sync commits must never count as authorization.
+- **Protected and outside the vault.** The file must be outside the vault and its Git work tree,
+  owned by the current user, and not writable by group or others (on Unix). A file that fails
+  these checks blocks every job of the vault, rather than being ignored.
+- **Format.** OpenSSH `allowed_signers` lines: principals, optional `namespaces="git"`, key type,
+  and key. Lines naming `cert-authority`, `valid-after`, or `valid-before` are rejected with a
+  diagnostic in v1 instead of being half-supported. Only entries whose principal is listed in
+  `principals` count.
+- **Signatures are verified in-process** (the `ssh-key` crate's SSHSIG verification with namespace
+  `git`), against the commit object's `gpgsig` header and payload. Vulcan runs neither
+  `ssh-keygen` nor `gpg` nor any program Git configuration names, so neither the repository nor
+  the candidate commits can choose the verifier. Supported key types match the crate features:
+  Ed25519 first, including keys held on hardware tokens; `sk-` (FIDO) keys and RSA follow if
+  needed. OpenPGP-signed commits are not accepted: an administrator who signs with OpenPGP today
+  sets `gpg.format = ssh` for the vault repository.
+
+A plain (non-Git) vault configured for `trusted-commit` blocks every job as unsupported.
+
+### What is authorized
+
+Each job is authorized separately, so an unsigned change blocks only the jobs it touches. A job's
+**execution definition** is the canonical JSON of:
+
+- its `[[schedules.jobs]]` entry;
+- the shared definition of the permission profile its `authority` names (device-local overrides
+  still apply at run time, and the device ceiling still caps the result);
+- the configuration its target declares as execution configuration: none for `scan`, and the
+  whole `[git]` table for `batch-commit`, because that table chooses the commit strategy and the
+  message agent, which reaches the network. Later targets declare their own sections when they
+  are added.
+
+The definition digest is the BLAKE3 hash of that JSON. A job absent from a commit has the digest
+of "absent", so removing or disabling a job is a definition change like any other.
+
+Definitions are read from Git objects, never the working tree: `git show <commit>:<prefix>.vulcan/config.toml`,
+where `<prefix>` is the vault's path inside the repository (`docs/` for a vault in a
+subdirectory). Uncommitted edits are reported as pending and have no effect until committed and
+signed. The run receives the authorized snapshot, so `batch-commit` uses the signed `[git]` table
+even if the working tree changed it.
+
+### Resolution
+
+On each scheduler reload, the verifier resolves `source` to its tip `T` and the vault's accepted
+checkpoint `C` from device state:
+
+1. **History must contain the checkpoint.** If `C` is not an ancestor of `T` or equal to it (a
+   force-push, a reset, or another fork), every job of the vault is blocked as `rolled-back`. Only
+   an explicit `trust accept` moves past this.
+2. **Find the authorizing frontier.** Among the commits reachable from `T` but not from `C`, take
+   those signed by an allowed signer. The frontier is the set of those that are not ancestors of
+   another one (`git merge-base --independent`). With none, the frontier is `C` itself.
+3. **Match every job.** A job is authorized when its digest at `T` equals its digest at every
+   frontier commit. An unsigned commit that changes a job after the last signature blocks that job
+   as `unsigned-change`. An unsigned merge of two differently signed definitions blocks it as
+   `conflicted`. An old definition copied back in an unsigned commit differs from the frontier's,
+   so it is blocked too, which is the rollback case the policy names.
+4. **Advance the checkpoint.** When the frontier is a single commit that descends from `C`, it
+   becomes the new checkpoint, even if some jobs are blocked: it is an authorized state, and
+   accepting it closes off rollback to anything older.
+
+Unsigned commits that leave execution definitions alone (note edits, auto-commits, sync
+snapshots) never block anything. A signed merge authorizes the definition in its tree. The result
+is cached by `(T, C, policy generation)`, so an unchanged tip costs nothing. Otherwise the walk
+covers only the commits since the checkpoint, which keeps advancing.
+
+A signer that loses trust (removed from the file or from `principals`) no longer signs anything.
+If the checkpoint itself was theirs, the jobs whose definitions it authorized stay blocked until a
+remaining signer signs a descendant. Falling back to an older signed commit would be a rollback.
+Each reload rechecks, and a run whose job loses authorization is cancelled cooperatively, as with
+disablement.
+
+### State, bootstrap, and recovery
+
+The checkpoint lives in `daemon/schedules.sqlite`, beside the occurrence ledger:
+`trust_checkpoints(vault, policy_generation, commit, signer, accepted_ms, how)`, where `how` is
+`enabled`, `advanced`, or `accepted`. The policy generation is the digest of the trust
+configuration and the allowed-signers file's contents, so editing either is visible in status.
+
+- **Bootstrap is explicit.** `vulcan schedule trust enable` writes the device configuration and
+  pins the current frontier as the first checkpoint, printing the commit and signer. The
+  administrator who runs it is the one who would otherwise approve that state. With no signed
+  commit yet, jobs stay blocked as `unsigned` until one arrives.
+- **Missing state blocks.** If the policy is configured but no checkpoint exists (the state
+  directory was lost, or another device's configuration was copied), every job is blocked as
+  `no-checkpoint`. Vulcan does not re-bootstrap silently, because that would accept any old signed
+  commit an attacker presents.
+- **Restored state** from an older backup can only pin an older checkpoint. Rollback to states
+  between it and the newest one is then possible until the next advance. Status shows the
+  checkpoint's age, and the guide tells administrators to rerun `trust accept` after a restore.
+- **Unreachable remotes** change nothing: authority is resolved from local objects and lasts until
+  the next resolution.
+
+### Commands
+
+- `vulcan schedule trust status`: the policy, signers and principals, checkpoint, frontier, and
+  each job's state (`authorized`, `unsigned-change`, `conflicted`, `rolled-back`,
+  `no-checkpoint`, `unsupported`, or `pending` for uncommitted edits), with the commits involved.
+- `vulcan schedule trust enable --allowed-signers <file> --principal <name>… [--source <ref>]`
+  and `trust disable` (back to `repository-trust`), with `--dry-run`.
+- `vulcan schedule trust accept [<commit>]`: pins a signed commit as the checkpoint after
+  rollback, a fork, or restored state. The commit must be signed by an allowed signer, and the
+  command shows what changes for each job before accepting. `--dry-run` is supported.
+
+Administrators sign with plain Git (`git commit -S`, or `git merge -S` for a merge); Vulcan needs no
+signing command. `schedule list`, `show`, and `run` report the trust decision they already carry,
+with the job's state in place of `repository-trust`.
+
+### Tests
+
+Signed, unsigned, and mixed histories built in temporary repositories with fixture keys: an
+unsigned note edit after a signed definition; an unsigned job change, removal, and re-addition of
+an old definition; signed and unsigned merges of conflicting definitions; force-push below the
+checkpoint; signer removal; a device key listed as a signer; a writable or in-vault signers file;
+missing and restored checkpoints; a vault in a repository subdirectory; uncommitted edits;
+`batch-commit` reading the signed `[git]` table. Malformed signature headers and unsupported key
+types fail closed.
 
 ## Sigchain evolution
 
