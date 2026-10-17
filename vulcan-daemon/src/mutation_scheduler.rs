@@ -96,6 +96,12 @@ impl MutationScheduler {
         })
     }
 
+    /// How many callers are waiting for a permit.
+    #[cfg(test)]
+    pub(crate) fn waiting(&self) -> usize {
+        self.queued.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     pub async fn acquire<F>(
         &self,
         context: &ExecutionContext,

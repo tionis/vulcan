@@ -52,6 +52,7 @@ impl HostedWorkerGate {
             host: self,
             registration,
             requires_git: true,
+            cancellation: ExecutionCancellationToken::default(),
         }
     }
 
@@ -64,6 +65,7 @@ impl HostedWorkerGate {
             host: self,
             registration,
             requires_git: false,
+            cancellation: ExecutionCancellationToken::default(),
         }
     }
 }
@@ -76,9 +78,18 @@ pub struct VaultGate<'a> {
     host: &'a HostedWorkerGate,
     registration: &'a WikiRegistration,
     requires_git: bool,
+    cancellation: ExecutionCancellationToken,
 }
 
 impl VaultGate<'_> {
+    /// Stops waiting for the permit once `cancellation` is cancelled, so a
+    /// cancelled worker does not queue behind a long write only to give up.
+    #[must_use]
+    pub fn cancelled_by(mut self, cancellation: ExecutionCancellationToken) -> Self {
+        self.cancellation = cancellation;
+        self
+    }
+
     fn profile(&self) -> &str {
         self.registration
             .permissions_profile
@@ -117,7 +128,7 @@ impl VaultGate<'_> {
             ExecutionIdentity::new(self.host.service_id),
             None,
             ExecutionRetryClass::DurableRecovery,
-            ExecutionCancellationToken::default(),
+            self.cancellation.clone(),
             Some(ExecutionDeadline::after(WORKER_PERMIT_WAIT)),
         )
         .map_err(|error| error.to_string())

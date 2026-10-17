@@ -145,7 +145,9 @@ recorded with `manual = 1` and leave the watermark alone. The scheduler rereads 
 vault configuration at least every 30 seconds; a run whose job is disabled, removed, reassigned,
 or changed, or that exceeds `max_runtime_seconds`, is asked to stop through its cancellation
 token. `scan` cannot stop mid-scan and `batch-commit` stops at its next check, so both finish
-their current step.
+their current step. The same token cancels a run's wait for the host's per-vault mutation permit,
+so a cancelled run (or shutdown) never waits behind a hosted write, and a run cancelled before it
+holds the permit stops without starting its target.
 
 ### Commands
 

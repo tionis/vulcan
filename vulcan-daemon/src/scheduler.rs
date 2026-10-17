@@ -145,6 +145,9 @@ pub fn run_job(job: &ScheduleJob, context: &RunContext<'_>) -> Result<String, St
             let guard = vulcan_core::ProfilePermissionGuard::new(context.paths, profile);
             vulcan_core::PermissionGuard::check_index(&guard).map_err(|error| error.to_string())?;
             let _permit = context.gate.enter().map_err(|error| error.to_string())?;
+            if context.cancellation.is_cancelled() {
+                return Err("cancelled while waiting for the vault".to_string());
+            }
             let summary = vulcan_core::scan_vault_with_progress(
                 context.paths,
                 if *full {
@@ -164,6 +167,9 @@ pub fn run_job(job: &ScheduleJob, context: &RunContext<'_>) -> Result<String, St
             let guard = vulcan_core::ProfilePermissionGuard::new(context.paths, profile);
             vulcan_core::PermissionGuard::check_index(&guard).map_err(|error| error.to_string())?;
             let _permit = context.gate.enter().map_err(|error| error.to_string())?;
+            if context.cancellation.is_cancelled() {
+                return Err("cancelled while waiting for the vault".to_string());
+            }
             let summary = vulcan_app::scan::scan_vault_with_automation(
                 context.paths,
                 if *full {
@@ -219,12 +225,31 @@ pub fn vault_key(registration: &WikiRegistration) -> String {
 }
 
 /// A run in progress.
+/// A run's cancellation, seen both by its target and by its wait for the
+/// vault's mutation permit.
+#[derive(Clone, Default)]
+struct RunCancellation {
+    target: SyncCancellationToken,
+    permit: vulcan_app::execution::ExecutionCancellationToken,
+}
+
+impl RunCancellation {
+    fn cancel(&self) {
+        self.target.cancel();
+        self.permit.cancel();
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.target.is_cancelled()
+    }
+}
+
 struct Running {
     revision: String,
     /// Which attempt this is, from 1, and how many retries the job allows.
     attempt: i64,
     retries: u8,
-    cancellation: SyncCancellationToken,
+    cancellation: RunCancellation,
     handle: JoinHandle<()>,
 }
 
@@ -456,7 +481,7 @@ impl Scheduler {
         registry: &WikiRegistry,
         gate: Option<&Arc<HostedWorkerGate>>,
     ) {
-        let cancellation = SyncCancellationToken::default();
+        let cancellation = RunCancellation::default();
         let thread_cancellation = cancellation.clone();
         let retries = job.limits.retries;
         let job = job.clone();
@@ -487,9 +512,10 @@ impl Scheduler {
                     }
                 })
             };
-            let vault_gate = gate
-                .as_ref()
-                .map(|gate| gate.for_file_writes(&registration));
+            let vault_gate = gate.as_ref().map(|gate| {
+                gate.for_file_writes(&registration)
+                    .cancelled_by(thread_cancellation.permit.clone())
+            });
             let gate: &dyn MutationGate = match vault_gate.as_ref() {
                 Some(gate) => gate,
                 None => &Ungated,
@@ -502,7 +528,7 @@ impl Scheduler {
                     paths: &paths,
                     ceiling: registration.permissions_profile.as_deref(),
                     gate,
-                    cancellation: &thread_cancellation,
+                    cancellation: &thread_cancellation.target,
                     trust: TrustTarget::for_registration(&registration, &state_root, &ledger_key),
                 },
             );
@@ -901,12 +927,27 @@ mod tests {
 
     /// Ticks at `now` until no run is in progress, as the service would.
     fn settle(scheduler: &mut Scheduler, fixture: &Fixture, now: DateTime<Utc>) {
+        tick(scheduler, fixture, now, None);
+        drain(scheduler, now);
+    }
+
+    /// One tick at `now`, leaving any run it starts in progress.
+    fn tick(
+        scheduler: &mut Scheduler,
+        fixture: &Fixture,
+        now: DateTime<Utc>,
+        gate: Option<&Arc<HostedWorkerGate>>,
+    ) {
         let vaults = scheduled_vaults(
             &fixture.registry.load().unwrap().vaults,
             scheduler.ledger(),
             now.timestamp_millis(),
         );
-        scheduler.tick(now, &vaults, &fixture.registry, None);
+        scheduler.tick(now, &vaults, &fixture.registry, gate);
+    }
+
+    /// Records runs as they finish until none is in progress.
+    fn drain(scheduler: &mut Scheduler, now: DateTime<Utc>) {
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         while !scheduler.running.is_empty() {
             assert!(std::time::Instant::now() < deadline, "a run never finished");
@@ -916,11 +957,57 @@ mod tests {
     }
 
     fn history(fixture: &Fixture, job: &str) -> Vec<OccurrenceRecord> {
+        history_in(fixture, &fixture.state, job)
+    }
+
+    /// `job`'s runs in the ledger under `state`, newest first.
+    fn history_in(fixture: &Fixture, state: &Path, job: &str) -> Vec<OccurrenceRecord> {
         let key = vault_key(&fixture.registry.load().unwrap().vaults[0]);
-        ScheduleLedger::open(&fixture.state)
+        ScheduleLedger::open(state)
             .unwrap()
             .history(&key, job, 50)
             .unwrap()
+    }
+
+    /// A host mutation gate, as the daemon builds for its workers, and its
+    /// scheduler.
+    fn host_gate() -> (
+        tokio::runtime::Runtime,
+        Arc<HostedWorkerGate>,
+        Arc<crate::mutation_scheduler::MutationScheduler>,
+    ) {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let scheduler = Arc::new(
+            crate::mutation_scheduler::MutationScheduler::new(
+                crate::mutation_scheduler::MutationSchedulerConfig::default(),
+            )
+            .unwrap(),
+        );
+        let gate = Arc::new(HostedWorkerGate::new(
+            Arc::clone(&scheduler),
+            runtime.handle().clone(),
+            "scheduler.test",
+        ));
+        (runtime, gate, scheduler)
+    }
+
+    /// Waits until a run is queued for the vault's permit.
+    fn await_queued(scheduler: &crate::mutation_scheduler::MutationScheduler) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while scheduler.waiting() == 0 {
+            assert!(std::time::Instant::now() < deadline, "the run never queued");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn set_config(fixture: &Fixture, edit: impl FnOnce(String) -> String) {
+        let path = fixture.vault.join(".vulcan/config.toml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, edit(text)).unwrap();
     }
 
     #[test]
@@ -1238,5 +1325,174 @@ mod tests {
         assert_eq!(retried[0].attempt, 2);
         let plain = history(&fixture, "plain");
         assert_eq!(plain[0].state, OccurrenceState::Interrupted, "{plain:?}");
+    }
+
+    #[test]
+    fn a_reload_cancels_a_run_still_waiting_for_the_vault() {
+        let fixture = fixture(
+            &job("rescan", "\"device-a\"", "limits = { retries = 1 }"),
+            None,
+        );
+        let (_runtime, gate, permits) = host_gate();
+        let registration = fixture.registry.load().unwrap().vaults.remove(0);
+        let vault = vault_key(&registration);
+        let mut scheduler = Scheduler::open(&fixture.state, Some("device-a".to_string())).unwrap();
+        tick(&mut scheduler, &fixture, at(0), Some(&gate));
+
+        // A hosted write holds the vault, so the due run waits for it.
+        let held = gate.for_file_writes(&registration).enter().unwrap();
+        tick(&mut scheduler, &fixture, at(61), Some(&gate));
+        await_queued(&permits);
+        assert!(scheduler.is_running(&vault, "rescan"));
+        let first = history(&fixture, "rescan");
+        assert_eq!(first[0].state, OccurrenceState::Dispatched, "{first:?}");
+
+        // The definition changes while it waits: the run stops without the
+        // permit and without scanning, and its occurrence is not retried.
+        set_config(&fixture, |text| {
+            text.replace("every = \"1m\"", "every = \"2m\"")
+        });
+        tick(&mut scheduler, &fixture, at(62), Some(&gate));
+        drain(&mut scheduler, at(62));
+        drop(held);
+        let runs = history(&fixture, "rescan");
+        assert_eq!(runs.len(), 1, "{runs:?}");
+        assert_eq!(runs[0].state, OccurrenceState::Cancelled, "{runs:?}");
+        assert!(
+            !fixture.vault.join(".vulcan/cache.db").exists(),
+            "a cancelled run never scanned"
+        );
+
+        // The new definition starts fresh and runs on its own trigger.
+        tick(&mut scheduler, &fixture, at(100), Some(&gate));
+        drain(&mut scheduler, at(100));
+        assert_eq!(
+            history(&fixture, "rescan").len(),
+            1,
+            "the old run is not retried"
+        );
+        tick(&mut scheduler, &fixture, at(125), Some(&gate));
+        drain(&mut scheduler, at(125));
+        let runs = history(&fixture, "rescan");
+        assert_eq!(runs.len(), 2, "{runs:?}");
+        assert_eq!(runs[0].state, OccurrenceState::Succeeded, "{runs:?}");
+        assert_eq!(runs[0].scheduled_ms, at(120).timestamp_millis());
+        assert_ne!(runs[0].revision, runs[1].revision);
+
+        // A malformed reload runs nothing until it is fixed; the unchanged
+        // definition then catches up once, as after downtime.
+        set_config(&fixture, |text| format!("{text}\n[schedules\n"));
+        settle(&mut scheduler, &fixture, at(245));
+        assert_eq!(history(&fixture, "rescan").len(), 2);
+        set_config(&fixture, |text| text.replace("\n[schedules\n", ""));
+        settle(&mut scheduler, &fixture, at(250));
+        let runs = history(&fixture, "rescan");
+        assert_eq!(runs.len(), 3, "{runs:?}");
+        assert_eq!(runs[0].scheduled_ms, at(240).timestamp_millis());
+        settle(&mut scheduler, &fixture, at(365));
+        assert_eq!(history(&fixture, "rescan").len(), 4);
+    }
+
+    #[test]
+    fn shutdown_does_not_wait_for_a_run_queued_behind_a_write() {
+        let fixture = fixture(&job("rescan", "\"device-a\"", ""), None);
+        let (_runtime, gate, permits) = host_gate();
+        let registration = fixture.registry.load().unwrap().vaults.remove(0);
+        let mut scheduler = Scheduler::open(&fixture.state, Some("device-a".to_string())).unwrap();
+        tick(&mut scheduler, &fixture, at(0), Some(&gate));
+        let held = gate.for_file_writes(&registration).enter().unwrap();
+        tick(&mut scheduler, &fixture, at(61), Some(&gate));
+        await_queued(&permits);
+        let started = std::time::Instant::now();
+        scheduler.shutdown(at(62));
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "shutdown waited {:?} for the permit",
+            started.elapsed()
+        );
+        drop(held);
+        let runs = history(&fixture, "rescan");
+        assert_eq!(runs[0].state, OccurrenceState::Cancelled, "{runs:?}");
+    }
+
+    #[test]
+    fn offline_runners_keep_their_own_history_and_a_handover_starts_fresh() {
+        let fixture = fixture(&job("rescan", "\"device-a\", \"device-b\"", ""), None);
+        let state_b = fixture.state.with_file_name("state-b");
+        let mut a = Scheduler::open(&fixture.state, Some("device-a".to_string())).unwrap();
+        let mut b = Scheduler::open(&state_b, Some("device-b".to_string())).unwrap();
+        settle(&mut a, &fixture, at(0));
+        settle(&mut b, &fixture, at(0));
+
+        // Both listed: each runs every occurrence it is up for, independently.
+        // `b` is offline from 0 to 185 and coalesces what it missed.
+        settle(&mut a, &fixture, at(65));
+        settle(&mut a, &fixture, at(125));
+        settle(&mut b, &fixture, at(185));
+        assert_eq!(history_in(&fixture, &fixture.state, "rescan").len(), 2);
+        let runs_b = history_in(&fixture, &state_b, "rescan");
+        assert_eq!(runs_b.len(), 1, "{runs_b:?}");
+        assert_eq!(runs_b[0].scheduled_ms, at(180).timestamp_millis());
+
+        // Reassigned to `b` alone while `a` is offline: `b` keeps running it
+        // under the new definition from when it first sees it, and `a`, back
+        // online, runs nothing, not even what it missed.
+        set_config(&fixture, |text| {
+            text.replace(
+                "nodes = [\"device-a\", \"device-b\"]",
+                "nodes = [\"device-b\"]",
+            )
+        });
+        settle(&mut b, &fixture, at(190));
+        settle(&mut b, &fixture, at(245));
+        let runs_b = history_in(&fixture, &state_b, "rescan");
+        assert_eq!(runs_b.len(), 2, "{runs_b:?}");
+        assert_eq!(runs_b[0].scheduled_ms, at(240).timestamp_millis());
+        assert_ne!(runs_b[0].revision, runs_b[1].revision);
+        settle(&mut a, &fixture, at(665));
+        assert_eq!(history_in(&fixture, &fixture.state, "rescan").len(), 2);
+    }
+
+    #[test]
+    fn narrowing_the_ceiling_stops_the_next_run() {
+        let fixture = fixture(&job("rescan", "\"device-a\"", ""), None);
+        let mut scheduler = Scheduler::open(&fixture.state, Some("device-a".to_string())).unwrap();
+        settle(&mut scheduler, &fixture, at(0));
+        settle(&mut scheduler, &fixture, at(65));
+        assert_eq!(
+            history(&fixture, "rescan")[0].state,
+            OccurrenceState::Succeeded
+        );
+
+        let registration = fixture.registry.load().unwrap().vaults.remove(0);
+        let ceiling = |profile: Option<&str>| crate::registry::UpdateWikiRequest {
+            groups_to_add: vec![],
+            groups_to_remove: vec![],
+            permissions_profile: Some(profile.map(str::to_string)),
+            sync_paused: None,
+            profile: None,
+            execution_trust: None,
+        };
+        fixture
+            .registry
+            .update(&registration.id, &ceiling(Some("readonly")), false)
+            .unwrap();
+        settle(&mut scheduler, &fixture, at(125));
+        let runs = history(&fixture, "rescan");
+        assert_eq!(runs[0].state, OccurrenceState::Failed, "{runs:?}");
+        assert!(runs[0]
+            .outcome
+            .as_deref()
+            .unwrap()
+            .contains("exceeds this device's ceiling"));
+
+        // Only the device can raise it again.
+        fixture
+            .registry
+            .update(&registration.id, &ceiling(None), false)
+            .unwrap();
+        settle(&mut scheduler, &fixture, at(185));
+        let runs = history(&fixture, "rescan");
+        assert_eq!(runs[0].state, OccurrenceState::Succeeded, "{runs:?}");
     }
 }
