@@ -584,13 +584,15 @@ fn allowed_signer_lines_keep_only_supported_entries_for_listed_principals() {
 
 #[test]
 fn configuration_requires_an_absolute_path_and_plain_principals() {
+    // Absolute on every platform (`/abs` is not on Windows).
+    let absolute = std::env::temp_dir().join("execution-signers");
     assert!(ExecutionTrustConfig::new("relative".into(), vec![ADMIN.into()], None).is_err());
-    assert!(ExecutionTrustConfig::new("/abs".into(), vec![], None).is_err());
-    assert!(ExecutionTrustConfig::new("/abs".into(), vec!["a*".into()], None).is_err());
+    assert!(ExecutionTrustConfig::new(absolute.clone(), vec![], None).is_err());
+    assert!(ExecutionTrustConfig::new(absolute.clone(), vec!["a*".into()], None).is_err());
     assert!(
-        ExecutionTrustConfig::new("/abs".into(), vec![ADMIN.into()], Some("-x".into())).is_err()
+        ExecutionTrustConfig::new(absolute.clone(), vec![ADMIN.into()], Some("-x".into())).is_err()
     );
-    let config = ExecutionTrustConfig::new("/abs".into(), vec![ADMIN.into()], None).expect("ok");
+    let config = ExecutionTrustConfig::new(absolute, vec![ADMIN.into()], None).expect("ok");
     assert_eq!(config.source, "HEAD");
     let text = toml::to_string(&config).expect("toml");
     assert!(text.contains("policy = \"trusted-commit\""));

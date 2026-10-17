@@ -802,7 +802,10 @@ fn check_protected(path: &Path, metadata: &std::fs::Metadata) -> Result<(), Stri
     Ok(())
 }
 
+// Same signature as the Unix check, which can fail; elsewhere the file's
+// ownership and mode bits are not checked.
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
 fn check_protected(_path: &Path, _metadata: &std::fs::Metadata) -> Result<(), String> {
     Ok(())
 }

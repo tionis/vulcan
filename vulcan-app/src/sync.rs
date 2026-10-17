@@ -6855,11 +6855,15 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         git(&writer, &["commit", "--quiet", "-m", "initial"]);
         git(&writer, &["push", "--quiet", "-u", "origin", "main"]);
         let reader = temporary.join("reader");
+        // The bare remote's HEAD follows the machine's `init.defaultBranch`,
+        // which may not be `main`; name the branch so the clone checks it out.
         git(
             temporary,
             &[
                 "clone",
                 "--quiet",
+                "--branch",
+                "main",
                 remote.to_str().expect("remote path"),
                 reader.to_str().expect("reader path"),
             ],

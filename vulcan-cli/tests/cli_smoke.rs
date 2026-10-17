@@ -40731,7 +40731,15 @@ fn vault_tokens_are_created_once_listed_without_secrets_and_revoked() {
     assert_eq!(listed[0]["label"], "phone");
     assert_eq!(listed[0]["orphaned"], false);
     let listing_text = listed.to_string();
-    assert!(!listing_text.contains(token.rsplit_once('_').unwrap().1));
+    // `vat_<ulid>_<secret>`: the secret is URL-safe base64 and may itself
+    // contain `_`, so split after the ID rather than at the last `_`.
+    let secret = token
+        .strip_prefix("vat_")
+        .and_then(|rest| rest.split_once('_'))
+        .expect("token shape")
+        .1;
+    assert!(secret.len() >= 40, "{token}");
+    assert!(!listing_text.contains(secret));
     assert!(!listing_text.contains("blake3"));
 
     cargo_vulcan_with_xdg_config(&config_home)

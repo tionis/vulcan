@@ -393,7 +393,8 @@ mod tests {
         assert_eq!(record.registration_id, registration);
         assert_eq!(record.label.as_deref(), Some("phone"));
         let stored = fs::read_to_string(store.path()).unwrap();
-        let secret = token.rsplit_once('_').unwrap().1;
+        // The secret follows the ID and may itself contain `_`.
+        let (_, secret) = parse_token(&token).unwrap();
         assert!(!stored.contains(secret), "the secret is never stored");
 
         let mut forged = token.clone();
