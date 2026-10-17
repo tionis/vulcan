@@ -9704,6 +9704,65 @@ fn a_permissions_profile_must_be_this_devices_own_and_pin_accepts_one() {
 }
 
 #[test]
+fn vector_commands_need_network_for_the_provider_and_index_for_writes() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
+    fs::write(vault_root.join("Home.md"), "home\n").expect("note");
+    // Nothing listens on the discard port: a request that got this far would
+    // fail to connect, not with a permission error.
+    fs::write(
+        vault_root.join(".vulcan/config.local.toml"),
+        "[embedding]\nprovider = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:9/v1\"\nmodel = \"fixture\"\napi_key_env = \"VULCAN_CLI_TEST_EMBEDDING_KEY\"\n\n[permissions.profiles.net_only]\nread = \"all\"\nnetwork = \"allow\"\nindex = \"deny\"\n",
+    )
+    .expect("local config");
+    let run = |arguments: &[&str]| {
+        let output = Command::cargo_bin("vulcan")
+            .expect("binary")
+            .env("VULCAN_CLI_TEST_EMBEDDING_KEY", "fixture-key")
+            .arg("--vault")
+            .arg(&vault_root)
+            .args(arguments)
+            .output()
+            .expect("vulcan runs");
+        assert!(!output.status.success(), "{arguments:?} should be refused");
+        String::from_utf8_lossy(&output.stderr).to_string()
+    };
+    for arguments in [
+        &["--permissions", "readonly", "vectors", "index"][..],
+        &["--permissions", "readonly", "vectors", "index", "--dry-run"][..],
+        &["--permissions", "readonly", "vectors", "neighbors", "home"][..],
+        &["--permissions", "readonly", "vectors", "queue", "run"][..],
+    ] {
+        let stderr = run(arguments);
+        assert!(
+            stderr.contains("does not allow network access"),
+            "{arguments:?}: {stderr}"
+        );
+    }
+    // With the provider reachable by the profile, writing the index still
+    // needs the index grant.
+    for arguments in [
+        &["--permissions", "net_only", "vectors", "index"][..],
+        &["--permissions", "net_only", "vectors", "rebuild"][..],
+        &["--permissions", "net_only", "vectors", "repair"][..],
+        &[
+            "--permissions",
+            "net_only",
+            "vectors",
+            "drop-model",
+            "openai-compatible:fixture",
+        ][..],
+    ] {
+        let stderr = run(arguments);
+        assert!(
+            stderr.contains("does not allow index"),
+            "{arguments:?}: {stderr}"
+        );
+    }
+}
+
+#[test]
 fn vault_registry_cli_round_trips_without_touching_wiki_files() {
     let temporary = TempDir::new().expect("temp dir should be created");
     let config_home = temporary.path().join("config");

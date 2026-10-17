@@ -475,6 +475,11 @@ Important behavior:
 - `vulcan vectors models`: list stored embedding models.
 - `vulcan vectors drop-model <cache-key>`: drop one model and its vectors.
 
+Under `--permissions`, commands that embed text (`index` and `queue run`, even with `--dry-run`;
+`repair`, `rebuild`, and `neighbors`) need network access to the configured provider's endpoint, and
+commands that write the vector index (`index`, `queue run`, `repair`, `rebuild`, `drop-model`, and
+`cluster` without `--dry-run`) need the `index` grant. Both are checked before any request.
+
 ## Query and filter syntax
 
 `vulcan query --where`, `vulcan search --where`, `vulcan refactor rewrite`, `vulcan note update`, `vulcan note unset`, and `bases view-*` filters all use the same typed filter grammar.

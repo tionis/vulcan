@@ -745,6 +745,27 @@ fn print_ranked_snippet_hit(
     println!();
 }
 
+/// Commands that write the vector index need the profile's index grant.
+fn check_vector_index_write(cli: &Cli, paths: &VaultPaths) -> Result<(), CliError> {
+    use vulcan_core::PermissionGuard as _;
+    crate::selected_permission_guard(cli, paths)?
+        .check_index()
+        .map_err(CliError::operation)
+}
+
+/// Commands that embed text call the configured provider, so the profile
+/// must allow its endpoint. A provider that cannot be loaded is left for
+/// the command to report.
+fn check_embedding_network(cli: &Cli, paths: &VaultPaths) -> Result<(), CliError> {
+    use vulcan_core::PermissionGuard as _;
+    let Ok(endpoint) = vulcan_core::embedding_endpoint(paths, cli.provider.as_deref()) else {
+        return Ok(());
+    };
+    crate::selected_permission_guard(cli, paths)?
+        .check_network(&endpoint)
+        .map_err(CliError::operation)
+}
+
 pub(crate) fn handle_cluster_command(
     cli: &Cli,
     paths: &VaultPaths,
@@ -755,6 +776,9 @@ pub(crate) fn handle_cluster_command(
     stdout_is_tty: bool,
     use_stdout_color: bool,
 ) -> Result<(), CliError> {
+    if !dry_run {
+        check_vector_index_write(cli, paths)?;
+    }
     let read_filter = selected_read_permission_filter(cli, paths)?;
     let report = cluster_vectors_with_filter(
         paths,
@@ -824,6 +848,11 @@ pub(crate) fn handle_vectors_command(
 ) -> Result<(), CliError> {
     match command {
         VectorsCommand::Index { dry_run } => {
+            // Even a dry run loads the provider.
+            check_embedding_network(cli, paths)?;
+            if !*dry_run {
+                check_vector_index_write(cli, paths)?;
+            }
             let verbosity = cli.verbosity();
             let mut progress = (cli.output == OutputFormat::Human)
                 .then(|| VectorIndexProgressReporter::new(use_stderr_color, verbosity));
@@ -845,6 +874,10 @@ pub(crate) fn handle_vectors_command(
             Ok(())
         }
         VectorsCommand::Repair { dry_run } => {
+            if !*dry_run {
+                check_vector_index_write(cli, paths)?;
+                check_embedding_network(cli, paths)?;
+            }
             let mut progress = (cli.output == OutputFormat::Human)
                 .then(|| VectorIndexProgressReporter::new(use_stderr_color, Verbosity::Normal));
             let report = repair_vectors_with_progress(
@@ -863,6 +896,10 @@ pub(crate) fn handle_vectors_command(
             print_vector_repair_report(cli.output, &report, use_stdout_color)
         }
         VectorsCommand::Rebuild { dry_run } => {
+            if !*dry_run {
+                check_vector_index_write(cli, paths)?;
+                check_embedding_network(cli, paths)?;
+            }
             let mut progress = (cli.output == OutputFormat::Human)
                 .then(|| VectorIndexProgressReporter::new(use_stderr_color, Verbosity::Normal));
             let report = rebuild_vectors_with_progress(
@@ -888,6 +925,10 @@ pub(crate) fn handle_vectors_command(
                 print_vector_queue_report(cli.output, &report)
             }
             VectorQueueCommand::Run { dry_run } => {
+                check_embedding_network(cli, paths)?;
+                if !*dry_run {
+                    check_vector_index_write(cli, paths)?;
+                }
                 let verbosity = cli.verbosity();
                 let mut progress = (cli.output == OutputFormat::Human)
                     .then(|| VectorIndexProgressReporter::new(use_stderr_color, verbosity));
@@ -914,6 +955,7 @@ pub(crate) fn handle_vectors_command(
             note,
             export,
         } => {
+            check_embedding_network(cli, paths)?;
             let read_filter = selected_read_permission_filter(cli, paths)?;
             let resolved_note = if note.is_some() || query.is_none() {
                 Some(resolve_note_argument(
@@ -1020,6 +1062,7 @@ pub(crate) fn handle_vectors_command(
             Ok(())
         }
         VectorsCommand::DropModel { key } => {
+            check_vector_index_write(cli, paths)?;
             let dropped = drop_vector_model(paths, key).map_err(CliError::operation)?;
             if dropped {
                 if cli.output == OutputFormat::Json {
