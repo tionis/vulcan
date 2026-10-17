@@ -280,6 +280,7 @@ mod tests {
             sync_backend: sync_backend.map(str::to_string),
             platform_profile: None,
             sync_paused: false,
+            execution_trust: None,
         }
     }
 

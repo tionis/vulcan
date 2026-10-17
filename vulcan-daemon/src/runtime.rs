@@ -1025,6 +1025,7 @@ mod tests {
             sync_backend: backend.map(str::to_string),
             platform_profile: None,
             sync_paused: paused,
+            execution_trust: None,
         }
     }
 
@@ -1273,6 +1274,7 @@ mod tests {
                     groups_to_remove: vec![],
                     permissions_profile: None,
                     sync_paused: Some(true),
+                    execution_trust: None,
                 },
                 false,
             )
@@ -1368,6 +1370,7 @@ mod tests {
                     groups_to_remove: vec![],
                     permissions_profile: None,
                     sync_paused: Some(false),
+                    execution_trust: None,
                 },
                 false,
             )
@@ -1495,6 +1498,7 @@ mod tests {
                     groups_to_remove: Vec::new(),
                     permissions_profile: None,
                     sync_paused: Some(true),
+                    execution_trust: None,
                 },
                 false,
             )

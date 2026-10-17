@@ -3514,6 +3514,7 @@ fn set_automatic_sync(
                 permissions_profile: None,
                 sync_paused: Some(paused),
                 profile: None,
+                execution_trust: None,
             },
             dry_run,
         )

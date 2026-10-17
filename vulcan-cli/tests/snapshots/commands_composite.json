@@ -15371,6 +15371,126 @@
               }
             ],
             "subcommands": []
+          },
+          {
+            "about": "Require scheduled jobs to be signed by an allowed signer (trusted-commit)",
+            "name": "trust",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "Show the trust policy, checkpoint, signed commits, and each job's state",
+                "name": "status",
+                "options": [],
+                "subcommands": []
+              },
+              {
+                "about": "Switch the vault to trusted-commit and pin the newest signed commit as the checkpoint",
+                "name": "enable",
+                "options": [
+                  {
+                    "help": "OpenSSH allowed-signers file for execution signers, outside the vault",
+                    "id": "allowed_signers",
+                    "long": "allowed-signers",
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "ALLOWED_SIGNERS"
+                    ]
+                  },
+                  {
+                    "help": "Principal of that file that may authorize jobs (repeatable)",
+                    "id": "principals",
+                    "long": "principal",
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "PRINCIPALS"
+                    ]
+                  },
+                  {
+                    "help": "Ref whose tip is resolved [default: HEAD]",
+                    "id": "source",
+                    "long": "source",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "SOURCE"
+                    ]
+                  },
+                  {
+                    "help": "Report what would change without writing anything",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Return the vault to repository trust and forget its checkpoint",
+                "name": "disable",
+                "options": [
+                  {
+                    "help": "Report what would change without writing anything",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Pin a signed commit as the checkpoint, after a rollback, fork, or restored state",
+                "name": "accept",
+                "options": [
+                  {
+                    "help": "Signed commit to accept [default: the newest signed commit]",
+                    "id": "commit",
+                    "long": null,
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "COMMIT"
+                    ]
+                  },
+                  {
+                    "help": "Show what would change for each job without accepting",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              }
+            ]
           }
         ]
       },

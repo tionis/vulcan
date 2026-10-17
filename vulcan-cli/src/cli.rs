@@ -6191,6 +6191,51 @@ pub enum ScheduleCommand {
         #[arg(long, help = "Report the change without writing config.toml")]
         dry_run: bool,
     },
+    #[command(
+        subcommand,
+        about = "Require scheduled jobs to be signed by an allowed signer (trusted-commit)"
+    )]
+    Trust(ScheduleTrustCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum ScheduleTrustCommand {
+    #[command(about = "Show the trust policy, checkpoint, signed commits, and each job's state")]
+    Status,
+    #[command(
+        about = "Switch the vault to trusted-commit and pin the newest signed commit as the checkpoint"
+    )]
+    Enable {
+        #[arg(
+            long,
+            help = "OpenSSH allowed-signers file for execution signers, outside the vault"
+        )]
+        allowed_signers: std::path::PathBuf,
+        #[arg(
+            long = "principal",
+            required = true,
+            help = "Principal of that file that may authorize jobs (repeatable)"
+        )]
+        principals: Vec<String>,
+        #[arg(long, help = "Ref whose tip is resolved [default: HEAD]")]
+        source: Option<String>,
+        #[arg(long, help = "Report what would change without writing anything")]
+        dry_run: bool,
+    },
+    #[command(about = "Return the vault to repository trust and forget its checkpoint")]
+    Disable {
+        #[arg(long, help = "Report what would change without writing anything")]
+        dry_run: bool,
+    },
+    #[command(
+        about = "Pin a signed commit as the checkpoint, after a rollback, fork, or restored state"
+    )]
+    Accept {
+        #[arg(help = "Signed commit to accept [default: the newest signed commit]")]
+        commit: Option<String>,
+        #[arg(long, help = "Show what would change for each job without accepting")]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]

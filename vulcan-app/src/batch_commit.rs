@@ -58,6 +58,13 @@ pub struct BatchedCommitOptions<'a> {
     /// from the registration). `None` reads the device registry.
     pub capture_owner: Option<CaptureOwner>,
     pub permission_profile: Option<&'a str>,
+    /// Use these instead of reading the working tree: a trusted-commit run
+    /// passes the signed `[git]` table and the profile it resolved from it.
+    pub git_config: Option<&'a GitConfig>,
+    pub resolved_profile: Option<&'a vulcan_core::ResolvedPermissionProfile>,
+    /// Whether the vault's commit plugins run. A trusted-commit run never
+    /// runs them: they are working-tree code nobody signed.
+    pub plugins: bool,
     pub gate: &'a dyn MutationGate,
     pub cancellation: &'a SyncCancellationToken,
     pub verbosity: Verbosity,
@@ -135,16 +142,20 @@ pub fn run_batched_commit(
     paths: &VaultPaths,
     options: &BatchedCommitOptions<'_>,
 ) -> Result<BatchedCommitReport, AppError> {
-    let config = load_vault_config(paths).config.git;
+    let config = options
+        .git_config
+        .cloned()
+        .unwrap_or_else(|| load_vault_config(paths).config.git);
     let requested = config.batch_messages;
     if let Some(report) = batch_precondition(paths, &config, options) {
         return Ok(report);
     }
-    let guard = ProfilePermissionGuard::new(
-        paths,
-        resolve_permission_profile(paths, options.permission_profile)
+    let profile = match options.resolved_profile {
+        Some(profile) => profile.clone(),
+        None => resolve_permission_profile(paths, options.permission_profile)
             .map_err(AppError::operation)?,
-    );
+    };
+    let guard = ProfilePermissionGuard::new(paths, profile);
     guard.check_git().map_err(AppError::operation)?;
 
     let mut candidates =
@@ -172,17 +183,19 @@ pub fn run_batched_commit(
             return Ok(report);
         }
         cancellation_check(options.cancellation)?;
-        crate::plugins::dispatch_plugin_event(
-            paths,
-            options.permission_profile,
-            PluginEvent::OnPreCommit,
-            &json!({
-                "kind": PluginEvent::OnPreCommit,
-                "action": BATCH_ACTION,
-                "files": candidates.paths,
-            }),
-            options.verbosity,
-        )?;
+        if options.plugins {
+            crate::plugins::dispatch_plugin_event(
+                paths,
+                options.permission_profile,
+                PluginEvent::OnPreCommit,
+                &json!({
+                    "kind": PluginEvent::OnPreCommit,
+                    "action": BATCH_ACTION,
+                    "files": candidates.paths,
+                }),
+                options.verbosity,
+            )?;
+        }
         let outcome = {
             let _permit = options.gate.enter()?;
             commit_batch_groups(paths.vault_root(), &config, &candidates, &plan.groups)
@@ -190,7 +203,9 @@ pub fn run_batched_commit(
         };
         match outcome {
             BatchCommitOutcome::Committed { commits } => {
-                announce_commits(paths, options, &commits);
+                if options.plugins {
+                    announce_commits(paths, options, &commits);
+                }
                 report.status = BatchedCommitStatus::Committed;
                 report.used_messages = Some(plan.used);
                 report.agent = plan.agent;
@@ -532,6 +547,9 @@ mod tests {
                 agent_unavailable: None,
                 capture_owner: Some(CaptureOwner::AutoCommit),
                 permission_profile: Some("unrestricted"),
+                git_config: None,
+                resolved_profile: None,
+                plugins: true,
                 gate: &Ungated,
                 cancellation: &cancellation,
                 verbosity: Verbosity::Quiet,
@@ -715,6 +733,9 @@ mod tests {
                     wiki_id: "notes".to_string(),
                 }),
                 permission_profile: Some("unrestricted"),
+                git_config: None,
+                resolved_profile: None,
+                plugins: true,
                 gate: &Ungated,
                 cancellation: &cancellation,
                 verbosity: Verbosity::Quiet,
@@ -762,6 +783,9 @@ mod tests {
                 agent_unavailable: None,
                 capture_owner: Some(CaptureOwner::AutoCommit),
                 permission_profile: Some("unrestricted"),
+                git_config: None,
+                resolved_profile: None,
+                plugins: true,
                 gate: &Ungated,
                 cancellation: &cancellation,
                 verbosity: Verbosity::Quiet,

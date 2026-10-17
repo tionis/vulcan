@@ -84,6 +84,10 @@ pub struct WikiRegistration {
     pub platform_profile: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub sync_paused: bool,
+    /// Device-local execution trust for scheduled jobs. Absent means
+    /// repository trust; `vulcan schedule trust enable` sets trusted-commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_trust: Option<vulcan_app::schedule_trust::ExecutionTrustConfig>,
 }
 
 /// Versioned local capability preset for a managed directory.
@@ -449,6 +453,8 @@ pub struct UpdateWikiRequest {
     pub permissions_profile: Option<Option<String>>,
     pub sync_paused: Option<bool>,
     pub profile: Option<ManagedDirectoryProfile>,
+    /// `Some(None)` returns the vault to repository trust.
+    pub execution_trust: Option<Option<vulcan_app::schedule_trust::ExecutionTrustConfig>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -775,6 +781,7 @@ impl WikiRegistry {
                 sync_backend: request.sync_backend.clone(),
                 platform_profile: request.platform_profile.clone(),
                 sync_paused: false,
+                execution_trust: None,
             };
             config.vaults.push(registration.clone());
             config.vaults.sort_by(|left, right| left.id.cmp(&right.id));
@@ -807,6 +814,9 @@ impl WikiRegistry {
             }
             if let Some(paused) = request.sync_paused {
                 wiki.sync_paused = paused;
+            }
+            if let Some(trust) = &request.execution_trust {
+                wiki.execution_trust.clone_from(trust);
             }
             if let Some(profile) = request.profile {
                 wiki.profile = profile;
@@ -1799,6 +1809,7 @@ mod tests {
                     permissions_profile: Some(Some("readonly".to_string())),
                     sync_paused: Some(true),
                     profile: None,
+                    execution_trust: None,
                 },
                 false,
             )
@@ -1910,6 +1921,7 @@ mod tests {
                     permissions_profile: None,
                     sync_paused: None,
                     profile: Some(ManagedDirectoryProfile::FilesOnly),
+                    execution_trust: None,
                 },
                 false,
             )
@@ -1969,6 +1981,7 @@ mod tests {
                     permissions_profile: None,
                     sync_paused: None,
                     profile: Some(ManagedDirectoryProfile::FilesOnly),
+                    execution_trust: None,
                 },
                 false,
             )

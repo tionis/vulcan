@@ -19609,6 +19609,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(permission_skill.contains("vulcan daemon config show"));
     assert!(permission_skill.contains("vulcan schedule run <id> --dry-run"));
     assert!(permission_skill.contains("`[[schedules.jobs]]`"));
+    assert!(permission_skill.contains("vulcan schedule trust status"));
+    assert!(permission_skill.contains("vulcan schedule trust enable|accept|disable"));
     assert!(permission_skill.contains("set-conflict-worker --wiki <id>"));
     assert!(permission_skill.contains("vulcan daemon companion --output json"));
     assert!(permission_skill.contains("synchronized plugin data"));
@@ -40657,6 +40659,204 @@ fn schedule_commands_list_preview_run_and_toggle_vault_jobs() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("unknown target"));
+}
+
+/// Commits `repo`'s work tree, SSH-signed by `key` when given, without
+/// `ssh-keygen`: the signature is made in process over Git's payload.
+fn commit_signed(repo: &Path, key: Option<&ssh_key::PrivateKey>) -> String {
+    use std::fmt::Write as _;
+    use std::io::Write as _;
+    let git = |arguments: &[&str], input: Option<&[u8]>| {
+        let mut child = ProcessCommand::new("git")
+            .args(arguments)
+            .current_dir(repo)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("git");
+        if let Some(input) = input {
+            child
+                .stdin
+                .take()
+                .expect("stdin")
+                .write_all(input)
+                .expect("write");
+        }
+        drop(child.stdin.take());
+        let output = child.wait_with_output().expect("git");
+        (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        )
+    };
+    assert!(git(&["add", "-A"], None).0);
+    let tree = git(&["write-tree"], None).1;
+    let (has_parent, parent) = git(&["rev-parse", "--verify", "--quiet", "HEAD"], None);
+    let mut payload = format!("tree {tree}\n");
+    if has_parent {
+        let _ = writeln!(payload, "parent {parent}");
+    }
+    payload.push_str("author T <t@example.invalid> 1700000000 +0000\n");
+    payload.push_str("committer T <t@example.invalid> 1700000000 +0000\n");
+    let message = format!("change {}\n", ulid::Ulid::new());
+    let object = match key {
+        Some(key) => {
+            let signature = key
+                .sign(
+                    "git",
+                    ssh_key::HashAlg::Sha512,
+                    format!("{payload}\n{message}").as_bytes(),
+                )
+                .expect("sign")
+                .to_pem(ssh_key::LineEnding::LF)
+                .expect("pem");
+            let mut header = String::new();
+            for line in signature.trim_end().lines() {
+                let _ = writeln!(header, " {line}");
+            }
+            format!("{payload}gpgsig{header}\n{message}")
+        }
+        None => format!("{payload}\n{message}"),
+    };
+    let (written, oid) = git(
+        &["hash-object", "-t", "commit", "-w", "--stdin"],
+        Some(object.as_bytes()),
+    );
+    assert!(written);
+    assert!(git(&["update-ref", "HEAD", &oid], None).0);
+    oid
+}
+
+#[test]
+fn schedule_trust_commands_enable_report_block_and_disable_trusted_commit() {
+    let temporary = TempDir::new().expect("temp dir");
+    let config_home = temporary.path().join("config");
+    fs::create_dir(&config_home).expect("config home");
+    let config_home = config_home.to_str().expect("utf-8 config home").to_string();
+    let vault = temporary.path().join("vault");
+    fs::create_dir_all(vault.join(".vulcan")).expect("vault");
+    fs::write(vault.join("Home.md"), "# Home\n").expect("note");
+    fs::write(vault.join(".gitignore"), ".vulcan/cache.db*\n").expect("ignore");
+    let job = |every: &str| {
+        format!(
+            "[schedules]\nversion = 1\n\n[[schedules.jobs]]\nid = \"rescan\"\ntarget = {{ builtin = \"scan\" }}\nnodes = [\"some-device\"]\ntrigger = {{ every = \"{every}\" }}\nauthority = \"unrestricted\"\n"
+        )
+    };
+    fs::write(vault.join(".vulcan/config.toml"), job("1h")).expect("schedules");
+    assert!(ProcessCommand::new("git")
+        .args(["init", "-q", "-b", "main"])
+        .current_dir(&vault)
+        .status()
+        .expect("git init")
+        .success());
+    let admin =
+        ssh_key::PrivateKey::random(&mut ssh_key::rand_core::OsRng, ssh_key::Algorithm::Ed25519)
+            .expect("key");
+    let signed = commit_signed(&vault, Some(&admin));
+    let signers = temporary.path().join("execution-signers");
+    fs::write(
+        &signers,
+        format!(
+            "admin {}\n",
+            admin.public_key().to_openssh().expect("public")
+        ),
+    )
+    .expect("signers");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(&signers, fs::Permissions::from_mode(0o600)).expect("mode");
+    }
+    let vulcan = |args: &[&str]| {
+        cargo_vulcan_with_xdg_config(&config_home)
+            .arg("--vault")
+            .arg(&vault)
+            .args(["--output", "json"])
+            .args(args)
+            .assert()
+    };
+    let json = |args: &[&str]| parse_stdout_json(&vulcan(args).success());
+    json(&[
+        "vault",
+        "add",
+        "--no-sync",
+        "notes",
+        vault.to_str().expect("utf-8"),
+    ]);
+    assert_eq!(
+        json(&["schedule", "trust", "status"])["policy"],
+        "repository-trust"
+    );
+
+    let signers_arg = signers.to_str().expect("utf-8");
+    let preview = json(&[
+        "schedule",
+        "trust",
+        "enable",
+        "--allowed-signers",
+        signers_arg,
+        "--principal",
+        "admin",
+        "--dry-run",
+    ]);
+    assert_eq!(preview["dry_run"], true);
+    assert_eq!(preview["checkpoint"]["commit"], signed.as_str());
+    assert_eq!(
+        json(&["schedule", "trust", "status"])["policy"],
+        "repository-trust",
+        "a dry run changes nothing"
+    );
+
+    let enabled = json(&[
+        "schedule",
+        "trust",
+        "enable",
+        "--allowed-signers",
+        signers_arg,
+        "--principal",
+        "admin",
+    ]);
+    assert_eq!(enabled["policy"], "trusted-commit");
+    let status = json(&["schedule", "trust", "status"]);
+    assert_eq!(status["policy"], "trusted-commit");
+    assert_eq!(
+        status["resolution"]["checkpoint"]["commit"],
+        signed.as_str()
+    );
+    assert_eq!(status["resolution"]["jobs"][0]["state"], "authorized");
+    assert_eq!(
+        json(&["schedule", "run", "rescan", "--dry-run"])["policy"],
+        "trusted-commit"
+    );
+
+    // An unsigned change blocks the job, and its run refuses.
+    fs::write(vault.join(".vulcan/config.toml"), job("2h")).expect("schedules");
+    commit_signed(&vault, None);
+    let status = json(&["schedule", "trust", "status"]);
+    assert_eq!(status["resolution"]["jobs"][0]["state"], "unsigned-change");
+    let listed = json(&["schedule", "list"]);
+    assert_eq!(listed["jobs"][0]["authorization"]["allowed"], false);
+    vulcan(&["schedule", "run", "rescan"])
+        .failure()
+        .stdout(predicate::str::contains("unsigned-change"));
+    vulcan(&["schedule", "trust", "accept", "HEAD"])
+        .failure()
+        .stdout(predicate::str::contains("not signed by an allowed signer"));
+
+    // Signed, it is authorized again; accept previews per-job changes.
+    let resigned = commit_signed(&vault, Some(&admin));
+    let accept = json(&["schedule", "trust", "accept", "--dry-run"]);
+    assert_eq!(accept["checkpoint"]["commit"], resigned.as_str());
+    assert_eq!(accept["before"][0]["state"], "authorized");
+    assert_eq!(accept["after"][0]["state"], "authorized");
+
+    let disabled = json(&["schedule", "trust", "disable"]);
+    assert_eq!(disabled["policy"], "repository-trust");
+    assert_eq!(
+        json(&["schedule", "trust", "status"])["policy"],
+        "repository-trust"
+    );
 }
 
 #[test]

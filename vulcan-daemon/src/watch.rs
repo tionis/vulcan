@@ -1110,6 +1110,7 @@ mod tests {
             sync_backend: Some("git".to_string()),
             platform_profile: None,
             sync_paused: false,
+            execution_trust: None,
         };
         let supervisor = std::sync::Arc::new(
             SyncSupervisor::at(temporary.path().join("jobs.json")).expect("supervisor"),
@@ -1245,6 +1246,7 @@ mod tests {
             sync_backend: Some("git".to_string()),
             platform_profile: None,
             sync_paused: false,
+            execution_trust: None,
         };
         let supervisor =
             SyncSupervisor::at(temporary.path().join("jobs.json")).expect("supervisor");

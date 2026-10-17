@@ -131,6 +131,7 @@ mod tests {
                             groups_to_remove: Vec::new(),
                             permissions_profile: None,
                             sync_paused: Some(true),
+                            execution_trust: None,
                         },
                         false,
                     )

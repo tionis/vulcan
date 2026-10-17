@@ -1412,6 +1412,7 @@ mod tests {
                     groups_to_remove: vec![],
                     permissions_profile: Some(Some("no_git".to_string())),
                     sync_paused: None,
+                    execution_trust: None,
                 },
                 false,
             )

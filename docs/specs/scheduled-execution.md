@@ -209,8 +209,9 @@ untrusted, stale, conflicted, and blocked states distinctly. No clock-based trus
 
 ## Trusted-commit v1
 
-Status: frozen 2026-10-17 after review; not yet implemented. Signatures are SSH commit signatures
-only; OpenPGP signatures are not accepted. This section makes the policy above
+Status: frozen 2026-10-17 after review, and implemented (`vulcan_app::schedule_trust`, the
+scheduler's trust targets, and `vulcan schedule trust`). Signatures are SSH commit signatures only;
+OpenPGP signatures are not accepted. This section makes the policy above
 concrete for static keys; the sigchain adapter below replaces only where the keys come from.
 
 ### Keys and device configuration
@@ -271,7 +272,10 @@ Definitions are read from Git objects, never the working tree: `git show <commit
 where `<prefix>` is the vault's path inside the repository (`docs/` for a vault in a
 subdirectory). Uncommitted edits are reported as pending and have no effect until committed and
 signed. The run receives the authorized snapshot, so `batch-commit` uses the signed `[git]` table
-even if the working tree changed it.
+even if the working tree changed it. The device ceiling's profile is resolved from the same signed
+configuration, so an unsigned edit cannot widen the ceiling either. Targets never run working-tree
+code under trusted-commit: `scan` runs the scan alone, without scan-triggered auto-commit or plugin
+events, and `batch-commit` runs without commit plugins. Each run resolves again at dispatch.
 
 ### Resolution
 
@@ -294,9 +298,9 @@ checkpoint `C` from device state:
    accepting it closes off rollback to anything older.
 
 Unsigned commits that leave execution definitions alone (note edits, auto-commits, sync
-snapshots) never block anything. A signed merge authorizes the definition in its tree. The result
-is cached by `(T, C, policy generation)`, so an unchanged tip costs nothing. Otherwise the walk
-covers only the commits since the checkpoint, which keeps advancing.
+snapshots) never block anything. A signed merge authorizes the definition in its tree. Every
+reload resolves again, but the walk covers only the commits since the checkpoint, which keeps
+advancing, so an unchanged tip costs a few plumbing calls.
 
 A signer that loses trust (removed from the file or from `principals`) no longer signs anything.
 If the checkpoint itself was theirs, the jobs whose definitions it authorized stay blocked until a

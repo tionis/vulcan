@@ -803,6 +803,7 @@ mod tests {
                     groups_to_remove: Vec::new(),
                     permissions_profile: None,
                     sync_paused: None,
+                    execution_trust: None,
                 },
                 false,
             )

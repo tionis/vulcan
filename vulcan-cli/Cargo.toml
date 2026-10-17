@@ -56,6 +56,7 @@ blake3.workspace = true
 predicates.workspace = true
 rusqlite.workspace = true
 serde_yaml.workspace = true
+ssh-key.workspace = true
 vulcan-secrets = { path = "../vulcan-secrets", version = "0.3.0" }
 
 [lints]

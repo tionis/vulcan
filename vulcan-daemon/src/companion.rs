@@ -799,6 +799,7 @@ impl<'a> CompanionService<'a> {
                     groups_to_remove: Vec::new(),
                     permissions_profile: None,
                     sync_paused: Some(paused),
+                    execution_trust: None,
                 },
                 false,
             )
@@ -1430,6 +1431,7 @@ mod tests {
                     permissions_profile: None,
                     sync_paused: None,
                     profile: Some(crate::registry::ManagedDirectoryProfile::FilesOnly),
+                    execution_trust: None,
                 },
                 false,
             )

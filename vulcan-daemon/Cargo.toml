@@ -38,5 +38,8 @@ vulcan-core = { path = "../vulcan-core", version = "0.3.0", default-features = f
 vulcan-secrets = { path = "../vulcan-secrets", version = "0.3.0" }
 vulcan-sync = { path = "../vulcan-sync", version = "0.3.0" }
 
+[dev-dependencies]
+ssh-key.workspace = true
+
 [lints]
 workspace = true

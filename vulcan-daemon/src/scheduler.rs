@@ -19,10 +19,16 @@ use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use vulcan_app::execution::{MutationGate, Ungated};
-use vulcan_app::schedules::{authorize_execution, OccurrenceKey, OccurrenceState, ScheduleLedger};
+use vulcan_app::schedule_trust::{
+    record_advance, resolve_trust, ExecutionTrustConfig, TrustRepository, TrustResolution,
+};
+use vulcan_app::schedules::{
+    authorize_execution, authorize_trusted_execution, ExecutionAuthorization, OccurrenceKey,
+    OccurrenceState, ScheduleLedger, TrustedSnapshot,
+};
 use vulcan_app::sync::SyncCancellationToken;
 use vulcan_core::schedules::{load_schedules, ScheduleJob, ScheduleTarget};
-use vulcan_core::{VaultPaths, Verbosity};
+use vulcan_core::{ResolvedPermissionProfile, VaultPaths, Verbosity};
 
 /// How often the service rereads registrations and vault schedules while it
 /// waits, which bounds how late a configuration change takes effect.
@@ -40,17 +46,120 @@ pub struct RunContext<'a> {
     pub ceiling: Option<&'a str>,
     pub gate: &'a dyn MutationGate,
     pub cancellation: &'a SyncCancellationToken,
+    /// Set when the vault uses trusted-commit.
+    pub trust: Option<TrustTarget<'a>>,
+}
+
+/// What trusted-commit authorization needs for one vault.
+pub struct TrustTarget<'a> {
+    pub config: &'a ExecutionTrustConfig,
+    pub repository: TrustRepository,
+    /// Where the schedule ledger, which holds the checkpoint, lives.
+    pub state_root: &'a Path,
+    /// The ledger key of the vault.
+    pub vault_key: &'a str,
+}
+
+impl<'a> TrustTarget<'a> {
+    /// The registration's trust target, if it uses trusted-commit.
+    #[must_use]
+    pub fn for_registration(
+        registration: &'a WikiRegistration,
+        state_root: &'a Path,
+        vault_key: &'a str,
+    ) -> Option<Self> {
+        registration
+            .execution_trust
+            .as_ref()
+            .map(|config| TrustTarget {
+                config,
+                repository: trust_repository(registration),
+                state_root,
+                vault_key,
+            })
+    }
+
+    /// Resolves the vault's trust state now, without advancing anything.
+    pub fn resolve(&self) -> Result<TrustResolution, String> {
+        let ledger = ScheduleLedger::open(self.state_root).map_err(|error| error.to_string())?;
+        Ok(resolve_trust(
+            self.config,
+            &self.repository,
+            &ledger,
+            self.vault_key,
+        ))
+    }
+}
+
+/// Where a registration's repository is.
+#[must_use]
+pub fn trust_repository(registration: &WikiRegistration) -> TrustRepository {
+    TrustRepository {
+        vault: registration.path.clone(),
+        git_dir: registration.git_dir.clone(),
+        work_tree: registration.work_tree.clone(),
+    }
+}
+
+/// Authorizes one run of `job` under the vault's policy. A trusted-commit
+/// vault is resolved again here, at dispatch, so a definition that lost its
+/// authorization since the last reload does not run.
+pub fn authorize_run(
+    job: &ScheduleJob,
+    context: &RunContext<'_>,
+) -> Result<
+    (
+        ExecutionAuthorization,
+        ResolvedPermissionProfile,
+        Option<TrustedSnapshot>,
+    ),
+    String,
+> {
+    match &context.trust {
+        None => authorize_execution(context.paths, job, context.ceiling)
+            .map(|(authorization, profile)| (authorization, profile, None))
+            .map_err(|error| error.to_string()),
+        Some(trust) => {
+            let resolution = trust.resolve()?;
+            authorize_trusted_execution(context.paths, job, context.ceiling, &resolution)
+                .map(|(authorization, profile, snapshot)| (authorization, profile, Some(snapshot)))
+                .map_err(|error| error.to_string())
+        }
+    }
 }
 
 /// Authorizes and runs `job` once, as a scheduled occurrence or a manual
 /// `vulcan schedule run`. Returns a one-line summary of what it did.
+///
+/// Under trusted-commit, targets use the signed configuration and never run
+/// working-tree code: `scan` runs the scan alone, without scan-triggered
+/// auto-commit or plugin events, and `batch-commit` uses the signed `[git]`
+/// table without commit plugins.
 pub fn run_job(job: &ScheduleJob, context: &RunContext<'_>) -> Result<String, String> {
-    let (authorization, profile) = authorize_execution(context.paths, job, context.ceiling)
-        .map_err(|error| error.to_string())?;
+    let (authorization, profile, snapshot) = authorize_run(job, context)?;
     if context.cancellation.is_cancelled() {
         return Err("cancelled before it started".to_string());
     }
     match &job.target {
+        ScheduleTarget::Scan { full } if snapshot.is_some() => {
+            let guard = vulcan_core::ProfilePermissionGuard::new(context.paths, profile);
+            vulcan_core::PermissionGuard::check_index(&guard).map_err(|error| error.to_string())?;
+            let _permit = context.gate.enter().map_err(|error| error.to_string())?;
+            let summary = vulcan_core::scan_vault_with_progress(
+                context.paths,
+                if *full {
+                    vulcan_core::ScanMode::Full
+                } else {
+                    vulcan_core::ScanMode::Incremental
+                },
+                |_| {},
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(format!(
+                "scanned: {} added, {} updated, {} deleted",
+                summary.added, summary.updated, summary.deleted
+            ))
+        }
         ScheduleTarget::Scan { full } => {
             let guard = vulcan_core::ProfilePermissionGuard::new(context.paths, profile);
             vulcan_core::PermissionGuard::check_index(&guard).map_err(|error| error.to_string())?;
@@ -82,6 +191,13 @@ pub fn run_job(job: &ScheduleJob, context: &RunContext<'_>) -> Result<String, St
                 Verbosity::Quiet,
                 context.gate,
                 context.cancellation,
+                snapshot
+                    .as_ref()
+                    .map(|snapshot| crate::auto_commit_worker::TrustedBatch {
+                        git: &snapshot.git,
+                        profile: &profile,
+                    })
+                    .as_ref(),
             )?;
             Ok(format!(
                 "batch {:?}: {} commit(s){}",
@@ -140,6 +256,7 @@ type FinishedRun = ((String, String), OccurrenceKey, Result<String, String>);
 /// The scheduler's state between ticks.
 pub struct Scheduler {
     ledger: ScheduleLedger,
+    state_root: PathBuf,
     device_id: Option<String>,
     running: BTreeMap<(String, String), Running>,
     /// Failed or interrupted occurrences waiting for a retry, by job: the
@@ -157,14 +274,43 @@ pub struct ScheduledVault {
     pub jobs: Vec<ScheduleJob>,
 }
 
-/// Reads every registration's schedules.
+/// Reads every registration's schedules. A trusted-commit vault contributes
+/// only its authorized jobs, as defined at the resolved commit, and a single
+/// signed frontier past its checkpoint becomes the new checkpoint.
 #[must_use]
-pub fn scheduled_vaults(registrations: &[WikiRegistration]) -> Vec<ScheduledVault> {
+pub fn scheduled_vaults(
+    registrations: &[WikiRegistration],
+    ledger: &ScheduleLedger,
+    now_ms: i64,
+) -> Vec<ScheduledVault> {
     registrations
         .iter()
-        .map(|registration| ScheduledVault {
-            jobs: load_schedules(&VaultPaths::new(&registration.path)).jobs,
-            registration: registration.clone(),
+        .map(|registration| {
+            let jobs = match &registration.execution_trust {
+                None => load_schedules(&VaultPaths::new(&registration.path)).jobs,
+                Some(config) => {
+                    let key = vault_key(registration);
+                    let resolution =
+                        resolve_trust(config, &trust_repository(registration), ledger, &key);
+                    if let Err(error) = record_advance(&resolution, ledger, &key, now_ms) {
+                        eprintln!(
+                            "cannot record the trust checkpoint of `{}`: {error}",
+                            registration.id
+                        );
+                    }
+                    resolution
+                        .schedules
+                        .jobs
+                        .iter()
+                        .filter(|job| resolution.authorize(&job.id).is_ok())
+                        .cloned()
+                        .collect()
+                }
+            };
+            ScheduledVault {
+                jobs,
+                registration: registration.clone(),
+            }
         })
         .collect()
 }
@@ -174,6 +320,7 @@ impl Scheduler {
         let (finished_sender, finished) = mpsc::channel();
         Ok(Self {
             ledger: ScheduleLedger::open(state_root).map_err(|error| error.to_string())?,
+            state_root: state_root.to_path_buf(),
             device_id,
             running: BTreeMap::new(),
             retry_at: BTreeMap::new(),
@@ -286,6 +433,12 @@ impl Scheduler {
         next
     }
 
+    /// The ledger, which also holds trust checkpoints.
+    #[must_use]
+    pub fn ledger(&self) -> &ScheduleLedger {
+        &self.ledger
+    }
+
     /// Whether `job` runs on this device.
     #[must_use]
     pub fn placement(&self, job: &ScheduleJob) -> JobPlacement {
@@ -311,6 +464,7 @@ impl Scheduler {
         let registry = registry.clone();
         let gate = gate.cloned();
         let sender = self.finished_sender.clone();
+        let state_root = self.state_root.clone();
         let revision = key.revision.clone();
         let thread_key = key;
         let thread_slot = slot.clone();
@@ -340,6 +494,7 @@ impl Scheduler {
                 Some(gate) => gate,
                 None => &Ungated,
             };
+            let ledger_key = vault_key(&registration);
             let result = run_job(
                 &job,
                 &RunContext {
@@ -348,6 +503,7 @@ impl Scheduler {
                     ceiling: registration.permissions_profile.as_deref(),
                     gate,
                     cancellation: &thread_cancellation,
+                    trust: TrustTarget::for_registration(&registration, &state_root, &ledger_key),
                 },
             );
             finished.store(true, Ordering::Release);
@@ -462,8 +618,8 @@ pub fn run_scheduler_service(
     let mut scheduler = Scheduler::open(state_root, device_id)?;
     while !stop.is_cancelled() {
         let registrations = registry.poll().map_err(|error| error.to_string())?.vaults;
-        let vaults = scheduled_vaults(&registrations);
         let now = Utc::now();
+        let vaults = scheduled_vaults(&registrations, scheduler.ledger(), now.timestamp_millis());
         let next = scheduler.tick(now, &vaults, registry, gate);
         let wait = next
             .and_then(|next| (next - Utc::now()).to_std().ok())
@@ -530,7 +686,7 @@ pub struct JobStatus {
 
 pub const SCHEDULE_STATUS_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ScheduleStatusReport {
     pub version: u32,
     pub vault: String,
@@ -539,10 +695,14 @@ pub struct ScheduleStatusReport {
     pub blocked: bool,
     pub diagnostics: Vec<vulcan_core::schedules::ScheduleDiagnostic>,
     pub jobs: Vec<JobStatus>,
+    /// The trusted-commit resolution, for a vault that uses it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trust: Option<TrustResolution>,
 }
 
 /// The vault's jobs as this device sees them: where each runs, whether the
-/// authorizer accepts it, its next run, and its last outcomes.
+/// authorizer accepts it, its next run, and its last outcomes. Under
+/// trusted-commit the jobs are those at the resolved commit.
 pub fn schedule_status(
     paths: &VaultPaths,
     vault: &str,
@@ -550,23 +710,39 @@ pub fn schedule_status(
     device_id: Option<&str>,
     state_root: &Path,
     now: DateTime<Utc>,
+    trust: Option<&TrustTarget<'_>>,
 ) -> Result<ScheduleStatusReport, String> {
-    let set = load_schedules(paths);
+    let resolution = trust.map(TrustTarget::resolve).transpose()?;
+    let set = resolution.as_ref().map_or_else(
+        || load_schedules(paths),
+        |resolution| resolution.schedules.clone(),
+    );
     let ledger = ScheduleLedger::open(state_root).map_err(|error| error.to_string())?;
     let unfinished = ledger
         .unfinished(vault)
         .map_err(|error| error.to_string())?;
     let mut jobs = Vec::with_capacity(set.jobs.len());
     for job in &set.jobs {
-        let authorization = match authorize_execution(paths, job, ceiling) {
-            Ok((authorization, _)) => AuthorizationStatus {
+        let decision = match &resolution {
+            None => authorize_execution(paths, job, ceiling)
+                .map(|(authorization, _)| authorization.policy),
+            Some(resolution) => authorize_trusted_execution(paths, job, ceiling, resolution)
+                .map(|(authorization, _, _)| authorization.policy),
+        };
+        let policy = if resolution.is_some() {
+            vulcan_app::schedule_trust::TRUSTED_COMMIT_POLICY
+        } else {
+            "repository-trust"
+        };
+        let authorization = match decision {
+            Ok(policy) => AuthorizationStatus {
                 allowed: true,
-                policy: authorization.policy,
+                policy,
                 error: None,
             },
             Err(error) => AuthorizationStatus {
                 allowed: false,
-                policy: "repository-trust",
+                policy,
                 error: Some(error.to_string()),
             },
         };
@@ -596,6 +772,7 @@ pub fn schedule_status(
         blocked: set.blocked,
         diagnostics: set.diagnostics,
         jobs,
+        trust: resolution,
     })
 }
 
@@ -620,8 +797,7 @@ pub fn run_manually(
     vault: &str,
     dry_run: bool,
 ) -> Result<ManualRunReport, String> {
-    let (authorization, _) = authorize_execution(context.paths, job, context.ceiling)
-        .map_err(|error| error.to_string())?;
+    let (authorization, _, _) = authorize_run(job, context)?;
     let mut report = ManualRunReport {
         job_id: job.id.clone(),
         revision: job.revision.clone(),
@@ -725,7 +901,11 @@ mod tests {
 
     /// Ticks at `now` until no run is in progress, as the service would.
     fn settle(scheduler: &mut Scheduler, fixture: &Fixture, now: DateTime<Utc>) {
-        let vaults = scheduled_vaults(&fixture.registry.load().unwrap().vaults);
+        let vaults = scheduled_vaults(
+            &fixture.registry.load().unwrap().vaults,
+            scheduler.ledger(),
+            now.timestamp_millis(),
+        );
         scheduler.tick(now, &vaults, &fixture.registry, None);
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         while !scheduler.running.is_empty() {
@@ -821,6 +1001,185 @@ mod tests {
             .find(|run| run.scheduled_ms == at(60).timestamp_millis())
             .unwrap();
         assert_eq!(first.attempt, 2, "no retries remain");
+    }
+
+    fn run_git(directory: &Path, arguments: &[&str], input: Option<&[u8]>) -> String {
+        use std::io::Write as _;
+        let mut child = std::process::Command::new("git")
+            .args(arguments)
+            .current_dir(directory)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        if let Some(input) = input {
+            child.stdin.take().unwrap().write_all(input).unwrap();
+        }
+        drop(child.stdin.take());
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "git {arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    }
+
+    /// Commits the vault's work tree, SSH-signed by `key` when given.
+    fn commit(vault: &Path, key: Option<&ssh_key::PrivateKey>) -> String {
+        use std::fmt::Write as _;
+        run_git(vault, &["add", "-A"], None);
+        let tree = run_git(vault, &["write-tree"], None);
+        let parent = std::process::Command::new("git")
+            .args(["rev-parse", "--verify", "--quiet", "HEAD"])
+            .current_dir(vault)
+            .output()
+            .unwrap();
+        let parent = String::from_utf8_lossy(&parent.stdout).trim().to_string();
+        let mut payload = format!("tree {tree}\n");
+        if !parent.is_empty() {
+            let _ = writeln!(payload, "parent {parent}");
+        }
+        payload.push_str("author T <t@example.invalid> 1700000000 +0000\n");
+        payload.push_str("committer T <t@example.invalid> 1700000000 +0000\n");
+        let message = format!("change {}\n", ulid::Ulid::new());
+        let object = match key {
+            Some(key) => {
+                let signature = key
+                    .sign(
+                        "git",
+                        ssh_key::HashAlg::Sha512,
+                        format!("{payload}\n{message}").as_bytes(),
+                    )
+                    .unwrap()
+                    .to_pem(ssh_key::LineEnding::LF)
+                    .unwrap();
+                let mut header = String::new();
+                for line in signature.trim_end().lines() {
+                    let _ = writeln!(header, " {line}");
+                }
+                format!("{payload}gpgsig{header}\n{message}")
+            }
+            None => format!("{payload}\n{message}"),
+        };
+        let oid = run_git(
+            vault,
+            &["hash-object", "-t", "commit", "-w", "--stdin"],
+            Some(object.as_bytes()),
+        );
+        run_git(vault, &["update-ref", "HEAD", &oid], None);
+        oid
+    }
+
+    #[test]
+    fn under_trusted_commit_only_signed_definitions_run() {
+        let fixture = fixture(&job("rescan", "\"device-a\"", ""), None);
+        run_git(&fixture.vault, &["init", "-q", "-b", "main"], None);
+        std::fs::write(fixture.vault.join(".gitignore"), ".vulcan/cache.db*\n").unwrap();
+        let admin = ssh_key::PrivateKey::random(
+            &mut ssh_key::rand_core::OsRng,
+            ssh_key::Algorithm::Ed25519,
+        )
+        .unwrap();
+        commit(&fixture.vault, Some(&admin));
+        let signers = fixture.state.with_file_name("execution-signers");
+        std::fs::write(
+            &signers,
+            format!("admin {}\n", admin.public_key().to_openssh().unwrap()),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&signers, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let config = ExecutionTrustConfig::new(signers, vec!["admin".to_string()], None).unwrap();
+        let registration = fixture.registry.load().unwrap().vaults.remove(0);
+        fixture
+            .registry
+            .update(
+                &registration.id,
+                &crate::registry::UpdateWikiRequest {
+                    groups_to_add: vec![],
+                    groups_to_remove: vec![],
+                    permissions_profile: None,
+                    sync_paused: None,
+                    profile: None,
+                    execution_trust: Some(Some(config.clone())),
+                },
+                false,
+            )
+            .unwrap();
+        let key = vault_key(&registration);
+        let mut scheduler = Scheduler::open(&fixture.state, Some("device-a".to_string())).unwrap();
+        // Without a checkpoint nothing runs.
+        settle(&mut scheduler, &fixture, at(0));
+        settle(&mut scheduler, &fixture, at(65));
+        assert!(history(&fixture, "rescan").is_empty());
+
+        vulcan_app::schedule_trust::pin_checkpoint(
+            &config,
+            &trust_repository(&registration),
+            scheduler.ledger(),
+            &key,
+            &vulcan_app::schedule_trust::CheckpointPin {
+                commit: None,
+                how: "enabled",
+                now_ms: 0,
+                dry_run: false,
+            },
+        )
+        .unwrap();
+        settle(&mut scheduler, &fixture, at(70));
+        settle(&mut scheduler, &fixture, at(125));
+        let runs = history(&fixture, "rescan");
+        assert_eq!(runs.len(), 1, "{runs:?}");
+        assert_eq!(runs[0].state, OccurrenceState::Succeeded, "{runs:?}");
+
+        // An uncommitted edit is pending and changes nothing.
+        let config_path = fixture.vault.join(".vulcan/config.toml");
+        let signed_text = std::fs::read_to_string(&config_path).unwrap();
+        std::fs::write(
+            &config_path,
+            signed_text.replace("every = \"1m\"", "every = \"2m\""),
+        )
+        .unwrap();
+        settle(&mut scheduler, &fixture, at(185));
+        assert_eq!(history(&fixture, "rescan").len(), 2, "still the signed job");
+
+        // Committed without a signature, the change stops the job.
+        commit(&fixture.vault, None);
+        settle(&mut scheduler, &fixture, at(245));
+        settle(&mut scheduler, &fixture, at(365));
+        assert_eq!(
+            history(&fixture, "rescan").len(),
+            2,
+            "unsigned changes never run"
+        );
+        let status = schedule_status(
+            &VaultPaths::new(&fixture.vault),
+            &key,
+            None,
+            Some("device-a"),
+            &fixture.state,
+            at(365),
+            TrustTarget::for_registration(
+                &fixture.registry.load().unwrap().vaults[0],
+                &fixture.state,
+                &key,
+            )
+            .as_ref(),
+        )
+        .unwrap();
+        assert!(!status.jobs[0].authorization.allowed);
+        assert_eq!(status.jobs[0].authorization.policy, "trusted-commit");
+
+        // Signed again, it runs again.
+        commit(&fixture.vault, Some(&admin));
+        settle(&mut scheduler, &fixture, at(370));
+        settle(&mut scheduler, &fixture, at(485));
+        assert_eq!(history(&fixture, "rescan").len(), 3);
     }
 
     #[test]

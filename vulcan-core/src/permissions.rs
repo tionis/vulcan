@@ -860,8 +860,28 @@ pub fn resolve_permission_profile(
     paths: &VaultPaths,
     requested_profile: Option<&str>,
 ) -> Result<ResolvedPermissionProfile, PermissionError> {
+    resolve_from_loaded(&load_permission_profiles(paths), requested_profile)
+}
+
+/// Resolves a profile from in-memory shared and local configuration instead
+/// of the files, such as the shared configuration at a signed commit.
+pub fn resolve_permission_profile_with_overrides(
+    paths: &VaultPaths,
+    shared: Option<&toml::Value>,
+    local: Option<&toml::Value>,
+    requested_profile: Option<&str>,
+) -> Result<ResolvedPermissionProfile, PermissionError> {
+    resolve_from_loaded(
+        &crate::config::load_permission_profiles_with_overrides(paths, shared, local),
+        requested_profile,
+    )
+}
+
+fn resolve_from_loaded(
+    loaded: &crate::config::PermissionProfilesLoadResult,
+    requested_profile: Option<&str>,
+) -> Result<ResolvedPermissionProfile, PermissionError> {
     let requested_name = requested_profile.unwrap_or("unrestricted");
-    let loaded = load_permission_profiles(paths);
     let Some(profile) = loaded.profiles.get(requested_name) else {
         return Err(PermissionError::UnknownProfile {
             requested: requested_name.to_string(),

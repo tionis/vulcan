@@ -288,9 +288,10 @@ pub use periodic::{
     PeriodicNoteMatch,
 };
 pub use permissions::{
-    combine_cte_fragments, resolve_permission_profile, PathPermission, PermissionError,
-    PermissionFilter, PermissionGrant, PermissionGuard, PermissionSql, ProfilePermissionGuard,
-    ResolvedPermissionProfile, ResourceLimits, ResourceSpecifier,
+    combine_cte_fragments, resolve_permission_profile, resolve_permission_profile_with_overrides,
+    PathPermission, PermissionError, PermissionFilter, PermissionGrant, PermissionGuard,
+    PermissionSql, ProfilePermissionGuard, ResolvedPermissionProfile, ResourceLimits,
+    ResourceSpecifier,
 };
 pub use properties::{
     evaluate_note_inline_expressions, extract_indexed_properties, list_properties,

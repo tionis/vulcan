@@ -233,7 +233,19 @@ pub fn load_schedules(paths: &VaultPaths) -> ScheduleSet {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return set,
         Err(error) => return block(set, format!("cannot read config.toml: {error}")),
     };
-    let table = match toml::from_str::<toml::Table>(&source) {
+    parse_schedules_into(set, &source)
+}
+
+/// Reads schedules from the text of a shared `config.toml`, such as the copy
+/// in a commit that trusted-commit authorization reads instead of the
+/// working tree.
+#[must_use]
+pub fn parse_schedules(source: &str) -> ScheduleSet {
+    parse_schedules_into(ScheduleSet::default(), source)
+}
+
+fn parse_schedules_into(mut set: ScheduleSet, source: &str) -> ScheduleSet {
+    let table = match toml::from_str::<toml::Table>(source) {
         Ok(table) => table,
         Err(error) => return block(set, format!("config.toml does not parse: {error}")),
     };

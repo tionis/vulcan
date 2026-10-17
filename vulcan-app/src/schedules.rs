@@ -139,10 +139,78 @@ impl ScheduleLedger {
                      last_scheduled_ms INTEGER,
                      PRIMARY KEY (vault, job_id, revision)
                  );
+                 CREATE TABLE IF NOT EXISTS trust_checkpoints (
+                     vault TEXT PRIMARY KEY,
+                     commit_oid TEXT NOT NULL,
+                     signer TEXT NOT NULL,
+                     policy_generation TEXT NOT NULL,
+                     accepted_ms INTEGER NOT NULL,
+                     how TEXT NOT NULL
+                 );
                  PRAGMA user_version = 1;",
             )
             .map_err(AppError::operation)?;
         Ok(Self { connection })
+    }
+
+    /// The vault's accepted trusted-commit checkpoint, if any.
+    pub fn trust_checkpoint(
+        &self,
+        vault: &str,
+    ) -> Result<Option<crate::schedule_trust::TrustCheckpoint>, AppError> {
+        self.connection
+            .query_row(
+                "SELECT commit_oid, signer, policy_generation, accepted_ms, how
+                 FROM trust_checkpoints WHERE vault = ?1",
+                params![vault],
+                |row| {
+                    Ok(crate::schedule_trust::TrustCheckpoint {
+                        commit: row.get(0)?,
+                        signer: row.get(1)?,
+                        policy_generation: row.get(2)?,
+                        accepted_ms: row.get(3)?,
+                        how: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(AppError::operation)
+    }
+
+    pub fn set_trust_checkpoint(
+        &self,
+        vault: &str,
+        checkpoint: &crate::schedule_trust::TrustCheckpoint,
+    ) -> Result<(), AppError> {
+        self.connection
+            .execute(
+                "INSERT INTO trust_checkpoints
+                     (vault, commit_oid, signer, policy_generation, accepted_ms, how)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT (vault) DO UPDATE SET commit_oid = ?2, signer = ?3,
+                     policy_generation = ?4, accepted_ms = ?5, how = ?6",
+                params![
+                    vault,
+                    checkpoint.commit,
+                    checkpoint.signer,
+                    checkpoint.policy_generation,
+                    checkpoint.accepted_ms,
+                    checkpoint.how
+                ],
+            )
+            .map_err(AppError::operation)?;
+        Ok(())
+    }
+
+    /// Forgets the vault's checkpoint, as `trust disable` does.
+    pub fn clear_trust_checkpoint(&self, vault: &str) -> Result<(), AppError> {
+        self.connection
+            .execute(
+                "DELETE FROM trust_checkpoints WHERE vault = ?1",
+                params![vault],
+            )
+            .map_err(AppError::operation)?;
+        Ok(())
     }
 
     /// The instant after which this revision's next occurrence is due: its
@@ -393,8 +461,12 @@ impl ScheduleLedger {
 /// What the authorizer allows one run to do.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExecutionAuthorization {
-    /// The trust policy that decided: `repository-trust` in v1.
+    /// The trust policy that decided: `repository-trust` or
+    /// `trusted-commit`.
     pub policy: &'static str,
+    /// Under trusted-commit, the commit whose definition was authorized.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
     /// The exact definition that was authorized.
     pub job_id: String,
     pub revision: String,
@@ -426,11 +498,92 @@ pub fn authorize_execution(
     Ok((
         ExecutionAuthorization {
             policy: "repository-trust",
+            commit: None,
             job_id: job.id.clone(),
             revision: job.revision.clone(),
             profile: job.authority.clone(),
         },
         authority,
+    ))
+}
+
+/// What a trusted-commit run uses instead of the working tree.
+#[derive(Debug, Clone)]
+pub struct TrustedSnapshot {
+    /// The signed `[git]` table, with this device's local overrides.
+    pub git: vulcan_core::GitConfig,
+}
+
+/// Authorizes `job` under trusted-commit: `resolution` must authorize it, the
+/// job must be exactly the definition at the resolved commit, and its
+/// `authority` profile and the device `ceiling` are resolved from the signed
+/// shared configuration (with this device's local overrides), so an
+/// unsigned working-tree edit can widen neither.
+pub fn authorize_trusted_execution(
+    paths: &VaultPaths,
+    job: &ScheduleJob,
+    ceiling: Option<&str>,
+    resolution: &crate::schedule_trust::TrustResolution,
+) -> Result<
+    (
+        ExecutionAuthorization,
+        ResolvedPermissionProfile,
+        TrustedSnapshot,
+    ),
+    AppError,
+> {
+    resolution.authorize(&job.id).map_err(AppError::operation)?;
+    let signed = resolution.schedules.job(&job.id).ok_or_else(|| {
+        AppError::operation(format!(
+            "trusted-commit: job `{}` does not parse at the resolved commit",
+            job.id
+        ))
+    })?;
+    if signed.revision != job.revision {
+        return Err(AppError::operation(format!(
+            "trusted-commit: job `{}` differs from its authorized definition",
+            job.id
+        )));
+    }
+    let shared = resolution.signed_config.as_ref();
+    let local = std::fs::read_to_string(paths.local_config_file())
+        .ok()
+        .and_then(|text| text.parse::<toml::Table>().ok())
+        .map(toml::Value::Table);
+    let ceiling_name = ceiling.unwrap_or("unrestricted");
+    let ceiling = vulcan_core::resolve_permission_profile_with_overrides(
+        paths,
+        shared,
+        local.as_ref(),
+        Some(ceiling_name),
+    )
+    .map_err(AppError::operation)?;
+    let authority = vulcan_core::resolve_permission_profile_with_overrides(
+        paths,
+        shared,
+        local.as_ref(),
+        Some(&job.authority),
+    )
+    .map_err(AppError::operation)?;
+    if !authority.grant.is_subset_of(&ceiling.grant) {
+        return Err(AppError::operation(format!(
+            "job `{}` asks for profile `{}`, which exceeds this device's ceiling `{ceiling_name}` for the vault",
+            job.id, job.authority
+        )));
+    }
+    let git = vulcan_core::load_vault_config_with_overrides(paths, shared, local.as_ref())
+        .config
+        .git;
+    Ok((
+        ExecutionAuthorization {
+            policy: crate::schedule_trust::TRUSTED_COMMIT_POLICY,
+            commit: resolution.tip.clone(),
+            job_id: job.id.clone(),
+            revision: job.revision.clone(),
+            profile: job.authority.clone(),
+        },
+        authority,
+        TrustedSnapshot { git },
     ))
 }
 

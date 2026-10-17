@@ -1494,6 +1494,7 @@ mod tests {
                     permissions_profile: None,
                     sync_paused: Some(true),
                     profile: None,
+                    execution_trust: None,
                 },
                 false,
             )

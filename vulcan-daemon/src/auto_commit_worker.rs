@@ -367,6 +367,9 @@ fn run_pass(
                         .as_deref()
                         .unwrap_or("unrestricted"),
                 ),
+                git_config: None,
+                resolved_profile: None,
+                plugins: true,
                 gate,
                 cancellation: &cancellation,
                 verbosity: Verbosity::Quiet,
@@ -409,11 +412,20 @@ pub fn run_direct_batch(
         verbosity,
         &Ungated,
         &SyncCancellationToken::default(),
+        None,
     )
+}
+
+/// What a trusted-commit `batch-commit` runs with instead of the working
+/// tree: the signed `[git]` table and the profile resolved from it.
+pub(crate) struct TrustedBatch<'a> {
+    pub git: &'a vulcan_core::GitConfig,
+    pub profile: &'a vulcan_core::ResolvedPermissionProfile,
 }
 
 /// [`run_direct_batch`] behind `gate` and stopped by `cancellation`, as a
 /// scheduled `batch-commit` runs it.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_batch_with(
     registry: &WikiRegistry,
     paths: &VaultPaths,
@@ -422,8 +434,12 @@ pub(crate) fn run_batch_with(
     verbosity: Verbosity,
     gate: &dyn MutationGate,
     cancellation: &SyncCancellationToken,
+    trusted: Option<&TrustedBatch<'_>>,
 ) -> Result<BatchedCommitReport, String> {
-    let config = load_vault_config(paths).config.git;
+    let config = trusted.map_or_else(
+        || load_vault_config(paths).config.git,
+        |trusted| trusted.git.clone(),
+    );
     let daemon = match registry.load() {
         Ok(daemon) => Some(daemon),
         Err(crate::registry::RegistryError::Io(error))
@@ -493,6 +509,9 @@ pub(crate) fn run_batch_with(
                 }
             }),
             permission_profile: profile.as_deref(),
+            git_config: trusted.map(|trusted| trusted.git),
+            resolved_profile: trusted.map(|trusted| trusted.profile),
+            plugins: trusted.is_none(),
             gate,
             cancellation,
             verbosity,
@@ -577,6 +596,7 @@ mod tests {
             sync_backend: Some(backend.to_string()),
             platform_profile: None,
             sync_paused: false,
+            execution_trust: None,
         }
     }
 

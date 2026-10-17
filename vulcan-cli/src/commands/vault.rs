@@ -138,6 +138,7 @@ pub(crate) fn handle_vault_command(cli: &Cli, command: &VaultCommand) -> Result<
                         permissions_profile: permissions,
                         sync_paused: None,
                         profile: profile.map(managed_profile),
+                        execution_trust: None,
                     },
                     *dry_run,
                 )
