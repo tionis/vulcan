@@ -60,6 +60,7 @@ const VAULT_PRINCIPAL_DAEMON_ROUTES: &[&str] =
 /// The first path segment after `/{id}/` of every per-vault REST route.
 pub const REST_VAULT_SEGMENTS: &[&str] = &[
     "health",
+    "doctor",
     "search",
     "notes",
     "info",
@@ -80,6 +81,21 @@ pub const REST_VAULT_SEGMENTS: &[&str] = &[
     "scan",
 ];
 
+/// The REST surface this module serves, for `GET /capabilities`.
+#[must_use]
+pub(crate) fn capabilities() -> crate::companion::RestCapabilities {
+    crate::companion::RestCapabilities {
+        daemon_routes: ["/capabilities", "/health", "/vaults", "/openapi.json"]
+            .map(str::to_string)
+            .to_vec(),
+        vault_route_groups: REST_VAULT_SEGMENTS
+            .iter()
+            .map(|segment| (*segment).to_string())
+            .collect(),
+        openapi: "/openapi.json".to_string(),
+    }
+}
+
 /// The REST read routes, merged into the companion router so they share its
 /// transport policy and principal middleware.
 pub(crate) fn routes() -> Router<CompanionHttpState> {
@@ -87,6 +103,7 @@ pub(crate) fn routes() -> Router<CompanionHttpState> {
         .route("/health", get(health))
         .route("/openapi.json", get(openapi))
         .route("/{id}/health", get(vault_health))
+        .route("/{id}/doctor", get(doctor))
         .route("/{id}/search", get(serve_route))
         .route(
             "/{id}/notes",
@@ -610,6 +627,27 @@ fn require_unrestricted_read(guard: &ProfilePermissionGuard) -> Result<(), RestE
     }
 }
 
+/// `GET /{id}/doctor`: the vault's diagnostics, as `vulcan doctor` reports
+/// them; it never repairs anything. The report names every note it flags,
+/// so it needs a profile that reads every note without a policy hook.
+async fn doctor(
+    State(state): State<CompanionHttpState>,
+    Extension(principal): Extension<Principal>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, RestError> {
+    read_vault(&state, &principal, &id, move |vault, guard| {
+        if !guard.read_filter().path_permission().is_unrestricted() || guard.has_policy_hook() {
+            return Err(RestError::new(
+                StatusCode::FORBIDDEN,
+                "the vault's diagnostics name every note they flag, so they need a permission profile that reads every note",
+            ));
+        }
+        vulcan_app::browse::doctor_vault(&vault.paths)
+            .map_err(|error| RestError::from_message(error.to_string()))
+    })
+    .await
+}
+
 fn require_readable(guard: &ProfilePermissionGuard, path: &str) -> Result<(), RestError> {
     guard
         .check_read_path(path)
@@ -884,6 +922,11 @@ fn native_route_documents(path_parameter: &Value) -> Vec<(&'static str, &'static
             "/{id}/backlinks/{path}",
             "Incoming links of a note",
             vec![path_parameter.clone()],
+        ),
+        (
+            "/{id}/doctor",
+            "Vault diagnostics, as `vulcan doctor` reports them (needs a profile that reads every note)",
+            vec![],
         ),
         ("/{id}/graph/stats", "Graph analytics", vec![]),
         ("/{id}/graph/hubs", "The most connected notes", vec![]),
@@ -1335,6 +1378,51 @@ mod tests {
         git(root, &["add", "."]);
         git(root, &["commit", "-q", "-m", "Initial notes"]);
         git(root, &["rev-parse", "HEAD"]).trim().to_string()
+    }
+
+    /// `doctor` answers as `vulcan doctor` does for a profile that reads
+    /// every note, refuses a narrower one, and is part of a vault token's
+    /// reach; capabilities list it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn doctor_reports_diagnostics_only_to_a_profile_that_reads_everything() {
+        let served = served();
+        let device = device(&served);
+        let root = served.temporary.path();
+        std::fs::write(root.join("notes/Broken.md"), "[[Nowhere]]\n").unwrap();
+
+        let (status, report) = get(&served, &device, "/notes/doctor").await;
+        assert_eq!(status, StatusCode::OK, "{report}");
+        let direct =
+            vulcan_app::browse::doctor_vault(&vulcan_core::VaultPaths::new(root.join("notes")))
+                .unwrap();
+        assert_eq!(report, json!(direct));
+        assert!(
+            report["unresolved_links"]
+                .as_array()
+                .is_some_and(|links| !links.is_empty()),
+            "{report}"
+        );
+
+        // `projects` reads only `Projects/`: the device and its own token
+        // are both refused, since the report would name every note.
+        for bearer in [device.as_str(), served.token.as_str()] {
+            let (status, denied) = get(&served, bearer, "/projects/doctor").await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{denied}");
+            assert!(denied["detail"]
+                .as_str()
+                .unwrap()
+                .contains("reads every note"));
+        }
+
+        let (status, capabilities) = get(&served, &device, "/capabilities").await;
+        assert_eq!(status, StatusCode::OK);
+        let groups = capabilities["rest"]["vault_route_groups"]
+            .as_array()
+            .expect("REST route groups");
+        assert!(groups.contains(&json!("doctor")) && groups.contains(&json!("notes")));
+        assert_eq!(capabilities["rest"]["openapi"], "/openapi.json");
+        let (_, openapi) = get(&served, &device, "/openapi.json").await;
+        assert!(openapi["paths"]["/{id}/doctor"]["get"].is_object());
     }
 
     #[tokio::test(flavor = "multi_thread")]

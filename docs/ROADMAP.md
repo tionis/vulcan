@@ -5257,7 +5257,7 @@ Implemented on the daemon's loopback listener beside the companion routes (`docs
 - [ ] `GET /{id}/vectors/related?note=...` — related notes
 - [ ] `GET /{id}/vectors/models` — list embedding models
 - [x] `GET /{id}/bases/{file}` — evaluate a bases view
-- [ ] `GET /{id}/doctor` — vault diagnostics
+- [x] `GET /{id}/doctor` — vault diagnostics: `vulcan doctor`'s report (never `--fix`), refused with 403 for a profile that does not read every note or has a policy hook, since it names every flagged note. A daemon test compares it with the direct report and checks the refusal for both the device and the vault's token.
 - [x] `GET /{id}/query?dsl=...` or `POST /{id}/query` with JSON body — ad hoc query
 
 **Write endpoints:**
@@ -5274,7 +5274,7 @@ Implemented over the shared CLI/MCP workflows behind the host's mutation gate, e
 - [ ] `POST /{id}/vectors/index` — trigger embedding indexing
 
 **Daemon management:**
-- [ ] `GET /capabilities` — protocol version, supported command/report schema versions, optional sync/agent features, and transport capabilities for CLI and companion-client negotiation
+- [x] `GET /capabilities` — protocol version, supported command/report schema versions, optional sync/agent features, and transport capabilities for CLI and companion-client negotiation. The companion endpoint already reported the protocol and sync-contract versions, operations (including routed reads), transports, and sync/agent features; it now adds `rest` with the daemon routes, every per-vault route group, and the OpenAPI path. REST responses are the CLI's reports, so there is no separate report-schema table: reports with their own `version` field keep it and the protocol version covers the rest.
 - [x] `GET /health` — daemon health, vault statuses
 - [x] `GET /vaults` — list registered vaults with status
 - [x] Auth: standard HTTP `Authorization: Bearer <token>` authentication for daemon clients; validate the token against the stored argon2 hash and resolve it to the vault's configured permission profile

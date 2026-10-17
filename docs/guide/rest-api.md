@@ -59,6 +59,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -H "Vulcan-Protocol-Version: 1" \
 | `GET /{id}/links/{path}`, `GET /{id}/backlinks/{path}` | `vulcan links`, `vulcan backlinks` |
 | `GET /{id}/graph/stats`, `/graph/hubs`, `/graph/path?from=...&to=...` | `vulcan graph stats|hubs|path` |
 | `GET /{id}/graph/dead-ends`, `/graph/components` | `vulcan graph dead-ends|components` |
+| `GET /{id}/doctor` | `vulcan doctor` (diagnostics only, never `--fix`); needs a profile that reads every note |
 | `GET /{id}/mdbase/...` | the `vulcan serve` mdbase routes |
 | `GET /{id}/history?limit=...` | `vulcan git log` |
 | `GET /{id}/history/{path}` | `vulcan note history`; with `?at=<commit>`, the file's content at that commit |
@@ -68,6 +69,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -H "Vulcan-Protocol-Version: 1" \
 | `GET /{id}/health` | the same for one vault |
 | `GET /vaults` | registered vaults visible to the token |
 | `GET /openapi.json` | an OpenAPI 3.1 description of these routes |
+| `GET /capabilities` | the protocol version and features, with `rest.vault_route_groups` listing the per-vault route groups this daemon serves |
 
 Errors are JSON objects with `kind` and `detail`: 400 for an invalid request, 401 for a missing or
 revoked token, 403 when the profile denies the operation, 404 for an unknown vault or note, and 503

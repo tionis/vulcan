@@ -99,6 +99,20 @@ pub struct CompanionCapabilities {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_conflict_proposal_claim_scope: Option<CompanionProposalClaimScope>,
     pub agent_semantic_plans: bool,
+    /// The REST routes this listener serves, when it serves them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rest: Option<RestCapabilities>,
+}
+
+/// The REST surface a listener serves (`docs/specs/daemon-rest-api.md`):
+/// its daemon-level routes and the first path segment of each per-vault
+/// route group, so a client can tell whether, say, `/{id}/doctor` exists
+/// before calling it. `openapi` describes the routes and their parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestCapabilities {
+    pub daemon_routes: Vec<String>,
+    pub vault_route_groups: Vec<String>,
+    pub openapi: String,
 }
 
 impl CompanionCapabilities {
@@ -456,6 +470,7 @@ impl<'a> CompanionService<'a> {
                 .resolution_agent
                 .map(|_| CompanionProposalClaimScope::DaemonProcess),
             agent_semantic_plans: self.semantic_agent.is_some(),
+            rest: None,
         }
     }
 

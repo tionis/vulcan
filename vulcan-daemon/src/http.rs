@@ -426,6 +426,7 @@ where
 async fn capabilities(State(state): State<CompanionHttpState>) -> Json<CompanionCapabilities> {
     let mut capabilities = state.service().capabilities();
     capabilities.transports = vec!["http_json".to_string(), "websocket".to_string()];
+    capabilities.rest = Some(crate::rest::capabilities());
     capabilities
         .operations
         .push(CompanionOperation::EventSubscribe);

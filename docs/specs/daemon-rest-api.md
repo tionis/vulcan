@@ -79,7 +79,11 @@ vault-relative and may contain `/`.
 
 ### Daemon
 
-- `GET /capabilities`: protocol version and feature flags, extended with `rest` route groups.
+- `GET /capabilities`: protocol version and feature flags, extended with `rest`: the daemon-level
+  routes (`daemon_routes`), the first path segment of every per-vault route group
+  (`vault_route_groups`, such as `doctor` or `graph`), and the `openapi` document's path. A client
+  checks a group there before calling it. REST responses are the CLI's JSON reports; reports that
+  carry their own `version` field keep it, and the protocol version covers the rest.
 - `GET /health`: per visible vault, whether it is served, its cache freshness and last scan error,
   and each observer and consumer (`observer`, `index`, `sync`, `auto-commit`) with whether it runs,
   its restart count, and its last exit error. `healthy` is true when every wanted component runs and
@@ -108,6 +112,9 @@ indexed, under the registration's profile. Their responses are the CLI's JSON re
 - `GET /{id}/graph/stats`, `/{id}/graph/hubs`, and `/{id}/graph/path?from=...&to=...`: from the
   daemon's retained graph, the same one routed CLI graph reports use.
 - `GET /{id}/graph/dead-ends` and `/{id}/graph/components`: from the cache, filtered by the profile.
+- `GET /{id}/doctor`: the vault's diagnostics, as `vulcan doctor` reports them, never repairs. The
+  report names every note it flags, so a profile that does not read every note, or that has a policy
+  hook, is refused with 403.
 
 A registered vault the daemon does not index (files-only, or while the daemon starts) answers 503.
 
