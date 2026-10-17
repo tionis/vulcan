@@ -1425,6 +1425,21 @@ fn load_embedding_config(
     Ok(config)
 }
 
+/// The URL the configured embedding provider (`requested_provider`, or the
+/// default) is called at, so a host can check the caller's network
+/// permission before any request. Fails as loading the provider would,
+/// including for a provider only the synced configuration names.
+pub fn embedding_endpoint(
+    paths: &VaultPaths,
+    requested_provider: Option<&str>,
+) -> Result<String, VectorError> {
+    let config = load_embedding_config(paths, requested_provider)?;
+    Ok(format!(
+        "{}/embeddings",
+        config.base_url.trim_end_matches('/')
+    ))
+}
+
 struct LoadedProvider {
     provider: OpenAICompatibleProvider,
     cache_key: String,

@@ -112,6 +112,15 @@ indexed, under the registration's profile. Their responses are the CLI's JSON re
 - `GET /{id}/graph/stats`, `/{id}/graph/hubs`, and `/{id}/graph/path?from=...&to=...`: from the
   daemon's retained graph, the same one routed CLI graph reports use.
 - `GET /{id}/graph/dead-ends` and `/{id}/graph/components`: from the cache, filtered by the profile.
+- `GET /{id}/vectors/models`: the embedding models in the vault's vector index.
+- `GET /{id}/vectors/neighbors?q=...` or `?note=...` (`limit` up to 200, optional `provider`): the
+  nearest chunks, filtered by the profile. Either form embeds text with the vault's provider, called
+  from the daemon with the device-local provider configuration and the key from the daemon's
+  environment, so the profile must allow the provider's endpoint; it is checked before any request.
+  Related notes are `GET /{id}/related?note=...`, a mounted serve route.
+- `POST /{id}/vectors/index` (body: optional `dry_run`, `provider`): embeds new and changed chunks
+  behind the mutation gate with an `Idempotency-Key`; the profile must allow indexing and the
+  provider's endpoint. A daemon built without the `vectors` feature answers these routes with 501.
 - `GET /{id}/doctor`: the vault's diagnostics, as `vulcan doctor` reports them, never repairs. The
   report names every note it flags, so a profile that does not read every note, or that has a policy
   hook, is refused with 403.

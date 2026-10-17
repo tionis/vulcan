@@ -59,6 +59,8 @@ curl -s -H "Authorization: Bearer $TOKEN" -H "Vulcan-Protocol-Version: 1" \
 | `GET /{id}/links/{path}`, `GET /{id}/backlinks/{path}` | `vulcan links`, `vulcan backlinks` |
 | `GET /{id}/graph/stats`, `/graph/hubs`, `/graph/path?from=...&to=...` | `vulcan graph stats|hubs|path` |
 | `GET /{id}/graph/dead-ends`, `/graph/components` | `vulcan graph dead-ends|components` |
+| `GET /{id}/vectors/models` | `vulcan vectors models` |
+| `GET /{id}/vectors/neighbors?q=...` or `?note=...` | `vulcan vectors neighbors`; embeds with the vault's provider from the daemon, so the profile must allow the provider's endpoint (the key comes from the daemon's environment) |
 | `GET /{id}/doctor` | `vulcan doctor` (diagnostics only, never `--fix`); needs a profile that reads every note |
 | `GET /{id}/mdbase/...` | the `vulcan serve` mdbase routes |
 | `GET /{id}/history?limit=...` | `vulcan git log` |
@@ -100,6 +102,7 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Vulcan-Protocol-Version: 1
 | `POST /{id}/move` | `vulcan refactor move` | `source`, `destination`, `dry_run` |
 | `POST /{id}/update` | `vulcan note update` and `note unset` | `where` (one or more filters), `set` (properties to write), `unset` (properties to remove), `dry_run` |
 | `POST /{id}/scan` | `vulcan scan` | `full` |
+| `POST /{id}/vectors/index` | `vulcan vectors index` | `dry_run`, `provider`; needs index permission and network access to the provider |
 
 Every write body also accepts `no_commit`. Writes run under the profile like reads, so a read-only
 profile cannot write, and a move needs permission to refactor the note and to write every file whose

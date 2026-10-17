@@ -656,6 +656,78 @@ pub(crate) async fn scan(
     .await
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(not(feature = "vectors"), allow(dead_code))]
+struct VectorIndexArgs {
+    #[serde(default)]
+    dry_run: bool,
+    provider: Option<String>,
+    /// Accepted like every write body's; indexing commits nothing.
+    #[serde(default, rename = "no_commit")]
+    _no_commit: bool,
+}
+
+/// `POST /{id}/vectors/index`: embed new and changed chunks, as
+/// `vulcan vectors index` does. It writes the vector index and calls the
+/// vault's embedding provider from the daemon with this device's provider
+/// configuration and credentials, so the profile must allow indexing and
+/// the provider's endpoint.
+pub(crate) async fn vector_index(
+    State(state): State<CompanionHttpState>,
+    Extension(principal): Extension<Principal>,
+    Path(id): Path<String>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    write_vault(
+        &state,
+        &principal,
+        &id,
+        &method,
+        &uri,
+        &headers,
+        &body,
+        Box::new(|request| {
+            let args: VectorIndexArgs = arguments(request.body, &[])?;
+            #[cfg(feature = "vectors")]
+            {
+                request
+                    .guard
+                    .check_index()
+                    .map_err(|error| RestError::new(StatusCode::FORBIDDEN, error.to_string()))?;
+                let endpoint =
+                    vulcan_core::embedding_endpoint(request.paths, args.provider.as_deref())
+                        .map_err(|error| RestError::from_message(error.to_string()))?;
+                request
+                    .guard
+                    .check_network(&endpoint)
+                    .map_err(|error| RestError::new(StatusCode::FORBIDDEN, error.to_string()))?;
+                report(
+                    vulcan_core::index_vectors_with_progress(
+                        request.paths,
+                        &vulcan_core::VectorIndexQuery {
+                            provider: args.provider,
+                            dry_run: args.dry_run,
+                            verbosity: Verbosity::Quiet,
+                        },
+                        |_| {},
+                    )
+                    .map_err(|error| RestError::from_message(error.to_string()))?,
+                )
+            }
+            #[cfg(not(feature = "vectors"))]
+            {
+                let _ = args;
+                Err(crate::rest::vectors_unavailable())
+            }
+        }),
+    )
+    .await
+}
+
 /// Refreshes the cache after a write and auto-commits it, as the CLI does.
 fn finish_mutation(
     paths: &VaultPaths,

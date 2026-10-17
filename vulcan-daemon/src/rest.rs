@@ -61,6 +61,7 @@ const VAULT_PRINCIPAL_DAEMON_ROUTES: &[&str] =
 pub const REST_VAULT_SEGMENTS: &[&str] = &[
     "health",
     "doctor",
+    "vectors",
     "search",
     "notes",
     "info",
@@ -104,6 +105,12 @@ pub(crate) fn routes() -> Router<CompanionHttpState> {
         .route("/openapi.json", get(openapi))
         .route("/{id}/health", get(vault_health))
         .route("/{id}/doctor", get(doctor))
+        .route("/{id}/vectors/models", get(vector_models))
+        .route("/{id}/vectors/neighbors", get(vector_neighbors))
+        .route(
+            "/{id}/vectors/index",
+            axum::routing::post(crate::rest_writes::vector_index),
+        )
         .route("/{id}/search", get(serve_route))
         .route(
             "/{id}/notes",
@@ -648,6 +655,102 @@ async fn doctor(
     .await
 }
 
+/// `GET /{id}/vectors/models`: the embedding models the vault's vector
+/// index holds, as `vulcan vectors models` lists them.
+async fn vector_models(
+    State(state): State<CompanionHttpState>,
+    Extension(principal): Extension<Principal>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, RestError> {
+    #[cfg(feature = "vectors")]
+    {
+        read_vault(&state, &principal, &id, move |vault, _guard| {
+            vulcan_core::list_vector_models(&vault.paths)
+                .map_err(|error| RestError::from_message(error.to_string()))
+        })
+        .await
+    }
+    #[cfg(not(feature = "vectors"))]
+    {
+        let _ = (state, principal, id);
+        Err(vectors_unavailable())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(not(feature = "vectors"), allow(dead_code))]
+struct VectorNeighborsParameters {
+    q: Option<String>,
+    note: Option<String>,
+    limit: Option<usize>,
+    provider: Option<String>,
+}
+
+/// The most neighbors one request returns.
+const MAX_VECTOR_NEIGHBORS: usize = 200;
+
+/// `GET /{id}/vectors/neighbors?q=...` or `?note=...`: the nearest chunks,
+/// as `vulcan vectors neighbors` finds them. Either form embeds text with
+/// the vault's embedding provider, a network call made from the daemon with
+/// this device's provider configuration and credentials, so the profile must
+/// allow the provider's endpoint; results are filtered by the profile.
+async fn vector_neighbors(
+    State(state): State<CompanionHttpState>,
+    Extension(principal): Extension<Principal>,
+    Path(id): Path<String>,
+    query: Result<Query<VectorNeighborsParameters>, axum::extract::rejection::QueryRejection>,
+) -> Result<Json<Value>, RestError> {
+    let Query(parameters) =
+        query.map_err(|error| RestError::new(StatusCode::BAD_REQUEST, error.body_text()))?;
+    if parameters.q.is_some() == parameters.note.is_some() {
+        return Err(RestError::new(
+            StatusCode::BAD_REQUEST,
+            "give exactly one of `q` (text) or `note`",
+        ));
+    }
+    #[cfg(feature = "vectors")]
+    {
+        read_vault(&state, &principal, &id, move |vault, guard| {
+            let endpoint =
+                vulcan_core::embedding_endpoint(&vault.paths, parameters.provider.as_deref())
+                    .map_err(|error| RestError::from_message(error.to_string()))?;
+            guard
+                .check_network(&endpoint)
+                .map_err(|error| RestError::new(StatusCode::FORBIDDEN, error.to_string()))?;
+            let filter = restricting_filter(guard);
+            vulcan_core::query_vector_neighbors_with_filter(
+                &vault.paths,
+                &vulcan_core::VectorNeighborsQuery {
+                    provider: parameters.provider,
+                    text: parameters.q,
+                    note: parameters.note,
+                    limit: parameters
+                        .limit
+                        .unwrap_or(10)
+                        .clamp(1, MAX_VECTOR_NEIGHBORS),
+                },
+                filter.as_ref(),
+            )
+            .map_err(|error| RestError::from_message(error.to_string()))
+        })
+        .await
+    }
+    #[cfg(not(feature = "vectors"))]
+    {
+        let _ = (state, principal, id);
+        Err(vectors_unavailable())
+    }
+}
+
+#[cfg(not(feature = "vectors"))]
+pub(crate) fn vectors_unavailable() -> RestError {
+    RestError::new(
+        StatusCode::NOT_IMPLEMENTED,
+        "this daemon was built without the `vectors` feature",
+    )
+}
+
 fn require_readable(guard: &ProfilePermissionGuard, path: &str) -> Result<(), RestError> {
     guard
         .check_read_path(path)
@@ -922,6 +1025,21 @@ fn native_route_documents(path_parameter: &Value) -> Vec<(&'static str, &'static
             "/{id}/backlinks/{path}",
             "Incoming links of a note",
             vec![path_parameter.clone()],
+        ),
+        (
+            "/{id}/vectors/models",
+            "Embedding models in the vector index, as `vulcan vectors models` lists them",
+            vec![],
+        ),
+        (
+            "/{id}/vectors/neighbors",
+            "Nearest chunks to a text or a note, as `vulcan vectors neighbors` finds them; embeds with the vault's provider, so the profile must allow its endpoint",
+            vec![
+                json!({"name": "q", "in": "query", "required": false, "schema": {"type": "string"}}),
+                json!({"name": "note", "in": "query", "required": false, "schema": {"type": "string"}}),
+                json!({"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": MAX_VECTOR_NEIGHBORS}}),
+                json!({"name": "provider", "in": "query", "required": false, "schema": {"type": "string"}}),
+            ],
         ),
         (
             "/{id}/doctor",
@@ -1378,6 +1496,116 @@ mod tests {
         git(root, &["add", "."]);
         git(root, &["commit", "-q", "-m", "Initial notes"]);
         git(root, &["rev-parse", "HEAD"]).trim().to_string()
+    }
+
+    /// A stand-in OpenAI-compatible embedding endpoint: every input embeds
+    /// to a two-dimensional vector, and requests are counted.
+    #[cfg(feature = "vectors")]
+    async fn embedding_server() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let requests = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&requests);
+        let app = Router::new().route(
+            "/v1/embeddings",
+            axum::routing::post(move |Json(body): Json<Value>| {
+                let counted = Arc::clone(&counted);
+                async move {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    let inputs = body["input"].as_array().cloned().unwrap_or_default();
+                    Json(json!({
+                        "data": inputs.iter().enumerate().map(|(index, input)| {
+                            let text = input.as_str().unwrap_or_default();
+                            let first = if text.contains("Plan") { 1.0 } else { 0.25 };
+                            json!({ "index": index, "embedding": [first, 1.0 - first] })
+                        }).collect::<Vec<_>>(),
+                    }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{address}/v1"), requests)
+    }
+
+    /// The vector routes run the CLI's workflows with the vault's own
+    /// provider configuration: models and neighbors read, index writes, and
+    /// a profile without network access to the provider is refused before
+    /// any request leaves the daemon.
+    #[cfg(feature = "vectors")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn vector_routes_embed_through_the_vaults_provider_within_the_profile() {
+        use std::fmt::Write as _;
+        use std::sync::atomic::Ordering;
+        let served = served();
+        let device = device(&served);
+        let root = served.temporary.path();
+        let (base_url, requests) = embedding_server().await;
+        // The provider's key comes from the daemon's environment, as the
+        // vault's local configuration names it.
+        std::env::set_var("VULCAN_REST_TEST_EMBEDDING_KEY", "fixture-key");
+        for id in ["notes", "projects"] {
+            let local = root.join(id).join(".vulcan/config.local.toml");
+            let mut text = std::fs::read_to_string(&local).unwrap_or_default();
+            let _ = write!(
+                text,
+                "\n[embedding]\nprovider = \"openai-compatible\"\nbase_url = \"{base_url}\"\nmodel = \"fixture\"\napi_key_env = \"VULCAN_REST_TEST_EMBEDDING_KEY\"\nmax_batch_size = 8\nmax_concurrency = 1\n"
+            );
+            std::fs::write(&local, text).unwrap();
+        }
+
+        let (status, index) = send(
+            &served,
+            &device,
+            Method::POST,
+            "/notes/vectors/index",
+            Some("vectors-1"),
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{index}");
+        assert!(index["indexed"].as_u64().unwrap() > 0, "{index}");
+        let (status, models) = get(&served, &device, "/notes/vectors/models").await;
+        assert_eq!(status, StatusCode::OK, "{models}");
+        assert_eq!(models[0]["model_name"], "fixture", "{models}");
+        let (status, neighbors) =
+            get(&served, &device, "/notes/vectors/neighbors?q=Plan&limit=2").await;
+        assert_eq!(status, StatusCode::OK, "{neighbors}");
+        let hits = neighbors["hits"].as_array().expect("hits");
+        assert!(!hits.is_empty() && hits.len() <= 2, "{neighbors}");
+        for uri in [
+            "/notes/vectors/neighbors",
+            "/notes/vectors/neighbors?q=Plan&note=Home",
+        ] {
+            let (status, error) = get(&served, &device, uri).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {error}");
+        }
+
+        // `projects` has no network grant: neither search nor indexing
+        // reaches the provider.
+        let before = requests.load(Ordering::SeqCst);
+        let (status, denied) = get(&served, &device, "/projects/vectors/neighbors?q=Plan").await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{denied}");
+        let (status, denied) = send(
+            &served,
+            &device,
+            Method::POST,
+            "/projects/vectors/index",
+            Some("vectors-2"),
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{denied}");
+        assert_eq!(requests.load(Ordering::SeqCst), before, "no provider call");
+    }
+
+    #[cfg(not(feature = "vectors"))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn vector_routes_say_when_the_daemon_was_built_without_vectors() {
+        let served = served();
+        let device = device(&served);
+        let (status, error) = get(&served, &device, "/notes/vectors/models").await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{error}");
     }
 
     /// `doctor` answers as `vulcan doctor` does for a profile that reads

@@ -5253,9 +5253,9 @@ Implemented on the daemon's loopback listener beside the companion routes (`docs
 - [x] `GET /{id}/graph/stats` — graph analytics
 - [x] `GET /{id}/graph/path?from=...&to=...` — shortest path
 - [x] `GET /{id}/graph/hubs`, `/dead-ends`, `/components` — graph analysis
-- [ ] `GET /{id}/vectors/neighbors?q=...` — vector similarity
-- [ ] `GET /{id}/vectors/related?note=...` — related notes
-- [ ] `GET /{id}/vectors/models` — list embedding models
+- [x] `GET /{id}/vectors/neighbors?q=...` — vector similarity: `vulcan vectors neighbors` for a text (`q`) or a note, limited to 200 and filtered by the profile. Either form embeds with the vault's provider from the daemon, using the device-local provider configuration and the daemon's environment for its key, so the profile must allow the provider's endpoint (`vulcan_core::embedding_endpoint`); the check runs before any request.
+- [x] `GET /{id}/vectors/related?note=...` — related notes: served as `GET /{id}/related?note=...` through the mounted `vulcan serve` route.
+- [x] `GET /{id}/vectors/models` — list embedding models
 - [x] `GET /{id}/bases/{file}` — evaluate a bases view
 - [x] `GET /{id}/doctor` — vault diagnostics: `vulcan doctor`'s report (never `--fix`), refused with 403 for a profile that does not read every note or has a policy hook, since it names every flagged note. A daemon test compares it with the direct report and checks the refusal for both the device and the vault's token.
 - [x] `GET /{id}/query?dsl=...` or `POST /{id}/query` with JSON body — ad hoc query
@@ -5271,7 +5271,7 @@ Implemented over the shared CLI/MCP workflows behind the host's mutation gate, e
   - Also takes `unset`. Selection and auto-commit moved from the CLI into `vulcan_app::properties` (`select_notes_matching`, `update_properties_where`), which the CLI's `--where` selection now uses.
 - [x] `POST /{id}/inbox` — quick capture (like `vulcan inbox`)
 - [x] `POST /{id}/scan` — trigger incremental rescan
-- [ ] `POST /{id}/vectors/index` — trigger embedding indexing
+- [x] `POST /{id}/vectors/index` — trigger embedding indexing: `vulcan vectors index` (`dry_run`, `provider`) behind the mutation gate with an `Idempotency-Key`; the profile must allow indexing and the provider's endpoint. A daemon test indexes against a stand-in provider, lists the model, finds neighbors, and shows a profile without network access refused with no provider request; without the `vectors` feature the routes answer 501.
 
 **Daemon management:**
 - [x] `GET /capabilities` — protocol version, supported command/report schema versions, optional sync/agent features, and transport capabilities for CLI and companion-client negotiation. The companion endpoint already reported the protocol and sync-contract versions, operations (including routed reads), transports, and sync/agent features; it now adds `rest` with the daemon routes, every per-vault route group, and the OpenAPI path. REST responses are the CLI's reports, so there is no separate report-schema table: reports with their own `version` field keep it and the protocol version covers the rest.

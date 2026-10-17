@@ -367,12 +367,13 @@ pub use tasks::{
 };
 #[cfg(feature = "vectors")]
 pub use vector::{
-    cluster_vectors, cluster_vectors_with_filter, drop_vector_model, index_vectors,
-    index_vectors_with_progress, inspect_vector_queue, list_vector_models, query_related_notes,
-    query_related_notes_with_filter, query_vector_neighbors, query_vector_neighbors_with_filter,
-    rebuild_vectors, rebuild_vectors_with_progress, repair_vectors, repair_vectors_with_progress,
-    vector_duplicates, vector_duplicates_with_progress, ClusterAssignment, ClusterDocumentCount,
-    ClusterError, ClusterQuery, ClusterReport, ClusterSummary, RelatedNoteHit, RelatedNotesQuery,
+    cluster_vectors, cluster_vectors_with_filter, drop_vector_model, embedding_endpoint,
+    index_vectors, index_vectors_with_progress, inspect_vector_queue, list_vector_models,
+    query_related_notes, query_related_notes_with_filter, query_vector_neighbors,
+    query_vector_neighbors_with_filter, rebuild_vectors, rebuild_vectors_with_progress,
+    repair_vectors, repair_vectors_with_progress, vector_duplicates,
+    vector_duplicates_with_progress, ClusterAssignment, ClusterDocumentCount, ClusterError,
+    ClusterQuery, ClusterReport, ClusterSummary, RelatedNoteHit, RelatedNotesQuery,
     RelatedNotesReport, StoredModelInfo, VectorDuplicatePair, VectorDuplicatesError,
     VectorDuplicatesQuery, VectorDuplicatesReport, VectorError, VectorIndexError, VectorIndexPhase,
     VectorIndexProgress, VectorIndexQuery, VectorIndexReport, VectorNeighborHit,
