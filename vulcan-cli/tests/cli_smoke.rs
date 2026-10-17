@@ -19611,6 +19611,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(permission_skill.contains("`[[schedules.jobs]]`"));
     assert!(permission_skill.contains("vulcan schedule trust status"));
     assert!(permission_skill.contains("vulcan schedule trust enable|accept|disable"));
+    assert!(permission_skill.contains("never from shared `.vulcan/config.toml`"));
     assert!(permission_skill.contains("set-conflict-worker --wiki <id>"));
     assert!(permission_skill.contains("vulcan daemon companion --output json"));
     assert!(permission_skill.contains("synchronized plugin data"));

@@ -71,6 +71,10 @@ each registered vault.
 `authority` profile must stay within this device's ceiling for the vault: the registration's
 permission profile (`vulcan vault set <id> --permissions-profile <name>`). A job asking for more
 than the ceiling fails. A synced change can therefore narrow what a job may do, never widen it.
+The ceiling must be a built-in profile or one defined under `[permissions.profiles.<name>]` in
+this device's `.vulcan/config.local.toml`, which is never synced. Profiles in the
+synced `.vulcan/config.toml` are ignored for the ceiling, even ones that redefine a built-in name,
+because anyone who can push to the vault could edit them.
 
 **Trusted-commit** runs a job only when an allowed signer signed its definition. Use it on a device,
 such as a home server, that pulls vault changes from other devices: then a device that can push to

@@ -102,7 +102,9 @@ limits = { max_runtime_seconds = 600, retries = 0 }
   and `_`). A device runs a job only when its own
   ID is listed. Several IDs mean independent runs on each, not a shared queue.
 - **`authority`** is a permission profile, capped by the registration's ceiling. A synced change
-  can choose a narrower profile, never a wider one than the device allows.
+  can choose a narrower profile, never a wider one than the device allows. The ceiling's profile
+  must be a built-in or defined in the device-local `.vulcan/config.local.toml`; profiles in the
+  synced `.vulcan/config.toml`, including redefinitions of built-in names, never apply to it.
 - **`limits`**: `max_runtime_seconds` (1 to 86,400, default 3,600) is enforced by cooperative
   cancellation. `retries` (0 to 5, default 0) applies only to targets that declare themselves
   idempotent; `scan` and `batch-commit` do.
@@ -272,8 +274,8 @@ Definitions are read from Git objects, never the working tree: `git show <commit
 where `<prefix>` is the vault's path inside the repository (`docs/` for a vault in a
 subdirectory). Uncommitted edits are reported as pending and have no effect until committed and
 signed. The run receives the authorized snapshot, so `batch-commit` uses the signed `[git]` table
-even if the working tree changed it. The device ceiling's profile is resolved from the same signed
-configuration, so an unsigned edit cannot widen the ceiling either. Targets never run working-tree
+even if the working tree changed it. The device ceiling is resolved as under repository trust, from
+built-ins and local configuration only, so not even a signed edit can widen it. Targets never run working-tree
 code under trusted-commit: `scan` runs the scan alone, without scan-triggered auto-commit or plugin
 events, and `batch-commit` runs without commit plugins. Each run resolves again at dispatch.
 

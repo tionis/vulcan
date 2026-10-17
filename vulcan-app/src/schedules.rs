@@ -478,15 +478,15 @@ pub struct ExecutionAuthorization {
 /// definition is accepted as written, but its `authority` profile must exist
 /// and stay within `ceiling`, the device's limit for this vault (the
 /// registration's profile, or the caller's for a direct run). A synced change
-/// can narrow what a job may do, never widen it.
+/// can narrow what a job may do, never widen it: the ceiling is resolved by
+/// [`resolve_device_ceiling`], never from the shared configuration.
 pub fn authorize_execution(
     paths: &VaultPaths,
     job: &ScheduleJob,
     ceiling: Option<&str>,
 ) -> Result<(ExecutionAuthorization, ResolvedPermissionProfile), AppError> {
     let ceiling_name = ceiling.unwrap_or("unrestricted");
-    let ceiling =
-        resolve_permission_profile(paths, Some(ceiling_name)).map_err(AppError::operation)?;
+    let ceiling = resolve_device_ceiling(paths, ceiling_name)?;
     let authority =
         resolve_permission_profile(paths, Some(&job.authority)).map_err(AppError::operation)?;
     if !authority.grant.is_subset_of(&ceiling.grant) {
@@ -507,6 +507,53 @@ pub fn authorize_execution(
     ))
 }
 
+/// Resolves the device's permission ceiling `name` from the built-in profiles
+/// and this device's local configuration only. The vault's shared
+/// configuration is synced, so a profile defined (or redefined) there would
+/// let a synced change widen the limit meant to cap it.
+pub fn resolve_device_ceiling(
+    paths: &VaultPaths,
+    name: &str,
+) -> Result<ResolvedPermissionProfile, AppError> {
+    let local = local_config(paths)?;
+    vulcan_core::resolve_permission_profile_with_overrides(paths, None, local.as_ref(), Some(name))
+        .map_err(|error| {
+            let shared_only = matches!(error, vulcan_core::PermissionError::UnknownProfile { .. })
+                && vulcan_core::load_permission_profiles(paths)
+                    .profiles
+                    .contains_key(name);
+            if shared_only {
+                AppError::operation(format!(
+                    "device ceiling `{name}` is defined only in the vault's shared configuration; a ceiling must be a built-in profile or defined in {}, so a synced change cannot widen it",
+                    paths.local_config_file().display()
+                ))
+            } else {
+                AppError::operation(error)
+            }
+        })
+}
+
+/// This device's local configuration, if it exists. An unreadable or invalid
+/// file is an error rather than ignored, since it may narrow the ceiling.
+fn local_config(paths: &VaultPaths) -> Result<Option<toml::Value>, AppError> {
+    let path = paths.local_config_file();
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(AppError::operation(format!(
+                "failed to read {}: {error}",
+                path.display()
+            )))
+        }
+    };
+    text.parse::<toml::Table>()
+        .map(|table| Some(toml::Value::Table(table)))
+        .map_err(|error| {
+            AppError::operation(format!("failed to parse {}: {error}", path.display()))
+        })
+}
+
 /// What a trusted-commit run uses instead of the working tree.
 #[derive(Debug, Clone)]
 pub struct TrustedSnapshot {
@@ -516,9 +563,10 @@ pub struct TrustedSnapshot {
 
 /// Authorizes `job` under trusted-commit: `resolution` must authorize it, the
 /// job must be exactly the definition at the resolved commit, and its
-/// `authority` profile and the device `ceiling` are resolved from the signed
-/// shared configuration (with this device's local overrides), so an
-/// unsigned working-tree edit can widen neither.
+/// `authority` profile is resolved from the signed shared configuration (with
+/// this device's local overrides), so an unsigned working-tree edit cannot
+/// widen it, and the device `ceiling` by [`resolve_device_ceiling`], so not even
+/// a signed one can.
 pub fn authorize_trusted_execution(
     paths: &VaultPaths,
     job: &ScheduleJob,
@@ -546,18 +594,9 @@ pub fn authorize_trusted_execution(
         )));
     }
     let shared = resolution.signed_config.as_ref();
-    let local = std::fs::read_to_string(paths.local_config_file())
-        .ok()
-        .and_then(|text| text.parse::<toml::Table>().ok())
-        .map(toml::Value::Table);
+    let local = local_config(paths)?;
     let ceiling_name = ceiling.unwrap_or("unrestricted");
-    let ceiling = vulcan_core::resolve_permission_profile_with_overrides(
-        paths,
-        shared,
-        local.as_ref(),
-        Some(ceiling_name),
-    )
-    .map_err(AppError::operation)?;
+    let ceiling = resolve_device_ceiling(paths, ceiling_name)?;
     let authority = vulcan_core::resolve_permission_profile_with_overrides(
         paths,
         shared,
@@ -808,9 +847,58 @@ mod tests {
         assert_eq!(authorization.policy, "repository-trust");
         assert_eq!(profile.name, "narrow");
         let wide = job(&paths, "unrestricted");
-        let error = authorize_execution(&paths, &wide, Some("narrow")).unwrap_err();
+        let error = authorize_execution(&paths, &wide, Some("readonly")).unwrap_err();
         assert!(error.to_string().contains("exceeds this device's ceiling"));
         let unknown = job(&paths, "missing-profile");
         assert!(authorize_execution(&paths, &unknown, None).is_err());
+    }
+
+    #[test]
+    fn the_device_ceiling_ignores_the_shared_configuration() {
+        let vault = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(vault.path());
+        let wide = job(&paths, "unrestricted");
+        // A synced edit can neither supply a ceiling nor redefine a built-in one.
+        let error = authorize_execution(&paths, &wide, Some("narrow")).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("defined only in the vault's shared configuration"),
+            "{error}"
+        );
+        // `narrow` indexes, which the built-in `readonly` does not allow.
+        let narrow = job(&paths, "narrow");
+        assert!(authorize_execution(&paths, &narrow, Some("readonly")).is_err());
+        let mut config = std::fs::read_to_string(paths.config_file()).unwrap();
+        config.push_str("\n[permissions.profiles.readonly]\nindex = \"allow\"\n");
+        std::fs::write(paths.config_file(), config).unwrap();
+        // As the shared configuration now reads, `readonly` would admit it.
+        let redefined = resolve_permission_profile(&paths, Some("readonly")).unwrap();
+        let asked = resolve_permission_profile(&paths, Some("narrow")).unwrap();
+        assert!(asked.grant.is_subset_of(&redefined.grant));
+        let error = authorize_execution(&paths, &narrow, Some("readonly")).unwrap_err();
+        assert!(
+            error.to_string().contains("exceeds this device's ceiling"),
+            "{error}"
+        );
+
+        // This device's local configuration may define one.
+        std::fs::write(
+            paths.local_config_file(),
+            "[permissions.profiles.narrow]\nread = \"all\"\nwrite = \"none\"\nindex = \"allow\"\n",
+        )
+        .unwrap();
+        authorize_execution(&paths, &narrow, Some("narrow")).unwrap();
+        assert!(authorize_execution(&paths, &wide, Some("narrow"))
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds this device's ceiling"));
+
+        // An unreadable local file fails closed instead of being skipped.
+        std::fs::write(paths.local_config_file(), "not = [toml").unwrap();
+        assert!(authorize_execution(&paths, &narrow, Some("narrow"))
+            .unwrap_err()
+            .to_string()
+            .contains("failed to parse"));
     }
 }
