@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use vulcan_core::VaultPaths;
 use vulcan_sync::{
     remote_registration_ref, GitEngine, GitOid, GitPushResult, GitRefDeleteResult, GitRefName,
-    GitReference, GitRemote, GitRepository, GitSyncDeviceId, GitSyncDeviceIdKind, RepositoryLock,
+    GitReference, GitRemote, GitRepository, GitSyncDeviceId, RepositoryLock,
     LOCAL_REGISTRATION_MIRROR_ROOT, REMOTE_REGISTRATION_BRANCH_ROOT,
 };
 
@@ -203,13 +203,9 @@ fn mirror_ref(device_id: &str) -> Result<GitRefName, AppError> {
 }
 
 fn parse_device_id(text: &str) -> Result<GitSyncDeviceId, AppError> {
-    let id = GitSyncDeviceId::parse(text).map_err(AppError::operation)?;
-    if id.kind() != GitSyncDeviceIdKind::SshKeyV1 {
-        return Err(AppError::operation(
-            "registrations use key-derived `vdev1_` device IDs; pass the full ID",
-        ));
-    }
-    Ok(id)
+    GitSyncDeviceId::parse(text).map_err(|_| {
+        AppError::operation("registrations use key-derived `vdev1_` device IDs; pass the full ID")
+    })
 }
 
 struct Context<'a> {

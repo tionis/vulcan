@@ -14,7 +14,7 @@ use crate::sync_state::SyncStateStore;
 use crate::AppError;
 use serde::{Deserialize, Serialize};
 use vulcan_core::VaultPaths;
-use vulcan_sync::{GitRemote, GitSyncDeviceId, GitSyncDeviceIdKind};
+use vulcan_sync::{GitRemote, GitSyncDeviceId};
 
 mod derive;
 #[cfg(feature = "web")]
@@ -320,8 +320,9 @@ impl DeployKey {
     fn marker_device(&self) -> Option<String> {
         let rest = self.title.strip_prefix(DEVICE_KEY_TITLE_PREFIX)?;
         let id = rest.split_whitespace().next()?;
-        let parsed = GitSyncDeviceId::parse(id).ok()?;
-        (parsed.kind() == GitSyncDeviceIdKind::SshKeyV1).then(|| parsed.as_str().to_owned())
+        GitSyncDeviceId::parse(id)
+            .ok()
+            .map(|parsed| parsed.as_str().to_owned())
     }
 }
 

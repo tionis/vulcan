@@ -55,38 +55,32 @@ pub fn git_live_epoch_id(profile: &str, previous: &GitOid) -> String {
 #[serde(transparent)]
 pub struct GitSyncDeviceId(String);
 
+/// How a device ID was derived. Every ID is key-derived (`vdev1_`); the
+/// ULID-shaped IDs of earlier versions are no longer accepted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GitSyncDeviceIdKind {
-    LegacyUlid,
     SshKeyV1,
 }
 
 impl GitSyncDeviceId {
     pub fn parse(value: impl Into<String>) -> Result<Self, GitSyncError> {
         let value = value.into();
-        let legacy_value = value.to_ascii_lowercase();
-        let legacy_valid = legacy_value.len() == 26
-            && legacy_value.bytes().all(|byte| {
-                byte.is_ascii_digit()
-                    || matches!(byte, b'a'..=b'h' | b'j'..=b'k' | b'm'..=b'n' | b'p'..=b't' | b'v'..=b'z')
-            });
-        if legacy_valid {
-            return Ok(Self(legacy_value));
-        }
         let key_digest = value.strip_prefix("vdev1_");
         if key_digest.is_some_and(is_canonical_device_key_digest) {
             return Ok(Self(value));
         }
         Err(GitSyncError::Git(GitEngineError::UnsupportedRepository {
-            detail: "sync device identity must be a 26-character Crockford Base32 ULID or a canonical vdev1_ key ID"
-                .to_string(),
+            detail: "sync device identity must be a canonical vdev1_ key ID".to_string(),
         }))
     }
 
+    /// The placeholder actor of a run without a device identity, such as a
+    /// dry run before `vulcan device init`. Key-shaped, but `0` is outside
+    /// the digest alphabet, so it never parses as a real device.
     #[must_use]
     pub fn anonymous() -> Self {
-        Self("00000000000000000000000000".to_string())
+        Self(format!("vdev1_{}", "0".repeat(52)))
     }
 
     #[must_use]
@@ -96,11 +90,7 @@ impl GitSyncDeviceId {
 
     #[must_use]
     pub fn kind(&self) -> GitSyncDeviceIdKind {
-        if self.0.starts_with("vdev1_") {
-            GitSyncDeviceIdKind::SshKeyV1
-        } else {
-            GitSyncDeviceIdKind::LegacyUlid
-        }
+        GitSyncDeviceIdKind::SshKeyV1
     }
 }
 
@@ -108,7 +98,6 @@ impl GitSyncDeviceIdKind {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::LegacyUlid => "legacy_ulid",
             Self::SshKeyV1 => "ssh_key_v1",
         }
     }
@@ -5373,11 +5362,13 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn device_id_parser_preserves_legacy_input_and_requires_canonical_key_ids() {
-        let legacy = GitSyncDeviceId::parse("01ARZ3NDEKTSV4RRFFQ69G5FAV")
-            .expect("legacy IDs retain case-insensitive compatibility");
-        assert_eq!(legacy.as_str(), "01arz3ndektsv4rrffq69g5fav");
-        assert_eq!(legacy.kind(), GitSyncDeviceIdKind::LegacyUlid);
+    fn device_id_parser_requires_canonical_key_ids() {
+        // ULID-shaped IDs of earlier versions are refused in either case.
+        for legacy in ["01ARZ3NDEKTSV4RRFFQ69G5FAV", "01arz3ndektsv4rrffq69g5fav"] {
+            assert!(GitSyncDeviceId::parse(legacy).is_err(), "{legacy}");
+        }
+        // The anonymous placeholder never parses as a device.
+        assert!(GitSyncDeviceId::parse(GitSyncDeviceId::anonymous().as_str()).is_err());
 
         let key_value = format!("vdev1_{}", "a".repeat(52));
         let key = GitSyncDeviceId::parse(&key_value).expect("canonical key ID");
@@ -6782,7 +6773,8 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
     fn live_snapshot_commits_record_versioned_machine_readable_provenance() {
         let (_temporary, _remote, writer) = setup_remote_and_writer();
         fs::write(writer.join("Home.md"), "changed before sync\n").expect("local edit");
-        let device_id = GitSyncDeviceId::parse("01arz3ndektsv4rrffq69g5fav").expect("device ID");
+        let device_id =
+            GitSyncDeviceId::parse(format!("vdev1_{}", "a".repeat(52))).expect("device ID");
         let options = GitSyncOptions {
             device_id: device_id.clone(),
             ..GitSyncOptions::default()

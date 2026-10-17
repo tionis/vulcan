@@ -571,7 +571,7 @@ fn sync_device_list_shows_shared_name_and_full_id() {
             remote.to_str().expect("remote path"),
         ],
     );
-    let device_id = "01arz3ndektsv4rrffq69g5fav";
+    let device_id = "vdev1_222222222222222222222222222222222222222222222222222a";
     let run = |args: &[&str]| {
         ProcessCommand::new(assert_cmd::cargo::cargo_bin("vulcan"))
             .args(["--vault", vault.to_str().expect("vault path")])
@@ -635,7 +635,7 @@ fn sync_device_list_shows_shared_name_and_full_id() {
     let report: Value = serde_json::from_slice(&json.stdout).expect("JSON device list");
     assert_eq!(report["backups"][0]["name"], "Desk laptop");
     assert_eq!(report["backups"][0]["device_id"], device_id);
-    assert_eq!(report["backups"][0]["identity_kind"], "legacy_ulid");
+    assert_eq!(report["backups"][0]["identity_kind"], "ssh_key_v1");
     assert_eq!(report["backups"][0]["recovery_status"], "not_fetched");
     let key_summary = report["backups"]
         .as_array()
@@ -646,14 +646,13 @@ fn sync_device_list_shows_shared_name_and_full_id() {
     assert_eq!(key_summary["identity_kind"], "ssh_key_v1");
     assert_eq!(key_summary["name"], "Key device");
     let human_kinds = String::from_utf8_lossy(&named.stdout);
-    assert!(human_kinds.contains("ID kind: legacy_ulid"));
     assert!(human_kinds.contains("ssh_key_v1 (key-shaped ID; unverified)"));
     let fetch = run(&["sync", "devices", "fetch", device_id]);
     assert!(fetch.status.success());
     let fetched = run(&["--output", "json", "sync", "devices", "list"]);
     let fetched_report: Value = serde_json::from_slice(&fetched.stdout).expect("fetched list");
     assert_eq!(fetched_report["backups"][0]["recovery_status"], "current");
-    let unbacked_id = "01arz3ndektsv4rrffq69g5faw";
+    let unbacked_id = "vdev1_cccccccccccccccccccccccccccccccccccccccccccccccccccq";
     assert!(
         run(&["sync", "devices", "set-name", unbacked_id, "Spare laptop"])
             .status

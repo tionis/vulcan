@@ -802,8 +802,8 @@ mod tests {
     use vulcan_core::VaultPaths;
     use vulcan_sync::{GitRefName, GitRemote, GitSyncDeviceIdKind, DEFAULT_REMOTE_LIVE_REF};
 
-    const DEVICE_A: &str = "01arz3ndektsv4rrffq69g5fav";
-    const DEVICE_B: &str = "01arz3ndektsv4rrffq69g5faw";
+    const DEVICE_A: &str = "vdev1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbba";
+    const DEVICE_B: &str = "vdev1_cccccccccccccccccccccccccccccccccccccccccccccccccccq";
 
     fn git(path: &Path, args: &[&str]) -> String {
         let output = Command::new("git")
@@ -1049,7 +1049,7 @@ mod tests {
     }
 
     #[test]
-    fn mixed_legacy_and_key_ids_can_be_listed_fetched_and_pruned_exactly() {
+    fn device_backups_can_be_listed_fetched_and_pruned_exactly() {
         let temporary = TempDir::new().expect("temporary directory");
         let remote = temporary.path().join("remote.git");
         let vault = temporary.path().join("vault");
@@ -1084,12 +1084,12 @@ mod tests {
             .expect("set key ID label");
         let listed = list_sync_device_backups(&paths, &options).expect("list mixed IDs");
         assert_eq!(listed.backups.len(), 2);
-        let legacy = listed
+        let other = listed
             .backups
             .iter()
             .find(|backup| backup.device_id == DEVICE_A)
-            .expect("legacy backup");
-        assert_eq!(legacy.identity_kind, GitSyncDeviceIdKind::LegacyUlid);
+            .expect("other device's backup");
+        assert_eq!(other.identity_kind, GitSyncDeviceIdKind::SshKeyV1);
         let keyed = listed
             .backups
             .iter()
@@ -1143,5 +1143,13 @@ mod tests {
             with_named_only.named_without_backup[0].identity_kind,
             GitSyncDeviceIdKind::SshKeyV1
         );
+
+        // A ULID-shaped device ref from an earlier version is refused
+        // rather than listed as a device.
+        let legacy_ref =
+            format!("HEAD:refs/heads/__vulcan-sync/devices/{profile}/01arz3ndektsv4rrffq69g5fav");
+        git(&vault, &["push", "--quiet", "origin", &legacy_ref]);
+        let error = list_sync_device_backups(&paths, &options).unwrap_err();
+        assert!(error.to_string().contains("vdev1_"), "{error}");
     }
 }

@@ -26,8 +26,8 @@ both execute the same application workflow.
   exports the public key; never request or print the private key for inventory work. If `device show`
   reports `invalid` because storage is readable by other accounts, preview
   `vulcan device repair-permissions --dry-run`; it only tightens access and never rewrites keys.
-- Remote safety branches named with an older 26-character ULID are historical recovery heads from
-  before key-derived IDs. `vulcan sync devices list/fetch/prune-backup` still handle them; a stale
+- Device IDs are key-derived (`vdev1_...`). A safety branch named with an older 26-character ULID
+  is refused by `vulcan sync devices list`; report it to the user rather than deleting it. A stale
   legacy `_device.json` is ignored.
 - `vulcan sync transport bind|status|unbind` makes one vault's Git sync (CLI and daemon) authenticate
   over SSH with the device key. Preview with `--dry-run`; it needs an SSH remote and an initialized
@@ -282,10 +282,8 @@ name the device.
   refs are recovery inputs, never automatic winners and never mixed into live merely because
   they exist.
 - Treat `identity_kind: ssh_key_v1` as the grammar of a key-shaped backup ID, not proof that the
-  listed device possesses that key, is trusted, has access, or is online. Legacy ULID and key-shaped
-  heads can coexist during migration. Current sync writers still create legacy IDs, and a
-  version-3 live tip requires an upgraded reconciler; recovery listing and fetch do not authorize
-  reconciliation.
+  listed device possesses that key, is trusted, has access, or is online. A version-3 live tip
+  requires an upgraded reconciler; recovery listing and fetch do not authorize reconciliation.
 - Run `vulcan sync devices fetch <device-id> [--wiki <id>] --dry-run`, then omit `--dry-run` to
   anchor that device and accepted live under durable local recovery refs. Review the reported
   paths and `git diff <live-recovery-ref>..<device-recovery-ref>`. Use the printed detached

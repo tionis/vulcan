@@ -38,7 +38,7 @@ fn installation_inventory_keeps_registry_and_per_vault_remote_state_scoped() {
     let data = root.join("data");
     let home = root.join("home");
     let vault = root.join("vault");
-    let named_id = "01arz3ndektsv4rrffq69g5fav";
+    let named_id = "vdev1_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbba";
     fs::create_dir_all(&home).expect("home directory");
     fs::create_dir_all(&vault).expect("vault directory");
     let git = ProcessCommand::new("git")

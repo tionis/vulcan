@@ -3107,7 +3107,6 @@ fn print_sync_device_local_inventory(report: &SyncDeviceListReport) {
 
 fn device_id_kind_label(kind: GitSyncDeviceIdKind) -> &'static str {
     match kind {
-        GitSyncDeviceIdKind::LegacyUlid => "legacy_ulid",
         GitSyncDeviceIdKind::SshKeyV1 => "ssh_key_v1 (key-shaped ID; unverified)",
     }
 }

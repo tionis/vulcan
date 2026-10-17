@@ -2,7 +2,8 @@
 
 Status: accepted design for Roadmap 12.15; partially implemented. Local identity inspection and
 initialization on Unix and Windows and public-key export are available, and sync writers use the
-key-derived ID with ref namespace version 3. Legacy ULIDs are read-only recovery evidence.
+key-derived ID with ref namespace version 3. ULID-shaped legacy IDs are no longer accepted
+(2026-10-18): every device ID is key-derived.
 
 ## Purpose
 
@@ -69,11 +70,11 @@ Human output may additionally show the conventional OpenSSH `SHA256:` fingerprin
 device ID, but JSON, ref names, comparisons, and mutation commands always use the complete device ID.
 Friendly device names are future mutable metadata and never identity.
 
-`GitSyncDeviceId` becomes a versioned parser rather than a ULID wrapper. It accepts the legacy
-26-character Crockford-Base32 ULID grammar and the exact `vdev1_` grammar so old recovery heads
-remain manageable. Legacy command input may still normalize uppercase to preserve existing CLI
-behavior; stored and reported IDs remain lowercase. Key-derived IDs must be canonical lowercase
-and are never normalized. New identities can only be key-derived.
+`GitSyncDeviceId` is a versioned parser rather than a ULID wrapper. It accepts only the exact
+`vdev1_` grammar: canonical lowercase, never normalized. It used to accept the legacy
+26-character Crockford-Base32 ULID grammar too, so old recovery heads stayed manageable; that
+reader was removed once no legacy heads remained, and a ULID-shaped device ref or label is now
+refused with an error naming the `vdev1_` form.
 
 ## Local storage and initialization
 
@@ -139,8 +140,8 @@ The singular `vulcan device` group describes the local cryptographic identity; t
 - `vulcan device public-key` explicitly emits the canonical OpenSSH public key for later manual
   registration. Structured output keeps it in a named field so scripts need not scrape prose.
 - `sync status`, `sync doctor`, `sync devices list`, and per-vault daemon status expose the current
-  device ID and identity state. Remote device lists distinguish `ssh_key_v1` from `legacy_ulid` and do
-  not imply that either is trusted.
+  device ID and identity state. Remote device lists report `identity_kind: ssh_key_v1`, which does
+  not imply the device is trusted.
 
 Creating a replacement identity on an already initialized installation is deliberately outside this
 slice. Until a reviewed lifecycle command exists, Vulcan refuses to overwrite the current identity.
@@ -177,11 +178,9 @@ before any release whose users run mixed binary versions.
 `SyncStateStore::load_or_create_device_id` is the sync-side entry point. It reads only the public
 manifest, so a locked or missing private key does not stop ordinary naming and provenance; when no
 identity artifacts exist, the first mutating operation initializes one. A legacy `_device.json` is
-ignored and never rewritten or deleted. Legacy ULID heads, commits, trailers, conflict records, and
-recovery refs stay readable as different historical devices and use the ordinary fetch, compare,
-integrate, and exact-lease backup-pruning workflow. Existing history is never relabelled, and no
-predecessor or continuity claim is published. ULID parsing can be removed once such heads are
-pruned.
+ignored and never rewritten or deleted. Legacy ULID heads were readable as different historical
+devices until they were pruned; ULID parsing has since been removed. Existing history is never
+relabelled, and no predecessor or continuity claim is published.
 
 ## Security and failure semantics
 
