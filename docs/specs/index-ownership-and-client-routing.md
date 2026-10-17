@@ -240,8 +240,9 @@ A routed error carries the same error code and message as the direct path, plus 
 6. **LSP daemon-backed store (9.40.5).** The LSP reads through the routed protocol when a daemon
    hosts the vault. This is optional and follows the slice 1 measurements.
 
-Routed writes, the full REST surface, and remote access stay out of scope. They need the operation
-status and authorization work of 10.3 and Phase 17, and nothing above depends on them.
+Routed writes, the full REST surface, and remote access stay out of scope here. Routed writes are
+proposed in [Routed Writes](routed-writes.md); remote access needs Phase 17, and nothing above
+depends on either.
 
 ## Baseline
 
