@@ -23,8 +23,8 @@ use vulcan_app::schedule_trust::{
     record_advance, resolve_trust, ExecutionTrustConfig, TrustRepository, TrustResolution,
 };
 use vulcan_app::schedules::{
-    authorize_execution, authorize_trusted_execution, ExecutionAuthorization, OccurrenceKey,
-    OccurrenceState, ScheduleLedger, TrustedSnapshot,
+    authorize_execution, authorize_trusted_execution, try_lock_job_run, ExecutionAuthorization,
+    OccurrenceKey, OccurrenceState, ScheduleLedger, TrustedSnapshot,
 };
 use vulcan_app::sync::SyncCancellationToken;
 use vulcan_core::schedules::{load_schedules, ScheduleJob, ScheduleTarget};
@@ -521,17 +521,37 @@ impl Scheduler {
                 None => &Ungated,
             };
             let ledger_key = vault_key(&registration);
-            let result = run_job(
-                &job,
-                &RunContext {
-                    registry: &registry,
-                    paths: &paths,
-                    ceiling: registration.permissions_profile.as_deref(),
-                    gate,
-                    cancellation: &thread_cancellation.target,
-                    trust: TrustTarget::for_registration(&registration, &state_root, &ledger_key),
-                },
-            );
+            // A direct `vulcan schedule run` of the same job may hold it; this
+            // run follows once it finishes.
+            let lock = loop {
+                match try_lock_job_run(&state_root, &ledger_key, &job.id) {
+                    Ok(Some(lock)) => break Ok(lock),
+                    Ok(None) if thread_cancellation.is_cancelled() => {
+                        break Err(
+                            "cancelled while another run of this job was in progress".to_string()
+                        )
+                    }
+                    Ok(None) => thread::sleep(Duration::from_millis(200)),
+                    Err(error) => break Err(error.to_string()),
+                }
+            };
+            let result = lock.and_then(|_lock| {
+                run_job(
+                    &job,
+                    &RunContext {
+                        registry: &registry,
+                        paths: &paths,
+                        ceiling: registration.permissions_profile.as_deref(),
+                        gate,
+                        cancellation: &thread_cancellation.target,
+                        trust: TrustTarget::for_registration(
+                            &registration,
+                            &state_root,
+                            &ledger_key,
+                        ),
+                    },
+                )
+            });
             finished.store(true, Ordering::Release);
             let _ = watchdog.join();
             let result = if thread_cancellation.is_cancelled() {
@@ -835,6 +855,14 @@ pub fn run_manually(
     if dry_run {
         return Ok(report);
     }
+    let Some(_lock) =
+        try_lock_job_run(state_root, vault, &job.id).map_err(|error| error.to_string())?
+    else {
+        return Err(format!(
+            "job `{}` is already running on this device; try again when it finishes",
+            job.id
+        ));
+    };
     let mut ledger = ScheduleLedger::open(state_root).map_err(|error| error.to_string())?;
     let now_ms = Utc::now().timestamp_millis();
     let key = OccurrenceKey {
@@ -1494,5 +1522,69 @@ mod tests {
         settle(&mut scheduler, &fixture, at(185));
         let runs = history(&fixture, "rescan");
         assert_eq!(runs[0].state, OccurrenceState::Succeeded, "{runs:?}");
+    }
+
+    #[test]
+    fn a_manual_run_and_the_daemon_never_overlap_one_job() {
+        let fixture = fixture(&job("rescan", "\"device-a\"", ""), None);
+        let registration = fixture.registry.load().unwrap().vaults.remove(0);
+        let vault = vault_key(&registration);
+        let paths = VaultPaths::new(&fixture.vault);
+        let job = load_schedules(&paths).job("rescan").unwrap().clone();
+        let cancellation = SyncCancellationToken::default();
+        let context = RunContext {
+            registry: &fixture.registry,
+            paths: &paths,
+            ceiling: None,
+            gate: &Ungated,
+            cancellation: &cancellation,
+            trust: None,
+        };
+        let mut scheduler = Scheduler::open(&fixture.state, Some("device-a".to_string())).unwrap();
+        settle(&mut scheduler, &fixture, at(0));
+
+        // While a direct run holds the job, the daemon's run waits for it.
+        let manual = try_lock_job_run(&fixture.state, &vault, "rescan")
+            .unwrap()
+            .unwrap();
+        tick(&mut scheduler, &fixture, at(61), None);
+        thread::sleep(Duration::from_millis(300));
+        scheduler.collect_finished(at(61).timestamp_millis());
+        assert!(scheduler.is_running(&vault, "rescan"));
+        assert!(!fixture.vault.join(".vulcan/cache.db").exists());
+        drop(manual);
+        drain(&mut scheduler, at(62));
+        let runs = history(&fixture, "rescan");
+        assert_eq!(runs[0].state, OccurrenceState::Succeeded, "{runs:?}");
+
+        // While the daemon's run holds it, a direct run is refused, and
+        // allowed again once it finishes.
+        let daemon = try_lock_job_run(&fixture.state, &vault, "rescan")
+            .unwrap()
+            .unwrap();
+        let error = run_manually(&job, &context, &fixture.state, &vault, false).unwrap_err();
+        assert!(error.contains("already running on this device"), "{error}");
+        assert!(
+            run_manually(&job, &context, &fixture.state, &vault, true).is_ok(),
+            "a dry run only authorizes"
+        );
+        drop(daemon);
+        let report = run_manually(&job, &context, &fixture.state, &vault, false).unwrap();
+        assert!(report.outcome.unwrap().starts_with("scanned"));
+
+        // A cancelled run stops waiting.
+        let held = try_lock_job_run(&fixture.state, &vault, "rescan")
+            .unwrap()
+            .unwrap();
+        tick(&mut scheduler, &fixture, at(121), None);
+        set_config(&fixture, |text| {
+            text.replace("every = \"1m\"", "every = \"2m\"")
+        });
+        tick(&mut scheduler, &fixture, at(122), None);
+        drain(&mut scheduler, at(122));
+        drop(held);
+        let runs = history(&fixture, "rescan");
+        let cancelled = runs.iter().find(|run| !run.manual).unwrap();
+        assert_eq!(cancelled.state, OccurrenceState::Cancelled, "{runs:?}");
     }
 }

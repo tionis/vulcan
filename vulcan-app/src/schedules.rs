@@ -16,6 +16,7 @@ use vulcan_core::schedules::ScheduleJob;
 use vulcan_core::{resolve_permission_profile, ResolvedPermissionProfile, VaultPaths};
 
 const LEDGER_FILE: &str = "daemon/schedules.sqlite";
+const RUN_LOCK_DIR: &str = "daemon/schedule-runs";
 const LEDGER_VERSION: i64 = 1;
 /// History kept per job: the newest this many occurrences, and none older
 /// than the retention window. Watermarks are never pruned.
@@ -554,6 +555,48 @@ fn local_config(paths: &VaultPaths) -> Result<Option<toml::Value>, AppError> {
         })
 }
 
+/// Held for the whole of one run of a job, scheduled or manual, by whichever
+/// process runs it, so a job never overlaps itself on this device even when a
+/// direct `vulcan schedule run` meets the daemon's run. The operating system
+/// releases it if the process dies, so a crash never leaves it stuck.
+pub struct JobRunLock {
+    file: std::fs::File,
+}
+
+impl Drop for JobRunLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.file);
+    }
+}
+
+/// Takes the run lock of `job_id` in `vault`, or returns `None` while
+/// another run of it holds the lock.
+pub fn try_lock_job_run(
+    state_root: &Path,
+    vault: &str,
+    job_id: &str,
+) -> Result<Option<JobRunLock>, AppError> {
+    let directory = state_root.join(RUN_LOCK_DIR);
+    std::fs::create_dir_all(&directory).map_err(AppError::operation)?;
+    let name = blake3::hash(format!("{vault}\0{job_id}").as_bytes()).to_hex();
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(directory.join(format!("{}.lock", &name[..32])))
+        .map_err(AppError::operation)?;
+    match fs2::FileExt::try_lock_exclusive(&file) {
+        Ok(()) => Ok(Some(JobRunLock { file })),
+        Err(error)
+            if error.kind() == std::io::ErrorKind::WouldBlock
+                || error.raw_os_error() == fs2::lock_contended_error().raw_os_error() =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(AppError::operation(error)),
+    }
+}
+
 /// What a trusted-commit run uses instead of the working tree.
 #[derive(Debug, Clone)]
 pub struct TrustedSnapshot {
@@ -851,6 +894,25 @@ mod tests {
         assert!(error.to_string().contains("exceeds this device's ceiling"));
         let unknown = job(&paths, "missing-profile");
         assert!(authorize_execution(&paths, &unknown, None).is_err());
+    }
+
+    #[test]
+    fn a_job_run_lock_excludes_only_other_runs_of_the_same_job() {
+        let state = tempfile::tempdir().unwrap();
+        let held = try_lock_job_run(state.path(), "vault", "rescan")
+            .unwrap()
+            .expect("free at first");
+        assert!(try_lock_job_run(state.path(), "vault", "rescan")
+            .unwrap()
+            .is_none());
+        let other = try_lock_job_run(state.path(), "vault", "nightly").unwrap();
+        assert!(other.is_some(), "another job runs alongside");
+        let elsewhere = try_lock_job_run(state.path(), "other-vault", "rescan").unwrap();
+        assert!(elsewhere.is_some(), "the same job in another vault too");
+        drop(held);
+        assert!(try_lock_job_run(state.path(), "vault", "rescan")
+            .unwrap()
+            .is_some());
     }
 
     #[test]

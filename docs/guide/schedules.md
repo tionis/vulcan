@@ -53,8 +53,9 @@ decision, and a single device cannot add one for itself.
 - A job added or changed starts with its next occurrence. Nothing it "missed" before then runs.
 - Occurrences missed while the daemon was stopped, the machine slept, or the clock jumped
   forward run once, as a single catch-up. A clock that jumps back repeats nothing.
-- A job never overlaps itself. If it is still running when it comes due again, one follow-up runs
-  after it finishes.
+- A job never overlaps itself on a device. If it is still running when it comes due again, one
+  follow-up runs after it finishes. This includes `vulcan schedule run`: while the daemon runs the
+  job, a manual run is refused, and a run that comes due during a manual one waits for it.
 - Daylight saving time: a cron time that does not exist (spring forward) runs at the first moment
   after the gap. A time that occurs twice (fall back) runs once, at its first occurrence.
 - A failed run is retried after 30 seconds, as many times as `retries` allows. A run interrupted

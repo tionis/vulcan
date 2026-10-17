@@ -141,7 +141,11 @@ An occurrence found `dispatched` after a crash is retried only if its target is 
 job has retries left, and otherwise reported as `interrupted`. A failed run is retried after 30
 seconds within the same budget. A revision is activated (its watermark set) when the scheduler
 first sees it, so a new or changed job never runs occurrences from before then. Manual runs are
-recorded with `manual = 1` and leave the watermark alone. The scheduler rereads registrations and
+recorded with `manual = 1` and leave the watermark alone. Every run, scheduled or manual, holds an
+OS file lock for its job under `daemon/schedule-runs/` while it runs, so a direct `vulcan schedule
+run` and the daemon never run one job at once on a device: the manual run is refused while the
+lock is held, and a scheduled run waits for it (cancellably). The OS drops the lock if the process
+dies, so no stale record blocks runs. The scheduler rereads registrations and
 vault configuration at least every 30 seconds; a run whose job is disabled, removed, reassigned,
 or changed, or that exceeds `max_runtime_seconds`, is asked to stop through its cancellation
 token. `scan` cannot stop mid-scan and `batch-commit` stops at its next check, so both finish
