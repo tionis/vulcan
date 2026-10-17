@@ -59,8 +59,14 @@ decision, and a single device cannot add one for itself.
   after the gap. A time that occurs twice (fall back) runs once, at its first occurrence.
 - A failed run is retried after 30 seconds, as many times as `retries` allows. A run interrupted
   by a crash is retried at startup if retries remain, and otherwise recorded as interrupted.
+- The daemon rereads every vault's jobs and its own registrations at least every 30 seconds, so an
+  edit, a synced change, or `vulcan vault set` takes effect without a restart.
 - Disabling, removing, reassigning, or changing a running job asks that run to stop. A run past
-  `max_runtime_seconds` is also asked to stop. Both targets finish their current step first.
+  `max_runtime_seconds` is also asked to stop. Both targets finish their current step first. A
+  run still waiting for another write to the vault stops at once, without starting. A stopped run
+  is recorded as cancelled and is not retried.
+- A `config.toml` that does not parse stops every job in the vault, and `vulcan schedule list`
+  says why. Once it is fixed, unchanged jobs catch up once, as after downtime.
 
 ## Who may run what
 
@@ -119,6 +125,47 @@ record is lost (a new state directory, or a backup restored from before), jobs s
 you run `trust accept`; Vulcan never re-trusts silently. After restoring device state from a backup,
 run `trust accept` so the checkpoint is current again. A plain directory without Git cannot use
 trusted-commit.
+
+## Setups
+
+### One device
+
+List only this device's ID in `nodes` and keep repository trust. This works on a plain directory
+too; only trusted-commit needs Git. Without a daemon, `vulcan schedule run <id>` from your own
+timer (cron, a systemd timer, launchd) runs a job once and records it as a manual run.
+
+### A home server that runs jobs for every device
+
+List only the server's ID in `nodes`, so laptops that sync the same vault never run the jobs
+themselves. On the server, enable trusted-commit so that a push from another device cannot change
+what the server runs, and give the vault a ceiling: define a profile in the server's
+`.vulcan/config.local.toml` and select it with `vulcan vault set <id> --permissions-profile <name>`.
+Sign job changes from a machine that holds the signing key, push them, and the server picks them up
+on its next sync.
+
+### Moving a job to another device
+
+Edit `nodes` and sync. Each device acts on its own copy of the vault: the old device stops the job
+when it receives the change, and the new device starts it with its first occurrence after it
+receives the change. Nothing missed in between runs, and each device keeps its own history.
+
+A device that is offline keeps running the job as it last saw it, because a synced change cannot
+reach it. During a handover both devices may therefore run the job until the old one syncs. When
+that overlap matters, make the change while the old device is online and wait until
+`vulcan schedule list` on it shows the job no longer runs there. For a device that is gone for
+good, stop its daemon or remove its registration with `vulcan vault remove` if it comes back
+before it syncs.
+
+### Repair
+
+- `vulcan schedule list` and `vulcan schedule show <id>` say why a job does not run: not this
+  device, disabled, a configuration error, its ceiling, or (under trusted-commit) its trust state.
+- A run interrupted by a crash needs nothing: at startup it is retried if retries remain and
+  otherwise recorded as interrupted.
+- Run history, the last run of each job, and the trusted-commit checkpoint live in
+  `daemon/schedules.sqlite` under the device state directory. If that file is lost or restored
+  from an older backup, history restarts and each job begins with its next occurrence; under
+  trusted-commit, jobs stay blocked until you run `vulcan schedule trust accept`.
 
 ## Commands
 
