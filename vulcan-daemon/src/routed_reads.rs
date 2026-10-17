@@ -18,7 +18,7 @@ use vulcan_app::routed::graph::{GraphAnswer, GraphRequest, RetainedGraph};
 use vulcan_app::routed::ls::{run_ls, LsRequest, LsWire};
 use vulcan_app::routed::query::{run_query, QueryRequest};
 use vulcan_app::routed::search;
-use vulcan_app::routed::tasks::{run_tasks_query, TasksQueryRequest};
+use vulcan_app::routed::tasks::{RetainedTasks, TasksQueryRequest};
 use vulcan_app::routed::wire::QueryReportWire;
 use vulcan_core::dql::DqlQueryResult;
 use vulcan_core::note_session::NoteStoreSession;
@@ -45,6 +45,7 @@ pub struct RoutedVault {
     pub permissions_profile: Option<String>,
     session: NoteStoreSession,
     graph: RetainedGraph,
+    tasks: RetainedTasks,
 }
 
 impl RoutedVault {
@@ -57,6 +58,7 @@ impl RoutedVault {
         Self {
             session: NoteStoreSession::new(paths.clone()),
             graph: RetainedGraph::default(),
+            tasks: RetainedTasks::default(),
             paths,
             tracker,
             permissions_profile,
@@ -308,13 +310,16 @@ pub fn routed_dql(vault: &RoutedVault, dql: &RoutedDql) -> Result<DqlQueryResult
         .map_err(|error| RoutedReadError::Failed(error.to_string()))
 }
 
-/// Answer a routed `tasks query` from the vault's retained session.
+/// Answer a routed `tasks query` from the vault's retained session and,
+/// for an unrestricted reader, its retained task rows.
 pub fn routed_tasks_query(
     vault: &RoutedVault,
     query: &RoutedTasksQuery,
 ) -> Result<TasksQueryResult, RoutedReadError> {
     let guard = prepare_read(vault, query.permissions.as_deref(), query.refresh)?;
-    run_tasks_query(Some(&vault.session), &vault.paths, &query.request, &guard)
+    vault
+        .tasks
+        .run(&vault.session, &vault.paths, &query.request, &guard)
         .map_err(|error| RoutedReadError::Failed(error.to_string()))
 }
 

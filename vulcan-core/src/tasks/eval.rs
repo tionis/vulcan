@@ -120,12 +120,61 @@ pub(crate) fn evaluate_parsed_tasks_query_with_note_index(
     query: &TasksQuery,
     note_index: &HashMap<String, NoteRecord, impl BuildHasher>,
 ) -> TasksQueryResult {
-    build_tasks_query_result(task_rows(note_index), query, true)
+    TaskRowIndex::from_note_index(note_index).evaluate_parsed(query)
 }
 
 #[must_use]
 pub fn shape_tasks_query_result(tasks: Vec<Value>, query: &TasksQuery) -> TasksQueryResult {
-    build_tasks_query_result(task_rows_from_values(tasks), query, false)
+    let rows = task_rows_from_values(tasks);
+    let completion_by_id = task_completion_by_id(&rows);
+    build_tasks_query_result(rows.iter().collect(), &completion_by_id, query, false)
+}
+
+/// A vault's task rows, built once from its note index so that a host can
+/// answer many Tasks queries without rebuilding them: each query filters,
+/// sorts, and limits borrowed rows and copies only the tasks it returns.
+pub struct TaskRowIndex {
+    rows: Vec<TaskRow>,
+    completion_by_id: HashMap<String, bool>,
+}
+
+impl TaskRowIndex {
+    #[must_use]
+    pub fn from_note_index(note_index: &HashMap<String, NoteRecord, impl BuildHasher>) -> Self {
+        let rows = task_rows(note_index);
+        let completion_by_id = task_completion_by_id(&rows);
+        Self {
+            rows,
+            completion_by_id,
+        }
+    }
+
+    /// How many tasks the index holds.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// Evaluate the Tasks query `source` over the indexed rows, as
+    /// [`evaluate_tasks_query_with_note_index`] would over the note index.
+    pub fn evaluate(&self, source: &str) -> Result<TasksQueryResult, TasksError> {
+        let query = parse_tasks_query(source).map_err(TasksError::Parse)?;
+        Ok(self.evaluate_parsed(&query))
+    }
+
+    fn evaluate_parsed(&self, query: &TasksQuery) -> TasksQueryResult {
+        build_tasks_query_result(
+            self.rows.iter().collect(),
+            &self.completion_by_id,
+            query,
+            true,
+        )
+    }
 }
 
 fn task_rows(note_index: &HashMap<String, crate::NoteRecord, impl BuildHasher>) -> Vec<TaskRow> {
@@ -191,11 +240,11 @@ fn task_rows_from_values(tasks: Vec<Value>) -> Vec<TaskRow> {
 }
 
 fn build_tasks_query_result(
-    mut rows: Vec<TaskRow>,
+    mut rows: Vec<&TaskRow>,
+    completion_by_id: &HashMap<String, bool>,
     query: &TasksQuery,
     apply_filters: bool,
 ) -> TasksQueryResult {
-    let completion_by_id = task_completion_by_id(&rows);
     let mut hidden_fields = Vec::new();
     let mut shown_fields = Vec::new();
     let mut short_mode = false;
@@ -206,7 +255,7 @@ fn build_tasks_query_result(
     for command in &query.commands {
         match command {
             TasksQueryCommand::Filter { filter } if apply_filters => {
-                rows.retain(|row| task_matches_filter(row, filter, &completion_by_id));
+                rows.retain(|row| task_matches_filter(row, filter, completion_by_id));
             }
             TasksQueryCommand::Filter { .. } => {}
             TasksQueryCommand::Sort { field, reverse } => {
@@ -227,7 +276,7 @@ fn build_tasks_query_result(
     let groups = group_field
         .map(|(field, reverse)| build_groups(&rows, &field, reverse, limit_groups))
         .unwrap_or_default();
-    let tasks = rows.into_iter().map(|row| row.value()).collect::<Vec<_>>();
+    let tasks = rows.into_iter().map(TaskRow::value).collect::<Vec<_>>();
 
     TasksQueryResult {
         result_count: tasks.len(),
@@ -363,7 +412,7 @@ fn compare_task_rows(left: &TaskRow, right: &TaskRow, field: &str, reverse: bool
 }
 
 fn build_groups(
-    rows: &[TaskRow],
+    rows: &[&TaskRow],
     field: &str,
     reverse: bool,
     limit_groups: Option<usize>,

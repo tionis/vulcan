@@ -1,0 +1,42 @@
+{
+  "acceptance_gate_result": "not_evaluated",
+  "note": "Diagnostic for the 10.5 item: retain task rows in the daemon between routed task queries.",
+  "commit": "the commit that adds this file, against e9b640c2",
+  "binary": "target/release/vulcan (cargo build --release -p vulcan-cli) for both commits",
+  "fixtures": [
+    "mdb-100k/collection from scripts/generate_mdb_fixture.py (generator v1, seed 42, 100,000 records, 33,334 task records), scanned with `scan --full`"
+  ],
+  "machine": {
+    "host": "development laptop, not the designated evaluation host (Intel Core i7-8650U, 31 GiB RAM, Debian 13)",
+    "load_average_at_start": [5.10, 8.27, 7.62]
+  },
+  "setup": [
+    "Separate isolated XDG_CONFIG_HOME, XDG_STATE_HOME, XDG_DATA_HOME, and XDG_CACHE_HOME per binary; daemon.toml binds 127.0.0.1:0",
+    "Fixture registered with `vault add --no-sync`; `daemon start --detach`; waited until a routed query answered; `daemon stop` after",
+    "The two binaries ran one after the other, with no build running"
+  ],
+  "method": {
+    "cases": [
+      "tasks query 'not done'",
+      "tasks query 'not done\\nlimit 20'",
+      "tasks query 'done\\ngroup by status'"
+    ],
+    "command": "vulcan --vault <fixture> --route <daemon|direct> --output json <case>",
+    "timing": "wall clock of the whole process; routed 11 runs per case and direct 4, the first discarded",
+    "equivalence": "sha256 of stdout of the second run of each case, compared between binaries and routes; the hashes also equal those in routed-tasks-query-17478ec0.json"
+  },
+  "results_ms": {
+    "daemon": {
+      "tasks query 'not done\\nlimit 20'": { "before_p50": 2516.5, "after_p50": 27.2 },
+      "tasks query 'done\\ngroup by status'": { "before_p50": 2626.5, "after_p50": 702.9 },
+      "tasks query 'not done'": { "before_p50": 2839.4, "after_p50": 966.4 }
+    },
+    "direct": {
+      "tasks query 'not done\\nlimit 20'": { "before_p50": 4627.2, "after_p50": 4424.2 },
+      "tasks query 'done\\ngroup by status'": { "before_p50": 5001.3, "after_p50": 4849.3 },
+      "tasks query 'not done'": { "before_p50": 5045.8, "after_p50": 5104.4 }
+    },
+    "outputs_identical": true
+  },
+  "remaining": "Queries returning tens of thousands of tasks now spend their time copying, serializing, transferring, and printing them; the direct CLI still loads every task note per process."
+}

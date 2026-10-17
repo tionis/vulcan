@@ -1740,6 +1740,49 @@ pub fn build_tasks_query_result_in(
     result
 }
 
+/// Every readable note's tasks as reusable rows, with how they were loaded,
+/// for a host that answers many task queries from one load
+/// ([`crate::routed::tasks::RetainedTasks`]). Only for readers without a
+/// read restriction, so the rows are everyone's.
+pub(crate) fn load_task_rows_in(
+    store: &dyn vulcan_core::note_store::NoteStore,
+    paths: &VaultPaths,
+) -> Result<
+    (
+        vulcan_core::tasks::TaskRowIndex,
+        vulcan_core::plan::QueryPlanExplain,
+    ),
+    AppError,
+> {
+    let (note_index, note_plan) =
+        TaskReadScope::Filter(None).load_tasks_with_plan_in(store, paths)?;
+    Ok((
+        vulcan_core::tasks::TaskRowIndex::from_note_index(&note_index),
+        note_plan,
+    ))
+}
+
+/// [`build_tasks_query_result_in`] over rows from [`load_task_rows_in`].
+pub(crate) fn build_tasks_query_result_from_rows(
+    paths: &VaultPaths,
+    source: &str,
+    rows: &vulcan_core::tasks::TaskRowIndex,
+    note_plan: &vulcan_core::plan::QueryPlanExplain,
+    guard: &ProfilePermissionGuard,
+) -> Result<TasksQueryResult, AppError> {
+    TaskReadScope::Guard(guard).recheck(paths)?;
+    let config = load_vault_config(paths).config.tasks;
+    let effective_source = tasks_query_source(&config, source, false);
+    let mut result = rows
+        .evaluate(&effective_source)
+        .map_err(AppError::operation)?;
+    if result.plan.is_some() {
+        result.note_plan = Some(note_plan.clone());
+    }
+    strip_global_filter_from_output(&mut result, &config);
+    Ok(result)
+}
+
 fn consistent_task_read(
     paths: &VaultPaths,
 ) -> Result<Option<vulcan_core::write_lock::ReadLockGuard>, AppError> {

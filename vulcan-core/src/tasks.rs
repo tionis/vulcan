@@ -19,7 +19,8 @@ pub use ast::{
 pub use eval::evaluate_tasks_query_with_note_index;
 pub use eval::{
     evaluate_parsed_tasks_query, evaluate_parsed_tasks_query_with_filter, evaluate_tasks_query,
-    evaluate_tasks_query_with_filter, shape_tasks_query_result, TasksQueryGroup, TasksQueryResult,
+    evaluate_tasks_query_with_filter, shape_tasks_query_result, TaskRowIndex, TasksQueryGroup,
+    TasksQueryResult,
 };
 pub use parse::parse_tasks_query;
 pub(crate) use recurrence::{inject_task_recurrence_fields, task_recurrence_properties};
