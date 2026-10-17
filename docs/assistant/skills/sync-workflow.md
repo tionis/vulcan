@@ -144,8 +144,12 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
   default and their prior JSON representation. `vault add --no-sync` registers a directory without
   a file-tree sync backend.
 - Use `vulcan vault show <id>` or `vulcan vault list` to inspect registration. Human output calls
-  out a nondefault files-only profile; the JSON shape for existing knowledge registrations remains
-  unchanged.
+  out a nondefault files-only profile. Each entry's `health.state` names what most needs attention
+  (`missing`, `unindexed`, `conflicted`, `recovery_required`, `paused`, `failing`, `offline`,
+  `syncing`, or `healthy`) with the conflict count and last sync attempt; it works without a
+  daemon (`daemon_running` says whether one answered). Start from it before choosing
+  `vulcan sync conflicts`, `vulcan scan`, or `vulcan sync resume`, and leave resolving conflicts or
+  resuming a paused vault to the user unless asked.
 
 - For an unregistered path or a daemon-independent operation, use `vulcan --vault <path> sync ...`.
   Direct commands never start a daemon implicitly. For an unregistered files-only path, choose

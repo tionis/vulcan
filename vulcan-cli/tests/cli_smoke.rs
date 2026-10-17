@@ -9763,6 +9763,88 @@ fn vector_commands_need_network_for_the_provider_and_index_for_writes() {
 }
 
 #[test]
+fn vault_list_and_show_report_each_registrations_health_without_a_daemon() {
+    let temporary = TempDir::new().expect("temp dir");
+    let config_home = temporary.path().join("config");
+    fs::create_dir_all(&config_home).expect("config home");
+    let config_home = config_home.to_str().expect("utf-8").to_string();
+    let vulcan = |arguments: &[&str]| {
+        let mut command = cargo_vulcan_with_xdg_config(&config_home);
+        command
+            .env("XDG_DATA_HOME", temporary.path().join("data"))
+            .args(arguments);
+        command
+    };
+    let make = |name: &str| {
+        let root = temporary.path().join(name);
+        initialize_vulcan_dir(&root);
+        fs::write(root.join("Home.md"), "home\n").expect("note");
+        root
+    };
+    let healthy = make("healthy");
+    let unindexed = make("unindexed");
+    let gone = make("gone");
+    let paused = make("paused");
+    for (id, root) in [
+        ("healthy", &healthy),
+        ("unindexed", &unindexed),
+        ("gone", &gone),
+        ("paused", &paused),
+    ] {
+        vulcan(&["vault", "add", id])
+            .arg(root)
+            .arg("--no-sync")
+            .assert()
+            .success();
+    }
+    for root in [&healthy, &paused] {
+        vulcan(&["--vault"])
+            .arg(root)
+            .args(["scan"])
+            .assert()
+            .success();
+    }
+    vulcan(&["sync", "pause", "paused"]).assert().success();
+    fs::remove_dir_all(&gone).expect("remove vault");
+
+    let list = parse_stdout_json(
+        &vulcan(&["--output", "json", "vault", "list"])
+            .assert()
+            .success(),
+    );
+    assert_eq!(list["daemon_running"], false);
+    let state = |id: &str| {
+        list["wikis"]
+            .as_array()
+            .expect("wikis")
+            .iter()
+            .find(|wiki| wiki["id"] == id)
+            .unwrap_or_else(|| panic!("{id} listed: {list}"))["health"]["state"]
+            .clone()
+    };
+    assert_eq!(state("healthy"), "healthy", "{list}");
+    assert_eq!(state("unindexed"), "unindexed", "{list}");
+    assert_eq!(state("gone"), "missing", "{list}");
+    assert_eq!(state("paused"), "paused", "{list}");
+
+    let human = vulcan(&["vault", "list"]).assert().success();
+    let human = String::from_utf8_lossy(&human.get_output().stdout).to_string();
+    assert!(
+        human
+            .lines()
+            .any(|line| line.starts_with("unindexed\t") && line.ends_with("\tunindexed")),
+        "{human}"
+    );
+    let show = parse_stdout_json(
+        &vulcan(&["--output", "json", "vault", "show", "paused"])
+            .assert()
+            .success(),
+    );
+    assert_eq!(show["health"]["state"], "paused", "{show}");
+    assert_eq!(show["id"], "paused");
+}
+
+#[test]
 fn vault_registry_cli_round_trips_without_touching_wiki_files() {
     let temporary = TempDir::new().expect("temp dir should be created");
     let config_home = temporary.path().join("config");
@@ -19835,6 +19917,9 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(permission_skill.contains("vulcan schedule run <id> --dry-run"));
     assert!(permission_skill.contains("`[[schedules.jobs]]`"));
     assert!(permission_skill.contains("vulcan schedule trust status"));
+    let sync_skill = fs::read_to_string(vault_root.join(".agents/skills/sync-workflow/SKILL.md"))
+        .expect("installed sync skill");
+    assert!(sync_skill.contains("`health.state`"));
     assert!(permission_skill.contains("vulcan schedule trust enable|accept|disable"));
     assert!(permission_skill.contains("never from shared `.vulcan/config.toml`"));
     assert!(permission_skill.contains("an offline old device keeps running it until it syncs"));

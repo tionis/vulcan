@@ -6072,12 +6072,18 @@ pub enum VaultCommand {
         #[arg(long, help = "Validate and report without writing registry state")]
         dry_run: bool,
     },
-    #[command(about = "List registered local wikis")]
+    #[command(
+        about = "List registered local wikis",
+        after_help = "Health:\n  Each wiki reports `health.state`, what most needs attention, most urgent first:\n  missing (directory gone), unindexed (no cache; run `vulcan scan`), conflicted\n  (preserved sync conflicts; `vulcan sync conflicts`), recovery_required (an\n  interrupted sync), paused, failing (last sync or the daemon's last scan\n  failed), offline (remote unreachable), syncing, or healthy. It also carries the\n  conflict count, the last sync attempt, and the daemon's cache state.\n  Without a running daemon, health comes from the sync ledger and records on\n  this device; `daemon_running` says which."
+    )]
     List {
         #[arg(long, help = "Only list wikis in this local group")]
         group: Option<String>,
     },
-    #[command(about = "Show one registered local wiki")]
+    #[command(
+        about = "Show one registered local wiki",
+        after_help = "Health is reported as by `vulcan vault list`."
+    )]
     Show {
         #[arg(help = "Registered wiki ID")]
         id: String,

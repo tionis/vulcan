@@ -15,6 +15,7 @@ use vulcan_daemon::registry::{
     AddWikiRequest, ManagedDirectoryProfile, UpdateWikiRequest, WikiId, WikiRegistration,
     WikiRegistrationStatus, WikiRegistry,
 };
+use vulcan_daemon::vault_health::{vault_health, VaultHealth};
 
 #[derive(Debug, Serialize)]
 struct VaultMutationReport<'a> {
@@ -78,7 +79,54 @@ impl SetupSteps {
 struct VaultListReport<'a> {
     registry_path: &'a Path,
     group: Option<&'a str>,
-    wikis: &'a [WikiRegistrationStatus],
+    /// Whether a daemon answered; without one, health comes from durable
+    /// state alone.
+    daemon_running: bool,
+    wikis: Vec<VaultWithHealth<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+struct VaultWithHealth<'a> {
+    #[serde(flatten)]
+    wiki: &'a WikiRegistrationStatus,
+    health: VaultHealth,
+}
+
+/// Each registration's health, read from the daemon's operational status:
+/// live from a running daemon, otherwise reconstructed from its ledger and
+/// sync state. When even that cannot be read, health rests on the
+/// registration alone.
+fn registration_health(wikis: &[WikiRegistrationStatus]) -> (bool, Vec<VaultHealth>) {
+    let status = vulcan_daemon::process::DaemonProcessContext::user_default()
+        .ok()
+        .and_then(|context| vulcan_daemon::process::daemon_status(&context).ok());
+    let running = status.as_ref().is_some_and(|status| status.running);
+    let health = wikis
+        .iter()
+        .map(|wiki| {
+            let operational = status.as_ref().and_then(|status| {
+                status
+                    .wiki_statuses
+                    .iter()
+                    .find(|candidate| candidate.wiki_id == wiki.registration.id.as_str())
+            });
+            vault_health(wiki, operational)
+        })
+        .collect();
+    (running, health)
+}
+
+fn health_label(health: &VaultHealth) -> String {
+    let state = serde_json::to_value(health.state)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_default()
+        .replace('_', " ");
+    if health.unresolved_conflicts > 0 {
+        format!("{state} ({} conflicts)", health.unresolved_conflicts)
+    } else {
+        state
+    }
 }
 
 pub(crate) fn handle_vault_command(cli: &Cli, command: &VaultCommand) -> Result<(), CliError> {
@@ -649,30 +697,32 @@ fn print_list(
     group: Option<&str>,
     wikis: &[WikiRegistrationStatus],
 ) -> Result<(), CliError> {
+    let (daemon_running, health) = registration_health(wikis);
     if output == OutputFormat::Json {
         return print_json(&VaultListReport {
             registry_path: registry.path(),
             group,
-            wikis,
+            daemon_running,
+            wikis: wikis
+                .iter()
+                .zip(health)
+                .map(|(wiki, health)| VaultWithHealth { wiki, health })
+                .collect(),
         });
     }
     if wikis.is_empty() {
         println!("No registered wikis.");
     } else {
-        for wiki in wikis {
-            let state = if wiki.available {
-                "available"
-            } else {
-                "missing"
-            };
+        for (wiki, health) in wikis.iter().zip(&health) {
             let profile = match wiki.registration.profile {
                 ManagedDirectoryProfile::Knowledge => "",
                 ManagedDirectoryProfile::FilesOnly => "\tfiles-only",
             };
             println!(
-                "{}\t{}{profile}\t{state}",
+                "{}\t{}{profile}\t{}",
                 wiki.registration.id,
-                wiki.registration.path.display()
+                wiki.registration.path.display(),
+                health_label(health)
             );
         }
     }
@@ -680,10 +730,16 @@ fn print_list(
 }
 
 fn print_show(output: OutputFormat, wiki: &WikiRegistrationStatus) -> Result<(), CliError> {
+    let (_, health) = registration_health(std::slice::from_ref(wiki));
+    let health = health.into_iter().next().expect("one registration");
     if output == OutputFormat::Json {
-        return print_json(wiki);
+        return print_json(&VaultWithHealth { wiki, health });
     }
     println!("Wiki: {}", wiki.registration.id);
+    match &health.detail {
+        Some(detail) => println!("Health: {} ({detail})", health_label(&health)),
+        None => println!("Health: {}", health_label(&health)),
+    }
     println!("Path: {}", wiki.registration.path.display());
     if let Some(work_tree) = &wiki.registration.work_tree {
         println!("Work tree: {}", work_tree.display());

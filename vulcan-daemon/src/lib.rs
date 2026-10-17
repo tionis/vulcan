@@ -72,6 +72,7 @@ pub mod supervisor;
 pub mod sync;
 pub mod termux_scheduler;
 pub mod update_schedule;
+pub mod vault_health;
 pub mod vault_http;
 pub mod vault_runtime;
 pub mod watch;
