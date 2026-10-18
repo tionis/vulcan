@@ -391,6 +391,11 @@ fn snapshot_record_scope(
     namespaces: &[String],
     known: Option<&super::MdbaseKnownRevisions>,
 ) -> Result<(Vec<MdbaseDirectoryMembership>, BTreeMap<String, String>), MdbaseWritePreviewError> {
+    // Without a collection-wide validation scope there is nothing to
+    // snapshot; discovering every record would only be discarded.
+    if namespaces.is_empty() {
+        return Ok((Vec::new(), BTreeMap::new()));
+    }
     let discovery = discover_mdbase_files(collection).map_err(|error| {
         MdbaseWritePreviewError::new("preview_dependency_error", error.to_string())
     })?;
@@ -692,6 +697,36 @@ mod tests {
                 known_revisions: None,
             },
         )
+    }
+
+    /// A write without a collection-wide validation scope snapshots no
+    /// records, so it never discovers the collection: an unreadable path
+    /// elsewhere does not block it, while a scoped write still sees it.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_without_a_record_scope_does_not_discover_the_collection() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let (directory, collection) = fixture();
+        let unreadable = directory
+            .path()
+            .join("other")
+            .join(std::ffi::OsStr::from_bytes(b"bad-\xff.md"));
+        std::fs::write(&unreadable, "---\ntype: other\n---\n").expect("non-UTF-8 name");
+        let now = "2026-09-08T12:00:00Z".parse().expect("time");
+
+        let mut unscoped = request(now);
+        unscoped.relevant_record_namespaces.clear();
+        let preview = build_mdbase_write_preview(&collection, unscoped).expect("unscoped preview");
+        assert!(preview.directory_memberships.is_empty());
+        assert_eq!(
+            preview.accepted_revisions.keys().collect::<Vec<_>>(),
+            ["tasks/a.md"],
+            "only the changed record is bound"
+        );
+        verify(&collection, &preview, now).expect("unscoped preview verifies");
+
+        let scoped = build_mdbase_write_preview(&collection, request(now)).unwrap_err();
+        assert_eq!(scoped.code, "preview_dependency_error");
     }
 
     #[test]
