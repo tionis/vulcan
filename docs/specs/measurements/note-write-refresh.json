@@ -1,0 +1,42 @@
+{
+  "acceptance_gate_result": "not_evaluated",
+  "note": "Diagnostic for the direct fix the routed-writes measurement pointed to: ordinary note writes refresh only the paths they wrote.",
+  "commit": "the commit that adds this file, against 21d1aaee",
+  "binary": "target/release/vulcan (cargo build --release -p vulcan-cli) for both commits",
+  "fixtures": [
+    "plain-100k: scripts/generate_synthetic_vault.py --notes 100000 --links 10, scanned with `scan --full`",
+    "mdb-100k/collection: scripts/generate_mdb_fixture.py (generator v1, seed 42, 100,000 records), scanned with `scan --full`"
+  ],
+  "machine": {
+    "host": "development laptop, not the designated evaluation host (Intel Core i7-8650U, 31 GiB RAM, Debian 13)",
+    "load_average_during": [0.66, 1.43]
+  },
+  "setup": [
+    "Isolated XDG_CONFIG_HOME, XDG_STATE_HOME, XDG_DATA_HOME, and XDG_CACHE_HOME; no daemon; stdin closed"
+  ],
+  "method": {
+    "cases": [
+      "vulcan --vault <fixture> --output json note append <note> <line>",
+      "vulcan --vault <fixture> --output json note set <note> --file <file>",
+      "vulcan --vault <fixture> --output json note create bench/<unique>.md"
+    ],
+    "notes": {"plain-100k": "Folder_024/Note_000524.md", "mdb-100k": "public/contact/01/record-000001.md"},
+    "timing": "wall clock from Python; 9 runs per case, the first discarded; p50 of 8"
+  },
+  "results_ms_p50": {
+    "plain-100k": {
+      "note append": {"before": 583.5, "after": 87.0},
+      "note set": {"before": 606.0, "after": 89.8},
+      "note create": {"before": 557.1, "after": 87.5}
+    },
+    "mdb-100k": {
+      "note append": {"before": 900.0, "after": 482.6},
+      "note set": {"before": 890.1, "after": 503.0},
+      "note create": {"before": 904.7, "after": 489.5}
+    }
+  },
+  "findings": [
+    "Every ordinary note write refreshed the cache with a full incremental scan, which discovers every file in the vault even when one note changed. Refreshing only the written paths (vulcan_core::scan::scan_vault_paths_unlocked) makes a write at 100K notes about 6.5 times faster.",
+    "In an mdbase collection the remaining time is mdbase's managed-write check: build_mdbase_write_preview calls discover_record_stats, which walks every file to validate the collection on each write (1,382 directories at 100K records). That is a separate mdbase fix."
+  ]
+}

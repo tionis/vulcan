@@ -43,6 +43,27 @@ pub fn refresh_cache_incrementally(paths: &VaultPaths) -> Result<ScanSummary, Ap
     refresh_cache_incrementally_with_progress(paths, |_| {})
 }
 
+/// Refreshes the cache after a write that changed `changed` (vault-relative
+/// paths). Updates of already indexed notes are rescanned directly, without
+/// discovering every file in the vault; creates, deletes, renames, and
+/// uncertain paths fall back to ordinary discovery inside the same scan, and
+/// an empty list refreshes as [`refresh_cache_incrementally`] does. Takes the
+/// vault write lock.
+pub fn refresh_cache_for_paths(
+    paths: &VaultPaths,
+    changed: &[String],
+) -> Result<ScanSummary, AppError> {
+    if changed.is_empty() {
+        return refresh_cache_incrementally(paths);
+    }
+    let _lock = vulcan_core::write_lock::acquire_write_lock(paths).map_err(AppError::operation)?;
+    let changed = changed
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    vulcan_core::scan::scan_vault_paths_unlocked(paths, &changed).map_err(AppError::operation)
+}
+
 /// Refreshes while the caller retains the vault write lock across a larger
 /// mutation transaction.
 pub(crate) fn refresh_cache_incrementally_unlocked(
@@ -76,6 +97,125 @@ mod tests {
     use vulcan_core::{
         initialize_vulcan_dir, scan_vault_with_progress, ScanMode, ScanPhase, VaultPaths,
     };
+
+    /// The cache as a full rescan would leave it: documents with their
+    /// content, every link with how it resolved, and full-text rows.
+    fn cache_state(paths: &VaultPaths) -> Vec<String> {
+        let connection = rusqlite::Connection::open(paths.cache_db()).expect("cache");
+        let mut rows = Vec::new();
+        for (label, sql) in [
+            ("doc", "SELECT path || ' ' || hex(content_hash) FROM documents ORDER BY path"),
+            (
+                "link",
+                "SELECT source.path || ' ' || links.raw_text || ' -> ' || COALESCE(target.path, '?')
+                 FROM links
+                 JOIN documents source ON source.id = links.source_document_id
+                 LEFT JOIN documents target ON target.id = links.resolved_target_id
+                 ORDER BY 1",
+            ),
+            (
+                "fts",
+                "SELECT documents.path || ' ' || search_chunk_content.content
+                 FROM search_chunk_content
+                 JOIN documents ON documents.id = search_chunk_content.document_id
+                 ORDER BY 1",
+            ),
+        ] {
+            let mut statement = connection.prepare(sql).expect(label);
+            let values = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .expect(label)
+                .collect::<Result<Vec<_>, _>>()
+                .expect(label);
+            rows.extend(values.into_iter().map(|value| format!("{label}: {value}")));
+        }
+        rows
+    }
+
+    /// Refreshing only the written paths leaves the cache exactly as a full
+    /// rescan would, for every kind of note write: an update (and a link it
+    /// adds or breaks), a create that resolves a dangling link, and a delete
+    /// that leaves links dangling.
+    #[test]
+    fn refreshing_written_paths_matches_a_full_rescan() {
+        use crate::notes::{
+            apply_note_append, apply_note_create, apply_note_delete, apply_note_set,
+            NoteAppendMode, NoteAppendRequest, NoteCreateRequest, NoteDeleteRequest,
+            NoteSetRequest,
+        };
+        use std::collections::HashMap;
+        let temp_dir = tempdir().expect("temp dir");
+        let root = temp_dir.path().join("vault");
+        crate::routed::test_support::copy_fixture("basic", &root);
+        let paths = VaultPaths::new(&root);
+        initialize_vulcan_dir(&paths).expect("init");
+        scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).expect("initial scan");
+        let verify = |label: &str, changed: &[String]| {
+            super::refresh_cache_for_paths(&paths, changed).expect("targeted refresh");
+            let targeted = cache_state(&paths);
+            scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).expect("full rescan");
+            assert_eq!(targeted, cache_state(&paths), "{label}");
+        };
+
+        let appended = apply_note_append(
+            &paths,
+            &NoteAppendRequest {
+                note: Some("Home".to_string()),
+                text: "See [[Projects/Beta]] and searchable-zebra.".to_string(),
+                mode: NoteAppendMode::Append,
+                heading: None,
+                periodic: None,
+                date: None,
+                vars: HashMap::new(),
+            },
+            None,
+            Verbosity::Quiet,
+        )
+        .expect("append");
+        verify("append adding a dangling link", &appended.changed_paths);
+
+        let created = apply_note_create(
+            &paths,
+            &NoteCreateRequest {
+                path: "Projects/Beta.md".to_string(),
+                template: None,
+                frontmatter: None,
+                body: "Beta links back to [[Home]].\n".to_string(),
+            },
+            None,
+            Verbosity::Quiet,
+        )
+        .expect("create");
+        verify("create resolving it", &created.changed_paths);
+
+        let set = apply_note_set(
+            &paths,
+            &NoteSetRequest {
+                note: "People/Bob".to_string(),
+                replacement: "Bob now links [[Projects/Beta]].\n".to_string(),
+                preserve_frontmatter: true,
+            },
+            None,
+            Verbosity::Quiet,
+        )
+        .expect("set");
+        verify("set replacing links", &set.changed_paths);
+
+        let deleted = apply_note_delete(
+            &paths,
+            &NoteDeleteRequest {
+                note: "Projects/Beta".to_string(),
+                dry_run: false,
+            },
+            None,
+            Verbosity::Quiet,
+        )
+        .expect("delete");
+        verify("delete leaving links dangling", &deleted.changed_paths);
+        assert!(!cache_state(&paths)
+            .iter()
+            .any(|row| row.starts_with("doc: Projects/Beta.md")));
+    }
 
     #[test]
     fn refresh_cache_incrementally_updates_cache_and_emits_progress() {

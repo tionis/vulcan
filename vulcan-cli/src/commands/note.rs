@@ -8,7 +8,7 @@ use crate::commit::AutoCommitPolicy;
 use crate::output::{print_json, ListOutputControls};
 use crate::resolve::resolve_note_argument;
 use crate::{
-    print_diagnostic_section, run_incremental_scan, selected_permission_guard,
+    print_diagnostic_section, refresh_after_write, selected_permission_guard,
     selected_read_permission_filter, warn_auto_commit_if_needed, AnsiPalette, Cli, CliError,
     NoteAppendMode, NoteAppendPeriodicArg, NoteCheckboxState, NoteCommand, NoteGetMode,
     OutputFormat,
@@ -112,7 +112,6 @@ pub(crate) fn handle_note_command(
     list_controls: &ListOutputControls,
     stdout_is_tty: bool,
     use_stdout_color: bool,
-    use_stderr_color: bool,
 ) -> Result<(), CliError> {
     match command {
         NoteCommand::Outline {
@@ -155,8 +154,6 @@ pub(crate) fn handle_note_command(
                     dry_run: *dry_run,
                 },
                 cli.permissions.as_deref(),
-                cli.output,
-                use_stderr_color,
                 cli.verbosity(),
             )?;
             if !*dry_run && report.changed {
@@ -234,8 +231,6 @@ pub(crate) fn handle_note_command(
                 *no_frontmatter,
                 *check,
                 cli.permissions.as_deref(),
-                cli.output,
-                use_stderr_color,
                 cli.verbosity(),
             )?;
             auto_commit
@@ -266,8 +261,6 @@ pub(crate) fn handle_note_command(
                 frontmatter,
                 *check,
                 cli.permissions.as_deref(),
-                cli.output,
-                use_stderr_color,
                 cli.verbosity(),
             )?;
             auto_commit
@@ -331,8 +324,6 @@ pub(crate) fn handle_note_command(
                     check: *check,
                 },
                 cli.permissions.as_deref(),
-                cli.output,
-                use_stderr_color,
                 cli.verbosity(),
             )?;
             auto_commit
@@ -377,8 +368,6 @@ pub(crate) fn handle_note_command(
                     dry_run: *dry_run,
                 },
                 cli.permissions.as_deref(),
-                cli.output,
-                use_stderr_color,
                 cli.verbosity(),
             )?;
             if !*dry_run {
@@ -426,8 +415,6 @@ pub(crate) fn handle_note_command(
                 note,
                 *dry_run,
                 cli.permissions.as_deref(),
-                cli.output,
-                use_stderr_color,
                 cli.verbosity(),
             )?;
             if !*dry_run {
@@ -699,10 +686,6 @@ impl ExistingMarkdownTarget {
     fn read_source(&self) -> Result<String, CliError> {
         fs::read_to_string(&self.absolute_path).map_err(CliError::operation)
     }
-
-    fn is_vault_managed(&self) -> bool {
-        self.vault_relative_path.is_some()
-    }
 }
 
 fn app_markdown_target(target: &ExistingMarkdownTarget) -> AppMarkdownTarget {
@@ -756,8 +739,6 @@ pub(crate) fn run_note_checkbox_command(
     paths: &VaultPaths,
     options: NoteCheckboxOptions<'_>,
     permission_profile: Option<&str>,
-    output: OutputFormat,
-    use_stderr_color: bool,
     verbosity: Verbosity,
 ) -> Result<NoteCheckboxReport, CliError> {
     let NoteCheckboxOptions {
@@ -820,8 +801,8 @@ pub(crate) fn run_note_checkbox_command(
             .map_err(vulcan_app::AppError::operation),
         }
         .map_err(CliError::operation)?;
-        if target.target.is_vault_managed() {
-            run_incremental_scan(paths, output, use_stderr_color, verbosity)?;
+        if let Some(relative_path) = target.target.vault_relative_path.as_deref() {
+            refresh_after_write(paths, &[relative_path.to_string()])?;
         }
     }
     let diagnostics = maybe_check_markdown_target(paths, &target.target, &updated_content, check)?;
@@ -854,8 +835,6 @@ pub(crate) fn run_note_set_command(
     no_frontmatter: bool,
     check: bool,
     permission_profile: Option<&str>,
-    output: OutputFormat,
-    use_stderr_color: bool,
     verbosity: Verbosity,
 ) -> Result<NoteSetReport, CliError> {
     let replacement = note_set_input_text(file)?;
@@ -866,8 +845,6 @@ pub(crate) fn run_note_set_command(
         no_frontmatter,
         check,
         permission_profile,
-        output,
-        use_stderr_color,
         verbosity,
     )
 }
@@ -880,8 +857,6 @@ pub(crate) fn run_note_set_with_content(
     preserve_frontmatter: bool,
     check: bool,
     permission_profile: Option<&str>,
-    output: OutputFormat,
-    use_stderr_color: bool,
     verbosity: Verbosity,
 ) -> Result<NoteSetReport, CliError> {
     let report = apply_note_set(
@@ -894,8 +869,9 @@ pub(crate) fn run_note_set_with_content(
         permission_profile,
         verbosity,
     )?;
+    let changed = report.changed_paths.clone();
     let report = finish_note_set_report(paths, report, check)?;
-    run_incremental_scan(paths, output, use_stderr_color, verbosity)?;
+    refresh_after_write(paths, &changed)?;
     Ok(report)
 }
 
@@ -907,8 +883,6 @@ pub(crate) fn run_note_create_command(
     frontmatter: &[String],
     check: bool,
     permission_profile: Option<&str>,
-    output: OutputFormat,
-    use_stderr_color: bool,
     verbosity: Verbosity,
 ) -> Result<NoteCreateReport, CliError> {
     let body = read_optional_stdin_text().map_err(CliError::operation)?;
@@ -920,8 +894,6 @@ pub(crate) fn run_note_create_command(
         &body,
         check,
         permission_profile,
-        output,
-        use_stderr_color,
         verbosity,
     )
 }
@@ -935,8 +907,6 @@ pub(crate) fn run_note_create_with_body(
     body: &str,
     check: bool,
     permission_profile: Option<&str>,
-    output: OutputFormat,
-    use_stderr_color: bool,
     verbosity: Verbosity,
 ) -> Result<NoteCreateReport, CliError> {
     let report = apply_note_create(
@@ -950,8 +920,9 @@ pub(crate) fn run_note_create_with_body(
         permission_profile,
         verbosity,
     )?;
+    let changed = report.changed_paths.clone();
     let report = finish_note_create_report(paths, report, check)?;
-    run_incremental_scan(paths, output, use_stderr_color, verbosity)?;
+    refresh_after_write(paths, &changed)?;
     Ok(report)
 }
 
@@ -979,8 +950,6 @@ pub(crate) fn run_note_append_command(
     paths: &VaultPaths,
     options: NoteAppendOptions<'_>,
     permission_profile: Option<&str>,
-    output: OutputFormat,
-    use_stderr_color: bool,
     verbosity: Verbosity,
 ) -> Result<NoteAppendReport, CliError> {
     let NoteAppendOptions {
@@ -1007,8 +976,9 @@ pub(crate) fn run_note_append_command(
         permission_profile,
         verbosity,
     )?;
+    let changed = report.changed_paths.clone();
     let report = finish_note_append_report(paths, report, check)?;
-    run_incremental_scan(paths, output, use_stderr_color, verbosity)?;
+    refresh_after_write(paths, &changed)?;
     Ok(report)
 }
 
@@ -1016,8 +986,6 @@ pub(crate) fn run_note_patch_command(
     paths: &VaultPaths,
     options: NotePatchOptions<'_>,
     permission_profile: Option<&str>,
-    output: OutputFormat,
-    use_stderr_color: bool,
     verbosity: Verbosity,
 ) -> Result<NotePatchReport, CliError> {
     let NotePatchOptions {
@@ -1046,7 +1014,7 @@ pub(crate) fn run_note_patch_command(
     };
     let report = apply_note_patch(paths, &request, permission_profile, verbosity)?;
     if !report.dry_run && !report.changed_paths.is_empty() {
-        run_incremental_scan(paths, output, use_stderr_color, verbosity)?;
+        refresh_after_write(paths, &report.changed_paths)?;
     }
     finish_note_patch_report(paths, &request, report, check).map_err(Into::into)
 }
@@ -1056,8 +1024,6 @@ pub(crate) fn run_note_delete_command(
     note: &str,
     dry_run: bool,
     permission_profile: Option<&str>,
-    output: OutputFormat,
-    use_stderr_color: bool,
     verbosity: Verbosity,
 ) -> Result<NoteDeleteReport, CliError> {
     let report = apply_note_delete(
@@ -1070,7 +1036,7 @@ pub(crate) fn run_note_delete_command(
         verbosity,
     )?;
     if !report.dry_run {
-        run_incremental_scan(paths, output, use_stderr_color, verbosity)?;
+        refresh_after_write(paths, &report.changed_paths)?;
     }
 
     Ok(NoteDeleteReport {

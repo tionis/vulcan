@@ -3746,6 +3746,15 @@ fn run_incremental_scan(
     .map_err(CliError::operation)
 }
 
+/// Refreshes the cache after a write for exactly the paths it changed,
+/// without discovering every file in the vault; see
+/// [`vulcan_app::scan::refresh_cache_for_paths`].
+pub(crate) fn refresh_after_write(paths: &VaultPaths, changed: &[String]) -> Result<(), CliError> {
+    vulcan_app::scan::refresh_cache_for_paths(paths, changed)
+        .map(drop)
+        .map_err(CliError::operation)
+}
+
 /// Whether this command's refresh mode asks for a current cache.
 pub(crate) fn refresh_requested(paths: &VaultPaths, cli: &Cli) -> bool {
     refresh_mode_for_target(paths, cli, RefreshTarget::Command) != AutoScanMode::Off
@@ -5040,7 +5049,6 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             &list_controls,
             stdout_is_tty,
             use_stdout_color,
-            use_stderr_color,
         ),
         Command::Completions { shell } => {
             let mut buf = Vec::new();

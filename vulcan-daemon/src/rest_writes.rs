@@ -728,7 +728,8 @@ pub(crate) async fn vector_index(
     .await
 }
 
-/// Refreshes the cache after a write and auto-commits it, as the CLI does.
+/// Refreshes the cache for the written paths and auto-commits them, as the
+/// CLI does.
 fn finish_mutation(
     paths: &VaultPaths,
     profile: &str,
@@ -736,7 +737,7 @@ fn finish_mutation(
     changed: &[String],
     no_commit: bool,
 ) -> Result<(), RestError> {
-    vulcan_app::scan::refresh_cache_incrementally(paths)
+    vulcan_app::scan::refresh_cache_for_paths(paths, changed)
         .map_err(|error| RestError::from_message(error.to_string()))?;
     AutoCommitPolicy::for_mutation(paths, no_commit)
         .commit(paths, action, changed, Some(profile), Verbosity::Quiet)

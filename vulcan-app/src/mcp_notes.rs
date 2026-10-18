@@ -24,7 +24,7 @@ use crate::notes::{
     NotePatchRequest, NoteSetCommandReport, NoteSetRequest,
 };
 use crate::periodic::resolve_periodic_target;
-use crate::scan::refresh_cache_incrementally;
+use crate::scan::refresh_cache_for_paths;
 use crate::templates::parse_template_var_bindings;
 
 pub fn note_create(
@@ -58,7 +58,8 @@ pub fn note_create(
     .map_err(|error| McpMethodError::tool(error.to_string()))?;
     let report = finish_note_create_report(paths, applied, args.check)
         .map_err(|error| McpMethodError::tool(error.to_string()))?;
-    refresh_cache_incrementally(paths).map_err(|error| McpMethodError::tool(error.to_string()))?;
+    refresh_cache_for_paths(paths, &report.changed_paths)
+        .map_err(|error| McpMethodError::tool(error.to_string()))?;
     AutoCommitPolicy::for_mutation(paths, args.no_commit)
         .commit(
             paths,
@@ -116,9 +117,11 @@ pub fn note_append(
         Verbosity::Quiet,
     )
     .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    let changed = applied.changed_paths.clone();
     let report = finish_note_append_report(paths, applied, args.check)
         .map_err(|error| McpMethodError::tool(error.to_string()))?;
-    refresh_cache_incrementally(paths).map_err(|error| McpMethodError::tool(error.to_string()))?;
+    refresh_cache_for_paths(paths, &changed)
+        .map_err(|error| McpMethodError::tool(error.to_string()))?;
     AutoCommitPolicy::for_mutation(paths, args.no_commit)
         .commit(
             paths,
@@ -188,7 +191,7 @@ pub fn note_patch(
     let applied = apply_note_patch(paths, &request, Some(profile_name), Verbosity::Quiet)
         .map_err(|error| McpMethodError::tool(error.to_string()))?;
     if !applied.dry_run && !applied.changed_paths.is_empty() {
-        refresh_cache_incrementally(paths)
+        refresh_cache_for_paths(paths, &applied.changed_paths)
             .map_err(|error| McpMethodError::tool(error.to_string()))?;
     }
     let report = finish_note_patch_report(paths, &request, applied, args.check)
@@ -230,9 +233,11 @@ pub fn note_set(
         Verbosity::Quiet,
     )
     .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    let changed = applied.changed_paths.clone();
     let report = finish_note_set_report(paths, applied, args.check)
         .map_err(|error| McpMethodError::tool(error.to_string()))?;
-    refresh_cache_incrementally(paths).map_err(|error| McpMethodError::tool(error.to_string()))?;
+    refresh_cache_for_paths(paths, &changed)
+        .map_err(|error| McpMethodError::tool(error.to_string()))?;
     AutoCommitPolicy::for_mutation(paths, args.no_commit)
         .commit(
             paths,
@@ -268,7 +273,7 @@ pub fn note_delete(
     )
     .map_err(|error| McpMethodError::tool(error.to_string()))?;
     if !args.dry_run {
-        refresh_cache_incrementally(paths)
+        refresh_cache_for_paths(paths, &report.changed_paths)
             .map_err(|error| McpMethodError::tool(error.to_string()))?;
         AutoCommitPolicy::for_mutation(paths, args.no_commit)
             .commit(
