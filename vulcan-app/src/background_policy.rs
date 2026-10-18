@@ -35,10 +35,19 @@ pub enum UnknownBehavior {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct BackgroundPolicy {
     pub network: NetworkRequirement,
     pub power: PowerRequirement,
     pub unknown: UnknownBehavior,
+}
+
+impl BackgroundPolicy {
+    /// Whether this policy never defers work, so no probe is needed.
+    #[must_use]
+    pub fn is_unconstrained(&self) -> bool {
+        self.network == NetworkRequirement::Any && self.power == PowerRequirement::Any
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -56,6 +65,20 @@ pub enum DeferReason {
     NotCharging,
     UnknownNetwork,
     UnknownPower,
+}
+
+impl DeferReason {
+    /// A short clause for reports, such as "the network is metered".
+    #[must_use]
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::MeteredNetwork => "the network is metered",
+            Self::LowBattery => "the battery is low",
+            Self::NotCharging => "external power is unavailable",
+            Self::UnknownNetwork => "the network cost is unknown",
+            Self::UnknownPower => "the power state is unknown",
+        }
+    }
 }
 
 /// Return the first unmet requirement, if this work should be deferred.

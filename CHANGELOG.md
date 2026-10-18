@@ -4,6 +4,11 @@
 
 ### Added
 
+- `vulcan daemon config set-automatic-sync [--network unmetered] [--power battery-not-low|charging|...]
+  [--defer-on-unknown]` lets the daemon's own sync cycles wait for an unmetered network or enough
+  power. A held-back cycle is reported as paused with the reason and retried at the next poll.
+  Manual, queued, recovery, and shutdown syncs always run, and the default is unchanged: no
+  conditions.
 - Sync's structured mergers are a closed, versioned registry (`vulcan_sync::ARTIFACT_MERGERS`), and
   each structured automatic resolution in a sync report now carries `merger`: the merger's `id` and
   `version` and the exact base, local, remote, and output blob IDs.

@@ -564,14 +564,7 @@ fn print_unattended_report(
         return print_json(report);
     }
     if let Some(reason) = &report.deferred {
-        let detail = match reason {
-            DeferReason::MeteredNetwork => "the network is metered",
-            DeferReason::LowBattery => "the battery is low",
-            DeferReason::NotCharging => "external power is unavailable",
-            DeferReason::UnknownNetwork => "the network cost is unknown",
-            DeferReason::UnknownPower => "the power state is unknown",
-        };
-        println!("Deferred unattended update: {detail}.");
+        println!("Deferred unattended update: {}.", reason.describe());
         return Ok(());
     }
     if let Some(applied) = &report.applied {

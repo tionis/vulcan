@@ -11592,6 +11592,39 @@ fn daemon_config_cli_persists_only_non_secret_agent_settings() {
     ])
     .success();
     let shown = parse_stdout_json(&daemon(&["show"]).success());
+    assert!(shown.get("automatic_sync").is_none());
+    let preview = parse_stdout_json(
+        &daemon(&[
+            "set-automatic-sync",
+            "--network",
+            "unmetered",
+            "--power",
+            "battery-not-low",
+            "--dry-run",
+        ])
+        .success(),
+    );
+    assert_eq!(preview["automatic_sync"]["network"], "unmetered");
+    assert_eq!(preview["automatic_sync"]["power"], "battery_not_low");
+    assert!(parse_stdout_json(&daemon(&["show"]).success())
+        .get("automatic_sync")
+        .is_none());
+    daemon(&[
+        "set-automatic-sync",
+        "--network",
+        "unmetered",
+        "--defer-on-unknown",
+    ])
+    .success();
+    let shown = parse_stdout_json(&daemon(&["show"]).success());
+    assert_eq!(
+        shown["automatic_sync"],
+        serde_json::json!({"network": "unmetered", "power": "any", "unknown": "defer"})
+    );
+    daemon(&["set-automatic-sync"]).success();
+    assert!(parse_stdout_json(&daemon(&["show"]).success())
+        .get("automatic_sync")
+        .is_none());
     assert_eq!(shown["bind"], "127.0.0.1:4321");
     assert_eq!(shown["semantic_agent"]["model"], "planner-1");
     assert_eq!(shown["semantic_agent"]["api_key_env"], "VULCAN_PLANNER_KEY");
@@ -19939,6 +19972,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("name: sync-workflow"));
     assert!(sync_skill.contains("vault add --no-sync"));
     assert!(sync_skill.contains("vault add <id> <path> --git-init"));
+    assert!(sync_skill.contains("vulcan daemon config set-automatic-sync"));
     assert!(sync_skill.contains("sync.worktree = \"none\""));
     assert!(sync_skill.contains("branch_paused"));
     assert!(sync_skill.contains("sync.worktree = \"paths\""));

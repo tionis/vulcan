@@ -3799,6 +3799,32 @@ fn parses_vault_registry_commands() {
     ])
     .is_err());
 
+    let automatic = Cli::try_parse_from([
+        "vulcan",
+        "daemon",
+        "config",
+        "set-automatic-sync",
+        "--network",
+        "unmetered",
+        "--power",
+        "battery-not-low-and-charging",
+        "--defer-on-unknown",
+    ])
+    .expect("set-automatic-sync should parse");
+    assert!(matches!(
+        automatic.command,
+        Command::Daemon {
+            command: DaemonCommand::Config {
+                command: DaemonConfigCommand::SetAutomaticSync {
+                    network: crate::cli::UpdateNetworkArg::Unmetered,
+                    power: crate::cli::AutomaticSyncPowerArg::BatteryNotLowAndCharging,
+                    defer_on_unknown: true,
+                    dry_run: false,
+                },
+            },
+        }
+    ));
+
     let discover = Cli::try_parse_from(["vulcan", "vault", "discover", "/vaults", "/more"])
         .expect("vault discover should parse");
     assert_eq!(

@@ -211,6 +211,14 @@ pub struct DaemonConfig {
     /// Discovery only suggests registrations; it never adds one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scan_dirs: Vec<PathBuf>,
+    /// Network and power conditions the daemon's own sync cycles (poll,
+    /// watch, remote notification, resume) wait for. Manual, recovery, and
+    /// shutdown syncs always run. Unconstrained by default.
+    #[serde(
+        default,
+        skip_serializing_if = "vulcan_app::background_policy::BackgroundPolicy::is_unconstrained"
+    )]
+    pub automatic_sync: vulcan_app::background_policy::BackgroundPolicy,
 }
 
 fn default_bind() -> String {
@@ -230,6 +238,7 @@ impl Default for DaemonConfig {
             vaults: Vec::new(),
             mcp_remotes: Vec::new(),
             scan_dirs: Vec::new(),
+            automatic_sync: vulcan_app::background_policy::BackgroundPolicy::default(),
         }
     }
 }
@@ -1147,6 +1156,17 @@ impl WikiRegistry {
                     "notification sink `{name}` does not exist"
                 )));
             }
+            Ok(config.clone())
+        })
+    }
+
+    pub fn set_automatic_sync_policy(
+        &self,
+        policy: vulcan_app::background_policy::BackgroundPolicy,
+        dry_run: bool,
+    ) -> Result<DaemonConfig, RegistryError> {
+        self.mutate(dry_run, |config| {
+            config.automatic_sync = policy;
             Ok(config.clone())
         })
     }

@@ -8,6 +8,7 @@ use crate::supervisor::{
 use serde::Serialize;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use vulcan_app::background_policy::{BackgroundConditions, BackgroundPolicy, DeferReason};
 use vulcan_app::sync::{
     sync_git_vault_with_profile_and_observer_and_engine_policy, GitPlatformProfile,
     GitSyncObserverError, GitSyncOptions, GitSyncOutcome, GitSyncPhase, GitSyncProgress,
@@ -196,6 +197,24 @@ pub fn execute_next_sync_job_with_state_store_and_engine(
     state_store: &SyncStateStore,
     engine: &GitCliEngine,
 ) -> Result<Option<DaemonSyncExecution>, SupervisorError> {
+    execute_next_sync_job_with_probe(
+        supervisor,
+        registry,
+        options,
+        state_store,
+        engine,
+        vulcan_app::background_policy::probe_conditions,
+    )
+}
+
+fn execute_next_sync_job_with_probe(
+    supervisor: &SyncSupervisor,
+    registry: &WikiRegistry,
+    options: &GitSyncOptions,
+    state_store: &SyncStateStore,
+    engine: &GitCliEngine,
+    probe: fn() -> BackgroundConditions,
+) -> Result<Option<DaemonSyncExecution>, SupervisorError> {
     let Some(claimed) = supervisor.claim_next()? else {
         return Ok(None);
     };
@@ -206,7 +225,55 @@ pub fn execute_next_sync_job_with_state_store_and_engine(
         state_store,
         engine,
         &claimed,
+        probe,
     )?))
+}
+
+/// Why an automatic job does not run now, if it does not: the registration
+/// is paused, or this device's background policy defers it. A held-back job
+/// completes as paused; the next poll or change tries again, and nothing is
+/// lost, since a later cycle captures the whole working tree.
+fn held_back(
+    registry: &WikiRegistry,
+    registration: &WikiRegistration,
+    triggers: &[vulcan_sync::SyncJobTrigger],
+    probe: fn() -> BackgroundConditions,
+) -> Option<String> {
+    if registration.sync_paused && !triggers.contains(&vulcan_sync::SyncJobTrigger::Manual) {
+        return Some("automatic synchronization is paused".to_string());
+    }
+    let policy = registry
+        .load()
+        .map(|config| config.automatic_sync)
+        .unwrap_or_default();
+    automatic_sync_deferral(&policy, triggers, probe).map(|reason| {
+        format!(
+            "automatic sync deferred by this device's background policy: {}",
+            reason.describe()
+        )
+    })
+}
+
+/// Why the device's background policy holds back this job, if it does.
+/// Only the daemon's own triggers are held back: a job that any manual,
+/// recovery, or shutdown request joined runs regardless. Conditions are
+/// probed only when the policy can defer.
+fn automatic_sync_deferral(
+    policy: &BackgroundPolicy,
+    triggers: &[vulcan_sync::SyncJobTrigger],
+    probe: impl FnOnce() -> BackgroundConditions,
+) -> Option<DeferReason> {
+    use vulcan_sync::SyncJobTrigger as Trigger;
+    let requested = triggers.iter().any(|trigger| {
+        matches!(
+            trigger,
+            Trigger::Manual | Trigger::Recovery | Trigger::Shutdown
+        )
+    });
+    if policy.is_unconstrained() || requested {
+        return None;
+    }
+    vulcan_app::background_policy::evaluate(policy, &probe())
 }
 
 fn execute_claimed_job(
@@ -216,18 +283,14 @@ fn execute_claimed_job(
     state_store: &SyncStateStore,
     engine: &GitCliEngine,
     claimed: &ClaimedSyncJob,
+    probe: fn() -> BackgroundConditions,
 ) -> Result<DaemonSyncExecution, SupervisorError> {
     let id = claimed.job.job.id.clone();
     let registration = match resolve_claimed_registration(registry, claimed) {
         Ok(registration) => registration,
         Err(error) => return complete_execution_error(supervisor, &id, error),
     };
-    if registration.sync_paused
-        && !claimed
-            .job
-            .triggers
-            .contains(&vulcan_sync::SyncJobTrigger::Manual)
-    {
+    if let Some(detail) = held_back(registry, &registration, &claimed.job.triggers, probe) {
         let status = SyncStatus {
             state: SyncState::Paused,
             backend: claimed.job.job.backend.clone(),
@@ -236,7 +299,7 @@ fn execute_claimed_job(
             remote_revision: None,
             accepted_revision: None,
             unresolved_conflicts: 0,
-            detail: Some("automatic synchronization is paused".to_string()),
+            detail: Some(detail),
         };
         let job = supervisor.complete(&id, SyncJobState::Paused, Some(status), None)?;
         return Ok(DaemonSyncExecution { job, report: None });
@@ -1462,6 +1525,147 @@ mod tests {
         assert_eq!(error.category, SyncErrorCategory::Repository);
         assert!(error.message.contains("file synchronization converged"));
         assert!(error.message.contains("branch `main` failed"));
+    }
+
+    #[test]
+    fn automatic_sync_deferral_holds_back_only_daemon_triggers() {
+        use vulcan_app::background_policy::{
+            NetworkRequirement, PowerRequirement, UnknownBehavior,
+        };
+        let metered = || BackgroundConditions {
+            metered: Some(true),
+            battery_low: Some(false),
+            charging: Some(true),
+        };
+        let unmetered = BackgroundPolicy {
+            network: NetworkRequirement::Unmetered,
+            ..BackgroundPolicy::default()
+        };
+        for trigger in [
+            SyncJobTrigger::Poll,
+            SyncJobTrigger::Watch,
+            SyncJobTrigger::RemoteNotification,
+            SyncJobTrigger::Resume,
+        ] {
+            assert_eq!(
+                automatic_sync_deferral(&unmetered, &[trigger], metered),
+                Some(DeferReason::MeteredNetwork),
+                "{trigger:?}"
+            );
+        }
+        for trigger in [
+            SyncJobTrigger::Manual,
+            SyncJobTrigger::Recovery,
+            SyncJobTrigger::Shutdown,
+        ] {
+            assert_eq!(
+                automatic_sync_deferral(&unmetered, &[SyncJobTrigger::Watch, trigger], metered),
+                None,
+                "{trigger:?}"
+            );
+        }
+        // The default policy never probes.
+        assert_eq!(
+            automatic_sync_deferral(
+                &BackgroundPolicy::default(),
+                &[SyncJobTrigger::Poll],
+                || { panic!("an unconstrained policy must not probe") }
+            ),
+            None
+        );
+        let unknown = || BackgroundConditions::default();
+        let charging = BackgroundPolicy {
+            power: PowerRequirement::Charging,
+            ..BackgroundPolicy::default()
+        };
+        assert_eq!(
+            automatic_sync_deferral(&charging, &[SyncJobTrigger::Poll], unknown),
+            None
+        );
+        let strict = BackgroundPolicy {
+            unknown: UnknownBehavior::Defer,
+            ..charging
+        };
+        assert_eq!(
+            automatic_sync_deferral(&strict, &[SyncJobTrigger::Poll], unknown),
+            Some(DeferReason::UnknownPower)
+        );
+    }
+
+    #[test]
+    fn a_deferred_automatic_job_is_reported_before_git_discovery() {
+        let temporary = tempdir().expect("temporary directory");
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&vault).expect("vault");
+        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+        registry
+            .add(
+                &AddWikiRequest {
+                    id: WikiId::parse("alpha").expect("ID"),
+                    path: vault.clone(),
+                    groups: Vec::new(),
+                    git_dir: None,
+                    permissions_profile: None,
+                    sync_backend: Some("git".to_string()),
+                    platform_profile: None,
+                    profile: None,
+                },
+                false,
+            )
+            .expect("registration");
+        registry
+            .set_automatic_sync_policy(
+                BackgroundPolicy {
+                    network: vulcan_app::background_policy::NetworkRequirement::Unmetered,
+                    ..BackgroundPolicy::default()
+                },
+                false,
+            )
+            .expect("policy");
+        let saved = fs::read_to_string(registry.path()).expect("daemon.toml");
+        assert!(saved.contains("[automatic_sync]"), "{saved}");
+        let supervisor =
+            SyncSupervisor::at(temporary.path().join("jobs.json")).expect("supervisor");
+        let state_store = SyncStateStore::at(temporary.path().join("sync-state"));
+        let metered = || BackgroundConditions {
+            metered: Some(true),
+            ..BackgroundConditions::default()
+        };
+        let run = || {
+            execute_next_sync_job_with_probe(
+                &supervisor,
+                &registry,
+                &GitSyncOptions::default(),
+                &state_store,
+                &GitCliEngine::default(),
+                metered,
+            )
+            .expect("execute")
+            .expect("job")
+        };
+
+        supervisor
+            .enqueue("alpha", &vault, SyncJobTrigger::Poll)
+            .expect("enqueue");
+        let deferred = run();
+        assert_eq!(deferred.job.job.state, SyncJobState::Paused);
+        let detail = deferred
+            .job
+            .job
+            .status
+            .as_ref()
+            .and_then(|status| status.detail.as_deref())
+            .expect("detail");
+        assert!(detail.contains("the network is metered"), "{detail}");
+        assert!(deferred.report.is_none());
+
+        // A manual request runs regardless; here it fails on the missing
+        // repository rather than being deferred.
+        supervisor
+            .enqueue("alpha", &vault, SyncJobTrigger::Manual)
+            .expect("enqueue");
+        let manual = run();
+        assert_ne!(manual.job.job.state, SyncJobState::Paused);
     }
 
     #[test]

@@ -648,6 +648,12 @@ commits and is never written from live.
   never automatically trusted by discovery, status, or sync.
 - One-shot `sync status`, `sync doctor`, and `sync run` are the supported baseline and require no
   daemon. Android shared storage cannot faithfully represent executable bits or symlinks.
+- The daemon's own sync cycles (poll, change, remote notification, resume) run unconditionally
+  by default; `vulcan daemon config set-automatic-sync --network unmetered --power battery-not-low
+  --dry-run` previews holding them back on metered networks or low battery. A held-back cycle is
+  reported as paused with "deferred by this device's background policy" and retried at the next
+  poll; it is not a failure and needs no repair. `sync run`, `--queue`, recovery, and shutdown syncs
+  are never held back. Change these conditions only when the user asks.
 - For an Android-managed periodic safety net, preview `vulcan sync termux-install <wiki>
   --period-minutes 60 --dry-run`, then apply only after checking the job ID, wrapper path, and
   network/battery policy. It requires Termux:API plus `pkg install termux-api`, defaults to

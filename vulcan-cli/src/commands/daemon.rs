@@ -554,6 +554,40 @@ fn handle_config(
             .registry
             .set_bind(bind, *dry_run)
             .map_err(CliError::operation)?,
+        DaemonConfigCommand::SetAutomaticSync {
+            network,
+            power,
+            defer_on_unknown,
+            dry_run,
+        } => {
+            use crate::cli::{AutomaticSyncPowerArg, UpdateNetworkArg};
+            use vulcan_app::background_policy::{
+                BackgroundPolicy, NetworkRequirement, PowerRequirement, UnknownBehavior,
+            };
+            let policy = BackgroundPolicy {
+                network: match network {
+                    UpdateNetworkArg::Any => NetworkRequirement::Any,
+                    UpdateNetworkArg::Unmetered => NetworkRequirement::Unmetered,
+                },
+                power: match power {
+                    AutomaticSyncPowerArg::Any => PowerRequirement::Any,
+                    AutomaticSyncPowerArg::BatteryNotLow => PowerRequirement::BatteryNotLow,
+                    AutomaticSyncPowerArg::Charging => PowerRequirement::Charging,
+                    AutomaticSyncPowerArg::BatteryNotLowAndCharging => {
+                        PowerRequirement::BatteryNotLowAndCharging
+                    }
+                },
+                unknown: if *defer_on_unknown {
+                    UnknownBehavior::Defer
+                } else {
+                    UnknownBehavior::Allow
+                },
+            };
+            context
+                .registry
+                .set_automatic_sync_policy(policy, *dry_run)
+                .map_err(CliError::operation)?
+        }
         DaemonConfigCommand::SetAgent {
             kind,
             base_url,

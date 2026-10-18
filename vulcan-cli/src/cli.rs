@@ -5744,6 +5744,36 @@ pub enum DaemonConfigCommand {
         )]
         dry_run: bool,
     },
+    #[command(
+        about = "Set the network and power conditions the daemon's own sync cycles wait for",
+        after_help = "Notes:\n  Applies to syncs the daemon starts itself: periodic polls, file changes,\n  remote notifications, and resume after sleep. `vulcan sync run`, queued\n  requests, recovery, and the final sync at shutdown always run.\n  A held-back cycle is reported as paused with the reason and is tried again at\n  the next poll or change; nothing is lost, since every cycle captures the\n  whole working tree. Run without flags to remove all conditions (the default).\n  Android/Termux jobs use the conditions given to `vulcan sync termux-install`,\n  which Android enforces, and are unaffected."
+    )]
+    SetAutomaticSync {
+        #[arg(
+            long,
+            value_enum,
+            default_value = "any",
+            help = "Network the daemon's sync cycles need"
+        )]
+        network: UpdateNetworkArg,
+        #[arg(
+            long,
+            value_enum,
+            default_value = "any",
+            help = "Power state the daemon's sync cycles need"
+        )]
+        power: AutomaticSyncPowerArg,
+        #[arg(
+            long,
+            help = "Hold back a cycle when a required network or power reading is unavailable"
+        )]
+        defer_on_unknown: bool,
+        #[arg(
+            long,
+            help = "Validate and report without writing daemon configuration"
+        )]
+        dry_run: bool,
+    },
     #[command(about = "Configure a daemon-owned OpenAI-compatible agent")]
     SetAgent {
         #[arg(value_enum, help = "Agent workflow to configure")]
@@ -9296,6 +9326,14 @@ pub enum TrustCommand {
 pub enum UpdateChannelArg {
     Stable,
     Main,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum AutomaticSyncPowerArg {
+    Any,
+    BatteryNotLow,
+    Charging,
+    BatteryNotLowAndCharging,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
