@@ -207,6 +207,10 @@ pub struct DaemonConfig {
     pub vaults: Vec<WikiRegistration>,
     #[serde(default, rename = "mcp_remote")]
     pub mcp_remotes: Vec<McpRemoteDefinition>,
+    /// Directories `vulcan vault discover` scans for unregistered vaults.
+    /// Discovery only suggests registrations; it never adds one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scan_dirs: Vec<PathBuf>,
 }
 
 fn default_bind() -> String {
@@ -225,6 +229,7 @@ impl Default for DaemonConfig {
             notifications: DaemonNotificationConfig::default(),
             vaults: Vec::new(),
             mcp_remotes: Vec::new(),
+            scan_dirs: Vec::new(),
         }
     }
 }
@@ -1146,6 +1151,38 @@ impl WikiRegistry {
         })
     }
 
+    /// Remembers `path` (canonicalized) as a directory to scan for vaults.
+    /// Adding one that is already remembered changes nothing.
+    pub fn add_scan_dir(&self, path: &Path, dry_run: bool) -> Result<PathBuf, RegistryError> {
+        let path = canonical_directory(path)?;
+        self.mutate(dry_run, |config| {
+            if !config.scan_dirs.contains(&path) {
+                config.scan_dirs.push(path.clone());
+                config.scan_dirs.sort();
+            }
+            Ok(path)
+        })
+    }
+
+    /// Forgets a remembered scan directory, named as stored or by any path
+    /// that resolves to it (so one that no longer exists can still go).
+    pub fn remove_scan_dir(&self, path: &Path, dry_run: bool) -> Result<PathBuf, RegistryError> {
+        let canonical = fs::canonicalize(path).ok();
+        self.mutate(dry_run, |config| {
+            let position = config
+                .scan_dirs
+                .iter()
+                .position(|dir| dir == path || canonical.as_ref() == Some(dir))
+                .ok_or_else(|| {
+                    RegistryError::InvalidDaemonSetting(format!(
+                        "{} is not a remembered scan directory",
+                        path.display()
+                    ))
+                })?;
+            Ok(config.scan_dirs.remove(position))
+        })
+    }
+
     fn mutate<T>(
         &self,
         dry_run: bool,
@@ -1186,6 +1223,12 @@ fn validate_daemon_config(config: &DaemonConfig) -> Result<(), RegistryError> {
         }
     }
     validate_bind(&config.bind)?;
+    if let Some(dir) = config.scan_dirs.iter().find(|dir| !dir.is_absolute()) {
+        return Err(RegistryError::InvalidDaemonSetting(format!(
+            "scan directory `{}` must be an absolute path",
+            dir.display()
+        )));
+    }
     if let Some(agent) = &config.resolution_agent {
         validate_agent_config(agent)?;
     }
@@ -1560,7 +1603,9 @@ fn validate_environment_name(name: &str, label: &str) -> Result<(), RegistryErro
 /// the enclosing Git work tree when that differs. A `.vulcan.toml` pointer in
 /// the named directory (a repository root) selects the vault it names; a
 /// named vault nested in a repository records the repository's work tree.
-fn resolve_registered_vault(named: &Path) -> Result<(PathBuf, Option<PathBuf>), RegistryError> {
+pub(crate) fn resolve_registered_vault(
+    named: &Path,
+) -> Result<(PathBuf, Option<PathBuf>), RegistryError> {
     let named = canonical_directory(named)?;
     let resolved = vulcan_core::vault_discovery::resolve_named_vault(&named)
         .map_err(|error| RegistryError::InvalidVaultPointer(error.to_string()))?;

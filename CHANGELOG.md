@@ -4,6 +4,10 @@
 
 ### Added
 
+- `vulcan vault discover [<dir>...]` finds vaults in a folder that are not registered yet: each
+  immediate subdirectory holding `.obsidian/`, `.vulcan/`, or a `.vulcan.toml` pointer, with a
+  free suggested wiki ID and the `vulcan vault add` command to run. It never registers anything.
+  `vulcan vault scan-dir add|remove|list` remembers folders to scan (`scan_dirs` in `daemon.toml`).
 - MDAF v1 gains optional document metadata and page labels, additive and backwards compatible.
   `info.json` may carry `language` (a BCP 47 tag) and `cover` (a declared image asset that
   represents the document), and `source-map.json` may carry `page_labels`: per paged source,

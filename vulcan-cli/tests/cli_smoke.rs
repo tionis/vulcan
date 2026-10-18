@@ -20655,6 +20655,8 @@ fn skill_list_and_get_surface_bundled_skills() {
     assert!(configuration.contains("vulcan daemon companion --output json"));
     assert!(configuration.contains("vulcan daemon companion install"));
     assert!(configuration.contains("native `SecretStorage`"));
+    assert!(configuration.contains("vulcan vault discover"));
+    assert!(configuration.contains("vulcan vault scan-dir add <dir>"));
 }
 
 #[test]
@@ -41163,6 +41165,85 @@ fn vault_tokens_are_created_once_listed_without_secrets_and_revoked() {
     assert_eq!(json(&["list"]), serde_json::json!([]));
     cargo_vulcan_with_xdg_config(&config_home)
         .args(["vault", "token", "create", "missing"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn vault_discover_suggests_unregistered_vaults_from_remembered_scan_dirs() {
+    let temporary = TempDir::new().expect("temp dir");
+    let config_home = temporary.path().join("config");
+    fs::create_dir(&config_home).expect("config home");
+    let config_home = config_home.to_str().expect("utf-8 config home").to_string();
+    let scan = temporary.path().join("vaults");
+    fs::create_dir_all(scan.join("My Notes/.obsidian")).expect("obsidian vault");
+    fs::create_dir_all(scan.join("work/.vulcan")).expect("vulcan vault");
+    fs::create_dir_all(scan.join("plain")).expect("plain folder");
+    fs::write(scan.join("plain/note.md"), "# Not a vault\n").expect("note");
+    let json = |args: &[&str]| {
+        parse_stdout_json(
+            &cargo_vulcan_with_xdg_config(&config_home)
+                .args(["--output", "json", "vault"])
+                .args(args)
+                .assert()
+                .success(),
+        )
+    };
+    let scan_arg = scan.to_str().expect("utf-8 scan dir");
+
+    let none = cargo_vulcan_with_xdg_config(&config_home)
+        .args(["vault", "discover"])
+        .assert()
+        .success();
+    assert!(String::from_utf8_lossy(&none.get_output().stdout).contains("scan-dir add"));
+
+    let preview = json(&["scan-dir", "add", scan_arg, "--dry-run"]);
+    assert_eq!(preview["dry_run"], true);
+    assert_eq!(preview["scan_dirs"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        json(&["scan-dir", "list"])["scan_dirs"],
+        serde_json::json!([])
+    );
+    json(&["scan-dir", "add", scan_arg]);
+    assert_eq!(
+        json(&["scan-dir", "list"])["scan_dirs"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+
+    cargo_vulcan_with_xdg_config(&config_home)
+        .args(["vault", "add", "work"])
+        .arg(scan.join("work"))
+        .arg("--no-sync")
+        .assert()
+        .success();
+    let report = json(&["discover"]);
+    let vaults = report["vaults"].as_array().expect("vaults");
+    assert_eq!(vaults.len(), 2, "{report}");
+    assert_eq!(vaults[0]["markers"], serde_json::json!(["obsidian"]));
+    assert_eq!(vaults[0]["suggested_id"], "my-notes");
+    assert_eq!(vaults[1]["registered_as"], "work");
+    assert!(vaults[1].get("suggested_id").is_none());
+
+    let human = cargo_vulcan_with_xdg_config(&config_home)
+        .args(["vault", "discover"])
+        .assert()
+        .success();
+    let human = String::from_utf8_lossy(&human.get_output().stdout).into_owned();
+    assert!(human.contains("vulcan vault add my-notes '"), "{human}");
+    assert!(human.contains("1 already registered"), "{human}");
+    // Discovery only suggests.
+    let listed = json(&["list"]);
+    assert_eq!(listed["wikis"].as_array().map(Vec::len), Some(1));
+
+    json(&["scan-dir", "remove", scan_arg]);
+    assert_eq!(
+        json(&["scan-dir", "list"])["scan_dirs"],
+        serde_json::json!([])
+    );
+    cargo_vulcan_with_xdg_config(&config_home)
+        .args(["vault", "scan-dir", "remove", scan_arg])
         .assert()
         .failure();
 }

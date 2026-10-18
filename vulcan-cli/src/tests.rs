@@ -3771,6 +3771,29 @@ fn parses_vault_registry_commands() {
         }
     );
 
+    let discover = Cli::try_parse_from(["vulcan", "vault", "discover", "/vaults", "/more"])
+        .expect("vault discover should parse");
+    assert_eq!(
+        discover.command,
+        Command::Vault {
+            command: VaultCommand::Discover {
+                dirs: vec![PathBuf::from("/vaults"), PathBuf::from("/more")],
+            },
+        }
+    );
+    let scan_dir =
+        Cli::try_parse_from(["vulcan", "vault", "scan-dir", "add", "/vaults", "--dry-run"])
+            .expect("vault scan-dir add should parse");
+    assert_eq!(
+        scan_dir.command,
+        Command::Vault {
+            command: VaultCommand::ScanDir(crate::cli::VaultScanDirCommand::Add {
+                path: PathBuf::from("/vaults"),
+                dry_run: true,
+            }),
+        }
+    );
+
     let set = Cli::try_parse_from([
         "vulcan",
         "vault",

@@ -159,6 +159,12 @@ pub(crate) fn handle_vault_command(cli: &Cli, command: &VaultCommand) -> Result<
                 .map_err(CliError::operation)?;
             print_list(cli.output, &registry, group.as_deref(), &wikis)
         }
+        VaultCommand::Discover { dirs } => {
+            let report = vulcan_daemon::vault_scan::discover_vaults(&registry, dirs)
+                .map_err(CliError::operation)?;
+            print_discovery(cli.output, &registry, dirs.is_empty(), &report)
+        }
+        VaultCommand::ScanDir(command) => handle_scan_dir_command(cli, &registry, command),
         VaultCommand::Show { id } => {
             let wiki = registry.show(&parse_id(id)?).map_err(CliError::operation)?;
             print_show(cli.output, &wiki)
@@ -727,6 +733,167 @@ fn print_list(
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct ScanDirReport<'a> {
+    action: &'static str,
+    dry_run: bool,
+    registry_path: &'a Path,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<&'a Path>,
+    scan_dirs: Vec<std::path::PathBuf>,
+}
+
+fn handle_scan_dir_command(
+    cli: &Cli,
+    registry: &WikiRegistry,
+    command: &crate::cli::VaultScanDirCommand,
+) -> Result<(), CliError> {
+    use crate::cli::VaultScanDirCommand;
+    let (action, dry_run, path) = match command {
+        VaultScanDirCommand::List => ("list", false, None),
+        VaultScanDirCommand::Add { path, dry_run } => (
+            "add",
+            *dry_run,
+            Some(
+                registry
+                    .add_scan_dir(path, *dry_run)
+                    .map_err(CliError::operation)?,
+            ),
+        ),
+        VaultScanDirCommand::Remove { path, dry_run } => (
+            "remove",
+            *dry_run,
+            Some(
+                registry
+                    .remove_scan_dir(path, *dry_run)
+                    .map_err(CliError::operation)?,
+            ),
+        ),
+    };
+    let mut scan_dirs = registry.load().map_err(CliError::operation)?.scan_dirs;
+    // A dry run reports the list as it would be.
+    if dry_run {
+        match (action, &path) {
+            ("add", Some(path)) if !scan_dirs.contains(path) => {
+                scan_dirs.push(path.clone());
+                scan_dirs.sort();
+            }
+            ("remove", Some(path)) => scan_dirs.retain(|dir| dir != path),
+            _ => {}
+        }
+    }
+    if cli.output == OutputFormat::Json {
+        return print_json(&ScanDirReport {
+            action,
+            dry_run,
+            registry_path: registry.path(),
+            path: path.as_deref(),
+            scan_dirs,
+        });
+    }
+    let verb = match (action, dry_run) {
+        ("add", false) => Some("Remembered"),
+        ("add", true) => Some("Would remember"),
+        ("remove", false) => Some("Forgot"),
+        ("remove", true) => Some("Would forget"),
+        _ => None,
+    };
+    if let (Some(verb), Some(path)) = (verb, &path) {
+        println!("{verb} scan directory {}", path.display());
+    }
+    if scan_dirs.is_empty() {
+        println!("No scan directories.");
+    } else if action == "list" {
+        for dir in &scan_dirs {
+            println!("{}", dir.display());
+        }
+    }
+    Ok(())
+}
+
+fn print_discovery(
+    output: OutputFormat,
+    registry: &WikiRegistry,
+    remembered: bool,
+    report: &vulcan_daemon::vault_scan::VaultDiscoveryReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    if report.scan_dirs.is_empty() {
+        println!(
+            "No scan directories in {}. Pass directories, or remember one with `vulcan vault scan-dir add <dir>`.",
+            registry.path().display()
+        );
+        return Ok(());
+    }
+    if remembered {
+        println!(
+            "Scanning {}.",
+            report
+                .scan_dirs
+                .iter()
+                .map(|dir| dir.path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    for dir in &report.scan_dirs {
+        if let Some(error) = &dir.error {
+            println!("Could not read {}: {error}", dir.path.display());
+        }
+    }
+    let mut new = 0;
+    for vault in report.unregistered() {
+        new += 1;
+        match &vault.suggested_id {
+            Some(id) => println!(
+                "{}\n  vulcan vault add {id} {}",
+                vault.path.display(),
+                shell_quote(&vault.path.display().to_string())
+            ),
+            None => println!(
+                "{}\n  vulcan vault add <id> {}  (choose an ID; the name gives none)",
+                vault.path.display(),
+                shell_quote(&vault.path.display().to_string())
+            ),
+        }
+    }
+    for vault in report.vaults.iter().filter(|vault| vault.error.is_some()) {
+        println!(
+            "{}: cannot be registered: {}",
+            vault.path.display(),
+            vault.error.as_deref().unwrap_or_default()
+        );
+    }
+    let registered = report
+        .vaults
+        .iter()
+        .filter(|vault| vault.registered_as.is_some())
+        .count();
+    if new == 0 {
+        println!("No unregistered vaults found.");
+    }
+    if registered > 0 {
+        println!("{registered} already registered (`vulcan vault list`).");
+    }
+    Ok(())
+}
+
+/// Quotes `value` for a POSIX shell when it holds anything but safe
+/// characters.
+fn shell_quote(value: &str) -> String {
+    if !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-+:@%".contains(c))
+    {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
 }
 
 fn print_show(output: OutputFormat, wiki: &WikiRegistrationStatus) -> Result<(), CliError> {

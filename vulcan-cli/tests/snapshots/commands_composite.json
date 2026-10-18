@@ -14907,6 +14907,102 @@
             "subcommands": []
           },
           {
+            "about": "Find vaults in scan directories that are not registered yet",
+            "after_help": "Notes:\n  Looks at the immediate subdirectories of each scan directory and reports the\n  ones holding `.obsidian/`, `.vulcan/`, or a `.vulcan.toml` pointer. A plain\n  folder of Markdown files is not proposed.\n  Discovery never registers anything: for each new vault it suggests a free\n  wiki ID and the `vulcan vault add` command to run. Vaults already registered\n  are reported with their wiki ID.\n  Without arguments it scans the directories remembered with\n  `vulcan vault scan-dir add`.\n",
+            "name": "discover",
+            "options": [
+              {
+                "help": "Directories to scan; defaults to the remembered scan directories",
+                "id": "dirs",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DIRS"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Remember directories for `vulcan vault discover` to scan",
+            "name": "scan-dir",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "List the remembered scan directories",
+                "name": "list",
+                "options": [],
+                "subcommands": []
+              },
+              {
+                "about": "Remember a directory to scan for vaults",
+                "name": "add",
+                "options": [
+                  {
+                    "help": "Existing directory whose subdirectories may be vaults",
+                    "id": "path",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "PATH"
+                    ]
+                  },
+                  {
+                    "help": "Validate and report without writing registry state",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Forget a remembered scan directory",
+                "name": "remove",
+                "options": [
+                  {
+                    "help": "Remembered scan directory",
+                    "id": "path",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "PATH"
+                    ]
+                  },
+                  {
+                    "help": "Validate and report without writing registry state",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              }
+            ]
+          },
+          {
             "about": "Show one registered local wiki",
             "after_help": "Health is reported as by `vulcan vault list`.",
             "name": "show",

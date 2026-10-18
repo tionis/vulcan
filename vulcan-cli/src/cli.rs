@@ -593,6 +593,18 @@ Examples:
   vulcan vault set personal --group mobile --remove-group desktop
   vulcan vault remove personal --dry-run";
 
+const VAULT_DISCOVER_AFTER_HELP: &str = "\
+Notes:
+  Looks at the immediate subdirectories of each scan directory and reports the
+  ones holding `.obsidian/`, `.vulcan/`, or a `.vulcan.toml` pointer. A plain
+  folder of Markdown files is not proposed.
+  Discovery never registers anything: for each new vault it suggests a free
+  wiki ID and the `vulcan vault add` command to run. Vaults already registered
+  are reported with their wiki ID.
+  Without arguments it scans the directories remembered with
+  `vulcan vault scan-dir add`.
+";
+
 const VAULT_ADD_AFTER_HELP: &str = "\
 Notes:
   Registration tells Vulcan this vault exists on this device. `vulcan sync <wiki>`
@@ -6088,6 +6100,20 @@ pub enum VaultCommand {
         group: Option<String>,
     },
     #[command(
+        about = "Find vaults in scan directories that are not registered yet",
+        after_help = VAULT_DISCOVER_AFTER_HELP
+    )]
+    Discover {
+        #[arg(help = "Directories to scan; defaults to the remembered scan directories")]
+        dirs: Vec<PathBuf>,
+    },
+    #[command(
+        subcommand,
+        name = "scan-dir",
+        about = "Remember directories for `vulcan vault discover` to scan"
+    )]
+    ScanDir(VaultScanDirCommand),
+    #[command(
         about = "Show one registered local wiki",
         after_help = "Health is reported as by `vulcan vault list`."
     )]
@@ -6257,6 +6283,26 @@ pub enum ScheduleTrustCommand {
         #[arg(help = "Signed commit to accept [default: the newest signed commit]")]
         commit: Option<String>,
         #[arg(long, help = "Show what would change for each job without accepting")]
+        dry_run: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum VaultScanDirCommand {
+    #[command(about = "List the remembered scan directories")]
+    List,
+    #[command(about = "Remember a directory to scan for vaults")]
+    Add {
+        #[arg(help = "Existing directory whose subdirectories may be vaults")]
+        path: PathBuf,
+        #[arg(long, help = "Validate and report without writing registry state")]
+        dry_run: bool,
+    },
+    #[command(about = "Forget a remembered scan directory")]
+    Remove {
+        #[arg(help = "Remembered scan directory")]
+        path: PathBuf,
+        #[arg(long, help = "Validate and report without writing registry state")]
         dry_run: bool,
     },
 }
