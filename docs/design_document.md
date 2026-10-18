@@ -876,6 +876,17 @@ Recommended direction:
 
 This keeps the cache schema private, avoids exposing raw SQL as a long-term product contract, and lets both humans and agents work against one stable query abstraction.
 
+**Current state (2026-10).** The direction above is the intent, not what every frontend does today. The frontends share foundations rather than one canonical AST: the Bases/Dataview expression parser and evaluator (`crate::expression`), the `file.*` resolver, and the shared note planner (`plan::NotePlan` over `predicate::Predicate` atoms, with tag and folder sources selected in SQL; see [`docs/specs/query-architecture.md`](specs/query-architecture.md) §4.3–4.7). Each frontend keeps its own syntax, plan, and dialect-specific steps:
+
+- **Native queries** (`query` DSL and JSON, CLI filter flags, `ls`, saved reports, MCP and serve handlers) parse into `QueryAst`. Typed predicates lower directly to structured note filters, which become a SQL source or an expression; expression filters go to the expression engine; both run through the note planner. Query-driven mutations (`update`, `unset`) take note filter strings rather than a `QueryAst` and select their notes through the same note-filter path.
+- **Bases** parse `.base` files into their own validated model. Base and view filters are Vulcan expressions executed as note filters through the same planner; formulas, grouping, summaries, and views stay Bases-specific. A `.base` file does not compile into `QueryAst`.
+- **DQL** compiles to its own `CompiledDqlQuery` pipeline (`dql::compile`, `dql::eval`; see §12b). Its expressions use the shared parser and evaluator, and its `FROM` source plus a leading `WHERE` decided on stored fields select candidates through the note planner.
+- **mdbase** queries compile to `StructuredQueryPlan`, a richer plan whose filters and projections are CEL expressions executed by mdbase's CEL engine over its record cache.
+- **Tasks plugin queries** (`tasks query`) have their own DSL parser and evaluator, sharing only value comparison and date parsing with the expression engine.
+- **JavaScript** (DataviewJS and Templater) is a separate compatibility surface with no query model of its own: `dv.pages()` resolves sources as DQL `FROM` does, and `dv.query()` runs DQL.
+
+Unifying these into one executor is not planned work; Roadmap 9.29.10 sets the threshold for extracting further shared operations.
+
 ### Interactive Bases workflows
 
 Post-v1 interactive Bases support should be layered on top of the same query and mutation engine rather than inventing a separate TUI-only model.
@@ -1167,11 +1178,11 @@ LIMIT <n>
 
 ### Recommended DQL implementation
 
-DQL shares Vulcan's expression engine, `FilterExpression` lowering, `file.*` resolver, and cache tables with Bases, CLI flags, and JSON payloads, so there is one set of semantics for fields, functions, and comparisons. It does not compile into `QueryAst`: DQL's sequential data commands (repeated `WHERE`, `FLATTEN`, `GROUP BY` producing `rows`, TASK/CALENDAR modes, and `this`) do not fit the single-pass note query model, so DQL compiles to its own `CompiledDqlQuery` plan evaluated by `dql::eval`. Where a `WHERE` clause lowers cleanly to `FilterExpression`s it is pushed down to the shared filter path; everything else runs through the shared expression evaluator. Extending `QueryAst` to express the DQL pipeline remains the long-term convergence goal.
+DQL shares Vulcan's expression parser and evaluator, `file.*` resolver, note planner, and cache tables with Bases and native queries, so there is one set of semantics for fields, functions, and comparisons. It does not compile into `QueryAst`: DQL's sequential data commands (repeated `WHERE`, `FLATTEN`, `GROUP BY` producing `rows`, TASK/CALENDAR modes, and `this`) do not fit the single-pass note query model, so DQL compiles to its own `CompiledDqlQuery` plan evaluated by `dql::eval`. Candidate rows come from the shared note planner (`plan::NotePlan`): the `FROM` source, and a leading `WHERE` whose predicate atoms decide rows on stored fields; every later command runs through the shared expression evaluator. There is no plan to make `QueryAst` express the DQL pipeline (see §12, current state).
 
 - **Parser:** Hand-rolled recursive descent parser for DQL syntax, producing the internal query AST. DQL is simple enough that a full parser generator is unnecessary.
 - **FROM → source resolution:** Translate FROM clauses to the existing source/filter primitives. Tag and folder sources map to SQL filters on the `tags` and `documents` tables. Link sources map to joins on the `links` table. `outgoing([[note]])` uses a forward join on `links`.
-- **WHERE → filter expressions:** DQL WHERE expressions are structurally similar to Bases filter expressions and should lower to the same `FilterExpression` representation. Much of the expression evaluation infrastructure from Phase 4.5 (Bases expression language) is reusable. The expression evaluator must be extended with the full DQL function library, lambda support, link indexing, and date/duration arithmetic.
+- **WHERE → filter expressions:** DQL WHERE expressions use the Bases expression language's parser and evaluator (Phase 4.5); a leading `WHERE` lowers to the shared predicate atoms the note planner decides on stored fields. The expression evaluator must be extended with the full DQL function library, lambda support, link indexing, and date/duration arithmetic.
 - **TABLE columns / LIST expressions → projections:** DQL column expressions compile to the same projection model used by Bases formulas. Support `AS "alias"` for column headers and `WITHOUT ID` to suppress the file link column.
 - **TASK queries:** Operate on the `list_items`/`tasks` tables rather than the `documents` table. Task-level fields (`status`, `checked`, `completed`, `fullyCompleted`) are synthesized by the query evaluator. Results are grouped by source note.
 - **CALENDAR queries:** Require a date-valued field per note. The CLI rendering shows a date-grouped list; calendar grid rendering is a WebUI concern.
