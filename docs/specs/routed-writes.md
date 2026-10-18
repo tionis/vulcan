@@ -1,6 +1,9 @@
 # Routed Writes
 
-Status: proposed scope for Roadmap 10.5 (the two open routing items)  
+Status: not pursued (2026-10-18). Slice 1 found no gain: a daemon-side write costs the same as a
+direct one, because the cost is the shared write path's post-write cache refresh
+([measurement](measurements/routed-writes-baseline.json)). That path is fixed directly instead.  
+Scope proposed for Roadmap 10.5 (the two open routing items)  
 Scope: sending finite CLI write commands to a resident daemon that hosts the vault, without ever
 applying a write twice or silently falling back after it may have run  
 Non-goals: remote or multi-user access (Phase 17), interactive commands (TUIs, `$EDITOR` flows,
@@ -128,6 +131,18 @@ the client cannot fully resolve.
 2. The write-status route and client outcome classification, with the fault-injection harness, on
    `note append`.
 3. The remaining candidates, one operation per slice.
+
+## Outcome
+
+Slice 1 (2026-10-18, [record](measurements/routed-writes-baseline.json)): at 100K notes a direct
+`note append` takes about 1,350 ms and the same append through the daemon's REST route about
+1,460 ms; `note set` 1,010 against 1,440 ms; at 10K both sides take 230 to 290 ms. Skipping the
+client's freshness proof saves nothing. The time goes to the write workflow's post-write refresh, a
+full incremental scan that discovers every file (about 500 ms at 100K with nothing changed) and then
+refreshes vault-wide derived state, which a daemon would run just the same. By this record's own
+rule, routed writes stop here; the refresh is fixed in the shared write path, where every
+integration gains. The design below stays as the reference should a later measurement change the
+answer.
 
 ## Decisions
 

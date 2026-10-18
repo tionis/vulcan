@@ -1,0 +1,60 @@
+{
+  "acceptance_gate_result": "failed",
+  "note": "Slice 1 of docs/specs/routed-writes.md: whether a write sent to a resident daemon saves time over a direct write. It does not, so routed writes are not pursued.",
+  "commit": "7bbe6abb",
+  "binary": "target/release/vulcan (cargo build --release -p vulcan-cli)",
+  "fixtures": [
+    "mdb-10k/collection and mdb-100k/collection from scripts/generate_mdb_fixture.py (generator v1, seed 42), scanned with `scan --full`"
+  ],
+  "machine": {
+    "host": "development laptop, not the designated evaluation host (Intel Core i7-8650U, 31 GiB RAM, Debian 13)",
+    "load_average_during": [2.8, 6.3]
+  },
+  "setup": [
+    "Isolated XDG_CONFIG_HOME, XDG_STATE_HOME, XDG_DATA_HOME, and XDG_CACHE_HOME; daemon.toml binds 127.0.0.1:0",
+    "Direct runs first with no daemon, then both fixtures registered with `vault add --no-sync`, `daemon start --detach`, both caches fresh, and an API token per vault",
+    "The daemon side is measured through the existing REST write routes, which run the same workflow behind the host's mutation permit that a routed CLI write would; a routed CLI write would add the process floor and request encoding"
+  ],
+  "method": {
+    "note": "public/contact/01/record-000001.md",
+    "cases": [
+      "vulcan --vault <fixture> --output json note append <note> <line>",
+      "vulcan --vault <fixture> --output json note set <note> --file <file>",
+      "POST /{id}/append/{note} {\"text\": ...}",
+      "PUT /{id}/notes/{note} {\"content\": ...}"
+    ],
+    "timing": "wall clock from Python; 11 runs per case, the first discarded; p50 and max of 10"
+  },
+  "results_ms_p50": {
+    "10k": {
+      "process floor (vulcan --version)": 10.7,
+      "direct note append": 282.9,
+      "direct note append, daemon running": 287.8,
+      "REST append": 226.6,
+      "direct note set": 247.4,
+      "direct note set, daemon running": 256.7,
+      "REST set": 971.6
+    },
+    "100k": {
+      "process floor (vulcan --version)": 17.7,
+      "direct note append": 1352.0,
+      "direct note append, daemon running": 1464.6,
+      "REST append": 1457.0,
+      "direct note set": 1012.1,
+      "direct note set, daemon running": 1520.4,
+      "REST set": 1437.0
+    }
+  },
+  "breakdown_100k_ms_p50": {
+    "note append (default refresh)": 930.4,
+    "note append --refresh off": 976.8,
+    "scan, incremental, nothing changed": 496.0,
+    "note get --refresh off": 16.1
+  },
+  "findings": [
+    "Daemon-side writes cost the same as direct ones at both sizes (REST set at 10K varied between runs, max 2,216 ms), so adding the process floor a routed write would be no faster.",
+    "Skipping the client's freshness proof (`--refresh off`) saves nothing: the cost is inside the write workflow both paths share.",
+    "Ordinary note writes refresh the cache with a full incremental scan, which discovers every file (about 500 ms at 100K even when nothing changed) and then refreshes vault-wide derived state. vulcan_core::scan::scan_vault_paths_unlocked already limits a scan to the paths a writer touched, and mdbase writes and the editor use it; note writes do not."
+  ],
+  "decision": "Routed writes are not pursued. The shared write path's post-write refresh is the cost every integration pays, and fixing it directly benefits direct, MCP, REST, and daemon writes alike."
+}
