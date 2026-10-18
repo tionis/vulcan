@@ -169,9 +169,15 @@ pub(crate) fn eligible_key(store: &DeviceIdentityStore) -> Result<(String, PathB
     let device_id = report
         .device_id
         .ok_or_else(|| "device identity has no device ID".to_owned())?;
-    let key = store
-        .private_key_path()
-        .map_err(|error| error.to_string())?;
+    // Only file custody can serve as an OpenSSH `IdentityFile`; other
+    // providers need their own reviewed transport path.
+    let provider = crate::device_key::open_device_key(store).map_err(|error| error.to_string())?;
+    let key = provider.identity_file().ok_or_else(|| {
+        format!(
+            "device key provider `{}` cannot be used as an SSH identity file",
+            provider.kind().as_str()
+        )
+    })?;
     Ok((device_id, key))
 }
 

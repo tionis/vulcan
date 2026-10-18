@@ -5105,6 +5105,7 @@ dependencies = [
  "ulid",
  "unicode-normalization",
  "vulcan-core",
+ "vulcan-secrets",
  "vulcan-sync",
  "vulcan-winacl",
  "yaml_serde",

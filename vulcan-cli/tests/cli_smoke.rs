@@ -19974,6 +19974,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("vault add --no-sync"));
     assert!(sync_skill.contains("vault add <id> <path> --git-init"));
     assert!(sync_skill.contains("vulcan daemon config set-automatic-sync"));
+    assert!(sync_skill.contains("vulcan device key status --output json"));
     assert!(sync_skill.contains("sync.worktree = \"none\""));
     assert!(sync_skill.contains("branch_paused"));
     assert!(sync_skill.contains("sync.worktree = \"paths\""));

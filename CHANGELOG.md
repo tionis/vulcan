@@ -4,6 +4,11 @@
 
 ### Added
 
+- `vulcan device key status` reports where the device's private key is kept (`file_v1` today), whether
+  it is available, and what its provider can do, without creating, signing, or prompting. A device
+  identity whose manifest names a reserved provider (`system_secret_v1`, `ssh_agent_v1`) is now
+  reported as degraded with that provider `unsupported`, instead of invalid; its key file is never
+  used in its place.
 - `vulcan daemon config set-automatic-sync [--network unmetered] [--power battery-not-low|charging|...]
   [--defer-on-unknown]` lets the daemon's own sync cycles wait for an unmetered network or enough
   power. A held-back cycle is reported as paused with the reason and retried at the next poll.

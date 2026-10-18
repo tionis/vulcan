@@ -143,6 +143,7 @@ Unbinding removes only Vulcan's own `core.sshCommand`; another tool's setting is
 ## Seeing the state
 
 - `vulcan device show`: this installation's identity and status.
+- `vulcan device key status`: where the private key is kept (its custody provider), whether it is available, and what that provider can do. Today the only provider is `file_v1`, the owner-only OpenSSH file: it works unattended and can be exported, and it is not encrypted or keychain-backed. Native keychains and SSH agents are planned; a manifest naming one reports `unsupported`, and Vulcan never falls back to a key file instead.
 - `vulcan devices list`: per vault, whether it is bound, and whether this device is registered.
 - `vulcan sync transport status`: one vault's binding and whether plain `git` is configured.
 - `vulcan sync devices list`: every device registered in a vault's remote, and whether each record is signed by its device.

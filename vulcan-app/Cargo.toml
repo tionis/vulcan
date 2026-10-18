@@ -41,6 +41,7 @@ getrandom.workspace = true
 unicode-normalization.workspace = true
 vulcan-core = { path = "../vulcan-core", version = "0.3.0", default-features = false }
 vulcan-sync = { path = "../vulcan-sync", version = "0.3.0" }
+vulcan-secrets = { path = "../vulcan-secrets", version = "0.3.0" }
 yaml_serde.workspace = true
 zeroize.workspace = true
 rquickjs = { workspace = true, optional = true }

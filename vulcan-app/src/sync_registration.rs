@@ -74,7 +74,8 @@ impl DeviceRegistration {
     fn sign(mut self, store: &DeviceIdentityStore) -> Result<Self, AppError> {
         self.signature = None;
         let bytes = self.signing_bytes()?;
-        self.signature = Some(store.sign(SIGNATURE_NAMESPACE, &bytes)?);
+        let key = crate::device_key::open_device_key(store)?;
+        self.signature = Some(key.sign(SIGNATURE_NAMESPACE, &bytes)?);
         Ok(self)
     }
 

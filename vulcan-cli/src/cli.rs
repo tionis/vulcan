@@ -4697,6 +4697,8 @@ pub enum DeviceCommand {
     },
     #[command(about = "Export this installation's canonical public device key")]
     PublicKey,
+    #[command(subcommand, about = "Inspect where this device's private key is kept")]
+    Key(DeviceKeyCommand),
     #[command(about = "Show or edit this device's non-secret transport policy and known forges")]
     Config {
         #[command(subcommand)]
@@ -4743,6 +4745,15 @@ pub enum DeviceCommand {
         #[arg(long, help = "Preview which artifacts would be restricted")]
         dry_run: bool,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum DeviceKeyCommand {
+    #[command(
+        about = "Show the device key's custody provider, its state, and what it can do",
+        after_help = "Notes:\n  Reads only: it never creates, unlocks, signs, or prompts. The provider is\n  file_v1 (an owner-only OpenSSH key file: unattended and exportable, not\n  encrypted or keychain-backed); system_secret_v1 and ssh_agent_v1 are reserved\n  and report `unsupported` in this build. States: available, missing,\n  unavailable, invalid, unsupported, or unknown. Each capability is supported,\n  unsupported, or unknown."
+    )]
+    Status,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

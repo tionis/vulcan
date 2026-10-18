@@ -26,6 +26,11 @@ both execute the same application workflow.
   exports the public key; never request or print the private key for inventory work. If `device show`
   reports `invalid` because storage is readable by other accounts, preview
   `vulcan device repair-permissions --dry-run`; it only tightens access and never rewrites keys.
+- `vulcan device key status --output json` reports the key's custody `provider` (`file_v1` today),
+  its `state` (`available`, `missing`, `unavailable`, `invalid`, `unsupported`, or `unknown`), and
+  per-capability support. It never signs, unlocks, or prompts. `unsupported` means the manifest
+  names a provider this build cannot use: report it, and do not edit the manifest or copy key files
+  to work around it.
 - Device IDs are key-derived (`vdev1_...`). A safety branch named with an older 26-character ULID
   is refused by `vulcan sync devices list`; report it to the user rather than deleting it. A stale
   legacy `_device.json` is ignored.

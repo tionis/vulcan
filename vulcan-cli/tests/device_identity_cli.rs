@@ -271,6 +271,47 @@ fn local_identity_commands_are_vault_independent_and_state_free_until_init() {
 }
 
 #[test]
+fn device_key_status_reports_custody_without_creating_or_reading_out_secrets() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let root = temporary.path();
+    let directory = root.join("data/vulcan/device");
+    let status =
+        |root: &Path| json_output(&run(root, &["--output", "json", "device", "key", "status"]));
+
+    let absent = status(root);
+    assert_eq!(absent["state"], "missing");
+    assert!(absent.get("provider").is_none());
+    assert!(!directory.exists());
+
+    json_output(&run(root, &["--output", "json", "device", "init"]));
+    let ready = status(root);
+    assert_eq!(ready["provider"], "file_v1");
+    assert_eq!(ready["state"], "available");
+    assert_eq!(ready["capabilities"]["unattended"], "supported");
+    assert_eq!(ready["capabilities"]["interactive"], "unsupported");
+    let human =
+        String::from_utf8_lossy(&run(root, &["device", "key", "status"]).stdout).into_owned();
+    assert!(human.contains("Provider: file_v1"), "{human}");
+    assert!(
+        !human.contains("PRIVATE KEY") && !human.contains("id_ed25519"),
+        "{human}"
+    );
+
+    // A reserved provider keeps the public identity and is reported, not
+    // treated as corrupt; the key file beside it is not used.
+    let manifest = directory.join("identity.json");
+    let text = fs::read_to_string(&manifest).expect("manifest");
+    fs::write(&manifest, text.replace("file_v1", "system_secret_v1")).expect("manifest");
+    let reserved = status(root);
+    assert_eq!(reserved["provider"], "system_secret_v1");
+    assert_eq!(reserved["state"], "unsupported");
+    assert_eq!(reserved["capabilities"]["unattended"], "unknown");
+    let shown = json_output(&run(root, &["--output", "json", "device", "show"]));
+    assert_eq!(shown["status"], "degraded");
+    assert_eq!(shown["device_id"], ready["device_id"]);
+}
+
+#[test]
 fn stale_legacy_sync_actor_state_is_ignored() {
     let temporary = TempDir::new().expect("temporary directory");
     let root = temporary.path();

@@ -35,6 +35,10 @@ pub(crate) fn handle_device_command(cli: &Cli, command: &DeviceCommand) -> Resul
             crate::commands::lifecycle::handle_device_replace(cli, command)
         }
         DeviceCommand::SshCommand { args } => run_device_ssh(&store, args),
+        DeviceCommand::Key(crate::cli::DeviceKeyCommand::Status) => {
+            let report = vulcan_app::device_key::device_key_status(&store);
+            print_device_key_status(cli.output, &report)
+        }
         DeviceCommand::PublicKey => {
             let public_key = store.public_key().map_err(CliError::operation)?;
             match cli.output {
@@ -267,6 +271,38 @@ fn handle_device_config(cli: &Cli, command: &DeviceConfigCommand) -> Result<(), 
             println!("  transport override: {transport:?}");
         }
         println!("  login: {:?}", entry.login);
+    }
+    Ok(())
+}
+
+fn print_device_key_status(
+    output: OutputFormat,
+    report: &vulcan_app::device_key::DeviceKeyStatusReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    let text = |value: serde_json::Value| value.as_str().unwrap_or("unknown").replace('_', " ");
+    if let Some(device_id) = &report.device_id {
+        println!("Device: {device_id}");
+    }
+    match report.provider {
+        Some(provider) => println!("Provider: {}", provider.as_str()),
+        None => println!("Provider: none"),
+    }
+    println!(
+        "State: {}",
+        text(serde_json::to_value(report.state).unwrap_or_default())
+    );
+    if let Some(capabilities) = &report.capabilities {
+        if let Ok(serde_json::Value::Object(fields)) = serde_json::to_value(capabilities) {
+            for (name, support) in fields {
+                println!("  {}: {}", name.replace('_', " "), text(support));
+            }
+        }
+    }
+    if let Some(diagnostic) = &report.diagnostic {
+        println!("Note: {diagnostic}");
     }
     Ok(())
 }

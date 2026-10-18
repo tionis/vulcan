@@ -48,6 +48,7 @@ pub mod config;
 pub mod decomposition;
 pub mod device_config;
 pub mod device_identity;
+pub mod device_key;
 pub mod device_replace;
 pub mod device_revoke;
 pub mod editor;

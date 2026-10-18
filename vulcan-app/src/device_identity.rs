@@ -22,6 +22,16 @@ const INIT_LOCK_FILE: &str = ".identity-init.lock";
 const MAX_MANIFEST_BYTES: u64 = 16 * 1024;
 const SCHEME: &str = "ssh-ed25519-sha256-v1";
 const KEY_PROVIDER: &str = "file_v1";
+/// Degraded-identity diagnostics that custody status maps to typed states.
+pub(crate) const STORAGE_INACCESSIBLE: &str = "identity storage is temporarily inaccessible";
+pub(crate) const KEY_FILE_MISSING: &str = "public identity is available, but a key file is missing";
+/// Every provider discriminator the version-1 manifest may name. Only
+/// `file_v1` is implemented; the others are reserved by
+/// `docs/specs/device-key-custody.md`. A manifest naming a reserved one keeps
+/// its public identity, and private-key use fails closed: it never falls
+/// back to a key file that happens to exist.
+pub(crate) const RESERVED_KEY_PROVIDERS: [&str; 3] =
+    ["file_v1", "system_secret_v1", "ssh_agent_v1"];
 
 /// State of the local installation's cryptographic device identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -122,7 +132,7 @@ impl DeviceIdentityStore {
         match self.inspect_inner() {
             Ok(report) => report,
             Err(error) if error.code() == Some("device_identity_unavailable") => {
-                unavailable_report("identity storage is temporarily inaccessible")
+                unavailable_report(STORAGE_INACCESSIBLE)
             }
             Err(_) => invalid_report("identity files are malformed or unsafe"),
         }
@@ -167,6 +177,11 @@ impl DeviceIdentityStore {
         Ok(path)
     }
 
+    /// The manifest's closed key-provider discriminator, such as `file_v1`.
+    pub fn key_provider(&self) -> Result<String, AppError> {
+        Ok(self.load_manifest()?.manifest.key_provider)
+    }
+
     pub fn public_key(&self) -> Result<String, AppError> {
         let validated = self.load_manifest()?;
         Ok(validated.manifest.public_key)
@@ -176,7 +191,7 @@ impl DeviceIdentityStore {
     /// given `namespace`, which separates uses so a signature made for one
     /// purpose is never valid for another. Only the signature leaves this
     /// function; the key is read, used, and dropped.
-    pub fn sign(&self, namespace: &str, message: &[u8]) -> Result<String, AppError> {
+    pub(crate) fn sign(&self, namespace: &str, message: &[u8]) -> Result<String, AppError> {
         let identity = self.load_manifest()?;
         let private = self.load_private_key(&identity)?;
         let signature = private
@@ -263,6 +278,17 @@ impl DeviceIdentityStore {
         match fs::symlink_metadata(self.directory.join(IDENTITY_FILE)) {
             Ok(_) => {
                 let identity = self.load_manifest()?;
+                if identity.manifest.key_provider != KEY_PROVIDER {
+                    return Ok(identity_report(
+                        &identity,
+                        DeviceIdentityStatus::Degraded,
+                        false,
+                        Some(format!(
+                            "key provider `{}` is not supported by this build; the public identity remains usable",
+                            identity.manifest.key_provider
+                        )),
+                    ));
+                }
                 let public_state = artifact_state(&self.directory.join(PUBLIC_KEY_FILE))?;
                 let private_state = artifact_state(&self.directory.join(PRIVATE_KEY_FILE))?;
                 if public_state == ArtifactState::Absent || private_state == ArtifactState::Absent {
@@ -270,7 +296,7 @@ impl DeviceIdentityStore {
                         &identity,
                         DeviceIdentityStatus::Degraded,
                         false,
-                        Some("public identity is available, but a key file is missing".into()),
+                        Some(KEY_FILE_MISSING.into()),
                     ));
                 }
                 match self.verify_keypair_files(&identity) {
@@ -285,7 +311,7 @@ impl DeviceIdentityStore {
                             &identity,
                             DeviceIdentityStatus::Degraded,
                             false,
-                            Some("identity storage is temporarily inaccessible".into()),
+                            Some(STORAGE_INACCESSIBLE.into()),
                         ))
                     }
                     Err(_) => Ok(identity_report(
@@ -581,6 +607,12 @@ impl DeviceIdentityStore {
     /// Reads the `file_v1` private key and checks it is the manifest's key.
     /// The key lives only as long as the returned value.
     fn load_private_key(&self, identity: &ValidatedPublicIdentity) -> Result<PrivateKey, AppError> {
+        if identity.manifest.key_provider != KEY_PROVIDER {
+            return Err(AppError::operation(format!(
+                "the device key is held by provider `{}`, which this build does not support",
+                identity.manifest.key_provider
+            )));
+        }
         let path = self.directory.join(PRIVATE_KEY_FILE);
         let file = open_regular_file(&path)?;
         let metadata = file.metadata().map_err(AppError::operation)?;
@@ -682,7 +714,10 @@ fn build_identity(public_key: &str) -> Result<ValidatedPublicIdentity, AppError>
 }
 
 fn validate_manifest(manifest: IdentityManifest) -> Result<ValidatedPublicIdentity, AppError> {
-    if manifest.version != 1 || manifest.scheme != SCHEME || manifest.key_provider != KEY_PROVIDER {
+    if manifest.version != 1
+        || manifest.scheme != SCHEME
+        || !RESERVED_KEY_PROVIDERS.contains(&manifest.key_provider.as_str())
+    {
         return Err(AppError::operation(
             "identity manifest has an unsupported version or provider",
         ));
