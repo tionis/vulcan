@@ -1,11 +1,123 @@
 //! Deterministic structured three-way mergers used after Git reports overlap.
+//!
+//! The mergers form a closed, versioned registry ([`ARTIFACT_MERGERS`]).
+//! Each entry declares what it accepts and promises; sync records the entry
+//! that resolved a path. Packages and vault configuration can only select
+//! among these entries through the merge policy; they never supply merge
+//! code. A merger's `version` changes whenever the bytes it produces for
+//! some input could change.
 
 use crate::MergeFileKind;
+use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 
 const MAX_STRUCTURED_DEPTH: usize = 64;
 const MAX_STRUCTURED_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MergerFormat {
+    JsonTree,
+    Yaml,
+    MarkdownFrontmatter,
+}
+
+/// One built-in deterministic merger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ArtifactMerger {
+    /// Stable identifier, recorded with every resolution it makes.
+    pub id: &'static str,
+    pub version: u32,
+    /// The classified file kinds this merger handles.
+    pub kinds: &'static [MergeFileKind],
+    /// Whether the result is the same whichever side is called local. None
+    /// of the built-in mergers is: concurrent appends to the same list are
+    /// ordered by the two candidates' commit IDs, so they stay internal to
+    /// sync, which knows those IDs, and are not offered as a Git merge
+    /// driver, which does not.
+    pub role_independent: bool,
+    /// Whether a common ancestor is required. Without one, only values both
+    /// sides agree on, or keyed and set-like entries, merge.
+    pub requires_base: bool,
+    /// Largest accepted input per side, in bytes.
+    pub max_bytes: usize,
+    /// Deepest accepted nesting of objects and arrays.
+    pub max_depth: usize,
+    /// How the output is written.
+    pub output: &'static str,
+    /// How deletions are treated.
+    pub deletion: &'static str,
+    /// What the output must satisfy before it is accepted.
+    pub validation: &'static str,
+    #[serde(skip)]
+    format: MergerFormat,
+}
+
+const DELETION: &str = "a file or entry deleted on one side is removed only when the other side left it unchanged; deleted on one side and changed on the other stays unresolved";
+
+/// The closed registry of built-in mergers, in lookup order.
+pub const ARTIFACT_MERGERS: &[ArtifactMerger] = &[
+    ArtifactMerger {
+        id: "vulcan.json-tree",
+        version: 1,
+        kinds: &[MergeFileKind::Json, MergeFileKind::ObsidianState],
+        role_independent: false,
+        requires_base: false,
+        max_bytes: MAX_STRUCTURED_BYTES,
+        max_depth: MAX_STRUCTURED_DEPTH,
+        output: "pretty-printed JSON with object keys sorted, ending in a newline",
+        deletion: DELETION,
+        validation: "parses as JSON",
+        format: MergerFormat::JsonTree,
+    },
+    ArtifactMerger {
+        id: "vulcan.json-canvas",
+        version: 1,
+        kinds: &[MergeFileKind::Canvas],
+        role_independent: false,
+        requires_base: false,
+        max_bytes: MAX_STRUCTURED_BYTES,
+        max_depth: MAX_STRUCTURED_DEPTH,
+        output: "pretty-printed JSON with object keys sorted, ending in a newline",
+        deletion: DELETION,
+        validation: "a JSON Canvas object whose `nodes` and `edges` arrays hold entries with non-empty string IDs",
+        format: MergerFormat::JsonTree,
+    },
+    ArtifactMerger {
+        id: "vulcan.bases-yaml",
+        version: 1,
+        kinds: &[MergeFileKind::Bases],
+        role_independent: false,
+        requires_base: false,
+        max_bytes: MAX_STRUCTURED_BYTES,
+        max_depth: MAX_STRUCTURED_DEPTH,
+        output: "YAML re-emitted from the merged document; comments and formatting are not kept",
+        deletion: DELETION,
+        validation: "a YAML mapping",
+        format: MergerFormat::Yaml,
+    },
+    ArtifactMerger {
+        id: "vulcan.markdown-frontmatter",
+        version: 1,
+        kinds: &[MergeFileKind::Markdown],
+        role_independent: false,
+        requires_base: false,
+        max_bytes: MAX_STRUCTURED_BYTES,
+        max_depth: MAX_STRUCTURED_DEPTH,
+        output: "frontmatter re-emitted as YAML between `---` lines, then the body; line endings become LF",
+        deletion: DELETION,
+        validation: "frontmatter is a mapping; the body changed on at most one side",
+        format: MergerFormat::MarkdownFrontmatter,
+    },
+];
+
+/// The merger registered for `kind`, if any.
+#[must_use]
+pub fn artifact_merger_for(kind: MergeFileKind) -> Option<&'static ArtifactMerger> {
+    ARTIFACT_MERGERS
+        .iter()
+        .find(|merger| merger.kinds.contains(&kind))
+}
 
 #[derive(Debug, Clone, PartialEq)]
 enum MergeOutcome {
@@ -27,10 +139,14 @@ pub(crate) fn merge_structured_path(
     local_identity: &str,
     remote_identity: &str,
 ) -> Result<StructuredMergeOutcome, String> {
+    let Some(entry) = artifact_merger_for(kind) else {
+        return Ok(StructuredMergeOutcome::Unresolved);
+    };
+    let max_bytes = entry.max_bytes;
     for (side, data) in [("base", base), ("local", local), ("remote", remote)] {
-        if data.is_some_and(|data| data.len() > MAX_STRUCTURED_BYTES) {
+        if data.is_some_and(|data| data.len() > max_bytes) {
             return Err(format!(
-                "{side} content exceeds the {MAX_STRUCTURED_BYTES} byte structured merge limit"
+                "{side} content exceeds the {max_bytes} byte structured merge limit"
             ));
         }
     }
@@ -52,17 +168,16 @@ pub(crate) fn merge_structured_path(
     let (Some(local), Some(remote)) = (local, remote) else {
         return Ok(StructuredMergeOutcome::Unresolved);
     };
-    let merged = match kind {
-        MergeFileKind::Json | MergeFileKind::Canvas | MergeFileKind::ObsidianState => {
+    let merged = match entry.format {
+        MergerFormat::JsonTree => {
             merge_json_bytes(base, local, remote, local_identity, remote_identity)?
         }
-        MergeFileKind::Bases => {
+        MergerFormat::Yaml => {
             merge_yaml_bytes(base, local, remote, local_identity, remote_identity)?
         }
-        MergeFileKind::Markdown => {
+        MergerFormat::MarkdownFrontmatter => {
             merge_markdown_bytes(base, local, remote, local_identity, remote_identity)?
         }
-        _ => return Ok(StructuredMergeOutcome::Unresolved),
     };
     let Some(data) = merged else {
         return Ok(StructuredMergeOutcome::Unresolved);
@@ -507,6 +622,102 @@ fn merge_scalar<'a, T: PartialEq + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_registry_is_closed_and_unambiguous() {
+        let mut ids = BTreeSet::new();
+        let mut claimed = BTreeSet::new();
+        for merger in ARTIFACT_MERGERS {
+            assert!(ids.insert(merger.id), "duplicate merger {}", merger.id);
+            assert!(merger.id.starts_with("vulcan."));
+            assert!(merger.version >= 1);
+            for kind in merger.kinds {
+                assert!(
+                    claimed.insert(format!("{kind:?}")),
+                    "{kind:?} has two mergers"
+                );
+                assert_eq!(artifact_merger_for(*kind), Some(merger));
+            }
+        }
+        for kind in [
+            MergeFileKind::Text,
+            MergeFileKind::Binary,
+            MergeFileKind::Missing,
+        ] {
+            assert!(artifact_merger_for(kind).is_none(), "{kind:?}");
+            assert_eq!(
+                merge_structured_path(kind, Some(b"a"), Some(b"b"), Some(b"c"), "1", "2"),
+                Ok(StructuredMergeOutcome::Unresolved)
+            );
+        }
+        let listed = serde_json::to_value(ARTIFACT_MERGERS).expect("registry JSON");
+        assert_eq!(listed[0]["id"], "vulcan.json-tree");
+        assert!(listed[0].get("format").is_none());
+    }
+
+    /// No built-in merger may claim role independence while its output
+    /// depends on which side is local: concurrent appends are ordered by
+    /// the candidates' identities.
+    #[test]
+    fn role_independence_is_declared_truthfully() {
+        type Case = (MergeFileKind, &'static [u8], &'static [u8], &'static [u8]);
+        let inputs: [Case; 4] = [
+            (MergeFileKind::Json, b"[1]", b"[1,2]", b"[1,3]"),
+            (
+                MergeFileKind::Canvas,
+                b"{\"nodes\":[],\"edges\":[],\"x\":[1]}",
+                b"{\"nodes\":[],\"edges\":[],\"x\":[1,2]}",
+                b"{\"nodes\":[],\"edges\":[],\"x\":[1,3]}",
+            ),
+            (
+                MergeFileKind::Bases,
+                b"x: [1]\n",
+                b"x: [1, 2]\n",
+                b"x: [1, 3]\n",
+            ),
+            (
+                MergeFileKind::Markdown,
+                b"---\nx: [1]\n---\nBody\n",
+                b"---\nx: [1, 2]\n---\nBody\n",
+                b"---\nx: [1, 3]\n---\nBody\n",
+            ),
+        ];
+        for (kind, base, local, remote) in inputs {
+            let merger = artifact_merger_for(kind).expect("registered");
+            let forward = resolved(merge_structured_path(
+                kind,
+                Some(base),
+                Some(local),
+                Some(remote),
+                "a",
+                "b",
+            ));
+            let relabelled = resolved(merge_structured_path(
+                kind,
+                Some(base),
+                Some(remote),
+                Some(local),
+                "a",
+                "b",
+            ));
+            assert!(!merger.role_independent, "{}", merger.id);
+            assert_ne!(
+                forward, relabelled,
+                "{} no longer depends on roles",
+                merger.id
+            );
+            // Swapping the identities with the sides gives the same bytes.
+            let swapped = resolved(merge_structured_path(
+                kind,
+                Some(base),
+                Some(remote),
+                Some(local),
+                "b",
+                "a",
+            ));
+            assert_eq!(forward, swapped, "{}", merger.id);
+        }
+    }
 
     fn resolved(result: Result<StructuredMergeOutcome, String>) -> Option<Vec<u8>> {
         match result.expect("merge") {

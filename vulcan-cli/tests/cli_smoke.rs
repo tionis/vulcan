@@ -19876,6 +19876,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("`safe.directory`"));
     assert!(git_skill.contains("vulcan sync doctor [<wiki>]"));
     assert!(git_skill.contains("vulcan vault add <id> <path> --profile files-only"));
+    assert!(git_skill.contains("`merger` (for structured results"));
     assert!(git_skill.contains("Vulcan's lock does not exclude external Git processes"));
     assert!(git_skill.contains("state.apply-marker"));
     assert!(git_skill.contains("vulcan-sync/apply.json"));

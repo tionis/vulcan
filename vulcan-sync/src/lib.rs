@@ -21,6 +21,7 @@ mod racy_index;
 mod refs;
 mod scope;
 mod structured_merge;
+pub use structured_merge::{artifact_merger_for, ArtifactMerger, ARTIFACT_MERGERS};
 mod sync;
 mod tree_ignore;
 
@@ -82,10 +83,11 @@ pub use sync::{
     GitAutomaticResolution, GitAutomaticResolutionValidation, GitAutomaticValidationCheck,
     GitBranchSync, GitBranchSyncAction, GitCarriedPath, GitConflictClass,
     GitConflictClassification, GitConflictProjection, GitConflictRefs, GitConflictScope,
-    GitDeviceBackup, GitDeviceBackupOutcome, GitLiveEpoch, GitRemoteObservation, GitSyncAction,
-    GitSyncBackend, GitSyncConflict, GitSyncDeviceId, GitSyncDeviceIdKind, GitSyncError,
-    GitSyncObserver, GitSyncObserverError, GitSyncOptions, GitSyncOutcome, GitSyncPause,
-    GitSyncPauseReason, GitSyncPhase, GitSyncPreview, GitSyncPreviewFileState, GitSyncProgress,
-    GitSyncRefs, GitSyncReport, IgnoreGitSyncProgress, SyncCancellationToken, WorktreeSyncMode,
+    GitDeviceBackup, GitDeviceBackupOutcome, GitLiveEpoch, GitMergerEvidence, GitRemoteObservation,
+    GitSyncAction, GitSyncBackend, GitSyncConflict, GitSyncDeviceId, GitSyncDeviceIdKind,
+    GitSyncError, GitSyncObserver, GitSyncObserverError, GitSyncOptions, GitSyncOutcome,
+    GitSyncPause, GitSyncPauseReason, GitSyncPhase, GitSyncPreview, GitSyncPreviewFileState,
+    GitSyncProgress, GitSyncRefs, GitSyncReport, IgnoreGitSyncProgress, SyncCancellationToken,
+    WorktreeSyncMode,
 };
 pub use tree_ignore::{tree_ignores, worktree_ignores, OBSIDIAN_DEVICE_FILES};

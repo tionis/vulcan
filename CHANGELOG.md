@@ -4,6 +4,9 @@
 
 ### Added
 
+- Sync's structured mergers are a closed, versioned registry (`vulcan_sync::ARTIFACT_MERGERS`), and
+  each structured automatic resolution in a sync report now carries `merger`: the merger's `id` and
+  `version` and the exact base, local, remote, and output blob IDs.
 - `vulcan vault add --git-init` creates a Git repository at the path first when it is not inside
   one (no commit, no remote). The registration is validated before the repository is created, so
   a refused add leaves the folder untouched.

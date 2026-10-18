@@ -461,6 +461,27 @@ pub struct GitAutomaticResolution {
     pub kind: MergeFileKind,
     pub rule_id: String,
     pub validation: GitAutomaticResolutionValidation,
+    /// The registered merger that produced the result, for structured
+    /// resolutions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merger: Option<GitMergerEvidence>,
+}
+
+/// Which registered merger resolved a path, and the exact Git blobs it
+/// read and wrote.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitMergerEvidence {
+    pub id: String,
+    pub version: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base: Option<GitOid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local: Option<GitOid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote: Option<GitOid>,
+    /// The merged blob, as written into the resolved tree.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<GitOid>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -4651,10 +4672,14 @@ fn try_structured_path(
                     kind,
                     rule_id: decision.rule_id,
                     validation: automatic_validation(kind),
+                    merger: None,
                 },
             )));
         }
     }
+    let Some(merger) = crate::structured_merge::artifact_merger_for(kind) else {
+        return Ok(None);
+    };
     let Some(crate::structured_merge::StructuredMergeOutcome::Resolved(Some(data))) =
         crate::structured_merge::merge_structured_path(
             kind,
@@ -4684,6 +4709,15 @@ fn try_structured_path(
             kind,
             rule_id: decision.rule_id,
             validation: automatic_validation(kind),
+            merger: Some(GitMergerEvidence {
+                id: merger.id.to_string(),
+                version: merger.version,
+                base: input.base.map(|object| object.oid.clone()),
+                local: input.local.map(|object| object.oid.clone()),
+                remote: input.remote.map(|object| object.oid.clone()),
+                // Known once the result is written into the resolved tree.
+                output: None,
+            }),
         },
     )))
 }
@@ -4776,7 +4810,7 @@ fn try_structured_merge(
     let tree = engine
         .resolve_merge_tree_with_paths(repository, &request)
         .map_err(|error| error.to_string())?;
-    validate_resolved_tree(
+    let written = validate_resolved_tree(
         engine,
         repository,
         &tree,
@@ -4788,6 +4822,9 @@ fn try_structured_merge(
             .validation
             .checks
             .push(GitAutomaticValidationCheck::ExactTreeObject);
+        if let Some(merger) = &mut resolution.merger {
+            merger.output = written.get(&resolution.path).cloned();
+        }
     }
     Ok(Some(StructuredMergeAttempt {
         tree,
@@ -4810,6 +4847,7 @@ fn untracked_resolution(
                 GitAutomaticValidationCheck::NewlyIgnored,
             ],
         },
+        merger: None,
     }
 }
 
@@ -4869,7 +4907,7 @@ fn validate_resolved_tree(
     tree: &GitOid,
     resolved_paths: &[GitResolvedPath],
     untracked: &BTreeSet<String>,
-) -> Result<(), String> {
+) -> Result<BTreeMap<String, GitOid>, String> {
     let selected = resolved_paths
         .iter()
         .map(|path| path.path.clone())
@@ -4906,7 +4944,10 @@ fn validate_resolved_tree(
             ));
         }
     }
-    Ok(())
+    Ok(actual_objects
+        .into_iter()
+        .map(|(path, object)| (path, object.oid))
+        .collect())
 }
 
 fn object_data(object: Option<&GitPathObject>) -> Option<&[u8]> {
@@ -9062,6 +9103,47 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
             serde_json::json!({"base": true, "reader": 2, "writer": 1})
         );
         assert!(!reader.join("removed.md").exists());
+
+        // The resolution names its registered merger and the exact blobs.
+        let blob = |content: &[u8]| {
+            use std::io::Write;
+            let mut child = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&reader)
+                .args(["hash-object", "--stdin"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("git hash-object");
+            child
+                .stdin
+                .take()
+                .expect("stdin")
+                .write_all(content)
+                .expect("write blob");
+            let output = child.wait_with_output().expect("hash-object output");
+            GitOid::parse(String::from_utf8(output.stdout).expect("utf-8").trim()).expect("oid")
+        };
+        let evidence = resolution.merger.as_ref().expect("merger evidence");
+        assert_eq!(evidence.id, "vulcan.json-tree");
+        assert_eq!(evidence.version, 1);
+        assert_eq!(evidence.base, Some(blob(b"{\"base\":true}\n")));
+        assert_eq!(
+            evidence.local,
+            Some(blob(b"{\"base\":true,\"reader\":2}\n"))
+        );
+        assert_eq!(
+            evidence.remote,
+            Some(blob(b"{\"base\":true,\"writer\":1}\n"))
+        );
+        assert_eq!(
+            evidence.output,
+            Some(blob(
+                &fs::read(reader.join("data.json")).expect("merged bytes")
+            ))
+        );
+        let json = serde_json::to_value(resolution).expect("resolution JSON");
+        assert_eq!(json["merger"]["id"], "vulcan.json-tree");
     }
 
     fn carried_object(data: &str) -> GitPathObject {
