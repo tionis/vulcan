@@ -764,14 +764,14 @@ fn extract_metadata_links(
     parsed.links
 }
 
-fn parse_frontmatter_with_recovery(raw_text: &str) -> Result<serde_yaml::Value, serde_yaml::Error> {
-    match serde_yaml::from_str(raw_text) {
+fn parse_frontmatter_with_recovery(raw_text: &str) -> Result<yaml_serde::Value, yaml_serde::Error> {
+    match yaml_serde::from_str(raw_text) {
         Ok(frontmatter) => Ok(frontmatter),
         Err(error) => {
             let Some(repaired) = repair_block_scalar_frontmatter(raw_text) else {
                 return Err(error);
             };
-            serde_yaml::from_str(&repaired).map_err(|_| error)
+            yaml_serde::from_str(&repaired).map_err(|_| error)
         }
     }
 }
@@ -884,11 +884,11 @@ fn next_char_boundary(source: &str, index: usize) -> usize {
     index + chars.next().map_or(0, char::len_utf8)
 }
 
-fn extract_aliases(frontmatter: &serde_yaml::Value) -> Vec<String> {
+fn extract_aliases(frontmatter: &yaml_serde::Value) -> Vec<String> {
     extract_string_list(frontmatter, "aliases")
 }
 
-fn extract_frontmatter_tags(frontmatter: &serde_yaml::Value) -> Vec<crate::parser::types::RawTag> {
+fn extract_frontmatter_tags(frontmatter: &yaml_serde::Value) -> Vec<crate::parser::types::RawTag> {
     extract_string_list(frontmatter, "tags")
         .into_iter()
         .flat_map(|value| {
@@ -904,19 +904,19 @@ fn extract_frontmatter_tags(frontmatter: &serde_yaml::Value) -> Vec<crate::parse
         .collect()
 }
 
-fn extract_string_list(frontmatter: &serde_yaml::Value, key: &str) -> Vec<String> {
+fn extract_string_list(frontmatter: &yaml_serde::Value, key: &str) -> Vec<String> {
     let Some(mapping) = frontmatter.as_mapping() else {
         return Vec::new();
     };
-    let Some(value) = mapping.get(serde_yaml::Value::String(key.to_string())) else {
+    let Some(value) = mapping.get(yaml_serde::Value::String(key.to_string())) else {
         return Vec::new();
     };
 
     match value {
-        serde_yaml::Value::String(value) => vec![value.clone()],
-        serde_yaml::Value::Sequence(values) => values
+        yaml_serde::Value::String(value) => vec![value.clone()],
+        yaml_serde::Value::Sequence(values) => values
             .iter()
-            .filter_map(serde_yaml::Value::as_str)
+            .filter_map(yaml_serde::Value::as_str)
             .map(ToOwned::to_owned)
             .collect(),
         _ => Vec::new(),

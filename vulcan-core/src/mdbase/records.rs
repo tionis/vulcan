@@ -1126,7 +1126,7 @@ fn schema_diagnostic_field(diagnostic: &crate::mdbase::MdbaseSchemaDiagnostic) -
     }
 }
 
-fn yaml_mapping_to_json(value: &serde_yaml::Value) -> Option<serde_json::Value> {
+fn yaml_mapping_to_json(value: &yaml_serde::Value) -> Option<serde_json::Value> {
     if !value.is_mapping() {
         return None;
     }

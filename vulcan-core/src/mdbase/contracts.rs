@@ -453,7 +453,7 @@ fn parse_contract_frontmatter(
             Vec::new(),
         ))
     })?;
-    let yaml = serde_yaml::from_str::<serde_yaml::Value>(&raw).map_err(|error| {
+    let yaml = yaml_serde::from_str::<yaml_serde::Value>(&raw).map_err(|error| {
         Box::new(contract_diagnostic(
             "invalid_data_contract",
             format!("failed to parse contract frontmatter: {error}"),
@@ -1199,19 +1199,19 @@ binding_schema:
     fn implementation_checks_use_the_existing_type_snapshot() {
         let (_directory, collection, _) =
             setup_collection(&[("_contracts/note.md", NOTE_CONTRACT)], &[]);
-        let value: serde_yaml::Value = serde_yaml::from_str(PERSONAL_TYPE).unwrap();
+        let value: yaml_serde::Value = yaml_serde::from_str(PERSONAL_TYPE).unwrap();
         let mut value = serde_json::to_value(value).unwrap();
         let schema = value["schema"]["value"].take();
         value["schema"] = serde_json::json!({"dialect":"json-schema-2020-12","ref":"shape.yaml"});
         write_file(
             &collection.root,
             "_types/shape.yaml",
-            &serde_yaml::to_string(&schema).unwrap(),
+            &yaml_serde::to_string(&schema).unwrap(),
         );
         write_file(
             &collection.root,
             "_types/personal.md",
-            &frontmatter(&serde_yaml::to_string(&value).unwrap()),
+            &frontmatter(&yaml_serde::to_string(&value).unwrap()),
         );
         let types = load_mdbase_type_registry(&collection).unwrap();
         assert!(types.diagnostics.is_empty());

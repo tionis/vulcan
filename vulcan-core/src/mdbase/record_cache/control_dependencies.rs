@@ -29,7 +29,7 @@ pub(super) fn schema_sources(
         let Some(frontmatter) = parsed.raw_frontmatter else {
             continue;
         };
-        let Ok(frontmatter) = serde_yaml::from_str::<serde_yaml::Value>(&frontmatter) else {
+        let Ok(frontmatter) = yaml_serde::from_str::<yaml_serde::Value>(&frontmatter) else {
             continue;
         };
         let Ok(frontmatter) = serde_json::to_value(frontmatter) else {
@@ -317,7 +317,7 @@ mod tests {
                 serde_json::json!({"value":{"$ref":format!("../{key}.txt")}}),
             );
         }
-        let source = format!("---\n{}---\n", serde_yaml::to_string(&frontmatter).unwrap());
+        let source = format!("---\n{}---\n", yaml_serde::to_string(&frontmatter).unwrap());
         let sources = schema_sources(
             dir.path(),
             [(PathBuf::from("_contracts/contract.md"), source)].into_iter(),

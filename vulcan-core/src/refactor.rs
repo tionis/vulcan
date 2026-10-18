@@ -9,12 +9,12 @@ use crate::write_lock::acquire_write_lock;
 use crate::{load_vault_config, VaultPaths};
 use rusqlite::{params, Connection};
 use serde::Serialize;
-use serde_yaml::Value as YamlValue;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::Path;
+use yaml_serde::Value as YamlValue;
 
 #[derive(Debug)]
 pub enum RefactorError {
@@ -45,7 +45,7 @@ pub enum RefactorError {
     },
     Scan(ScanError),
     Sqlite(rusqlite::Error),
-    Yaml(serde_yaml::Error),
+    Yaml(yaml_serde::Error),
 }
 
 impl Display for RefactorError {
@@ -131,8 +131,8 @@ impl From<rusqlite::Error> for RefactorError {
     }
 }
 
-impl From<serde_yaml::Error> for RefactorError {
-    fn from(error: serde_yaml::Error) -> Self {
+impl From<yaml_serde::Error> for RefactorError {
+    fn from(error: yaml_serde::Error) -> Self {
         Self::Yaml(error)
     }
 }
@@ -787,7 +787,7 @@ where
         return Ok(None);
     };
     let raw_yaml = &source[block.yaml_start..block.yaml_end];
-    let mut frontmatter = serde_yaml::from_str::<YamlValue>(raw_yaml)?;
+    let mut frontmatter = yaml_serde::from_str::<YamlValue>(raw_yaml)?;
     let changes = mutate(&mut frontmatter)?;
     if changes.is_empty() {
         return Ok(None);
@@ -824,7 +824,7 @@ fn plan_set_note_property_replacement(
         }
 
         // Fall back to full round-trip (handles complex types, new-key append, etc.).
-        let mut frontmatter = serde_yaml::from_str::<YamlValue>(raw_yaml)?;
+        let mut frontmatter = yaml_serde::from_str::<YamlValue>(raw_yaml)?;
         let changes = set_frontmatter_property(&mut frontmatter, path, key, value)?;
         if changes.is_empty() {
             return Ok(None);
@@ -845,7 +845,7 @@ fn plan_set_note_property_replacement(
         return Ok(None);
     };
 
-    let mut mapping = serde_yaml::Mapping::new();
+    let mut mapping = yaml_serde::Mapping::new();
     mapping.insert(YamlValue::String(key.to_string()), value.clone());
     let replacement = format_frontmatter_block(&YamlValue::Mapping(mapping))?;
     Ok(Some((
@@ -877,7 +877,7 @@ fn try_surgical_set_in_yaml(
     // We need the previous value for the change record.
     let (key_start, _key_end) = find_yaml_key_span(raw_yaml, key)?;
     let key_block = &raw_yaml[key_start..];
-    let prev_mapping: YamlValue = serde_yaml::from_str(key_block).ok()?;
+    let prev_mapping: YamlValue = yaml_serde::from_str(key_block).ok()?;
     let prev_value = prev_mapping
         .as_mapping()?
         .get(YamlValue::String(key.to_string()))?
@@ -1417,7 +1417,7 @@ fn find_frontmatter_block(source: &str) -> Option<FrontmatterBlock> {
 }
 
 fn format_frontmatter_block(frontmatter: &YamlValue) -> Result<String, RefactorError> {
-    let mut yaml = serde_yaml::to_string(frontmatter)?;
+    let mut yaml = yaml_serde::to_string(frontmatter)?;
     if let Some(stripped) = yaml.strip_prefix("---\n") {
         yaml = stripped.to_string();
     }
@@ -1430,7 +1430,7 @@ fn format_frontmatter_block(frontmatter: &YamlValue) -> Result<String, RefactorE
 fn format_frontmatter_block_or_remove(frontmatter: &YamlValue) -> Result<String, RefactorError> {
     if frontmatter
         .as_mapping()
-        .is_some_and(serde_yaml::Mapping::is_empty)
+        .is_some_and(yaml_serde::Mapping::is_empty)
     {
         Ok(String::new())
     } else {
@@ -1530,7 +1530,7 @@ fn format_scalar_yaml_value(value: &YamlValue) -> Option<String> {
     match value {
         YamlValue::Null => Some("null".to_string()),
         YamlValue::Bool(b) => Some(b.to_string()),
-        YamlValue::Number(_) | YamlValue::String(_) => serde_yaml::to_string(value)
+        YamlValue::Number(_) | YamlValue::String(_) => yaml_serde::to_string(value)
             .ok()
             .map(|s| s.trim_end().to_string()),
         _ => None,
@@ -1553,7 +1553,7 @@ fn format_yaml_kv_block(key: &str, value: &YamlValue) -> Option<String> {
             let mut block = format!("{key}:\n");
             for item in seq {
                 let item_str = format_scalar_yaml_value(item).or_else(|| {
-                    serde_yaml::to_string(item)
+                    yaml_serde::to_string(item)
                         .ok()
                         .map(|s| s.trim_end().to_string())
                 })?;
@@ -1606,7 +1606,7 @@ where
     let key_block = &yaml[key_start..key_end];
 
     // Parse just this key's block as a mini YAML mapping.
-    let mut mini: YamlValue = serde_yaml::from_str(key_block).ok()?;
+    let mut mini: YamlValue = yaml_serde::from_str(key_block).ok()?;
     let key_yaml = YamlValue::String(key_property.to_string());
     let value = mini.as_mapping_mut()?.get_mut(&key_yaml)?;
 
@@ -1662,11 +1662,11 @@ fn parse_property_value(value: Option<&str>) -> Result<Option<YamlValue>, Refact
     if value.is_empty() {
         return Ok(None);
     }
-    Ok(Some(serde_yaml::from_str::<YamlValue>(value)?))
+    Ok(Some(yaml_serde::from_str::<YamlValue>(value)?))
 }
 
 fn summarize_yaml_value(value: &YamlValue) -> String {
-    let rendered = serde_yaml::to_string(value).unwrap_or_else(|_| format!("{value:?}"));
+    let rendered = yaml_serde::to_string(value).unwrap_or_else(|_| format!("{value:?}"));
     rendered.trim().replace('\n', " ")
 }
 

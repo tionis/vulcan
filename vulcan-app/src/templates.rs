@@ -38,8 +38,8 @@ pub use prompt::{
 };
 
 pub type CliError = AppError;
-pub type YamlMapping = serde_yaml::Mapping;
-pub type YamlValue = serde_yaml::Value;
+pub type YamlMapping = yaml_serde::Mapping;
+pub type YamlValue = yaml_serde::Value;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TemplateStage {
@@ -3668,11 +3668,11 @@ fn js_call_response(
         }
         "obsidian.parseYaml" => {
             let text = args.first().and_then(JsonValue::as_str).unwrap_or_default();
-            let value: YamlValue = serde_yaml::from_str(text).map_err(|error| error.to_string())?;
+            let value: YamlValue = yaml_serde::from_str(text).map_err(|error| error.to_string())?;
             yaml_to_json(&value)
         }
         "obsidian.stringifyYaml" => JsonValue::String(
-            serde_yaml::to_string(args.first().unwrap_or(&JsonValue::Null))
+            yaml_serde::to_string(args.first().unwrap_or(&JsonValue::Null))
                 .map_err(|error| error.to_string())?,
         ),
         name if name.starts_with("app.") => js_app_call(&mut state, name, args)?,
@@ -4171,7 +4171,7 @@ fn js_app_call(
                 "app.fileManager.processFrontMatter()",
             )?;
             let mapping: YamlMapping =
-                serde_yaml::to_value(args.get(1).unwrap_or(&JsonValue::Null))
+                yaml_serde::to_value(args.get(1).unwrap_or(&JsonValue::Null))
                     .ok()
                     .and_then(|value| value.as_mapping().cloned())
                     .unwrap_or_default();
@@ -4896,7 +4896,7 @@ fn extract_include_subpath(
 
 /// `body` under a frontmatter block holding `mapping`.
 fn with_frontmatter(mapping: &YamlMapping, body: &str) -> Result<String, String> {
-    let yaml = serde_yaml::to_string(&YamlValue::Mapping(mapping.clone()))
+    let yaml = yaml_serde::to_string(&YamlValue::Mapping(mapping.clone()))
         .map_err(|error| error.to_string())?;
     let yaml = yaml.strip_prefix("---\n").unwrap_or(&yaml);
     Ok(format!(
@@ -5858,10 +5858,10 @@ pub struct PreparedTemplateInsertion {
 #[derive(Debug)]
 pub enum TemplateInsertionError {
     NoteFrontmatterNotMapping,
-    NoteFrontmatterParse(serde_yaml::Error),
+    NoteFrontmatterParse(yaml_serde::Error),
     TemplateFrontmatterNotMapping,
-    TemplateFrontmatterParse(serde_yaml::Error),
-    YamlSerialize(serde_yaml::Error),
+    TemplateFrontmatterParse(yaml_serde::Error),
+    YamlSerialize(yaml_serde::Error),
 }
 
 impl std::fmt::Display for TemplateInsertionError {

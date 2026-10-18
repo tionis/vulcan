@@ -5946,7 +5946,7 @@ globalThis.Function = undefined;
                     "note frontmatter must be a JSON object".to_string(),
                 ));
             }
-            let yaml_source = serde_yaml::to_string(frontmatter)
+            let yaml_source = yaml_serde::to_string(frontmatter)
                 .map_err(|error| DataviewJsError::Message(error.to_string()))?;
             let yaml = strip_yaml_doc_marker(&yaml_source);
             rendered.push_str("---\n");
@@ -5978,7 +5978,7 @@ globalThis.Function = undefined;
     }
 
     fn render_property_value(value: &Value) -> Result<String, DataviewJsError> {
-        let yaml = serde_yaml::to_string(value)
+        let yaml = yaml_serde::to_string(value)
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
         Ok(strip_yaml_doc_marker(&yaml).trim().to_string())
     }

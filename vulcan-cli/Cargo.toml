@@ -55,9 +55,9 @@ assert_cmd.workspace = true
 blake3.workspace = true
 predicates.workspace = true
 rusqlite.workspace = true
-serde_yaml.workspace = true
 ssh-key.workspace = true
 vulcan-secrets = { path = "../vulcan-secrets", version = "0.3.0" }
+yaml_serde.workspace = true
 
 [lints]
 workspace = true

@@ -34,7 +34,7 @@ fn policy(event: &str, fields: Value) -> MdbaseComposedTypeBehavior {
 }
 
 fn pinned_behavior(group: usize, names: &[&str]) -> MdbaseComposedTypeBehavior {
-    let suite: Value = serde_yaml::from_str(include_str!(concat!(
+    let suite: Value = yaml_serde::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/resources/mdbase/v0.3/upstream/tests/lifecycle/lifecycle.yaml"
     )))

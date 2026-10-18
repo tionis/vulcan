@@ -270,7 +270,7 @@ pub fn extract_indexed_properties(
     if let Some(mapping) = parsed
         .frontmatter
         .as_ref()
-        .and_then(serde_yaml::Value::as_mapping)
+        .and_then(yaml_serde::Value::as_mapping)
     {
         for (key, value) in mapping {
             let Some(key) = key.as_str() else {
@@ -354,29 +354,29 @@ pub(crate) fn indexed_inline_property_value(
     extract_inline_property_value(key, value_text, kind, config, expected_type).value
 }
 
-fn inline_text_to_yaml_value(value_text: &str, config: &VaultConfig) -> serde_yaml::Value {
+fn inline_text_to_yaml_value(value_text: &str, config: &VaultConfig) -> yaml_serde::Value {
     let trimmed = value_text.trim();
 
     if is_internal_link_value(trimmed, config) {
-        return serde_yaml::Value::String(trimmed.to_string());
+        return yaml_serde::Value::String(trimmed.to_string());
     }
 
     if let Some(values) = parse_inline_quoted_list(trimmed) {
-        return serde_yaml::Value::Sequence(
-            values.into_iter().map(serde_yaml::Value::String).collect(),
+        return yaml_serde::Value::Sequence(
+            values.into_iter().map(yaml_serde::Value::String).collect(),
         );
     }
 
-    match serde_yaml::from_str::<serde_yaml::Value>(trimmed) {
-        Ok(serde_yaml::Value::Bool(value_bool)) if parse_boolean(trimmed).is_some() => {
-            serde_yaml::Value::Bool(value_bool)
+    match yaml_serde::from_str::<yaml_serde::Value>(trimmed) {
+        Ok(yaml_serde::Value::Bool(value_bool)) if parse_boolean(trimmed).is_some() => {
+            yaml_serde::Value::Bool(value_bool)
         }
-        Ok(serde_yaml::Value::Number(number)) if matches_number_literal(trimmed) => {
-            serde_yaml::Value::Number(number)
+        Ok(yaml_serde::Value::Number(number)) if matches_number_literal(trimmed) => {
+            yaml_serde::Value::Number(number)
         }
-        Ok(serde_yaml::Value::String(text)) => serde_yaml::Value::String(text),
-        Ok(serde_yaml::Value::Null) => serde_yaml::Value::Null,
-        Ok(_) | Err(_) => serde_yaml::Value::String(trimmed.to_string()),
+        Ok(yaml_serde::Value::String(text)) => yaml_serde::Value::String(text),
+        Ok(yaml_serde::Value::Null) => yaml_serde::Value::Null,
+        Ok(_) | Err(_) => yaml_serde::Value::String(trimmed.to_string()),
     }
 }
 
@@ -410,14 +410,14 @@ fn parse_inline_quoted_list(value_text: &str) -> Option<Vec<String>> {
         return None;
     }
 
-    let parsed = serde_yaml::from_str::<serde_yaml::Value>(&format!("[{value_text}]")).ok()?;
-    let serde_yaml::Value::Sequence(values) = parsed else {
+    let parsed = yaml_serde::from_str::<yaml_serde::Value>(&format!("[{value_text}]")).ok()?;
+    let yaml_serde::Value::Sequence(values) = parsed else {
         return None;
     };
     values
         .into_iter()
         .map(|value| match value {
-            serde_yaml::Value::String(text) => Some(text),
+            yaml_serde::Value::String(text) => Some(text),
             _ => None,
         })
         .collect()
@@ -473,7 +473,7 @@ fn extracted_property_json_value(value: &ExtractedPropertyValue) -> Value {
     property_json_value(&value.value)
 }
 
-fn yaml_to_json_object(value: &serde_yaml::Value) -> Map<String, Value> {
+fn yaml_to_json_object(value: &yaml_serde::Value) -> Map<String, Value> {
     match yaml_to_json(value) {
         Value::Object(object) => object,
         _ => Map::new(),
@@ -485,7 +485,7 @@ fn parse_frontmatter_json_object(raw_yaml: &str) -> Value {
         return Value::Object(Map::new());
     }
 
-    serde_yaml::from_str::<serde_yaml::Value>(raw_yaml)
+    yaml_serde::from_str::<yaml_serde::Value>(raw_yaml)
         .ok()
         .map_or_else(
             || Value::Object(Map::new()),
@@ -2643,7 +2643,7 @@ struct ExtractedPropertyValue {
 
 fn extract_property_value(
     key: &str,
-    value: &serde_yaml::Value,
+    value: &yaml_serde::Value,
     config: &VaultConfig,
     expected_type: Option<&str>,
 ) -> ExtractedPropertyValue {
@@ -2699,11 +2699,11 @@ struct NormalizedPropertyValue {
 }
 
 fn normalize_property_value(
-    value: &serde_yaml::Value,
+    value: &yaml_serde::Value,
     config: &VaultConfig,
     expected_type: Option<&str>,
 ) -> NormalizedPropertyValue {
-    if let serde_yaml::Value::String(text) = value {
+    if let yaml_serde::Value::String(text) = value {
         if let Some(expected_type) = expected_type {
             if let Some(coerced) = coerce_string_to_expected_type(text, expected_type, config) {
                 return coerced;
@@ -2712,7 +2712,7 @@ fn normalize_property_value(
     }
 
     match value {
-        serde_yaml::Value::Null => NormalizedPropertyValue {
+        yaml_serde::Value::Null => NormalizedPropertyValue {
             value_text: None,
             value_number: None,
             value_bool: None,
@@ -2720,7 +2720,7 @@ fn normalize_property_value(
             value_type: "null".to_string(),
             list_items: Vec::new(),
         },
-        serde_yaml::Value::Bool(value_bool) => NormalizedPropertyValue {
+        yaml_serde::Value::Bool(value_bool) => NormalizedPropertyValue {
             value_text: None,
             value_number: None,
             value_bool: Some(*value_bool),
@@ -2728,7 +2728,7 @@ fn normalize_property_value(
             value_type: "boolean".to_string(),
             list_items: Vec::new(),
         },
-        serde_yaml::Value::Number(number) => NormalizedPropertyValue {
+        yaml_serde::Value::Number(number) => NormalizedPropertyValue {
             value_text: None,
             value_number: number.as_f64(),
             value_bool: None,
@@ -2736,7 +2736,7 @@ fn normalize_property_value(
             value_type: "number".to_string(),
             list_items: Vec::new(),
         },
-        serde_yaml::Value::String(text) => {
+        yaml_serde::Value::String(text) => {
             if is_internal_link_value(text, config) {
                 return NormalizedPropertyValue {
                     value_text: Some(text.clone()),
@@ -2777,7 +2777,7 @@ fn normalize_property_value(
                 list_items: Vec::new(),
             }
         }
-        serde_yaml::Value::Sequence(values) => NormalizedPropertyValue {
+        yaml_serde::Value::Sequence(values) => NormalizedPropertyValue {
             value_text: None,
             value_number: None,
             value_bool: None,
@@ -2785,7 +2785,7 @@ fn normalize_property_value(
             value_type: "list".to_string(),
             list_items: values.iter().map(yaml_scalar_to_text).collect(),
         },
-        serde_yaml::Value::Mapping(_) => NormalizedPropertyValue {
+        yaml_serde::Value::Mapping(_) => NormalizedPropertyValue {
             value_text: None,
             value_number: None,
             value_bool: None,
@@ -2793,7 +2793,7 @@ fn normalize_property_value(
             value_type: "object".to_string(),
             list_items: Vec::new(),
         },
-        serde_yaml::Value::Tagged(tagged) => {
+        yaml_serde::Value::Tagged(tagged) => {
             normalize_property_value(&tagged.value, config, expected_type)
         }
     }
@@ -2886,11 +2886,11 @@ pub(crate) fn canonical_property_type(raw_type: &str) -> &str {
     }
 }
 
-fn yaml_to_json(value: &serde_yaml::Value) -> Value {
+fn yaml_to_json(value: &yaml_serde::Value) -> Value {
     match value {
-        serde_yaml::Value::Null => Value::Null,
-        serde_yaml::Value::Bool(value_bool) => Value::Bool(*value_bool),
-        serde_yaml::Value::Number(number) => {
+        yaml_serde::Value::Null => Value::Null,
+        yaml_serde::Value::Bool(value_bool) => Value::Bool(*value_bool),
+        yaml_serde::Value::Number(number) => {
             if let Some(value_i64) = number.as_i64() {
                 Value::Number(value_i64.into())
             } else if let Some(value_u64) = number.as_u64() {
@@ -2901,11 +2901,11 @@ fn yaml_to_json(value: &serde_yaml::Value) -> Value {
                 Value::Null
             }
         }
-        serde_yaml::Value::String(text) => Value::String(text.clone()),
-        serde_yaml::Value::Sequence(values) => {
+        yaml_serde::Value::String(text) => Value::String(text.clone()),
+        yaml_serde::Value::Sequence(values) => {
             Value::Array(values.iter().map(yaml_to_json).collect::<Vec<_>>())
         }
-        serde_yaml::Value::Mapping(values) => {
+        yaml_serde::Value::Mapping(values) => {
             let mut object = Map::new();
             for (key, value) in values {
                 let key = key
@@ -2915,16 +2915,16 @@ fn yaml_to_json(value: &serde_yaml::Value) -> Value {
             }
             Value::Object(object)
         }
-        serde_yaml::Value::Tagged(tagged) => yaml_to_json(&tagged.value),
+        yaml_serde::Value::Tagged(tagged) => yaml_to_json(&tagged.value),
     }
 }
 
-fn yaml_scalar_to_text(value: &serde_yaml::Value) -> String {
+fn yaml_scalar_to_text(value: &yaml_serde::Value) -> String {
     match value {
-        serde_yaml::Value::Null => "null".to_string(),
-        serde_yaml::Value::Bool(value_bool) => value_bool.to_string(),
-        serde_yaml::Value::Number(number) => number.to_string(),
-        serde_yaml::Value::String(text) => text.clone(),
+        yaml_serde::Value::Null => "null".to_string(),
+        yaml_serde::Value::Bool(value_bool) => value_bool.to_string(),
+        yaml_serde::Value::Number(number) => number.to_string(),
+        yaml_serde::Value::String(text) => text.clone(),
         other => serde_json::to_string(&yaml_to_json(other)).unwrap_or_default(),
     }
 }
@@ -3890,6 +3890,83 @@ mod tests {
         );
         assert_eq!(indexed.diagnostics.len(), 1);
         assert_eq!(indexed.diagnostics[0].key, "status");
+    }
+
+    /// The YAML behavior frontmatter properties depend on, pinned so that a
+    /// parser upgrade changing any of it fails here: YAML 1.2 scalars (`yes`,
+    /// `on`, and `y` stay text, and a leading zero is not octal), anchors
+    /// that copy their value, merge keys kept as a literal `<<` key rather
+    /// than expanded, custom tags dropped to their value, `.inf` as JSON
+    /// null, quoted links, block scalars, and integers past `i64`.
+    #[test]
+    fn frontmatter_yaml_semantics_are_pinned() {
+        let config = VaultConfig::default();
+        let parsed = parse_document(
+            concat!(
+                "---\n",
+                "yes_word: yes\n",
+                "on_word: on\n",
+                "y_word: y\n",
+                "real_bool: True\n",
+                "nothing: ~\n",
+                "empty:\n",
+                "octal_old: 017\n",
+                "octal_new: 0o17\n",
+                "hex: 0x1F\n",
+                "float: 1e3\n",
+                "infinite: .inf\n",
+                "big: 12345678901234567890\n",
+                "date: 2026-10-18\n",
+                "stamp: 2026-10-18T09:30:00Z\n",
+                "base: &base {x: 1, y: 2}\n",
+                "merged:\n  <<: *base\n  y: 3\n",
+                "again: *base\n",
+                "tagged: !custom value\n",
+                "link: \"[[Wiki Link]]\"\n",
+                "block: |\n  one\n  two\n",
+                "tags: [project, \"#hash\"]\n",
+                "---\n",
+            ),
+            &config,
+        );
+        let indexed = extract_indexed_properties(&parsed, &config)
+            .expect("property extraction should succeed")
+            .expect("frontmatter should produce properties");
+        let types = indexed
+            .values
+            .iter()
+            .map(|value| format!("{}={}", value.key, value.value_type))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            indexed.canonical_json,
+            "{\"again\":{\"x\":1,\"y\":2},\"base\":{\"x\":1,\"y\":2},\"big\":12345678901234567890,\"block\":\"one\\ntwo\\n\",\"date\":\"2026-10-18\",\"empty\":null,\"float\":1000.0,\"hex\":31,\"infinite\":null,\"link\":\"[[Wiki Link]]\",\"merged\":{\"<<\":{\"x\":1,\"y\":2},\"y\":3},\"nothing\":null,\"octal_new\":15,\"octal_old\":\"017\",\"on_word\":\"on\",\"real_bool\":true,\"stamp\":\"2026-10-18T09:30:00Z\",\"tagged\":\"value\",\"tags\":[\"project\",\"#hash\"],\"y_word\":\"y\",\"yes_word\":\"yes\"}"
+        );
+        assert_eq!(
+            types,
+            [
+                "yes_word=text",
+                "on_word=text",
+                "y_word=text",
+                "real_bool=boolean",
+                "nothing=null",
+                "empty=null",
+                "octal_old=text",
+                "octal_new=number",
+                "hex=number",
+                "float=number",
+                "infinite=number",
+                "big=number",
+                "date=date",
+                "stamp=date",
+                "base=object",
+                "merged=object",
+                "again=object",
+                "tagged=text",
+                "link=link",
+                "block=text",
+                "tags=list",
+            ]
+        );
     }
 
     #[test]

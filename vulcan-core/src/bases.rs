@@ -29,7 +29,7 @@ pub enum BasesError {
     Io(std::io::Error),
     Property(PropertyError),
     Source(String),
-    Yaml(serde_yaml::Error),
+    Yaml(yaml_serde::Error),
 }
 
 impl Display for BasesError {
@@ -68,8 +68,8 @@ impl From<PropertyError> for BasesError {
     }
 }
 
-impl From<serde_yaml::Error> for BasesError {
-    fn from(error: serde_yaml::Error) -> Self {
+impl From<yaml_serde::Error> for BasesError {
+    fn from(error: yaml_serde::Error) -> Self {
         Self::Yaml(error)
     }
 }
@@ -738,182 +738,182 @@ pub struct BasesCreateContext {
 // ── Serializer ───────────────────────────────────────────────────────────────
 
 fn serialize_base_file(parsed: &ParsedBaseFile) -> Result<String, BasesError> {
-    let mut root = serde_yaml::Mapping::new();
+    let mut root = yaml_serde::Mapping::new();
 
     if let Some(source) = serialize_base_source(&parsed.source) {
-        root.insert(serde_yaml::Value::String("source".to_string()), source);
+        root.insert(yaml_serde::Value::String("source".to_string()), source);
     }
 
     if let Some(create_template) = &parsed.create_template {
         root.insert(
-            serde_yaml::Value::String("create_template".to_string()),
-            serde_yaml::Value::String(create_template.clone()),
+            yaml_serde::Value::String("create_template".to_string()),
+            yaml_serde::Value::String(create_template.clone()),
         );
     }
 
     // filters
     if !parsed.filters.is_empty() {
-        let seq: serde_yaml::Sequence = parsed
+        let seq: yaml_serde::Sequence = parsed
             .filters
             .iter()
-            .map(|f| serde_yaml::Value::String(f.clone()))
+            .map(|f| yaml_serde::Value::String(f.clone()))
             .collect();
         root.insert(
-            serde_yaml::Value::String("filters".to_string()),
-            serde_yaml::Value::Sequence(seq),
+            yaml_serde::Value::String("filters".to_string()),
+            yaml_serde::Value::Sequence(seq),
         );
     }
 
     // properties
     if !parsed.property_display_names.is_empty() {
-        let mut props = serde_yaml::Mapping::new();
+        let mut props = yaml_serde::Mapping::new();
         for (key, display_name) in &parsed.property_display_names {
-            let mut def = serde_yaml::Mapping::new();
+            let mut def = yaml_serde::Mapping::new();
             def.insert(
-                serde_yaml::Value::String("displayName".to_string()),
-                serde_yaml::Value::String(display_name.clone()),
+                yaml_serde::Value::String("displayName".to_string()),
+                yaml_serde::Value::String(display_name.clone()),
             );
             props.insert(
-                serde_yaml::Value::String(key.clone()),
-                serde_yaml::Value::Mapping(def),
+                yaml_serde::Value::String(key.clone()),
+                yaml_serde::Value::Mapping(def),
             );
         }
         root.insert(
-            serde_yaml::Value::String("properties".to_string()),
-            serde_yaml::Value::Mapping(props),
+            yaml_serde::Value::String("properties".to_string()),
+            yaml_serde::Value::Mapping(props),
         );
     }
 
     // views
     if !parsed.views.is_empty() {
-        let seq: serde_yaml::Sequence = parsed.views.iter().map(serialize_view).collect();
+        let seq: yaml_serde::Sequence = parsed.views.iter().map(serialize_view).collect();
         root.insert(
-            serde_yaml::Value::String("views".to_string()),
-            serde_yaml::Value::Sequence(seq),
+            yaml_serde::Value::String("views".to_string()),
+            yaml_serde::Value::Sequence(seq),
         );
     }
 
-    serde_yaml::to_string(&serde_yaml::Value::Mapping(root)).map_err(BasesError::Yaml)
+    yaml_serde::to_string(&yaml_serde::Value::Mapping(root)).map_err(BasesError::Yaml)
 }
 
-fn serialize_base_source(source: &ParsedBaseSource) -> Option<serde_yaml::Value> {
+fn serialize_base_source(source: &ParsedBaseSource) -> Option<yaml_serde::Value> {
     if source.source_type == "file" && source.config.is_none() {
         return None;
     }
 
-    let mut mapping = serde_yaml::Mapping::new();
+    let mut mapping = yaml_serde::Mapping::new();
     mapping.insert(
-        serde_yaml::Value::String("type".to_string()),
-        serde_yaml::Value::String(source.source_type.clone()),
+        yaml_serde::Value::String("type".to_string()),
+        yaml_serde::Value::String(source.source_type.clone()),
     );
     if let Some(config) = source.config.as_ref() {
         mapping.insert(
-            serde_yaml::Value::String("config".to_string()),
+            yaml_serde::Value::String("config".to_string()),
             json_to_yaml_value(config),
         );
     }
-    Some(serde_yaml::Value::Mapping(mapping))
+    Some(yaml_serde::Value::Mapping(mapping))
 }
 
-fn serialize_view(view: &ParsedBaseView) -> serde_yaml::Value {
-    let mut m = serde_yaml::Mapping::new();
+fn serialize_view(view: &ParsedBaseView) -> yaml_serde::Value {
+    let mut m = yaml_serde::Mapping::new();
 
     if let Some(name) = &view.name {
         m.insert(
-            serde_yaml::Value::String("name".to_string()),
-            serde_yaml::Value::String(name.clone()),
+            yaml_serde::Value::String("name".to_string()),
+            yaml_serde::Value::String(name.clone()),
         );
     }
 
     m.insert(
-        serde_yaml::Value::String("type".to_string()),
-        serde_yaml::Value::String(view.view_type.clone()),
+        yaml_serde::Value::String("type".to_string()),
+        yaml_serde::Value::String(view.view_type.clone()),
     );
 
     if !view.filters.is_empty() {
-        let seq: serde_yaml::Sequence = view
+        let seq: yaml_serde::Sequence = view
             .filters
             .iter()
-            .map(|f| serde_yaml::Value::String(f.clone()))
+            .map(|f| yaml_serde::Value::String(f.clone()))
             .collect();
         m.insert(
-            serde_yaml::Value::String("filters".to_string()),
-            serde_yaml::Value::Sequence(seq),
+            yaml_serde::Value::String("filters".to_string()),
+            yaml_serde::Value::Sequence(seq),
         );
     }
 
     if !view.columns.is_empty() {
-        let seq: serde_yaml::Sequence = view
+        let seq: yaml_serde::Sequence = view
             .columns
             .iter()
-            .map(|c| serde_yaml::Value::String(c.clone()))
+            .map(|c| yaml_serde::Value::String(c.clone()))
             .collect();
         m.insert(
-            serde_yaml::Value::String("order".to_string()),
-            serde_yaml::Value::Sequence(seq),
+            yaml_serde::Value::String("order".to_string()),
+            yaml_serde::Value::Sequence(seq),
         );
     }
 
     if let Some(sort_by) = &view.sort_by {
         let sort_val = if view.sort_descending {
-            let mut sort_map = serde_yaml::Mapping::new();
+            let mut sort_map = yaml_serde::Mapping::new();
             sort_map.insert(
-                serde_yaml::Value::String("by".to_string()),
-                serde_yaml::Value::String(sort_by.clone()),
+                yaml_serde::Value::String("by".to_string()),
+                yaml_serde::Value::String(sort_by.clone()),
             );
             sort_map.insert(
-                serde_yaml::Value::String("desc".to_string()),
-                serde_yaml::Value::Bool(true),
+                yaml_serde::Value::String("desc".to_string()),
+                yaml_serde::Value::Bool(true),
             );
-            serde_yaml::Value::Mapping(sort_map)
+            yaml_serde::Value::Mapping(sort_map)
         } else {
-            serde_yaml::Value::String(sort_by.clone())
+            yaml_serde::Value::String(sort_by.clone())
         };
-        m.insert(serde_yaml::Value::String("sort".to_string()), sort_val);
+        m.insert(yaml_serde::Value::String("sort".to_string()), sort_val);
     }
 
     if let Some(group_by) = &view.group_by {
-        let mut gb_map = serde_yaml::Mapping::new();
+        let mut gb_map = yaml_serde::Mapping::new();
         gb_map.insert(
-            serde_yaml::Value::String("property".to_string()),
-            serde_yaml::Value::String(group_by.property.clone()),
+            yaml_serde::Value::String("property".to_string()),
+            yaml_serde::Value::String(group_by.property.clone()),
         );
         gb_map.insert(
-            serde_yaml::Value::String("direction".to_string()),
-            serde_yaml::Value::String(if group_by.descending {
+            yaml_serde::Value::String("direction".to_string()),
+            yaml_serde::Value::String(if group_by.descending {
                 "desc".to_string()
             } else {
                 "asc".to_string()
             }),
         );
         m.insert(
-            serde_yaml::Value::String("groupBy".to_string()),
-            serde_yaml::Value::Mapping(gb_map),
+            yaml_serde::Value::String("groupBy".to_string()),
+            yaml_serde::Value::Mapping(gb_map),
         );
     }
 
     if let Some(limit) = view.limit {
         m.insert(
-            serde_yaml::Value::String("limit".to_string()),
-            serde_yaml::Value::Number(u64::try_from(limit).unwrap_or(u64::MAX).into()),
+            yaml_serde::Value::String("limit".to_string()),
+            yaml_serde::Value::Number(u64::try_from(limit).unwrap_or(u64::MAX).into()),
         );
     }
 
     if !view.formulas.is_empty() {
-        let mut formulas_map = serde_yaml::Mapping::new();
+        let mut formulas_map = yaml_serde::Mapping::new();
         for (name, expr) in &view.formulas {
             formulas_map.insert(
-                serde_yaml::Value::String(name.clone()),
-                serde_yaml::Value::String(expr.clone()),
+                yaml_serde::Value::String(name.clone()),
+                yaml_serde::Value::String(expr.clone()),
             );
         }
         m.insert(
-            serde_yaml::Value::String("formulas".to_string()),
-            serde_yaml::Value::Mapping(formulas_map),
+            yaml_serde::Value::String("formulas".to_string()),
+            yaml_serde::Value::Mapping(formulas_map),
         );
     }
 
-    serde_yaml::Value::Mapping(m)
+    yaml_serde::Value::Mapping(m)
 }
 
 // ── Conversion helpers ────────────────────────────────────────────────────────
@@ -1605,7 +1605,7 @@ struct ParsedBaseGroupBy {
 }
 
 fn parse_base_file(source: &str) -> Result<ParsedBaseFile, BasesError> {
-    let value = serde_yaml::from_str::<serde_yaml::Value>(source)?;
+    let value = yaml_serde::from_str::<yaml_serde::Value>(source)?;
     let mut diagnostics = Vec::new();
     let Some(root) = value.as_mapping() else {
         return Ok(ParsedBaseFile {
@@ -1624,18 +1624,18 @@ fn parse_base_file(source: &str) -> Result<ParsedBaseFile, BasesError> {
     let source = parse_base_source(root, &mut diagnostics);
     let create_template = parse_create_template(root, &mut diagnostics);
     let filters = root
-        .get(serde_yaml::Value::String("filters".to_string()))
+        .get(yaml_serde::Value::String("filters".to_string()))
         .map_or_else(Vec::new, |value| {
             parse_base_filters("filters", value, &mut diagnostics)
         });
     let property_display_names = root
-        .get(serde_yaml::Value::String("properties".to_string()))
+        .get(yaml_serde::Value::String("properties".to_string()))
         .map_or_else(BTreeMap::new, |value| {
             parse_property_display_names(value, &mut diagnostics)
         });
     let mut views = root
-        .get(serde_yaml::Value::String("views".to_string()))
-        .and_then(serde_yaml::Value::as_sequence)
+        .get(yaml_serde::Value::String("views".to_string()))
+        .and_then(yaml_serde::Value::as_sequence)
         .map_or_else(Vec::new, |entries| {
             entries
                 .iter()
@@ -1645,7 +1645,7 @@ fn parse_base_file(source: &str) -> Result<ParsedBaseFile, BasesError> {
         });
 
     let base_formulas = root
-        .get(serde_yaml::Value::String("formulas".to_string()))
+        .get(yaml_serde::Value::String("formulas".to_string()))
         .map_or_else(BTreeMap::new, |value| {
             parse_top_level_formulas(value, &mut diagnostics)
         });
@@ -1660,7 +1660,7 @@ fn parse_base_file(source: &str) -> Result<ParsedBaseFile, BasesError> {
     }
     inject_tasknotes_view_defaults(&source, &mut views);
 
-    for key in root.keys().filter_map(serde_yaml::Value::as_str) {
+    for key in root.keys().filter_map(yaml_serde::Value::as_str) {
         if !matches!(
             key,
             "source" | "create_template" | "views" | "filters" | "properties" | "formulas"
@@ -1684,7 +1684,7 @@ fn parse_base_file(source: &str) -> Result<ParsedBaseFile, BasesError> {
 
 fn parse_view(
     index: usize,
-    entry: &serde_yaml::Value,
+    entry: &yaml_serde::Value,
     diagnostics: &mut Vec<BasesDiagnostic>,
 ) -> Option<ParsedBaseView> {
     let Some(mapping) = entry.as_mapping() else {
@@ -1696,12 +1696,12 @@ fn parse_view(
     };
 
     let name = mapping
-        .get(serde_yaml::Value::String("name".to_string()))
-        .and_then(serde_yaml::Value::as_str)
+        .get(yaml_serde::Value::String("name".to_string()))
+        .and_then(yaml_serde::Value::as_str)
         .map(ToOwned::to_owned);
     let view_type = mapping
-        .get(serde_yaml::Value::String("type".to_string()))
-        .and_then(serde_yaml::Value::as_str)
+        .get(yaml_serde::Value::String("type".to_string()))
+        .and_then(yaml_serde::Value::as_str)
         .unwrap_or("table")
         .to_string();
     let filters = parse_view_filters(index, mapping, diagnostics);
@@ -1709,7 +1709,7 @@ fn parse_view(
     let columns = parse_view_columns(index, mapping, diagnostics);
     let group_by = parse_view_group_by(index, mapping, diagnostics);
     let formulas = parse_view_formulas(index, mapping, diagnostics);
-    let limit = match mapping.get(serde_yaml::Value::String("limit".to_string())) {
+    let limit = match mapping.get(yaml_serde::Value::String("limit".to_string())) {
         None => None,
         Some(value) => {
             let limit = value.as_u64().and_then(|limit| usize::try_from(limit).ok());
@@ -1723,7 +1723,7 @@ fn parse_view(
         }
     };
 
-    for key in mapping.keys().filter_map(serde_yaml::Value::as_str) {
+    for key in mapping.keys().filter_map(yaml_serde::Value::as_str) {
         if !matches!(
             key,
             "name"
@@ -1763,10 +1763,10 @@ fn parse_view(
 }
 
 fn parse_base_source(
-    root: &serde_yaml::Mapping,
+    root: &yaml_serde::Mapping,
     diagnostics: &mut Vec<BasesDiagnostic>,
 ) -> ParsedBaseSource {
-    let Some(source) = root.get(serde_yaml::Value::String("source".to_string())) else {
+    let Some(source) = root.get(yaml_serde::Value::String("source".to_string())) else {
         return ParsedBaseSource::default();
     };
 
@@ -1787,8 +1787,8 @@ fn parse_base_source(
     };
 
     let source_type = source_mapping
-        .get(serde_yaml::Value::String("type".to_string()))
-        .and_then(serde_yaml::Value::as_str)
+        .get(yaml_serde::Value::String("type".to_string()))
+        .and_then(yaml_serde::Value::as_str)
         .map_or_else(
             || {
                 diagnostics.push(BasesDiagnostic {
@@ -1800,10 +1800,10 @@ fn parse_base_source(
             normalize_source_type,
         );
     let config = source_mapping
-        .get(serde_yaml::Value::String("config".to_string()))
+        .get(yaml_serde::Value::String("config".to_string()))
         .map(yaml_to_json_value);
 
-    for key in source_mapping.keys().filter_map(serde_yaml::Value::as_str) {
+    for key in source_mapping.keys().filter_map(yaml_serde::Value::as_str) {
         if !matches!(key, "type" | "config") {
             diagnostics.push(BasesDiagnostic {
                 path: Some(format!("source.{key}")),
@@ -1819,10 +1819,10 @@ fn parse_base_source(
 }
 
 fn parse_create_template(
-    root: &serde_yaml::Mapping,
+    root: &yaml_serde::Mapping,
     diagnostics: &mut Vec<BasesDiagnostic>,
 ) -> Option<String> {
-    let template = root.get(serde_yaml::Value::String("create_template".to_string()))?;
+    let template = root.get(yaml_serde::Value::String("create_template".to_string()))?;
 
     let Some(template) = template.as_str().map(str::trim) else {
         diagnostics.push(BasesDiagnostic {
@@ -1844,7 +1844,7 @@ fn parse_create_template(
 
 fn parse_base_filters(
     path: &str,
-    value: &serde_yaml::Value,
+    value: &yaml_serde::Value,
     diagnostics: &mut Vec<BasesDiagnostic>,
 ) -> Vec<String> {
     if let Some(sequence) = value.as_sequence() {
@@ -1858,10 +1858,10 @@ fn parse_base_filters(
     }
 
     if let Some(mapping) = value.as_mapping() {
-        if let Some(and_filters) = mapping.get(serde_yaml::Value::String("and".to_string())) {
+        if let Some(and_filters) = mapping.get(yaml_serde::Value::String("and".to_string())) {
             return parse_base_filters(&format!("{path}.and"), and_filters, diagnostics);
         }
-        if mapping.contains_key(serde_yaml::Value::String("or".to_string())) {
+        if mapping.contains_key(yaml_serde::Value::String("or".to_string())) {
             return parse_base_filter_clause(path, value, diagnostics)
                 .into_iter()
                 .collect();
@@ -1877,19 +1877,19 @@ fn parse_base_filters(
 
 fn parse_base_filter_clause(
     path: &str,
-    value: &serde_yaml::Value,
+    value: &yaml_serde::Value,
     diagnostics: &mut Vec<BasesDiagnostic>,
 ) -> Option<String> {
     if value.is_mapping() {
         let mapping = value.as_mapping()?;
-        if let Some(and_filters) = mapping.get(serde_yaml::Value::String("and".to_string())) {
+        if let Some(and_filters) = mapping.get(yaml_serde::Value::String("and".to_string())) {
             let clauses = parse_base_filters(&format!("{path}.and"), and_filters, diagnostics);
             if clauses.is_empty() {
                 return None;
             }
             return join_filter_clauses(path, &clauses, "&&", diagnostics);
         }
-        if let Some(or_filters) = mapping.get(serde_yaml::Value::String("or".to_string())) {
+        if let Some(or_filters) = mapping.get(yaml_serde::Value::String("or".to_string())) {
             let clauses = parse_base_filters(&format!("{path}.or"), or_filters, diagnostics);
             if clauses.is_empty() {
                 return None;
@@ -1909,7 +1909,7 @@ fn parse_base_filter_clause(
 
 fn parse_base_filter_entry(
     path: &str,
-    value: &serde_yaml::Value,
+    value: &yaml_serde::Value,
     diagnostics: &mut Vec<BasesDiagnostic>,
 ) -> Option<String> {
     let expression = value
@@ -2161,11 +2161,11 @@ fn tasknotes_builtin_formulas() -> [(&'static str, &'static str); 5] {
     ]
 }
 
-fn yaml_to_json_value(value: &serde_yaml::Value) -> Value {
+fn yaml_to_json_value(value: &yaml_serde::Value) -> Value {
     match value {
-        serde_yaml::Value::Null => Value::Null,
-        serde_yaml::Value::Bool(value_bool) => Value::Bool(*value_bool),
-        serde_yaml::Value::Number(value_number) => value_number.as_i64().map_or_else(
+        yaml_serde::Value::Null => Value::Null,
+        yaml_serde::Value::Bool(value_bool) => Value::Bool(*value_bool),
+        yaml_serde::Value::Number(value_number) => value_number.as_i64().map_or_else(
             || {
                 value_number.as_u64().map_or_else(
                     || {
@@ -2179,46 +2179,46 @@ fn yaml_to_json_value(value: &serde_yaml::Value) -> Value {
             },
             |value| Value::Number(value.into()),
         ),
-        serde_yaml::Value::String(value_text) => Value::String(value_text.clone()),
-        serde_yaml::Value::Sequence(values) => {
+        yaml_serde::Value::String(value_text) => Value::String(value_text.clone()),
+        yaml_serde::Value::Sequence(values) => {
             Value::Array(values.iter().map(yaml_to_json_value).collect())
         }
-        serde_yaml::Value::Mapping(mapping) => Value::Object(
+        yaml_serde::Value::Mapping(mapping) => Value::Object(
             mapping
                 .iter()
                 .map(|(key, value)| (yaml_key_to_string(key), yaml_to_json_value(value)))
                 .collect(),
         ),
-        serde_yaml::Value::Tagged(value) => yaml_to_json_value(&value.value),
+        yaml_serde::Value::Tagged(value) => yaml_to_json_value(&value.value),
     }
 }
 
-fn yaml_key_to_string(value: &serde_yaml::Value) -> String {
+fn yaml_key_to_string(value: &yaml_serde::Value) -> String {
     match value {
-        serde_yaml::Value::String(value_text) => value_text.clone(),
-        _ => serde_yaml::to_string(value)
+        yaml_serde::Value::String(value_text) => value_text.clone(),
+        _ => yaml_serde::to_string(value)
             .unwrap_or_else(|_| format!("{value:?}"))
             .trim()
             .to_string(),
     }
 }
 
-fn json_to_yaml_value(value: &Value) -> serde_yaml::Value {
+fn json_to_yaml_value(value: &Value) -> yaml_serde::Value {
     match value {
-        Value::Null => serde_yaml::Value::Null,
-        Value::Bool(value_bool) => serde_yaml::Value::Bool(*value_bool),
-        Value::Number(value_number) => serde_yaml::to_value(value_number)
-            .unwrap_or_else(|_| serde_yaml::Value::String(value_number.to_string())),
-        Value::String(value_text) => serde_yaml::Value::String(value_text.clone()),
+        Value::Null => yaml_serde::Value::Null,
+        Value::Bool(value_bool) => yaml_serde::Value::Bool(*value_bool),
+        Value::Number(value_number) => yaml_serde::to_value(value_number)
+            .unwrap_or_else(|_| yaml_serde::Value::String(value_number.to_string())),
+        Value::String(value_text) => yaml_serde::Value::String(value_text.clone()),
         Value::Array(values) => {
-            serde_yaml::Value::Sequence(values.iter().map(json_to_yaml_value).collect())
+            yaml_serde::Value::Sequence(values.iter().map(json_to_yaml_value).collect())
         }
-        Value::Object(mapping) => serde_yaml::Value::Mapping(
+        Value::Object(mapping) => yaml_serde::Value::Mapping(
             mapping
                 .iter()
                 .map(|(key, value)| {
                     (
-                        serde_yaml::Value::String(key.clone()),
+                        yaml_serde::Value::String(key.clone()),
                         json_to_yaml_value(value),
                     )
                 })
@@ -2228,7 +2228,7 @@ fn json_to_yaml_value(value: &Value) -> serde_yaml::Value {
 }
 
 fn parse_property_display_names(
-    value: &serde_yaml::Value,
+    value: &yaml_serde::Value,
     diagnostics: &mut Vec<BasesDiagnostic>,
 ) -> BTreeMap<String, String> {
     let Some(mapping) = value.as_mapping() else {
@@ -2256,11 +2256,11 @@ fn parse_property_display_names(
             continue;
         };
         let display_name = definition
-            .get(serde_yaml::Value::String("displayName".to_string()))
-            .and_then(serde_yaml::Value::as_str)
+            .get(yaml_serde::Value::String("displayName".to_string()))
+            .and_then(yaml_serde::Value::as_str)
             .map_or_else(|| key.to_string(), ToOwned::to_owned);
         names.insert(key.to_string(), display_name);
-        for field in definition.keys().filter_map(serde_yaml::Value::as_str) {
+        for field in definition.keys().filter_map(yaml_serde::Value::as_str) {
             if field != "displayName" {
                 diagnostics.push(BasesDiagnostic {
                     path: Some(format!("properties.{key}.{field}")),
@@ -2275,10 +2275,10 @@ fn parse_property_display_names(
 
 fn parse_view_filters(
     index: usize,
-    mapping: &serde_yaml::Mapping,
+    mapping: &yaml_serde::Mapping,
     diagnostics: &mut Vec<BasesDiagnostic>,
 ) -> Vec<String> {
-    let Some(filters) = mapping.get(serde_yaml::Value::String("filters".to_string())) else {
+    let Some(filters) = mapping.get(yaml_serde::Value::String("filters".to_string())) else {
         return Vec::new();
     };
     parse_base_filters(&format!("views[{index}].filters"), filters, diagnostics)
@@ -2286,10 +2286,10 @@ fn parse_view_filters(
 
 fn parse_view_sort(
     index: usize,
-    mapping: &serde_yaml::Mapping,
+    mapping: &yaml_serde::Mapping,
     diagnostics: &mut Vec<BasesDiagnostic>,
 ) -> (Option<String>, bool) {
-    let Some(sort) = mapping.get(serde_yaml::Value::String("sort".to_string())) else {
+    let Some(sort) = mapping.get(yaml_serde::Value::String("sort".to_string())) else {
         return (None, false);
     };
 
@@ -2299,15 +2299,15 @@ fn parse_view_sort(
 
     // Support Obsidian's list format: [{property: "field", direction: "DESC"}]
     if let Some(sequence) = sort.as_sequence() {
-        if let Some(first) = sequence.first().and_then(serde_yaml::Value::as_mapping) {
+        if let Some(first) = sequence.first().and_then(yaml_serde::Value::as_mapping) {
             let sort_by = first
-                .get(serde_yaml::Value::String("property".to_string()))
-                .or_else(|| first.get(serde_yaml::Value::String("column".to_string())))
-                .and_then(serde_yaml::Value::as_str)
+                .get(yaml_serde::Value::String("property".to_string()))
+                .or_else(|| first.get(yaml_serde::Value::String("column".to_string())))
+                .and_then(yaml_serde::Value::as_str)
                 .map(ToOwned::to_owned);
             let sort_descending = first
-                .get(serde_yaml::Value::String("direction".to_string()))
-                .and_then(serde_yaml::Value::as_str)
+                .get(yaml_serde::Value::String("direction".to_string()))
+                .and_then(yaml_serde::Value::as_str)
                 .is_some_and(|direction| direction.eq_ignore_ascii_case("desc"));
             if sort_by.is_none() {
                 diagnostics.push(BasesDiagnostic {
@@ -2328,16 +2328,16 @@ fn parse_view_sort(
     };
 
     let sort_by = sort
-        .get(serde_yaml::Value::String("by".to_string()))
-        .or_else(|| sort.get(serde_yaml::Value::String("property".to_string())))
-        .and_then(serde_yaml::Value::as_str)
+        .get(yaml_serde::Value::String("by".to_string()))
+        .or_else(|| sort.get(yaml_serde::Value::String("property".to_string())))
+        .and_then(yaml_serde::Value::as_str)
         .map(ToOwned::to_owned);
     let sort_descending = sort
-        .get(serde_yaml::Value::String("desc".to_string()))
-        .and_then(serde_yaml::Value::as_bool)
+        .get(yaml_serde::Value::String("desc".to_string()))
+        .and_then(yaml_serde::Value::as_bool)
         .unwrap_or_else(|| {
-            sort.get(serde_yaml::Value::String("direction".to_string()))
-                .and_then(serde_yaml::Value::as_str)
+            sort.get(yaml_serde::Value::String("direction".to_string()))
+                .and_then(yaml_serde::Value::as_str)
                 .is_some_and(|direction| direction.eq_ignore_ascii_case("desc"))
         });
     if sort_by.is_none() {
@@ -2352,10 +2352,10 @@ fn parse_view_sort(
 
 fn parse_view_columns(
     index: usize,
-    mapping: &serde_yaml::Mapping,
+    mapping: &yaml_serde::Mapping,
     diagnostics: &mut Vec<BasesDiagnostic>,
 ) -> Vec<String> {
-    let Some(order) = mapping.get(serde_yaml::Value::String("order".to_string())) else {
+    let Some(order) = mapping.get(yaml_serde::Value::String("order".to_string())) else {
         return Vec::new();
     };
     let Some(order) = order.as_sequence() else {
@@ -2383,10 +2383,10 @@ fn parse_view_columns(
 
 fn parse_view_group_by(
     index: usize,
-    mapping: &serde_yaml::Mapping,
+    mapping: &yaml_serde::Mapping,
     diagnostics: &mut Vec<BasesDiagnostic>,
 ) -> Option<ParsedBaseGroupBy> {
-    let group_by = mapping.get(serde_yaml::Value::String("groupBy".to_string()))?;
+    let group_by = mapping.get(yaml_serde::Value::String("groupBy".to_string()))?;
     let Some(group_by) = group_by.as_mapping() else {
         diagnostics.push(BasesDiagnostic {
             path: Some(format!("views[{index}].groupBy")),
@@ -2397,12 +2397,12 @@ fn parse_view_group_by(
     };
 
     let property = group_by
-        .get(serde_yaml::Value::String("property".to_string()))
-        .and_then(serde_yaml::Value::as_str)
+        .get(yaml_serde::Value::String("property".to_string()))
+        .and_then(yaml_serde::Value::as_str)
         .map(ToOwned::to_owned);
     let descending = group_by
-        .get(serde_yaml::Value::String("direction".to_string()))
-        .and_then(serde_yaml::Value::as_str)
+        .get(yaml_serde::Value::String("direction".to_string()))
+        .and_then(yaml_serde::Value::as_str)
         .is_some_and(|direction| direction.eq_ignore_ascii_case("desc"));
     if property.is_none() {
         diagnostics.push(BasesDiagnostic {
@@ -2418,7 +2418,7 @@ fn parse_view_group_by(
 }
 
 fn parse_top_level_formulas(
-    value: &serde_yaml::Value,
+    value: &yaml_serde::Value,
     diagnostics: &mut Vec<BasesDiagnostic>,
 ) -> BTreeMap<String, String> {
     let Some(formulas) = value.as_mapping() else {
@@ -2455,10 +2455,10 @@ fn parse_top_level_formulas(
 
 fn parse_view_formulas(
     index: usize,
-    mapping: &serde_yaml::Mapping,
+    mapping: &yaml_serde::Mapping,
     diagnostics: &mut Vec<BasesDiagnostic>,
 ) -> BTreeMap<String, String> {
-    let Some(formulas) = mapping.get(serde_yaml::Value::String("formulas".to_string())) else {
+    let Some(formulas) = mapping.get(yaml_serde::Value::String("formulas".to_string())) else {
         return BTreeMap::new();
     };
     let Some(formulas) = formulas.as_mapping() else {

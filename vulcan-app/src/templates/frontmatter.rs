@@ -25,7 +25,7 @@ pub fn parse_frontmatter_document(
     };
 
     let raw_yaml = &source[yaml_start..yaml_end];
-    let value = serde_yaml::from_str::<YamlValue>(raw_yaml).map_err(|error| {
+    let value = yaml_serde::from_str::<YamlValue>(raw_yaml).map_err(|error| {
         if template_document {
             TemplateInsertionError::TemplateFrontmatterParse(error)
         } else {
@@ -132,7 +132,7 @@ fn merge_body_sections(first: &str, second: &str, preserve_second_leading_space:
 pub fn format_frontmatter_block(
     frontmatter: &YamlMapping,
 ) -> Result<String, TemplateInsertionError> {
-    let mut yaml = serde_yaml::to_string(&YamlValue::Mapping(frontmatter.clone()))
+    let mut yaml = yaml_serde::to_string(&YamlValue::Mapping(frontmatter.clone()))
         .map_err(TemplateInsertionError::YamlSerialize)?;
     if let Some(stripped) = yaml.strip_prefix("---\n") {
         yaml = stripped.to_string();

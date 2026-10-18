@@ -4,7 +4,6 @@ all-features = true
 [advisories]
 ignore = [
     { id = "RUSTSEC-2023-0071", reason = "jsonwebtoken uses rsa only for external JWT public-key verification; Vulcan performs no RSA private-key signing or decryption, and local tokens use HS256" },
-    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml is unmaintained (not a known vulnerability); it backs serde_yaml, which every YAML read and write uses. Replacing serde_yaml with a maintained parser is the open Phase 6 hardening item in docs/ROADMAP.md" },
 ]
 
 [licenses]

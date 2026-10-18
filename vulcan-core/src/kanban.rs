@@ -1409,7 +1409,7 @@ fn normalize_wrapped_marker(line: &str) -> String {
 }
 
 fn merged_board_settings(
-    frontmatter: Option<&serde_yaml::Value>,
+    frontmatter: Option<&yaml_serde::Value>,
     source: &str,
 ) -> Option<Map<String, Value>> {
     let mut settings = footer_settings(source).unwrap_or_default();
@@ -1420,7 +1420,7 @@ fn merged_board_settings(
     (!settings.is_empty()).then_some(settings)
 }
 
-fn frontmatter_settings(frontmatter: Option<&serde_yaml::Value>) -> Option<Map<String, Value>> {
+fn frontmatter_settings(frontmatter: Option<&yaml_serde::Value>) -> Option<Map<String, Value>> {
     let mapping = frontmatter?.as_mapping()?;
     let mut settings = Map::new();
     for key in [
@@ -1434,7 +1434,7 @@ fn frontmatter_settings(frontmatter: Option<&serde_yaml::Value>) -> Option<Map<S
         NEW_CARD_INSERTION_METHOD_KEY,
     ] {
         let value = mapping
-            .get(serde_yaml::Value::String(key.to_string()))
+            .get(yaml_serde::Value::String(key.to_string()))
             .and_then(|value| serde_json::to_value(value).ok());
         if let Some(value) = value {
             settings.insert(key.to_string(), value);

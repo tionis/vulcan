@@ -12,12 +12,12 @@ use chrono_tz::Tz;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_yaml::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use yaml_serde::Value;
 
 mod contracts;
 mod control_access;
@@ -719,7 +719,7 @@ fn parse_local_schema(
     contents: &[u8],
     path: &Path,
 ) -> Result<serde_json::Value, MdbaseSchemaCompileError> {
-    let yaml: serde_yaml::Value = serde_yaml::from_slice(contents).map_err(|error| {
+    let yaml: yaml_serde::Value = yaml_serde::from_slice(contents).map_err(|error| {
         MdbaseSchemaCompileError::with_code(
             "schema_ref_malformed",
             format!(
@@ -1256,7 +1256,7 @@ pub enum MdbaseConfigError {
     },
     InvalidYaml {
         path: PathBuf,
-        source: serde_yaml::Error,
+        source: yaml_serde::Error,
     },
     InvalidConfig {
         path: PathBuf,
@@ -1342,7 +1342,7 @@ pub fn load_mdbase_collection(
         }
     };
     let raw: RawMdbaseConfig =
-        serde_yaml::from_str(&contents).map_err(|source| MdbaseConfigError::InvalidYaml {
+        yaml_serde::from_str(&contents).map_err(|source| MdbaseConfigError::InvalidYaml {
             path: config_path.clone(),
             source,
         })?;
@@ -2772,7 +2772,7 @@ fn parse_type_frontmatter(
             "",
         )
     })?;
-    let yaml = serde_yaml::from_str::<serde_yaml::Value>(&raw_frontmatter).map_err(|error| {
+    let yaml = yaml_serde::from_str::<yaml_serde::Value>(&raw_frontmatter).map_err(|error| {
         type_diagnostic(
             path,
             "type_frontmatter_invalid",

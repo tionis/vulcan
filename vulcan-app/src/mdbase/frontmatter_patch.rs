@@ -72,7 +72,7 @@ pub fn patch_mdbase_frontmatter(
         .set
         .iter()
         .map(|(key, value)| {
-            serde_yaml::to_value(value)
+            yaml_serde::to_value(value)
                 .map(|value| (key.clone(), Some(value)))
                 .map_err(AppError::operation)
         })

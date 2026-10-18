@@ -1210,7 +1210,7 @@ pub fn parse_note_frontmatter_bindings(
             )));
         }
         let parsed =
-            serde_yaml::from_str::<YamlValue>(value.trim()).map_err(AppError::operation)?;
+            yaml_serde::from_str::<YamlValue>(value.trim()).map_err(AppError::operation)?;
         mapping.insert(YamlValue::String(key.to_string()), parsed);
     }
 
@@ -1228,7 +1228,7 @@ pub fn json_properties_to_frontmatter(
     for (key, value) in properties {
         mapping.insert(
             YamlValue::String(key.clone()),
-            serde_yaml::to_value(value).map_err(AppError::operation)?,
+            yaml_serde::to_value(value).map_err(AppError::operation)?,
         );
     }
     Ok(Some(mapping))
@@ -3087,7 +3087,7 @@ mod tests {
         assert_eq!(parsed["status"], YamlValue::String("done".to_string()));
         assert_eq!(
             parsed["tags"],
-            serde_yaml::from_str::<YamlValue>(
+            yaml_serde::from_str::<YamlValue>(
                 "- alpha
 - beta
 "
@@ -3110,7 +3110,7 @@ mod tests {
         assert_eq!(frontmatter["done"], YamlValue::Bool(true));
         assert_eq!(
             frontmatter["owners"],
-            serde_yaml::from_str::<YamlValue>(
+            yaml_serde::from_str::<YamlValue>(
                 "- alice
 - bob
 "

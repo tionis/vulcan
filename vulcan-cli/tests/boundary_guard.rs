@@ -44,7 +44,7 @@ fn production_cli_code_avoids_direct_backend_dependencies() {
             "raw SQLite access belongs below the CLI boundary",
         ),
         (
-            "serde_yaml::",
+            "yaml_serde::",
             "runtime YAML parsing belongs below the CLI boundary",
         ),
         (

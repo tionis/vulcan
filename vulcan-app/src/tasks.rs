@@ -16,7 +16,6 @@ use crate::AppError;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::Read;
@@ -43,6 +42,7 @@ use vulcan_core::{
     TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksQueryResult, VaultConfig,
     VaultPaths,
 };
+use yaml_serde::{Mapping as YamlMapping, Value as YamlValue};
 
 mod types;
 pub use types::*;
@@ -825,7 +825,7 @@ pub fn apply_task_add_with_guard(
     if let Some(time_estimate) = time_estimate {
         frontmatter.insert(
             YamlValue::String(mapping.time_estimate.clone()),
-            YamlValue::Number(serde_yaml::Number::from(time_estimate as u64)),
+            YamlValue::Number(yaml_serde::Number::from(time_estimate as u64)),
         );
     }
     if let Some(recurrence) = recurrence.as_ref() {
@@ -2678,7 +2678,7 @@ fn render_tasknotes_saved_view_base_yaml(
         YamlValue::Sequence(vec![YamlValue::Mapping(view)]),
     );
 
-    serde_yaml::to_string(&root).map_err(AppError::operation)
+    yaml_serde::to_string(&root).map_err(AppError::operation)
 }
 
 fn tasknotes_saved_view_query_to_yaml(
@@ -4955,7 +4955,7 @@ fn build_converted_tasknote(
         if let Some(change) = set_tasknote_frontmatter_value(
             &mut frontmatter,
             &mapping.time_estimate,
-            Some(YamlValue::Number(serde_yaml::Number::from(
+            Some(YamlValue::Number(yaml_serde::Number::from(
                 time_estimate as u64,
             ))),
         ) {
@@ -5504,11 +5504,11 @@ fn parse_task_pomodoro_session_json(value: &Value) -> Option<TaskPomodoroSession
 }
 
 fn parse_task_pomodoro_session_yaml(value: &YamlValue) -> Option<TaskPomodoroSession> {
-    serde_yaml::from_value(value.clone()).ok()
+    yaml_serde::from_value(value.clone()).ok()
 }
 
 fn task_pomodoro_session_yaml_value(session: &TaskPomodoroSession) -> Result<YamlValue, AppError> {
-    serde_yaml::to_value(session).map_err(AppError::operation)
+    yaml_serde::to_value(session).map_err(AppError::operation)
 }
 
 fn task_pomodoro_elapsed_minutes(session: &TaskPomodoroSession, now_ms: i64) -> i64 {
@@ -6764,7 +6764,7 @@ fn parse_tasknote_cli_value(value: &str) -> YamlValue {
     if trimmed.is_empty() {
         return YamlValue::String(String::new());
     }
-    match serde_yaml::from_str::<YamlValue>(trimmed) {
+    match yaml_serde::from_str::<YamlValue>(trimmed) {
         Ok(parsed) => parsed,
         Err(_) => YamlValue::String(value.to_string()),
     }
@@ -6836,7 +6836,7 @@ fn default_tasknote_reminders_yaml_value(
         return Ok(None);
     }
 
-    serde_yaml::to_value(reminders)
+    yaml_serde::to_value(reminders)
         .map(Some)
         .map_err(AppError::operation)
 }

@@ -26,7 +26,6 @@ pulldown-cmark.workspace = true
 regex.workspace = true
 reqwest = { workspace = true, optional = true }
 rusqlite.workspace = true
-serde_yaml.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_json_canonicalizer.workspace = true
@@ -42,6 +41,7 @@ getrandom.workspace = true
 unicode-normalization.workspace = true
 vulcan-core = { path = "../vulcan-core", version = "0.3.0", default-features = false }
 vulcan-sync = { path = "../vulcan-sync", version = "0.3.0" }
+yaml_serde.workspace = true
 zeroize.workspace = true
 rquickjs = { workspace = true, optional = true }
 zip.workspace = true

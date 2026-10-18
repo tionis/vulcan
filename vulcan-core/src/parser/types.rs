@@ -1,5 +1,5 @@
-use serde_yaml::Value;
 use std::ops::Range;
+use yaml_serde::Value;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ParsedDocument {

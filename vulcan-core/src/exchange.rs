@@ -799,7 +799,7 @@ mod tests {
         );
         let round_trip: Vec<ExchangeSelector> = serde_json::from_str(&json).expect("parse");
         assert_eq!(round_trip, selectors);
-        let yaml = serde_yaml::to_string(&selectors[0]).expect("yaml");
+        let yaml = yaml_serde::to_string(&selectors[0]).expect("yaml");
         assert!(
             yaml.contains("start: 74\n") && !yaml.contains("null"),
             "{yaml}"

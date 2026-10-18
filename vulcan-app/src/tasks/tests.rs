@@ -17,7 +17,6 @@ use super::{
 };
 use crate::templates::render_note_from_parts;
 use serde::Serialize;
-use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use std::fs;
 use std::sync::mpsc;
 use std::thread;
@@ -28,6 +27,7 @@ use vulcan_core::{
     initialize_vulcan_dir, load_vault_config, resolve_permission_profile, scan_vault_with_progress,
     ProfilePermissionGuard, RefactorChange, ScanMode, VaultPaths,
 };
+use yaml_serde::{Mapping as YamlMapping, Value as YamlValue};
 
 #[test]
 fn guarded_tasknote_reports_preserve_readable_duplicate_basenames() {
@@ -555,8 +555,8 @@ fn guarded_task_show_uses_read_only_scope_and_rejects_stale_authority() {
             folder,
             "open",
             &[
-                ("tags", serde_yaml::to_value(tags).unwrap()),
-                ("aliases", serde_yaml::to_value(["Shared"]).unwrap()),
+                ("tags", yaml_serde::to_value(tags).unwrap()),
+                ("aliases", yaml_serde::to_value(["Shared"]).unwrap()),
             ],
             &format!("{folder} sentinel\n"),
         )
@@ -884,7 +884,7 @@ fn guarded_pomodoro_status_completes_only_visible_due_sessions() {
     let config = load_vault_config(&paths).config;
     for folder in ["Public", "Hidden"] {
         let task = format!("{folder}/Task.md");
-        let sessions = serde_yaml::to_value(serde_json::json!([{
+        let sessions = yaml_serde::to_value(serde_json::json!([{
             "id": folder, "startTime": "2026-04-01T08:00:00Z",
             "plannedDuration": 1, "type": "work", "taskPath": task,
             "completed": false,
@@ -938,7 +938,7 @@ fn read_only_pomodoro_status_uses_tag_scope_without_upkeep() {
         ),
         ("Due.md", "[task, visible]", "2020-01-01T08:00:00Z"),
     ] {
-        let sessions = serde_yaml::to_value(serde_json::json!([{
+        let sessions = yaml_serde::to_value(serde_json::json!([{
             "id": path, "startTime": start,
             "plannedDuration": 25, "type": "work", "taskPath": path,
             "completed": false,
@@ -952,7 +952,7 @@ fn read_only_pomodoro_status_uses_tag_scope_without_upkeep() {
             "Task",
             "open",
             &[
-                ("tags", serde_yaml::from_str(tags).unwrap()),
+                ("tags", yaml_serde::from_str(tags).unwrap()),
                 (config.tasknotes.field_mapping.pomodoros.as_str(), sessions),
             ],
             "",
@@ -3023,11 +3023,11 @@ fn build_task_show_report_reports_tasknote_details_and_metrics() {
             ),
             (
                 mapping.time_estimate.as_str(),
-                YamlValue::Number(serde_yaml::Number::from(90_u64)),
+                YamlValue::Number(yaml_serde::Number::from(90_u64)),
             ),
             (
                 "effort",
-                serde_yaml::to_value(3.0_f64).expect("float yaml value"),
+                yaml_serde::to_value(3.0_f64).expect("float yaml value"),
             ),
         ],
         "Write the docs body.\n",
@@ -3495,7 +3495,7 @@ fn task_track_workflows_update_entries_and_reports() {
         "open",
         &[(
             estimate_key.as_str(),
-            YamlValue::Number(serde_yaml::Number::from(120_u64)),
+            YamlValue::Number(yaml_serde::Number::from(120_u64)),
         )],
         "",
     )

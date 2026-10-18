@@ -727,7 +727,7 @@ Walk the event stream once, maintaining a small state machine. For each event, t
 
 **c) Extract frontmatter:**
 
-- On `MetadataBlock` event, capture raw YAML text. Parse with `serde_yaml` for the canonical layer. Preserve the raw text for lossless roundtrip. `serde_yaml` is archived and unmaintained upstream; `ParsedDocument::frontmatter` still exposes its `Value` type, so replacing it is a breaking change for library consumers. Replacing it is tracked as Roadmap 6.8 with frontmatter round-trip fixtures as the acceptance gate.
+- On `MetadataBlock` event, capture raw YAML text. Parse with `yaml_serde` (the YAML organization's maintained fork of the archived `serde_yaml`) for the canonical layer. Preserve the raw text for lossless roundtrip. `ParsedDocument::frontmatter` exposes its `Value` type; `properties::tests::frontmatter_yaml_semantics_are_pinned` pins the YAML behavior properties rely on, and `docs/investigations/yaml-parser-replacement.md` records why this crate and how equivalence was shown.
 
 The public API is a single function returning a `ParsedDocument` struct that contains frontmatter, headings, block refs, links, tags, aliases, chunk texts, and diagnostics. The indexer never touches pulldown-cmark directly.
 
@@ -1322,7 +1322,7 @@ Suggested Rust stack:
 - `rusqlite` with `bundled` feature for SQLite access (`vulcan-core`)
 - `notify` for file watching (`vulcan-core`)
 - `pulldown-cmark` with `ENABLE_WIKILINKS` and `ENABLE_GFM`, plus a small Obsidian semantic pass for callouts, embeds, and rewrite-relevant token classification (`vulcan-core`)
-- `serde` / `serde_yaml` / `toml` for structured parsing (`vulcan-core`)
+- `serde` / `yaml_serde` / `toml` for structured parsing (`vulcan-core`)
 - `ulid` for stable internal identifiers (`vulcan-core`)
 - `reqwest` for HTTP embedding provider (`vulcan-embed`)
 - `sqlite-vec` loaded as an extension behind a local trait or adapter (`vulcan-embed`)

@@ -378,12 +378,12 @@ fn source_annotations(
             .map_err(AppError::operation)?;
         let text = String::from_utf8(bytes).map_err(AppError::operation)?;
         let provenance = match detail {
-            WikiSourceLocators::Summary => serde_yaml::to_value(NoteSourceSummary {
+            WikiSourceLocators::Summary => yaml_serde::to_value(NoteSourceSummary {
                 artifact: package.identity.clone(),
                 member: note.to_string(),
                 mappings: mappings.len(),
             }),
-            WikiSourceLocators::Full => serde_yaml::to_value(NoteSourceProvenance {
+            WikiSourceLocators::Full => yaml_serde::to_value(NoteSourceProvenance {
                 artifact: package.identity.clone(),
                 member: note.to_string(),
                 spans: full_spans(&mappings),

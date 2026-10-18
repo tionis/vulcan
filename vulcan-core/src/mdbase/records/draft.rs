@@ -240,7 +240,7 @@ fn composition_errors(
         .collect()
 }
 
-fn render_draft(source: &str, frontmatter: &Value) -> Result<String, serde_yaml::Error> {
+fn render_draft(source: &str, frontmatter: &Value) -> Result<String, yaml_serde::Error> {
     let bom = if source.starts_with('\u{feff}') {
         "\u{feff}"
     } else {
@@ -254,7 +254,7 @@ fn render_draft(source: &str, frontmatter: &Value) -> Result<String, serde_yaml:
     } else {
         "\n"
     };
-    let yaml = serde_yaml::to_string(frontmatter)?;
+    let yaml = yaml_serde::to_string(frontmatter)?;
     let yaml = yaml
         .strip_prefix("---\n")
         .unwrap_or(&yaml)

@@ -66,23 +66,23 @@ fn describe_base_source(path: &str, document: &str) -> Result<MdbaseViewSource, 
     BasesEvaluator::new()
         .inspect_yaml(path, document)
         .map_err(|error| format!("`{path}` is not a valid Obsidian base: {error}"))?;
-    let yaml = serde_yaml::from_str::<serde_yaml::Value>(document)
+    let yaml = yaml_serde::from_str::<yaml_serde::Value>(document)
         .map_err(|error| format!("`{path}` is not valid YAML: {error}"))?;
     let views = yaml
         .get("views")
-        .and_then(serde_yaml::Value::as_sequence)
+        .and_then(yaml_serde::Value::as_sequence)
         .cloned()
         .unwrap_or_default();
     let names = views
         .iter()
-        .map(|view| view.get("name").and_then(serde_yaml::Value::as_str))
+        .map(|view| view.get("name").and_then(yaml_serde::Value::as_str))
         .collect::<Vec<_>>();
     let ids = derive_mdbase_view_ids(&names);
     let display_name = |key: &str| {
         yaml.get("properties")
             .and_then(|properties| properties.get(key))
             .and_then(|property| property.get("displayName"))
-            .and_then(serde_yaml::Value::as_str)
+            .and_then(yaml_serde::Value::as_str)
             .map(ToString::to_string)
     };
     let stem = Path::new(path)
@@ -110,10 +110,10 @@ fn describe_base_source(path: &str, document: &str) -> Result<MdbaseViewSource, 
                 description: None,
                 properties: view
                     .get("order")
-                    .and_then(serde_yaml::Value::as_sequence)
+                    .and_then(yaml_serde::Value::as_sequence)
                     .into_iter()
                     .flatten()
-                    .filter_map(serde_yaml::Value::as_str)
+                    .filter_map(yaml_serde::Value::as_str)
                     .map(|key| MdbaseViewProperty {
                         key: key.to_string(),
                         label: display_name(key),
@@ -124,7 +124,7 @@ fn describe_base_source(path: &str, document: &str) -> Result<MdbaseViewSource, 
                     .collect(),
                 presentation: view
                     .get("type")
-                    .and_then(serde_yaml::Value::as_str)
+                    .and_then(yaml_serde::Value::as_str)
                     .map(|kind| serde_json::json!({"type": kind})),
             })
             .collect(),
@@ -217,16 +217,16 @@ pub(super) fn execute_base_view(
 /// as tables; `TaskNotes` types keep their own source semantics. Nothing is
 /// written back: the `.base` file stays authoritative.
 fn headless_view_yaml(document: &str, index: usize) -> Result<String, AppError> {
-    let mut yaml = serde_yaml::from_str::<serde_yaml::Value>(document)
+    let mut yaml = yaml_serde::from_str::<yaml_serde::Value>(document)
         .map_err(|error| AppError::operation_with_code("invalid_view", error))?;
     let views = yaml
         .get_mut("views")
-        .and_then(serde_yaml::Value::as_sequence_mut)
+        .and_then(yaml_serde::Value::as_sequence_mut)
         .ok_or_else(|| AppError::operation_with_code("invalid_view", "base has no views"))?;
     let mut view = views.swap_remove(index);
     let rendered = view
         .get("type")
-        .and_then(serde_yaml::Value::as_str)
+        .and_then(yaml_serde::Value::as_str)
         .is_some_and(|kind| {
             kind.eq_ignore_ascii_case("table") || kind.to_ascii_lowercase().starts_with("tasknotes")
         });
@@ -236,7 +236,7 @@ fn headless_view_yaml(document: &str, index: usize) -> Result<String, AppError> 
         }
     }
     *views = vec![view];
-    serde_yaml::to_string(&yaml).map_err(AppError::operation)
+    yaml_serde::to_string(&yaml).map_err(AppError::operation)
 }
 
 fn base_result(

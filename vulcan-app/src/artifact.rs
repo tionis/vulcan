@@ -1071,7 +1071,7 @@ fn add_source_frontmatter(
     };
     vulcan.insert(
         source_key,
-        serde_yaml::to_value(provenance).map_err(AppError::operation)?,
+        yaml_serde::to_value(provenance).map_err(AppError::operation)?,
     );
     render_note_from_parts(Some(&frontmatter), &body).map_err(AppError::operation)
 }

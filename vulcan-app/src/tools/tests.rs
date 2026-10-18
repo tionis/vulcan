@@ -43,22 +43,22 @@ fn tool_test_manifest_metadata(manifest: &str) -> ToolTestManifestMetadata {
         .and_then(|rest| rest.split_once("---"))
         .expect("test tool manifest should have frontmatter");
     let (frontmatter, body) = frontmatter;
-    let value: serde_yaml::Value =
-        serde_yaml::from_str(frontmatter).expect("test tool manifest should parse");
+    let value: yaml_serde::Value =
+        yaml_serde::from_str(frontmatter).expect("test tool manifest should parse");
     let mapping = value
         .as_mapping()
         .expect("test tool manifest frontmatter should be a map");
-    let get = |key: &str| mapping.get(serde_yaml::Value::String(key.to_string()));
+    let get = |key: &str| mapping.get(yaml_serde::Value::String(key.to_string()));
     let tool_name = get("name")
-        .and_then(serde_yaml::Value::as_str)
+        .and_then(yaml_serde::Value::as_str)
         .expect("test tool manifest should set name")
         .to_string();
     let description = get("description")
-        .and_then(serde_yaml::Value::as_str)
+        .and_then(yaml_serde::Value::as_str)
         .unwrap_or("Test custom tool.")
         .to_string();
     let permission_profile = get("permission_profile")
-        .and_then(serde_yaml::Value::as_str)
+        .and_then(yaml_serde::Value::as_str)
         .map(ToOwned::to_owned);
     let input_schema = get("input_schema")
         .cloned()
@@ -107,7 +107,7 @@ fn render_tool_test_skill_manifest(name: &str, metadata: &ToolTestManifestMetada
             }
         }
     });
-    let frontmatter = serde_yaml::to_string(&manifest).expect("manifest should render");
+    let frontmatter = yaml_serde::to_string(&manifest).expect("manifest should render");
     let body = if metadata.body.is_empty() {
         format!("# {name}")
     } else {

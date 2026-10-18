@@ -5,12 +5,12 @@ use crate::commands::completions::{
 };
 use crate::commands::docs::{describe_cli, CliArgDescribe, CliCommandDescribe};
 use clap::Parser;
-use serde_yaml::Value as YamlValue;
 use std::fs;
 use std::process::{Command as ProcessCommand, Output as ProcessOutput};
 use tempfile::TempDir;
 use vulcan_app::templates::{parse_frontmatter_document, render_note_from_parts};
 use vulcan_core::expression::functions::parse_date_like_string;
+use yaml_serde::Value as YamlValue;
 
 const CLI_TEST_STACK_BYTES: &str = "8388608";
 
@@ -4849,7 +4849,7 @@ fn bases_create_writes_template_with_derived_frontmatter() {
     );
     assert_eq!(
         frontmatter["tags"],
-        serde_yaml::from_str::<YamlValue>("- base\n").expect("tag yaml should parse")
+        yaml_serde::from_str::<YamlValue>("- base\n").expect("tag yaml should parse")
     );
     assert!(body.contains("# Launch Plan"));
     assert!(body.contains("Template body."));
@@ -5156,7 +5156,7 @@ fn prepare_template_insertion_merges_frontmatter_without_overwriting_existing_va
     );
     assert_eq!(
         merged["tags"],
-        serde_yaml::from_str::<YamlValue>("- team\n- shipped\n- release\n")
+        yaml_serde::from_str::<YamlValue>("- team\n- shipped\n- release\n")
             .expect("tags should parse")
     );
     assert_eq!(prepared.target_body, "# Existing\n");
@@ -5259,7 +5259,7 @@ fn template_insert_command_prepends_and_merges_frontmatter() {
     );
     assert_eq!(
         frontmatter["tags"],
-        serde_yaml::from_str::<YamlValue>("- team\n- shipped\n- release\n")
+        yaml_serde::from_str::<YamlValue>("- team\n- shipped\n- release\n")
             .expect("tags should parse"),
     );
     assert_eq!(body, "\n## Inserted\n\n# Existing\n");

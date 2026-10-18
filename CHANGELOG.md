@@ -17,6 +17,11 @@
 
 ### Changed
 
+- YAML parsing moves from the archived `serde_yaml` to `yaml_serde`, the YAML organization's
+  maintained fork, which drops the unmaintained `unsafe-libyaml` dependency (RUSTSEC-2024-0449).
+  Frontmatter, Bases, and other YAML parse and serialize exactly as before (compared over about
+  7,700 documents; see `docs/investigations/yaml-parser-replacement.md`). For library users,
+  `ParsedDocument::frontmatter` and other YAML-typed APIs now use `yaml_serde::Value`.
 - mdbase query and permission failures keep their canonical code. `vulcan mdbase query` (and
   other mdbase commands) now report `invalid_query`, `context_not_found`, or `permission_denied`
   in `--output json` instead of `operation_failed`, as does the Python example's

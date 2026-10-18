@@ -97,8 +97,8 @@ fn validate_merged_shape(kind: MergeFileKind, data: &[u8]) -> Result<(), String>
             }
         }
         MergeFileKind::Bases => {
-            let value: serde_yaml::Value =
-                serde_yaml::from_slice(data).map_err(|error| error.to_string())?;
+            let value: yaml_serde::Value =
+                yaml_serde::from_slice(data).map_err(|error| error.to_string())?;
             if !value.is_mapping() {
                 return Err("Bases document root must be a mapping".to_string());
             }
@@ -145,18 +145,18 @@ fn merge_yaml_bytes(
     remote_identity: &str,
 ) -> Result<Option<Vec<u8>>, String> {
     let base = base
-        .map(serde_yaml::from_slice::<serde_yaml::Value>)
+        .map(yaml_serde::from_slice::<yaml_serde::Value>)
         .transpose()
         .map_err(|error| error.to_string())?
         .map(serde_json::to_value)
         .transpose()
         .map_err(|error| error.to_string())?;
     let local = serde_json::to_value(
-        serde_yaml::from_slice::<serde_yaml::Value>(local).map_err(|error| error.to_string())?,
+        yaml_serde::from_slice::<yaml_serde::Value>(local).map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
     let remote = serde_json::to_value(
-        serde_yaml::from_slice::<serde_yaml::Value>(remote).map_err(|error| error.to_string())?,
+        yaml_serde::from_slice::<yaml_serde::Value>(remote).map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
     let MergeOutcome::Resolved(Some(merged)) = merge_value(
@@ -170,9 +170,9 @@ fn merge_yaml_bytes(
     else {
         return Ok(None);
     };
-    let yaml: serde_yaml::Value =
+    let yaml: yaml_serde::Value =
         serde_json::from_value(merged).map_err(|error| error.to_string())?;
-    serde_yaml::to_string(&yaml)
+    yaml_serde::to_string(&yaml)
         .map(String::into_bytes)
         .map(Some)
         .map_err(|error| error.to_string())
@@ -217,10 +217,10 @@ fn merge_markdown_bytes(
     }
     let mut output = String::new();
     if let Some(frontmatter) = frontmatter {
-        let yaml: serde_yaml::Value =
+        let yaml: yaml_serde::Value =
             serde_json::from_value(frontmatter).map_err(|error| error.to_string())?;
         output.push_str("---\n");
-        output.push_str(&serde_yaml::to_string(&yaml).map_err(|error| error.to_string())?);
+        output.push_str(&yaml_serde::to_string(&yaml).map_err(|error| error.to_string())?);
         output.push_str("---\n");
     }
     output.push_str(body);
@@ -236,7 +236,7 @@ fn split_frontmatter(input: &str) -> Result<(Option<Value>, String), String> {
     let Some(end) = rest.find("\n---\n") else {
         return Err("unterminated Markdown YAML frontmatter".to_string());
     };
-    let yaml = serde_yaml::from_str::<serde_yaml::Value>(&rest[..end])
+    let yaml = yaml_serde::from_str::<yaml_serde::Value>(&rest[..end])
         .map_err(|error| error.to_string())?;
     let value = serde_json::to_value(yaml).map_err(|error| error.to_string())?;
     Ok((Some(value), rest[end + 5..].to_string()))

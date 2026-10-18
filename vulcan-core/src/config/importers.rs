@@ -2164,7 +2164,7 @@ pub(super) fn tasknotes_migrate_mdbase_assets(
     }
 
     let config_source = fs::read_to_string(&config_path)?;
-    let config_yaml: serde_yaml::Value = serde_yaml::from_str(&config_source)
+    let config_yaml: yaml_serde::Value = yaml_serde::from_str(&config_source)
         .map_err(|error| ConfigImportError::InvalidConfig(error.to_string()))?;
     let config: Value = serde_json::to_value(config_yaml)
         .map_err(|error| ConfigImportError::InvalidConfig(error.to_string()))?;
@@ -2302,7 +2302,7 @@ fn validate_mdbase_migration_document(
     } else {
         source
     };
-    let value: serde_yaml::Value = serde_yaml::from_str(yaml)
+    let value: yaml_serde::Value = yaml_serde::from_str(yaml)
         .map_err(|error| ConfigImportError::InvalidConfig(error.to_string()))?;
     let value = serde_json::to_value(value)
         .map_err(|error| ConfigImportError::InvalidConfig(error.to_string()))?;

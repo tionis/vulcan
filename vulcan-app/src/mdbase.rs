@@ -1001,7 +1001,7 @@ fn load_query_records_with_boundary(
 }
 
 pub fn parse_mdbase_query(source: &str) -> Result<serde_json::Value, AppError> {
-    let yaml = serde_yaml::from_str::<serde_yaml::Value>(source).map_err(|error| {
+    let yaml = yaml_serde::from_str::<yaml_serde::Value>(source).map_err(|error| {
         AppError::operation_with_code(
             "invalid_query",
             format!("invalid query YAML or JSON: {error}"),

@@ -1618,7 +1618,7 @@ mod tests {
 
     #[test]
     fn pinned_portable_query_compiles_to_the_shared_rich_plan() {
-        let yaml: serde_yaml::Value = serde_yaml::from_str(include_str!(
+        let yaml: yaml_serde::Value = yaml_serde::from_str(include_str!(
             "../../resources/mdbase/v0.3/upstream/tests/fixtures/views/valid-query.yml"
         ))
         .expect("fixture YAML");

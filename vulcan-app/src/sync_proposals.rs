@@ -3671,7 +3671,7 @@ fn validate_proposal_content(
             serde_json::from_slice::<serde_json::Value>(data).map_err(AppError::operation)?;
         }
         vulcan_sync::MergeFileKind::Bases => {
-            serde_yaml::from_slice::<serde_yaml::Value>(data).map_err(AppError::operation)?;
+            yaml_serde::from_slice::<yaml_serde::Value>(data).map_err(AppError::operation)?;
         }
         vulcan_sync::MergeFileKind::Text => {
             std::str::from_utf8(data).map_err(AppError::operation)?;

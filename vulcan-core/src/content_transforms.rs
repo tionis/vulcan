@@ -137,7 +137,7 @@ fn strip_excluded_frontmatter_keys(source: &str, excluded: &HashSet<String>) -> 
     };
 
     let raw_yaml = &source[block.yaml_start..block.yaml_end];
-    let Ok(frontmatter) = serde_yaml::from_str::<serde_yaml::Value>(raw_yaml) else {
+    let Ok(frontmatter) = yaml_serde::from_str::<yaml_serde::Value>(raw_yaml) else {
         return source.to_string();
     };
     let Some(mapping) = frontmatter.as_mapping() else {
@@ -154,7 +154,7 @@ fn strip_excluded_frontmatter_keys(source: &str, excluded: &HashSet<String>) -> 
     let replacement = if updated_mapping.is_empty() {
         String::new()
     } else {
-        match serde_yaml::to_string(&updated_mapping) {
+        match yaml_serde::to_string(&updated_mapping) {
             Ok(updated_yaml) => format!("---\n{updated_yaml}---\n"),
             Err(_) => String::new(),
         }

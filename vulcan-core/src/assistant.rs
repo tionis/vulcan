@@ -5,10 +5,10 @@ use crate::paths::{
 use crate::JsRuntimeSandbox;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use serde_yaml::Value as YamlValue;
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::{Path, PathBuf};
+use yaml_serde::Value as YamlValue;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AssistantError {
@@ -524,7 +524,7 @@ fn normalize_skill_commands(
     };
     let mut parsed = Vec::new();
     for command in sequence {
-        let summary: AssistantSkillCommandSummary = serde_yaml::from_value(command.clone())
+        let summary: AssistantSkillCommandSummary = yaml_serde::from_value(command.clone())
             .map_err(|error| {
                 AssistantError::parse(format!("invalid skill command metadata: {error}"))
             })?;
@@ -726,7 +726,7 @@ fn is_valid_skill_command_id(value: &str) -> bool {
 fn parse_yaml_frontmatter<T: for<'de> Deserialize<'de>>(
     frontmatter: &str,
 ) -> Result<T, AssistantError> {
-    serde_yaml::from_str(frontmatter)
+    yaml_serde::from_str(frontmatter)
         .map_err(|error| AssistantError::parse(format!("invalid assistant frontmatter: {error}")))
 }
 

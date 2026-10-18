@@ -11,7 +11,7 @@ pub struct MdbaseTaskNotesTypeMigration {
 pub enum MdbaseTaskNotesMigrationError {
     InvalidFrontmatter(String),
     UnsupportedField(String),
-    Serialize(serde_yaml::Error),
+    Serialize(yaml_serde::Error),
 }
 
 impl Display for MdbaseTaskNotesMigrationError {
@@ -38,7 +38,7 @@ pub fn migrate_tasknotes_v02_type(
     let Some((frontmatter_source, body)) = split_frontmatter(source) else {
         return Ok(None);
     };
-    let yaml: serde_yaml::Value = serde_yaml::from_str(frontmatter_source)
+    let yaml: yaml_serde::Value = yaml_serde::from_str(frontmatter_source)
         .map_err(|error| MdbaseTaskNotesMigrationError::InvalidFrontmatter(error.to_string()))?;
     let frontmatter = serde_json::to_value(yaml)
         .map_err(|error| MdbaseTaskNotesMigrationError::InvalidFrontmatter(error.to_string()))?;
@@ -169,7 +169,7 @@ pub fn migrate_tasknotes_v02_type(
     );
     migrated.insert("x-tasknotes".to_string(), Value::Object(tasknotes));
 
-    let yaml = serde_yaml::to_string(&Value::Object(migrated))
+    let yaml = yaml_serde::to_string(&Value::Object(migrated))
         .map_err(MdbaseTaskNotesMigrationError::Serialize)?;
     let body = body.replace("mdbase-spec) v0.2.0", "mdbase-spec) v0.3.0");
     Ok(Some(MdbaseTaskNotesTypeMigration {
@@ -403,7 +403,7 @@ It conforms to mdbase-spec) v0.2.0.
             .expect("migration should succeed")
             .expect("source should be recognized");
         let (yaml, _) = split_frontmatter(&migration.rendered_source).expect("frontmatter");
-        let value: Value = serde_yaml::from_str(yaml).expect("migrated yaml");
+        let value: Value = yaml_serde::from_str(yaml).expect("migrated yaml");
         let schema = bundled_mdbase_schema(&format!(
             "{MDBASE_CANONICAL_SCHEMA_BASE}type-file.schema.json"
         ))

@@ -145,9 +145,9 @@ struct FixtureSetup {
     #[serde(default)]
     files: BTreeMap<String, String>,
     #[serde(default)]
-    event: serde_yaml::Value,
+    event: yaml_serde::Value,
     #[serde(default)]
-    steps: BTreeMap<String, serde_yaml::Value>,
+    steps: BTreeMap<String, yaml_serde::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -156,9 +156,9 @@ struct FixtureCase {
     name: String,
     operation: String,
     #[serde(default)]
-    input: serde_yaml::Value,
+    input: yaml_serde::Value,
     #[serde(default)]
-    expect: serde_yaml::Value,
+    expect: yaml_serde::Value,
     #[serde(default)]
     covers: Vec<String>,
 }
@@ -184,15 +184,15 @@ enum CaseExecution {
 /// profiles and verify coverage against the upstream manifest.
 pub fn run_mdbase_core_read_conformance() -> Result<MdbaseConformanceEvidenceReport, AppError> {
     let suites = [
-        serde_yaml::from_str::<FixtureSuite>(MDBASE_V03_CORE_COLLECTION_SUITE)
+        yaml_serde::from_str::<FixtureSuite>(MDBASE_V03_CORE_COLLECTION_SUITE)
             .map_err(AppError::operation)?,
-        serde_yaml::from_str::<FixtureSuite>(MDBASE_V03_DATA_CONTRACTS_SUITE)
+        yaml_serde::from_str::<FixtureSuite>(MDBASE_V03_DATA_CONTRACTS_SUITE)
             .map_err(AppError::operation)?,
-        serde_yaml::from_str::<FixtureSuite>(MDBASE_V03_CEL_SUITE).map_err(AppError::operation)?,
-        serde_yaml::from_str::<FixtureSuite>(MDBASE_V03_VIEWS_SUITE)
+        yaml_serde::from_str::<FixtureSuite>(MDBASE_V03_CEL_SUITE).map_err(AppError::operation)?,
+        yaml_serde::from_str::<FixtureSuite>(MDBASE_V03_VIEWS_SUITE)
             .map_err(AppError::operation)?,
     ];
-    let manifest = serde_yaml::from_str::<FixtureManifest>(MDBASE_V03_MANIFEST)
+    let manifest = yaml_serde::from_str::<FixtureManifest>(MDBASE_V03_MANIFEST)
         .map_err(AppError::operation)?;
     let mut results = Vec::new();
     for suite in &suites {
@@ -750,19 +750,19 @@ fn case_covers(case: &FixtureCase) -> Vec<String> {
     let mut covers = case.covers.clone();
     let expectation = case.expect.as_mapping();
     if expectation.is_some_and(|expectation| {
-        expectation.contains_key(serde_yaml::Value::String("resolved_links".to_string()))
+        expectation.contains_key(yaml_serde::Value::String("resolved_links".to_string()))
     }) {
         covers.push("links.resolution".to_string());
     }
     if expectation
-        .and_then(|expectation| expectation.get(serde_yaml::Value::String("issues".to_string())))
-        .and_then(serde_yaml::Value::as_sequence)
+        .and_then(|expectation| expectation.get(yaml_serde::Value::String("issues".to_string())))
+        .and_then(yaml_serde::Value::as_sequence)
         .is_some_and(|issues| {
             issues.iter().any(|issue| {
                 issue
                     .as_mapping()
-                    .and_then(|issue| issue.get(serde_yaml::Value::String("code".to_string())))
-                    .and_then(serde_yaml::Value::as_str)
+                    .and_then(|issue| issue.get(yaml_serde::Value::String("code".to_string())))
+                    .and_then(yaml_serde::Value::as_str)
                     .is_some_and(|code| code.starts_with("link_"))
             })
         })
@@ -867,12 +867,12 @@ fn materialize_case_inputs(root: &Path, case: &FixtureCase) -> Result<(), AppErr
         }
     }
     if let Some(paths) = input
-        .get(serde_yaml::Value::String("paths".to_string()))
-        .and_then(serde_yaml::Value::as_sequence)
+        .get(yaml_serde::Value::String("paths".to_string()))
+        .and_then(yaml_serde::Value::as_sequence)
     {
         for (index, path) in paths
             .iter()
-            .filter_map(serde_yaml::Value::as_str)
+            .filter_map(yaml_serde::Value::as_str)
             .enumerate()
         {
             if let Some(contents) = bundled_reference(path) {
@@ -977,7 +977,7 @@ fn execute_read_case(
     collection: &vulcan_core::mdbase::MdbaseCollection,
     types: &vulcan_core::mdbase::MdbaseTypeRegistry,
     contracts: &vulcan_core::mdbase::MdbaseContractRegistry,
-    input: &serde_yaml::Mapping,
+    input: &yaml_serde::Mapping,
     operation: &str,
 ) -> Result<CaseExecution, AppError> {
     let path = required_yaml_string(input, "path")?;
@@ -1035,7 +1035,7 @@ fn execute_cel(
     collection: &vulcan_core::mdbase::MdbaseCollection,
     types: &vulcan_core::mdbase::MdbaseTypeRegistry,
     contracts: &vulcan_core::mdbase::MdbaseContractRegistry,
-    input: &serde_yaml::Mapping,
+    input: &yaml_serde::Mapping,
     setup: Option<&FixtureSetup>,
 ) -> Result<CaseExecution, AppError> {
     let engine = MdbaseCelEngine::default();
@@ -1076,12 +1076,12 @@ fn execute_cel(
 }
 
 fn execute_workflow_input(
-    input: &serde_yaml::Mapping,
+    input: &yaml_serde::Mapping,
     setup: &FixtureSetup,
 ) -> Result<CaseExecution, AppError> {
     let template = yaml_to_json(
         input
-            .get(serde_yaml::Value::String("template".to_string()))
+            .get(yaml_serde::Value::String("template".to_string()))
             .ok_or_else(|| AppError::operation("workflow input template is missing"))?,
     )?;
     let engine = MdbaseCelEngine::default();
@@ -1098,9 +1098,9 @@ fn execute_query(
     collection: &vulcan_core::mdbase::MdbaseCollection,
     types: &vulcan_core::mdbase::MdbaseTypeRegistry,
     contracts: &vulcan_core::mdbase::MdbaseContractRegistry,
-    input: &serde_yaml::Mapping,
+    input: &yaml_serde::Mapping,
 ) -> Result<CaseExecution, AppError> {
-    let query = yaml_to_json(&serde_yaml::Value::Mapping(input.clone()))?;
+    let query = yaml_to_json(&yaml_serde::Value::Mapping(input.clone()))?;
     let plan = match compile_mdbase_query(&query) {
         Ok(plan) => plan,
         Err(error) => return Ok(CaseExecution::Actual(query_failure(&error))),
@@ -1141,9 +1141,9 @@ fn execute_view_case(
     collection: &vulcan_core::mdbase::MdbaseCollection,
     types: &vulcan_core::mdbase::MdbaseTypeRegistry,
     contracts: &vulcan_core::mdbase::MdbaseContractRegistry,
-    input: &serde_yaml::Mapping,
+    input: &yaml_serde::Mapping,
 ) -> Result<CaseExecution, AppError> {
-    let input = yaml_to_json(&serde_yaml::Value::Mapping(input.clone()))?;
+    let input = yaml_to_json(&yaml_serde::Value::Mapping(input.clone()))?;
     let invocation = view_invocation(&input)?;
     let records = load_mdbase_records_with_contracts(collection, types, contracts, true)
         .map_err(AppError::operation)?;
@@ -1274,7 +1274,7 @@ fn record_known_fields(
 
 fn execute_create(
     types: &vulcan_core::mdbase::MdbaseTypeRegistry,
-    input: &serde_yaml::Mapping,
+    input: &yaml_serde::Mapping,
 ) -> Result<CaseExecution, AppError> {
     if let Some(path) = yaml_string(input, "path") {
         return Ok(
@@ -1296,7 +1296,7 @@ fn execute_create(
     let type_name = required_yaml_string(input, "type")?;
     let frontmatter = yaml_to_json(
         input
-            .get(serde_yaml::Value::String("frontmatter".to_string()))
+            .get(yaml_serde::Value::String("frontmatter".to_string()))
             .ok_or_else(|| AppError::operation("create frontmatter is missing"))?,
     )?;
     let behavior = compose_mdbase_type_behavior(types, &[type_name.to_string()]);
@@ -1321,7 +1321,7 @@ fn execute_contract_validation(
     collection: &vulcan_core::mdbase::MdbaseCollection,
     types: &vulcan_core::mdbase::MdbaseTypeRegistry,
     contracts: &vulcan_core::mdbase::MdbaseContractRegistry,
-    input: &serde_yaml::Mapping,
+    input: &yaml_serde::Mapping,
 ) -> Result<CaseExecution, AppError> {
     let mut errors = types
         .diagnostics
@@ -1337,8 +1337,8 @@ fn execute_contract_validation(
     if let Some(record_path) = yaml_string(input, "record") {
         let contents = bundled_reference(record_path)
             .ok_or_else(|| AppError::operation(format!("unbundled fixture: {record_path}")))?;
-        let yaml: serde_yaml::Value =
-            serde_yaml::from_str(contents).map_err(AppError::operation)?;
+        let yaml: yaml_serde::Value =
+            yaml_serde::from_str(contents).map_err(AppError::operation)?;
         let frontmatter = yaml_to_json(&yaml)?;
         let contract = contracts
             .iter()
@@ -1370,7 +1370,7 @@ fn execute_contract_validation(
 
 fn assert_expectation(
     actual: &serde_json::Value,
-    expected: &serde_yaml::Value,
+    expected: &yaml_serde::Value,
 ) -> Result<(), String> {
     let expected = yaml_to_json(expected).map_err(|error| error.to_string())?;
     let expected = expected
@@ -1555,21 +1555,21 @@ fn basename(path: &str) -> Result<&str, AppError> {
         .ok_or_else(|| AppError::operation(format!("fixture path has no filename: {path}")))
 }
 
-fn yaml_string<'a>(mapping: &'a serde_yaml::Mapping, key: &str) -> Option<&'a str> {
+fn yaml_string<'a>(mapping: &'a yaml_serde::Mapping, key: &str) -> Option<&'a str> {
     mapping
-        .get(serde_yaml::Value::String(key.to_string()))
-        .and_then(serde_yaml::Value::as_str)
+        .get(yaml_serde::Value::String(key.to_string()))
+        .and_then(yaml_serde::Value::as_str)
 }
 
 fn required_yaml_string<'a>(
-    mapping: &'a serde_yaml::Mapping,
+    mapping: &'a yaml_serde::Mapping,
     key: &str,
 ) -> Result<&'a str, AppError> {
     yaml_string(mapping, key)
         .ok_or_else(|| AppError::operation(format!("fixture input `{key}` is missing")))
 }
 
-fn yaml_to_json(value: &serde_yaml::Value) -> Result<serde_json::Value, AppError> {
+fn yaml_to_json(value: &yaml_serde::Value) -> Result<serde_json::Value, AppError> {
     serde_json::to_value(value).map_err(AppError::operation)
 }
 
@@ -1651,7 +1651,7 @@ mod tests {
                 .iter()
                 .filter(|case| case.fixture_set == VIEWS_FIXTURE_SET)
                 .count(),
-            serde_yaml::from_str::<FixtureSuite>(MDBASE_V03_VIEWS_SUITE)
+            yaml_serde::from_str::<FixtureSuite>(MDBASE_V03_VIEWS_SUITE)
                 .unwrap()
                 .groups
                 .iter()
@@ -1699,8 +1699,8 @@ mod tests {
             id: Some("test.unsupported".to_string()),
             name: "unsupported".to_string(),
             operation: "future_operation".to_string(),
-            input: serde_yaml::from_str("{}\n").expect("input"),
-            expect: serde_yaml::from_str("valid: true\n").expect("expect"),
+            input: yaml_serde::from_str("{}\n").expect("input"),
+            expect: yaml_serde::from_str("valid: true\n").expect("expect"),
             covers: vec!["core_read.future".to_string()],
         };
         let directory = tempfile::tempdir().expect("temp dir");
