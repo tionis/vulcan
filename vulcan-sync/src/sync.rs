@@ -3945,6 +3945,7 @@ fn merge_divergence(
             remote,
             &capture.commit,
             published.as_ref(),
+            &report.automatic_resolutions,
         ),
     )?;
     require_accepted_platform(engine, options, report, &merged)?;
@@ -5332,12 +5333,56 @@ fn merge_message(
     remote: &GitOid,
     local: &GitOid,
     published: Option<&GitOid>,
+    resolutions: &[GitAutomaticResolution],
 ) -> String {
     format!(
-        "vulcan live merge\n\n{}{}",
+        "vulcan live merge\n\n{}{}{}",
         sync_trailers(refs, options, &format!("{remote}+{local}")),
-        scope_trailers(options, published)
+        scope_trailers(options, published),
+        merger_trailers(resolutions)
     )
+}
+
+/// Merge commits record at most this many `Vulcan-Sync-Merger` trailers;
+/// the rest are counted in `Vulcan-Sync-Merger-Omitted`.
+const MAX_MERGER_TRAILERS: usize = 32;
+
+/// One `Vulcan-Sync-Merger` trailer per path a registered merger resolved:
+/// the merger and version, the exact base, local, and remote input blobs
+/// (`-` for a side without the file), the output blob, and the path as a
+/// JSON string. Every value follows from the merge inputs alone, so the
+/// trailers add nothing device-specific to the commit.
+fn merger_trailers(resolutions: &[GitAutomaticResolution]) -> String {
+    fn side(oid: Option<&GitOid>) -> &str {
+        oid.map_or("-", GitOid::as_str)
+    }
+    use std::fmt::Write as _;
+    let evidence = resolutions
+        .iter()
+        .filter_map(|resolution| Some((resolution.path.as_str(), resolution.merger.as_ref()?)))
+        .collect::<Vec<_>>();
+    let mut trailers = String::new();
+    for (path, merger) in evidence.iter().take(MAX_MERGER_TRAILERS) {
+        let _ = writeln!(
+            trailers,
+            "Vulcan-Sync-Merger: {}@{} base={} local={} remote={} output={} path={}",
+            merger.id,
+            merger.version,
+            side(merger.base.as_ref()),
+            side(merger.local.as_ref()),
+            side(merger.remote.as_ref()),
+            side(merger.output.as_ref()),
+            serde_json::to_string(path).expect("a string serializes"),
+        );
+    }
+    if evidence.len() > MAX_MERGER_TRAILERS {
+        let _ = writeln!(
+            trailers,
+            "Vulcan-Sync-Merger-Omitted: {}",
+            evidence.len() - MAX_MERGER_TRAILERS
+        );
+    }
+    trailers
 }
 
 fn sync_trailers(refs: &GitSyncRefs, options: &GitSyncOptions, source: &str) -> String {
@@ -9106,23 +9151,8 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
 
         // The resolution names its registered merger and the exact blobs.
         let blob = |content: &[u8]| {
-            use std::io::Write;
-            let mut child = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&reader)
-                .args(["hash-object", "--stdin"])
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("git hash-object");
-            child
-                .stdin
-                .take()
-                .expect("stdin")
-                .write_all(content)
-                .expect("write blob");
-            let output = child.wait_with_output().expect("hash-object output");
-            GitOid::parse(String::from_utf8(output.stdout).expect("utf-8").trim()).expect("oid")
+            let hashed = git_with_stdin(&reader, &["hash-object", "--stdin"], content);
+            GitOid::parse(hashed.trim()).expect("oid")
         };
         let evidence = resolution.merger.as_ref().expect("merger evidence");
         assert_eq!(evidence.id, "vulcan.json-tree");
@@ -9144,6 +9174,88 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         );
         let json = serde_json::to_value(resolution).expect("resolution JSON");
         assert_eq!(json["merger"]["id"], "vulcan.json-tree");
+
+        // The merge commit carries the same evidence as a trailer.
+        let log = git_with_stdin(&reader, &["log", "--all", "--format=%B%x00"], b"");
+        let merge = log
+            .split('\0')
+            .find(|message| message.trim_start().starts_with("vulcan live merge"))
+            .expect("live merge commit");
+        let trailer = format!(
+            "Vulcan-Sync-Merger: vulcan.json-tree@1 base={} local={} remote={} output={} path=\"data.json\"",
+            evidence.base.as_ref().expect("base"),
+            evidence.local.as_ref().expect("local"),
+            evidence.remote.as_ref().expect("remote"),
+            evidence.output.as_ref().expect("output"),
+        );
+        assert!(merge.lines().any(|line| line == trailer), "{merge}");
+        let parsed = git_with_stdin(
+            &reader,
+            &["interpret-trailers", "--parse"],
+            merge.as_bytes(),
+        );
+        assert!(parsed.lines().any(|line| line == trailer), "{parsed}");
+        assert!(parsed.contains("Vulcan-Sync-Device: "), "{parsed}");
+    }
+
+    /// Runs `git` in `repository` with `input` on stdin and returns stdout.
+    fn git_with_stdin(repository: &Path, args: &[&str], input: &[u8]) -> String {
+        use std::io::Write;
+        let mut child = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repository)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("git");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(input)
+            .expect("git input");
+        let output = child.wait_with_output().expect("git output");
+        assert!(output.status.success(), "git {args:?} failed");
+        String::from_utf8(output.stdout).expect("utf-8 git output")
+    }
+
+    #[test]
+    fn merger_trailers_quote_paths_mark_absent_sides_and_are_capped() {
+        let oid = |digit: char| GitOid::parse(digit.to_string().repeat(40)).expect("oid");
+        let resolution = |path: &str, base: Option<GitOid>| GitAutomaticResolution {
+            path: path.to_string(),
+            kind: MergeFileKind::Json,
+            rule_id: "json-structured".to_string(),
+            validation: GitAutomaticResolutionValidation { checks: Vec::new() },
+            merger: Some(GitMergerEvidence {
+                id: "vulcan.json-tree".to_string(),
+                version: 1,
+                base,
+                local: Some(oid('b')),
+                remote: Some(oid('c')),
+                output: Some(oid('d')),
+            }),
+        };
+        let mut untracked = resolution("ignored.json", None);
+        untracked.merger = None;
+        let trailers = merger_trailers(&[resolution("dir/a \"b\"\nc.json", None), untracked]);
+        assert_eq!(
+            trailers,
+            format!(
+                "Vulcan-Sync-Merger: vulcan.json-tree@1 base=- local={} remote={} output={} path=\"dir/a \\\"b\\\"\\nc.json\"\n",
+                oid('b'),
+                oid('c'),
+                oid('d')
+            )
+        );
+        let many = (0..40)
+            .map(|index| resolution(&format!("{index}.json"), Some(oid('a'))))
+            .collect::<Vec<_>>();
+        let trailers = merger_trailers(&many);
+        assert_eq!(trailers.lines().count(), MAX_MERGER_TRAILERS + 1);
+        assert!(trailers.ends_with("Vulcan-Sync-Merger-Omitted: 8\n"));
+        assert!(merger_trailers(&[]).is_empty());
     }
 
     fn carried_object(data: &str) -> GitPathObject {
