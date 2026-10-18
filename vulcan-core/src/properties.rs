@@ -667,6 +667,7 @@ fn query_notes_core(
         &crate::note_store::DirectNoteStore::new(paths),
         paths,
         query,
+        None,
         filter,
         authorized_index,
         output,
@@ -674,10 +675,12 @@ fn query_notes_core(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn query_notes_core_in(
     store: &dyn crate::note_store::NoteStore,
     paths: &VaultPaths,
     query: &NoteQuery,
+    typed: Option<&[NoteFilterInput]>,
     filter: Option<&PermissionFilter>,
     authorized_index: Option<&HashMap<String, NoteRecord>>,
     output: NoteQueryOutput,
@@ -691,7 +694,7 @@ fn query_notes_core_in(
             .collect::<HashSet<_>>()
     });
     let lookup = store.lookup(NoteIndexReadScope::Filter(filter), within.as_ref())?;
-    query_notes_over(paths, &lookup, &config, query, output, page, None)
+    query_notes_over(paths, &lookup, &config, query, typed, output, page, None)
 }
 
 /// [`query_notes_with_filter`] reading notes from `store` (QRY.6).
@@ -713,10 +716,25 @@ pub fn query_notes_page_in(
     filter: Option<&PermissionFilter>,
     page: Option<NotePage>,
 ) -> Result<NotesReport, PropertyError> {
+    query_notes_typed_page_in(store, paths, query, None, filter, page)
+}
+
+/// [`query_notes_page_in`] whose filters are `typed` when given, already
+/// structured where they can be, instead of `query.filters` parsed from
+/// text; `query.filters` remains what the report echoes.
+pub(crate) fn query_notes_typed_page_in(
+    store: &dyn crate::note_store::NoteStore,
+    paths: &VaultPaths,
+    query: &NoteQuery,
+    typed: Option<&[NoteFilterInput]>,
+    filter: Option<&PermissionFilter>,
+    page: Option<NotePage>,
+) -> Result<NotesReport, PropertyError> {
     match query_notes_core_in(
         store,
         paths,
         query,
+        typed,
         filter,
         None,
         NoteQueryOutput::Notes,
@@ -751,7 +769,7 @@ pub fn query_notes_stored_in(
     } else {
         NoteQueryOutput::StoredNotes
     };
-    match query_notes_core_in(store, paths, query, filter, None, output, None)? {
+    match query_notes_core_in(store, paths, query, None, filter, None, output, None)? {
         NoteQueryOutcome::Notes(shared) => Ok(shared.into_report(query)),
         NoteQueryOutcome::Paths(_) => unreachable!("notes output yields notes"),
     }
@@ -774,7 +792,7 @@ pub(crate) fn query_notes_shared_over(
     } else {
         NoteQueryOutput::Notes
     };
-    match query_notes_over(paths, lookup, config, query, output, None, top)? {
+    match query_notes_over(paths, lookup, config, query, None, output, None, top)? {
         NoteQueryOutcome::Notes(shared) => Ok(shared),
         NoteQueryOutcome::Paths(_) => unreachable!("notes output yields notes"),
     }
@@ -824,16 +842,21 @@ pub struct NotePage {
     pub limit: Option<usize>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn query_notes_over(
     paths: &VaultPaths,
     lookup: &crate::note_lookup::IndexedNoteLookup<'_>,
     config: &VaultConfig,
     query: &NoteQuery,
+    typed: Option<&[NoteFilterInput]>,
     output: NoteQueryOutput,
     page: Option<NotePage>,
     top: Option<crate::plan::PlanTop<'_>>,
 ) -> Result<NoteQueryOutcome, PropertyError> {
-    let compiled = compile_note_filters(&query.filters)?;
+    let compiled = match typed {
+        Some(typed) => compile_note_filter_inputs(typed)?,
+        None => compile_note_filters(&query.filters)?,
+    };
     // A page of hydrated notes needs only the page hydrated when filters
     // and the sort read stored fields (sort keys always do).
     let page_first = page.is_some()
@@ -3117,23 +3140,54 @@ struct CompiledExpressionFilter {
     predicate: crate::predicate::Predicate,
 }
 
+/// One note filter to compile: its text, which reports and errors show,
+/// and the structured `field op value` filter it is, if it is one. A typed
+/// query predicate arrives already structured, so its text is never parsed
+/// back.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct NoteFilterInput {
+    pub text: String,
+    pub parsed: Option<ParsedFilter>,
+}
+
+impl NoteFilterInput {
+    /// A filter given as text: structured when it parses as one.
+    pub(crate) fn from_text(text: &str) -> Self {
+        Self {
+            text: text.to_string(),
+            parsed: parse_filter_expression(text).ok(),
+        }
+    }
+}
+
 fn compile_note_filters(filters: &[String]) -> Result<CompiledNoteFilters, PropertyError> {
+    let inputs = filters
+        .iter()
+        .map(|filter| NoteFilterInput::from_text(filter))
+        .collect::<Vec<_>>();
+    compile_note_filter_inputs(&inputs)
+}
+
+fn compile_note_filter_inputs(
+    filters: &[NoteFilterInput],
+) -> Result<CompiledNoteFilters, PropertyError> {
     let mut sources = Vec::new();
     let mut expressions = Vec::new();
     for filter in filters {
-        if let Ok(parsed) = parse_filter_expression(filter) {
-            if let Some(source) = filter_source(&parsed) {
-                sources.push(source);
-                continue;
-            }
+        if let Some(source) = filter.parsed.as_ref().and_then(filter_source) {
+            sources.push(source);
+            continue;
         }
-        let source = note_filter_expression_source(filter)?;
+        let source = match &filter.parsed {
+            Some(parsed) => parsed_filter_expression_source(parsed, &filter.text)?,
+            None => filter.text.clone(),
+        };
         let expr = Parser::new(&source)
             .and_then(Parser::parse)
-            .map_err(|_| PropertyError::InvalidFilter(filter.clone()))?;
+            .map_err(|_| PropertyError::InvalidFilter(filter.text.clone()))?;
         let predicate = crate::predicate::Predicate::lower_dataview(&expr);
         expressions.push(CompiledExpressionFilter {
-            filter: filter.clone(),
+            filter: filter.text.clone(),
             expr,
             predicate,
         });
@@ -3186,9 +3240,18 @@ fn is_tag_source(parsed: &ParsedFilter) -> bool {
 /// `key op value` filters are surface syntax for an expression, and any
 /// other filter already is one.
 pub(crate) fn note_filter_expression_source(filter: &str) -> Result<String, PropertyError> {
-    let Ok(parsed) = parse_filter_expression(filter) else {
-        return Ok(filter.to_string());
-    };
+    match parse_filter_expression(filter) {
+        Ok(parsed) => parsed_filter_expression_source(&parsed, filter),
+        Err(_) => Ok(filter.to_string()),
+    }
+}
+
+/// The Vulcan expression the structured filter `parsed` means; `filter` is
+/// its text, for errors.
+fn parsed_filter_expression_source(
+    parsed: &ParsedFilter,
+    filter: &str,
+) -> Result<String, PropertyError> {
     let field = match &parsed.field {
         FilterField::Property(key) => property_expression_source(key),
         FilterField::FilePath => "file.path".to_string(),
@@ -3208,7 +3271,7 @@ pub(crate) fn note_filter_expression_source(filter: &str) -> Result<String, Prop
         FilterOperator::Lt => comparison("<"),
         FilterOperator::Lte => comparison("<="),
         FilterOperator::StartsWith => Ok(format!("startswith({field}, {value})")),
-        FilterOperator::Contains | FilterOperator::HasTag if is_tag_source(&parsed) => {
+        FilterOperator::Contains | FilterOperator::HasTag if is_tag_source(parsed) => {
             Ok(format!("file.hasTag({value})"))
         }
         FilterOperator::Contains => Ok(format!("contains({field}, {value})")),

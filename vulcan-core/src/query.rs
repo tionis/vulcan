@@ -207,6 +207,55 @@ impl From<QueryPredicate> for QueryFilter {
 }
 
 impl QueryPredicate {
+    /// The structured note filter this predicate is, built directly rather
+    /// than rendered and parsed back, so a value is used exactly as given
+    /// (quotes, backslashes, and operator words in text included). `None`
+    /// for an empty field and for `file.*` fields without a structured
+    /// form, which keep meaning the expression their text reads as.
+    fn to_parsed(&self) -> Option<crate::properties::ParsedFilter> {
+        use crate::properties::{FilterField, FilterOperator, FilterValue, ParsedFilter};
+        let field = match self.field.as_str() {
+            "" => return None,
+            "file.path" => FilterField::FilePath,
+            "file.name" => FilterField::FileName,
+            "file.ext" | "file.extension" => FilterField::FileExt,
+            "file.mtime" => FilterField::FileMtime,
+            "file.ctime" => FilterField::FileCtime,
+            "file.tags" => FilterField::FileTags,
+            other if other.starts_with("file.") => return None,
+            other => FilterField::Property(
+                other
+                    .strip_prefix("properties.")
+                    .unwrap_or(other)
+                    .to_string(),
+            ),
+        };
+        let operator = match self.operator {
+            QueryOperator::Eq => FilterOperator::Eq,
+            QueryOperator::Ne => FilterOperator::Ne,
+            QueryOperator::Gt => FilterOperator::Gt,
+            QueryOperator::Gte => FilterOperator::Gte,
+            QueryOperator::Lt => FilterOperator::Lt,
+            QueryOperator::Lte => FilterOperator::Lte,
+            QueryOperator::StartsWith => FilterOperator::StartsWith,
+            QueryOperator::Contains => FilterOperator::Contains,
+            QueryOperator::HasTag => FilterOperator::HasTag,
+            QueryOperator::Matches => FilterOperator::Matches,
+            QueryOperator::MatchesI => FilterOperator::MatchesI,
+        };
+        let value = match &self.value {
+            QueryValue::Null => FilterValue::Null,
+            QueryValue::Bool(value) => FilterValue::Bool(*value),
+            QueryValue::Number(value) => FilterValue::Number(*value),
+            QueryValue::Text(value) => FilterValue::Text(value.clone()),
+        };
+        Some(ParsedFilter {
+            field,
+            operator,
+            value,
+        })
+    }
+
     fn from_parsed(parsed: &crate::properties::ParsedFilter) -> Self {
         use crate::properties::{FilterField, FilterOperator, FilterValue};
         let field = match &parsed.field {
@@ -430,6 +479,25 @@ impl QueryAst {
         }
     }
 
+    /// The filters to execute: typed predicates lowered directly to
+    /// structured filters, the rest as the text [`Self::to_note_query`]
+    /// renders.
+    fn note_filter_inputs(&self) -> Vec<crate::properties::NoteFilterInput> {
+        self.predicates
+            .iter()
+            .map(|filter| {
+                let text = filter.to_filter_string();
+                match filter.as_predicate().and_then(QueryPredicate::to_parsed) {
+                    Some(parsed) => crate::properties::NoteFilterInput {
+                        text,
+                        parsed: Some(parsed),
+                    },
+                    None => crate::properties::NoteFilterInput::from_text(&text),
+                }
+            })
+            .collect()
+    }
+
     /// Convert this AST back to a `NoteQuery` compatible form.
     ///
     pub fn to_note_query(&self) -> NoteQuery {
@@ -487,13 +555,18 @@ pub fn execute_query_with_filter(
     ast: &QueryAst,
     filter: Option<&PermissionFilter>,
 ) -> Result<NotesReport, QueryError> {
-    let note_query = ast.to_note_query();
-
     if !paths.cache_db().exists() {
         return Err(QueryError::CacheMissing);
     }
-
-    crate::properties::query_notes_with_filter(paths, &note_query, filter).map_err(QueryError::from)
+    crate::properties::query_notes_typed_page_in(
+        &crate::note_store::DirectNoteStore::new(paths),
+        paths,
+        &ast.to_note_query(),
+        Some(&ast.note_filter_inputs()),
+        filter,
+        None,
+    )
+    .map_err(QueryError::from)
 }
 
 /// Execute a `QueryAst` from a DSL string.
@@ -837,8 +910,14 @@ pub fn execute_query_report_page_in(
     if !paths.cache_db().exists() {
         return Err(QueryError::CacheMissing);
     }
-    let report =
-        crate::properties::query_notes_page_in(store, paths, &ast.to_note_query(), filter, page)?;
+    let report = crate::properties::query_notes_typed_page_in(
+        store,
+        paths,
+        &ast.to_note_query(),
+        Some(&ast.note_filter_inputs()),
+        filter,
+        page,
+    )?;
     Ok(QueryReport {
         query: ast,
         notes: report.notes,
@@ -939,6 +1018,128 @@ mod tests {
     }
 
     // ── DSL parsing tests ──────────────────────────────────────────────────────
+
+    /// Typed predicates run as given, without a trip through filter text:
+    /// text with both quote kinds, backslashes, or operator words, typed
+    /// null, booleans, and numbers, regex operators, a property key with a
+    /// space, and a permission filter hiding a matching private note.
+    #[test]
+    fn typed_predicates_execute_exactly_as_given() {
+        use crate::permissions::{PathPermission, PermissionFilter, ResourceSpecifier};
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let root = temp.path();
+        std::fs::create_dir_all(root.join(".vulcan")).expect("vulcan dir");
+        for (path, frontmatter) in [
+            ("Public/Quotes.md", "title: 'it''s \"quoted\"'\n"),
+            ("Private/Quotes.md", "title: 'it''s \"quoted\"'\n"),
+            ("Public/Backslash.md", "title: 'C:\\dir\\x'\n"),
+            ("Public/Words.md", "title: \"a contains b = c\"\n"),
+            (
+                "Public/Typed.md",
+                "done: true\ncount: 3\nempty: null\nmy field: hit\n",
+            ),
+            (
+                "Public/Other.md",
+                "done: false\ncount: 4.5\nempty: value\ncode: AB-12\n",
+            ),
+        ] {
+            std::fs::create_dir_all(root.join(path).parent().expect("parent")).expect("dir");
+            std::fs::write(root.join(path), format!("---\n{frontmatter}---\n")).expect("note");
+        }
+        let paths = VaultPaths::new(root);
+        crate::scan_vault(&paths, crate::ScanMode::Full).expect("scan");
+        let public = PermissionFilter::new(PathPermission {
+            allow: vec![ResourceSpecifier::Folder("Public/**".to_string())],
+            deny: Vec::new(),
+        });
+        let matching = |predicate: serde_json::Value, filter: Option<&PermissionFilter>| {
+            let ast = QueryAst::from_json(
+                &serde_json::json!({ "source": "notes", "predicates": [predicate] }).to_string(),
+            )
+            .expect("query json");
+            let mut found = execute_query_with_filter(&paths, &ast, filter)
+                .expect("query runs")
+                .notes
+                .into_iter()
+                .map(|note| note.document_path)
+                .collect::<Vec<_>>();
+            found.sort();
+            found
+        };
+        let text = |field: &str, operator: &str, value: &str| serde_json::json!({ "field": field, "operator": operator, "value": value });
+
+        assert_eq!(
+            matching(text("title", "eq", "it's \"quoted\""), None),
+            ["Private/Quotes.md", "Public/Quotes.md"]
+        );
+        assert_eq!(
+            matching(text("title", "eq", "it's \"quoted\""), Some(&public)),
+            ["Public/Quotes.md"]
+        );
+        assert_eq!(
+            matching(text("title", "eq", "C:\\dir\\x"), None),
+            ["Public/Backslash.md"]
+        );
+        assert_eq!(
+            matching(text("title", "eq", "a contains b = c"), None),
+            ["Public/Words.md"]
+        );
+        assert_eq!(
+            matching(text("title", "contains", "\"quoted"), None),
+            ["Private/Quotes.md", "Public/Quotes.md"]
+        );
+        assert_eq!(
+            matching(text("my field", "eq", "hit"), None),
+            ["Public/Typed.md"]
+        );
+        assert_eq!(
+            matching(
+                serde_json::json!({ "field": "done", "operator": "eq", "value": true }),
+                None
+            ),
+            ["Public/Typed.md"]
+        );
+        assert_eq!(
+            matching(
+                serde_json::json!({ "field": "count", "operator": "gt", "value": 3 }),
+                None
+            ),
+            ["Public/Other.md"]
+        );
+        assert_eq!(
+            matching(
+                serde_json::json!({ "field": "empty", "operator": "eq", "value": null }),
+                None
+            ),
+            // A missing property equals null too.
+            [
+                "Private/Quotes.md",
+                "Public/Backslash.md",
+                "Public/Quotes.md",
+                "Public/Typed.md",
+                "Public/Words.md"
+            ]
+        );
+        assert_eq!(
+            matching(text("code", "matches", "^AB-\\d+$"), None),
+            ["Public/Other.md"]
+        );
+        assert_eq!(
+            matching(text("code", "matches_i", "^ab-"), None),
+            ["Public/Other.md"]
+        );
+        // A text value that reads like a number or keyword stays text.
+        assert!(matching(text("count", "eq", "3"), None).is_empty());
+        assert!(matching(text("done", "eq", "true"), None).is_empty());
+        // Errors stay errors: an invalid regex, and `has_tag` on a property.
+        for bad in [text("code", "matches", "("), text("code", "has_tag", "x")] {
+            let ast = QueryAst::from_json(
+                &serde_json::json!({ "source": "notes", "predicates": [bad] }).to_string(),
+            )
+            .expect("query json");
+            assert!(execute_query(&paths, &ast).is_err(), "{ast:?}");
+        }
+    }
 
     #[test]
     fn dsl_from_notes() {

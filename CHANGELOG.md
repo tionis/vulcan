@@ -76,6 +76,13 @@
   binaries must first update to 0.3.0, which both keys signed, or be reinstalled from a
   checksum-verified archive or package.
 
+### Fixed
+
+- Native queries run typed predicates exactly as given. A JSON `query` predicate whose text value
+  contains both `'` and `"`, or whose field is a property key with a space, failed with
+  `invalid property filter`; typed predicates no longer pass through filter text, so both now
+  match as written. Other predicates return the same notes as before.
+
 ## 0.3.0 — 2026-10-08
 
 Vulcan 0.3.0 makes multi-device use dependable. Sync authenticates with per-device keys, can
