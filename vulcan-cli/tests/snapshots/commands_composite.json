@@ -14731,7 +14731,7 @@
           },
           {
             "about": "Register an existing local vault so sync and the daemon can use it",
-            "after_help": "Notes:\n  Registration tells Vulcan this vault exists on this device. `vulcan sync <wiki>`\n  and the daemon operate on registered wikis; plain `--vault <path>` commands\n  keep working without registration.\n  IDs are at most 64 characters: lowercase letters, digits, `-`, and `_`.\n  The path must already exist; Git sync additionally needs a Git repository\n  with the live remote configured.\n  Preview with --dry-run first; --dry-run never writes registry state.\n\nDevice key:\n  For an SSH remote, `vault add` also enrolls this device's key (created if\n  needed): it checks whether the remote accepts it, authorizes it through the\n  forge when you have a login or token, binds Git to it, and registers the\n  device. It never asks a question and never fails the add; anything missing is\n  reported as `pending` with the exact next step (`vulcan vault enroll <id>`\n  finishes it). Use --no-device-key to leave authentication to your own SSH\n  setup. Details: `vulcan help device-keys`.\n\nExamples:\n  vulcan vault add personal ~/vaults/personal --dry-run\n  vulcan vault add personal ~/vaults/personal\n  vulcan vault list\n  vulcan sync status personal\n  vulcan daemon start",
+            "after_help": "Notes:\n  Registration tells Vulcan this vault exists on this device. `vulcan sync <wiki>`\n  and the daemon operate on registered wikis; plain `--vault <path>` commands\n  keep working without registration.\n  IDs are at most 64 characters: lowercase letters, digits, `-`, and `_`.\n  The path must already exist; Git sync additionally needs a Git repository\n  with the live remote configured. --git-init creates the repository first\n  when the path is not inside one (no commit, no remote); a vault already\n  inside a repository is left as it is.\n  Preview with --dry-run first; --dry-run never writes registry state.\n\nDevice key:\n  For an SSH remote, `vault add` also enrolls this device's key (created if\n  needed): it checks whether the remote accepts it, authorizes it through the\n  forge when you have a login or token, binds Git to it, and registers the\n  device. It never asks a question and never fails the add; anything missing is\n  reported as `pending` with the exact next step (`vulcan vault enroll <id>`\n  finishes it). Use --no-device-key to leave authentication to your own SSH\n  setup. Details: `vulcan help device-keys`.\n\nExamples:\n  vulcan vault add personal ~/vaults/personal --dry-run\n  vulcan vault add personal ~/vaults/personal\n  vulcan vault list\n  vulcan sync status personal\n  vulcan daemon start",
             "name": "add",
             "options": [
               {
@@ -14790,6 +14790,20 @@
                 "short": null,
                 "value_names": [
                   "GIT_DIR"
+                ]
+              },
+              {
+                "help": "Create a Git repository at the path first when it is not inside one",
+                "id": "git_init",
+                "long": "git-init",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "GIT_INIT"
                 ]
               },
               {

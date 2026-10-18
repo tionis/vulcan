@@ -612,7 +612,9 @@ Notes:
   keep working without registration.
   IDs are at most 64 characters: lowercase letters, digits, `-`, and `_`.
   The path must already exist; Git sync additionally needs a Git repository
-  with the live remote configured.
+  with the live remote configured. --git-init creates the repository first
+  when the path is not inside one (no commit, no remote); a vault already
+  inside a repository is left as it is.
   Preview with --dry-run first; --dry-run never writes registry state.
 
 Device key:
@@ -6059,6 +6061,12 @@ pub enum VaultCommand {
         group: Vec<String>,
         #[arg(long, help = "Optional detached Git directory for this device")]
         git_dir: Option<PathBuf>,
+        #[arg(
+            long,
+            conflicts_with = "git_dir",
+            help = "Create a Git repository at the path first when it is not inside one"
+        )]
+        git_init: bool,
         #[arg(long, help = "Permission profile used by future daemon requests")]
         permissions_profile: Option<String>,
         #[arg(

@@ -4,6 +4,9 @@
 
 ### Added
 
+- `vulcan vault add --git-init` creates a Git repository at the path first when it is not inside
+  one (no commit, no remote). The registration is validated before the repository is created, so
+  a refused add leaves the folder untouched.
 - `vulcan vault discover [<dir>...]` finds vaults in a folder that are not registered yet: each
   immediate subdirectory holding `.obsidian/`, `.vulcan/`, or a `.vulcan.toml` pointer, with a
   free suggested wiki ID and the `vulcan vault add` command to run. It never registers anything.
@@ -21,6 +24,8 @@
 
 ### Changed
 
+- `vulcan vault add` of a Git-sync vault whose folder is not a Git repository now says so
+  (`not_a_git_repository` in JSON) and skips device-key enrollment instead of attempting it.
 - YAML parsing moves from the archived `serde_yaml` to `yaml_serde`, the YAML organization's
   maintained fork, which drops the unmaintained `unsafe-libyaml` dependency (RUSTSEC-2024-0449).
   Frontmatter, Bases, and other YAML parse and serialize exactly as before (compared over about

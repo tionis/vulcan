@@ -29,10 +29,25 @@ struct VaultMutationReport<'a> {
     setup: &'a SetupSteps,
 }
 
+#[derive(Debug, Serialize)]
+struct GitInitReport {
+    path: std::path::PathBuf,
+    initialized: bool,
+    dry_run: bool,
+}
+
 /// The steps that follow registering a vault for sync. None of them fails
 /// the add or clone; an error is reported next to the registration.
 #[derive(Debug, Default, Serialize)]
 struct SetupSteps {
+    /// `--git-init`: whether a repository was created (or, in a dry run,
+    /// would be).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    git_init: Option<GitInitReport>,
+    /// A Git-sync registration whose directory is not a repository yet;
+    /// enrollment is skipped until it is one.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    not_a_git_repository: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     enroll: Option<vulcan_app::vault_enroll::EnrollReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -59,6 +74,20 @@ impl SetupSteps {
     }
 
     fn print(&self, wiki: &str) {
+        if let Some(report) = &self.git_init {
+            match (report.initialized, report.dry_run) {
+                (true, false) => println!("Created a Git repository at {}.", report.path.display()),
+                (true, true) => println!(
+                    "Would create a Git repository at {}.",
+                    report.path.display()
+                ),
+                (false, _) => println!("{} is already in a Git repository.", report.path.display()),
+            }
+        }
+        if self.not_a_git_repository {
+            println!("Not a Git repository yet, so Git sync cannot run and the device key was not enrolled.");
+            println!("Create one (`git init`, or `vault add --git-init` next time), add the `origin` remote, then run `vulcan vault enroll {wiki}`.");
+        }
         print_enrollment(self.enroll.as_ref(), self.enroll_error.as_deref(), wiki);
         if let Some(report) = self.device_files.as_ref().filter(|r| !r.added.is_empty()) {
             println!(
@@ -398,6 +427,7 @@ fn handle_add(cli: &Cli, registry: &WikiRegistry, command: &VaultCommand) -> Res
         profile,
         group,
         git_dir,
+        git_init,
         permissions_profile,
         sync_backend,
         no_sync,
@@ -426,13 +456,35 @@ fn handle_add(cli: &Cli, registry: &WikiRegistry, command: &VaultCommand) -> Res
         },
         platform_profile: None,
     };
+    let mut setup = SetupSteps::default();
+    // The repository is created only once the registration is known to be
+    // valid, and before it is written, so a failed init registers nothing.
+    if *git_init {
+        let initialized = if *dry_run {
+            !vulcan_core::is_git_repo(path)
+        } else {
+            registry.add(&request, true).map_err(CliError::operation)?;
+            vulcan_core::git::git_init(path).map_err(CliError::operation)?
+        };
+        setup.git_init = Some(GitInitReport {
+            path: std::fs::canonicalize(path).unwrap_or_else(|_| path.clone()),
+            initialized,
+            dry_run: *dry_run,
+        });
+    }
     let wiki = registry
         .add(&request, *dry_run)
         .map_err(CliError::operation)?;
+    let git_sync = wiki.sync_backend.as_deref() == Some("git");
+    setup.not_a_git_repository = git_sync
+        && !setup
+            .git_init
+            .as_ref()
+            .is_some_and(|report| report.initialized)
+        && !WikiRegistrationStatus::from_registration(&wiki).git_repository;
     // A registered Git vault is enrolled with the device key when policy
     // says so; this never fails the add.
-    let mut setup = SetupSteps::default();
-    if !(*dry_run || *no_device_key || wiki.sync_backend.as_deref() != Some("git")) {
+    if !(*dry_run || *no_device_key || !git_sync || setup.not_a_git_repository) {
         match crate::commands::enroll::enroll_registered(
             cli,
             &wiki,

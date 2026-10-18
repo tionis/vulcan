@@ -19937,6 +19937,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         .expect("sync workflow skill should be readable");
     assert!(sync_skill.contains("name: sync-workflow"));
     assert!(sync_skill.contains("vault add --no-sync"));
+    assert!(sync_skill.contains("vault add <id> <path> --git-init"));
     assert!(sync_skill.contains("sync.worktree = \"none\""));
     assert!(sync_skill.contains("branch_paused"));
     assert!(sync_skill.contains("sync.worktree = \"paths\""));
@@ -41167,6 +41168,56 @@ fn vault_tokens_are_created_once_listed_without_secrets_and_revoked() {
         .args(["vault", "token", "create", "missing"])
         .assert()
         .failure();
+}
+
+#[test]
+fn vault_add_git_init_creates_a_repository_only_for_a_valid_new_registration() {
+    let temporary = TempDir::new().expect("temp dir");
+    let config_home = temporary.path().join("config");
+    fs::create_dir(&config_home).expect("config home");
+    let config_home = config_home.to_str().expect("utf-8 config home").to_string();
+    let plain = temporary.path().join("plain");
+    let fresh = temporary.path().join("fresh");
+    let existing = temporary.path().join("existing");
+    for dir in [&plain, &fresh, &existing] {
+        fs::create_dir_all(dir).expect("vault dir");
+    }
+    run_git_ok(&existing, &["init", "--quiet"]);
+    let add = |id: &str, path: &Path, extra: &[&str]| {
+        let mut command = cargo_vulcan_with_xdg_config(&config_home);
+        command
+            .args(["--output", "json", "vault", "add", id])
+            .arg(path)
+            .arg("--no-device-key")
+            .args(extra);
+        command.assert()
+    };
+
+    // Without --git-init a Git-sync registration of a plain folder says
+    // that it is not a repository yet.
+    let report = parse_stdout_json(&add("plain", &plain, &[]).success());
+    assert_eq!(report["not_a_git_repository"], true);
+    assert!(report.get("git_init").is_none());
+    assert!(!plain.join(".git").exists());
+
+    let preview = parse_stdout_json(&add("fresh", &fresh, &["--git-init", "--dry-run"]).success());
+    assert_eq!(preview["git_init"]["initialized"], true);
+    assert_eq!(preview["git_init"]["dry_run"], true);
+    assert!(!fresh.join(".git").exists());
+
+    let created = parse_stdout_json(&add("fresh", &fresh, &["--git-init"]).success());
+    assert_eq!(created["git_init"]["initialized"], true);
+    assert!(created.get("not_a_git_repository").is_none());
+    assert!(fresh.join(".git").is_dir());
+
+    let kept = parse_stdout_json(&add("existing", &existing, &["--git-init"]).success());
+    assert_eq!(kept["git_init"]["initialized"], false);
+
+    // A refused registration creates no repository.
+    add("again", &plain, &["--git-init"]).failure();
+    assert!(!plain.join(".git").exists());
+    add("plain", &temporary.path().join("missing"), &["--git-init"]).failure();
+    assert!(!temporary.path().join("missing").exists());
 }
 
 #[test]

@@ -161,6 +161,19 @@ pub fn is_git_repo(vault_root: &Path) -> bool {
         .is_ok_and(|output| output.status.success())
 }
 
+/// Creates a Git repository at `root` unless `root` already lies inside a
+/// Git work tree. Returns whether a repository was created. The initial
+/// branch follows the user's `init.defaultBranch`; nothing is committed.
+pub fn git_init(root: &Path) -> Result<bool, GitError> {
+    if is_git_repo(root) {
+        return Ok(false);
+    }
+    run_git(root, "initialize a repository", |command| {
+        command.args(["init", "--quiet"]);
+    })?;
+    Ok(true)
+}
+
 pub fn auto_commit(
     vault_root: &Path,
     config: &GitConfig,
@@ -1099,6 +1112,20 @@ mod tests {
             .status()
             .expect("git should launch");
         assert!(status.success(), "git command failed: {args:?}");
+    }
+
+    #[test]
+    fn git_init_creates_a_repository_only_where_none_encloses_the_root() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let root = temp_dir.path().join("vault");
+        fs::create_dir_all(root.join("nested")).expect("vault dirs");
+        assert!(!is_git_repo(&root));
+        assert!(git_init(&root).expect("init"));
+        assert!(root.join(".git").is_dir());
+        assert!(!git_init(&root).expect("second init"));
+        assert!(!git_init(&root.join("nested")).expect("nested init"));
+        assert!(!root.join("nested/.git").exists());
+        assert!(git_init(&temp_dir.path().join("missing")).is_err());
     }
 
     fn init_git_repo(vault_root: &Path) {

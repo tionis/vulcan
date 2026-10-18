@@ -5855,7 +5855,8 @@ snapshot history for synchronization. When that backend is enabled, frequent wor
 must move to the hidden ref rather than creating `main` commits through both systems; deliberate
 semantic checkpoints continue to use the normal branch.
 
-- [ ] On vault registration: detect if vault is a git repo, optionally `git init` if configured
+- [x] On vault registration: detect if vault is a git repo, optionally `git init` if configured
+  - `vulcan vault add --git-init` (2026-10-18) runs `git init` at the path when it is not inside a work tree, after a dry-run registration has validated the request, so a refused add creates nothing; an existing repository is left alone and reported. It makes no commit and adds no remote, and conflicts with `--git-dir`. Without it, a Git-sync add of a plain folder reports `not_a_git_repository` and skips enrollment. The opt-in is a flag rather than a stored setting: registration is a one-time act. Tests: `vulcan_core::git` unit test, CLI test for preview, creation, existing repositories, and refused adds. Skill review: `sync-workflow`.
 - [x] Configurable commit strategy per vault. Implemented in the vault's own `[git]` table rather than `daemon.toml`, beside the existing `auto_commit`, `message`, and `exclude` settings: `strategy = "per-write" | "batched"`, `batch_interval_seconds` (clamped to 30–86,400), and `batch_messages`. Only device-local consent for agent messages lives in `daemon.toml`. The original sketch:
   ```toml
   [[vault]]

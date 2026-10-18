@@ -3760,6 +3760,7 @@ fn parses_vault_registry_commands() {
                 profile: crate::cli::ManagedDirectoryProfileArg::Knowledge,
                 group: vec!["daily".to_string()],
                 git_dir: Some(PathBuf::from("/data/git/personal")),
+                git_init: false,
                 permissions_profile: None,
                 sync_backend: None,
                 no_sync: false,
@@ -3770,6 +3771,33 @@ fn parses_vault_registry_commands() {
             },
         }
     );
+
+    let git_init = Cli::try_parse_from([
+        "vulcan",
+        "vault",
+        "add",
+        "notes",
+        "/vaults/notes",
+        "--git-init",
+    ])
+    .expect("vault add --git-init should parse");
+    assert!(matches!(
+        git_init.command,
+        Command::Vault {
+            command: VaultCommand::Add { git_init: true, .. }
+        }
+    ));
+    assert!(Cli::try_parse_from([
+        "vulcan",
+        "vault",
+        "add",
+        "notes",
+        "/vaults/notes",
+        "--git-init",
+        "--git-dir",
+        "/git/notes",
+    ])
+    .is_err());
 
     let discover = Cli::try_parse_from(["vulcan", "vault", "discover", "/vaults", "/more"])
         .expect("vault discover should parse");
