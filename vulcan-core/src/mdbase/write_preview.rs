@@ -702,7 +702,8 @@ mod tests {
     /// A write without a collection-wide validation scope snapshots no
     /// records, so it never discovers the collection: an unreadable path
     /// elsewhere does not block it, while a scoped write still sees it.
-    #[cfg(unix)]
+    /// Not on macOS, whose file systems refuse non-UTF-8 names.
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn a_write_without_a_record_scope_does_not_discover_the_collection() {
         use std::os::unix::ffi::OsStrExt as _;
