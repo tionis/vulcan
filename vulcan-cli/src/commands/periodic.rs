@@ -747,7 +747,7 @@ fn run_daily_append_command(
     )
     .map_err(CliError::operation)?;
 
-    run_incremental_scan(paths, OutputFormat::Human, false, Verbosity::Normal)?;
+    crate::refresh_after_write(paths, std::slice::from_ref(&target.path))?;
     commit_periodic_changes_if_needed(&auto_commit, paths, period_type, &target.path, verbosity)?;
 
     Ok(DailyAppendReport {

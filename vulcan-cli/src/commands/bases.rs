@@ -370,7 +370,6 @@ pub(crate) fn handle_bases_command(
     list_controls: &ListOutputControls,
     stdout_is_tty: bool,
     use_stdout_color: bool,
-    use_stderr_color: bool,
 ) -> Result<(), CliError> {
     match command {
         BasesCommand::Eval {
@@ -412,7 +411,7 @@ pub(crate) fn handle_bases_command(
                 Some(&guard),
             )?;
             if !*dry_run {
-                crate::run_incremental_scan(paths, cli.output, use_stderr_color, cli.verbosity())?;
+                crate::refresh_after_write(paths, std::slice::from_ref(&report.path))?;
                 auto_commit
                     .commit(
                         paths,

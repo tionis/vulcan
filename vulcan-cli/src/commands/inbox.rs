@@ -1,8 +1,6 @@
 use crate::commit::AutoCommitPolicy;
 use crate::output::print_json;
-use crate::{
-    inbox_input_text, run_incremental_scan, warn_auto_commit_if_needed, CliError, OutputFormat,
-};
+use crate::{inbox_input_text, warn_auto_commit_if_needed, CliError, OutputFormat};
 use serde::Serialize;
 use std::path::PathBuf;
 use vulcan_core::VaultPaths;
@@ -26,7 +24,7 @@ pub(crate) fn run_inbox_command(
     let raw_text = inbox_input_text(text, file)?;
     let relative_path = vulcan_app::inbox::write_inbox_capture(paths, &raw_text, None, verbosity)
         .map_err(CliError::operation)?;
-    run_incremental_scan(paths, OutputFormat::Human, false, Verbosity::Normal)?;
+    crate::refresh_after_write(paths, std::slice::from_ref(&relative_path))?;
     auto_commit
         .commit(
             paths,

@@ -219,7 +219,7 @@ pub(crate) fn run_template_insert_command(
         verbosity,
     )?;
 
-    run_incremental_scan(paths, OutputFormat::Human, false, Verbosity::Normal)?;
+    crate::refresh_after_write(paths, &report.changed_paths)?;
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
     warn_auto_commit_if_needed(&auto_commit, verbosity);
     auto_commit

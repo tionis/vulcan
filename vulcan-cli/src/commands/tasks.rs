@@ -4,10 +4,10 @@ use crate::commit::AutoCommitPolicy;
 use crate::editor::open_in_editor;
 use crate::output::{print_json, render_human_value, ListOutputControls};
 use crate::{
-    print_bases_report, print_edit_report, resolve_cli_export, run_incremental_scan,
-    warn_auto_commit_if_needed, Cli, CliError, EditReport, OutputFormat, TasksCommand,
-    TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg,
-    TasksViewCommand,
+    print_bases_report, print_edit_report, refresh_after_write, resolve_cli_export,
+    run_incremental_scan, warn_auto_commit_if_needed, Cli, CliError, EditReport, OutputFormat,
+    TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand,
+    TasksTrackSummaryPeriodArg, TasksViewCommand,
 };
 use serde_json::Value;
 use vulcan_app::tasks::{
@@ -64,14 +64,7 @@ pub(crate) fn handle_tasks_command(
         crate::maybe_auto_refresh_command_cache(paths, cli, use_stderr_color)?;
     }
     if should_process_tasknotes_auto_archive(command) {
-        process_due_tasknote_auto_archives(
-            paths,
-            &guard,
-            auto_archive_excluded_task(command),
-            cli.output,
-            use_stderr_color,
-            cli.verbosity(),
-        )?;
+        process_due_tasknote_auto_archives(paths, &guard, auto_archive_excluded_task(command))?;
     }
 
     match command {
@@ -105,9 +98,6 @@ pub(crate) fn handle_tasks_command(
                 tags,
                 template.as_deref(),
                 *dry_run,
-                cli.output,
-                use_stderr_color,
-                cli.verbosity(),
             )?;
             if !*dry_run {
                 auto_commit
@@ -158,17 +148,7 @@ pub(crate) fn handle_tasks_command(
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
-            let report = run_tasks_set_command(
-                paths,
-                &guard,
-                task,
-                property,
-                value,
-                *dry_run,
-                cli.output,
-                use_stderr_color,
-                cli.verbosity(),
-            )?;
+            let report = run_tasks_set_command(paths, &guard, task, property, value, *dry_run)?;
             if !*dry_run {
                 auto_commit
                     .commit(
@@ -190,16 +170,8 @@ pub(crate) fn handle_tasks_command(
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
-            let report = run_tasks_complete_command(
-                paths,
-                &guard,
-                task,
-                date.as_deref(),
-                *dry_run,
-                cli.output,
-                use_stderr_color,
-                cli.verbosity(),
-            )?;
+            let report =
+                run_tasks_complete_command(paths, &guard, task, date.as_deref(), *dry_run)?;
             if !*dry_run {
                 auto_commit
                     .commit(
@@ -220,15 +192,7 @@ pub(crate) fn handle_tasks_command(
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
-            let report = run_tasks_archive_command(
-                paths,
-                &guard,
-                task,
-                *dry_run,
-                cli.output,
-                use_stderr_color,
-                cli.verbosity(),
-            )?;
+            let report = run_tasks_archive_command(paths, &guard, task, *dry_run)?;
             if !*dry_run {
                 auto_commit
                     .commit(
@@ -250,16 +214,7 @@ pub(crate) fn handle_tasks_command(
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
-            let report = run_tasks_convert_command(
-                paths,
-                &guard,
-                file,
-                *line,
-                *dry_run,
-                cli.output,
-                use_stderr_color,
-                cli.verbosity(),
-            )?;
+            let report = run_tasks_convert_command(paths, &guard, file, *line, *dry_run)?;
             if !*dry_run {
                 auto_commit
                     .commit(
@@ -293,9 +248,6 @@ pub(crate) fn handle_tasks_command(
                     priority: priority.as_deref(),
                     dry_run: *dry_run,
                 },
-                cli.output,
-                use_stderr_color,
-                cli.verbosity(),
             )?;
             if !*dry_run {
                 auto_commit
@@ -318,16 +270,7 @@ pub(crate) fn handle_tasks_command(
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
-            let report = run_tasks_reschedule_command(
-                paths,
-                &guard,
-                task,
-                due,
-                *dry_run,
-                cli.output,
-                use_stderr_color,
-                cli.verbosity(),
-            )?;
+            let report = run_tasks_reschedule_command(paths, &guard, task, due, *dry_run)?;
             if !*dry_run {
                 auto_commit
                     .commit(
@@ -423,9 +366,6 @@ pub(crate) fn handle_tasks_command(
                     task,
                     description.as_deref(),
                     *dry_run,
-                    cli.output,
-                    use_stderr_color,
-                    cli.verbosity(),
                 )?;
                 if !*dry_run {
                     auto_commit
@@ -447,15 +387,8 @@ pub(crate) fn handle_tasks_command(
             } => {
                 let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
                 warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
-                let report = run_tasks_track_stop_command(
-                    paths,
-                    &guard,
-                    task.as_deref(),
-                    *dry_run,
-                    cli.output,
-                    use_stderr_color,
-                    cli.verbosity(),
-                )?;
+                let report =
+                    run_tasks_track_stop_command(paths, &guard, task.as_deref(), *dry_run)?;
                 if !*dry_run {
                     auto_commit
                         .commit(
@@ -490,15 +423,7 @@ pub(crate) fn handle_tasks_command(
             } => {
                 let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
                 warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
-                let report = run_tasks_pomodoro_start_command(
-                    paths,
-                    &guard,
-                    task,
-                    *dry_run,
-                    cli.output,
-                    use_stderr_color,
-                    cli.verbosity(),
-                )?;
+                let report = run_tasks_pomodoro_start_command(paths, &guard, task, *dry_run)?;
                 if !*dry_run {
                     auto_commit
                         .commit(
@@ -519,15 +444,8 @@ pub(crate) fn handle_tasks_command(
             } => {
                 let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
                 warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
-                let report = run_tasks_pomodoro_stop_command(
-                    paths,
-                    &guard,
-                    task.as_deref(),
-                    *dry_run,
-                    cli.output,
-                    use_stderr_color,
-                    cli.verbosity(),
-                )?;
+                let report =
+                    run_tasks_pomodoro_stop_command(paths, &guard, task.as_deref(), *dry_run)?;
                 if !*dry_run {
                     auto_commit
                         .commit(
@@ -542,13 +460,7 @@ pub(crate) fn handle_tasks_command(
                 print_task_pomodoro_report(cli.output, &report)
             }
             TasksPomodoroCommand::Status => {
-                let report = run_tasks_pomodoro_status_command(
-                    paths,
-                    &guard,
-                    cli.output,
-                    use_stderr_color,
-                    cli.verbosity(),
-                )?;
+                let report = run_tasks_pomodoro_status_command(paths, &guard)?;
                 print_task_pomodoro_status_report(cli.output, &report)
             }
         },
@@ -623,9 +535,6 @@ fn run_tasks_add_command(
     tags: &[String],
     template: Option<&str>,
     dry_run: bool,
-    output: OutputFormat,
-    use_stderr_color: bool,
-    verbosity: Verbosity,
 ) -> Result<TaskAddReport, CliError> {
     let report = apply_task_add_with_guard(
         paths,
@@ -646,7 +555,7 @@ fn run_tasks_add_command(
     )
     .map_err(CliError::operation)?;
     if !report.dry_run && !report.changed_paths.is_empty() {
-        run_incremental_scan(paths, output, use_stderr_color, verbosity)?;
+        refresh_after_write(paths, &report.changed_paths)?;
     }
     Ok(report)
 }
@@ -664,9 +573,6 @@ pub(crate) fn run_tasks_create_command(
     paths: &VaultPaths,
     guard: &ProfilePermissionGuard,
     options: TasksCreateOptions<'_>,
-    output: OutputFormat,
-    use_stderr_color: bool,
-    verbosity: Verbosity,
 ) -> Result<TaskCreateReport, CliError> {
     let TasksCreateOptions {
         text,
@@ -688,7 +594,7 @@ pub(crate) fn run_tasks_create_command(
     )
     .map_err(CliError::operation)?;
     if !report.dry_run && !report.changed_paths.is_empty() {
-        run_incremental_scan(paths, output, use_stderr_color, verbosity)?;
+        refresh_after_write(paths, &report.changed_paths)?;
     }
     Ok(report)
 }
@@ -700,9 +606,6 @@ pub(crate) fn run_tasks_reschedule_command(
     task: &str,
     due: &str,
     dry_run: bool,
-    output: OutputFormat,
-    use_stderr_color: bool,
-    verbosity: Verbosity,
 ) -> Result<TaskMutationReport, CliError> {
     let report = apply_task_reschedule_with_guard(
         paths,
@@ -715,7 +618,7 @@ pub(crate) fn run_tasks_reschedule_command(
     )
     .map_err(CliError::operation)?;
     if !report.dry_run && !report.changed_paths.is_empty() {
-        run_incremental_scan(paths, output, use_stderr_color, verbosity)?;
+        refresh_after_write(paths, &report.changed_paths)?;
     }
     Ok(report)
 }
@@ -727,9 +630,6 @@ fn run_tasks_convert_command(
     file: &str,
     line: Option<i64>,
     dry_run: bool,
-    output: OutputFormat,
-    use_stderr_color: bool,
-    verbosity: Verbosity,
 ) -> Result<TaskConvertReport, CliError> {
     let report = apply_task_convert_with_guard(
         paths,
@@ -742,7 +642,7 @@ fn run_tasks_convert_command(
     )
     .map_err(CliError::operation)?;
     if !report.dry_run && !report.changed_paths.is_empty() {
-        run_incremental_scan(paths, output, use_stderr_color, verbosity)?;
+        refresh_after_write(paths, &report.changed_paths)?;
     }
     Ok(report)
 }
@@ -762,9 +662,6 @@ fn run_tasks_track_start_command(
     task: &str,
     description: Option<&str>,
     dry_run: bool,
-    output: OutputFormat,
-    use_stderr_color: bool,
-    verbosity: Verbosity,
 ) -> Result<TaskTrackReport, CliError> {
     let report = apply_task_track_start_with_guard(
         paths,
@@ -777,7 +674,7 @@ fn run_tasks_track_start_command(
     )
     .map_err(CliError::operation)?;
     if !report.dry_run && !report.changed_paths.is_empty() {
-        run_incremental_scan(paths, output, use_stderr_color, verbosity)?;
+        refresh_after_write(paths, &report.changed_paths)?;
     }
     Ok(report)
 }
@@ -787,9 +684,6 @@ fn run_tasks_track_stop_command(
     guard: &ProfilePermissionGuard,
     task: Option<&str>,
     dry_run: bool,
-    output: OutputFormat,
-    use_stderr_color: bool,
-    verbosity: Verbosity,
 ) -> Result<TaskTrackReport, CliError> {
     let report = apply_task_track_stop_with_guard(
         paths,
@@ -801,7 +695,7 @@ fn run_tasks_track_stop_command(
     )
     .map_err(CliError::operation)?;
     if !report.dry_run && !report.changed_paths.is_empty() {
-        run_incremental_scan(paths, output, use_stderr_color, verbosity)?;
+        refresh_after_write(paths, &report.changed_paths)?;
     }
     Ok(report)
 }
@@ -841,9 +735,6 @@ fn run_tasks_pomodoro_start_command(
     guard: &ProfilePermissionGuard,
     task: &str,
     dry_run: bool,
-    output: OutputFormat,
-    use_stderr_color: bool,
-    verbosity: Verbosity,
 ) -> Result<TaskPomodoroReport, CliError> {
     let report = apply_task_pomodoro_start_with_guard(
         paths,
@@ -855,7 +746,7 @@ fn run_tasks_pomodoro_start_command(
     )
     .map_err(CliError::operation)?;
     if !report.dry_run && !report.changed_paths.is_empty() {
-        run_incremental_scan(paths, output, use_stderr_color, verbosity)?;
+        refresh_after_write(paths, &report.changed_paths)?;
     }
     Ok(report)
 }
@@ -865,9 +756,6 @@ fn run_tasks_pomodoro_stop_command(
     guard: &ProfilePermissionGuard,
     task: Option<&str>,
     dry_run: bool,
-    output: OutputFormat,
-    use_stderr_color: bool,
-    verbosity: Verbosity,
 ) -> Result<TaskPomodoroReport, CliError> {
     let report = apply_task_pomodoro_stop_with_guard(
         paths,
@@ -879,7 +767,7 @@ fn run_tasks_pomodoro_stop_command(
     )
     .map_err(CliError::operation)?;
     if !report.dry_run && !report.changed_paths.is_empty() {
-        run_incremental_scan(paths, output, use_stderr_color, verbosity)?;
+        refresh_after_write(paths, &report.changed_paths)?;
     }
     Ok(report)
 }
@@ -887,14 +775,11 @@ fn run_tasks_pomodoro_stop_command(
 fn run_tasks_pomodoro_status_command(
     paths: &VaultPaths,
     guard: &ProfilePermissionGuard,
-    output: OutputFormat,
-    use_stderr_color: bool,
-    verbosity: Verbosity,
 ) -> Result<TaskPomodoroStatusReport, CliError> {
     let report = build_task_pomodoro_status_report_with_guard(paths, Some(guard))
         .map_err(CliError::operation)?;
     if !report.changed_paths.is_empty() {
-        run_incremental_scan(paths, output, use_stderr_color, verbosity)?;
+        refresh_after_write(paths, &report.changed_paths)?;
     }
     Ok(report)
 }
@@ -945,9 +830,6 @@ fn run_tasks_set_command(
     property: &str,
     value: &str,
     dry_run: bool,
-    output: OutputFormat,
-    use_stderr_color: bool,
-    verbosity: Verbosity,
 ) -> Result<TaskMutationReport, CliError> {
     let report = apply_task_set_with_guard(
         paths,
@@ -961,7 +843,7 @@ fn run_tasks_set_command(
     )
     .map_err(CliError::operation)?;
     if !report.dry_run && !report.changed_paths.is_empty() {
-        run_incremental_scan(paths, output, use_stderr_color, verbosity)?;
+        refresh_after_write(paths, &report.changed_paths)?;
     }
     Ok(report)
 }
@@ -973,9 +855,6 @@ pub(crate) fn run_tasks_complete_command(
     task: &str,
     date: Option<&str>,
     dry_run: bool,
-    output: OutputFormat,
-    use_stderr_color: bool,
-    verbosity: Verbosity,
 ) -> Result<TaskMutationReport, CliError> {
     let report = apply_task_complete_with_guard(
         paths,
@@ -988,7 +867,7 @@ pub(crate) fn run_tasks_complete_command(
     )
     .map_err(CliError::operation)?;
     if !report.dry_run && !report.changed_paths.is_empty() {
-        run_incremental_scan(paths, output, use_stderr_color, verbosity)?;
+        refresh_after_write(paths, &report.changed_paths)?;
     }
     Ok(report)
 }
@@ -997,14 +876,11 @@ pub(crate) fn process_due_tasknote_auto_archives(
     paths: &VaultPaths,
     guard: &ProfilePermissionGuard,
     exclude_task: Option<&str>,
-    output: OutputFormat,
-    use_stderr_color: bool,
-    verbosity: Verbosity,
 ) -> Result<Vec<String>, CliError> {
     let changed_paths = app_process_due_tasknote_auto_archives(paths, exclude_task, Some(guard))
         .map_err(CliError::operation)?;
     if !changed_paths.is_empty() {
-        run_incremental_scan(paths, output, use_stderr_color, verbosity)?;
+        refresh_after_write(paths, &changed_paths)?;
     }
     Ok(changed_paths)
 }
@@ -1014,9 +890,6 @@ fn run_tasks_archive_command(
     guard: &ProfilePermissionGuard,
     task: &str,
     dry_run: bool,
-    output: OutputFormat,
-    use_stderr_color: bool,
-    verbosity: Verbosity,
 ) -> Result<TaskMutationReport, CliError> {
     let report = apply_task_archive_with_guard(
         paths,
@@ -1028,7 +901,7 @@ fn run_tasks_archive_command(
     )
     .map_err(CliError::operation)?;
     if !report.dry_run && !report.changed_paths.is_empty() {
-        run_incremental_scan(paths, output, use_stderr_color, verbosity)?;
+        refresh_after_write(paths, &report.changed_paths)?;
     }
     Ok(report)
 }

@@ -9843,6 +9843,87 @@ fn vault_list_and_show_report_each_registrations_health_without_a_daemon() {
     assert_eq!(show["id"], "paused");
 }
 
+/// Documents, links with their resolution, and full-text rows, as a full
+/// rescan would leave them.
+fn cache_rows(vault_root: &Path) -> Vec<String> {
+    let connection =
+        rusqlite::Connection::open(vault_root.join(".vulcan/cache.db")).expect("cache");
+    let mut rows = Vec::new();
+    for sql in [
+        "SELECT 'doc ' || path || ' ' || hex(content_hash) FROM documents ORDER BY path",
+        "SELECT 'link ' || source.path || ' ' || links.raw_text || ' -> ' || COALESCE(target.path, '?')
+         FROM links
+         JOIN documents source ON source.id = links.source_document_id
+         LEFT JOIN documents target ON target.id = links.resolved_target_id
+         ORDER BY 1",
+        "SELECT 'fts ' || documents.path || ' ' || search_chunk_content.content
+         FROM search_chunk_content
+         JOIN documents ON documents.id = search_chunk_content.document_id
+         ORDER BY 1",
+    ] {
+        let mut statement = connection.prepare(sql).expect("query");
+        rows.extend(
+            statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .expect("rows")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("rows"),
+        );
+    }
+    rows
+}
+
+#[test]
+fn task_inbox_periodic_and_template_writes_refresh_like_a_full_rescan() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
+    fs::write(vault_root.join("Home.md"), "# Home\n").expect("home");
+    fs::create_dir_all(vault_root.join(".vulcan/templates")).expect("templates");
+    fs::write(
+        vault_root.join(".vulcan/templates/stamp.md"),
+        "Stamped, see [[Ideas]].\n",
+    )
+    .expect("template");
+    let run = |arguments: &[&str]| {
+        let output = Command::cargo_bin("vulcan")
+            .expect("binary")
+            .env("VULCAN_FIXED_NOW", "2026-10-18T09:00:00Z")
+            .arg("--vault")
+            .arg(&vault_root)
+            .args(arguments)
+            .write_stdin("")
+            .output()
+            .expect("vulcan runs");
+        assert!(
+            output.status.success(),
+            "{arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    run(&["scan"]);
+    for (label, arguments) in [
+        (
+            "inbox",
+            &["inbox", "Capture linking [[Home]] and [[Ideas]]"][..],
+        ),
+        (
+            "tasks add",
+            &["tasks", "add", "Write the [[Ideas]] note"][..],
+        ),
+        ("daily append", &["daily", "append", "Logged [[Home]]"][..]),
+        (
+            "template insert",
+            &["template", "insert", "stamp", "Home"][..],
+        ),
+    ] {
+        run(arguments);
+        let targeted = cache_rows(&vault_root);
+        run(&["scan", "--full"]);
+        assert_eq!(targeted, cache_rows(&vault_root), "{label}");
+    }
+}
+
 #[test]
 fn vault_registry_cli_round_trips_without_touching_wiki_files() {
     let temporary = TempDir::new().expect("temp dir should be created");

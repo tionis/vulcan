@@ -5190,7 +5190,6 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             &list_controls,
             stdout_is_tty,
             use_stdout_color,
-            use_stderr_color,
         ),
         Command::Help {
             ref search,

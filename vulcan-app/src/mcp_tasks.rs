@@ -8,7 +8,7 @@ use crate::mcp_access::check_write_path_access;
 use crate::mcp_protocol::{
     McpMethodError, McpTaskCompleteArgs, McpTaskCreateArgs, McpTaskRescheduleArgs,
 };
-use crate::scan::refresh_cache_incrementally;
+use crate::scan::refresh_cache_for_paths;
 use crate::tasks::{
     apply_task_complete_with_guard, apply_task_create_with_guard, apply_task_reschedule_with_guard,
     TaskCompleteRequest, TaskCreateReport, TaskCreateRequest, TaskMutationReport,
@@ -122,7 +122,7 @@ fn refresh_and_commit(
     no_commit: bool,
 ) -> Result<(), McpMethodError> {
     if !dry_run && !changed_paths.is_empty() {
-        refresh_cache_incrementally(paths)
+        refresh_cache_for_paths(paths, changed_paths)
             .map_err(|error| McpMethodError::tool(error.to_string()))?;
     }
     if !dry_run {
