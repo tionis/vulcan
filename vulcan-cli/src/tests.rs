@@ -2464,9 +2464,37 @@ fn parses_sync_commands() {
                 max_retries: 7,
                 git_timeout_seconds: 42,
                 dry_run: true,
+                queue: false,
             },
         }
     );
+
+    let queued = Cli::try_parse_from(["vulcan", "sync", "run", "--group", "work", "--queue"])
+        .expect("queued sync run should parse");
+    assert!(matches!(
+        queued.command,
+        Command::Sync {
+            command: SyncCommand::Run {
+                queue: true,
+                selection: SyncSelectionArgs { group: Some(ref group), .. },
+                ..
+            }
+        } if group == "work"
+    ));
+    for tuning in [
+        &["--dry-run"][..],
+        &["--profile", "knowledge"],
+        &["--max-retries", "2"],
+        &["--git-timeout-seconds", "5"],
+        &["--remote", "backup"],
+        &["--live-ref", "refs/heads/live"],
+    ] {
+        let arguments = [&["vulcan", "sync", "run", "--all", "--queue"][..], tuning].concat();
+        assert!(
+            Cli::try_parse_from(arguments).is_err(),
+            "--queue should refuse {tuning:?}"
+        );
+    }
 
     let status =
         Cli::try_parse_from(["vulcan", "sync", "status"]).expect("sync status should parse");

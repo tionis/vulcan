@@ -167,6 +167,12 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
   backup.
 - For registered wikis, select one ID, `--group <name>`, or `--all`. Aggregate results are independent
   per-wiki transactions, not a cross-repository atomic commit.
+- When the daemon runs, `vulcan sync run --group <name> --queue` (or one ID, `--all`, or the
+  selected registered vault) asks it to queue one retained job per wiki and returns at once with
+  the aggregate and child job IDs; follow them with `vulcan daemon status`. Queued jobs use each
+  registration's stored profile, so `--permissions` and the run-tuning flags are refused. Without a
+  daemon `--queue` fails rather than syncing here; drop it to run the cycles directly. After a
+  transport error the jobs may already be queued, so check `daemon status` before retrying.
 - Direct and daemon sync of an initialized vault use the same vault-write and repository locks as
   ordinary Vulcan mutations and Git/auto-commit commands. A competing writer may therefore wait or
   report bounded repository contention; do not bypass the lock with raw Git while sync is active.

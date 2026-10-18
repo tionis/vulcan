@@ -146,7 +146,7 @@ pub enum CompanionProposalClaimScope {
     DaemonProcess,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncSelectionRequest {
     #[serde(default)]
     pub wiki: Option<String>,

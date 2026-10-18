@@ -10241,6 +10241,121 @@ fn daemon_cli_detaches_reports_status_and_stops_gracefully() {
         .contains("daemon must be running to provision a companion client"));
 }
 
+/// `sync run --queue` hands the selection to the running daemon, which
+/// queues one retained job per wiki under one aggregate, and returns without
+/// running anything here; it refuses without a daemon, for an unknown group,
+/// and with `--permissions`.
+#[test]
+fn queued_sync_run_asks_the_daemon_for_one_job_per_wiki() {
+    let temporary = TempDir::new().expect("temp dir should be created");
+    let config_home = temporary.path().join("config");
+    let state_home = temporary.path().join("state");
+    let vulcan_config = config_home.join("vulcan");
+    fs::create_dir_all(&vulcan_config).expect("config directory");
+    fs::write(
+        vulcan_config.join("daemon.toml"),
+        format!(
+            "device_id = \"{}\"\nbind = \"127.0.0.1:0\"\n",
+            ulid::Ulid::new()
+        ),
+    )
+    .expect("daemon config");
+    let vulcan = |vault: &Path, arguments: &[&str]| {
+        ProcessCommand::new(assert_cmd::cargo::cargo_bin("vulcan"))
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", &state_home)
+            .env_remove("VULCAN_ROUTE")
+            .args([
+                "--output",
+                "json",
+                "--vault",
+                vault.to_str().expect("utf-8"),
+            ])
+            .args(arguments)
+            .output()
+            .expect("vulcan should run")
+    };
+    let mut vaults = Vec::new();
+    for id in ["alpha", "beta"] {
+        let root = temporary.path().join(id);
+        copy_fixture_vault("basic", &root);
+        let added = vulcan(
+            &root,
+            &[
+                "vault",
+                "add",
+                "--no-sync",
+                "--group",
+                "work",
+                id,
+                root.to_str().expect("utf-8"),
+            ],
+        );
+        assert!(added.status.success(), "{added:?}");
+        vaults.push(root);
+    }
+    let not_running = vulcan(&vaults[0], &["sync", "run", "--group", "work", "--queue"]);
+    assert!(!not_running.status.success());
+    assert!(
+        String::from_utf8_lossy(&not_running.stdout).contains("daemon is not running"),
+        "{not_running:?}"
+    );
+
+    let daemon = |arguments: &[&str]| run_daemon_test_command(&config_home, &state_home, arguments);
+    let _daemon = DetachedDaemonGuard::new(&config_home, &state_home);
+    successful_process_json(&daemon(&["start", "--detach"]));
+
+    let queued = successful_process_json(&vulcan(
+        &vaults[0],
+        &["sync", "run", "--group", "work", "--queue"],
+    ));
+    assert_eq!(queued["replay"], false, "{queued}");
+    assert_eq!(queued["aggregate"]["total"], 2, "{queued}");
+    let mut children = queued["aggregate"]["children"]
+        .as_array()
+        .expect("children")
+        .iter()
+        .map(|child| {
+            assert!(child["job"]["id"].as_str().is_some(), "{child}");
+            child["wiki_id"].as_str().expect("wiki id").to_string()
+        })
+        .collect::<Vec<_>>();
+    children.sort();
+    assert_eq!(children, ["alpha", "beta"]);
+
+    // Without a selection, the registered vault at the selected path.
+    let here = successful_process_json(&vulcan(&vaults[1], &["sync", "run", "--queue"]));
+    assert_eq!(here["aggregate"]["total"], 1, "{here}");
+    assert_eq!(here["aggregate"]["children"][0]["wiki_id"], "beta");
+
+    let unknown = vulcan(
+        &vaults[0],
+        &["sync", "run", "--group", "missing", "--queue"],
+    );
+    assert!(!unknown.status.success());
+    assert!(
+        String::from_utf8_lossy(&unknown.stdout).contains("refused"),
+        "{unknown:?}"
+    );
+    let narrowed = vulcan(
+        &vaults[0],
+        &[
+            "--permissions",
+            "readonly",
+            "sync",
+            "run",
+            "--all",
+            "--queue",
+        ],
+    );
+    assert!(!narrowed.status.success());
+    assert!(
+        String::from_utf8_lossy(&narrowed.stdout).contains("cannot narrow a queued sync"),
+        "{narrowed:?}"
+    );
+    successful_process_json(&daemon(&["stop"]));
+}
+
 /// `--route daemon` prints exactly what a direct `query` (DSL, JSON, or DQL),
 /// `search`, `ls`, `tasks query`, or a whole-graph report prints, sees changes made just before it, and fails as a direct read would; `auto`
 /// falls back once the daemon is gone, and `daemon` then reports
@@ -20000,6 +20115,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     let sync_skill = fs::read_to_string(vault_root.join(".agents/skills/sync-workflow/SKILL.md"))
         .expect("installed sync skill");
     assert!(sync_skill.contains("`health.state`"));
+    assert!(sync_skill.contains("vulcan sync run --group <name> --queue"));
     assert!(permission_skill.contains("vulcan schedule trust enable|accept|disable"));
     assert!(permission_skill.contains("never from shared `.vulcan/config.toml`"));
     assert!(permission_skill.contains("an offline old device keeps running it until it syncs"));

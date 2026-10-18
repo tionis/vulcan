@@ -1470,6 +1470,7 @@ where
         record.bind,
         &credential,
         &format!("/{wiki_id}/ops/{operation}"),
+        &[],
         &body,
     )
     .map_err(transport)?;
@@ -1492,19 +1493,100 @@ where
     }
 }
 
-/// POST `body` as JSON and return the status and body.
+/// Why the daemon did not queue a sync selection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QueuedSyncError {
+    /// No daemon runtime record: the daemon is not running.
+    NotRunning,
+    /// The daemon refused the selection, such as an unknown wiki or an empty
+    /// group; nothing was queued.
+    Rejected(String),
+    /// The request did not complete. The jobs may or may not be queued;
+    /// repeating the request with the same idempotency key settles it.
+    Transport(String),
+}
+
+impl std::fmt::Display for QueuedSyncError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotRunning => formatter.write_str("the Vulcan daemon is not running"),
+            Self::Rejected(detail) => write!(formatter, "the daemon refused the sync: {detail}"),
+            Self::Transport(error) => write!(formatter, "the daemon request failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for QueuedSyncError {}
+
+/// Ask the running daemon to queue one retained sync job per wiki in
+/// `selection`, grouped under one aggregate job, and return without waiting
+/// for them. Nothing runs in this process. The daemon records
+/// `idempotency_key`, so repeating a request returns the jobs it queued.
+pub fn request_queued_sync(
+    context: &DaemonProcessContext,
+    selection: &crate::companion::SyncSelectionRequest,
+    idempotency_key: &str,
+) -> Result<crate::supervisor::IdempotentEnqueueAggregateSyncReport, QueuedSyncError> {
+    let transport = |error: DaemonProcessError| QueuedSyncError::Transport(error.to_string());
+    let record = read_runtime_record(&context.runtime_path())
+        .map_err(transport)?
+        .ok_or(QueuedSyncError::NotRunning)?;
+    let credential = CompanionCredentialStore::at(&context.state_root)
+        .load()
+        .map_err(|error| QueuedSyncError::Transport(error.to_string()))?;
+    if credential.id != record.credential_id {
+        return Err(QueuedSyncError::Transport(
+            "daemon runtime credential identity does not match device state".to_string(),
+        ));
+    }
+    let body = serde_json::to_vec(selection)
+        .map_err(|error| QueuedSyncError::Transport(error.to_string()))?;
+    let (status, response) = send_http_json(
+        record.bind,
+        &credential,
+        "/sync",
+        &[(crate::http::IDEMPOTENCY_KEY_HEADER, idempotency_key)],
+        &body,
+    )
+    .map_err(transport)?;
+    match status {
+        200..=299 => serde_json::from_slice(&response)
+            .map_err(|error| QueuedSyncError::Transport(error.to_string())),
+        400..=499 => Err(QueuedSyncError::Rejected(
+            serde_json::from_slice::<serde_json::Value>(&response)
+                .ok()
+                .and_then(|error| error["detail"].as_str().map(str::to_string))
+                .unwrap_or_else(|| String::from_utf8_lossy(&response).into_owned()),
+        )),
+        status => Err(QueuedSyncError::Transport(format!(
+            "unexpected status {status}: {}",
+            String::from_utf8_lossy(&response)
+        ))),
+    }
+}
+
+/// POST `body` as JSON with the extra `headers` and return the status and
+/// body.
 fn send_http_json(
     bind: SocketAddr,
     credential: &CompanionCredential,
     path: &str,
+    headers: &[(&str, &str)],
     body: &[u8],
 ) -> Result<(u16, Vec<u8>), DaemonProcessError> {
     let mut stream = TcpStream::connect_timeout(&bind, Duration::from_millis(500))?;
     stream.set_read_timeout(Some(ROUTED_READ_TIMEOUT))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let extra = headers
+        .iter()
+        .fold(String::new(), |mut extra, (name, value)| {
+            use std::fmt::Write as _;
+            let _ = write!(extra, "{name}: {value}\r\n");
+            extra
+        });
     write!(
         stream,
-        "POST {path} HTTP/1.1\r\nHost: {bind}\r\nAuthorization: Bearer {}\r\nVulcan-Protocol-Version: 1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "POST {path} HTTP/1.1\r\nHost: {bind}\r\nAuthorization: Bearer {}\r\nVulcan-Protocol-Version: 1\r\nContent-Type: application/json\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n",
         credential.token,
         body.len()
     )?;

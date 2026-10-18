@@ -11007,6 +11007,20 @@
                 "value_names": [
                   "DRY_RUN"
                 ]
+              },
+              {
+                "help": "Ask the running daemon to queue one retained sync job per selected registered wiki and return without waiting; never runs here",
+                "id": "queue",
+                "long": "queue",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "QUEUE"
+                ]
               }
             ],
             "subcommands": []

@@ -5059,6 +5059,13 @@ pub enum SyncCommand {
             help = "Inspect and plan without creating refs, objects, or files"
         )]
         dry_run: bool,
+        #[arg(
+            long,
+            conflicts_with_all = ["dry_run", "profile", "max_retries", "git_timeout_seconds", "remote", "live_ref"],
+            help = "Ask the running daemon to queue one retained sync job per selected registered wiki and return without waiting; never runs here",
+            long_help = "Ask the running daemon to queue one retained sync job per selected registered wiki (the named wiki, `--group`, `--all`, or the registered vault at the selected path), grouped under one aggregate job, and return without waiting for them. The jobs run in the daemon with each registration's stored permission profile and sync settings, so `--permissions` and the run-tuning flags are refused. Nothing runs in this process: without a running daemon the command fails instead of syncing directly. `vulcan daemon status` shows the jobs' progress."
+        )]
+        queue: bool,
     },
     #[command(about = "Inspect synchronization state without changing it")]
     Status {

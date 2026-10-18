@@ -51,6 +51,8 @@ For an SSH remote, the clone also enrolls this device's key (authorize, bind, re
 
 The default colocated layout keeps `.git/` beside the vault. `sync run` does not start the daemon. It also works against an unregistered repository selected with `--vault <path>`.
 
+To have a running daemon do the work instead, add `--queue`: `vulcan sync run --group work --queue` queues one retained sync job per wiki in the group (also for one wiki ID, `--all`, or the registered vault at the selected path) and returns immediately with the jobs' IDs. `vulcan daemon status` shows their progress. Queued jobs run with each registration's stored permission profile and sync settings, so `--queue` refuses `--permissions` and the run-tuning flags, and it fails rather than syncing directly when no daemon is running.
+
 ## Android and Termux
 
 Android shared storage is suitable for the Obsidian-visible files but not for Git's private repository machinery or SQLite WAL. Keep the worktree in shared storage; Vulcan places the detached Git directory, rebuildable cache, vault write lock, mdbase transaction state, and integration/Outline state in Termux-private storage. Existing route and Outline state is copied there on the first write, with the older files left intact. An existing mdbase transaction is copied under the vault lock before recovery. After upgrading from a build that kept `.vulcan/cache.db` in shared storage, run `vulcan scan` to build the private cache. The old shared cache is not used and can be removed after the rebuild succeeds. Mdbase canonical file writes require directory sync on the shared worktree; if the Android filesystem rejects it, Vulcan refuses the write before creating a transaction.

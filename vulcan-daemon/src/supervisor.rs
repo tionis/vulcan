@@ -180,7 +180,7 @@ pub struct AggregateSyncChild {
     pub job_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AggregateSyncJob {
     pub version: u32,
     pub id: String,
@@ -199,14 +199,14 @@ pub struct AggregateSyncJob {
     pub children: Vec<AggregateSyncChildReport>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AggregateSyncChildReport {
     pub wiki_id: String,
     pub vault: PathBuf,
     pub job: SupervisedSyncJob,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdempotentEnqueueAggregateSyncReport {
     pub aggregate: AggregateSyncJob,
     pub replay: bool,

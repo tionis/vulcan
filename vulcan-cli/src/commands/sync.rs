@@ -75,7 +75,10 @@ use vulcan_core::{
     resolve_permission_profile, vulcan_user_data_dir, PermissionGuard, ProfilePermissionGuard,
     VaultPaths,
 };
-use vulcan_daemon::process::{daemon_status, DaemonProcessContext};
+use vulcan_daemon::companion::SyncSelectionRequest;
+use vulcan_daemon::process::{
+    daemon_status, request_queued_sync, DaemonProcessContext, QueuedSyncError,
+};
 use vulcan_daemon::registry::{
     ManagedDirectoryProfile, NetworkNotificationMode, UpdateWikiRequest, WikiId, WikiRegistration,
     WikiRegistry,
@@ -98,6 +101,14 @@ pub(crate) fn handle_sync_command(
     if let Some(result) = handle_non_cycle_sync_command(cli, paths, command) {
         return result;
     }
+    if let SyncCommand::Run {
+        selection,
+        queue: true,
+        ..
+    } = command
+    {
+        return handle_queued_sync_run(cli, paths, selection);
+    }
     let (options, selection, profile) = match command {
         SyncCommand::Run {
             selection,
@@ -106,6 +117,7 @@ pub(crate) fn handle_sync_command(
             max_retries,
             git_timeout_seconds,
             dry_run,
+            queue: _,
         } => (
             GitSyncOptions {
                 remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
@@ -168,6 +180,77 @@ pub(crate) fn handle_sync_command(
     observer.finish();
     let report = result.map_err(CliError::operation)?;
     print_sync_report(cli.output, cli.verbosity(), &report)
+}
+
+/// `sync run --queue`: the daemon queues one retained job per selected wiki
+/// and this process returns without running or waiting for any of them.
+fn handle_queued_sync_run(
+    cli: &Cli,
+    paths: &VaultPaths,
+    selection: &SyncSelectionArgs,
+) -> Result<(), CliError> {
+    if cli.permissions.is_some() {
+        return Err(CliError::operation(
+            "`--permissions` cannot narrow a queued sync; the daemon runs each wiki with its registration's permission profile",
+        ));
+    }
+    let request = match registered_selection(selection)? {
+        Some(RegisteredSyncSelection::Wiki(id)) => SyncSelectionRequest {
+            wiki: Some(id.as_str().to_string()),
+            group: None,
+            all: false,
+        },
+        Some(RegisteredSyncSelection::Group(group)) => SyncSelectionRequest {
+            wiki: None,
+            group: Some(group),
+            all: false,
+        },
+        Some(RegisteredSyncSelection::All) => SyncSelectionRequest {
+            wiki: None,
+            group: None,
+            all: true,
+        },
+        None => {
+            let registration = crate::registered_directory_for_path(paths.vault_root())?
+                .ok_or_else(|| {
+                    CliError::operation(
+                        "`--queue` needs a registered wiki: name one, use `--group` or `--all`, or select a registered vault",
+                    )
+                })?;
+            SyncSelectionRequest {
+                wiki: Some(registration.id.as_str().to_string()),
+                group: None,
+                all: false,
+            }
+        }
+    };
+    let context = DaemonProcessContext::user_default().map_err(CliError::operation)?;
+    let key = ulid::Ulid::new().to_string();
+    let report = request_queued_sync(&context, &request, &key).map_err(|error| match error {
+        QueuedSyncError::NotRunning => CliError::operation(
+            "the Vulcan daemon is not running; start it with `vulcan daemon start --detach`, or run the sync directly without `--queue`",
+        ),
+        QueuedSyncError::Transport(_) => CliError::operation(format!(
+            "{error}; the jobs may have been queued, so check `vulcan daemon status` before retrying"
+        )),
+        QueuedSyncError::Rejected(_) => CliError::operation(error),
+    })?;
+    if cli.output == OutputFormat::Json {
+        return print_json(&report);
+    }
+    let aggregate = &report.aggregate;
+    println!(
+        "Queued {} sync job(s) for {} as {}",
+        aggregate.total, aggregate.selection, aggregate.id
+    );
+    for child in &aggregate.children {
+        println!(
+            "  {}: {} ({:?})",
+            child.wiki_id, child.job.job.id, child.job.job.state
+        );
+    }
+    println!("Follow progress with `vulcan daemon status`.");
+    Ok(())
 }
 
 fn require_sync_knowledge_profile(cli: &Cli, command: &SyncCommand) -> Result<(), CliError> {
