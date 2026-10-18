@@ -9924,6 +9924,62 @@ fn task_inbox_periodic_and_template_writes_refresh_like_a_full_rescan() {
     }
 }
 
+/// `tasks add` writes without reading the cache, so it skips the
+/// whole-vault freshness proof other `tasks` commands run first and refreshes
+/// only the task it wrote: a note changed outside Vulcan stays unindexed. With
+/// `TaskNotes` auto-archive configured, whose upkeep reads the task index, it
+/// refreshes first as before.
+#[test]
+fn tasks_add_refreshes_only_what_it_writes_unless_auto_archive_reads_first() {
+    let indexed = |vault_root: &Path, path: &str| {
+        cache_rows(vault_root)
+            .iter()
+            .any(|row| row.starts_with(&format!("doc {path} ")))
+    };
+    for auto_archive in [false, true] {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let vault_root = temp_dir.path().join("vault");
+        initialize_vulcan_dir(&vault_root);
+        fs::write(vault_root.join("Home.md"), "# Home\n").expect("home");
+        if auto_archive {
+            fs::write(
+                vault_root.join(".vulcan/config.toml"),
+                concat!(
+                    "[[tasknotes.statuses]]\n",
+                    "id = \"open\"\nvalue = \"open\"\nlabel = \"Open\"\ncolor = \"#808080\"\n",
+                    "isCompleted = false\norder = 1\n",
+                    "\n[[tasknotes.statuses]]\n",
+                    "id = \"done\"\nvalue = \"done\"\nlabel = \"Done\"\ncolor = \"#00aa00\"\n",
+                    "isCompleted = true\norder = 2\nautoArchive = true\nautoArchiveDelay = 5\n",
+                ),
+            )
+            .expect("config");
+        }
+        let run = |arguments: &[&str]| {
+            Command::cargo_bin("vulcan")
+                .expect("binary")
+                .arg("--vault")
+                .arg(&vault_root)
+                .args(arguments)
+                .write_stdin("")
+                .assert()
+                .success();
+        };
+        run(&["scan"]);
+        fs::write(vault_root.join("Outside.md"), "# Written elsewhere\n").expect("outside");
+        run(&["tasks", "add", "Fresh task"]);
+        assert!(
+            indexed(&vault_root, "TaskNotes/Tasks/Fresh task.md"),
+            "auto_archive={auto_archive}: the new task is indexed"
+        );
+        assert_eq!(
+            indexed(&vault_root, "Outside.md"),
+            auto_archive,
+            "auto_archive={auto_archive}: whether the command refreshed first"
+        );
+    }
+}
+
 #[test]
 fn vault_registry_cli_round_trips_without_touching_wiki_files() {
     let temporary = TempDir::new().expect("temp dir should be created");

@@ -1,0 +1,26 @@
+{
+  "acceptance_gate_result": "not_evaluated",
+  "note": "Diagnostic: tasks add spent most of its time proving the whole cache fresh before writing, though it reads nothing from the cache. It now skips that proof unless TaskNotes auto-archive is configured.",
+  "commit": "the commit that adds this file, against 90ae5705",
+  "binary": "target/release/vulcan (cargo build --release -p vulcan-cli)",
+  "fixtures": [
+    "plain-100k: scripts/generate_synthetic_vault.py --notes 100000 --links 10, scanned with `scan --full`"
+  ],
+  "machine": {
+    "host": "development laptop, not the designated evaluation host (Intel Core i7-8650U, 31 GiB RAM, Debian 13)",
+    "load_average_during": [3.71, 5.72]
+  },
+  "setup": [
+    "Isolated XDG_CONFIG_HOME, XDG_STATE_HOME, XDG_DATA_HOME, and XDG_CACHE_HOME; no daemon; stdin closed; default TaskNotes configuration (no auto-archive status)"
+  ],
+  "method": {
+    "cases": ["vulcan --vault <fixture> --output json tasks add <unique title>"],
+    "timing": "wall clock from the shell; before: 5 runs; after: 9 runs; p50",
+    "diagnosis": "strace -c counted one walk of about 100,000 statx calls, the freshness proof; with --refresh off the same command took 117 ms"
+  },
+  "results_ms_p50": {
+    "plain-100k": {
+      "tasks add": {"before": 364, "after": 101}
+    }
+  }
+}

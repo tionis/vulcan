@@ -3854,12 +3854,29 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
     }
 }
 
+/// Whether a command in the auto-refresh set writes a new note without
+/// reading the cache first, so proving the whole cache fresh beforehand
+/// only costs time; it refreshes the paths it wrote afterwards. `tasks add`
+/// is one unless `TaskNotes` auto-archive is configured, whose upkeep reads
+/// the task index before the command runs.
+fn writes_without_reading_cache(paths: &VaultPaths, command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Tasks {
+            command: TasksCommand::Add { .. }
+        }
+    ) && !vulcan_app::tasks::tasknote_auto_archive_enabled(
+        &load_vault_config(paths).config.tasknotes,
+    )
+}
+
 pub(crate) fn maybe_auto_refresh_command_cache(
     paths: &VaultPaths,
     cli: &Cli,
     use_stderr_color: bool,
 ) -> Result<(), CliError> {
-    if !command_uses_auto_refresh(&cli.command) {
+    if !command_uses_auto_refresh(&cli.command) || writes_without_reading_cache(paths, &cli.command)
+    {
         return Ok(());
     }
 
