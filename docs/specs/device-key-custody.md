@@ -4,11 +4,11 @@ Status: accepted design for Roadmap 12.16. The opaque `SecretStore` boundary and
 `file_v1` secret provider are implemented in `vulcan-secrets`. The device-key boundary is
 implemented in `vulcan_app::device_key`: `KeyProvider`, the `file_v1` adapter over the identity
 store, `open_device_key` (the `DeviceKeyProvider` role, chosen by the manifest alone), typed states and
-capabilities, and the read-only `vulcan device key status`. Registration signing and the SSH transport's
+capabilities, the read-only `vulcan device key status`, and `vulcan device key verify` (namespace
+`vulcan.device-key-verify.v1`; `--interactive` is deferred until a provider can prompt). Registration signing and the SSH transport's
 `IdentityFile` go through it. The manifest accepts the three reserved discriminators; a reserved provider
 other than `file_v1` keeps its public identity and reports `unsupported`, and private-key use fails closed
-without touching the key file. Native stores, agent signing, `verify`, and custody migration remain
-unimplemented.
+without touching the key file. Native stores, agent signing, and custody migration remain unimplemented.
 
 This specification extends `device-identity.md`. It changes where the private half of a device
 identity may be kept, not how a device is identified or trusted.

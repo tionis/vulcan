@@ -35,6 +35,21 @@ pub(crate) fn handle_device_command(cli: &Cli, command: &DeviceCommand) -> Resul
             crate::commands::lifecycle::handle_device_replace(cli, command)
         }
         DeviceCommand::SshCommand { args } => run_device_ssh(&store, args),
+        DeviceCommand::Key(crate::cli::DeviceKeyCommand::Verify) => {
+            let report =
+                vulcan_app::device_key::verify_device_key(&store).map_err(CliError::operation)?;
+            match cli.output {
+                OutputFormat::Json => print_json(&report),
+                OutputFormat::Human | OutputFormat::Markdown => {
+                    println!(
+                        "Verified: provider {} holds the key of {}.",
+                        report.provider.as_str(),
+                        report.device_id
+                    );
+                    Ok(())
+                }
+            }
+        }
         DeviceCommand::Key(crate::cli::DeviceKeyCommand::Status) => {
             let report = vulcan_app::device_key::device_key_status(&store);
             print_device_key_status(cli.output, &report)

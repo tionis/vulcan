@@ -8,7 +8,8 @@
   it is available, and what its provider can do, without creating, signing, or prompting. A device
   identity whose manifest names a reserved provider (`system_secret_v1`, `ssh_agent_v1`) is now
   reported as degraded with that provider `unsupported`, instead of invalid; its key file is never
-  used in its place.
+  used in its place. `vulcan device key verify` proves the provider holds the key by signing and
+  checking a fresh challenge, without writing anything.
 - `vulcan daemon config set-automatic-sync [--network unmetered] [--power battery-not-low|charging|...]
   [--defer-on-unknown]` lets the daemon's own sync cycles wait for an unmetered network or enough
   power. A held-back cycle is reported as paused with the reason and retried at the next poll.

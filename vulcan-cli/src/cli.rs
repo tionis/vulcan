@@ -4754,6 +4754,11 @@ pub enum DeviceKeyCommand {
         after_help = "Notes:\n  Reads only: it never creates, unlocks, signs, or prompts. The provider is\n  file_v1 (an owner-only OpenSSH key file: unattended and exportable, not\n  encrypted or keychain-backed); system_secret_v1 and ssh_agent_v1 are reserved\n  and report `unsupported` in this build. States: available, missing,\n  unavailable, invalid, unsupported, or unknown. Each capability is supported,\n  unsupported, or unknown."
     )]
     Status,
+    #[command(
+        about = "Prove the custody provider holds this device's key by signing a fresh challenge",
+        after_help = "Notes:\n  Signs a random challenge in a namespace used for nothing else and checks the\n  signature against the identity's public key. Nothing is written, and no vault\n  or remote is contacted. Exits non-zero when the provider cannot sign or holds\n  a different key."
+    )]
+    Verify,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

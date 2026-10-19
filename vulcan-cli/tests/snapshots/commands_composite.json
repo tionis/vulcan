@@ -13299,6 +13299,13 @@
                 "name": "status",
                 "options": [],
                 "subcommands": []
+              },
+              {
+                "about": "Prove the custody provider holds this device's key by signing a fresh challenge",
+                "after_help": "Notes:\n  Signs a random challenge in a namespace used for nothing else and checks the\n  signature against the identity's public key. Nothing is written, and no vault\n  or remote is contacted. Exits non-zero when the provider cannot sign or holds\n  a different key.",
+                "name": "verify",
+                "options": [],
+                "subcommands": []
               }
             ]
           },

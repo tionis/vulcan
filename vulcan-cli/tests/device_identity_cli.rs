@@ -297,6 +297,11 @@ fn device_key_status_reports_custody_without_creating_or_reading_out_secrets() {
         "{human}"
     );
 
+    let verified = json_output(&run(root, &["--output", "json", "device", "key", "verify"]));
+    assert_eq!(verified["verified"], true);
+    assert_eq!(verified["provider"], "file_v1");
+    assert_eq!(verified["device_id"], ready["device_id"]);
+
     // A reserved provider keeps the public identity and is reported, not
     // treated as corrupt; the key file beside it is not used.
     let manifest = directory.join("identity.json");
@@ -309,6 +314,9 @@ fn device_key_status_reports_custody_without_creating_or_reading_out_secrets() {
     let shown = json_output(&run(root, &["--output", "json", "device", "show"]));
     assert_eq!(shown["status"], "degraded");
     assert_eq!(shown["device_id"], ready["device_id"]);
+    let refused = run(root, &["device", "key", "verify"]);
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("system_secret_v1"));
 }
 
 #[test]

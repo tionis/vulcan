@@ -30,7 +30,8 @@ both execute the same application workflow.
   its `state` (`available`, `missing`, `unavailable`, `invalid`, `unsupported`, or `unknown`), and
   per-capability support. It never signs, unlocks, or prompts. `unsupported` means the manifest
   names a provider this build cannot use: report it, and do not edit the manifest or copy key files
-  to work around it.
+  to work around it. `vulcan device key verify` proves possession by signing a fresh challenge
+  locally; use it when a device-key operation fails, before suggesting re-enrollment or replacement.
 - Device IDs are key-derived (`vdev1_...`). A safety branch named with an older 26-character ULID
   is refused by `vulcan sync devices list`; report it to the user rather than deleting it. A stale
   legacy `_device.json` is ignored.

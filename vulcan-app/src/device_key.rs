@@ -256,6 +256,55 @@ pub fn device_key_status(store: &DeviceIdentityStore) -> DeviceKeyStatusReport {
     }
 }
 
+/// SSHSIG namespace for proof-of-possession challenges. Dedicated so a
+/// verification signature is never valid for any other device-key use.
+const VERIFY_NAMESPACE: &str = "vulcan.device-key-verify.v1";
+
+/// Result of `vulcan device key verify`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DeviceKeyVerifyReport {
+    pub device_id: String,
+    pub provider: KeyProviderKind,
+    /// The provider signed a fresh challenge and the signature verified
+    /// against the manifest's public key.
+    pub verified: bool,
+}
+
+/// Proves the configured provider holds this device's key: it signs a fresh
+/// random challenge in a dedicated namespace, and the signature is checked
+/// against the manifest's public key. Nothing is written, and no vault or
+/// remote is involved. Fails when the provider cannot sign or the signature
+/// does not verify.
+pub fn verify_device_key(store: &DeviceIdentityStore) -> Result<DeviceKeyVerifyReport, AppError> {
+    let device_id = store.device_id()?.ok_or_else(|| {
+        AppError::operation("no device identity yet; `vulcan device init` creates one")
+    })?;
+    let provider = open_device_key(store)?;
+    let mut nonce = [0_u8; 32];
+    getrandom::fill(&mut nonce)
+        .map_err(|_| AppError::operation("could not generate a verification challenge"))?;
+    let mut challenge = format!("vulcan device key verify\0{device_id}\0").into_bytes();
+    challenge.extend_from_slice(&nonce);
+    let signature = provider.sign(VERIFY_NAMESPACE, &challenge)?;
+    crate::device_identity::verify_signature(
+        &store.public_key()?,
+        VERIFY_NAMESPACE,
+        &challenge,
+        &signature,
+    )
+    .map_err(|_| {
+        AppError::operation_with_code(
+            "device_key_mismatch",
+            "the device key provider signed with a key that does not match the identity",
+        )
+    })?;
+    Ok(DeviceKeyVerifyReport {
+        device_id,
+        provider: provider.kind(),
+        verified: true,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,6 +360,42 @@ mod tests {
         assert_eq!(device_key_status(&store).state, KeyProviderState::Missing);
         assert!(provider.sign("vulcan-test", b"message").is_err());
         assert!(provider.identity_file().is_none());
+    }
+
+    #[test]
+    fn verify_proves_possession_and_fails_closed() {
+        let (_temporary, store) = store();
+        assert!(verify_device_key(&store).is_err());
+        assert!(
+            !store.directory().exists(),
+            "verify must not create an identity"
+        );
+        store.initialize(false).expect("initialize");
+        let report = verify_device_key(&store).expect("verified");
+        assert!(report.verified);
+        assert_eq!(report.provider, KeyProviderKind::File);
+        assert_eq!(Some(report.device_id), store.device_id().expect("ID"));
+
+        // A key file that is not the manifest's key never verifies.
+        let other = store_with_identity();
+        fs::copy(
+            other.1.directory().join("id_ed25519"),
+            store.directory().join("id_ed25519"),
+        )
+        .expect("swap key");
+        assert!(verify_device_key(&store).is_err());
+
+        let manifest_path = store.directory().join("identity.json");
+        let manifest = fs::read_to_string(&manifest_path).expect("manifest");
+        fs::write(&manifest_path, manifest.replace("file_v1", "ssh_agent_v1")).expect("manifest");
+        let error = verify_device_key(&store).expect_err("unsupported provider");
+        assert_eq!(error.code(), Some("device_key_provider_unsupported"));
+    }
+
+    fn store_with_identity() -> (tempfile::TempDir, DeviceIdentityStore) {
+        let (temporary, store) = store();
+        store.initialize(false).expect("initialize");
+        (temporary, store)
     }
 
     #[test]
