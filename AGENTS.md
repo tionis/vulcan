@@ -31,7 +31,7 @@ Cargo workspace with crates:
 - `vulcan-app` — Reusable synchronous application workflows that compose `vulcan-core` with filesystem mutation, plugin dispatch, config edits, scan refresh, and other non-UI orchestration
 - `vulcan-embed` — Embedding provider trait, OpenAI-compatible provider, vector store abstraction
 - `vulcan-cli` — CLI binary, command handlers, output formatting, TUI (note picker, bases TUI, browse TUI), JS REPL, and transport/presentation adapters over shared services
-- `vulcan-daemon` — axum-based device-local daemon (`vulcan daemon start/install`): sync supervisor and job ledger, per-wiki watchers, companion HTTP/WebSocket transport, and notification sinks. The multi-vault REST API and unified hosting (Phase 10) are in progress
+- `vulcan-daemon` — axum-based device-local daemon (`vulcan daemon start/install`): sync supervisor and job ledger, per-wiki watchers, companion HTTP/WebSocket transport, notification sinks, the per-vault REST API with API tokens, routed CLI reads, vault schedules, and batched auto-commits
 - `vulcan-lsp` — Synchronous Language Server Protocol transport (`vulcan lsp`) over `vulcan-app::editor`, including the multi-root router; the only crate that knows LSP
 - `vulcan-sync` — Synchronous sync backend contracts and the Git CLI engine (hidden-ref snapshots, merge policy, conflict preservation); the Phase 12 Git baseline is implemented
 
@@ -68,7 +68,7 @@ Contributor boundary rule: new reusable business logic must not land in `vulcan-
 
 ## Current implementation status
 
-Phases 1–8 and the Phase 9 pre-daemon gate through 9.29 are complete, including the re-scoped external-agent integration and CLI polish. Optional follow-ons 9.30 (Outline publication) and 9.31 (folder notes) are complete. The mdbase candidate track has implemented discovery, bundled schemas, and schema validation; broader typed-collection interoperability remains candidate work. Phase 10 (daemon) is in progress, and the Phase 12 Git synchronization baseline (12.1–12.14) is implemented with identity, key-management, and selective-materialization follow-ons outstanding. The codebase has:
+Phases 1–8 and the Phase 9 pre-daemon gate through 9.29 are complete, including the re-scoped external-agent integration and CLI polish. Optional follow-ons 9.30 (Outline publication) and 9.31 (folder notes) are complete. The mdbase candidate track has implemented discovery, bundled schemas, and schema validation; broader typed-collection interoperability remains candidate work. Phase 10 (daemon) is implemented except App endpoints, which wait for the Apps platform. The Phase 12 Git synchronization baseline (12.1–12.14), device identity (12.15), the device-key transport (12.21–12.22), and worktree sync modes (12.23) are implemented; key custody and management, synced secrets, Git-level artifact mergers, and selective materialization remain. The codebase has:
 - Full vault indexing with incremental scan, link resolution, graph queries, FTS5 search, vector search
 - Bases evaluator with full expression language, formulas, and interactive TUI
 - Canonical query AST shared across CLI, Bases, and API surfaces
@@ -92,9 +92,9 @@ Phases 1–8 and the Phase 9 pre-daemon gate through 9.29 are complete, includin
 
 See `docs/ROADMAP.md` for the full dependency graph and detailed task lists.
 
-**Phase 10 — multi-vault daemon (in progress):** The device-local daemon, sync supervision, watchers, and companion transport exist. Remaining work is unified hosting (10.7), the full vault registry, REST API, authentication, and CLI client mode, all while preserving direct local CLI operation.
+**Phase 10 — multi-vault daemon (mostly implemented):** The daemon hosts every registered vault with sync supervision, one index owner per vault, the companion transport, the per-vault REST API with API tokens, routed CLI reads (`--route`), vault schedules with repository or signed-commit trust, and batched auto-commits, all while preserving direct local CLI operation. Remaining: mounting Vulcan App endpoints (10.7.7, waits for the Apps platform), the last 10.8 trust-binding and failure tests, and a remote catalog discovery adapter.
 
-**Phase 12 — device and file-tree synchronization:** The Git backend baseline is implemented (see `docs/specs/git-sync-architecture.md`). Remaining work covers cryptographic device identity, key custody and management, synced secrets, deterministic artifact mergers, and selective materialization (12.15–12.20). This phase does not define logical wiki import/publication semantics.
+**Phase 12 — device and file-tree synchronization:** The Git backend baseline is implemented (see `docs/specs/git-sync-architecture.md`). Device identity (12.15) and the device-key transport are implemented. Remaining work covers native key custody and key management (12.16–12.17), synced secrets (12.18), the Git-level side of deterministic artifact mergers (12.19), and selective materialization (12.20). This phase does not define logical wiki import/publication semantics.
 
 **Phase 15 — external knowledge hub:** Add typed external-document bindings, explicit pull/push routes, durable reconciliation state, scheduling, and first-party connectors for Outline, HedgeDoc/HedgeSync, simple Git-backed wikis, and SilverBullet. All remote-to-remote flow passes through the canonical local vault.
 
