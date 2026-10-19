@@ -16,7 +16,11 @@ Knowledge bases remain Vulcan's focus. Registered directories have a versioned, 
 
 Search note text with full-text and optional semantic search; explore backlinks, outgoing links, and the note graph; find unresolved links and other diagnostics. Query frontmatter, tags, inline fields, and file metadata using Vulcan's query language, Dataview DQL, or Obsidian Bases views.
 
-Read and patch individual sections of long notes, rename files with link rewriting, and preview bulk property edits and refactors. Terminal browsers and interactive Bases views complement the scriptable commands.
+Read and patch individual sections of long notes, rename files with link rewriting, and preview bulk property edits and refactors. `vulcan render` and the terminal browser show notes with Dataview, Tasks, `.base` embeds, and embedded notes evaluated, and interactive Bases views complement the scriptable commands.
+
+### Edit in your editor
+
+`vulcan lsp` serves a vault to any Language Server Protocol editor: link and heading navigation, backlinks, completion of links, tags, and properties, diagnostics, and renames and moves that rewrite links across the vault. `vulcan editor nvim|vim install` installs the bundled Neovim and Vim plugins, and `vulcan editor helix install` configures Helix. See the [editors guide](docs/guide/editors.md).
 
 Start with the [query guide](docs/guide/query-dsl.md), [filter reference](docs/guide/filters.md), and [workflow recipes](docs/examples/recipes.md).
 
@@ -39,15 +43,16 @@ Use the CLI directly from shell or Python scripts, request JSON output, or run J
 | Skills and skill commands | Reusable agent guidance and typed callable workflows |
 | Plugins | Event-driven lifecycle hooks |
 | MCP | Tool clients using permission profiles and selected tool packs |
+| Daemon REST API | Programs reaching one vault over HTTP with a per-vault token |
 | Rust crates | Native integration with shared semantics and application workflows |
 
-Read the [automation overview](docs/guide/automation-surfaces.md), [scripting guide](docs/guide/scripting.md), [JavaScript API](docs/reference/js-api/index.md), and [sandbox guide](docs/guide/sandbox.md). For remote agent access with per-connection consent, see [named MCP remotes](docs/guide/mcp-remotes.md) (`vulcan help mcp-remotes`) and the [ChatGPT MCP setup guide](docs/guide/chatgpt-mcp.md).
+Read the [automation overview](docs/guide/automation-surfaces.md), [scripting guide](docs/guide/scripting.md), [JavaScript API](docs/reference/js-api/index.md), and [sandbox guide](docs/guide/sandbox.md). The daemon's [REST API](docs/guide/rest-api.md) serves reads from its warm index and accepts idempotent writes, and [scheduled jobs](docs/guide/schedules.md) run scans and batched commits on chosen devices. For remote agent access with per-connection consent, see [named MCP remotes](docs/guide/mcp-remotes.md) (`vulcan help mcp-remotes`) and the [ChatGPT MCP setup guide](docs/guide/chatgpt-mcp.md).
 
 ### Publish and synchronize
 
 Export selected notes as documents, datasets, books, or archives; build static sites; or publish to Outline. Outline integration includes explicit pull and publication workflows, exact note/document bindings, and named subtree routes with conflict handling.
 
-Git-backed synchronization replicates the complete working tree across registered directories. The `knowledge` profile preserves existing vault behavior; `files-only` skips indexing, knowledge-specific validation, scripts, semantic history, and agent conflict resolution while using the same file reconciliation. Concurrent automatic merges on files-only registrations remain preserved for review. An optional multi-vault daemon schedules synchronization, performs a bounded final sync on graceful shutdown, and reconciles again after detecting resume from suspend; the Obsidian companion exposes status, sync, and file-conflict review. Files-only unattended sync checks repository shape, but external Git processes are outside Vulcan's lock; active development checkout workflows need a separate contract. File replication does not by itself provide a complete backup of refs, history, or Git LFS payloads. Device synchronization and external wiki publication have separate responsibilities: external documents pass through an inspectable local vault.
+Git-backed synchronization replicates the working tree across registered directories: by default every file, or only committed history (`sync.worktree = "none"`), or uncommitted edits only under chosen paths (`sync.worktree = "paths"`). The `knowledge` profile preserves existing vault behavior; `files-only` skips indexing, knowledge-specific validation, scripts, semantic history, and agent conflict resolution while using the same file reconciliation. Concurrent automatic merges on files-only registrations remain preserved for review. An optional multi-vault daemon schedules synchronization, performs a bounded final sync on graceful shutdown, and reconciles again after detecting resume from suspend; the Obsidian companion exposes status, sync, and file-conflict review. Files-only unattended sync checks repository shape, but external Git processes are outside Vulcan's lock; active development checkout workflows need a separate contract. File replication does not by itself provide a complete backup of refs, history, or Git LFS payloads. Device synchronization and external wiki publication have separate responsibilities: external documents pass through an inspectable local vault.
 
 Follow the guides for [static sites](docs/guide/static-sites.md), [Outline publishing](docs/guide/outline-publishing.md), [Git synchronization](docs/guide/git-sync.md), [device keys for Git over SSH](docs/guide/device-keys.md), [unattended conflict resolution](docs/guide/git-sync.md#unattended-conflict-resolution), and the [Obsidian companion](integrations/obsidian-vulcan/README.md).
 
@@ -153,6 +158,7 @@ That integration is planned. The current mdbase query path still performs collec
 | Write scripts or extend automation | [Scripting](docs/guide/scripting.md), [JS API](docs/reference/js-api/index.md), [custom tools](docs/assistant/custom_tools.md), [skill commands](docs/assistant/skill_commands.md) |
 | Configure permissions and script access | [Configuration](docs/reference/config.md), [sandboxing](docs/guide/sandbox.md), [MCP setup](docs/guide/chatgpt-mcp.md) |
 | Publish or exchange knowledge | [Static sites](docs/guide/static-sites.md), [Outline](docs/guide/outline-publishing.md), [external wikis](docs/guide/information-hub.md) |
+| Edit notes in Neovim, Vim, or Helix | [Editors](docs/guide/editors.md) |
 | Sync devices and use Obsidian alongside Vulcan | [Git sync](docs/guide/git-sync.md), [device keys](docs/guide/device-keys.md), [companion plugin](integrations/obsidian-vulcan/README.md) |
 | Understand or contribute to the implementation | [Design document](docs/design_document.md), [roadmap](docs/ROADMAP.md), [hardening and verification](docs/hardening.md) |
 
@@ -165,10 +171,12 @@ The Rust workspace separates reusable synchronous semantics and workflows from U
 | `vulcan-core` | Parsing, indexing, SQLite cache, queries, graph, tasks, permissions, and compatibility semantics |
 | `vulcan-app` | Reusable application workflows, including mutations, publication, configuration, and plugin dispatch |
 | `vulcan-cli` | CLI, terminal UIs, output formatting, and local MCP stdio adapter |
-| `vulcan-daemon` | Async service, multi-vault registry, MCP HTTP/OAuth hosting, and background scheduling |
+| `vulcan-lsp` | Language Server Protocol transport for editors (`vulcan lsp`) |
+| `vulcan-daemon` | Async service, multi-vault registry, REST API, MCP HTTP/OAuth hosting, and background scheduling |
 | `vulcan-secrets` | Device-local secret custody and protected-file storage |
 | `vulcan-sync` | Synchronous Git synchronization engine and backend boundaries |
 | `vulcan-embed` | Embedding providers and vector-store abstractions |
+| `vulcan-winacl` | Windows private-path ACL helpers |
 
 The `vulcan-app` crate is the shared workflow layer used today; the planned **Vulcan Apps** platform is a separate product capability.
 
@@ -177,8 +185,8 @@ Run the required checks before committing:
 ```sh
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --no-default-features -- -D warnings
 cargo test --workspace
-cargo check --workspace --no-default-features
 ```
 
 See [hardening](docs/hardening.md) for feature combinations and architecture boundary checks.
