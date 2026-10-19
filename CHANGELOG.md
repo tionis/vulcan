@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-10-19
 
-This release brings Vulcan into text editors and lets other programs use a vault through the
+Vulcan 0.4.0 brings Vulcan into text editors and lets other programs use a vault through the
 daemon. `vulcan lsp` gives Neovim, Vim, Helix, and other LSP editors link-aware navigation,
 completion, diagnostics, and renames. The daemon gains a per-vault REST API with tokens, answers
 routed CLI reads from its warm index, runs scheduled jobs, and batches auto-commits. Notes now

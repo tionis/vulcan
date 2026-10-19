@@ -18,8 +18,8 @@ lsp-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 url.workspace = true
-vulcan-app = { path = "../vulcan-app", version = "0.3.0", default-features = false }
-vulcan-core = { path = "../vulcan-core", version = "0.3.0", default-features = false }
+vulcan-app = { path = "../vulcan-app", version = "0.4.0", default-features = false }
+vulcan-core = { path = "../vulcan-core", version = "0.4.0", default-features = false }
 
 [dev-dependencies]
 tempfile.workspace = true

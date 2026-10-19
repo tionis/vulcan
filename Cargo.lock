@@ -5074,7 +5074,7 @@ dependencies = [
 
 [[package]]
 name = "vulcan-app"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64",
  "blake3",
@@ -5115,7 +5115,7 @@ dependencies = [
 
 [[package]]
 name = "vulcan-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "assert_cmd",
  "base64",
@@ -5154,7 +5154,7 @@ dependencies = [
 
 [[package]]
 name = "vulcan-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aho-corasick",
  "ammonia",
@@ -5197,7 +5197,7 @@ dependencies = [
 
 [[package]]
 name = "vulcan-daemon"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "base64",
@@ -5228,7 +5228,7 @@ dependencies = [
 
 [[package]]
 name = "vulcan-embed"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "reqwest",
  "rusqlite",
@@ -5240,7 +5240,7 @@ dependencies = [
 
 [[package]]
 name = "vulcan-lsp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "crossbeam-channel",
  "lsp-server",
@@ -5255,7 +5255,7 @@ dependencies = [
 
 [[package]]
 name = "vulcan-secrets"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "fs2",
  "libc",
@@ -5269,7 +5269,7 @@ dependencies = [
 
 [[package]]
 name = "vulcan-sync"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aho-corasick",
  "blake3",
@@ -5289,7 +5289,7 @@ dependencies = [
 
 [[package]]
 name = "vulcan-winacl"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "tempfile",
  "windows-sys 0.61.2",
