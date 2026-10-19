@@ -2,8 +2,125 @@
 
 ## Unreleased
 
+This release brings Vulcan into text editors and lets other programs use a vault through the
+daemon. `vulcan lsp` gives Neovim, Vim, Helix, and other LSP editors link-aware navigation,
+completion, diagnostics, and renames. The daemon gains a per-vault REST API with tokens, answers
+routed CLI reads from its warm index, runs scheduled jobs, and batches auto-commits. Notes now
+render with Dataview, Tasks, and embeds evaluated in the terminal, browse, exports, and editors.
+Sync gains committed-history-only and path-scoped modes. Vulcan is still pre-alpha: keep
+independent backups and review mutations with `--dry-run`.
+
+### Highlights
+
+- **Editor integration.** `vulcan lsp` is a Language Server for vaults: definitions and references
+  for links, headings, and block IDs, hover previews, completion of links, tags, and properties,
+  diagnostics, semantic highlighting, backlink lenses, due-date hints, task toggling, section
+  extraction, multi-vault workspaces, and link-safe renames and moves, including in unsaved
+  buffers. `vulcan editor nvim|vim install` installs the vulcan.nvim and vulcan.vim plugins this
+  binary carries, and `vulcan editor helix install` merges configuration into Helix's own files.
+  See `docs/guide/editors.md`.
+- **Evaluated notes.** `vulcan render`, `note get --evaluate`, daily and periodic notes, browse
+  previews, exports with `--evaluate`, and editors show inline expressions, Dataview, DataviewJS,
+  Tasks, `.base` embeds, and embedded notes evaluated, read-only and under the selected permission
+  profile. Terminal output is laid out as styled Markdown that fits the width, and browse draws
+  images (Kitty, sixel, iTerm2, or half-blocks), follows links, and shows images full screen.
+- **Daemon REST API.** Per-vault API tokens (`vulcan vault token create|list|revoke`) reach one
+  vault's routes on the daemon's loopback listener: notes, search, queries, graph reports, history
+  and diffs, doctor, vectors, health, and idempotent writes. See `docs/guide/rest-api.md`.
+- **Routed reads.** With `--route daemon|auto`, `VULCAN_ROUTE`, or `vulcan device config set-route`,
+  `query`, DQL, keyword `search`, `ls`, `tasks query`, graph reports, and `note info|links|backlinks`
+  are answered from the daemon's retained index, never staler than running directly.
+- **Schedules and batched commits.** `[[schedules.jobs]]` in the shared vault config runs `scan` and
+  `batch-commit` jobs on named devices through the daemon; `vulcan schedule` lists, runs, and
+  enables them, and `vulcan schedule trust` can require a signed commit for each job.
+  `[git] strategy = "batched"` commits accumulated changes together, optionally with agent-written
+  messages. See `docs/guide/schedules.md`.
+- **Sync modes.** `sync.worktree = "none"` syncs only committed history, and `"paths"` with
+  `sync.paths` syncs uncommitted edits only under those paths. Obsidian settings merge key by key,
+  and newly ignored files stop syncing without being deleted anywhere.
+- **Faster at scale.** Writes refresh only the paths they change (a note write at 100K notes takes
+  about 90 ms instead of 600 ms), and note lookups, `status`, graph reports, task queries, and broad
+  searches no longer do work proportional to the whole vault.
+
+### Upgrade notes
+
+- **Permission profiles you select must be defined on this device.** `--permissions <name>`
+  (including for `vulcan mcp` and `vulcan lsp` started by an agent), a registration's
+  `--permissions-profile`, MCP remote ceilings, and the schedule ceiling now refuse a profile that
+  only the vault's synced `.vulcan/config.toml` defines or that the synced file widens, so a pushed
+  edit cannot raise them. Run `vulcan config permissions profile pin <name>` to accept the vault's
+  definition into `config.local.toml`, or define it there. Built-in profiles are unaffected.
+- **Stable signing-key rotation, final step.** The stable channel now trusts only the
+  hardware-held `stable-2026-10` key, and stable releases are signed only with it. The retired
+  `stable-2026-09` key is no longer accepted. Installations on 0.3.0 update normally. Older
+  binaries must first update to 0.3.0, which both keys signed, or be reinstalled from a
+  checksum-verified archive or package.
+- **DataviewJS follows vault trust.** Rendering commands now run DataviewJS in the strict sandbox by
+  default and with the configured sandbox tier (still read-only) in vaults trusted with
+  `vulcan trust`. `[dataview] render_dataview_js` or `--dataviewjs off` turns it off.
+  `vulcan render` now evaluates vault notes unless given `--raw`.
+- **Verbosity is counted.** `-v`, `-vv`, and `-vvv` select verbose, debug, and trace output, with
+  `VULCAN_VERBOSITY` as the default. `kanban show --verbose` is now `kanban show --cards`.
+- **Path-scoped sync needs this release on every device.** Live commits written with
+  `sync.worktree = "paths"` use a newer format that older versions refuse.
+- **Building from source needs Rust 1.90.**
+
 ### Added
 
+- Editors: `vulcan lsp` serves definition, references, hover, completion (including inline-field
+  keys), document and workspace symbols, pushed and pulled diagnostics, semantic tokens, code lenses,
+  inlay hints, and code actions (create a missing note, pick an ambiguous target, convert link
+  style, toggle a task, extract a section). Renames of a link's note, heading, or block, and file
+  moves from the editor, rewrite links across the vault. `vulcan/render`, `vulcan/outline`,
+  `vulcan/backlinks`, and `vulcan/status` requests and the `vulcan.*` commands (scan, capture,
+  periodic notes, template insertion, note moves) serve editor plugins. An `[editor]` config section
+  turns features on and off. Under `--permissions`, notes the profile cannot read are invisible to
+  the editor.
+- `vulcan editor nvim|vim install|status|path|uninstall` and
+  `vulcan editor helix install|status|uninstall|print-config` install and update the bundled
+  editor integrations. `self-update` refreshes installed copies and leaves locally edited ones
+  alone unless `--force`.
+- Rendering: `note get --evaluate`, `--dataviewjs off|static|on`, and MCP `note_get` `evaluate`
+  return evaluated notes. Note embeds are transcluded, Obsidian `%% comments %%` are hidden, inline
+  DataviewJS (`$=`) is evaluated where the vault enables it, inline fields render as Dataview's
+  reading view shows them, and `strictLineBreaks` is honored. Markdown, JSON, ZIP, and SQLite
+  exports take `--evaluate` and `--dataviewjs` (profiles: `evaluate`, `dataview_js`).
+- Terminal output: tables wrap cells instead of truncating, callouts, quotes, nested lists, and
+  `#tags` are styled, and `daily show`, `daily latest`, and `periodic show` print the note
+  evaluated. Browse renders the preview on a worker thread, caches it, shows the whole source with
+  line numbers (Ctrl-V), selects and follows links (Tab, Enter), and draws embedded images;
+  `VULCAN_IMAGE_PROTOCOL` forces a graphics mode.
+- Templater templates that use JavaScript run as one program, as Templater does, so declarations,
+  conditions, and loops can span tags. Errors name the template line, `tp.system.prompt` and
+  QuickAdd inputs come from `--var` or a terminal prompt instead of silently taking the first
+  option, `template show` lists the inputs, and more of `tp.obsidian` and `tp.file.cursor()` work.
+  See `vulcan help templates`.
+- Daemon REST API (`docs/guide/rest-api.md`): API tokens, reads served from the retained index
+  under the registration's permission profile, history and diffs, doctor, vector models,
+  neighbors, and indexing, bulk property updates, note create, replace, patch, append, delete, move,
+  inbox, and scan with required `Idempotency-Key`s, `GET /health` with per-vault watcher and
+  consumer health, and `GET /openapi.json`. `GET /capabilities` lists the REST routes.
+- `--route direct|daemon|auto`, `VULCAN_ROUTE`, and `vulcan device config set-route|clear-route`
+  choose where routable reads run. `direct` is the default and never contacts the daemon; `auto`
+  falls back to running directly whenever the daemon cannot vouch for a fresh index.
+- Scheduled jobs (`docs/guide/schedules.md`): `[[schedules.jobs]]` with `every` or five-field
+  `cron` triggers in an IANA zone, exact device IDs as nodes, a capped authority profile, and
+  runtime and retry limits. The daemon coalesces missed runs and never overlaps a job, and
+  `vulcan schedule list|show|next|history|run|enable|disable|trust` work without it.
+- Batched auto-commits: `[git] strategy = "batched"` with `batch_interval_seconds` and
+  `batch_messages = "template"|"deterministic"|"agent"`. The daemon commits once edits pause, and
+  `vulcan git batch-commit [--dry-run]` runs one batch for cron or a timer. Agent messages need
+  `vulcan daemon config set-auto-commit-agent` on the device; `vulcan daemon auto-commit-status`
+  reports each vault.
+- `sync.worktree = "none"` (committed history only) and `sync.worktree = "paths"` with
+  `sync.paths` (uncommitted edits only under those paths), plus `sync.branch_push` to stop
+  publishing local commits.
+- `vulcan sync run --queue` hands a sync to the running daemon without waiting.
+- `vulcan vault list` and `vault show` report each vault's `health` (missing, unindexed,
+  conflicted, recovery_required, paused, failing, offline, syncing, or healthy), with or without
+  a running daemon.
+- `vulcan config permissions profile pin <name>` copies a vault-defined permission profile into
+  `config.local.toml`.
 - `vulcan device key status` reports where the device's private key is kept (`file_v1` today), whether
   it is available, and what its provider can do, without creating, signing, or prompting. A device
   identity whose manifest names a reserved provider (`system_secret_v1`, `ssh_agent_v1`) is now
@@ -39,6 +156,27 @@
 
 ### Changed
 
+- One process indexes each vault. The daemon, `vulcan serve`, MCP over HTTP, and the language
+  server elect an owner through `.vulcan/index-owner.lock`; the others follow its changes and take
+  over when it exits. `vulcan daemon status` shows a following index as `following`.
+- Writes refresh only the paths they change instead of rescanning the vault: note, task, inbox,
+  periodic, template, bases, and MCP writes, and REST writes. Note-name resolution, `note info`,
+  `note backlinks`, `status`, graph reports, task queries, and broad keyword searches use indexes
+  instead of whole-vault passes (cache schema v35 to v38, migrated automatically).
+- `dataview query` and `dataview eval` print results with the same formatter as rendered notes:
+  integral numbers without `.0`, null as `-`, and diagnostics as a warning callout.
+- Completing a recurring task inline (`tasks complete`, MCP, or the editor) now inserts its next
+  occurrence, as the Tasks plugin does.
+- A daemon agent whose API key variable is unset is reported as unavailable in `daemon status`
+  instead of stopping the daemon. A daemon consumer that exits restarts alone with backoff, idle
+  daemons wake about 20 times less often, and a daemon whose state directory was deleted stops.
+- `vulcan sync semantic-plan` and `semantic-auto` with `--agent` and no `--base-url` use the
+  daemon's configured semantic agent instead of a local Ollama default.
+- Live sync snapshots link the published checked-out branch, so a device that received commits
+  through live sync adopts them when they reach the branch instead of showing them as a large
+  uncommitted diff. Criss-crossed live history merges against a virtual merge base.
+- Sync accepts only key-derived (`vdev1_`) device IDs; a leftover device ref in the older ULID form
+  is refused with an error instead of listed.
 - `vulcan vault add` of a Git-sync vault whose folder is not a Git repository now says so
   (`not_a_git_repository` in JSON) and skips device-key enrollment instead of attempting it.
 - Sync errors from a bound vault and device-key probe results show `<device key>` and
@@ -88,7 +226,6 @@
 - Sync conflicts no longer write a copy of each side's bytes beside the conflict record. Nothing
   read those copies; the bytes stay in Git behind the conflict's preserved refs and, later, in the
   conflict archive.
-
 - Sync sweeps Vulcan's own refs at most once a day per repository: remote backups of devices that
   are no longer registered are deleted when live already contains them, local device recovery refs
   are released once their backup is gone. Backups that hold content live lacks are kept and reported
@@ -99,14 +236,32 @@
   longer create such copies. Git tools without negative-refspec support (Git before 2.29,
   isomorphic-git) cannot fetch from a remote configured this way.
 
-- **Stable signing-key rotation, final step.** The stable channel now trusts only the
-  hardware-held `stable-2026-10` key, and stable releases are signed only with it. The retired
-  `stable-2026-09` key is no longer accepted. Installations on 0.3.0 update normally. Older
-  binaries must first update to 0.3.0, which both keys signed, or be reinstalled from a
-  checksum-verified archive or package.
-
 ### Fixed
 
+- Rendering a note no longer lets DataviewJS write: browse previews, `render`, `note get`, and MCP
+  `note_get` run it read-only whatever the sandbox tier. HTML rendering ran DQL over the whole
+  vault regardless of the permission profile; evaluated reads now honor it, and `daily show` and
+  `periodic show` check read access.
+- `vulcan vectors` honors `--permissions`: commands that embed need network access to the
+  provider, and commands that write the vector index need the `index` grant.
+- Device-key SSH no longer joins the user's own `ControlMaster` connections, which could let later
+  plain `git` to the same forge run with the vault's key. Notification discovery on a bound vault
+  uses the device key too, instead of the user's credentials and two extra processes per check.
+- List items and tasks after a nested sublist were left out of the index, task queries, and
+  Dataview. Bare `key:: value` fields on list lines were indexed with the list marker in the key.
+- `FROM ""` in DQL means the whole vault, as in Dataview. `sort by description` and
+  `group by description` in task queries use the task text.
+- `doctor` counts attachments reached through plain links and reports only media as orphans. Web
+  Clipper's linked image embeds (`[![[img.png]]](url)`) parse correctly, and HedgeDoc image size
+  suffixes are reported as unsupported syntax.
+- Semantic automation (`semantic-auto`) works after its first application on a lineage.
+- `sync doctor` checks a nested vault's cache ignore rules in the vault's own `.vulcan/`.
+- Notes in a vault opened through a symlink (such as macOS `/var`) are recognized as vault notes.
+- Templater `tp.file.path` and `tp.file.folder` follow Templater's semantics.
+- HTML rendering no longer breaks inline fields into empty spans and prints integral numbers
+  without `.0`.
+- `file.inlinks` and the matches of an ambiguous link are listed in a stable order.
+- Building with `js_runtime` but without `web` compiles.
 - Native queries run typed predicates exactly as given. A JSON `query` predicate whose text value
   contains both `'` and `"`, or whose field is a property key with a space, failed with
   `invalid property filter`; typed predicates no longer pass through filter text, so both now
