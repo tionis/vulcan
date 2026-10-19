@@ -41,6 +41,11 @@
 
 - `vulcan vault add` of a Git-sync vault whose folder is not a Git repository now says so
   (`not_a_git_repository` in JSON) and skips device-key enrollment instead of attempting it.
+- Sync errors from a bound vault and device-key probe results show `<device key>` and
+  `<device key directory>` where ssh would name the key file (`Load key "…/id_ed25519": bad
+  permissions`). The path is not secret; this keeps home-directory paths out of journals and
+  notifications, as the device-key specs already require. The key stays at `device/id_ed25519` in Vulcan's data
+  directory.
 - YAML parsing moves from the archived `serde_yaml` to `yaml_serde`, the YAML organization's
   maintained fork, which drops the unmaintained `unsafe-libyaml` dependency (RUSTSEC-2024-0449).
   Frontmatter, Bases, and other YAML parse and serialize exactly as before (compared over about
@@ -102,9 +107,6 @@
 
 ### Fixed
 
-- Git and ssh error text no longer reveals the device key's file path. ssh can name the key it was
-  given (`Load key "…/id_ed25519": bad permissions`); sync errors from a bound vault and device-key
-  probe results now show `<device key>` and `<device key directory>` instead.
 - Native queries run typed predicates exactly as given. A JSON `query` predicate whose text value
   contains both `'` and `"`, or whose field is a property key with a space, failed with
   `invalid property filter`; typed predicates no longer pass through filter text, so both now
