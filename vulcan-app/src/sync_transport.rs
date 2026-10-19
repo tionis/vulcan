@@ -417,7 +417,7 @@ fn git_engine_with_store(
         Ok(None) => engine,
         Ok(Some(record)) => match store.map(|store| (store, eligible_key(store))) {
             Some((_, Ok((device_id, key)))) if device_id == record.device_id => {
-                engine.with_ssh_command(ssh_command_for(&key))
+                redact_key_path(engine.with_ssh_command(ssh_command_for(&key)), &key)
             }
             Some((store, Ok((device_id, _)))) => {
                 engine.with_ssh_command(failing_ssh_command(&binding_mismatch(
@@ -514,11 +514,30 @@ pub(crate) fn probe_device_key_with(
     if let Some(mut pipe) = child.stderr.take() {
         let _ = std::io::Read::take(&mut pipe, 8192).read_to_string(&mut stderr);
     }
-    Ok(classify_probe_failure(&stderr))
+    Ok(classify_probe_failure(&stderr, &key))
+}
+
+/// Keeps the device key's path, which ssh may name in an error, out of
+/// every Git error and report the engine produces.
+fn redact_key_path(engine: GitCliEngine, key: &Path) -> GitCliEngine {
+    let mut engine = engine.with_stderr_redaction(&key.to_string_lossy(), "<device key>");
+    if let Some(directory) = key.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        engine =
+            engine.with_stderr_redaction(&directory.to_string_lossy(), "<device key directory>");
+    }
+    engine
 }
 
 /// A single-line, bounded message from Git/ssh output, never anything else.
-fn classify_probe_failure(stderr: &str) -> ProbeOutcome {
+/// ssh can name the key file it was given (`Load key "...": bad
+/// permissions`); that path, and the identity directory holding it, are
+/// replaced before the message can reach a report.
+fn classify_probe_failure(stderr: &str, key: &Path) -> ProbeOutcome {
+    let mut redacted = stderr.replace(&*key.to_string_lossy(), "<device key>");
+    if let Some(directory) = key.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        redacted = redacted.replace(&*directory.to_string_lossy(), "<device key directory>");
+    }
+    let stderr = redacted.as_str();
     let lower = stderr.to_ascii_lowercase();
     let line = stderr
         .lines()
@@ -1819,20 +1838,63 @@ mod tests {
 
     #[test]
     fn failure_text_is_classified_without_leaking_control_characters() {
-        let denied = classify_probe_failure("\x1b[31mPermission denied (publickey).\nfatal: Could not read from remote repository.\n");
+        let key = Path::new("/home/user/.local/share/vulcan/device/id_ed25519");
+        let denied = classify_probe_failure("\x1b[31mPermission denied (publickey).\nfatal: Could not read from remote repository.\n", key);
         assert!(
             matches!(&denied, ProbeOutcome::Denied(message) if message == "[31mPermission denied (publickey)."),
             "{denied:?}"
         );
         assert!(matches!(
-            classify_probe_failure("ssh: connect to host x port 22: Connection refused"),
+            classify_probe_failure("ssh: connect to host x port 22: Connection refused", key),
             ProbeOutcome::Unreachable(_)
         ));
         assert!(matches!(
-            classify_probe_failure(""),
+            classify_probe_failure("", key),
             ProbeOutcome::Unreachable(_)
         ));
-        let long = classify_probe_failure(&"x".repeat(1000));
+        let long = classify_probe_failure(&"x".repeat(1000), key);
         assert!(matches!(long, ProbeOutcome::Unreachable(message) if message.len() == 200));
+    }
+
+    #[test]
+    fn git_errors_from_a_bound_engine_never_name_the_device_key_file() {
+        use vulcan_sync::{GitEngine, GitRefName, GitRemote};
+        // A remote that is the key file itself makes Git print its path.
+        let probe = fixture("origin", true);
+        let (_, key) = eligible_key(&probe.store).expect("eligible key");
+        let fx = fixture(&key.to_string_lossy(), false);
+        let engine = redact_key_path(GitCliEngine::default(), &key);
+        let repository = engine
+            .discover_repository(fx.paths.vault_root())
+            .expect("repository");
+        let error = engine
+            .list_remote_refs(
+                &repository,
+                &GitRemote::parse("origin").expect("remote"),
+                &GitRefName::parse("refs/heads").expect("prefix"),
+            )
+            .expect_err("the key file is not a repository");
+        let rendered = format!("{error} {error:?}");
+        assert!(!rendered.contains(&*key.to_string_lossy()), "{rendered}");
+        assert!(rendered.contains("<device key>"), "{rendered}");
+    }
+
+    #[test]
+    fn failure_text_never_names_the_device_key_file() {
+        let key = Path::new("/home/user/.local/share/vulcan/device/id_ed25519");
+        for stderr in [
+            "Load key \"/home/user/.local/share/vulcan/device/id_ed25519\": bad permissions\ngit@host: Permission denied (publickey).\n",
+            "no such identity: /home/user/.local/share/vulcan/device/id_ed25519: No such file or directory\n",
+            "Permissions 0644 for '/home/user/.local/share/vulcan/device/id_ed25519.pub' are too open.\n",
+        ] {
+            let (ProbeOutcome::Denied(message) | ProbeOutcome::Unreachable(message)) =
+                classify_probe_failure(stderr, key)
+            else {
+                panic!("a failure outcome");
+            };
+            assert!(!message.contains("/home/user"), "{message}");
+            assert!(!message.contains("id_ed25519"), "{message}");
+            assert!(message.contains("<device key"), "{message}");
+        }
     }
 }

@@ -102,6 +102,9 @@
 
 ### Fixed
 
+- Git and ssh error text no longer reveals the device key's file path. ssh can name the key it was
+  given (`Load key "…/id_ed25519": bad permissions`); sync errors from a bound vault and device-key
+  probe results now show `<device key>` and `<device key directory>` instead.
 - Native queries run typed predicates exactly as given. A JSON `query` predicate whose text value
   contains both `'` and `"`, or whose field is a property key with a space, failed with
   `invalid property filter`; typed predicates no longer pass through filter text, so both now

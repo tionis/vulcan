@@ -1813,6 +1813,9 @@ pub struct GitRefMirror<'a> {
     pub local_prefix: &'a GitRefName,
 }
 
+/// Text to replace in Git's stderr, and the label replacing it.
+type StderrRedaction = (Box<[u8]>, &'static str);
+
 #[derive(Debug, Clone)]
 pub struct GitCliEngine {
     executable: PathBuf,
@@ -1822,6 +1825,10 @@ pub struct GitCliEngine {
     subprocess_count: Arc<AtomicU64>,
     /// Exact `GIT_SSH_COMMAND` for every spawned Git process. Never logged.
     ssh_command: Option<Arc<str>>,
+    /// Text replaced in every Git process's stderr before it can reach an
+    /// error, report, or journal, in order: for example the device key file
+    /// that ssh may name.
+    stderr_redactions: Arc<[StderrRedaction]>,
 }
 
 impl PartialEq for GitCliEngine {
@@ -1850,7 +1857,27 @@ impl GitCliEngine {
             pending_requirements: Arc::new(Mutex::new(BTreeMap::new())),
             subprocess_count: Arc::new(AtomicU64::new(0)),
             ssh_command: None,
+            stderr_redactions: Arc::from(Vec::new()),
         }
+    }
+
+    /// Replaces every occurrence of `text` in Git's stderr with `label`.
+    /// Redactions apply in the order added, so add longer texts first.
+    #[must_use]
+    pub fn with_stderr_redaction(mut self, text: &str, label: &'static str) -> Self {
+        if !text.is_empty() {
+            let mut redactions = self.stderr_redactions.to_vec();
+            redactions.push((text.as_bytes().into(), label));
+            self.stderr_redactions = Arc::from(redactions);
+        }
+        self
+    }
+
+    fn redact_stderr(&self, mut stderr: Vec<u8>) -> Vec<u8> {
+        for (text, label) in self.stderr_redactions.iter() {
+            stderr = replace_bytes(&stderr, text, label.as_bytes());
+        }
+        stderr
     }
 
     /// Authenticates every spawned Git process with this exact SSH command,
@@ -2145,7 +2172,7 @@ impl GitCliEngine {
             Ok(Output {
                 status,
                 stdout,
-                stderr,
+                stderr: self.redact_stderr(stderr),
             })
         })
     }
@@ -6661,6 +6688,24 @@ fn parse_commit_metadata(source: &[u8]) -> Result<GitCommitMetadata, GitEngineEr
     })
 }
 
+fn replace_bytes(haystack: &[u8], needle: &[u8], replacement: &[u8]) -> Vec<u8> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return haystack.to_vec();
+    }
+    let mut output = Vec::with_capacity(haystack.len());
+    let mut index = 0;
+    while index < haystack.len() {
+        if haystack[index..].starts_with(needle) {
+            output.extend_from_slice(replacement);
+            index += needle.len();
+        } else {
+            output.push(haystack[index]);
+            index += 1;
+        }
+    }
+    output
+}
+
 fn redact_clone_source(mut error: GitEngineError, source: &str) -> GitEngineError {
     if let GitEngineError::CommandFailed { stderr, .. } = &mut error {
         *stderr = stderr.replace(source, "<redacted clone source>");
@@ -7426,6 +7471,27 @@ fn bounded_lossy(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn stderr_redactions_replace_every_occurrence_in_order() {
+        let engine = GitCliEngine::default()
+            .with_stderr_redaction("/data/device/id_ed25519", "<device key>")
+            .with_stderr_redaction("/data/device", "<device key directory>")
+            .with_stderr_redaction("", "ignored");
+        let redacted = engine.redact_stderr(
+            b"Load key \"/data/device/id_ed25519\": bad permissions\n/data/device/x and /data/device/id_ed25519.pub\n"
+                .to_vec(),
+        );
+        assert_eq!(
+            String::from_utf8(redacted).expect("utf-8"),
+            "Load key \"<device key>\": bad permissions\n<device key directory>/x and <device key>.pub\n"
+        );
+        assert_eq!(
+            GitCliEngine::default().redact_stderr(b"plain".to_vec()),
+            b"plain"
+        );
+        assert_eq!(replace_bytes(b"ab", b"abc", b"x"), b"ab");
+    }
 
     #[test]
     fn ssh_command_overrides_ambient_git_ssh_environment() {
