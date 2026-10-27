@@ -697,6 +697,10 @@ class DataArray {
   forEach(callback) {
     this.values.forEach((value, index) => callback(value, index));
   }
+
+  toJSON() {
+    return this.values;
+  }
 }
 
 function __vulcanAsArray(value) {
@@ -858,6 +862,13 @@ function __vulcanReviveFileMetadata(file) {
   }
   // Copy descriptors so lazy fields stay lazy.
   const revived = Object.defineProperties({}, Object.getOwnPropertyDescriptors(file));
+  // Dataview hands out every `file` array (tasks, lists, links, tags) as a
+  // DataArray; lazy fields wrap theirs when they load.
+  for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(revived))) {
+    if (Array.isArray(descriptor.value)) {
+      revived[key] = new DataArray(descriptor.value);
+    }
+  }
   for (const key of ["day", "mday", "cday"]) {
     if (typeof revived[key] === "string") {
       const millis = __vulcan_date_millis(revived[key]);
@@ -895,10 +906,8 @@ function __vulcanLazyFile(file, generation, set) {
       enumerable: true,
       configurable: true,
       get() {
-        return settle(
-          this,
-          JSON.parse(__vulcan_page_file_field_json(generation, set, path, key))
-        );
+        const value = JSON.parse(__vulcan_page_file_field_json(generation, set, path, key));
+        return settle(this, Array.isArray(value) ? new DataArray(value) : value);
       },
       set(value) {
         settle(this, value);
@@ -8187,7 +8196,36 @@ cpu_limit_ms = 25
         }
 
         #[test]
-        fn dataviewjs_reports_runtime_disabled_primitives() {
+        fn dataviewjs_file_arrays_are_data_arrays() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let result = evaluate_dataview_js_query(
+                &paths,
+                r#"
+                const current = dv.current().file;
+                const paged = dv.pages().where((p) => p.file.name === "Dashboard").array()[0].file;
+                [
+                  current.lists.where((item) => item.kind === "note").length,
+                  current.tasks.where((task) => task.due).length,
+                  paged.lists.where((item) => item.kind === "note").length,
+                  JSON.stringify(current.tags) === JSON.stringify(current.tags.array()),
+                ]
+                "#,
+                Some("Dashboard.md"),
+            )
+            .expect("DataviewJS should evaluate");
+
+            assert_eq!(result.value, Some(serde_json::json!([1, 1, 1, true])));
+        }
+
+        #[test]
+        fn dataviewjs_omits_fetch_but_keeps_eval_and_function() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
             std::fs::create_dir_all(vault_root.join(".vulcan"))
