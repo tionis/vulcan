@@ -2961,13 +2961,24 @@ const web = {
   },
 };
 
+// Scripts and the REPL print console output. A rendered note does not
+// show it, as Obsidian sends it to the developer console.
+function __vulcanConsoleWrite(...args) {
+  if (globalThis.__vulcan_rendering) {
+    return;
+  }
+  __vulcan_emit(JSON.stringify({
+    kind: "paragraph",
+    text: args.map((value) => __vulcanRenderScalar(value)).join(" ")
+  }));
+}
+
 const console = {
-  log(...args) {
-    __vulcan_emit(JSON.stringify({
-      kind: "paragraph",
-      text: args.map((value) => __vulcanRenderScalar(value)).join(" ")
-    }));
-  },
+  log: __vulcanConsoleWrite,
+  info: __vulcanConsoleWrite,
+  warn: __vulcanConsoleWrite,
+  error: __vulcanConsoleWrite,
+  debug: __vulcanConsoleWrite,
 };
 
 const tools = {
@@ -3878,6 +3889,9 @@ globalThis.this = dv.current();
 
         globals
             .set("__vulcan_deterministic_static", state.deterministic_static)
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        globals
+            .set("__vulcan_rendering", state.read_only)
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
 
         globals
@@ -8391,6 +8405,40 @@ cpu_limit_ms = 25
             )
             .expect_err("static mode should reject the clock");
             assert!(error.to_string().contains("wall-clock time"), "{error}");
+        }
+
+        #[test]
+        fn dataviewjs_console_output_is_hidden_only_while_rendering() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+            let source = "console.log('log'); console.warn('warn'); dv.paragraph('shown')";
+            let run = |read_only| {
+                evaluate_dataview_js_with_options(
+                    &paths,
+                    source,
+                    Some("Dashboard.md"),
+                    DataviewJsEvalOptions {
+                        read_only,
+                        ..DataviewJsEvalOptions::default()
+                    },
+                )
+                .expect("DataviewJS should evaluate")
+                .outputs
+            };
+            let paragraph = |text: &str| DataviewJsOutput::Paragraph {
+                text: text.to_string(),
+            };
+
+            assert_eq!(
+                run(false),
+                vec![paragraph("log"), paragraph("warn"), paragraph("shown")]
+            );
+            assert_eq!(run(true), vec![paragraph("shown")]);
         }
 
         #[test]
