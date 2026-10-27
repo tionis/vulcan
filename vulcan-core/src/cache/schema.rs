@@ -1,5 +1,13 @@
 use rusqlite::Transaction;
 
+/// Typed inline fields of list items, which Dataview exposes on each item.
+/// The parser version bump that came with it re-parses existing notes.
+pub fn apply_schema_v39(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "ALTER TABLE list_items ADD COLUMN properties_json TEXT NOT NULL DEFAULT '{}';",
+    )
+}
+
 /// Covering indexes for hydrating incoming links: each link to a hydrated
 /// note is found, filtered by kind, and mapped to its source's path and
 /// extension from the indexes alone, without reading the wide `links` and

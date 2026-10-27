@@ -212,6 +212,11 @@ impl MigrationRegistry {
                 "cover incoming-link hydration with indexes",
                 schema::apply_schema_v38,
             ),
+            Migration::new(
+                39,
+                "store the inline fields of list items",
+                schema::apply_schema_v39,
+            ),
         ])
     }
 

@@ -2032,7 +2032,7 @@ fn replace_derived_rows(
             insert_tasknote_task(transaction, document_id, &tasknote)?;
         }
     }
-    let list_item_ids = insert_list_items(transaction, document_id, &parsed.list_items)?;
+    let list_item_ids = insert_list_items(transaction, document_id, &parsed.list_items, config)?;
     insert_tasks(
         transaction,
         document_id,
@@ -2950,6 +2950,7 @@ fn insert_list_items(
     transaction: &Transaction<'_>,
     document_id: &str,
     list_items: &[crate::RawListItem],
+    config: &crate::VaultConfig,
 ) -> Result<Vec<String>, ScanError> {
     if list_items.is_empty() {
         return Ok(Vec::new());
@@ -2975,9 +2976,10 @@ fn insert_list_items(
             is_task,
             block_id,
             annotated,
-            symbol
+            symbol,
+            properties_json
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
         ",
     )?;
 
@@ -3011,6 +3013,11 @@ fn insert_list_items(
             list_item.block_id.as_deref(),
             i64::from(list_item.annotated),
             &list_item.symbol,
+            serde_json::to_string(&crate::properties::list_item_inline_properties(
+                &list_item.inline_fields,
+                config,
+            ))
+            .map_err(|error| ScanError::Io(std::io::Error::other(error)))?,
         ])?;
     }
 
@@ -4377,6 +4384,7 @@ mod tests {
         assert_eq!(dashboard_lists.len(), 4);
         assert_eq!(dashboard_lists[0]["line"], Value::Number(19.into()));
         assert_eq!(dashboard_lists[0]["annotated"], Value::Bool(true));
+        assert_eq!(dashboard_lists[0]["kind"], serde_json::json!("note"));
         assert_eq!(dashboard_lists[0]["task"], Value::Bool(false));
         assert_eq!(
             dashboard_lists[0]["tags"],

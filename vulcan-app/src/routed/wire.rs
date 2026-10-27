@@ -180,6 +180,10 @@ mod tests {
             block_id: Some("block".into()),
             annotated: true,
             symbol: "-".into(),
+            properties: serde_json::json!({ "cost": 12.5 })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
         };
         let mut task_properties = serde_json::Map::new();
         task_properties.insert("due".into(), serde_json::json!("2026-10-15"));

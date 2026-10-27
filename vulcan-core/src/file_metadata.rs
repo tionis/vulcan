@@ -160,6 +160,9 @@ fn list_item_object(
         "blockId".to_string(),
         item.block_id.clone().map_or(Value::Null, Value::String),
     );
+    for (key, value) in &item.properties {
+        object.insert(key.clone(), value.clone());
+    }
     Value::Object(object)
 }
 
@@ -583,6 +586,7 @@ mod tests {
                 block_id: None,
                 annotated: true,
                 symbol: "-".to_string(),
+                properties: Map::new(),
             },
             NoteListItemRecord {
                 id: "list-2".to_string(),
@@ -598,6 +602,7 @@ mod tests {
                 block_id: Some("child".to_string()),
                 annotated: false,
                 symbol: "-".to_string(),
+                properties: Map::new(),
             },
         ];
         note.tasks = vec![NoteTaskRecord {
@@ -687,6 +692,7 @@ mod tests {
                 block_id: None,
                 annotated: false,
                 symbol: "-".to_string(),
+                properties: Map::new(),
             },
             NoteListItemRecord {
                 id: "list-child".to_string(),
@@ -702,6 +708,7 @@ mod tests {
                 block_id: None,
                 annotated: false,
                 symbol: "-".to_string(),
+                properties: Map::new(),
             },
         ];
         note.tasks = vec![

@@ -220,6 +220,10 @@ pub struct NoteListItemRecord {
     pub block_id: Option<String>,
     pub annotated: bool,
     pub symbol: String,
+    /// Typed values of the item's inline fields, which Dataview exposes on
+    /// the item itself.
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub properties: Map<String, Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -342,6 +346,44 @@ fn extract_inline_property_value(
         InlineFieldKind::Bracket => PropertyValueOrigin::InlineBracket,
     };
     extracted
+}
+
+/// Typed values of a list item's inline fields, merged per key as task
+/// properties are.
+pub(crate) fn list_item_inline_properties(
+    fields: &[crate::parser::types::RawTaskField],
+    config: &VaultConfig,
+) -> Map<String, Value> {
+    let mut grouped: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    for field in fields {
+        let expected_type = config
+            .property_types
+            .get(&field.key)
+            .map(String::as_str)
+            .map(canonical_property_type);
+        let value = indexed_inline_property_value(
+            &field.key,
+            &field.value_text,
+            field.kind,
+            config,
+            expected_type,
+        );
+        grouped
+            .entry(field.key.clone())
+            .or_default()
+            .push(typed_property_json_value(
+                value.value_text,
+                value.value_number,
+                value.value_bool,
+                value.value_date,
+                &value.value_type,
+            ));
+    }
+    let mut properties = Map::new();
+    for (key, values) in grouped {
+        merge_property_json_values(&mut properties, key, values);
+    }
+    properties
 }
 
 pub(crate) fn indexed_inline_property_value(
@@ -2121,7 +2163,8 @@ fn load_list_item_map(
     let mut list_item_map: HashMap<String, Vec<NoteListItemRecord>> = HashMap::new();
     let list_item_sql = String::from(
         "SELECT id, document_id, text, tags_json, outlinks_json, line_number, line_count, \
-         byte_offset, section_heading, parent_item_id, is_task, block_id, annotated, symbol \
+         byte_offset, section_heading, parent_item_id, is_task, block_id, annotated, symbol, \
+         properties_json \
          FROM list_items WHERE document_id IN (SELECT value FROM json_each(?1))",
     );
     let mut list_item_stmt = connection.prepare(&list_item_sql)?;
@@ -2142,6 +2185,7 @@ fn load_list_item_map(
                 row.get::<_, Option<String>>(11)?,
                 row.get::<_, i64>(12)? != 0,
                 row.get::<_, String>(13)?,
+                row.get::<_, String>(14)?,
             ),
         ))
     })?;
@@ -2162,6 +2206,7 @@ fn load_list_item_map(
                 block_id,
                 annotated,
                 symbol,
+                properties_json,
             ),
         ) = list_item_row?;
         let list_item = NoteListItemRecord {
@@ -2178,6 +2223,9 @@ fn load_list_item_map(
             block_id,
             annotated,
             symbol,
+            properties: serde_json::from_str(&properties_json).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(14, SqlType::Text, Box::new(error))
+            })?,
         };
         list_item_map.entry(doc_id).or_default().push(list_item);
     }
