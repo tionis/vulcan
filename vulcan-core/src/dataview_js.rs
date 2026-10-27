@@ -545,12 +545,15 @@ class DataArray {
     return this.values.length;
   }
 
+  // Methods follow Dataview's DataArray: callbacks get (value, index,
+  // values), sorting and grouping use the default value comparator unless
+  // one is passed.
   array() {
     return Array.from(this.values);
   }
 
   where(predicate) {
-    return new DataArray(this.values.filter((value, index) => predicate(value, index)));
+    return new DataArray(this.values.filter(predicate));
   }
 
   filter(predicate) {
@@ -558,65 +561,85 @@ class DataArray {
   }
 
   map(mapper) {
-    return new DataArray(this.values.map((value, index) => mapper(value, index)));
+    return new DataArray(this.values.map(mapper));
   }
 
   flatMap(mapper) {
-    return new DataArray(this.values.flatMap((value, index) => __vulcanAsArray(mapper(value, index))));
+    return new DataArray(
+      this.values.flatMap((value, index, values) => __vulcanAsArray(mapper(value, index, values)))
+    );
   }
 
-  sort(key, dir = "asc") {
-    const values = this.array();
-    values.sort((left, right) => __vulcanCompareForSort(__vulcanResolveKey(left, key), __vulcanResolveKey(right, key), dir));
-    return new DataArray(values);
-  }
-
-  sortInPlace(key, dir = "asc") {
-    this.values = this.sort(key, dir).values;
+  mutate(mutator) {
+    this.values.forEach(mutator);
     return this;
   }
 
-  sortBy(key, dir = "asc") {
-    return this.sort(key, dir);
+  sort(key, direction = "asc", comparator = undefined) {
+    const compare = comparator ?? __vulcanDefaultComparator;
+    const descending = String(direction).toLowerCase().startsWith("desc");
+    const keyed = this.values.map((value, index, values) => ({
+      value,
+      key: __vulcanResolveKey(value, key, index, values),
+    }));
+    keyed.sort((left, right) =>
+      descending ? -compare(left.key, right.key) : compare(left.key, right.key)
+    );
+    return new DataArray(keyed.map((entry) => entry.value));
   }
 
-  groupBy(key) {
-    const order = [];
-    const groups = new Map();
-    for (const value of this.values) {
-      const groupKey = __vulcanResolveKey(value, key);
-      const serialized = JSON.stringify(__vulcanPlain(groupKey));
-      if (!groups.has(serialized)) {
-        groups.set(serialized, { key: groupKey, rows: [] });
-        order.push(serialized);
+  sortInPlace(key, direction = "asc", comparator = undefined) {
+    this.values = this.sort(key, direction, comparator).values;
+    return this;
+  }
+
+  sortBy(key, direction = "asc", comparator = undefined) {
+    return this.sort(key, direction, comparator);
+  }
+
+  groupBy(key, comparator = undefined) {
+    const compare = comparator ?? __vulcanDefaultComparator;
+    const keyed = this.values
+      .map((value, index, values) => ({ value, key: __vulcanResolveKey(value, key, index, values) }));
+    keyed.sort((left, right) => compare(left.key, right.key));
+    const groups = [];
+    for (const entry of keyed) {
+      const last = groups[groups.length - 1];
+      if (last && compare(last.key, entry.key) === 0) {
+        last.rows.push(entry.value);
+      } else {
+        groups.push({ key: entry.key, rows: [entry.value] });
       }
-      groups.get(serialized).rows.push(value);
     }
-    return new DataArray(order.map((serialized) => {
-      const group = groups.get(serialized);
-      return { key: group.key, rows: new DataArray(group.rows) };
+    return new DataArray(groups.map((group) => ({ key: group.key, rows: new DataArray(group.rows) })));
+  }
+
+  groupIn(key, comparator = undefined) {
+    const isGrouping = this.values.length > 0
+      && this.values.every((value) => value && typeof value === "object" && "key" in value && "rows" in value);
+    if (!isGrouping) {
+      return this.groupBy(key, comparator);
+    }
+    return this.map((group) => ({
+      key: group.key,
+      rows: new DataArray(__vulcanAsArray(group.rows)).groupIn(key, comparator),
     }));
   }
 
-  groupIn(key) {
-    return this.groupBy(key);
-  }
-
   unique() {
-    const seen = new Set();
-    const values = [];
-    for (const value of this.values) {
-      const serialized = JSON.stringify(__vulcanPlain(value));
-      if (!seen.has(serialized)) {
-        seen.add(serialized);
-        values.push(value);
-      }
-    }
-    return new DataArray(values);
+    return this.distinct();
   }
 
-  distinct() {
-    return this.unique();
+  distinct(key = undefined, comparator = undefined) {
+    const compare = comparator ?? __vulcanDefaultComparator;
+    const kept = [];
+    this.values.forEach((value, index, values) => {
+      const candidate = __vulcanResolveKey(value, key, index, values);
+      if (!kept.some((entry) => compare(entry.key, candidate) === 0)) {
+        kept.push({ key: candidate, value });
+      }
+    });
+    return new DataArray(kept.map((entry) => entry.value));
   }
 
   limit(count) {
@@ -631,71 +654,105 @@ class DataArray {
     return new DataArray(this.values.concat(__vulcanAsArray(other)));
   }
 
-  indexOf(value) {
-    const serialized = JSON.stringify(__vulcanPlain(value));
-    return this.values.findIndex((candidate) => JSON.stringify(__vulcanPlain(candidate)) === serialized);
+  indexOf(element, fromIndex = 0) {
+    return this.findIndex((value) => __vulcanDefaultComparator(value, element) === 0, fromIndex);
   }
 
   find(predicate) {
-    return this.values.find((value, index) => predicate(value, index));
+    const index = this.findIndex(predicate);
+    return index === -1 ? undefined : this.values[index];
   }
 
-  findIndex(predicate) {
-    return this.values.findIndex((value, index) => predicate(value, index));
+  findIndex(predicate, fromIndex = 0) {
+    for (let index = fromIndex ?? 0; index < this.values.length; index++) {
+      if (predicate(this.values[index], index, this.values)) {
+        return index;
+      }
+    }
+    return -1;
   }
 
-  includes(value) {
-    return this.indexOf(value) >= 0;
+  includes(element) {
+    return this.indexOf(element) !== -1;
   }
 
   join(separator = ", ") {
-    return this.values.map(__vulcanRenderScalar).join(separator);
+    return this.values.map(__vulcanRenderScalar).join(separator ?? ", ");
   }
 
   every(predicate) {
-    return this.values.every((value, index) => predicate(value, index));
+    return this.values.every(predicate);
   }
 
   some(predicate) {
-    return this.values.some((value, index) => predicate(value, index));
+    return this.values.some(predicate);
   }
 
   none(predicate) {
-    return !this.some(predicate);
+    return this.values.every((value, index, values) => !predicate(value, index, values));
   }
 
-  forEach(callback) {
-    this.values.forEach((value, index) => callback(value, index));
+  first() {
+    return this.values.length > 0 ? this.values[0] : undefined;
   }
 
-  mutate(mutator) {
-    this.values.forEach((value, index) => mutator(value, index));
-    return this;
+  last() {
+    return this.values.length > 0 ? this.values[this.values.length - 1] : undefined;
+  }
+
+  to(key) {
+    return new DataArray(this.values.flatMap((value) => __vulcanSwizzle(value, key)));
   }
 
   into(key) {
-    return new DataArray(this.values.map((value) => value == null ? undefined : value[key]));
+    return new DataArray(
+      this.values.map((value) => (value == null ? undefined : value[key])).filter((value) => value != null)
+    );
   }
 
-  expand(expander) {
+  // Dataview takes a field name; a function is also accepted.
+  expand(key) {
     const expanded = [];
-    const visit = (value) => {
-      expanded.push(value);
-      const next = expander(value);
-      for (const child of __vulcanAsArray(next)) {
-        if (child != null) {
-          visit(child);
-        }
+    const queue = Array.from(this.values);
+    while (queue.length > 0) {
+      const next = queue.pop();
+      if (next == null) {
+        continue;
       }
-    };
-    for (const value of this.values) {
-      visit(value);
+      const children = typeof key === "function" ? key(next) : next[key];
+      if (children == null) {
+        continue;
+      }
+      for (const child of __vulcanAsArray(children)) {
+        queue.push(child);
+      }
+      expanded.push(next);
     }
     return new DataArray(expanded);
   }
 
   forEach(callback) {
-    this.values.forEach((value, index) => callback(value, index));
+    this.values.forEach(callback);
+  }
+
+  sum() {
+    return this.values.reduce((total, value) => total + value, 0);
+  }
+
+  avg() {
+    return this.sum() / this.values.length;
+  }
+
+  min() {
+    return Math.min(...this.values);
+  }
+
+  max() {
+    return Math.max(...this.values);
+  }
+
+  toString() {
+    return "[" + this.values.join(", ") + "]";
   }
 
   toJSON() {
@@ -724,12 +781,12 @@ function __vulcanSwizzle(value, property) {
   return __vulcanAsArray(candidate);
 }
 
-function __vulcanResolveKey(value, key) {
+function __vulcanResolveKey(value, key, index = undefined, values = undefined) {
   if (key == null) {
     return value;
   }
   if (typeof key === "function") {
-    return key(value);
+    return key(value, index, values);
   }
   return value == null ? undefined : value[key];
 }
@@ -793,6 +850,11 @@ function __vulcanSerialize(value) {
 function __vulcanSerializeComparable(value) {
   const normalized = __vulcanNormalizeComparable(value);
   return JSON.stringify(normalized === undefined ? null : normalized);
+}
+
+// Dataview's default ordering of values (Values.compareValue).
+function __vulcanDefaultComparator(left, right) {
+  return __vulcan_compare(__vulcanSerializeComparable(left), __vulcanSerializeComparable(right));
 }
 
 function __vulcanCompareForSort(left, right, dir) {
@@ -2068,6 +2130,15 @@ const dv = {
     } finally {
       globalThis.input = previousInput;
     }
+  },
+  array(raw) {
+    return raw instanceof DataArray ? raw : new DataArray(__vulcanAsArray(raw));
+  },
+  isArray(raw) {
+    return raw instanceof DataArray || Array.isArray(raw);
+  },
+  isDataArray(raw) {
+    return raw instanceof DataArray;
   },
   date(input) {
     const millis = __vulcan_date_millis(
@@ -8191,6 +8262,60 @@ cpu_limit_ms = 25
                 }
                 other => panic!("expected table output, got {other:?}"),
             }
+        }
+
+        #[test]
+        fn dataviewjs_data_arrays_follow_dataview_semantics() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let result = evaluate_dataview_js_query(
+                &paths,
+                r#"
+                const numbers = dv.array([3, 1, 2]);
+                const nodes = dv.array([{ name: "a", kids: [{ name: "b", kids: [] }] }]);
+                const rows = dv.array([{ k: "b" }, { k: "a" }, { k: "b" }, { k: null }]);
+                ({
+                  keyArgs: numbers.sort((value, index, values) => [typeof index, values.length].join()).length,
+                  desc: numbers.sort((value) => value, "desc").array(),
+                  comparator: numbers.sort((value) => value, "asc", (a, b) => b - a).array(),
+                  firstLast: [numbers.first(), numbers.last(), dv.array([]).first()],
+                  stats: [numbers.sum(), numbers.avg(), numbers.min(), numbers.max()],
+                  to: nodes.to("kids").map((kid) => kid.name).array(),
+                  into: rows.into("k").array(),
+                  expand: nodes.expand("kids").map((node) => node.name).array().sort(),
+                  distinct: rows.distinct((row) => row.k).length,
+                  groups: rows.groupBy((row) => row.k).map((group) => [group.key, group.rows.length]).array(),
+                  indexOf: [numbers.indexOf(2), numbers.indexOf(3, 1), numbers.findIndex((value) => value > 0, 1)],
+                  text: numbers.toString(),
+                })
+                "#,
+                Some("Dashboard.md"),
+            )
+            .expect("DataviewJS should evaluate");
+
+            assert_eq!(
+                result.value,
+                Some(serde_json::json!({
+                    "keyArgs": 3,
+                    "desc": [3, 2, 1],
+                    "comparator": [3, 2, 1],
+                    "firstLast": [3, 2, null],
+                    "stats": [6, 2, 1, 3],
+                    "to": ["b"],
+                    "into": ["b", "a", "b"],
+                    "expand": ["a", "b"],
+                    "distinct": 3,
+                    "groups": [[null, 1], ["a", 1], ["b", 2]],
+                    "indexOf": [2, -1, 1],
+                    "text": "[3, 1, 2]",
+                }))
+            );
         }
 
         #[test]
