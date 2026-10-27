@@ -265,8 +265,10 @@ open stay readable to it. The startup and on-save index refresh keeps the
 cache usable regardless of `index`, as the CLI's automatic refresh does.
 
 **DataviewJS and code execution.** The strict `static` sandbox (computation and cache-backed
-reads; no raw file reads, network, writes, or host execution; deterministic) cannot harm the vault
-or the device, so it is the floor for every vault. Full evaluation (`on`: the vault's configured
+reads; no raw file reads, network, writes, or host execution) cannot harm the vault or the device,
+so it is the floor for every vault. Reading the clock is harmless, so editor renders allow it; only
+publication (static sites and evaluated exports) makes `static` deterministic by rejecting
+wall-clock time. Full evaluation (`on`: the vault's configured
 `JsRuntimeSandbox` tier and permission profile, still never writing) follows `vulcan trust`, the
 same per-user trust list that gates startup scripts and plugins. Without a client preference
 (`initializationOptions.dataviewJs`, or a request's `dataviewJs`), the vault's

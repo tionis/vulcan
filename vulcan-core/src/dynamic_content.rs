@@ -38,8 +38,9 @@ pub enum DataviewJsRenderPolicy {
     /// Leave blocks unevaluated and render a visible "disabled" notice.
     #[default]
     Off,
-    /// Evaluate in the strict sandbox with determinism constraints, as static
-    /// publication does.
+    /// Evaluate in the strict sandbox: computation and cache-backed reads
+    /// only. Publication renders additionally reject wall-clock time (see
+    /// [`EvaluatedMarkdownOptions::deterministic`]).
     Static,
     /// Evaluate with the vault's configured sandbox tier and the caller's
     /// permission profile, as `dataview eval` does, except that writes and
@@ -107,6 +108,9 @@ pub(crate) struct DynamicContentContext<'a> {
     pub guard: Option<&'a dyn PermissionGuard>,
     pub permission_profile: Option<&'a str>,
     pub dataview_js: DataviewJsRenderPolicy,
+    /// Reject wall-clock time in `static` `DataviewJS`, so rebuilds produce
+    /// the same output.
+    pub deterministic: bool,
 }
 
 /// The evaluated result of one dynamic region.
@@ -604,7 +608,7 @@ fn dataview_js_options(ctx: &DynamicContentContext<'_>) -> Option<crate::Datavie
         DataviewJsRenderPolicy::Off => None,
         DataviewJsRenderPolicy::Static => Some(crate::DataviewJsEvalOptions {
             sandbox: Some(JsRuntimeSandbox::Strict),
-            deterministic_static: true,
+            deterministic_static: ctx.deterministic,
             read_only: true,
             permission_profile: ctx.permission_profile.map(ToOwned::to_owned),
             ..crate::DataviewJsEvalOptions::default()
@@ -687,6 +691,9 @@ pub struct EvaluatedMarkdownOptions<'a> {
     pub guard: Option<&'a dyn PermissionGuard>,
     /// Permission profile name handed to `DataviewJS`.
     pub permission_profile: Option<&'a str>,
+    /// Publication output that must be reproducible: `static` `DataviewJS`
+    /// may not read wall-clock time. Interactive views leave this unset.
+    pub deterministic: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -807,6 +814,7 @@ impl EvaluatedMarkdownRenderer {
             guard: options.guard,
             permission_profile: options.permission_profile,
             dataview_js: options.dataview_js,
+            deterministic: options.deterministic,
         };
         let mut diagnostics = Vec::new();
         let mut regions =
@@ -873,6 +881,7 @@ impl EvaluatedMarkdownRenderer {
             guard: options.guard,
             permission_profile: options.permission_profile,
             dataview_js: options.dataview_js,
+            deterministic: options.deterministic,
         };
         let mut diagnostics = Vec::new();
         let mut replacements = rendered_inline_fields(&parsed)
@@ -1864,6 +1873,35 @@ mod tests {
             );
             assert!(rendered.diagnostics.is_empty());
         }
+    }
+
+    #[cfg(feature = "js_runtime")]
+    #[test]
+    fn static_dataviewjs_reads_the_clock_unless_the_render_is_deterministic() {
+        let (_temp_dir, paths, _) = build_vault();
+        let source = "```dataviewjs\ndv.paragraph(new Date().getFullYear() > 2000 ? 'clock ok' : 'bad')\n```\n";
+        let render = |deterministic| {
+            render_evaluated_markdown(
+                &paths,
+                source,
+                &EvaluatedMarkdownOptions {
+                    source_path: Some("Home.md"),
+                    dataview_js: DataviewJsRenderPolicy::Static,
+                    deterministic,
+                    ..EvaluatedMarkdownOptions::default()
+                },
+            )
+            .markdown
+        };
+
+        let interactive = render(false);
+        assert!(interactive.contains("clock ok"), "{interactive}");
+
+        let published = render(true);
+        assert!(
+            published.contains("does not allow wall-clock time via new Date()"),
+            "{published}"
+        );
     }
 
     #[cfg(feature = "js_runtime")]

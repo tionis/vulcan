@@ -22,7 +22,7 @@ and translating view logic into Vulcan queries.
 
 ## Recommended Flow
 
-- To see a note the way Obsidian shows it, read it with `vulcan note get <note> --evaluate`: inline expressions, `dataview`, `tasks`, and embedded `.base` views are replaced by their results. `dataviewjs` blocks run in the strict sandbox (deterministic; no file access, network, or writes) by default, and with full evaluation (the configured sandbox tier, still read-only) in a vault trusted with `vulcan trust`. The vault's `[dataview] render_dataview_js` can lower that, but its `on` needs trust. `--dataviewjs off|static|on` chooses explicitly for one command; do not reach for `on` in a vault the user has not trusted. `vulcan render <file>` evaluates the same way for terminal output.
+- To see a note the way Obsidian shows it, read it with `vulcan note get <note> --evaluate`: inline expressions, `dataview`, `tasks`, and embedded `.base` views are replaced by their results. `dataviewjs` blocks run in the strict sandbox (no file access, network, or writes; the clock is readable) by default, and with full evaluation (the configured sandbox tier, still read-only) in a vault trusted with `vulcan trust`. The vault's `[dataview] render_dataview_js` can lower that, but its `on` needs trust. `--dataviewjs off|static|on` chooses explicitly for one command; do not reach for `on` in a vault the user has not trusted. `vulcan render <file>` evaluates the same way for terminal output.
 - Use `vulcan dataview query` for DQL strings and `vulcan dataview eval` to debug individual Dataview blocks and their raw result data.
 - Use `vulcan dataview query-js` only when JavaScript behavior matters.
 - Use `vulcan bases eval <file>` to inspect `.base` output and diagnostics.

@@ -587,6 +587,7 @@ fn render_note_selection(
                     dataview_js: render.dataview_js,
                     guard: render.guard,
                     permission_profile,
+                    deterministic: false,
                 },
             );
             (evaluated.markdown, evaluated.diagnostics)

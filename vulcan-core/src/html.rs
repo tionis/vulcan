@@ -56,6 +56,9 @@ pub struct HtmlRenderOptions<'a> {
     pub full_document: bool,
     pub link_targets: Option<&'a HtmlLinkTargets>,
     pub dataview_js_policy: HtmlDataviewJsPolicy,
+    /// Publication output that must be reproducible: `static` `DataviewJS`
+    /// may not read wall-clock time. Interactive views leave this unset.
+    pub deterministic: bool,
     pub raw_html_policy: HtmlRawHtmlPolicy,
     pub max_embed_depth: usize,
 }
@@ -69,6 +72,7 @@ impl Default for HtmlRenderOptions<'_> {
             full_document: true,
             link_targets: None,
             dataview_js_policy: HtmlDataviewJsPolicy::Off,
+            deterministic: false,
             raw_html_policy: HtmlRawHtmlPolicy::Sanitize,
             max_embed_depth: 4,
         }
@@ -113,6 +117,7 @@ struct HtmlRenderEnvironment<'a> {
     resolver_documents: Option<&'a [ResolverDocument]>,
     link_targets: &'a HtmlLinkTargets,
     dataview_js_policy: HtmlDataviewJsPolicy,
+    deterministic: bool,
     guard: Option<&'a dyn PermissionGuard>,
     permission_profile: Option<&'a str>,
     raw_html_policy: HtmlRawHtmlPolicy,
@@ -177,6 +182,7 @@ impl VaultHtmlRenderer {
             resolver_documents: self.resolver_documents.as_deref(),
             link_targets: options.link_targets.unwrap_or(&empty_targets),
             dataview_js_policy: options.dataview_js_policy,
+            deterministic: options.deterministic,
             guard: options.guard,
             permission_profile: options.permission_profile,
             raw_html_policy: options.raw_html_policy,
@@ -334,6 +340,7 @@ fn render_markdown_with_replacements(
         guard: env.guard,
         permission_profile: env.permission_profile,
         dataview_js: env.dataview_js_policy,
+        deterministic: env.deterministic,
     };
     for region in evaluate_dynamic_regions(&ctx, source_path, parsed, diagnostics) {
         let replacement = render_dynamic_outcome_html(
@@ -1969,7 +1976,7 @@ mod tests {
     }
 
     #[test]
-    fn dataviewjs_static_policy_surfaces_wall_clock_errors() {
+    fn dataviewjs_static_policy_surfaces_wall_clock_errors_when_deterministic() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
         fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should exist");
@@ -1989,6 +1996,7 @@ mod tests {
             &HtmlRenderOptions {
                 source_path: Some("Home.md"),
                 dataview_js_policy: HtmlDataviewJsPolicy::Static,
+                deterministic: true,
                 ..HtmlRenderOptions::default()
             },
         );

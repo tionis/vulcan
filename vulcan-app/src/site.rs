@@ -1921,6 +1921,7 @@ fn render_site_plan_note(
                 SiteDataviewJsPolicyConfig::Off => HtmlDataviewJsPolicy::Off,
                 SiteDataviewJsPolicyConfig::Static => HtmlDataviewJsPolicy::Static,
             },
+            deterministic: true,
             raw_html_policy: match plan.profile.raw_html {
                 SiteRawHtmlPolicyConfig::Passthrough | SiteRawHtmlPolicyConfig::Sanitize => {
                     HtmlRawHtmlPolicy::Sanitize

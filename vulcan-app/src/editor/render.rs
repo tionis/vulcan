@@ -63,6 +63,7 @@ impl EditorSession {
                 dataview_js,
                 guard,
                 permission_profile: self.permission_profile(),
+                deterministic: false,
             },
         );
         let wanted = range.map(|range| {

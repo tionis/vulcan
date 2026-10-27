@@ -168,6 +168,7 @@ fn render_note(
                 dataview_js,
                 guard,
                 permission_profile: profile,
+                deterministic: false,
             },
         )
         .markdown

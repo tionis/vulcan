@@ -949,6 +949,7 @@ fn print_periodic_note(
             dataview_js: vulcan_core::vault_dataview_js_policy(paths, None),
             guard: Some(&guard),
             permission_profile: Some(guard.profile_name()),
+            deterministic: false,
         },
     );
     let strict_line_breaks = vulcan_core::load_vault_config(paths)

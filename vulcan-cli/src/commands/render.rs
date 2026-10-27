@@ -88,6 +88,7 @@ pub(crate) fn run_render_command(
                     dataview_js: options.dataview_js,
                     guard: options.guard,
                     permission_profile,
+                    deterministic: false,
                 },
             );
             let rendered =

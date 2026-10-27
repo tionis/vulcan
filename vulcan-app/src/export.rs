@@ -711,6 +711,8 @@ pub fn prepare_evaluated_export_data(
                         dataview_js: evaluation.dataview_js,
                         guard: evaluation.guard,
                         permission_profile,
+                        // Exports must rebuild to the same output.
+                        deterministic: true,
                     },
                 )
                 .markdown
