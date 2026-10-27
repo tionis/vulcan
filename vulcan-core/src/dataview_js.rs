@@ -2140,7 +2140,21 @@ const dv = {
   isDataArray(raw) {
     return raw instanceof DataArray;
   },
+  // Dataview's date(): dates pass through, and strings may be the
+  // shorthands `today`, `now`, `sow`, `end-of-month`, and so on.
   date(input) {
+    if (input == null) {
+      return null;
+    }
+    if (input instanceof VulcanDateTime) {
+      return input;
+    }
+    if (typeof input === "string") {
+      const shorthand = __vulcan_date_shorthand_millis(input.trim());
+      if (shorthand != null) {
+        return new VulcanDateTime(new Date(shorthand));
+      }
+    }
     const millis = __vulcan_date_millis(
       input instanceof Date ? input.toISOString() : String(input)
     );
@@ -4109,6 +4123,28 @@ globalThis.this = dv.current();
                             )
                         },
                     )
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        let shorthand_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_date_shorthand_millis",
+                Func::from(move |ctx: Ctx<'_>, name: String| {
+                    let Some(millis) = crate::expression::functions::date_shortcut_value(
+                        &name,
+                        crate::current_utc_timestamp_ms(),
+                    ) else {
+                        return Ok(None);
+                    };
+                    if shorthand_state.deterministic_static {
+                        return Err(Exception::throw_message(
+                            &ctx,
+                            &static_mode_time_denied(&format!("dv.date(\"{name}\")")).to_string(),
+                        ));
+                    }
+                    Ok::<Option<i64>, rquickjs::Error>(Some(millis))
                 }),
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
@@ -8316,6 +8352,45 @@ cpu_limit_ms = 25
                     "text": "[3, 1, 2]",
                 }))
             );
+        }
+
+        #[test]
+        fn dataviewjs_date_accepts_shorthands_and_static_mode_rejects_them() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+            let source = r#"
+                const day = 86400000;
+                [
+                  dv.date("tomorrow").toMillis() - dv.date("today").toMillis() === day,
+                  dv.date("start-of-month").toMillis() === dv.date("som").toMillis(),
+                  dv.date("today").toFormat("yyyy-MM-dd") === new Date().toISOString().slice(0, 10),
+                  dv.date("not a date"),
+                ]
+            "#;
+
+            let result = evaluate_dataview_js_query(&paths, source, Some("Dashboard.md"))
+                .expect("DataviewJS should evaluate");
+            assert_eq!(
+                result.value,
+                Some(serde_json::json!([true, true, true, null]))
+            );
+
+            let error = evaluate_dataview_js_with_options(
+                &paths,
+                "dv.date('today')",
+                Some("Dashboard.md"),
+                DataviewJsEvalOptions {
+                    deterministic_static: true,
+                    ..DataviewJsEvalOptions::default()
+                },
+            )
+            .expect_err("static mode should reject the clock");
+            assert!(error.to_string().contains("wall-clock time"), "{error}");
         }
 
         #[test]

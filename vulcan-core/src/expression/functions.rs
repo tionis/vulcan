@@ -2077,7 +2077,9 @@ fn date_shortcut_arg(expr: &Expr, ctx: &EvalContext) -> Option<i64> {
     date_shortcut_value(name, localized_now_ms(ctx))
 }
 
-fn date_shortcut_value(name: &str, now_ms: i64) -> Option<i64> {
+/// The time Dataview's date shorthand `name` (`today`, `sow`,
+/// `start-of-week`, ...) names at `now_ms`.
+pub(crate) fn date_shortcut_value(name: &str, now_ms: i64) -> Option<i64> {
     let today = start_of_day(now_ms);
     let day_ms = 86_400_000_i64;
     let (year, month, day, _, _, _, _) = date_components(today);
@@ -2087,16 +2089,16 @@ fn date_shortcut_value(name: &str, now_ms: i64) -> Option<i64> {
         "now" => Some(now_ms),
         "tomorrow" => Some(today + day_ms),
         "yesterday" => Some(today - day_ms),
-        "sow" => {
+        "sow" | "start-of-week" => {
             let weekday = iso_weekday(year, month, day);
             Some(today - (weekday - 1) * day_ms)
         }
-        "eow" => {
+        "eow" | "end-of-week" => {
             let weekday = iso_weekday(year, month, day);
             Some(today + (7 - weekday) * day_ms)
         }
-        "som" => Some(timestamp_from_civil(year, month, 1)),
-        "eom" => {
+        "som" | "start-of-month" => Some(timestamp_from_civil(year, month, 1)),
+        "eom" | "end-of-month" => {
             let (next_year, next_month) = if month == 12 {
                 (year + 1, 1)
             } else {
@@ -2104,8 +2106,8 @@ fn date_shortcut_value(name: &str, now_ms: i64) -> Option<i64> {
             };
             Some(timestamp_from_civil(next_year, next_month, 1) - day_ms)
         }
-        "soy" => Some(timestamp_from_civil(year, 1, 1)),
-        "eoy" => Some(timestamp_from_civil(year + 1, 1, 1) - day_ms),
+        "soy" | "start-of-year" => Some(timestamp_from_civil(year, 1, 1)),
+        "eoy" | "end-of-year" => Some(timestamp_from_civil(year + 1, 1, 1) - day_ms),
         _ => None,
     }
 }
@@ -2435,6 +2437,28 @@ fn weekday_name(weekday: i64) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn date_shorthands_accept_dataview_long_forms() {
+        // Wednesday 2026-10-28, 15:30 UTC.
+        let now = timestamp_from_civil(2026, 10, 28) + 15 * 3_600_000 + 30 * 60_000;
+        for (short, long, expected) in [
+            ("sow", "start-of-week", timestamp_from_civil(2026, 10, 26)),
+            ("eow", "end-of-week", timestamp_from_civil(2026, 11, 1)),
+            ("som", "start-of-month", timestamp_from_civil(2026, 10, 1)),
+            ("eom", "end-of-month", timestamp_from_civil(2026, 10, 31)),
+            ("soy", "start-of-year", timestamp_from_civil(2026, 1, 1)),
+            ("eoy", "end-of-year", timestamp_from_civil(2026, 12, 31)),
+        ] {
+            assert_eq!(date_shortcut_value(short, now), Some(expected), "{short}");
+            assert_eq!(date_shortcut_value(long, now), Some(expected), "{long}");
+        }
+        assert_eq!(
+            date_shortcut_value("today", now),
+            Some(timestamp_from_civil(2026, 10, 28))
+        );
+        assert_eq!(date_shortcut_value("someday", now), None);
+    }
 
     #[test]
     fn test_parse_date_string() {
