@@ -3612,8 +3612,6 @@ globalThis.app = app;
 globalThis._ = undefined;
 globalThis._error = undefined;
 globalThis.this = dv.current();
-globalThis.eval = undefined;
-globalThis.Function = undefined;
 "##;
 
     pub fn evaluate_dataview_js(
@@ -8240,8 +8238,8 @@ cpu_limit_ms = 25
                 dv.paragraph(
                   [
                     typeof fetch === "undefined" ? "no-fetch" : "fetch",
-                    typeof eval === "undefined" ? "no-eval" : "eval",
-                    typeof Function === "undefined" ? "no-function" : "function"
+                    eval("1 + 1") === 2 ? "eval" : "no-eval",
+                    new Function("return 6 / 3")() === 2 ? "function" : "no-function"
                   ].join(", ")
                 )
                 "#,
@@ -8252,7 +8250,7 @@ cpu_limit_ms = 25
             assert_eq!(
                 result.outputs,
                 vec![DataviewJsOutput::Paragraph {
-                    text: "no-fetch, no-eval, no-function".to_string(),
+                    text: "no-fetch, eval, function".to_string(),
                 }]
             );
         }

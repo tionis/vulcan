@@ -99,8 +99,9 @@ scripts_folder = ".vulcan/scripts"
 `vulcan run --timeout <duration>` may set a per-run timeout. Selecting `none` disables the runtime
 memory, stack, and execution-time limits rather than granting an infinite safe budget.
 
-Dangerous user-visible globals such as `eval` and `Function` are removed from the exposed runtime
-surface. That hardening does not make untrusted `none` code safe.
+`eval` and `new Function` are available, as in Obsidian: they run code with the same tier and
+permissions as the script that calls them, so removing them would not contain anything. Isolation
+comes from the tier and permission profile, and nothing makes untrusted `none` code safe.
 
 ## Runtime surfaces
 
