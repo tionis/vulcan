@@ -235,40 +235,35 @@ fn scan_inline_field_variants(
 ) {
     let mut target = target;
 
-    for (regex, kind) in [
-        (bracket_inline_field_regex(), InlineFieldKind::Bracket),
-        (
-            parenthesized_inline_field_regex(),
-            InlineFieldKind::Parenthesized,
-        ),
-    ] {
-        for captures in regex.captures_iter(raw_line) {
-            let Some(full_match) = captures.get(0) else {
-                continue;
-            };
-            let byte_range = (line_start + full_match.start())..(line_start + full_match.end());
-            if overlaps_comment(&byte_range, comment_regions) {
-                continue;
-            }
-            let Some(key_match) = captures.name("key") else {
-                continue;
-            };
-            let Some(value_match) = captures.name("value") else {
-                continue;
-            };
-            let value_byte_range =
-                (line_start + value_match.start())..(line_start + value_match.end());
-            property_value_ranges.push(value_byte_range.clone());
-            push_inline_field(
-                &mut target,
-                normalize_inline_field_key(key_match.as_str()),
-                value_match.as_str().trim().to_string(),
-                kind,
-                byte_range,
-                value_byte_range,
-                line_number,
-            );
+    let parenthesized = parenthesized_inline_field_regex()
+        .captures_iter(raw_line)
+        .filter_map(|captures| {
+            Some(DelimitedInlineField {
+                full: captures.get(0)?.range(),
+                key: captures.name("key")?.range(),
+                value: captures.name("value")?.range(),
+                kind: InlineFieldKind::Parenthesized,
+            })
+        });
+    for field in bracket_inline_fields(raw_line)
+        .into_iter()
+        .chain(parenthesized)
+    {
+        let byte_range = (line_start + field.full.start)..(line_start + field.full.end);
+        if overlaps_comment(&byte_range, comment_regions) {
+            continue;
         }
+        let value_byte_range = (line_start + field.value.start)..(line_start + field.value.end);
+        property_value_ranges.push(value_byte_range.clone());
+        push_inline_field(
+            &mut target,
+            normalize_inline_field_key(&raw_line[field.key]),
+            raw_line[field.value].trim().to_string(),
+            field.kind,
+            byte_range,
+            value_byte_range,
+            line_number,
+        );
     }
 
     let bare_field_start = bare_field_start.min(raw_line.len());
@@ -414,10 +409,74 @@ fn list_item_line_regex() -> &'static Regex {
     })
 }
 
-fn bracket_inline_field_regex() -> &'static Regex {
+/// One `[key:: value]` or `(key:: value)` field; ranges are line-relative.
+struct DelimitedInlineField {
+    full: Range<usize>,
+    key: Range<usize>,
+    value: Range<usize>,
+    kind: InlineFieldKind,
+}
+
+/// Every `[key:: value]` field on the line. As in Dataview, a value ends at
+/// its balanced closing bracket, so it may hold links (`[up:: [[Note]]]`)
+/// and several fields can share a line.
+fn bracket_inline_fields(raw_line: &str) -> Vec<DelimitedInlineField> {
+    let mut fields = Vec::new();
+    let mut search_from = 0;
+    while let Some(offset) = raw_line[search_from..].find('[') {
+        let open = search_from + offset;
+        search_from = open + 1;
+        let Some(captures) = bracket_inline_field_start_regex().captures(&raw_line[open..]) else {
+            continue;
+        };
+        let (Some(key), Some(start)) = (captures.name("key"), captures.get(0)) else {
+            continue;
+        };
+        let value_start = open + start.end();
+        let Some(close) = balanced_bracket_end(raw_line, value_start) else {
+            continue;
+        };
+        if close == value_start {
+            continue;
+        }
+        fields.push(DelimitedInlineField {
+            full: open..close + 1,
+            key: (open + key.start())..(open + key.end()),
+            value: value_start..close,
+            kind: InlineFieldKind::Bracket,
+        });
+        search_from = close + 1;
+    }
+    fields
+}
+
+/// The byte offset of the `]` closing a bracket opened before `start`,
+/// skipping nested brackets and backslash escapes.
+fn balanced_bracket_end(line: &str, start: usize) -> Option<usize> {
+    let mut depth = 1_usize;
+    let mut escaped = false;
+    for (offset, character) in line[start..].char_indices() {
+        match character {
+            _ if escaped => escaped = false,
+            '\\' => escaped = true,
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(start + offset);
+                }
+            }
+            '\n' | '\r' => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+fn bracket_inline_field_start_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
-        Regex::new(r"\[(?P<key>[^\[\]\r\n:][^\[\]\r\n]*?)::\s*(?P<value>.+)\]")
+        Regex::new(r"^\[(?P<key>[^\[\]\r\n:][^\[\]\r\n]*?)::\s*")
             .expect("bracket inline field regex should compile")
     })
 }
@@ -498,6 +557,38 @@ mod tests {
         assert_eq!(extraction.tasks[0].list_item_index, 0);
         assert_eq!(extraction.tasks[0].status_char, ' ');
         assert_eq!(extraction.tasks[0].inline_fields[0].key, "due");
+    }
+
+    #[test]
+    fn bracket_fields_end_at_their_balanced_closing_bracket() {
+        let source = "- Kagi [cost:: -9.51 / 12] [groups:: a, b] [up:: [[Note]]] [x:: \\]]\n";
+        let block = SemanticBlock {
+            block_kind: SemanticBlockKind::List,
+            text: source.to_string(),
+            byte_offset_start: 0,
+            byte_offset_end: source.len(),
+            heading_path: Vec::new(),
+            code_language: None,
+        };
+
+        let extraction = extract_dataview_metadata(source, &[], &[block]);
+
+        let fields = extraction.list_items[0]
+            .inline_fields
+            .iter()
+            .map(|field| (field.key.as_str(), field.value_text.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            fields,
+            vec![
+                ("cost", "-9.51 / 12"),
+                ("groups", "a, b"),
+                ("up", "[[Note]]"),
+                ("x", "\\]"),
+            ]
+        );
+        let up = &extraction.list_items[0].inline_fields[2];
+        assert_eq!(&source[up.byte_range.clone()], "[up:: [[Note]]]");
     }
 
     #[test]
