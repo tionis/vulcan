@@ -3918,3 +3918,87 @@ fn first_completed_status_for_test(config: &VaultConfig) -> String {
 
 use crate::AppError;
 use vulcan_core::VaultConfig;
+
+/// `TaskNotes` dependencies name blocker task notes with wikilinks (or
+/// Markdown links) by path or basename, usually with an alias; they resolve
+/// like Obsidian links, and a done blocker no longer blocks.
+#[test]
+fn tasknotes_blockers_resolve_by_note_link() {
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    let task = |title: &str, status: &str, blocked_by: &[&str]| {
+        let blocked_by = blocked_by.iter().fold(String::new(), |mut yaml, uid| {
+            yaml.push_str("  - uid: \"");
+            yaml.push_str(uid);
+            yaml.push_str("\"\n    reltype: FINISHTOSTART\n");
+            yaml
+        });
+        let blocked_by = if blocked_by.is_empty() {
+            String::new()
+        } else {
+            format!("blockedBy:\n{blocked_by}")
+        };
+        format!("---\ntitle: {title}\nstatus: {status}\ntags:\n  - task\n{blocked_by}---\n")
+    };
+    for (path, source) in [
+        ("Archive/2603011grk.md", task("finished", "done", &[])),
+        ("Tasks/26012512ka.md", task("still open", "open", &[])),
+        ("Tasks/clean up.md", task("spaced", "open", &[])),
+        ("A/dup.md", task("dup one", "open", &[])),
+        ("B/dup.md", task("dup two", "open", &[])),
+        (
+            "Tasks/2610081ld8.md",
+            task(
+                "blocked",
+                "open",
+                &[
+                    "[[2603011grk|finish trystero passive mode]]",
+                    "[[Tasks/26012512KA#Notes|clean up recipes vault]]",
+                    "[spaced](Tasks/clean%20up.md)",
+                    "[[dup]]",
+                    "[[missing]]",
+                ],
+            ),
+        ),
+    ] {
+        fs::create_dir_all(temp.path().join(path).parent().unwrap()).unwrap();
+        fs::write(temp.path().join(path), source).unwrap();
+    }
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).unwrap();
+
+    let graph = build_tasks_graph_report(&paths).unwrap();
+    let edge = |id: &str| {
+        graph
+            .edges
+            .iter()
+            .find(|edge| edge.blocker_id == id)
+            .unwrap_or_else(|| panic!("edge {id} in {:?}", graph.edges))
+    };
+    let archived = edge("[[2603011grk|finish trystero passive mode]]");
+    assert!(archived.resolved);
+    assert_eq!(
+        archived.blocker_path.as_deref(),
+        Some("Archive/2603011grk.md")
+    );
+    assert_eq!(archived.blocker_completed, Some(true));
+    let by_path = edge("[[Tasks/26012512KA#Notes|clean up recipes vault]]");
+    assert_eq!(by_path.blocker_path.as_deref(), Some("Tasks/26012512ka.md"));
+    assert_eq!(by_path.blocker_completed, Some(false));
+    let markdown = edge("[spaced](Tasks/clean%20up.md)");
+    assert_eq!(markdown.blocker_path.as_deref(), Some("Tasks/clean up.md"));
+    // An ambiguous basename and a missing note stay unresolved.
+    assert!(!edge("[[dup]]").resolved);
+    assert!(!edge("[[missing]]").resolved);
+
+    let blocked = build_tasks_blocked_report(&paths).unwrap();
+    assert_eq!(blocked.tasks.len(), 1);
+    let blockers = blocked.tasks[0]
+        .blockers
+        .iter()
+        .map(|blocker| blocker.blocker_id.as_str())
+        .collect::<Vec<_>>();
+    // The done blocker is satisfied; open and unresolved ones still block.
+    assert!(!blockers.contains(&"[[2603011grk|finish trystero passive mode]]"));
+    assert_eq!(blockers.len(), 4, "{blockers:?}");
+}

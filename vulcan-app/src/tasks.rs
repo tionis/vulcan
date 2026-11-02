@@ -2352,12 +2352,15 @@ fn tasks_graph_report(tasks: &[Value]) -> TasksGraphReport {
         nodes.push(node);
     }
 
+    let task_notes = TaskNoteIndex::new(&nodes);
     let mut edges = tasks
         .iter()
         .flat_map(|(key, task)| {
             task_blocker_references(task).into_iter().map(|reference| {
                 let blocker_id = reference.blocker_id;
-                let blocker = node_by_id.get(blocker_id.as_str());
+                let blocker = node_by_id
+                    .get(blocker_id.as_str())
+                    .or_else(|| task_notes.resolve(&blocker_id));
                 TaskDependencyEdge {
                     blocked_key: key.clone(),
                     blocker_id,
@@ -2380,6 +2383,83 @@ fn tasks_graph_report(tasks: &[Value]) -> TasksGraphReport {
     });
 
     TasksGraphReport { nodes, edges }
+}
+
+/// Task notes (one task per note, written with a `[[path]]` id) by the
+/// links a `TaskNotes` dependency can use to name them: the vault path without
+/// `.md`, or a basename that only one task note has.
+struct TaskNoteIndex<'a> {
+    by_path: HashMap<String, &'a TaskDependencyNode>,
+    by_basename: HashMap<String, Vec<&'a TaskDependencyNode>>,
+}
+
+impl<'a> TaskNoteIndex<'a> {
+    fn new(nodes: &'a [TaskDependencyNode]) -> Self {
+        let mut by_path = HashMap::new();
+        let mut by_basename = HashMap::<String, Vec<_>>::new();
+        for node in nodes {
+            if !node.id.as_deref().is_some_and(|id| id.starts_with("[[")) {
+                continue;
+            }
+            let path = note_link_key(&node.path);
+            let basename = path.rsplit('/').next().unwrap_or(&path).to_string();
+            by_basename.entry(basename).or_default().push(node);
+            by_path.insert(path, node);
+        }
+        Self {
+            by_path,
+            by_basename,
+        }
+    }
+
+    /// The task note `reference` links to, resolved like Obsidian: by path,
+    /// then by unique basename, ignoring any alias or heading. Ambiguous
+    /// basenames and plain IDs stay unresolved.
+    fn resolve(&self, reference: &str) -> Option<&'a TaskDependencyNode> {
+        let target = tasknotes_link_target(reference)?;
+        let key = note_link_key(&target);
+        if let Some(node) = self.by_path.get(&key) {
+            return Some(node);
+        }
+        if key.contains('/') {
+            return None;
+        }
+        match self.by_basename.get(&key).map(Vec::as_slice) {
+            Some([node]) => Some(node),
+            _ => None,
+        }
+    }
+}
+
+/// The link target of a `TaskNotes` dependency written as a wikilink
+/// (`[[target|alias]]`) or a Markdown link (`[alias](target.md)`).
+fn tasknotes_link_target(reference: &str) -> Option<String> {
+    let reference = reference.trim();
+    let target = if let Some(inner) = reference
+        .strip_prefix("[[")
+        .and_then(|rest| rest.strip_suffix("]]"))
+    {
+        inner.split('|').next().unwrap_or(inner).to_string()
+    } else if reference.starts_with('[') && reference.ends_with(')') {
+        let start = reference.find("](")? + 2;
+        let destination = reference[start..reference.len() - 1].trim();
+        let destination = destination
+            .strip_prefix('<')
+            .and_then(|rest| rest.strip_suffix('>'))
+            .unwrap_or(destination);
+        destination.replace("%20", " ")
+    } else {
+        return None;
+    };
+    let target = target.split('#').next().unwrap_or(&target).trim();
+    (!target.is_empty()).then(|| target.to_string())
+}
+
+/// Case-insensitive vault path without a leading `./` or `/` and without `.md`.
+fn note_link_key(path: &str) -> String {
+    let path = path.trim_start_matches("./").trim_start_matches('/');
+    let lower = path.to_lowercase();
+    lower.strip_suffix(".md").unwrap_or(&lower).to_string()
 }
 
 fn resolve_tasknotes_view_target(
