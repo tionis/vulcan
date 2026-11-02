@@ -5250,3 +5250,25 @@ fn git_batch_settings_default_to_per_write_commits_and_accept_overrides() {
         DEFAULT_GIT_BATCH_INTERVAL_SECONDS
     );
 }
+
+#[test]
+fn tasknotes_filename_format_imports_supported_formats_and_skips_custom() {
+    let skipped_format = |format: &str| {
+        tasknotes_skipped_settings(&serde_json::json!({ "taskFilenameFormat": format }))
+            .into_iter()
+            .any(|item| item.source == "taskFilenameFormat")
+    };
+    for format in ["title", "zettel", "timestamp"] {
+        assert!(!skipped_format(format), "{format}");
+        assert!(TaskNotesFilenameFormat::from_tasknotes_setting(format).is_some());
+    }
+    assert!(skipped_format("custom"));
+    assert_eq!(
+        TaskNotesFilenameFormat::from_tasknotes_setting("custom"),
+        None
+    );
+    assert_eq!(
+        TaskNotesConfig::default().filename_format,
+        TaskNotesFilenameFormat::Title
+    );
+}

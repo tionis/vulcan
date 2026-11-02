@@ -1057,6 +1057,33 @@ pub enum TaskNotesIdentificationMethod {
     Property,
 }
 
+/// How new task notes are named: `TaskNotes`' `taskFilenameFormat`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskNotesFilenameFormat {
+    /// The sanitized task title.
+    #[default]
+    Title,
+    /// `yyMMdd` plus the seconds since local midnight in base 36.
+    Zettel,
+    /// `yyyy-MM-dd-HHmmss` in local time.
+    Timestamp,
+}
+
+impl TaskNotesFilenameFormat {
+    /// The format a `TaskNotes` `taskFilenameFormat` value names; `None` for
+    /// formats Vulcan does not support (such as `custom` templates).
+    #[must_use]
+    pub fn from_tasknotes_setting(value: &str) -> Option<Self> {
+        match value {
+            "title" => Some(Self::Title),
+            "zettel" => Some(Self::Zettel),
+            "timestamp" => Some(Self::Timestamp),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskNotesFieldMapping {
     pub title: String,
@@ -1444,6 +1471,8 @@ pub struct TaskNotesConfig {
     pub default_status: String,
     pub default_priority: String,
     #[serde(default)]
+    pub filename_format: TaskNotesFilenameFormat,
+    #[serde(default)]
     pub field_mapping: TaskNotesFieldMapping,
     #[serde(default = "default_tasknotes_statuses")]
     pub statuses: Vec<TaskNotesStatusConfig>,
@@ -1479,6 +1508,7 @@ impl Default for TaskNotesConfig {
             excluded_folders: Vec::new(),
             default_status: "open".to_string(),
             default_priority: "normal".to_string(),
+            filename_format: TaskNotesFilenameFormat::Title,
             field_mapping: TaskNotesFieldMapping::default(),
             statuses: default_tasknotes_statuses(),
             priorities: default_tasknotes_priorities(),
@@ -3818,6 +3848,13 @@ fn apply_obsidian_tasknotes_defaults(config: &mut VaultConfig, obsidian: Obsidia
     if let Some(method) = obsidian.task_identification_method {
         config.tasknotes.identification_method = method;
     }
+    if let Some(format) = obsidian
+        .task_filename_format
+        .as_deref()
+        .and_then(TaskNotesFilenameFormat::from_tasknotes_setting)
+    {
+        config.tasknotes.filename_format = format;
+    }
     config.tasknotes.task_property_name = normalize_optional_text(obsidian.task_property_name);
     config.tasknotes.task_property_value = normalize_optional_text(obsidian.task_property_value);
     if let Some(excluded_folders) = obsidian.excluded_folders {
@@ -4659,6 +4696,9 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
         if let Some(identification_method) = tasknotes.identification_method {
             config.tasknotes.identification_method = identification_method;
+        }
+        if let Some(filename_format) = tasknotes.filename_format {
+            config.tasknotes.filename_format = filename_format;
         }
         if let Some(task_property_name) = tasknotes.task_property_name {
             config.tasknotes.task_property_name = normalize_optional_text(Some(task_property_name));

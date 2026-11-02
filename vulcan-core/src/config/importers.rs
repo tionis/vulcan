@@ -1852,6 +1852,12 @@ fn tasknotes_config_import_mappings(
     )?;
     push_config_import_mapping(
         &mut mappings,
+        "taskFilenameFormat",
+        "tasknotes.filename_format",
+        &config.filename_format,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
         "taskPropertyName",
         "tasknotes.task_property_name",
         &config.task_property_name,
@@ -2648,6 +2654,16 @@ pub(super) fn tasknotes_skipped_settings(raw: &Value) -> Vec<ImportSkippedSettin
     };
 
     let mut skipped = Vec::new();
+    if let Some(format) = settings.get("taskFilenameFormat").and_then(Value::as_str) {
+        if TaskNotesFilenameFormat::from_tasknotes_setting(format).is_none() {
+            skipped.push(ImportSkippedSetting {
+                source: "taskFilenameFormat".to_string(),
+                reason: format!(
+                    "the `{format}` filename format is not yet supported; new task notes are named after their title"
+                ),
+            });
+        }
+    }
     push_tasknotes_skipped_group(
         &mut skipped,
         settings,
@@ -2674,7 +2690,6 @@ pub(super) fn tasknotes_skipped_settings(raw: &Value) -> Vec<ImportSkippedSettin
             "moveArchivedTasks",
             "hideIdentifyingTagsInCards",
             "taskOrgFiltersCollapsed",
-            "taskFilenameFormat",
             "storeTitleInFilename",
             "customFilenameTemplate",
             "enableTaskLinkOverlay",

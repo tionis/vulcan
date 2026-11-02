@@ -278,6 +278,7 @@ pub(super) struct PartialTaskNotesConfig {
     pub(super) archive_folder: Option<String>,
     pub(super) task_tag: Option<String>,
     pub(super) identification_method: Option<TaskNotesIdentificationMethod>,
+    pub(super) filename_format: Option<TaskNotesFilenameFormat>,
     pub(super) task_property_name: Option<String>,
     pub(super) task_property_value: Option<String>,
     pub(super) excluded_folders: Option<Vec<String>>,

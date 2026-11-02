@@ -448,6 +448,10 @@ pub(super) struct ObsidianTaskNotesConfig {
     pub(super) task_tag: Option<String>,
     #[serde(rename = "taskIdentificationMethod")]
     pub(super) task_identification_method: Option<TaskNotesIdentificationMethod>,
+    /// Kept as text: unsupported formats such as `custom` must not fail the
+    /// whole settings file.
+    #[serde(rename = "taskFilenameFormat")]
+    pub(super) task_filename_format: Option<String>,
     #[serde(rename = "taskPropertyName")]
     pub(super) task_property_name: Option<String>,
     #[serde(rename = "taskPropertyValue")]

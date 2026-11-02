@@ -4002,3 +4002,108 @@ fn tasknotes_blockers_resolve_by_note_link() {
     assert!(!blockers.contains(&"[[2603011grk|finish trystero passive mode]]"));
     assert_eq!(blockers.len(), 4, "{blockers:?}");
 }
+
+#[test]
+fn tasknote_filename_formats_match_tasknotes() {
+    use vulcan_core::TaskNotesFilenameFormat as Format;
+    let at = chrono::DateTime::parse_from_rfc3339("2026-10-08T20:39:08+01:00").unwrap();
+    // 20:39:08 is 74,348 s after local midnight: `1ld8` in base 36.
+    assert_eq!(
+        super::tasknote_file_stem(Format::Zettel, "x", &at),
+        "2610081ld8"
+    );
+    assert_eq!(
+        super::tasknote_file_stem(Format::Timestamp, "x", &at),
+        "2026-10-08-203908"
+    );
+    assert_eq!(
+        super::tasknote_file_stem(Format::Title, "Plan: trip", &at),
+        super::sanitize_tasknote_filename("Plan: trip")
+    );
+    let midnight = chrono::DateTime::parse_from_rfc3339("2026-10-08T00:00:00+01:00").unwrap();
+    assert_eq!(
+        super::tasknote_file_stem(Format::Zettel, "x", &midnight),
+        "2610080"
+    );
+}
+
+#[test]
+fn zettel_names_move_forward_one_second_when_taken() {
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    let config = vulcan_core::TaskNotesConfig {
+        tasks_folder: "Tasks".to_string(),
+        filename_format: vulcan_core::TaskNotesFilenameFormat::Zettel,
+        ..vulcan_core::TaskNotesConfig::default()
+    };
+    let at = chrono::DateTime::parse_from_rfc3339("2026-10-08T20:39:08+01:00").unwrap();
+    fs::create_dir_all(temp.path().join("Tasks")).unwrap();
+    fs::write(temp.path().join("Tasks/2610081ld8.md"), "taken\n").unwrap();
+    assert_eq!(
+        super::new_tasknote_path(&paths, &config, "x", at),
+        "Tasks/2610081ld9.md"
+    );
+}
+
+/// `TaskNotes`' own zettel setting names new tasks, and the title still goes
+/// into frontmatter since it is not in the file name.
+#[test]
+fn task_add_uses_the_tasknotes_zettel_filename_setting() {
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    let plugin = temp.path().join(".obsidian/plugins/tasknotes");
+    fs::create_dir_all(&plugin).unwrap();
+    fs::write(
+        plugin.join("data.json"),
+        r#"{"tasksFolder": "Tasks", "taskFilenameFormat": "zettel", "storeTitleInFilename": false}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        load_vault_config(&paths).config.tasknotes.filename_format,
+        vulcan_core::TaskNotesFilenameFormat::Zettel
+    );
+    let report = apply_task_add(
+        &paths,
+        &TaskAddRequest {
+            text: "test zettel naming".into(),
+            no_nlp: true,
+            status: None,
+            priority: None,
+            due: None,
+            scheduled: None,
+            contexts: vec![],
+            projects: vec![],
+            tags: vec![],
+            template: None,
+            dry_run: false,
+        },
+    )
+    .unwrap();
+    let name = report
+        .path
+        .strip_prefix("Tasks/")
+        .and_then(|name| name.strip_suffix(".md"))
+        .unwrap_or_else(|| panic!("{}", report.path));
+    assert!(
+        name.len() >= 7
+            && name[..6].bytes().all(|byte| byte.is_ascii_digit())
+            && name[6..]
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || byte.is_ascii_lowercase()),
+        "{name}"
+    );
+    let source = fs::read_to_string(temp.path().join(&report.path)).unwrap();
+    assert!(source.contains("title: test zettel naming"), "{source}");
+
+    // An unsupported format falls back to title names instead of failing.
+    fs::write(
+        plugin.join("data.json"),
+        r#"{"tasksFolder": "Tasks", "taskFilenameFormat": "custom"}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        load_vault_config(&paths).config.tasknotes.filename_format,
+        vulcan_core::TaskNotesFilenameFormat::Title
+    );
+}

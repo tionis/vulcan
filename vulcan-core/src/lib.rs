@@ -163,14 +163,15 @@ pub use config::{
     PermissionProfile, PermissionProfilesLoadResult, PermissionsConfig, PluginEvent,
     PluginImporter, PluginRegistration, ScanConfig, SearchBackendKind, SyncConfig,
     SyncTreeValidationConfig, TaskNotesConfig, TaskNotesDateDefault, TaskNotesFieldMapping,
-    TaskNotesIdentificationMethod, TaskNotesImporter, TaskNotesNlpTriggerConfig,
-    TaskNotesPriorityConfig, TaskNotesRecurrenceDefault, TaskNotesSavedViewCondition,
-    TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue, TaskNotesSavedViewGroup,
-    TaskNotesSavedViewNode, TaskNotesSavedViewOptionValue, TaskNotesSavedViewQuery,
-    TaskNotesStatusConfig, TaskNotesTaskCreationDefaults, TaskNotesUserFieldConfig,
-    TaskNotesUserFieldType, TasksImporter, TemplaterCommandPairConfig, TemplaterFileCreationMode,
-    TemplaterFileTemplateConfig, TemplaterFolderTemplateConfig, TemplaterIgnoredFolderConfig,
-    TemplaterImporter, TemplatesConfig, VaultConfig, DEFAULT_GIT_BATCH_INTERVAL_SECONDS,
+    TaskNotesFilenameFormat, TaskNotesIdentificationMethod, TaskNotesImporter,
+    TaskNotesNlpTriggerConfig, TaskNotesPriorityConfig, TaskNotesRecurrenceDefault,
+    TaskNotesSavedViewCondition, TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue,
+    TaskNotesSavedViewGroup, TaskNotesSavedViewNode, TaskNotesSavedViewOptionValue,
+    TaskNotesSavedViewQuery, TaskNotesStatusConfig, TaskNotesTaskCreationDefaults,
+    TaskNotesUserFieldConfig, TaskNotesUserFieldType, TasksImporter, TemplaterCommandPairConfig,
+    TemplaterFileCreationMode, TemplaterFileTemplateConfig, TemplaterFolderTemplateConfig,
+    TemplaterIgnoredFolderConfig, TemplaterImporter, TemplatesConfig, VaultConfig,
+    DEFAULT_GIT_BATCH_INTERVAL_SECONDS,
 };
 pub use content_transforms::apply_content_transforms;
 pub use dataview_js::{

@@ -609,6 +609,9 @@ TaskNotes folders, statuses, NLP, pomodoro, and saved views.
 - `tasknotes.field_mapping.title` — type: `string`; target: `shared|local`; default: `title`
   TaskNotes task storage, metadata mapping, automation defaults, and saved view settings.
   Example: `vulcan config set tasknotes.field_mapping.title <value>`
+- `tasknotes.filename_format` — type: `string`; target: `shared|local`; default: `title`
+  TaskNotes task storage, metadata mapping, automation defaults, and saved view settings.
+  Example: `vulcan config set tasknotes.filename_format <value>`
 - `tasknotes.identification_method` — type: `string`; target: `shared|local`; default: `tag`
   TaskNotes task storage, metadata mapping, automation defaults, and saved view settings.
   Example: `vulcan config set tasknotes.identification_method <value>`

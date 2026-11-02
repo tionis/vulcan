@@ -749,10 +749,11 @@ pub fn apply_task_add_with_guard(
             )
         });
 
-    let relative_path = format!(
-        "{}/{}.md",
-        config.tasknotes.tasks_folder.trim_end_matches('/'),
-        sanitize_tasknote_filename(&title)
+    let relative_path = new_tasknote_path(
+        paths,
+        &config.tasknotes,
+        &title,
+        chrono::Local::now().fixed_offset(),
     );
     let absolute_path = paths.vault_root().join(&relative_path);
     if let Some(guard) = guard {
@@ -4943,10 +4944,11 @@ fn build_converted_tasknote(
             )
         });
 
-    let relative_path = format!(
-        "{}/{}.md",
-        config.tasknotes.tasks_folder.trim_end_matches('/'),
-        sanitize_tasknote_filename(&title)
+    let relative_path = new_tasknote_path(
+        paths,
+        &config.tasknotes,
+        &title,
+        chrono::Local::now().fixed_offset(),
     );
     if let Some(guard) = guard {
         guard
@@ -6930,6 +6932,69 @@ fn first_completed_tasknote_status(config: &VaultConfig) -> String {
         .map_or_else(|| "done".to_string(), |status| status.value.clone())
 }
 
+/// The vault path for a new task note in the tasks folder, named by the
+/// configured `TaskNotes` filename format. Title names keep the existing
+/// "destination task already exists" check; zettel and timestamp names move
+/// one second forward until the name is free, as `TaskNotes` does.
+fn new_tasknote_path(
+    paths: &VaultPaths,
+    config: &vulcan_core::TaskNotesConfig,
+    title: &str,
+    now: chrono::DateTime<chrono::FixedOffset>,
+) -> String {
+    let folder = config.tasks_folder.trim_end_matches('/');
+    let path_for = |stem: String| format!("{folder}/{stem}.md");
+    if config.filename_format == vulcan_core::TaskNotesFilenameFormat::Title {
+        return path_for(sanitize_tasknote_filename(title));
+    }
+    let mut at = now;
+    for _ in 0..86_400 {
+        let path = path_for(tasknote_file_stem(config.filename_format, title, &at));
+        if !paths.vault_root().join(&path).exists() {
+            return path;
+        }
+        at += chrono::TimeDelta::seconds(1);
+    }
+    path_for(tasknote_file_stem(config.filename_format, title, &at))
+}
+
+/// A task note's file name without `.md` in `format`, at local time `at`.
+fn tasknote_file_stem(
+    format: vulcan_core::TaskNotesFilenameFormat,
+    title: &str,
+    at: &chrono::DateTime<chrono::FixedOffset>,
+) -> String {
+    use chrono::Timelike;
+    match format {
+        vulcan_core::TaskNotesFilenameFormat::Title => sanitize_tasknote_filename(title),
+        vulcan_core::TaskNotesFilenameFormat::Zettel => {
+            format!(
+                "{}{}",
+                at.format("%y%m%d"),
+                base36(at.num_seconds_from_midnight())
+            )
+        }
+        vulcan_core::TaskNotesFilenameFormat::Timestamp => at.format("%Y-%m-%d-%H%M%S").to_string(),
+    }
+}
+
+/// Lowercase base 36, as JavaScript's `Number.prototype.toString(36)`.
+fn base36(mut value: u32) -> String {
+    const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut digits = Vec::new();
+    loop {
+        digits.push(DIGITS[(value % 36) as usize]);
+        value /= 36;
+        if value == 0 {
+            break;
+        }
+    }
+    digits.reverse();
+    String::from_utf8(digits).expect("base 36 digits are ASCII")
+}
+
+/// A `dateCreated`/`dateModified` value as `TaskNotes` writes it: local time
+/// with milliseconds and the UTC offset (`2026-11-02T15:16:33.812+01:00`).
 fn current_utc_timestamp_string() -> String {
     TemplateTimestamp::current().default_strings().datetime
 }

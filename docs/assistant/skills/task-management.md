@@ -27,6 +27,8 @@ Use this skill when the task depends on extracting, filtering, reviewing, or upd
 - Use `tasks show <path-or-name>` for one TaskNotes note's current details and body; an exact path disambiguates multiple readable notes with the same filename or alias.
 - Use `tasks eval <file> [--block <zero-based-index>]` for indexed Tasks query blocks in a note.
 - Reach for `tasks create`, `tasks complete`, `tasks next`, or `tasks blocked` when the workflow is task-specific.
+- `tasks add` and `tasks create` name new task notes with the vault's TaskNotes filename format (`tasknotes.filename_format`: `title`, `zettel`, or `timestamp`, read from TaskNotes' own settings), so take the created path from the command output instead of deriving it from the title. The title is always written to frontmatter.
+- `tasks blocked` and `tasks graph` resolve TaskNotes `blockedBy` links by path or unique basename, ignoring aliases; a done blocker no longer blocks, and an `unresolved` blocker names a missing, ambiguous, or unreadable task note.
 - Combine task views with daily note review when date-based workflows matter.
 - Use `help` when the Tasks query syntax or recurrence behavior is unclear.
 
