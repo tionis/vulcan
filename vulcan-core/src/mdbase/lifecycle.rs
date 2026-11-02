@@ -6,7 +6,6 @@ use super::{
     resolve_match_field, MdbaseCelClock, MdbaseCelContext, MdbaseCelEngine, MdbaseCelLinkIndex,
     MdbaseComposedTypeBehavior, MdbaseTypeCompositionDiagnostic,
 };
-use chrono::SecondsFormat;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -231,9 +230,7 @@ pub fn evaluate_mdbase_lifecycle_provider(
         "now" | "today" | "uuid" | "ulid" if argument != &Value::Bool(true) => Err(
             MdbaseLifecycleProviderError::new(format!("{name} requires true")),
         ),
-        "now" => Ok(Value::String(
-            clock.now_utc().to_rfc3339_opts(SecondsFormat::Millis, true),
-        )),
+        "now" => Ok(Value::String(clock.now_rfc3339())),
         "today" => Ok(Value::String(clock.today())),
         "uuid" => {
             let mut bytes = entropy()?;
@@ -334,8 +331,11 @@ mod tests {
     fn fixed_clock_preserves_precision_and_collection_date() {
         assert_eq!(
             evaluate(json!({"now": true}), json!({})).unwrap(),
-            "2026-09-08T23:30:45.123Z"
+            "2026-09-09T01:30:45.123+02:00"
         );
+        let utc =
+            MdbaseCelClock::new("2026-09-08T23:30:45.123456Z".parse().unwrap(), "UTC").unwrap();
+        assert_eq!(utc.now_rfc3339(), "2026-09-08T23:30:45.123Z");
         assert_eq!(
             evaluate(json!({"today": true}), json!({})).unwrap(),
             "2026-09-09"

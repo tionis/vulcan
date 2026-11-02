@@ -368,7 +368,10 @@ mod tests {
         let prepared = prepare(&collection, &types, source, None).unwrap();
         assert!(prepared.diagnostics.is_empty());
         assert!(prepared.frontmatter["id"].is_string());
-        assert_eq!(prepared.frontmatter["created"], "2026-09-08T23:30:45.000Z");
+        assert_eq!(
+            prepared.frontmatter["created"],
+            "2026-09-09T01:30:45.000+02:00"
+        );
         assert!(prepared.frontmatter.get("status").is_none());
         assert_eq!(record_body(&prepared.source), "# Body\n[[Other|Alias]]\n");
         assert!(!directory.path().join("tasks/new.md").exists());

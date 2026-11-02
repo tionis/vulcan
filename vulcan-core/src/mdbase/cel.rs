@@ -578,6 +578,20 @@ impl MdbaseCelClock {
         self.timezone.name()
     }
 
+    /// The clock's instant as RFC 3339 with milliseconds, in the
+    /// collection's timezone: `Z` for UTC, a numeric offset otherwise.
+    #[must_use]
+    pub fn now_rfc3339(&self) -> String {
+        if self.timezone == Tz::UTC {
+            return self
+                .now_utc
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        }
+        self.now_utc
+            .with_timezone(&self.timezone)
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, false)
+    }
+
     #[must_use]
     pub fn today(&self) -> String {
         self.now_utc

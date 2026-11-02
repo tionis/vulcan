@@ -218,7 +218,7 @@ fn all_providers_run_before_validation_and_exact_reviewed_values_survive_apply_a
     assert!(ulid::Ulid::from_string(generated["id"].as_str().unwrap()).is_ok());
     assert_ne!(generated["id"], plan.preview.generated_values["b.md"]["id"]);
     assert_eq!(generated["uuid"].as_str().unwrap().len(), 36);
-    assert_eq!(generated["created"], "2026-09-13T23:30:00.000Z");
+    assert_eq!(generated["created"], "2026-09-14T01:30:00.000+02:00");
     assert_eq!(generated["day"], "2026-09-14");
     assert_eq!(generated["slug"], "hello-world");
     assert_eq!(generated["copied"], "Hello World");

@@ -21,6 +21,9 @@ views/tasks.md         a saved-view record (type: view)
 
 `settings.types_folder`, `settings.contracts_folder`, `settings.exclude`, record extensions, the
 type key, the validation level, and the collection timezone are configured in `mdbase.yaml`.
+The timezone (`settings.timezone`, an IANA name such as `Europe/Berlin`; default UTC) sets
+`today()` and lifecycle `today`, and lifecycle `now` stamps are written in it with a numeric offset
+(`2026-11-02T19:40:12.345+01:00`), or with `Z` under UTC.
 Keys starting with `x-` are extensions and never produce unknown-key warnings.
 
 ## Reading

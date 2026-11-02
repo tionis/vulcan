@@ -84,7 +84,7 @@ fn pinned_create_policy_generates_required_fields_without_materializing_defaults
     assert_eq!(result.assignments["slug"], "created-task");
     assert_eq!(
         result.assignments["dateCreated"],
-        "2026-09-08T23:30:45.000Z"
+        "2026-09-09T01:30:45.000+02:00"
     );
     assert_eq!(
         result.assignments["dateModified"],
@@ -117,7 +117,7 @@ fn pinned_update_policy_refreshes_only_modified_timestamp() {
         result.assignments,
         BTreeMap::from([(
             "dateModified".to_string(),
-            json!("2026-09-08T23:30:45.000Z")
+            json!("2026-09-09T01:30:45.000+02:00")
         )])
     );
     assert_eq!(draft["dateCreated"], old["dateCreated"]);
