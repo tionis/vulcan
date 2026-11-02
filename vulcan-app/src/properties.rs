@@ -150,38 +150,36 @@ pub fn apply_bulk_property_mutation(
             }
         })
         .collect::<Vec<_>>();
+    // The managed batch validates before it writes anything, and it runs
+    // before the ordinary writes, so a rejected batch leaves every file
+    // unchanged without a separate preview pass.
     if !managed_changes.is_empty() {
-        apply_managed_property_batch(paths, &managed_changes, true, permission_profile, verbosity)?;
+        apply_managed_property_batch(
+            paths,
+            &managed_changes,
+            dry_run,
+            permission_profile,
+            verbosity,
+        )?;
     }
 
-    if !dry_run {
-        if !managed_changes.is_empty() {
-            apply_managed_property_batch(
-                paths,
-                &managed_changes,
-                false,
-                permission_profile,
-                verbosity,
-            )?;
-        }
-        if !ordinary_indexes.is_empty() {
-            let _lock = acquire_write_lock(paths).map_err(AppError::operation)?;
-            recheck_ordinary_property_routes(
-                paths,
-                &guard,
-                &ordinary_indexes
-                    .iter()
-                    .map(|index| planned[*index].path.as_str())
-                    .collect::<Vec<_>>(),
-            )?;
-            for index in ordinary_indexes {
-                let plan = &planned[index];
-                secure_write(paths.vault_root(), Path::new(&plan.path), &plan.after)
-                    .map_err(AppError::operation)?;
-            }
-            vulcan_core::scan::scan_vault_unlocked(paths, ScanMode::Incremental)
+    if !dry_run && !ordinary_indexes.is_empty() {
+        let _lock = acquire_write_lock(paths).map_err(AppError::operation)?;
+        recheck_ordinary_property_routes(
+            paths,
+            &guard,
+            &ordinary_indexes
+                .iter()
+                .map(|index| planned[*index].path.as_str())
+                .collect::<Vec<_>>(),
+        )?;
+        for index in ordinary_indexes {
+            let plan = &planned[index];
+            secure_write(paths.vault_root(), Path::new(&plan.path), &plan.after)
                 .map_err(AppError::operation)?;
         }
+        vulcan_core::scan::scan_vault_unlocked(paths, ScanMode::Incremental)
+            .map_err(AppError::operation)?;
     }
 
     Ok(BulkMutationReport {
@@ -402,6 +400,39 @@ mod tests {
             before_two
         );
         assert!(!directory.path().join(".vulcan").exists());
+    }
+
+    #[test]
+    fn rejected_mixed_property_batch_leaves_ordinary_notes_unchanged() {
+        let (directory, paths) = fixture();
+        let before_record = fs::read_to_string(directory.path().join("tasks/one.md")).unwrap();
+        let before_ordinary =
+            fs::read_to_string(directory.path().join("Archive/ordinary.md")).unwrap();
+
+        let error = apply_bulk_property_mutation(
+            &paths,
+            &[
+                "Archive/ordinary.md".to_string(),
+                "tasks/one.md".to_string(),
+            ],
+            "title",
+            None,
+            false,
+            None,
+            Verbosity::Quiet,
+        )
+        .expect_err("required property removal should fail");
+
+        assert!(error.message().contains("schema_required"));
+        assert_eq!(
+            fs::read_to_string(directory.path().join("tasks/one.md")).unwrap(),
+            before_record
+        );
+        assert_eq!(
+            fs::read_to_string(directory.path().join("Archive/ordinary.md")).unwrap(),
+            before_ordinary
+        );
+        assert!(list_mdbase_write_outbox(&paths).expect("outbox").is_empty());
     }
 
     #[test]
