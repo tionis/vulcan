@@ -28779,6 +28779,101 @@ fn move_json_output_supports_dry_run_and_apply() {
 }
 
 #[test]
+fn move_stdin_applies_each_pair_in_order() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("move-rewrite", &vault_root);
+    run_scan(&vault_root);
+    let vault = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8");
+
+    let applied = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault", vault, "--output", "json", "refactor", "move", "--stdin",
+        ])
+        .write_stdin(
+            "Projects/Alpha.md\tArchive/Alpha.md\n\n./People/Bob.md\tArchive/People/Bob.md\n",
+        )
+        .assert()
+        .success();
+    let rows = parse_stdout_json_lines(&applied);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["destination_path"], "Archive/Alpha.md");
+    assert_eq!(rows[1]["source_path"], "People/Bob.md");
+    assert!(vault_root.join("Archive/Alpha.md").exists());
+    assert!(vault_root.join("Archive/People/Bob.md").exists());
+    assert!(!vault_root.join("Projects/Alpha.md").exists());
+    assert!(fs::read_to_string(vault_root.join("Home.md"))
+        .expect("home should be readable")
+        .contains("[[Archive/Alpha#Status]]"));
+
+    // A batch that fails part-way keeps the moves before the failure and
+    // names the failing pair.
+    let failed = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--vault", vault, "move", "--stdin"])
+        .write_stdin("Archive/Alpha.md\tProjects/Alpha.md\nMissing.md\tElsewhere.md\n")
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&failed.get_output().stderr).into_owned();
+    assert!(
+        stderr.contains("move 2 of 2 (Missing.md -> Elsewhere.md) failed"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("1 earlier move(s) were applied"),
+        "{stderr}"
+    );
+    assert!(vault_root.join("Projects/Alpha.md").exists());
+}
+
+#[test]
+fn move_stdin_rejects_a_malformed_batch_before_moving_anything() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("move-rewrite", &vault_root);
+    run_scan(&vault_root);
+    let vault = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8");
+
+    for (input, message) in [
+        (
+            "Projects/Alpha.md\tArchive/Alpha.md\nPeople/Bob.md Archive/Bob.md\n",
+            "stdin line 2: expected `source<TAB>destination`",
+        ),
+        (
+            "Projects/Alpha.md\tArchive/X.md\nPeople/Bob.md\tArchive/X.md\n",
+            "Archive/X.md is the destination of more than one move",
+        ),
+        (
+            "Projects/Alpha.md\tA.md\nProjects/Alpha.md\tB.md\n",
+            "Projects/Alpha.md is moved more than once",
+        ),
+        ("\n", "`--stdin` found no moves to apply"),
+    ] {
+        let rejected = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args(["--vault", vault, "move", "--stdin"])
+            .write_stdin(input)
+            .assert()
+            .failure();
+        let stderr = String::from_utf8_lossy(&rejected.get_output().stderr).into_owned();
+        assert!(stderr.contains(message), "{input:?}: {stderr}");
+        assert!(vault_root.join("Projects/Alpha.md").exists());
+        assert!(vault_root.join("People/Bob.md").exists());
+    }
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--vault", vault, "move", "--stdin", "Projects/Alpha.md"])
+        .assert()
+        .failure();
+}
+
+#[test]
 fn note_rename_json_output_renames_in_place_and_rewrites_links() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

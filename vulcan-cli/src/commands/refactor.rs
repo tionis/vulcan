@@ -9,6 +9,7 @@ use crate::{
     BulkNoteSelection, Cli, CliError, FolderNotePlacementArg, OutputFormat, RefactorCommand,
     SuggestCommand, SuggestLinkStatusArg,
 };
+use std::collections::HashSet;
 use vulcan_app::browse::move_note_with_profile;
 use vulcan_app::decomposition::{
     split_note, MissingFragmentPolicy, SplitNoteReport, SplitNoteRequest,
@@ -41,6 +42,141 @@ fn dispatch_refactor_plugin_hooks(
         }),
         cli.verbosity(),
     );
+}
+
+/// Runs `move` / `refactor move`: one pair from arguments, or a batch of
+/// `source<TAB>destination` pairs from stdin. A batch checks every pair
+/// before moving anything, applies them in order, stops at the first
+/// failure, and auto-commits whatever moved as one commit.
+pub(crate) fn run_move_command(
+    cli: &Cli,
+    paths: &VaultPaths,
+    source: Option<&str>,
+    dest: Option<&str>,
+    stdin: bool,
+    dry_run: bool,
+    no_commit: bool,
+) -> Result<(), CliError> {
+    let pairs = if stdin {
+        if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            return Err(CliError::operation(
+                "`--stdin` requires tab-separated `source<TAB>destination` lines on stdin",
+            ));
+        }
+        let mut buffer = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut buffer)
+            .map_err(CliError::operation)?;
+        parse_move_pairs(&buffer)?
+    } else {
+        match (source, dest) {
+            (Some(source), Some(dest)) => vec![(source.to_string(), dest.to_string())],
+            _ => {
+                return Err(CliError::operation(
+                    "move needs a source and a destination, or --stdin",
+                ))
+            }
+        }
+    };
+    let guard = selected_permission_guard(cli, paths)?;
+    for (source, dest) in &pairs {
+        guard
+            .check_refactor_path(source)
+            .map_err(CliError::operation)?;
+        guard
+            .check_refactor_path(dest)
+            .map_err(CliError::operation)?;
+    }
+    let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
+    warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
+
+    let mut changed_paths = std::collections::BTreeSet::new();
+    let mut failure = None;
+    for (index, (source, dest)) in pairs.iter().enumerate() {
+        match move_note_with_profile(paths, source, dest, dry_run, cli.permissions.as_deref()) {
+            Ok(summary) => {
+                changed_paths.extend(crate::move_changed_files(&summary));
+                crate::print_move_summary(cli.output, &summary)?;
+            }
+            Err(error) => {
+                failure = Some(if pairs.len() == 1 {
+                    CliError::operation(error)
+                } else {
+                    CliError::operation(format!(
+                        "move {} of {} ({source} -> {dest}) failed: {error}; \
+                         {index} earlier move(s) {}",
+                        index + 1,
+                        pairs.len(),
+                        if dry_run { "previewed" } else { "were applied" },
+                    ))
+                });
+                break;
+            }
+        }
+    }
+    if !dry_run && !changed_paths.is_empty() {
+        let changed_paths = changed_paths.into_iter().collect::<Vec<_>>();
+        auto_commit
+            .commit(
+                paths,
+                "move",
+                &changed_paths,
+                cli.permissions.as_deref(),
+                cli.verbosity(),
+            )
+            .map_err(CliError::operation)?;
+        dispatch_refactor_plugin_hooks(cli, paths, "move", &changed_paths);
+    }
+    failure.map_or(Ok(()), Err)
+}
+
+/// Parses `source<TAB>destination` lines. Blank lines are skipped; a
+/// missing tab, an empty side, a repeated source, or a repeated destination
+/// rejects the whole batch before anything moves.
+pub(crate) fn parse_move_pairs(input: &str) -> Result<Vec<(String, String)>, CliError> {
+    let mut sources = HashSet::new();
+    let mut destinations = HashSet::new();
+    let mut pairs = Vec::new();
+    for (number, line) in input.lines().enumerate() {
+        let line = line.trim_end_matches('\r');
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Some((source, dest)) = line.split_once('\t') else {
+            return Err(CliError::operation(format!(
+                "stdin line {}: expected `source<TAB>destination`",
+                number + 1
+            )));
+        };
+        let (source, dest) = (normalize_move_path(source), normalize_move_path(dest));
+        if source.is_empty() || dest.is_empty() || dest.contains('\t') {
+            return Err(CliError::operation(format!(
+                "stdin line {}: expected one non-empty source and destination",
+                number + 1
+            )));
+        }
+        if !sources.insert(source.clone()) {
+            return Err(CliError::operation(format!(
+                "stdin line {}: {source} is moved more than once",
+                number + 1
+            )));
+        }
+        if !destinations.insert(dest.clone()) {
+            return Err(CliError::operation(format!(
+                "stdin line {}: {dest} is the destination of more than one move",
+                number + 1
+            )));
+        }
+        pairs.push((source, dest));
+    }
+    if pairs.is_empty() {
+        return Err(CliError::operation("`--stdin` found no moves to apply"));
+    }
+    Ok(pairs)
+}
+
+fn normalize_move_path(path: &str) -> String {
+    let path = path.trim();
+    path.strip_prefix("./").unwrap_or(path).to_string()
 }
 
 pub(crate) fn handle_refactor_command(
@@ -253,36 +389,18 @@ pub(crate) fn handle_refactor_command(
         RefactorCommand::Move {
             source,
             dest,
+            stdin,
             dry_run,
             no_commit,
-        } => {
-            let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
-            let guard = selected_permission_guard(cli, paths)?;
-            guard
-                .check_refactor_path(source)
-                .map_err(CliError::operation)?;
-            guard
-                .check_refactor_path(dest)
-                .map_err(CliError::operation)?;
-            let summary =
-                move_note_with_profile(paths, source, dest, *dry_run, cli.permissions.as_deref())
-                    .map_err(CliError::operation)?;
-            if !dry_run {
-                let changed_paths = crate::move_changed_files(&summary);
-                auto_commit
-                    .commit(
-                        paths,
-                        "move",
-                        &changed_paths,
-                        cli.permissions.as_deref(),
-                        cli.verbosity(),
-                    )
-                    .map_err(CliError::operation)?;
-                dispatch_refactor_plugin_hooks(cli, paths, "move", &changed_paths);
-            }
-            crate::print_move_summary(cli.output, &summary)
-        }
+        } => run_move_command(
+            cli,
+            paths,
+            source.as_deref(),
+            dest.as_deref(),
+            *stdin,
+            *dry_run,
+            *no_commit,
+        ),
         RefactorCommand::SplitNote {
             source,
             destination,

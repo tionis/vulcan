@@ -1342,12 +1342,15 @@ Notes:
   All refactor subcommands support `--dry-run` to preview changes without writing files.
   Mutating refactor commands participate in auto-commit when git integration is enabled.
   Use `--no-commit` to suppress the auto-commit for a single invocation.
+  `refactor move --stdin` reads `source<TAB>destination` pairs, checks every pair before moving,
+  applies them in order with one auto-commit, and stops at the first failure.
 
 Examples:
   vulcan refactor rename-heading Projects/Alpha \"## Status\" \"## Current Status\" --dry-run
   vulcan refactor rename-property status project_status --dry-run
   vulcan refactor merge-tags \"#wip\" \"#in-progress\" --dry-run
   vulcan refactor move Projects/Alpha.md Archive/Alpha.md --dry-run
+  printf 'Inbox/a.md\\tArchive/a.md\\n' | vulcan refactor move --stdin
   vulcan refactor split-note Rulebook.md --from-level 2 --through-level 3 --dry-run
   vulcan refactor rewrite --where 'status = draft' --find TODO --replace DONE
   vulcan refactor link-mentions Projects/Alpha --dry-run";
@@ -7294,10 +7297,22 @@ pub enum RefactorCommand {
     },
     #[command(about = "Move a note or attachment and safely rewrite inbound links")]
     Move {
-        #[arg(help = "Existing source note or attachment path")]
-        source: String,
-        #[arg(help = "Destination note or attachment path")]
-        dest: String,
+        #[arg(
+            help = "Existing source note or attachment path",
+            required_unless_present = "stdin"
+        )]
+        source: Option<String>,
+        #[arg(
+            help = "Destination note or attachment path",
+            required_unless_present = "stdin"
+        )]
+        dest: Option<String>,
+        #[arg(
+            long,
+            conflicts_with_all = ["source", "dest"],
+            help = "Read tab-separated `source<TAB>destination` pairs from stdin, one move per line"
+        )]
+        stdin: bool,
         #[arg(long, help = "Report rewrite changes without moving files")]
         dry_run: bool,
         #[arg(long, help = "Suppress auto-commit for this invocation")]
@@ -8756,10 +8771,22 @@ pub enum Command {
         hide = true
     )]
     Move {
-        #[arg(help = "Existing source note or attachment path")]
-        source: String,
-        #[arg(help = "Destination note or attachment path")]
-        dest: String,
+        #[arg(
+            help = "Existing source note or attachment path",
+            required_unless_present = "stdin"
+        )]
+        source: Option<String>,
+        #[arg(
+            help = "Destination note or attachment path",
+            required_unless_present = "stdin"
+        )]
+        dest: Option<String>,
+        #[arg(
+            long,
+            conflicts_with_all = ["source", "dest"],
+            help = "Read tab-separated `source<TAB>destination` pairs from stdin, one move per line"
+        )]
+        stdin: bool,
         #[arg(long, help = "Report rewrite changes without moving files")]
         dry_run: bool,
         #[arg(long, help = "Suppress auto-commit for this invocation")]

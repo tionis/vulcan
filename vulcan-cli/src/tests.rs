@@ -6257,8 +6257,9 @@ fn parses_links_and_backlinks_commands() {
     assert_eq!(
         move_command.command,
         Command::Move {
-            source: "Projects/Alpha.md".to_string(),
-            dest: "Archive/Alpha.md".to_string(),
+            source: Some("Projects/Alpha.md".to_string()),
+            dest: Some("Archive/Alpha.md".to_string()),
+            stdin: false,
             dry_run: true,
             no_commit: false,
         }

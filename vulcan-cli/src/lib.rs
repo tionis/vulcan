@@ -487,7 +487,6 @@ use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use toml::Value as TomlValue;
-use vulcan_app::browse::move_note_with_profile;
 use vulcan_app::browse::{
     DataviewBlockResult as AppDataviewBlockResult, DataviewEvalReport as AppDataviewEvalReport,
 };
@@ -5281,47 +5280,18 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Command::Move {
             ref source,
             ref dest,
+            stdin,
             dry_run,
             no_commit,
-        } => {
-            let guard = selected_permission_guard(cli, &paths)?;
-            guard
-                .check_refactor_path(source)
-                .map_err(CliError::operation)?;
-            guard
-                .check_refactor_path(dest)
-                .map_err(CliError::operation)?;
-            let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
-            let summary =
-                move_note_with_profile(&paths, source, dest, dry_run, cli.permissions.as_deref())
-                    .map_err(CliError::operation)?;
-            if !dry_run {
-                let changed_paths = move_changed_files(&summary);
-                auto_commit
-                    .commit(
-                        &paths,
-                        "move",
-                        &changed_paths,
-                        cli.permissions.as_deref(),
-                        cli.verbosity(),
-                    )
-                    .map_err(CliError::operation)?;
-                let _ = crate::plugins::dispatch_plugin_event(
-                    &paths,
-                    cli.permissions.as_deref(),
-                    PluginEvent::OnRefactor,
-                    &serde_json::json!({
-                        "kind": PluginEvent::OnRefactor,
-                        "action": "move",
-                        "paths": changed_paths,
-                    }),
-                    cli.verbosity(),
-                );
-            }
-            print_move_summary(cli.output, &summary)?;
-            Ok(())
-        }
+        } => crate::commands::refactor::run_move_command(
+            cli,
+            &paths,
+            source.as_deref(),
+            dest.as_deref(),
+            stdin,
+            dry_run,
+            no_commit,
+        ),
         Command::RenameProperty {
             ref old,
             ref new,

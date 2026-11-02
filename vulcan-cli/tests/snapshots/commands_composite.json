@@ -19521,7 +19521,7 @@
       },
       {
         "about": "Apply vault-wide refactors and suggestion passes",
-        "after_help": "Notes:\n  All refactor subcommands support `--dry-run` to preview changes without writing files.\n  Mutating refactor commands participate in auto-commit when git integration is enabled.\n  Use `--no-commit` to suppress the auto-commit for a single invocation.\n\nExamples:\n  vulcan refactor rename-heading Projects/Alpha \"## Status\" \"## Current Status\" --dry-run\n  vulcan refactor rename-property status project_status --dry-run\n  vulcan refactor merge-tags \"#wip\" \"#in-progress\" --dry-run\n  vulcan refactor move Projects/Alpha.md Archive/Alpha.md --dry-run\n  vulcan refactor split-note Rulebook.md --from-level 2 --through-level 3 --dry-run\n  vulcan refactor rewrite --where 'status = draft' --find TODO --replace DONE\n  vulcan refactor link-mentions Projects/Alpha --dry-run",
+        "after_help": "Notes:\n  All refactor subcommands support `--dry-run` to preview changes without writing files.\n  Mutating refactor commands participate in auto-commit when git integration is enabled.\n  Use `--no-commit` to suppress the auto-commit for a single invocation.\n  `refactor move --stdin` reads `source<TAB>destination` pairs, checks every pair before moving,\n  applies them in order with one auto-commit, and stops at the first failure.\n\nExamples:\n  vulcan refactor rename-heading Projects/Alpha \"## Status\" \"## Current Status\" --dry-run\n  vulcan refactor rename-property status project_status --dry-run\n  vulcan refactor merge-tags \"#wip\" \"#in-progress\" --dry-run\n  vulcan refactor move Projects/Alpha.md Archive/Alpha.md --dry-run\n  printf 'Inbox/a.md\\tArchive/a.md\\n' | vulcan refactor move --stdin\n  vulcan refactor split-note Rulebook.md --from-level 2 --through-level 3 --dry-run\n  vulcan refactor rewrite --where 'status = draft' --find TODO --replace DONE\n  vulcan refactor link-mentions Projects/Alpha --dry-run",
         "name": "refactor",
         "options": [],
         "subcommands": [
@@ -19935,7 +19935,7 @@
                 "id": "source",
                 "long": null,
                 "possible_values": [],
-                "required": true,
+                "required": false,
                 "short": null,
                 "value_names": [
                   "SOURCE"
@@ -19946,10 +19946,24 @@
                 "id": "dest",
                 "long": null,
                 "possible_values": [],
-                "required": true,
+                "required": false,
                 "short": null,
                 "value_names": [
                   "DEST"
+                ]
+              },
+              {
+                "help": "Read tab-separated `source<TAB>destination` pairs from stdin, one move per line",
+                "id": "stdin",
+                "long": "stdin",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "STDIN"
                 ]
               },
               {
