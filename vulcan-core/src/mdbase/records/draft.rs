@@ -120,6 +120,9 @@ pub fn prepare_mdbase_record_draft(
     }
     let source = if updated == frontmatter {
         request.source.to_string()
+    } else if let Some(patched) = patch_draft(request.source, request.path, &frontmatter, &updated)
+    {
+        patched
     } else {
         render_draft(request.source, &updated).map_err(|error| {
             vec![draft_error(
@@ -240,6 +243,39 @@ fn composition_errors(
         .collect()
 }
 
+/// `source` with only the top-level keys whose values differ between
+/// `before` and `after` edited, keeping every other key's order, quoting, and
+/// layout. `None` when a key cannot be patched in place or the patched
+/// frontmatter would not read back as exactly `after`; the caller then
+/// renders the whole frontmatter.
+fn patch_draft(source: &str, path: &str, before: &Value, after: &Value) -> Option<String> {
+    // Creating a frontmatter block is left to the renderer, which places it
+    // before any byte-order mark.
+    if record_body(source).len() == source.len() {
+        return None;
+    }
+    let (Value::Object(before_map), Value::Object(after_map)) = (before, after) else {
+        return None;
+    };
+    let keys = before_map
+        .keys()
+        .chain(after_map.keys())
+        .collect::<BTreeSet<_>>();
+    let mut changes = Vec::new();
+    for key in keys {
+        if before_map.get(key) == after_map.get(key) {
+            continue;
+        }
+        let value = match after_map.get(key) {
+            Some(value) => Some(yaml_serde::to_value(value).ok()?),
+            None => None,
+        };
+        changes.push((key.clone(), value));
+    }
+    let patched = crate::refactor::patch_frontmatter_source(source, path, &changes).ok()?;
+    (parse_raw(&patched, path).ok()? == *after).then_some(patched)
+}
+
 fn render_draft(source: &str, frontmatter: &Value) -> Result<String, yaml_serde::Error> {
     let bom = if source.starts_with('\u{feff}') {
         "\u{feff}"
@@ -350,6 +386,41 @@ mod tests {
                 .iter()
                 .any(|error| error.field == "/count" && error.code.starts_with("schema_")),
             "{errors:?}"
+        );
+    }
+
+    /// A lifecycle value changes only its own line: other keys keep their
+    /// order, quoting, and list indentation (as `TaskNotes` writes them).
+    #[test]
+    fn lifecycle_update_edits_only_the_generated_key() {
+        let (_directory, collection, types) = fixture(
+            "lifecycle:\n  on_update:\n    set:\n      dateModified: {literal: '2026-11-02T15:16:33.812+01:00'}",
+            "{type: object}",
+        );
+        let frontmatter = |title: &str, modified: &str| {
+            format!(
+                "---\ntype: task\ntitle: {title}\npriority: \"0\"\ntags:\n  - task\n  - home\ndateModified: {modified}\nblockedBy:\n  - uid: \"[[2603011grk|finish]]\"\n    reltype: FINISHTOSTART\n---\nBody\n"
+            )
+        };
+        let old = frontmatter("before", "2026-10-01T09:00:00.000+01:00");
+        let source = frontmatter("after", "2026-10-01T09:00:00.000+01:00");
+        let changed = prepare(&collection, &types, &source, Some(&old)).unwrap();
+        let lines = |text: &str| text.lines().map(str::to_string).collect::<Vec<_>>();
+        let (before, after) = (lines(&source), lines(&changed.source));
+        assert_eq!(before.len(), after.len(), "{}", changed.source);
+        for (original, patched) in before.iter().zip(&after) {
+            if original.starts_with("dateModified: ") {
+                assert!(
+                    patched.contains("2026-11-02T15:16:33.812+01:00"),
+                    "{patched}"
+                );
+            } else {
+                assert_eq!(original, patched);
+            }
+        }
+        assert_eq!(
+            parse_raw(&changed.source, "tasks/new.md").unwrap(),
+            changed.frontmatter
         );
     }
 
