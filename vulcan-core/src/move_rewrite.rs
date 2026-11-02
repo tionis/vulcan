@@ -13,7 +13,7 @@ use crate::{
 };
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs;
@@ -281,6 +281,27 @@ fn prepare_note_move(
         },
         rewrite_plans,
     ))
+}
+
+/// Every file a move of `source_identifier` could write: the source, the
+/// destination, and each note with a link to or from the source, read from
+/// the link cache without opening any of them. Callers use it to decide how
+/// to route a move before paying for the full rewrite plan.
+pub fn move_candidate_paths(
+    paths: &VaultPaths,
+    source_identifier: &str,
+    destination: &str,
+) -> Result<Vec<String>, MoveError> {
+    let connection = open_existing_cache(paths)?;
+    let source = resolve_move_source(paths, &connection, source_identifier)?;
+    let destination_path = normalize_destination_path(destination, &source.extension)?;
+    let mut candidates = load_move_links(&connection, &source.id)?
+        .into_iter()
+        .map(|link| link.source_path)
+        .collect::<BTreeSet<_>>();
+    candidates.insert(source.path);
+    candidates.insert(destination_path);
+    Ok(candidates.into_iter().collect())
 }
 
 /// Immutable file preimages for composing a move with a larger ordinary-write
@@ -1207,6 +1228,32 @@ mod tests {
     use std::sync::{Arc, Barrier};
     use std::thread;
     use tempfile::TempDir;
+
+    #[test]
+    fn move_candidates_list_every_file_the_move_could_write() {
+        let temporary = TempDir::new().expect("temporary vault");
+        let paths = VaultPaths::new(temporary.path());
+        crate::initialize_vulcan_dir(&paths).expect("initialize vault");
+        fs::write(temporary.path().join("Source.md"), "[[Out]]\n").expect("source");
+        fs::write(temporary.path().join("Out.md"), "# Out\n").expect("outgoing target");
+        fs::write(temporary.path().join("Backlink.md"), "[[Source]]\n").expect("backlink");
+        fs::write(temporary.path().join("Other.md"), "[[Out]]\n").expect("unrelated");
+        scan_vault(&paths, ScanMode::Full).expect("scan");
+
+        assert_eq!(
+            move_candidate_paths(&paths, "Source", "Archive/Source.md").expect("candidates"),
+            vec!["Archive/Source.md", "Backlink.md", "Source.md"]
+        );
+        // Every file the full plan rewrites is among the candidates.
+        let summary = move_note(&paths, "Source.md", "Archive/Source.md", true).expect("plan");
+        for file in summary.rewritten_files {
+            assert!(
+                ["Archive/Source.md", "Backlink.md", "Source.md"].contains(&file.path.as_str()),
+                "{}",
+                file.path
+            );
+        }
+    }
 
     #[test]
     fn move_and_preview_refuse_a_pending_ordinary_write_journal() {

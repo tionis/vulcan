@@ -467,13 +467,30 @@ pub fn move_note_with_profile(
         apply_managed_mdbase_note_writes, MdbaseManagedNoteWriteBatchRequest,
         MdbaseManagedNoteWriteChange, MdbaseManagedWriteMode, MdbaseWriteOperation,
     };
-    // Without an mdbase collection nothing can be routed, so skip the
-    // routing plan: the ordinary move plans (and re-reads every linking
-    // file) once instead of twice.
+    // Routing needs the full plan only when the move can write an mdbase
+    // record. The link cache lists every file the move could write without
+    // opening any, so a move that touches no record (or a vault without a
+    // collection) plans once, in the ordinary move, instead of twice.
     let selection = vulcan_core::resolve_permission_profile(paths, permission_profile)
         .map_err(AppError::operation)?;
     let guard = ProfilePermissionGuard::new(paths, selection);
-    if crate::mdbase::load_mdbase_routing_collection(paths, &guard)?.is_none() {
+    let Some(collection) = crate::mdbase::load_mdbase_routing_collection(paths, &guard)? else {
+        return core_move_note(paths, source_path, destination, dry_run)
+            .map_err(AppError::operation);
+    };
+    let candidates =
+        vulcan_core::move_rewrite::move_candidate_paths(paths, source_path, destination)
+            .map_err(AppError::operation)?;
+    let mut touches_record = false;
+    for path in &candidates {
+        if vulcan_core::mdbase::is_mdbase_record_path(&collection, path)
+            .map_err(AppError::operation)?
+        {
+            touches_record = true;
+            break;
+        }
+    }
+    if !touches_record {
         return core_move_note(paths, source_path, destination, dry_run)
             .map_err(AppError::operation);
     }

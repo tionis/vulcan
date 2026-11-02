@@ -2554,6 +2554,53 @@ mod tests {
     }
 
     #[test]
+    fn a_move_routes_through_mdbase_only_when_it_writes_a_record() {
+        let (directory, paths) = fixture();
+        fs::write(
+            directory.path().join("mdbase.yaml"),
+            "spec_version: \"0.3.0\"\nsettings:\n  exclude: [notes/**]\n",
+        )
+        .unwrap();
+        fs::create_dir_all(directory.path().join("notes")).unwrap();
+        fs::write(directory.path().join("notes/a.md"), "# A\n").unwrap();
+        fs::write(directory.path().join("notes/b.md"), "[[a]]\n").unwrap();
+        fs::write(directory.path().join("notes/c.md"), "# C\n").unwrap();
+        fs::write(
+            directory.path().join("tasks/public.md"),
+            "---\ntype: task\ntitle: Public\n---\nSee [[c]]\n",
+        )
+        .unwrap();
+        initialize_vulcan_dir(&paths).unwrap();
+        vulcan_core::scan_vault(&paths, ScanMode::Full).unwrap();
+        let outbox_events = || {
+            fs::read_dir(
+                paths
+                    .operational_state_dir()
+                    .unwrap_or_else(|_| paths.vulcan_dir().to_path_buf())
+                    .join("mdbase-write/outbox"),
+            )
+            .map_or(0, Iterator::count)
+        };
+
+        // Only excluded notes are written: an ordinary move.
+        crate::browse::move_note_with_profile(&paths, "notes/a.md", "notes/moved.md", false, None)
+            .unwrap();
+        assert_eq!(outbox_events(), 0);
+        assert!(fs::read_to_string(directory.path().join("notes/b.md"))
+            .unwrap()
+            .contains("[[moved]]"));
+
+        // A record links to the moved note, so the rewrite of that record is
+        // a validated mdbase write.
+        crate::browse::move_note_with_profile(&paths, "notes/c.md", "notes/d.md", false, None)
+            .unwrap();
+        assert_eq!(outbox_events(), 1);
+        assert!(fs::read_to_string(directory.path().join("tasks/public.md"))
+            .unwrap()
+            .contains("[[d]]"));
+    }
+
+    #[test]
     fn moving_a_record_is_one_validated_rename_with_reference_rewrites() {
         let (directory, paths) = fixture();
         initialize_vulcan_dir(&paths).unwrap();
