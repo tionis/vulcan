@@ -814,8 +814,23 @@ fn rewrite_link(
         link.target_block.as_deref(),
         document_paths_after_move,
         resolution_mode,
-        preferred_style,
+        existing_link_style(link).unwrap_or(preferred_style),
     )
+}
+
+/// The style `link` is written in. A rewrite keeps it: the configured
+/// preference only applies to links Vulcan writes new, so a moved target
+/// never turns a wikilink that a plugin expects (such as a `TaskNotes`
+/// `blockedBy` entry) into a Markdown link, or the other way round.
+fn existing_link_style(link: &RawLink) -> Option<LinkStylePreference> {
+    let text = link.raw_text.strip_prefix('!').unwrap_or(&link.raw_text);
+    if text.starts_with("[[") {
+        Some(LinkStylePreference::Wikilink)
+    } else if text.starts_with('[') {
+        Some(LinkStylePreference::Markdown)
+    } else {
+        None
+    }
 }
 
 /// `link` rewritten in the other style: a wikilink as a Markdown link and a
@@ -1376,8 +1391,8 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_link_uses_configured_style_for_plain_note_links() {
-        let link = RawLink {
+    fn rewrite_link_keeps_the_existing_style_over_the_configured_one() {
+        let wikilink = RawLink {
             raw_text: "[[Projects/Alpha]]".to_string(),
             link_kind: crate::LinkKind::Wikilink,
             display_text: None,
@@ -1388,29 +1403,30 @@ mod tests {
             byte_offset: 0,
             is_note_embed: false,
         };
-
-        assert_eq!(
+        let markdown = RawLink {
+            raw_text: "[Alpha](../Projects/Alpha.md)".to_string(),
+            link_kind: crate::LinkKind::Markdown,
+            target_path_candidate: Some("../Projects/Alpha.md".to_string()),
+            ..wikilink.clone()
+        };
+        let documents = ["Archive/Alpha.md".to_string(), "People/Bob.md".to_string()];
+        let rewrite = |link: &RawLink, preferred| {
             rewrite_link(
-                &link,
+                link,
                 "People/Bob.md",
                 "Archive/Alpha.md",
-                &["Archive/Alpha.md".to_string(), "People/Bob.md".to_string()],
+                &documents,
                 LinkResolutionMode::Relative,
-                LinkStylePreference::Markdown,
-            ),
-            "[Alpha](../Archive/Alpha.md)"
-        );
-        assert_eq!(
-            rewrite_link(
-                &link,
-                "People/Bob.md",
-                "Archive/Alpha.md",
-                &["Archive/Alpha.md".to_string(), "People/Bob.md".to_string()],
-                LinkResolutionMode::Relative,
-                LinkStylePreference::Wikilink,
-            ),
-            "[[../Archive/Alpha]]"
-        );
+                preferred,
+            )
+        };
+        for preferred in [LinkStylePreference::Markdown, LinkStylePreference::Wikilink] {
+            assert_eq!(rewrite(&wikilink, preferred), "[[../Archive/Alpha]]");
+            assert_eq!(
+                rewrite(&markdown, preferred),
+                "[Alpha](../Archive/Alpha.md)"
+            );
+        }
     }
 
     #[test]
@@ -1519,8 +1535,12 @@ mod tests {
         assert_eq!(updated, "[[Alpha]] and [[Beta]]");
     }
 
+    /// A move rewrites where links point, never how they are written: with
+    /// Markdown links preferred, wikilinks (including frontmatter values a
+    /// plugin such as `TaskNotes` reads) stay wikilinks and Markdown links stay
+    /// Markdown links.
     #[test]
-    fn move_rewrite_respects_vault_link_style_for_plain_links() {
+    fn move_rewrite_keeps_each_links_style() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
         std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
@@ -1544,9 +1564,15 @@ mod tests {
         let bob =
             fs::read_to_string(vault_root.join("People/Bob.md")).expect("bob should be readable");
 
-        assert!(home.contains("[Alpha](Archive/Alpha.md)"));
-        assert!(home.contains("[Alpha > Status](Archive/Alpha.md#Status)"));
+        assert!(
+            home.contains("  - \"[[Archive/Alpha]]\"\n  - \"[[Archive/Alpha#Status]]\"\n"),
+            "{home}"
+        );
+        assert!(home.contains("reference: \"[Alpha doc](Archive/Alpha.md)\""));
+        assert!(home.contains("- [[Archive/Alpha]]\n- [[Archive/Alpha#Status]]\n"));
+        assert!(home.contains("- [Alpha doc](Archive/Alpha.md)"));
         assert!(home.contains("![[Archive/Alpha]]"));
+        assert!(!home.contains("[Alpha](") && !home.contains("[Alpha > Status]("));
         assert!(bob.contains("[[../Archive/Alpha|Project Alpha]]"));
     }
 
