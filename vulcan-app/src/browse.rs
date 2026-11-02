@@ -467,6 +467,16 @@ pub fn move_note_with_profile(
         apply_managed_mdbase_note_writes, MdbaseManagedNoteWriteBatchRequest,
         MdbaseManagedNoteWriteChange, MdbaseManagedWriteMode, MdbaseWriteOperation,
     };
+    // Without an mdbase collection nothing can be routed, so skip the
+    // routing plan: the ordinary move plans (and re-reads every linking
+    // file) once instead of twice.
+    let selection = vulcan_core::resolve_permission_profile(paths, permission_profile)
+        .map_err(AppError::operation)?;
+    let guard = ProfilePermissionGuard::new(paths, selection);
+    if crate::mdbase::load_mdbase_routing_collection(paths, &guard)?.is_none() {
+        return core_move_note(paths, source_path, destination, dry_run)
+            .map_err(AppError::operation);
+    }
     let plan = vulcan_core::move_rewrite::plan_ordinary_note_move(paths, source_path, destination)
         .map_err(AppError::operation)?;
     if !plan.changes.is_empty() {
