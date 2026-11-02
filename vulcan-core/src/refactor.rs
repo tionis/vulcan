@@ -461,6 +461,15 @@ pub fn bulk_set_property_on_paths(
     })
 }
 
+/// Names the note in an I/O error, so a missing or unreadable path in a
+/// stdin batch says which path failed.
+fn io_error_for_path(path: &str, error: &std::io::Error) -> RefactorError {
+    RefactorError::Io(std::io::Error::new(
+        error.kind(),
+        format!("{path}: {error}"),
+    ))
+}
+
 /// Exact source-level property mutations for application-layer orchestration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlannedPropertyMutation {
@@ -482,7 +491,8 @@ pub fn plan_property_mutations_on_paths(
 
     for path in note_paths {
         let normalized = normalize_bulk_note_path(path)?;
-        let source = secure_read_to_string(paths.vault_root(), Path::new(&normalized))?;
+        let source = secure_read_to_string(paths.vault_root(), Path::new(&normalized))
+            .map_err(|error| io_error_for_path(&normalized, &error))?;
         let Some((edit, changes)) =
             plan_set_note_property_replacement(&source, &normalized, key, desired_value.as_ref())?
         else {
@@ -1911,6 +1921,29 @@ mod tests {
             original
         );
         assert!(!vault_root.join(".vulcan").exists());
+    }
+
+    #[test]
+    fn property_mutation_planner_names_a_missing_note() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(&vault_root).expect("vault dir");
+        fs::write(vault_root.join("Present.md"), "Body\n").expect("note");
+
+        let error = plan_property_mutations_on_paths(
+            &VaultPaths::new(&vault_root),
+            &["Present.md".to_string(), "Inbox/Missing.md".to_string()],
+            "status",
+            Some("active"),
+        )
+        .expect_err("a missing note must fail the batch");
+
+        let message = error.to_string();
+        assert!(message.starts_with("Inbox/Missing.md: "), "{message}");
+        assert!(
+            matches!(&error, RefactorError::Io(io) if io.kind() == std::io::ErrorKind::NotFound),
+            "{error:?}"
+        );
     }
 
     #[cfg(unix)]
