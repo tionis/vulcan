@@ -4107,3 +4107,55 @@ fn task_add_uses_the_tasknotes_zettel_filename_setting() {
         vulcan_core::TaskNotesFilenameFormat::Title
     );
 }
+
+/// Task metadata timestamps are written as `TaskNotes` writes them: local
+/// time with milliseconds and a numeric UTC offset, never `Z`.
+#[test]
+fn tasknote_metadata_timestamps_use_local_offsets() {
+    let timestamp = super::tasknote_metadata_timestamp();
+    let parsed = chrono::DateTime::parse_from_rfc3339(&timestamp).unwrap();
+    let (date_time, offset) = timestamp.split_at(timestamp.len() - 6);
+    assert!(
+        date_time.len() == 23 && date_time.as_bytes()[19] == b'.',
+        "{timestamp}"
+    );
+    assert!(
+        offset.starts_with(['+', '-']) && offset.as_bytes()[3] == b':',
+        "{timestamp}"
+    );
+    assert_eq!(
+        parsed.offset().local_minus_utc(),
+        chrono::Local::now().offset().local_minus_utc()
+    );
+
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    let report = apply_task_add(
+        &paths,
+        &TaskAddRequest {
+            text: "stamped".into(),
+            no_nlp: true,
+            status: None,
+            priority: None,
+            due: None,
+            scheduled: None,
+            contexts: vec![],
+            projects: vec![],
+            tags: vec![],
+            template: None,
+            dry_run: false,
+        },
+    )
+    .unwrap();
+    let source = fs::read_to_string(temp.path().join(&report.path)).unwrap();
+    for key in ["dateCreated: ", "dateModified: "] {
+        let value = source
+            .lines()
+            .find_map(|line| line.strip_prefix(key))
+            .unwrap_or_else(|| panic!("{key} in {source}"))
+            .trim_matches(['"', '\'']);
+        assert!(!value.ends_with('Z'), "{value}");
+        chrono::DateTime::parse_from_rfc3339(value).unwrap();
+    }
+}

@@ -282,7 +282,7 @@ pub fn apply_task_set_with_guard(
             if let Some(change) = set_tasknote_frontmatter_value(
                 frontmatter,
                 modified_key,
-                Some(YamlValue::String(current_utc_timestamp_string())),
+                Some(YamlValue::String(tasknote_metadata_timestamp())),
             ) {
                 changes.push(change);
             }
@@ -331,7 +331,7 @@ pub fn apply_task_reschedule_with_guard(
                 if let Some(change) = set_tasknote_frontmatter_value(
                     frontmatter,
                     modified_key,
-                    Some(YamlValue::String(current_utc_timestamp_string())),
+                    Some(YamlValue::String(tasknote_metadata_timestamp())),
                 ) {
                     changes.push(change);
                 }
@@ -450,7 +450,7 @@ pub fn apply_task_complete_with_guard(
                 if let Some(change) = set_tasknote_frontmatter_value(
                     frontmatter,
                     modified_key,
-                    Some(YamlValue::String(current_utc_timestamp_string())),
+                    Some(YamlValue::String(tasknote_metadata_timestamp())),
                 ) {
                     changes.push(change);
                 }
@@ -770,7 +770,7 @@ pub fn apply_task_add_with_guard(
         )));
     }
 
-    let timestamp = current_utc_timestamp_string();
+    let timestamp = tasknote_metadata_timestamp();
     let mapping = &config.tasknotes.field_mapping;
     let mut frontmatter = YamlMapping::new();
     frontmatter.insert(
@@ -1284,7 +1284,7 @@ pub fn apply_task_track_start_with_guard(
             if let Some(change) = set_tasknote_frontmatter_value(
                 frontmatter,
                 &loaded.config.tasknotes.field_mapping.date_modified,
-                Some(YamlValue::String(current_utc_timestamp_string())),
+                Some(YamlValue::String(tasknote_metadata_timestamp())),
             ) {
                 changes.push(change);
             }
@@ -1394,7 +1394,7 @@ pub fn apply_task_track_stop_with_guard(
             if let Some(change) = set_tasknote_frontmatter_value(
                 frontmatter,
                 &loaded.config.tasknotes.field_mapping.date_modified,
-                Some(YamlValue::String(current_utc_timestamp_string())),
+                Some(YamlValue::String(tasknote_metadata_timestamp())),
             ) {
                 changes.push(change);
             }
@@ -3863,7 +3863,7 @@ pub fn apply_task_pomodoro_start_with_guard(
                 if let Some(change) = set_tasknote_frontmatter_value(
                     frontmatter,
                     &loaded.config.tasknotes.field_mapping.date_modified,
-                    Some(YamlValue::String(current_utc_timestamp_string())),
+                    Some(YamlValue::String(tasknote_metadata_timestamp())),
                 ) {
                     changes.push(change);
                 }
@@ -3997,7 +3997,7 @@ pub fn apply_task_pomodoro_stop_with_guard(
                 if let Some(change) = set_tasknote_frontmatter_value(
                     frontmatter,
                     &loaded.config.tasknotes.field_mapping.date_modified,
-                    Some(YamlValue::String(current_utc_timestamp_string())),
+                    Some(YamlValue::String(tasknote_metadata_timestamp())),
                 ) {
                     changes.push(change);
                 }
@@ -4592,7 +4592,7 @@ fn prepare_existing_note_tasknote_frontmatter(
         .and_then(yaml_string)
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(current_utc_timestamp_string);
+        .unwrap_or_else(tasknote_metadata_timestamp);
     if let Some(change) = set_tasknote_frontmatter_value(
         frontmatter,
         &mapping.date_created,
@@ -4604,7 +4604,7 @@ fn prepare_existing_note_tasknote_frontmatter(
     if let Some(change) = set_tasknote_frontmatter_value(
         frontmatter,
         &mapping.date_modified,
-        Some(YamlValue::String(current_utc_timestamp_string())),
+        Some(YamlValue::String(tasknote_metadata_timestamp())),
     ) {
         changes.push(change);
     }
@@ -4965,7 +4965,7 @@ fn build_converted_tasknote(
     }
 
     let mapping = &config.tasknotes.field_mapping;
-    let timestamp = current_utc_timestamp_string();
+    let timestamp = tasknote_metadata_timestamp();
     let mut frontmatter = YamlMapping::new();
     let mut task_changes = Vec::new();
     for (key, value) in [
@@ -6317,7 +6317,7 @@ fn process_due_task_pomodoros(
                     if let Some(change) = set_tasknote_frontmatter_value(
                         frontmatter,
                         &loaded.config.tasknotes.field_mapping.date_modified,
-                        Some(YamlValue::String(current_utc_timestamp_string())),
+                        Some(YamlValue::String(tasknote_metadata_timestamp())),
                     ) {
                         changes.push(change);
                     }
@@ -6995,6 +6995,10 @@ fn base36(mut value: u32) -> String {
 
 /// A `dateCreated`/`dateModified` value as `TaskNotes` writes it: local time
 /// with milliseconds and the UTC offset (`2026-11-02T15:16:33.812+01:00`).
+fn tasknote_metadata_timestamp() -> String {
+    chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, false)
+}
+
 fn current_utc_timestamp_string() -> String {
     TemplateTimestamp::current().default_strings().datetime
 }
@@ -7115,7 +7119,7 @@ fn prepare_tasknote_archive_plan(
     if let Some(change) = set_tasknote_frontmatter_value(
         frontmatter,
         modified_key,
-        Some(YamlValue::String(current_utc_timestamp_string())),
+        Some(YamlValue::String(tasknote_metadata_timestamp())),
     ) {
         changes.push(change);
     }
