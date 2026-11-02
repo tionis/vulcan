@@ -219,17 +219,26 @@ pub(super) fn analyze_scope(
             .iter()
             .map(|change| change.path.as_str())
             .collect::<BTreeSet<_>>();
-        let cached = preview
-            .accepted_revisions
-            .iter()
-            .filter(|(path, _)| !changed_paths.contains(path.as_str()))
-            .map(|(path, revision)| (path.clone(), revision.clone()))
-            .collect::<BTreeMap<_, _>>();
+        // Paths whose cached derivation is missing or stale are read from
+        // source like the uncached path does, so one miss costs one record
+        // instead of the whole collection.
+        let mut cached = BTreeMap::new();
+        let mut sources = changed.clone();
+        for (path, revision) in &preview.accepted_revisions {
+            if changed_paths.contains(path.as_str()) {
+                continue;
+            }
+            if local.covers(path, revision) {
+                cached.insert(path.clone(), revision.clone());
+            } else if let Some(source) = accepted_unchanged_source(loaded, path, revision, scope)? {
+                sources.insert(path.clone(), source);
+            }
+        }
         if let Some(set) = analyze_mdbase_record_set_with_cached(
             &loaded.collection,
             &loaded.types,
             local,
-            &changed,
+            &sources,
             &cached,
             clock,
         ) {
@@ -247,6 +256,27 @@ pub(super) fn analyze_scope(
         &sources,
         clock,
     ))
+}
+
+/// The source of an unchanged accepted record, read from disk and checked
+/// against its accepted revision. A mismatch skips the record in the
+/// `Before` scope (it cannot have pre-existing diagnostics to excuse) and is
+/// a stale snapshot in the `After` scope, matching [`accepted_sources`] and
+/// [`proposed_sources`].
+fn accepted_unchanged_source(
+    loaded: &LoadedCollection,
+    path: &str,
+    revision: &str,
+    scope: Scope,
+) -> Result<Option<String>, AppError> {
+    let source = secure_read_to_string(&loaded.collection.root, Path::new(path))
+        .ok()
+        .filter(|source| mdbase_content_revision(source) == revision);
+    match (source, scope) {
+        (Some(source), _) => Ok(Some(source)),
+        (None, Scope::Before) => Ok(None),
+        (None, _) => Err(snapshot_changed(path)),
+    }
 }
 
 /// Accepted record sources as captured, skipping any that no longer match:
@@ -402,6 +432,96 @@ mod tests {
             fs::rename(&hidden, cache).unwrap();
             assert_eq!(with, without, "{changes:?}");
         }
+    }
+
+    fn cached_rows(paths: &VaultPaths) -> i64 {
+        rusqlite::Connection::open(paths.cache_db())
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM mdbase_record_cache WHERE local_record_json IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    fn drop_cached_rows(paths: &VaultPaths, keep: &str) {
+        rusqlite::Connection::open(paths.cache_db())
+            .unwrap()
+            .execute("DELETE FROM mdbase_record_cache WHERE path <> ?1", [keep])
+            .unwrap();
+    }
+
+    /// A cache that misses some records must validate exactly like the
+    /// uncached path: hits come from the cache, misses from their sources.
+    #[test]
+    fn partially_cached_validation_equals_source_validation() {
+        let (dir, paths) = fixture(
+            "  unique: [{field: id, scope: collection}]\n  links:\n    parent: {target_type: task, validate_exists: true}\n",
+        );
+        for (name, id) in [("a.md", "one"), ("b.md", "two"), ("c.md", "two")] {
+            fs::write(dir.path().join(name), source(id)).unwrap();
+        }
+        fs::write(
+            dir.path().join("d.md"),
+            "---\ntype: task\nid: four\nparent: '[[b]]'\n---\nBody\n",
+        )
+        .unwrap();
+        vulcan_core::initialize_vulcan_dir(&paths).unwrap();
+        build_mdbase_query_report(&paths, &serde_json::json!({}), None).unwrap();
+        let clock = vulcan_core::mdbase::MdbaseCelClock::new(now(), "UTC").unwrap();
+        let scenarios = [
+            vec![("a.md", Some(source("five")))],
+            vec![("a.md", Some(source("two")))],
+            vec![("b.md", None)],
+            vec![("f.md", Some(source("six")))],
+        ];
+        let mut compared = 0;
+        for changes in scenarios {
+            // Rejected writes have no plan to compare.
+            let Ok(plan) = plan_mdbase_write(&paths, &request(&changes), now()) else {
+                continue;
+            };
+            compared += 1;
+            let mut loaded = load_collection_authorized(&paths, None).unwrap();
+            let full = |loaded: &LoadedCollection, scope| {
+                let mut diagnostics = analyze_scope(loaded, &plan.preview, &clock, scope)
+                    .unwrap()
+                    .records
+                    .into_iter()
+                    .flat_map(|record| record.diagnostics)
+                    .collect::<Vec<_>>();
+                diagnostics.sort_by_key(diagnostic_key);
+                diagnostics
+            };
+            let from_source = (full(&loaded, Scope::Before), full(&loaded, Scope::After));
+            drop_cached_rows(&paths, "c.md");
+            loaded.load_cached_local(&paths);
+            assert!(loaded.cached_local.is_some(), "{changes:?}");
+            let partial = (full(&loaded, Scope::Before), full(&loaded, Scope::After));
+            assert_eq!(partial, from_source, "{changes:?}");
+            build_mdbase_query_report(&paths, &serde_json::json!({}), None).unwrap();
+        }
+        // Duplicating `two` and deleting the link target `b.md` are rejected.
+        assert_eq!(compared, 2);
+    }
+
+    /// Planning a collection-wide write refreshes the record cache, so the
+    /// next write takes unchanged records from it instead of their sources.
+    #[test]
+    fn collection_wide_planning_refills_the_record_cache() {
+        let (dir, paths) = fixture("  unique: [{field: id, scope: collection}]\n");
+        for (name, id) in [("a.md", "one"), ("b.md", "two"), ("c.md", "three")] {
+            fs::write(dir.path().join(name), source(id)).unwrap();
+        }
+        vulcan_core::initialize_vulcan_dir(&paths).unwrap();
+        build_mdbase_query_report(&paths, &serde_json::json!({}), None).unwrap();
+        let full = cached_rows(&paths);
+        assert_eq!(full, 3);
+        drop_cached_rows(&paths, "a.md");
+        assert_eq!(cached_rows(&paths), 1);
+        plan_mdbase_write(&paths, &request(&[("a.md", Some(source("four")))]), now()).unwrap();
+        assert_eq!(cached_rows(&paths), full);
     }
 
     #[test]

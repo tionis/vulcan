@@ -368,6 +368,21 @@ impl LoadedCollection {
     }
 
     /// Load cached local derivations valid under the current registries.
+    /// Refresh the record cache, then load fingerprint-proven revisions and
+    /// cached local derivations for a collection-wide validation scope. The
+    /// refresh re-derives only records whose files changed; every record left
+    /// uncached would be read and analyzed again on every write.
+    fn load_validation_caches(&mut self, paths: &VaultPaths, filter: &PermissionFilter) {
+        refresh_query_cache(
+            paths,
+            self,
+            Some(filter),
+            &mut MdbaseQueryMetrics::default(),
+        );
+        self.load_known_revisions(paths);
+        self.load_cached_local(paths);
+    }
+
     fn load_cached_local(&mut self, paths: &VaultPaths) {
         self.cached_local = indexed_query_allowed(self.control_filter.as_ref())
             .then(|| open_query_cache(paths))
@@ -1108,8 +1123,7 @@ fn plan_mdbase_write_in_mode(
     // Only a collection-wide validation scope reads unchanged records; the
     // cache then spares re-reading and re-parsing them.
     if !preview_request.relevant_record_namespaces.is_empty() {
-        loaded.load_known_revisions(paths);
-        loaded.load_cached_local(paths);
+        loaded.load_validation_caches(paths, &filter);
     }
     let preview = loaded.capture_preview(preview_request.clone())?;
     write_validation::check_snapshot_stability(&initial, &preview)?;

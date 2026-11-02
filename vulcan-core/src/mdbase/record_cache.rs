@@ -2088,6 +2088,15 @@ impl MdbaseCachedLocalRecords {
     pub fn controls(&self) -> &MdbaseControlRevisions {
         &self.controls
     }
+
+    /// Whether a derivation of `path` at exactly `revision` is cached, so
+    /// [`analyze_mdbase_record_set_with_cached`] can take it from the cache.
+    #[must_use]
+    pub fn covers(&self, path: &str, revision: &str) -> bool {
+        self.records
+            .get(path)
+            .is_some_and(|snapshot| snapshot.record.revision == revision)
+    }
 }
 
 /// Load every cached local derivation valid under the current controls, or
