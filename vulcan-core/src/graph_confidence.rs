@@ -30,6 +30,15 @@ const FOLD_SQL: &str = "
     JOIN documents AS source ON source.id = links.source_document_id
     JOIN documents AS target ON target.id = links.resolved_target_id
     WHERE source.extension = 'md' AND target.extension = 'md'";
+/// [`FOLD_SQL`] restricted to the JSON array of source ids bound to `?1`.
+const FOLD_LISTED_SQL: &str = "
+    SELECT links.source_document_id, links.resolved_target_id,
+           links.confidence, links.confidence_score
+    FROM json_each(?1) AS listed
+    CROSS JOIN links ON links.source_document_id = listed.value
+    JOIN documents AS source ON source.id = links.source_document_id
+    JOIN documents AS target ON target.id = links.resolved_target_id
+    WHERE source.extension = 'md' AND target.extension = 'md'";
 const FOLD_ORDER: &str =
     " ORDER BY links.source_document_id, links.resolved_target_id, links.byte_offset";
 
@@ -82,10 +91,12 @@ fn fold_sources(
     sources: Option<&[String]>,
 ) -> Result<HashMap<String, GraphConfidenceBreakdown>, rusqlite::Error> {
     let (sql, ids) = match sources {
+        // Drive the join from the listed sources. With an `IN` filter SQLite
+        // scans every Markdown target and probes the list for each, so a
+        // scan that changed many notes took tens of seconds; `CROSS JOIN`
+        // pins the listed sources as the outer loop.
         Some(sources) => (
-            format!(
-                "{FOLD_SQL} AND links.source_document_id IN (SELECT value FROM json_each(?1)){FOLD_ORDER}"
-            ),
+            format!("{FOLD_LISTED_SQL}{FOLD_ORDER}"),
             Some(serde_json::to_string(sources).expect("ids serialize")),
         ),
         None => (format!("{FOLD_SQL}{FOLD_ORDER}"), None),
@@ -372,5 +383,42 @@ mod tests {
             read(connection).unwrap(),
             path_ordered_reference(connection)
         );
+    }
+
+    /// Folding listed sources must start from the list: scanning every
+    /// Markdown target first costs (targets x listed) and took 42 s for 1,000
+    /// changed notes in a 10,000-note vault.
+    #[test]
+    fn listed_sources_drive_the_fold() {
+        let temp = TempDir::new().unwrap();
+        let paths = VaultPaths::new(temp.path());
+        fs::create_dir_all(paths.vulcan_dir()).unwrap();
+        fs::write(temp.path().join("A.md"), "[[B]]\n").unwrap();
+        fs::write(temp.path().join("B.md"), "[[A]]\n").unwrap();
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        let database = CacheDatabase::open(&paths).unwrap();
+        let connection = database.connection();
+        connection.execute_batch("ANALYZE").unwrap();
+        let mut statement = connection
+            .prepare(&format!("EXPLAIN QUERY PLAN {FOLD_LISTED_SQL}{FOLD_ORDER}"))
+            .unwrap();
+        let plan = statement
+            .query_map(["[]"], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            plan.first().is_some_and(|step| step.contains("listed")),
+            "{plan:?}"
+        );
+        let ids = connection
+            .prepare("SELECT id FROM documents ORDER BY path")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let folded = fold_sources(connection, Some(&ids)).unwrap();
+        assert_eq!(folded, fold_sources(connection, None).unwrap());
     }
 }
