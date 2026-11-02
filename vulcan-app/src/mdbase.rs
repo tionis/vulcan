@@ -2489,7 +2489,19 @@ mod tests {
         .expect("canonical write committed");
 
         let error = build_mdbase_status_report(&paths, None).unwrap_err();
-        assert!(error.to_string().contains("recovery is required"));
+        let message = error.to_string();
+        // The error names the transaction, the affected file, and the commands
+        // that resolve it, so nobody has to discover them one by one.
+        assert!(message.contains("cannot be read until interrupted write transaction"));
+        assert!(message.contains("`tasks/public.md`"), "{message}");
+        assert!(message.contains("`vulcan repair mdbase-write recover`"));
+        let id = message
+            .split("interrupted write transaction ")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .expect("transaction id");
+        assert!(!id.is_empty());
+        assert!(message.contains(&format!("accept-current {id} --review-token")));
     }
 
     #[test]

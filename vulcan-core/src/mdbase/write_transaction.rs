@@ -494,10 +494,45 @@ pub fn acquire_mdbase_consistent_read(
             };
             Err(MdbaseWriteTransactionError::new(
                 code,
-                "mdbase transaction recovery is required before records can be read; run `vulcan repair mdbase-write status`",
+                recovery_required_message(journal.as_ref()),
             ))
         }
     }
+}
+
+/// Name the interrupted transaction, the files it touches, and the commands
+/// that resolve it, so a user does not have to discover them one by one.
+fn recovery_required_message(journal: Option<&WriteJournal>) -> String {
+    const SHOWN: usize = 5;
+    let Some(journal) = journal else {
+        return "mdbase transaction recovery is required before records can be read; run `vulcan repair mdbase-write status`".to_string();
+    };
+    let paths = journal
+        .preview
+        .changes
+        .iter()
+        .map(|change| change.path.as_str())
+        .collect::<Vec<_>>();
+    let mut affected = paths
+        .iter()
+        .take(SHOWN)
+        .map(|path| format!("`{path}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if paths.len() > SHOWN {
+        let _ = std::fmt::Write::write_fmt(
+            &mut affected,
+            format_args!(" and {} more", paths.len() - SHOWN),
+        );
+    }
+    let id = &journal.transaction_id;
+    format!(
+        "mdbase records cannot be read until interrupted write transaction {id} is resolved \
+         (affected: {affected}). Run `vulcan repair mdbase-write recover` to finish or roll it \
+         back. If `vulcan repair mdbase-write status` reports it as not recoverable (an affected \
+         file changed since), review those files and run `vulcan repair mdbase-write \
+         accept-current {id} --review-token <token from status> --confirm` to keep them as they are"
+    )
 }
 
 /// Lock-free admission for readers that prove every result against the

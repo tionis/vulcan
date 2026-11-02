@@ -56,7 +56,8 @@ the collection keep their normal Vulcan behavior; use the other skills for them.
   contract file. Ask for an authorized profile; do not widen permissions yourself.
 - Records you cannot read behave as if they do not exist (`view_not_found`, `context_not_found`,
   absent from results and diagnostics). Do not try to infer them from failures.
-- An interrupted write blocks further writes until resolved: run
+- An interrupted write blocks every read and write of the collection until resolved, even for
+  unrelated records; the error names the transaction and its affected files. Run
   `vulcan repair mdbase-write status`, then `recover`, and use `accept-current` only when the user
   confirms the on-disk state is right.
 - CEL is not Dataview or the native query DSL; do not mix their syntax. Integral numbers are CEL
