@@ -4865,6 +4865,43 @@ fn command_allows_template_prompts(command: &Command) -> bool {
     )
 }
 
+/// Finish an interrupted mdbase write under the caller's profile before the
+/// command runs. A failure is not reported here: the command then meets the
+/// pending transaction and reports it with the repair commands. `repair`
+/// commands skip this so they can inspect the transaction as found.
+fn recover_interrupted_mdbase_write_before_command(cli: &Cli, paths: &VaultPaths) {
+    let quiet = cli.verbosity() == Verbosity::Quiet;
+    if !quiet {
+        // Ids only: the files are shown by `repair mdbase-write status` to a
+        // profile allowed to see them.
+        for id in vulcan_core::mdbase::mdbase_write_blocked_transactions(paths) {
+            eprintln!(
+                "warning: mdbase write {id} is blocked: a file it touched changed since; \
+                 its files stay as they are until reviewed with `vulcan repair mdbase-write status`"
+            );
+        }
+    }
+    let Ok(Some(report)) =
+        vulcan_app::mdbase::recover_interrupted_mdbase_write(paths, cli.permissions.as_deref())
+    else {
+        return;
+    };
+    if quiet {
+        return;
+    }
+    if let Some(review) = report.review {
+        let action = if report.outcome.is_some() {
+            "completed"
+        } else {
+            "rolled back"
+        };
+        eprintln!(
+            "Recovered interrupted mdbase write {} ({action}).",
+            review.transaction_id
+        );
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn dispatch(cli: &Cli) -> Result<(), CliError> {
     let vault_discovery = cli.vault_discovery()?;
@@ -4973,6 +5010,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
     // configuration defines or widens before any command resolves it by name.
     // An unknown name is left to the command, which reports it as before.
     check_selected_permissions(cli, &paths)?;
+    if !matches!(cli.command, Command::Repair { .. }) {
+        recover_interrupted_mdbase_write_before_command(cli, &paths);
+    }
     let list_controls = ListOutputControls::from_cli(cli);
     let stdout_is_tty = io::stdout().is_terminal();
     let stderr_is_tty = io::stderr().is_terminal();

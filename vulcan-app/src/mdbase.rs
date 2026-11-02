@@ -12,8 +12,9 @@ pub use feature_gates::{
     SAVED_VIEWS_FEATURE, WRITABLE_VIEW_SOURCES_GATE,
 };
 pub use write_repair::{
-    accept_current_mdbase_write, build_mdbase_write_repair_status, recover_mdbase_write,
-    MdbaseWriteAcceptCurrentReport, MdbaseWriteRecoveryReport, MdbaseWriteRepairStatus,
+    accept_current_mdbase_write, build_mdbase_write_repair_status,
+    recover_interrupted_mdbase_write, recover_mdbase_write, MdbaseWriteAcceptCurrentReport,
+    MdbaseWriteRecoveryReport, MdbaseWriteRepairStatus,
 };
 mod bases_views;
 mod change_feed;
@@ -2490,10 +2491,11 @@ mod tests {
 
         let error = build_mdbase_status_report(&paths, None).unwrap_err();
         let message = error.to_string();
-        // The error names the transaction, the affected file, and the commands
-        // that resolve it, so nobody has to discover them one by one.
+        // The error names the transaction and the commands that resolve it.
+        // The affected file is left to `repair mdbase-write status`, which
+        // shows it only to a profile allowed to read and write it.
         assert!(message.contains("cannot be read until interrupted write transaction"));
-        assert!(message.contains("`tasks/public.md`"), "{message}");
+        assert!(!message.contains("tasks/public.md"), "{message}");
         assert!(message.contains("`vulcan repair mdbase-write recover`"));
         let id = message
             .split("interrupted write transaction ")

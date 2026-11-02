@@ -134,8 +134,12 @@ Collection records are written through one validated pipeline: `note set`, `note
 `note append`, `note create`, property `update`/`unset`, moves and renames, scripts, and
 `view-source` all plan the complete change, check permissions and uniqueness across everything they
 affect, apply lifecycle policies, journal the batch, and replace files atomically. A failure leaves
-no partial write. `vulcan repair mdbase-write status|recover|accept-current` inspects and resolves
-an interrupted write.
+no partial write. The next CLI command finishes or rolls back an interrupted write on its own when
+its permission profile can read and write every file the write touched; `repair` commands do not,
+so they show the transaction as found. `vulcan repair mdbase-write status|recover|accept-current`
+inspects and resolves one that needs a decision (a touched file changed since) or a broader profile.
+A write that needs a decision blocks only its own files while it waits, unless it touched
+`mdbase.yaml`, a type, or a contract; every command warns about it until it is resolved.
 
 ## Permissions
 

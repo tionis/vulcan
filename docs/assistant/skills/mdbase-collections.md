@@ -56,10 +56,15 @@ the collection keep their normal Vulcan behavior; use the other skills for them.
   contract file. Ask for an authorized profile; do not widen permissions yourself.
 - Records you cannot read behave as if they do not exist (`view_not_found`, `context_not_found`,
   absent from results and diagnostics). Do not try to infer them from failures.
-- An interrupted write blocks every read and write of the collection until resolved, even for
-  unrelated records; the error names the transaction and its affected files. Run
-  `vulcan repair mdbase-write status`, then `recover`, and use `accept-current` only when the user
-  confirms the on-disk state is right.
+- An interrupted write is finished or rolled back automatically by the next CLI command whose
+  profile can read and write every file it touched (a stderr note names the transaction). Until
+  then it blocks reads and writes of the collection, and the error names the transaction. Do not
+  widen permissions to clear it.
+- A write is *blocked* when a file it touched changed since. A blocked write over records only
+  holds just its own files: other records read and write normally, writes to its files fail with
+  `recovery_blocked`, and every command warns about it. One that touched `mdbase.yaml`, types, or
+  contracts still blocks the whole collection. Run `vulcan repair mdbase-write status` to see the
+  files, and use `accept-current` only when the user confirms the on-disk state is right.
 - CEL is not Dataview or the native query DSL; do not mix their syntax. Integral numbers are CEL
   `int`, strings use double or single quotes, and `&&`/`||` combine conditions.
 

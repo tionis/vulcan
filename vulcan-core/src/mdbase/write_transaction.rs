@@ -321,8 +321,12 @@ pub fn inspect_mdbase_write_transaction(
     paths: &VaultPaths,
     collection: &super::MdbaseCollection,
 ) -> Result<Option<MdbaseWriteReview>, MdbaseWriteTransactionError> {
-    let Some(journal) = load_journal(paths)? else {
-        return Ok(None);
+    let journal = match load_journal(paths)? {
+        Some(journal) => journal,
+        None => match load_parked_journals(paths)?.into_iter().next() {
+            Some(journal) => journal,
+            None => return Ok(None),
+        },
     };
     ensure_collection_identity(collection, &journal.preview.collection_root)?;
     review_journal(collection, &journal).map(Some)
@@ -395,9 +399,25 @@ pub fn accept_current_mdbase_write_transaction(
     let _lock = acquire_write_lock(paths).map_err(|error| {
         MdbaseWriteTransactionError::io("failed to acquire vault write lock", error)
     })?;
-    let journal = load_journal(paths)?.ok_or_else(|| {
-        MdbaseWriteTransactionError::new("not_found", "mdbase write journal is no longer pending")
-    })?;
+    let parked = parked_journal_path(paths, transaction_id);
+    let (journal, is_parked) = match load_journal(paths)? {
+        Some(journal) if journal.transaction_id == transaction_id => (journal, false),
+        _ if Ulid::from_string(transaction_id).is_ok() => (
+            load_journal_at(&parked)?.ok_or_else(|| {
+                MdbaseWriteTransactionError::new(
+                    "not_found",
+                    "mdbase write journal is no longer pending",
+                )
+            })?,
+            true,
+        ),
+        _ => {
+            return Err(MdbaseWriteTransactionError::new(
+                "not_found",
+                "mdbase write journal is no longer pending",
+            ))
+        }
+    };
     ensure_collection_identity(collection, &journal.preview.collection_root)?;
     let review = review_journal(collection, &journal)?;
     if review.transaction_id != transaction_id || review.review_token != review_token {
@@ -429,7 +449,12 @@ pub fn accept_current_mdbase_write_transaction(
             },
         )?;
         durable_json_replace(&retired, &journal)?;
-        clear_transaction(paths, &journal.transaction_id)?;
+        if is_parked {
+            durable_remove(&parked)?;
+            clear_stage(paths, &journal.transaction_id)?;
+        } else {
+            clear_transaction(paths, &journal.transaction_id)?;
+        }
         retired_journal = Some(retired.display().to_string());
     }
     Ok(MdbaseWriteAcceptCurrentOutcome {
@@ -484,10 +509,23 @@ pub fn acquire_mdbase_consistent_read(
         }
         Ok(_) => {
             let journal = load_journal(paths)?;
-            let code = if journal
+            let blocked = journal
                 .as_ref()
-                .is_some_and(|journal| journal.phase == JournalPhase::Blocked)
+                .is_some_and(|journal| journal.phase == JournalPhase::Blocked);
+            // A blocked transaction over records only leaves the rest of the
+            // collection readable; its own files read as they are on disk
+            // until a person resolves it. Controls stay blocking.
+            if blocked
+                && journal.as_ref().is_some_and(|journal| {
+                    matches!(
+                        super::load_mdbase_collection(paths.vault_root()),
+                        Ok(Some(collection)) if !journal_touches_controls(&collection, journal)
+                    )
+                })
             {
+                return Ok(Some(MdbaseConsistentReadGuard { _lock: lock }));
+            }
+            let code = if blocked {
                 "recovery_blocked"
             } else {
                 "recovery_required"
@@ -500,38 +538,52 @@ pub fn acquire_mdbase_consistent_read(
     }
 }
 
-/// Name the interrupted transaction, the files it touches, and the commands
-/// that resolve it, so a user does not have to discover them one by one.
+/// Whether an interrupted write transaction is waiting that recovery can
+/// finish on its own (not blocked by files edited outside it). Reads only the
+/// journal; any error reads as `false` and is left to the caller's command.
+#[must_use]
+pub fn mdbase_write_recovery_pending(paths: &VaultPaths) -> bool {
+    match fs::symlink_metadata(journal_path(paths)) {
+        Ok(metadata) if metadata.is_file() => {}
+        _ => return false,
+    }
+    matches!(
+        load_journal(paths),
+        Ok(Some(journal)) if journal.phase != JournalPhase::Blocked
+    )
+}
+
+/// Ids of blocked transactions waiting for a person, in the active slot or
+/// set aside. Reads only journals; errors read as none.
+#[must_use]
+pub fn mdbase_write_blocked_transactions(paths: &VaultPaths) -> Vec<String> {
+    let mut ids = Vec::new();
+    if let Ok(Some(journal)) = load_journal(paths) {
+        if journal.phase == JournalPhase::Blocked {
+            ids.push(journal.transaction_id);
+        }
+    }
+    if let Ok(parked) = load_parked_journals(paths) {
+        ids.extend(parked.into_iter().map(|journal| journal.transaction_id));
+    }
+    ids
+}
+
+/// Name the interrupted transaction and the commands that resolve it. The
+/// affected paths are left to `repair mdbase-write status`, which shows them
+/// only to a profile that may read and write every one of them.
 fn recovery_required_message(journal: Option<&WriteJournal>) -> String {
-    const SHOWN: usize = 5;
     let Some(journal) = journal else {
         return "mdbase transaction recovery is required before records can be read; run `vulcan repair mdbase-write status`".to_string();
     };
-    let paths = journal
-        .preview
-        .changes
-        .iter()
-        .map(|change| change.path.as_str())
-        .collect::<Vec<_>>();
-    let mut affected = paths
-        .iter()
-        .take(SHOWN)
-        .map(|path| format!("`{path}`"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    if paths.len() > SHOWN {
-        let _ = std::fmt::Write::write_fmt(
-            &mut affected,
-            format_args!(" and {} more", paths.len() - SHOWN),
-        );
-    }
     let id = &journal.transaction_id;
     format!(
-        "mdbase records cannot be read until interrupted write transaction {id} is resolved \
-         (affected: {affected}). Run `vulcan repair mdbase-write recover` to finish or roll it \
-         back. If `vulcan repair mdbase-write status` reports it as not recoverable (an affected \
-         file changed since), review those files and run `vulcan repair mdbase-write \
-         accept-current {id} --review-token <token from status> --confirm` to keep them as they are"
+        "mdbase records cannot be read until interrupted write transaction {id} is resolved. \
+         Run `vulcan repair mdbase-write status` to see the files it touched, then \
+         `vulcan repair mdbase-write recover` to finish or roll it back. If status reports it as \
+         not recoverable (a touched file changed since), review those files and run \
+         `vulcan repair mdbase-write accept-current {id} --review-token <token from status> \
+         --confirm` to keep them as they are"
     )
 }
 
@@ -721,7 +773,9 @@ where
         MdbaseWriteTransactionError::io("failed to acquire vault write lock", error)
     })?;
     ensure_state_layout(paths)?;
+    park_blocked_journal(paths, collection)?;
     recover_locked(paths, collection, &mut reconcile)?;
+    ensure_no_parked_conflict(paths, request.preview)?;
 
     let identity = operation_identity(request)?;
     if let Some(mut receipt) = load_receipt(paths, &identity)? {
@@ -809,6 +863,114 @@ fn verify_android_directory_sync(root: &Path) -> Result<(), MdbaseWriteTransacti
                 ),
             )
         })
+}
+
+/// Blocked transactions waiting for a person, oldest first. Each keeps the
+/// journal and staged bytes it had when recovery stopped.
+fn load_parked_journals(
+    paths: &VaultPaths,
+) -> Result<Vec<WriteJournal>, MdbaseWriteTransactionError> {
+    let entries = match fs::read_dir(parked_dir(paths)) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(MdbaseWriteTransactionError::io(
+                "failed to list blocked mdbase transactions",
+                error,
+            ))
+        }
+    };
+    let mut files = entries
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            MdbaseWriteTransactionError::io("failed to list blocked mdbase transactions", error)
+        })?;
+    files.retain(|path| {
+        path.extension()
+            .is_some_and(|extension| extension == "json")
+    });
+    files.sort();
+    let mut journals = Vec::with_capacity(files.len());
+    for file in files {
+        if let Some(journal) = load_journal_at(&file)? {
+            journals.push(journal);
+        }
+    }
+    Ok(journals)
+}
+
+/// Whether a transaction touches the collection's control files. A blocked
+/// one of those keeps the whole collection blocked: types and contracts
+/// decide how every other record reads and validates.
+fn journal_touches_controls(collection: &super::MdbaseCollection, journal: &WriteJournal) -> bool {
+    let settings = &collection.config.settings;
+    let within = |path: &str, folder: &str| {
+        let folder = folder.trim_matches('/');
+        !folder.is_empty()
+            && path
+                .strip_prefix(folder)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    };
+    journal.preview.changes.iter().any(|change| {
+        let path = change.path.as_str();
+        path == "mdbase.yaml"
+            || path == super::MDBASE_LOCK_FILE_NAME
+            || within(path, &settings.types_folder)
+            || within(path, &settings.contracts_folder)
+    })
+}
+
+/// Move a blocked transaction that touches only records out of the active
+/// journal slot, so writes to other records can proceed. Writes to its
+/// paths stay refused until a person resolves it with accept-current.
+fn park_blocked_journal(
+    paths: &VaultPaths,
+    collection: &super::MdbaseCollection,
+) -> Result<(), MdbaseWriteTransactionError> {
+    let Some(journal) = load_journal(paths)? else {
+        return Ok(());
+    };
+    if journal.phase != JournalPhase::Blocked || journal_touches_controls(collection, &journal) {
+        return Ok(());
+    }
+    ensure_collection_identity(collection, &journal.preview.collection_root)?;
+    ensure_plain_directory(&parked_dir(paths))?;
+    durable_json_replace(
+        &parked_journal_path(paths, &journal.transaction_id),
+        &journal,
+    )?;
+    durable_remove(&journal_path(paths))
+}
+
+/// Refuse a write that touches a path a blocked transaction still holds.
+fn ensure_no_parked_conflict(
+    paths: &VaultPaths,
+    preview: &MdbaseWritePreview,
+) -> Result<(), MdbaseWriteTransactionError> {
+    let requested = preview
+        .changes
+        .iter()
+        .map(|change| change.path.as_str())
+        .collect::<BTreeSet<_>>();
+    for journal in load_parked_journals(paths)? {
+        if let Some(change) = journal
+            .preview
+            .changes
+            .iter()
+            .find(|change| requested.contains(change.path.as_str()))
+        {
+            let mut error =
+                MdbaseWriteTransactionError::blocked(&journal.transaction_id, &change.path);
+            error.message = format!(
+                "`{}` belongs to blocked mdbase write transaction {}, which needs review; run \
+                 `vulcan repair mdbase-write status`",
+                change.path, journal.transaction_id
+            );
+            return Err(error);
+        }
+    }
+    Ok(())
 }
 
 fn recover_locked<F>(
@@ -1652,8 +1814,11 @@ fn save_journal(
 }
 
 fn load_journal(paths: &VaultPaths) -> Result<Option<WriteJournal>, MdbaseWriteTransactionError> {
-    let path = journal_path(paths);
-    let bytes = match read_bounded(&path, MDBASE_WRITE_MAX_JOURNAL_BYTES) {
+    load_journal_at(&journal_path(paths))
+}
+
+fn load_journal_at(path: &Path) -> Result<Option<WriteJournal>, MdbaseWriteTransactionError> {
+    let bytes = match read_bounded(path, MDBASE_WRITE_MAX_JOURNAL_BYTES) {
         Ok(bytes) => bytes,
         Err(error) if error.code == "not_found" => return Ok(None),
         Err(error) => return Err(error),
@@ -1758,6 +1923,13 @@ fn clear_transaction(
     transaction_id: &str,
 ) -> Result<(), MdbaseWriteTransactionError> {
     durable_remove(&journal_path(paths))?;
+    clear_stage(paths, transaction_id)
+}
+
+fn clear_stage(
+    paths: &VaultPaths,
+    transaction_id: &str,
+) -> Result<(), MdbaseWriteTransactionError> {
     let stage = transaction_stage_dir(paths, transaction_id);
     match fs::remove_dir_all(&stage) {
         Ok(()) => sync_directory(stage.parent().expect("staging transaction has a parent")),
@@ -1902,6 +2074,15 @@ fn state_root(paths: &VaultPaths) -> PathBuf {
 
 fn journal_path(paths: &VaultPaths) -> PathBuf {
     state_root(paths).join("journal.json")
+}
+
+/// Blocked transactions moved aside so writes to other records can proceed.
+fn parked_dir(paths: &VaultPaths) -> PathBuf {
+    state_root(paths).join("blocked")
+}
+
+fn parked_journal_path(paths: &VaultPaths, transaction_id: &str) -> PathBuf {
+    parked_dir(paths).join(format!("{transaction_id}.json"))
 }
 
 fn transaction_stage_dir(paths: &VaultPaths, transaction_id: &str) -> PathBuf {
@@ -2636,6 +2817,152 @@ mod tests {
         );
     }
 
+    /// Interrupt a one-path write after it replaced the file, then edit the
+    /// file externally so recovery blocks.
+    fn blocked_write(
+        directory: &Path,
+        paths: &VaultPaths,
+        collection: &super::super::MdbaseCollection,
+        path: &str,
+    ) {
+        let preview = self::preview(
+            collection,
+            vec![MdbaseWritePreviewChangeRequest {
+                path: path.to_string(),
+                after: Some("after\n".to_string()),
+                if_revision: None,
+            }],
+        );
+        let request = MdbaseWriteApplyRequest {
+            preview: &preview,
+            verification: verification(),
+            idempotency_key: "blocked",
+        };
+        let interrupted = apply_with_boundary_hook(
+            paths,
+            collection,
+            &request,
+            |_| Ok(()),
+            |boundary| {
+                if boundary == "after_replace" {
+                    return Err(MdbaseWriteTransactionError::new(
+                        "interrupted",
+                        "fault injection",
+                    ));
+                }
+                Ok(())
+            },
+        );
+        assert!(interrupted.is_err());
+        write(directory, path, "external\n");
+        let error = recover_mdbase_write_transaction(paths, collection, |_| Ok(())).unwrap_err();
+        assert_eq!(error.code, "recovery_blocked");
+    }
+
+    fn write_one(
+        paths: &VaultPaths,
+        collection: &super::super::MdbaseCollection,
+        path: &str,
+        key: &str,
+    ) -> Result<MdbaseWriteOutcome, MdbaseWriteTransactionError> {
+        let preview = self::preview(
+            collection,
+            vec![MdbaseWritePreviewChangeRequest {
+                path: path.to_string(),
+                after: Some(format!("{key}\n")),
+                if_revision: None,
+            }],
+        );
+        apply_mdbase_write_transaction(
+            paths,
+            collection,
+            &MdbaseWriteApplyRequest {
+                preview: &preview,
+                verification: verification(),
+                idempotency_key: key,
+            },
+            |_| Ok(()),
+        )
+    }
+
+    fn review_id(paths: &VaultPaths, collection: &super::super::MdbaseCollection) -> String {
+        inspect_mdbase_write_transaction(paths, collection)
+            .unwrap()
+            .expect("review")
+            .transaction_id
+    }
+
+    #[test]
+    fn a_blocked_record_write_holds_only_its_own_paths() {
+        let (directory, paths, collection) = fixture();
+        blocked_write(directory.path(), &paths, &collection, "records/a.md");
+
+        // Another record can be written; the blocked transaction is set aside.
+        write_one(&paths, &collection, "records/b.md", "other").expect("unrelated write");
+        assert_eq!(
+            fs::read_to_string(directory.path().join("records/b.md")).unwrap(),
+            "other\n"
+        );
+        assert!(load_journal(&paths).unwrap().is_none());
+        assert!(acquire_mdbase_consistent_read(&paths).unwrap().is_some());
+
+        // Its own path stays refused, and names only that path.
+        assert_eq!(
+            mdbase_write_blocked_transactions(&paths),
+            vec![review_id(&paths, &collection)]
+        );
+        let refused = write_one(&paths, &collection, "records/a.md", "again").unwrap_err();
+        assert_eq!(refused.code, "recovery_blocked");
+        assert!(
+            refused.message.contains("records/a.md"),
+            "{}",
+            refused.message
+        );
+        assert_eq!(
+            fs::read_to_string(directory.path().join("records/a.md")).unwrap(),
+            "external\n"
+        );
+
+        // Review and accept-current find it where it was set aside.
+        let review = inspect_mdbase_write_transaction(&paths, &collection)
+            .unwrap()
+            .expect("blocked review");
+        assert_eq!(review.recovery, "blocked");
+        accept_current_mdbase_write_transaction(
+            &paths,
+            &collection,
+            &review.transaction_id,
+            &review.review_token,
+            false,
+        )
+        .expect("accept current");
+        assert!(inspect_mdbase_write_transaction(&paths, &collection)
+            .unwrap()
+            .is_none());
+        assert!(mdbase_write_blocked_transactions(&paths).is_empty());
+        write_one(&paths, &collection, "records/a.md", "resolved").expect("path released");
+    }
+
+    #[test]
+    fn a_blocked_control_write_keeps_the_collection_blocked() {
+        let (directory, paths, collection) = fixture();
+        write(directory.path(), "_types/task.md", "before type\n");
+        blocked_write(directory.path(), &paths, &collection, "_types/task.md");
+
+        assert_eq!(
+            acquire_mdbase_consistent_read(&paths).unwrap_err().code,
+            "recovery_blocked"
+        );
+        let refused = write_one(&paths, &collection, "records/b.md", "other").unwrap_err();
+        assert_eq!(refused.code, "recovery_blocked");
+        assert_eq!(
+            fs::read_to_string(directory.path().join("records/b.md")).unwrap(),
+            "before b\n"
+        );
+        let message = acquire_mdbase_consistent_read(&paths).unwrap_err().message;
+        assert!(!message.contains("_types/task.md"), "{message}");
+    }
+
     #[test]
     #[allow(clippy::too_many_lines)] // One blocked journal, then its review and retirement.
     fn recovery_preserves_external_edits_and_blocks_the_transaction() {
@@ -2669,13 +2996,14 @@ mod tests {
             },
         );
         assert!(interrupted.is_err());
+        assert!(mdbase_write_recovery_pending(&paths));
         write(directory.path(), "records/a.md", "external\n");
         let error = recover_mdbase_write_transaction(&paths, &collection, |_| Ok(())).unwrap_err();
         assert_eq!(error.code, "recovery_blocked");
-        assert_eq!(
-            acquire_mdbase_consistent_read(&paths).unwrap_err().code,
-            "recovery_blocked"
-        );
+        // A blocked transaction needs a person; automatic recovery skips it.
+        assert!(!mdbase_write_recovery_pending(&paths));
+        // It holds only a record, so the rest of the collection stays readable.
+        assert!(acquire_mdbase_consistent_read(&paths).unwrap().is_some());
         assert_eq!(
             fs::read_to_string(directory.path().join("records/a.md")).unwrap(),
             "external\n"

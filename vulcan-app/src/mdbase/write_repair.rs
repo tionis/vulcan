@@ -110,6 +110,21 @@ pub fn recover_mdbase_write(
     })
 }
 
+/// Finish an interrupted transaction before a command runs, so one crashed
+/// write does not block every later read. Runs only when recovery needs no
+/// decision, and only under `permission_profile`: a profile that cannot read
+/// and write every affected path leaves the transaction pending (the command
+/// then reports it), so no caller borrows the original writer's authority.
+pub fn recover_interrupted_mdbase_write(
+    paths: &VaultPaths,
+    permission_profile: Option<&str>,
+) -> Result<Option<MdbaseWriteRecoveryReport>, AppError> {
+    if !vulcan_core::mdbase::mdbase_write_recovery_pending(paths) {
+        return Ok(None);
+    }
+    recover_mdbase_write(paths, permission_profile, false).map(Some)
+}
+
 /// Retire a pending transaction that recovery cannot complete, keeping the
 /// current files, after a person reconciled them against `review_token`.
 pub fn accept_current_mdbase_write(
@@ -335,5 +350,39 @@ mod tests {
         assert!(fs::read_to_string(directory.path().join("tasks/public.md"))
             .unwrap()
             .contains("Recovered"));
+    }
+
+    #[test]
+    fn automatic_recovery_needs_read_and_write_authority() {
+        let (_directory, paths) = fixture();
+        vulcan_core::initialize_vulcan_dir(&paths).unwrap();
+        vulcan_core::scan_vault(&paths, vulcan_core::ScanMode::Full).unwrap();
+        assert!(recover_interrupted_mdbase_write(&paths, None)
+            .unwrap()
+            .is_none());
+
+        interrupted_update(&paths);
+        fs::write(
+            paths.config_file(),
+            "[permissions.profiles.reader]\nread = \"all\"\nwrite = \"none\"\n",
+        )
+        .unwrap();
+        // A read-only caller cannot finish another writer's transaction.
+        assert_eq!(
+            recover_interrupted_mdbase_write(&paths, Some("reader"))
+                .unwrap_err()
+                .code(),
+            Some("permission_denied")
+        );
+        assert!(vulcan_core::mdbase::mdbase_write_recovery_pending(&paths));
+
+        let report = recover_interrupted_mdbase_write(&paths, None)
+            .unwrap()
+            .expect("pending transaction recovered");
+        assert!(report.outcome.is_some());
+        assert!(!vulcan_core::mdbase::mdbase_write_recovery_pending(&paths));
+        let read = crate::mdbase::build_mdbase_read_report(&paths, "tasks/public.md", false, None)
+            .unwrap();
+        assert_eq!(read.record.frontmatter["title"], "Recovered");
     }
 }
