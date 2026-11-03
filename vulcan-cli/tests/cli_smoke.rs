@@ -1301,7 +1301,7 @@ impl HttpResponse {
 
 fn wait_for_http_server_ready(child: &mut Child, bind_addr: &str) {
     for _ in 0..100 {
-        if TcpStream::connect(bind_addr).is_ok() {
+        if TcpStream::connect(bind_addr).is_ok_and(|stream| !is_self_connected(&stream)) {
             return;
         }
         if let Some(status) = child.try_wait().expect("child status should be readable") {
@@ -1310,6 +1310,13 @@ fn wait_for_http_server_ready(child: &mut Child, bind_addr: &str) {
         thread::sleep(std::time::Duration::from_millis(20));
     }
     panic!("MCP HTTP server did not start listening at {bind_addr}");
+}
+
+/// Linux can connect a socket to itself when it dials a free local port
+/// from the ephemeral range and picks that same port as its source: the
+/// connect succeeds with nothing listening. Such a stream is not a server.
+fn is_self_connected(stream: &TcpStream) -> bool {
+    matches!((stream.local_addr(), stream.peer_addr()), (Ok(local), Ok(peer)) if local == peer)
 }
 
 fn read_http_response(mut stream: TcpStream) -> HttpResponse {
