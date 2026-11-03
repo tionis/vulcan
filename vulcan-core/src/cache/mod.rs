@@ -99,17 +99,40 @@ impl CacheDatabase {
         Ok(result)
     }
 
+    /// Clear the cache and run `rebuild` in the same transaction.
+    ///
+    /// The triggers that maintain derived state from the core tables (see
+    /// [`REBUILT_TRIGGER_TABLES`]) are suspended for the whole rebuild and
+    /// recreated before it commits: firing them for every row of a full
+    /// rebuild tripled its cost. The callback starts from an empty,
+    /// consistent cache. One that writes documents must call
+    /// [`rebuild_note_store`] once they and their properties, tags, and
+    /// aliases are written, and recompute graph confidence once links are
+    /// resolved. Checkpoint change tracking needs nothing: clearing the
+    /// cache already makes the next checkpoint a full one.
     pub fn rebuild_with<F, T, E>(&mut self, rebuild: F) -> Result<T, E>
     where
         F: FnOnce(&Transaction<'_>) -> Result<T, E>,
         E: From<CacheError>,
     {
         self.with_transaction(|transaction| {
+            let triggers = suspend_rebuilt_triggers(transaction)
+                .map_err(CacheError::from)
+                .map_err(E::from)?;
             schema::clear_cache_tables(transaction)
                 .map_err(CacheError::from)
                 .map_err(E::from)?;
+            rebuild_note_store(transaction)
+                .and_then(|()| crate::graph_confidence::recompute_all(transaction))
+                .map_err(CacheError::from)
+                .map_err(E::from)?;
             sync_runtime_metadata_tx(transaction).map_err(E::from)?;
-            rebuild(transaction)
+            let result = rebuild(transaction)?;
+            triggers
+                .restore(transaction)
+                .map_err(CacheError::from)
+                .map_err(E::from)?;
+            Ok(result)
         })
     }
 
@@ -210,6 +233,90 @@ pub(crate) fn touch_note_rows(
         statement.execute([id])?;
     }
     Ok(())
+}
+
+/// Tables whose triggers only maintain state that a full rebuild recomputes:
+/// `note_query` and its row versions, checkpoint change tracking, and graph
+/// confidence dirty marking.
+pub(crate) const REBUILT_TRIGGER_TABLES: [&str; 6] = [
+    "documents",
+    "properties",
+    "tags",
+    "aliases",
+    "links",
+    "note_query",
+];
+
+/// Triggers dropped for a rebuild, kept as their `CREATE` statements.
+#[must_use = "suspended triggers must be restored before the rebuild commits"]
+pub(crate) struct SuspendedTriggers(Vec<(String, String)>);
+
+impl SuspendedTriggers {
+    #[cfg(test)]
+    pub(crate) fn names(&self) -> Vec<&str> {
+        self.0.iter().map(|(name, _)| name.as_str()).collect()
+    }
+
+    /// Recreate the dropped triggers in the caller's transaction.
+    pub(crate) fn restore(self, transaction: &Transaction<'_>) -> rusqlite::Result<()> {
+        for (_, sql) in self.0 {
+            transaction.execute_batch(&sql)?;
+        }
+        Ok(())
+    }
+}
+
+/// Drop every trigger on [`REBUILT_TRIGGER_TABLES`] in the caller's
+/// transaction and return what recreates them.
+pub(crate) fn suspend_rebuilt_triggers(
+    transaction: &Transaction<'_>,
+) -> rusqlite::Result<SuspendedTriggers> {
+    let triggers = transaction
+        .prepare(
+            "SELECT name, sql FROM sqlite_master
+             WHERE type = 'trigger' AND tbl_name IN (SELECT value FROM json_each(?1))
+             ORDER BY name",
+        )?
+        .query_map(
+            [serde_json::to_string(&REBUILT_TRIGGER_TABLES).expect("table names serialize")],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (name, _) in &triggers {
+        transaction.execute_batch(&format!("DROP TRIGGER \"{}\"", name.replace('"', "\"\"")))?;
+    }
+    Ok(SuspendedTriggers(triggers))
+}
+
+/// Rebuild `note_query` from the normalized tables in one pass, as its
+/// triggers would have maintained it row by row. Every row gets a version
+/// above the current clock and the clock moves past all of them, so retained
+/// readers see each row, and each removed row, as changed.
+pub(crate) fn rebuild_note_store(transaction: &Transaction<'_>) -> rusqlite::Result<()> {
+    transaction.execute_batch(
+        "DELETE FROM note_query;
+         INSERT INTO note_query (
+             document_id, path, filename, extension, stat_fingerprint, revision,
+             parser_version, file_size, file_mtime, file_ctime, properties, tags, aliases,
+             row_version
+         )
+         SELECT documents.id, documents.path, documents.filename, documents.extension,
+                documents.stat_fingerprint, documents.content_hash, documents.parser_version,
+                documents.file_size, documents.file_mtime, documents.file_ctime,
+                (SELECT jsonb(canonical_json) FROM properties
+                 WHERE properties.document_id = documents.id),
+                (SELECT json_group_array(tag_text) FROM
+                    (SELECT tag_text FROM tags WHERE tags.document_id = documents.id
+                     ORDER BY tags.rowid)),
+                (SELECT json_group_array(alias_text) FROM
+                    (SELECT alias_text FROM aliases WHERE aliases.document_id = documents.id
+                     ORDER BY aliases.rowid)),
+                (SELECT version FROM note_store_clock)
+                    + row_number() OVER (ORDER BY documents.rowid)
+         FROM documents;
+         UPDATE note_store_clock
+         SET version = version + (SELECT count(*) FROM note_query) + 1;",
+    )
 }
 
 /// Advance the note store clock (schema v28) in the caller's transaction.
@@ -386,6 +493,7 @@ mod tests {
                     ],
                 )?;
 
+                rebuild_note_store(transaction).map_err(CacheError::from)?;
                 Ok::<_, CacheError>("doc-2".to_string())
             })
             .expect("rebuild should succeed");
@@ -395,6 +503,93 @@ mod tests {
         assert_eq!(
             document_paths(database.connection()),
             vec!["two.md".to_string()]
+        );
+        let note_paths: Vec<String> = database
+            .connection()
+            .prepare("SELECT path FROM note_query")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(note_paths, vec!["two.md".to_string()]);
+    }
+
+    /// A trigger added to a core table is suspended for every full rebuild,
+    /// so whatever it maintains must be rebuilt in bulk there. Review that
+    /// before extending this list.
+    #[test]
+    fn a_rebuild_suspends_only_the_reviewed_derived_state_triggers() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        crate::initialize_vulcan_dir(&paths).expect(".vulcan dir should be created");
+        let mut database = CacheDatabase::open(&paths).expect("database should open");
+        let trigger_count = |connection: &Connection| {
+            connection
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE type = 'trigger'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap()
+        };
+        let before = trigger_count(database.connection());
+
+        database
+            .with_transaction(|transaction| {
+                let suspended = suspend_rebuilt_triggers(transaction)?;
+                assert_eq!(
+                    suspended.names(),
+                    [
+                        "checkpoint_link_delete",
+                        "checkpoint_link_insert",
+                        "checkpoint_link_target_delete",
+                        "checkpoint_link_target_rename",
+                        "checkpoint_link_update",
+                        "checkpoint_orphan_link_delete",
+                        "checkpoint_orphan_link_insert",
+                        "checkpoint_orphan_link_update",
+                        "checkpoint_path_delete",
+                        "checkpoint_path_insert",
+                        "checkpoint_path_update",
+                        "checkpoint_property_delete",
+                        "checkpoint_property_insert",
+                        "checkpoint_property_update",
+                        "graph_confidence_extension_update",
+                        "graph_confidence_link_delete",
+                        "graph_confidence_link_insert",
+                        "graph_confidence_link_update",
+                        "note_query_aliases_delete",
+                        "note_query_aliases_insert",
+                        "note_query_document_delete",
+                        "note_query_document_insert",
+                        "note_query_document_update",
+                        "note_query_properties_delete",
+                        "note_query_properties_insert",
+                        "note_query_properties_update",
+                        "note_query_tags_delete",
+                        "note_query_tags_insert",
+                        "note_query_version_delete",
+                        "note_query_version_insert",
+                        "note_query_version_update",
+                    ]
+                );
+                assert_eq!(
+                    trigger_count(transaction),
+                    before - 31,
+                    "suspended triggers are dropped"
+                );
+                suspended.restore(transaction)?;
+                Ok::<_, CacheError>(())
+            })
+            .unwrap();
+        assert_eq!(trigger_count(database.connection()), before);
+
+        database.clear_all().unwrap();
+        assert_eq!(
+            trigger_count(database.connection()),
+            before,
+            "a rebuild restores every trigger it suspended"
         );
     }
 

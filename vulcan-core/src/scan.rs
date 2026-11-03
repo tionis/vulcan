@@ -479,6 +479,9 @@ where
                             },
                         );
                     }
+                    // The rebuild suspends the row triggers that maintain
+                    // `note_query`; link resolution below reads it.
+                    crate::cache::rebuild_note_store(transaction)?;
                     emit_scan_progress(
                         on_progress,
                         ScanProgress {
@@ -5321,6 +5324,47 @@ mod tests {
         scan_vault(&paths, ScanMode::Incremental).expect("incremental scan should succeed");
         assert_eq!(note_query_drift(&paths), Vec::<String>::new());
         scan_vault(&paths, ScanMode::Full).expect("rebuild should succeed");
+        assert_eq!(note_query_drift(&paths), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_full_rebuild_versions_every_note_above_the_previous_clock() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).unwrap();
+        copy_fixture_vault("dataview", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
+        let state = |paths: &VaultPaths| {
+            let database = CacheDatabase::open(paths).unwrap();
+            let connection = database.connection();
+            let scalar = |sql: &str| connection.query_row(sql, [], |row| row.get::<_, i64>(0));
+            (
+                scalar("SELECT version FROM note_store_clock").unwrap(),
+                scalar("SELECT min(row_version) FROM note_query").unwrap(),
+                scalar("SELECT max(row_version) FROM note_query").unwrap(),
+                scalar("SELECT count(DISTINCT row_version) = count(*) FROM note_query").unwrap(),
+                scalar("SELECT count(*) FROM sqlite_master WHERE type = 'trigger'").unwrap(),
+                scalar("SELECT count(*) FROM graph_confidence_dirty").unwrap(),
+            )
+        };
+        let (clock, _, _, _, triggers, _) = state(&paths);
+
+        scan_vault(&paths, ScanMode::Full).expect("rebuild should succeed");
+
+        let (rebuilt_clock, min_version, max_version, distinct, rebuilt_triggers, dirty) =
+            state(&paths);
+        assert!(min_version > clock, "{min_version} > {clock}");
+        assert!(
+            rebuilt_clock >= max_version,
+            "{rebuilt_clock} >= {max_version}"
+        );
+        assert_eq!(distinct, 1, "every row has its own version");
+        assert_eq!(
+            rebuilt_triggers, triggers,
+            "every suspended trigger is back"
+        );
+        assert_eq!(dirty, 0, "graph confidence was recomputed, not marked");
         assert_eq!(note_query_drift(&paths), Vec::<String>::new());
     }
 
