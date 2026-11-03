@@ -4,6 +4,7 @@ all-features = true
 [advisories]
 ignore = [
     { id = "RUSTSEC-2023-0071", reason = "jsonwebtoken uses rsa only for external JWT public-key verification; Vulcan performs no RSA private-key signing or decryption, and local tokens use HS256" },
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 reaches Vulcan only through jsonwebtoken's p256/p384, used solely to verify external ES256/ES384 JWTs against public JWKs; Vulcan holds no EC private keys, local tokens use HS256, and jsonwebtoken 11.1 still depends on crypto-bigint 0.5" },
 ]
 
 [licenses]

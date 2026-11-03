@@ -981,7 +981,10 @@ fn sized_image_regex() -> &'static Regex {
 
 #[cfg(test)]
 mod tests {
-    use super::complete_raw_link_text;
+    use super::{complete_raw_link_text, process_events};
+    use crate::config::VaultConfig;
+    use crate::parser::types::ParseDiagnosticKind;
+    use pulldown_cmark::Parser;
 
     #[test]
     fn completes_markdown_links_without_slicing_inside_utf8() {
@@ -991,5 +994,33 @@ mod tests {
         let raw = complete_raw_link_text(source, start, nbsp + 1);
 
         assert_eq!(raw, "[Doc](docs/\u{00a0}name.md)");
+    }
+
+    /// A parser panic mid-document keeps the batches extracted before it
+    /// and reports a diagnostic instead of aborting the scan. No known input
+    /// panics the pinned pulldown-cmark, so the event stream panics here.
+    #[test]
+    fn a_parser_panic_keeps_earlier_batches_as_a_diagnostic() {
+        // Three events per heading: the panic lands in the second batch.
+        let source = "# Heading\n\n".repeat(60);
+        let mut events = Parser::new(&source).into_offset_iter();
+        let mut remaining = super::PARSER_EVENT_BATCH_SIZE + 30;
+        let panicking = std::iter::from_fn(move || {
+            assert!(remaining > 0, "simulated parser panic");
+            remaining -= 1;
+            events.next()
+        });
+
+        let parsed = process_events(&source, &VaultConfig::default(), &[], panicking, false);
+
+        assert!(parsed.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == ParseDiagnosticKind::UnsupportedSyntax
+                && diagnostic
+                    .message
+                    .contains("partial results may be incomplete")
+                && diagnostic.message.contains("simulated parser panic")
+        }));
+        let kept = parsed.headings.len();
+        assert!(kept > 0 && kept < 60, "kept {kept} headings");
     }
 }

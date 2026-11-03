@@ -242,18 +242,6 @@ mod tests {
     }
 
     #[test]
-    fn pulldown_cmark_panics_become_diagnostics() {
-        let parsed = parse_document("+\t[.]::\r\t\t", &VaultConfig::default());
-
-        assert!(parsed.diagnostics.iter().any(|diagnostic| {
-            diagnostic.kind == ParseDiagnosticKind::UnsupportedSyntax
-                && diagnostic
-                    .message
-                    .contains("partial results may be incomplete")
-        }));
-    }
-
-    #[test]
     fn web_clipper_linked_wikilink_embeds_keep_embed_and_url() {
         // pulldown-cmark 0.13 turns these into images pointing at the URL and
         // corrupts neighbouring events when two share a line.
