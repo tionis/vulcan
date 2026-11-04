@@ -4159,3 +4159,86 @@ fn tasknote_metadata_timestamps_use_local_offsets() {
         chrono::DateTime::parse_from_rfc3339(value).unwrap();
     }
 }
+
+/// `TaskNotes` file names need not match titles (zettel and timestamp
+/// formats), and tasks are referred to by title.
+#[test]
+fn tasks_resolve_by_title_when_the_file_name_differs() {
+    let temp = tempdir().unwrap();
+    let paths = VaultPaths::new(temp.path());
+    initialize_vulcan_dir(&paths).unwrap();
+    fs::write(
+        paths.config_file(),
+        "[permissions.profiles.scoped]\nread = { allow = [\"tag:visible\"] }\nwrite = \"none\"\n\
+         [permissions.profiles.tasks]\nread = { allow = [\"folder:Tasks/**\", \"note:mdbase.yaml\"] }\nwrite = { allow = [\"folder:Tasks/**\"] }\n",
+    )
+    .unwrap();
+    let config = load_vault_config(&paths).config;
+    for (path, title, tags) in [
+        (
+            "Tasks/2611048ek.md",
+            "Weekly review",
+            vec!["task", "visible"],
+        ),
+        ("Tasks/2611049ab.md", "Twin", vec!["task", "visible"]),
+        ("Tasks/261104acd.md", "Twin", vec!["task", "visible"]),
+        ("Secret/261104xyz.md", "Hidden plan", vec!["task"]),
+    ] {
+        seed_tasknote(
+            &paths,
+            &config,
+            path,
+            title,
+            "open",
+            &[("tags", yaml_serde::to_value(tags).unwrap())],
+            "Body\n",
+        )
+        .unwrap();
+    }
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).unwrap();
+
+    for reference in ["Weekly review", "weekly REVIEW"] {
+        let report = build_task_show_report(&paths, reference).unwrap();
+        assert_eq!(report.path, "Tasks/2611048ek.md");
+    }
+    let ambiguous = build_task_show_report(&paths, "Twin").unwrap_err();
+    assert!(ambiguous.to_string().contains("ambiguous"), "{ambiguous}");
+
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("scoped")).unwrap(),
+    );
+    let report = super::build_task_show_report_with_guard(&paths, "Weekly review", &guard).unwrap();
+    assert_eq!(report.path, "Tasks/2611048ek.md");
+    // A title held only by an unreadable task reveals nothing about it.
+    let hidden =
+        super::build_task_show_report_with_guard(&paths, "Hidden plan", &guard).unwrap_err();
+    assert!(!hidden.to_string().contains("Secret"), "{hidden}");
+
+    let writer = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("tasks")).unwrap(),
+    );
+    let started = super::apply_task_track_start_with_guard(
+        &paths,
+        &TaskTrackStartRequest {
+            task: "Weekly review".to_string(),
+            description: None,
+            dry_run: true,
+        },
+        Some(&writer),
+    )
+    .unwrap();
+    assert_eq!(started.path, "Tasks/2611048ek.md");
+    let hidden = super::apply_task_track_start_with_guard(
+        &paths,
+        &TaskTrackStartRequest {
+            task: "Hidden plan".to_string(),
+            description: None,
+            dry_run: true,
+        },
+        Some(&writer),
+    )
+    .unwrap_err();
+    assert!(!hidden.to_string().contains("Secret"), "{hidden}");
+}

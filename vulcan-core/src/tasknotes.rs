@@ -1273,6 +1273,35 @@ fn number_value(value: f64) -> Value {
     serde_json::Number::from_f64(value).map_or(Value::Null, Value::Number)
 }
 
+/// Paths of the indexed `TaskNotes` tasks titled `title` (ignoring ASCII
+/// case) that `filter` lets the caller read, in path order. A task's title
+/// can differ from its file name (zettel or timestamp file names), so a
+/// reference by title does not resolve as a note reference. Empty when the
+/// cache does not exist yet.
+pub fn tasknote_paths_by_title(
+    paths: &crate::paths::VaultPaths,
+    title: &str,
+    filter: Option<&crate::permissions::PermissionFilter>,
+) -> Result<Vec<String>, rusqlite::Error> {
+    if !paths.cache_db().exists() {
+        return Ok(Vec::new());
+    }
+    let connection = rusqlite::Connection::open(paths.cache_db())?;
+    let candidates = connection
+        .prepare(
+            "SELECT documents.path FROM tasknotes_tasks
+             JOIN documents ON documents.id = tasknotes_tasks.document_id
+             WHERE tasknotes_tasks.title = ?1 COLLATE NOCASE
+             ORDER BY documents.path",
+        )?
+        .query_map([title.trim()], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(candidates
+        .into_iter()
+        .filter(|path| filter.is_none_or(|filter| filter.is_allowed(path)))
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;

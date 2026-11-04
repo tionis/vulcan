@@ -1156,12 +1156,43 @@ fn load_tasknote_for_read(
     parse_loaded_tasknote(paths, task, path, source, None, Some(&guard.read_filter()))
 }
 
+/// The one `TaskNotes` task titled `task` that `readable` admits, for references
+/// that did not resolve as a note; `None` when no admitted task has that
+/// title. A title matching only unreadable tasks is indistinguishable from
+/// an unknown one.
+fn resolve_task_title(
+    paths: &VaultPaths,
+    task: &str,
+    readable: impl Fn(&str) -> bool,
+) -> Result<Option<String>, AppError> {
+    let mut matches = vulcan_core::tasknotes::tasknote_paths_by_title(paths, task, None)
+        .map_err(AppError::operation)?;
+    matches.retain(|path| readable(path));
+    match matches.len() {
+        0 => Ok(None),
+        1 => Ok(matches.pop()),
+        _ => Err(AppError::operation(format!(
+            "task title '{task}' is ambiguous: {}",
+            matches.join(", ")
+        ))),
+    }
+}
+
 fn resolve_task_read_path(
     paths: &VaultPaths,
     task: &str,
     guard: &ProfilePermissionGuard,
 ) -> Result<String, AppError> {
-    match vulcan_core::graph::resolve_note_reference_with_guard(paths, task, guard) {
+    let resolved = vulcan_core::graph::resolve_note_reference_with_guard(paths, task, guard);
+    if matches!(resolved, Err(GraphQueryError::NoteNotFound { .. })) {
+        if let Some(path) = resolve_task_title(paths, task, |path| {
+            vulcan_core::graph::resolve_note_reference_with_guard(paths, path, guard).is_ok()
+        })? {
+            // Resolving the path through the guard above authorized it.
+            return Ok(path);
+        }
+    }
+    match resolved {
         Ok(note) => Ok(note.path),
         Err(GraphQueryError::CacheMissing | GraphQueryError::NoteNotFound { .. })
             if !guard.has_policy_hook()
@@ -6456,18 +6487,25 @@ fn resolve_task_mutation_path(
     guard: Option<&ProfilePermissionGuard>,
 ) -> Result<String, AppError> {
     let Some(guard) = guard else {
-        return resolve_existing_note_path(paths, task);
+        return match resolve_existing_note_path(paths, task) {
+            Ok(path) => Ok(path),
+            Err(error) => resolve_task_title(paths, task, |_| true)?.ok_or(error),
+        };
     };
-    let path = match vulcan_core::resolve_note_reference_with_filter(
-        paths,
-        task,
-        Some(&guard.read_filter()),
-    ) {
+    let filter = guard.read_filter();
+    let resolved = vulcan_core::resolve_note_reference_with_filter(paths, task, Some(&filter));
+    let path = match resolved {
         Ok(note) => note.path,
-        Err(GraphQueryError::CacheMissing | GraphQueryError::NoteNotFound { .. }) => {
-            // Authorize even missing paths before inspecting their disk state.
-            normalize_note_path(task)?
+        Err(GraphQueryError::NoteNotFound { .. }) => {
+            match resolve_task_title(paths, task, |path| {
+                vulcan_core::resolve_note_reference_with_filter(paths, path, Some(&filter)).is_ok()
+            })? {
+                Some(path) => path,
+                // Authorize even missing paths before inspecting their disk state.
+                None => normalize_note_path(task)?,
+            }
         }
+        Err(GraphQueryError::CacheMissing) => normalize_note_path(task)?,
         Err(error) => return Err(AppError::operation(error)),
     };
     guard.check_read_path(&path).map_err(AppError::operation)?;
