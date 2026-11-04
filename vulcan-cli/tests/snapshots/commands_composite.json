@@ -9267,7 +9267,7 @@
             "name": "append",
             "options": [
               {
-                "help": "Text to append",
+                "help": "Text to append; may start with `-`, as list items do",
                 "id": "text",
                 "long": null,
                 "possible_values": [],
@@ -16810,7 +16810,7 @@
             "name": "append",
             "options": [
               {
-                "help": "Text to append",
+                "help": "Text to append; may start with `-`, as list items do",
                 "id": "text",
                 "long": null,
                 "possible_values": [],

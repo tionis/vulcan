@@ -2461,56 +2461,108 @@ pub(crate) fn append_entry_at_end(contents: &str, entry: &str) -> String {
 }
 
 pub(crate) fn append_entry_under_heading(contents: &str, heading: &str, entry: &str) -> String {
+    insert_entry_under_heading(contents, heading, entry).updated
+}
+
+/// A note with an entry inserted, and the 1-based line the entry starts on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeadingEntryInsertion {
+    pub updated: String,
+    pub line_number: usize,
+}
+
+/// Insert `entry` at the end of the section under the exact `heading`, which
+/// ends at the next heading of the same or a higher level or at the end of
+/// the note; the heading is appended when missing, and an empty `heading`
+/// appends to the note after a blank line. Under a heading, a list item directly follows the heading or a
+/// preceding list item, so repeated captures form one tight list in order;
+/// other entries are set off by a blank line. Blank lines and headings after
+/// the section's content are kept as they were.
+#[must_use]
+pub fn insert_entry_under_heading(
+    contents: &str,
+    heading: &str,
+    entry: &str,
+) -> HeadingEntryInsertion {
     let heading = heading.trim();
-    if heading.is_empty() {
-        return append_entry_at_end(contents, entry);
-    }
+    let entry = entry.trim_end();
+    let entry_is_list_item = is_markdown_list_item(entry.lines().next().unwrap_or_default());
 
     let heading_level = markdown_heading_level(heading);
     let mut offset = 0usize;
-    let mut insert_at = None;
-    for line in contents.split_inclusive('\n') {
-        let trimmed = line.trim_end_matches(['\n', '\r']);
-        if insert_at.is_none() && trimmed == heading {
-            insert_at = Some(offset + line.len());
-        } else if insert_at.is_some()
-            && markdown_heading_level(trimmed).is_some_and(|level| Some(level) <= heading_level)
-        {
-            insert_at = Some(offset);
-            break;
+    let mut heading_end = None;
+    let mut content_end = 0usize;
+    if !heading.is_empty() {
+        for line in contents.split_inclusive('\n') {
+            let trimmed = line.trim_end_matches(['\n', '\r']);
+            if heading_end.is_none() {
+                if trimmed == heading {
+                    heading_end = Some(offset + line.len());
+                    content_end = offset + line.len();
+                }
+            } else if markdown_heading_level(trimmed)
+                .is_some_and(|level| Some(level) <= heading_level)
+            {
+                break;
+            } else if !trimmed.trim().is_empty() {
+                content_end = offset + line.len();
+            }
+            offset += line.len();
         }
-        offset += line.len();
     }
 
-    if let Some(insert_at) = insert_at {
-        let mut prefix = String::new();
-        prefix.push_str(&contents[..insert_at]);
-        if !prefix.ends_with('\n') {
-            prefix.push('\n');
+    let (mut updated, follows_heading, rest) = if let Some(heading_end) = heading_end {
+        (
+            contents[..content_end].to_string(),
+            content_end == heading_end,
+            &contents[content_end..],
+        )
+    } else {
+        let mut prefix = contents.trim_end_matches(['\n', '\r']).to_string();
+        if !heading.is_empty() {
+            if !prefix.is_empty() {
+                prefix.push_str("\n\n");
+            }
+            prefix.push_str(heading);
         }
-        if !prefix.ends_with("\n\n") {
-            prefix.push('\n');
-        }
-        let mut updated = prefix;
-        updated.push_str(entry.trim_end());
-        updated.push('\n');
-        if insert_at < contents.len() && !contents[insert_at..].starts_with('\n') {
+        (prefix, !heading.is_empty(), "")
+    };
+    if !updated.is_empty() {
+        if !updated.ends_with('\n') {
             updated.push('\n');
         }
-        updated.push_str(&contents[insert_at..]);
-        updated
-    } else {
-        let mut prefix = contents.trim_end_matches('\n').to_string();
-        if !prefix.is_empty() {
-            prefix.push_str("\n\n");
+        let previous = updated.lines().last().unwrap_or_default();
+        let tight = !heading.is_empty()
+            && entry_is_list_item
+            && (follows_heading || is_markdown_list_item(previous));
+        if !tight {
+            updated.push('\n');
         }
-        prefix.push_str(heading);
-        prefix.push_str("\n\n");
-        let mut updated = prefix;
-        updated.push_str(entry.trim_end());
-        updated.push('\n');
-        updated
     }
+    let line_number = updated.lines().count() + 1;
+    updated.push_str(entry);
+    updated.push('\n');
+    if !rest.is_empty() && !rest.starts_with(['\n', '\r']) {
+        updated.push('\n');
+    }
+    updated.push_str(rest);
+    HeadingEntryInsertion {
+        updated,
+        line_number,
+    }
+}
+
+/// Whether `line` starts a Markdown list item (`-`, `*`, `+`, or `1.`/`1)`).
+fn is_markdown_list_item(line: &str) -> bool {
+    let line = line.trim_start();
+    if let Some(rest) = line.strip_prefix(['-', '*', '+']) {
+        return rest.is_empty() || rest.starts_with([' ', '\t']);
+    }
+    let digits = line.chars().take_while(char::is_ascii_digit).count();
+    digits > 0
+        && line[digits..]
+            .strip_prefix(['.', ')'])
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', '\t']))
 }
 
 fn prepend_entry_after_frontmatter(contents: &str, entry: &str) -> String {
@@ -2669,6 +2721,58 @@ fn load_note_append_target(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn heading_entries_append_at_the_end_of_the_last_section_as_a_tight_list() {
+        let mut note = "# 2026-11-04\n\n## Notes\n".to_string();
+        for entry in ["- 03:00 one", "- 03:01 two", "- 03:02 three"] {
+            note = super::insert_entry_under_heading(&note, "## Notes", entry).updated;
+        }
+        assert_eq!(
+            note,
+            "# 2026-11-04\n\n## Notes\n- 03:00 one\n- 03:01 two\n- 03:02 three\n"
+        );
+    }
+
+    #[test]
+    fn heading_entries_end_their_section_and_keep_what_follows() {
+        let note = "## Log\n- a\n\n\n## Later\ntext\n";
+        let inserted = super::insert_entry_under_heading(note, "## Log", "- b");
+        assert_eq!(inserted.updated, "## Log\n- a\n- b\n\n\n## Later\ntext\n");
+        assert_eq!(inserted.line_number, 3);
+
+        // A deeper heading belongs to the section; a paragraph gets a blank line.
+        let note = "## Log\nfirst\n### Detail\nmore\n## Next\n";
+        assert_eq!(
+            super::insert_entry_under_heading(note, "## Log", "second").updated,
+            "## Log\nfirst\n### Detail\nmore\n\nsecond\n\n## Next\n"
+        );
+        assert_eq!(
+            super::insert_entry_under_heading("## Log\n\n## Next\n", "## Log", "1. item").updated,
+            "## Log\n1. item\n\n## Next\n"
+        );
+    }
+
+    #[test]
+    fn heading_entries_create_a_missing_heading_or_append_without_one() {
+        assert_eq!(
+            super::insert_entry_under_heading("# Day\n", "## Notes", "- one").updated,
+            "# Day\n\n## Notes\n- one\n"
+        );
+        assert_eq!(
+            super::insert_entry_under_heading("# Day\n", "## Notes", "text").updated,
+            "# Day\n\n## Notes\n\ntext\n"
+        );
+        assert_eq!(
+            super::insert_entry_under_heading("# Day\n- a", "", "- b").updated,
+            "# Day\n- a\n\n- b\n"
+        );
+        assert_eq!(
+            super::insert_entry_under_heading("", "## Notes", "- one").updated,
+            "## Notes\n- one\n"
+        );
+    }
+
     use super::{
         apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
         build_note_info_report, check_read_markdown_source_access,

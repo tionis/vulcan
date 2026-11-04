@@ -1110,6 +1110,31 @@ fn parses_kanban_add_command() {
 }
 
 #[test]
+fn daily_append_accepts_list_items_without_a_separator() {
+    let cli = Cli::try_parse_from([
+        "vulcan",
+        "daily",
+        "append",
+        "- 03:00 text",
+        "--heading",
+        "## Notes",
+    ])
+    .expect("cli should parse");
+
+    assert_eq!(
+        cli.command,
+        Command::Daily {
+            command: Some(DailyCommand::Append {
+                text: "- 03:00 text".to_string(),
+                heading: Some("## Notes".to_string()),
+                date: None,
+                no_commit: false,
+            }),
+        }
+    );
+}
+
+#[test]
 fn parses_daily_append_command() {
     let cli = Cli::try_parse_from([
         "vulcan",
@@ -4996,7 +5021,7 @@ fn append_under_heading_inserts_before_next_peer_heading() {
         "- new item",
     );
 
-    assert!(rendered.contains("## Inbox\n\n- earlier\n\n- new item\n\n## Later"));
+    assert!(rendered.contains("## Inbox\n\n- earlier\n- new item\n\n## Later"));
 }
 
 #[test]

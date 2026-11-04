@@ -4211,7 +4211,10 @@ pub enum DailyCommand {
     },
     #[command(about = "Append text to one daily note")]
     Append {
-        #[arg(help = "Text to append")]
+        #[arg(
+            allow_hyphen_values = true,
+            help = "Text to append; may start with `-`, as list items do"
+        )]
         text: String,
         #[arg(long, help = "Optional heading to append under")]
         heading: Option<String>,
@@ -6753,7 +6756,10 @@ pub enum PeriodicSubcommand {
     },
     #[command(about = "Append text to a periodic note")]
     Append {
-        #[arg(help = "Text to append")]
+        #[arg(
+            allow_hyphen_values = true,
+            help = "Text to append; may start with `-`, as list items do"
+        )]
         text: String,
         #[arg(long = "type", help = "Period type: daily, weekly, or monthly")]
         period_type: String,

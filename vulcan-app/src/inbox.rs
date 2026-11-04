@@ -126,9 +126,9 @@ mod tests {
         assert_eq!(path, "Capture/Inbox.md");
         assert_eq!(
             updated,
-            "# Inbox\n\n## Todo\n\n- [ ] old\n\n- [ ] new idea\n\n## Later\n"
+            "# Inbox\n\n## Todo\n\n- [ ] old\n- [ ] new idea\n\n## Later\n"
         );
         let (_, created) = plan_inbox_capture(&paths, "", "first").unwrap();
-        assert_eq!(created, "## Todo\n\n- [ ] first\n");
+        assert_eq!(created, "## Todo\n- [ ] first\n");
     }
 }

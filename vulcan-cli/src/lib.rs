@@ -4023,7 +4023,7 @@ pub(crate) fn append_at_end(contents: &str, entry: &str) -> String {
 }
 
 pub(crate) fn append_under_heading(contents: &str, heading: &str, entry: &str) -> String {
-    append_entry_under_heading(contents, heading, entry).updated
+    vulcan_app::notes::insert_entry_under_heading(contents, heading, entry).updated
 }
 
 fn append_entry_at_end(contents: &str, entry: &str) -> NoteEntryInsertion {
@@ -4045,83 +4045,6 @@ fn append_entry_at_end(contents: &str, entry: &str) -> NoteEntryInsertion {
             after: entry.trim_end().to_string(),
         },
     }
-}
-
-fn append_entry_under_heading(contents: &str, heading: &str, entry: &str) -> NoteEntryInsertion {
-    let heading = heading.trim();
-    if heading.is_empty() {
-        return append_entry_at_end(contents, entry);
-    }
-
-    let heading_level = markdown_heading_level(heading);
-    let mut offset = 0usize;
-    let mut insert_at = None;
-    for line in contents.split_inclusive('\n') {
-        let trimmed = line.trim_end_matches(['\n', '\r']);
-        if insert_at.is_none() && trimmed == heading {
-            insert_at = Some(offset + line.len());
-        } else if insert_at.is_some()
-            && markdown_heading_level(trimmed).is_some_and(|level| Some(level) <= heading_level)
-        {
-            insert_at = Some(offset);
-            break;
-        }
-        offset += line.len();
-    }
-
-    if let Some(insert_at) = insert_at {
-        let mut prefix = String::new();
-        prefix.push_str(&contents[..insert_at]);
-        if !prefix.ends_with('\n') {
-            prefix.push('\n');
-        }
-        if !prefix.ends_with("\n\n") {
-            prefix.push('\n');
-        }
-        let line_number = i64::try_from(prefix.lines().count().saturating_add(1))
-            .expect("line count should fit in i64");
-        let mut updated = prefix;
-        updated.push_str(entry.trim_end());
-        updated.push('\n');
-        if insert_at < contents.len() && !contents[insert_at..].starts_with('\n') {
-            updated.push('\n');
-        }
-        updated.push_str(&contents[insert_at..]);
-        NoteEntryInsertion {
-            updated,
-            line_number,
-            change: RefactorChange {
-                before: String::new(),
-                after: entry.trim_end().to_string(),
-            },
-        }
-    } else {
-        let mut prefix = contents.trim_end_matches('\n').to_string();
-        if !prefix.is_empty() {
-            prefix.push_str("\n\n");
-        }
-        prefix.push_str(heading);
-        prefix.push_str("\n\n");
-        let line_number = i64::try_from(prefix.lines().count().saturating_add(1))
-            .expect("line count should fit in i64");
-        let mut updated = prefix;
-        updated.push_str(entry.trim_end());
-        updated.push('\n');
-        NoteEntryInsertion {
-            updated,
-            line_number,
-            change: RefactorChange {
-                before: String::new(),
-                after: entry.trim_end().to_string(),
-            },
-        }
-    }
-}
-
-pub(crate) fn markdown_heading_level(line: &str) -> Option<usize> {
-    let hashes = line.chars().take_while(|ch| *ch == '#').count();
-    (hashes > 0 && hashes <= 6 && line.chars().nth(hashes).is_some_and(char::is_whitespace))
-        .then_some(hashes)
 }
 
 pub(crate) fn resolve_bulk_note_selection(

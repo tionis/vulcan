@@ -5634,7 +5634,7 @@ fn note_append_under_heading_reports_check_diagnostics() {
                 .as_str()
                 .is_some_and(|message| message.contains("Unresolved link target")))
         ));
-    assert!(rendered.contains("## Done\n\n[[Missing]]\n\nFinished line"));
+    assert!(rendered.ends_with("## Done\nFinished line\n- Item line\n^done-item\n\n[[Missing]]\n"));
 }
 
 #[test]
