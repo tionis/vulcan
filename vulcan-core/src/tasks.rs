@@ -25,8 +25,8 @@ pub use eval::{
 pub use parse::parse_tasks_query;
 pub(crate) use recurrence::{inject_task_recurrence_fields, task_recurrence_properties};
 pub use recurrence::{
-    parse_recurrence_text, parse_task_recurrence, task_recurrence_anchor,
-    task_upcoming_occurrences, TaskRecurrence,
+    next_recurrence_occurrence, parse_recurrence_text, parse_task_recurrence,
+    task_recurrence_anchor, task_upcoming_occurrences, with_recurrence_start, TaskRecurrence,
 };
 pub use toggle::{
     apply_inline_task_toggle, complete_inline_task_line, days_between, task_line_due_date,

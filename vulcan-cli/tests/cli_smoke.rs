@@ -17285,8 +17285,10 @@ fn tasks_complete_json_output_records_recurring_instance_completion() {
     copy_fixture_vault("tasknotes", &vault_root);
     run_scan(&vault_root);
 
+    // "Write docs" restarts from its completion day (`recurrence_anchor: completion`).
     let complete_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("VULCAN_FIXED_NOW", "2026-04-10T12:00:00Z")
         .args([
             "--vault",
             vault_root
@@ -17326,6 +17328,9 @@ fn tasks_complete_json_output_records_recurring_instance_completion() {
     assert!(show_json["complete_instances"]
         .as_array()
         .is_some_and(|items| items.iter().any(|item| item == "2026-04-10")));
+    // The task moves to the next open Friday; due keeps its two-day lag.
+    assert_eq!(show_json["scheduled"], "2026-04-17");
+    assert_eq!(show_json["due"], "2026-04-19");
 
     let next_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")

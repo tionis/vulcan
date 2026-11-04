@@ -370,61 +370,11 @@ pub fn apply_task_complete_with_guard(
             |frontmatter, loaded| {
                 let mut changes = Vec::new();
                 if loaded.indexed.recurrence.is_some() {
-                    let target_date = match request.date.as_deref() {
-                        Some(value) => normalize_date_argument(Some(value))?,
-                        None => loaded
-                            .indexed
-                            .scheduled
-                            .as_deref()
-                            .or(loaded.indexed.due.as_deref())
-                            .map(|value| normalize_date_argument(Some(value)))
-                            .transpose()?
-                            .unwrap_or_else(current_utc_date_string),
-                    };
-
-                    let complete_key = &loaded.config.tasknotes.field_mapping.complete_instances;
-                    let skipped_key = &loaded.config.tasknotes.field_mapping.skipped_instances;
-                    let complete_yaml_key = YamlValue::String(complete_key.clone());
-                    let mut complete_instances =
-                        yaml_string_list(frontmatter.get(&complete_yaml_key));
-                    if !complete_instances.iter().any(|entry| entry == &target_date) {
-                        complete_instances.push(target_date.clone());
-                        complete_instances.sort();
-                    }
-                    if let Some(change) = set_tasknote_frontmatter_value(
+                    changes.extend(complete_recurring_tasknote_instance(
                         frontmatter,
-                        complete_key,
-                        Some(YamlValue::Sequence(
-                            complete_instances
-                                .iter()
-                                .cloned()
-                                .map(YamlValue::String)
-                                .collect(),
-                        )),
-                    ) {
-                        changes.push(change);
-                    }
-
-                    let skipped_yaml_key = YamlValue::String(skipped_key.clone());
-                    let skipped_instances = yaml_string_list(frontmatter.get(&skipped_yaml_key))
-                        .into_iter()
-                        .filter(|entry| entry != &target_date)
-                        .collect::<Vec<_>>();
-                    let skipped_value = if skipped_instances.is_empty() {
-                        None
-                    } else {
-                        Some(YamlValue::Sequence(
-                            skipped_instances
-                                .into_iter()
-                                .map(YamlValue::String)
-                                .collect(),
-                        ))
-                    };
-                    if let Some(change) =
-                        set_tasknote_frontmatter_value(frontmatter, skipped_key, skipped_value)
-                    {
-                        changes.push(change);
-                    }
+                        loaded,
+                        request.date.as_deref(),
+                    )?);
                 } else {
                     let status_key = &loaded.config.tasknotes.field_mapping.status;
                     if let Some(change) = set_tasknote_frontmatter_value(
@@ -6832,6 +6782,170 @@ fn tasknote_change_summary(value: Option<&YamlValue>) -> String {
         Some(value) => serde_json::to_string(&serde_json::to_value(value).unwrap_or(Value::Null))
             .unwrap_or_else(|_| "<unserializable>".to_string()),
     }
+}
+
+/// Record one instance of a recurring task as completed (clearing it from the
+/// skipped instances) and move the task to its next open occurrence. The
+/// instance defaults to the task's scheduled day, then its due day, then today.
+fn complete_recurring_tasknote_instance(
+    frontmatter: &mut YamlMapping,
+    loaded: &LoadedTaskNote,
+    date: Option<&str>,
+) -> Result<Vec<RefactorChange>, AppError> {
+    let mut changes = Vec::new();
+    let target_date = match date {
+        Some(value) => normalize_date_argument(Some(value))?,
+        None => loaded
+            .indexed
+            .scheduled
+            .as_deref()
+            .or(loaded.indexed.due.as_deref())
+            // A scheduled time of day names the same instance.
+            .map(|value| normalize_date_argument(Some(date_part(value).unwrap_or(value))))
+            .transpose()?
+            .unwrap_or_else(current_utc_date_string),
+    };
+
+    let complete_key = &loaded.config.tasknotes.field_mapping.complete_instances;
+    let skipped_key = &loaded.config.tasknotes.field_mapping.skipped_instances;
+    let complete_yaml_key = YamlValue::String(complete_key.clone());
+    let mut complete_instances = yaml_string_list(frontmatter.get(&complete_yaml_key));
+    if !complete_instances.iter().any(|entry| entry == &target_date) {
+        complete_instances.push(target_date.clone());
+        complete_instances.sort();
+    }
+    if let Some(change) = set_tasknote_frontmatter_value(
+        frontmatter,
+        complete_key,
+        Some(YamlValue::Sequence(
+            complete_instances
+                .iter()
+                .cloned()
+                .map(YamlValue::String)
+                .collect(),
+        )),
+    ) {
+        changes.push(change);
+    }
+
+    let skipped_yaml_key = YamlValue::String(skipped_key.clone());
+    let skipped_instances = yaml_string_list(frontmatter.get(&skipped_yaml_key))
+        .into_iter()
+        .filter(|entry| entry != &target_date)
+        .collect::<Vec<_>>();
+    let skipped_value = if skipped_instances.is_empty() {
+        None
+    } else {
+        Some(YamlValue::Sequence(
+            skipped_instances
+                .iter()
+                .cloned()
+                .map(YamlValue::String)
+                .collect(),
+        ))
+    };
+    let excluded = complete_instances
+        .iter()
+        .chain(&skipped_instances)
+        .cloned()
+        .collect::<Vec<_>>();
+    if let Some(change) = set_tasknote_frontmatter_value(frontmatter, skipped_key, skipped_value) {
+        changes.push(change);
+    }
+    changes.extend(advance_recurring_tasknote(
+        frontmatter,
+        loaded,
+        &target_date,
+        &excluded,
+    ));
+    Ok(changes)
+}
+
+/// Move a recurring task's dates past the instance just completed, as the
+/// `TaskNotes` plugin does, so the task (and reminders relative to its dates)
+/// points at the next open occurrence. `scheduled` moves to that occurrence,
+/// keeping its time of day, and `due` keeps its distance from `scheduled`;
+/// without `scheduled`, `due` moves to the occurrence. A completion-anchored
+/// series restarts from the completed day by rewriting the rule's `DTSTART`.
+/// Nothing moves once the series has ended.
+fn advance_recurring_tasknote(
+    frontmatter: &mut YamlMapping,
+    loaded: &LoadedTaskNote,
+    completed: &str,
+    excluded: &[String],
+) -> Vec<RefactorChange> {
+    let indexed = &loaded.indexed;
+    let mapping = &loaded.config.tasknotes.field_mapping;
+    let Some(rule) = indexed.recurrence.as_deref() else {
+        return Vec::new();
+    };
+    let Some(anchor) = indexed.scheduled.as_deref().or(indexed.due.as_deref()) else {
+        return Vec::new();
+    };
+    let mut changes = Vec::new();
+    let completion_anchored = indexed
+        .recurrence_anchor
+        .as_deref()
+        .is_some_and(|anchor| anchor.trim().eq_ignore_ascii_case("completion"));
+    let rule = if completion_anchored {
+        let today = current_utc_date_string();
+        let restarted = vulcan_core::tasks::with_recurrence_start(rule, &today);
+        if let Some(change) = set_tasknote_frontmatter_value(
+            frontmatter,
+            &mapping.recurrence,
+            Some(YamlValue::String(restarted.clone())),
+        ) {
+            changes.push(change);
+        }
+        restarted
+    } else {
+        rule.to_string()
+    };
+    let after = if completion_anchored {
+        current_utc_date_string()
+    } else {
+        completed.to_string()
+    };
+    let Some(next) =
+        vulcan_core::tasks::next_recurrence_occurrence(&rule, anchor, &after, excluded)
+    else {
+        return changes;
+    };
+    let Some(shift) =
+        date_part(anchor).and_then(|from| vulcan_core::tasks::days_between(from, &next))
+    else {
+        return changes;
+    };
+    for (key, value) in [
+        (&mapping.scheduled, indexed.scheduled.as_deref()),
+        (&mapping.due, indexed.due.as_deref()),
+    ] {
+        let Some(moved) = value.and_then(|value| shift_date_keeping_time(value, shift)) else {
+            continue;
+        };
+        if let Some(change) =
+            set_tasknote_frontmatter_value(frontmatter, key, Some(YamlValue::String(moved)))
+        {
+            changes.push(change);
+        }
+    }
+    changes
+}
+
+/// The `YYYY-MM-DD` day a date or date-time value starts with.
+fn date_part(value: &str) -> Option<&str> {
+    let value = value.trim();
+    let day = value.get(..10)?;
+    chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()?;
+    Some(day)
+}
+
+/// `value` moved by `days`, keeping anything after its date (a time of day).
+fn shift_date_keeping_time(value: &str, days: i64) -> Option<String> {
+    let value = value.trim();
+    let day = chrono::NaiveDate::parse_from_str(date_part(value)?, "%Y-%m-%d").ok()?;
+    let moved = day.checked_add_signed(chrono::Duration::days(days))?;
+    Some(format!("{}{}", moved.format("%Y-%m-%d"), &value[10..]))
 }
 
 fn set_tasknote_frontmatter_value(

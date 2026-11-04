@@ -1716,6 +1716,110 @@ fn apply_task_complete_updates_recurring_instance_lists() {
     )));
 }
 
+/// Completing an instance moves the task to its next open occurrence, so
+/// reminders relative to its dates follow the series.
+#[test]
+fn completing_a_recurring_instance_advances_the_task_to_its_next_occurrence() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    initialize_vulcan_dir(&paths).expect("init should succeed");
+    let config = load_vault_config(&paths).config;
+    let mapping = config.tasknotes.field_mapping.clone();
+    let string = |value: &str| YamlValue::String(value.to_string());
+    seed_tasknote(
+        &paths,
+        &config,
+        "Tasks/Weekly.md",
+        "Weekly review",
+        "open",
+        &[
+            (
+                mapping.recurrence.as_str(),
+                string("DTSTART:20261108;FREQ=WEEKLY;BYDAY=SU"),
+            ),
+            (mapping.scheduled.as_str(), string("2026-11-08T09:00")),
+            (mapping.due.as_str(), string("2026-11-09")),
+            (
+                mapping.skipped_instances.as_str(),
+                YamlValue::Sequence(vec![string("2026-11-15")]),
+            ),
+        ],
+        "",
+    )
+    .expect("seed weekly task");
+    seed_tasknote(
+        &paths,
+        &config,
+        "Tasks/Water.md",
+        "Water plants",
+        "open",
+        &[
+            (
+                mapping.recurrence.as_str(),
+                string("DTSTART:20261101;FREQ=DAILY;INTERVAL=3"),
+            ),
+            (mapping.recurrence_anchor.as_str(), string("completion")),
+            (mapping.scheduled.as_str(), string("2026-11-01")),
+        ],
+        "",
+    )
+    .expect("seed completion-anchored task");
+    let complete = |task: &str, date: Option<&str>| {
+        apply_task_complete(
+            &paths,
+            &TaskCompleteRequest {
+                task: task.to_string(),
+                date: date.map(ToOwned::to_owned),
+                dry_run: false,
+            },
+        )
+        .expect("complete report");
+        let source = fs::read_to_string(temp_dir.path().join(format!("{task}.md"))).unwrap();
+        let frontmatter = source
+            .strip_prefix("---\n")
+            .and_then(|rest| rest.split_once("\n---"))
+            .map(|(frontmatter, _)| frontmatter)
+            .expect("frontmatter");
+        yaml_serde::from_str::<YamlMapping>(frontmatter).unwrap()
+    };
+    let field = |frontmatter: &YamlMapping, key: &str| {
+        frontmatter
+            .get(YamlValue::String(key.to_string()))
+            .and_then(YamlValue::as_str)
+            .map(ToOwned::to_owned)
+    };
+
+    // The skipped 2026-11-15 is passed over; due keeps its one-day lead.
+    let weekly = complete("Tasks/Weekly", None);
+    assert_eq!(
+        field(&weekly, &mapping.scheduled).as_deref(),
+        Some("2026-11-22T09:00")
+    );
+    assert_eq!(field(&weekly, &mapping.due).as_deref(), Some("2026-11-23"));
+    assert_eq!(
+        field(&weekly, &mapping.recurrence).as_deref(),
+        Some("DTSTART:20261108;FREQ=WEEKLY;BYDAY=SU")
+    );
+    assert_eq!(field(&weekly, &mapping.status).as_deref(), Some("open"));
+
+    // A completion-anchored series restarts from the day it was completed.
+    let today = super::current_utc_date_string();
+    let water = complete("Tasks/Water", Some("2026-11-01"));
+    assert_eq!(
+        field(&water, &mapping.recurrence),
+        Some(format!(
+            "DTSTART:{};FREQ=DAILY;INTERVAL=3",
+            today.replace('-', "")
+        ))
+    );
+    let next =
+        chrono::NaiveDate::parse_from_str(&today, "%Y-%m-%d").unwrap() + chrono::Duration::days(3);
+    assert_eq!(
+        field(&water, &mapping.scheduled),
+        Some(next.format("%Y-%m-%d").to_string())
+    );
+}
+
 #[test]
 fn tasknote_reschedule_waits_for_the_vault_write_lock() {
     let temp_dir = tempdir().expect("temp dir");

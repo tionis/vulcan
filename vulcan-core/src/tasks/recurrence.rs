@@ -89,6 +89,49 @@ pub fn task_upcoming_occurrences(
     )
 }
 
+/// The first occurrence of the recurrence `rule` strictly after the day
+/// `after` that is not in `excluded`, as `YYYY-MM-DD`. The rule's inline
+/// `DTSTART` anchors the series, or else `anchor`. `None` when the rule does
+/// not parse or the series has ended.
+#[must_use]
+pub fn next_recurrence_occurrence(
+    rule: &str,
+    anchor: &str,
+    after: &str,
+    excluded: &[String],
+) -> Option<String> {
+    let recurrence = parse_recurrence_text(rule)?;
+    let anchor_ms = recurrence
+        .start
+        .as_deref()
+        .or(Some(anchor))
+        .and_then(normalized_date_ms)?;
+    let from_ms = normalized_date_ms(after)?.saturating_add(DAY_MS);
+    let exclusions = excluded
+        .iter()
+        .filter_map(|day| normalized_date_string(day))
+        .collect::<BTreeSet<_>>();
+    recurrence_occurrences(&recurrence, anchor_ms, from_ms, 1, &exclusions)
+        .into_iter()
+        .next()
+}
+
+/// `rule` with its inline `DTSTART` set to the day `start` (`YYYY-MM-DD`),
+/// added in front when the rule has none, as `TaskNotes` restarts a
+/// completion-anchored series from the day an instance was completed.
+#[must_use]
+pub fn with_recurrence_start(rule: &str, start: &str) -> String {
+    let dtstart = format!("DTSTART:{}", start.replace('-', ""));
+    let rest = rule
+        .trim()
+        .split(';')
+        .filter(|segment| !segment.trim().starts_with("DTSTART:"))
+        .collect::<Vec<_>>()
+        .join(";");
+    let rest = rest.strip_prefix("RRULE:").unwrap_or(&rest);
+    format!("{dtstart};{rest}")
+}
+
 pub(crate) fn task_recurrence_properties(task: &Map<String, Value>) -> Vec<(String, Value)> {
     let Some(recurrence) = parse_task_recurrence(task) else {
         return Vec::new();
@@ -749,6 +792,42 @@ mod tests {
             .expect("iCalendar lines should parse");
         assert_eq!(multiline.start.as_deref(), Some("2026-11-08"));
         assert_eq!(multiline.frequency, "daily");
+    }
+
+    #[test]
+    fn next_occurrences_skip_finished_instances_and_honor_a_restarted_series() {
+        let weekly = "DTSTART:20261108;FREQ=WEEKLY;BYDAY=SU";
+        assert_eq!(
+            next_recurrence_occurrence(weekly, "2026-11-08", "2026-11-08", &[]).as_deref(),
+            Some("2026-11-15")
+        );
+        assert_eq!(
+            next_recurrence_occurrence(
+                weekly,
+                "2026-11-08",
+                "2026-11-08",
+                &["2026-11-15".to_string()]
+            )
+            .as_deref(),
+            Some("2026-11-22")
+        );
+        assert_eq!(
+            next_recurrence_occurrence("FREQ=DAILY;COUNT=2", "2026-11-01", "2026-11-02", &[]),
+            None,
+            "the series has ended"
+        );
+
+        let restarted =
+            with_recurrence_start("DTSTART:20261101;FREQ=DAILY;INTERVAL=3", "2026-11-05");
+        assert_eq!(restarted, "DTSTART:20261105;FREQ=DAILY;INTERVAL=3");
+        assert_eq!(
+            with_recurrence_start("RRULE:FREQ=WEEKLY", "2026-11-05"),
+            "DTSTART:20261105;FREQ=WEEKLY"
+        );
+        assert_eq!(
+            next_recurrence_occurrence(&restarted, "2026-11-01", "2026-11-05", &[]).as_deref(),
+            Some("2026-11-08")
+        );
     }
 
     #[test]
