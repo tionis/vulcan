@@ -14,6 +14,7 @@ struct RecurrenceDetails {
     month: Option<u32>,
     count: Option<u32>,
     until: Option<String>,
+    start: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -32,6 +33,11 @@ pub struct TaskRecurrence {
     pub count: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub until: Option<String>,
+    /// The series start from an inline `DTSTART:` (`TaskNotes` writes
+    /// `DTSTART:20261108;FREQ=WEEKLY;...`), as `YYYY-MM-DD`. It anchors the
+    /// occurrences ahead of the task's dates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start: Option<String>,
 }
 
 #[must_use]
@@ -51,7 +57,9 @@ pub fn parse_task_recurrence(task: &Map<String, Value>) -> Option<TaskRecurrence
 
 #[must_use]
 pub fn task_recurrence_anchor(task: &Map<String, Value>) -> Option<String> {
-    task_recurrence_anchor_ms(task).map(format_day)
+    parse_task_recurrence(task)
+        .and_then(|recurrence| recurrence.start)
+        .or_else(|| task_recurrence_anchor_ms(task).map(format_day))
 }
 
 #[must_use]
@@ -63,7 +71,12 @@ pub fn task_upcoming_occurrences(
     let Some(recurrence) = parse_task_recurrence(task) else {
         return Vec::new();
     };
-    let Some(anchor_ms) = task_recurrence_anchor_ms(task) else {
+    let Some(anchor_ms) = recurrence
+        .start
+        .as_deref()
+        .and_then(normalized_date_ms)
+        .or_else(|| task_recurrence_anchor_ms(task))
+    else {
         return Vec::new();
     };
 
@@ -319,7 +332,18 @@ fn parse_rrule(raw: &str) -> Option<TaskRecurrence> {
     let mut interval = 1_u32;
     let mut details = RecurrenceDetails::default();
 
-    for segment in rule.split(';') {
+    // Segments are `;`-separated, or one property per line in the iCalendar
+    // form `DTSTART:...` newline `RRULE:...`.
+    for segment in rule.split([';', '\n']) {
+        let segment = segment.trim();
+        let segment = segment.strip_prefix("RRULE:").unwrap_or(segment);
+        if segment.is_empty() {
+            continue;
+        }
+        if let Some(start) = segment.strip_prefix("DTSTART:") {
+            details.start = Some(normalize_rrule_until(start)?);
+            continue;
+        }
         let (key, value) = segment.split_once('=')?;
         match key.trim().to_ascii_uppercase().as_str() {
             "FREQ" => {
@@ -393,6 +417,7 @@ fn build_recurrence(
         month: details.month,
         count: details.count,
         until: details.until,
+        start: details.start,
     }
 }
 
@@ -685,6 +710,45 @@ mod tests {
         assert_eq!(monthly.frequency, "monthly");
         assert_eq!(monthly.month_day, Some(15));
         assert_eq!(monthly.rule, "FREQ=MONTHLY;INTERVAL=1;BYMONTHDAY=15");
+    }
+
+    /// `TaskNotes` stores the series start inline (`DTSTART:...;FREQ=...`);
+    /// it anchors the occurrences even where the task's dates differ.
+    #[test]
+    fn tasknotes_rules_with_an_inline_dtstart_recur_from_it() {
+        let weekly = parse_recurrence_text("DTSTART:20261108;FREQ=WEEKLY;BYDAY=SU")
+            .expect("TaskNotes rule should parse");
+        assert_eq!(weekly.start.as_deref(), Some("2026-11-08"));
+        assert_eq!(weekly.rule, "FREQ=WEEKLY;INTERVAL=1;BYDAY=SU");
+        let sunday = task(&[
+            ("recurrence", Value::String(weekly.raw.clone())),
+            ("scheduled", Value::String("2026-11-08".to_string())),
+        ]);
+        assert_eq!(
+            task_upcoming_occurrences(&sunday, ms("2026-11-04"), 3),
+            vec!["2026-11-08", "2026-11-15", "2026-11-22"]
+        );
+
+        let quarterly = task(&[
+            (
+                "recurrence",
+                Value::String("DTSTART:20251103;FREQ=MONTHLY;INTERVAL=3;BYMONTHDAY=3".to_string()),
+            ),
+            ("scheduled", Value::String("2026-01-20".to_string())),
+        ]);
+        assert_eq!(
+            task_recurrence_anchor(&quarterly).as_deref(),
+            Some("2025-11-03")
+        );
+        assert_eq!(
+            task_upcoming_occurrences(&quarterly, ms("2026-11-04"), 2),
+            vec!["2027-02-03", "2027-05-03"]
+        );
+
+        let multiline = parse_recurrence_text("DTSTART:20261108T090000Z\nRRULE:FREQ=DAILY")
+            .expect("iCalendar lines should parse");
+        assert_eq!(multiline.start.as_deref(), Some("2026-11-08"));
+        assert_eq!(multiline.frequency, "daily");
     }
 
     #[test]
