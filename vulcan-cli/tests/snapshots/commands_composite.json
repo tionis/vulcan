@@ -1953,6 +1953,17 @@
                 ]
               },
               {
+                "help": "Reminder to add: an offset such as -15m, due-1h, or scheduled+0m (relative to due, else scheduled), or a date-time such as 2026-11-05T14:00; repeat for several",
+                "id": "reminders",
+                "long": "reminder",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SPEC"
+                ]
+              },
+              {
                 "help": "Report the planned task file without writing it",
                 "id": "dry_run",
                 "long": "dry-run",
@@ -2770,6 +2781,138 @@
                     "short": null,
                     "value_names": [
                       "PERIOD"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              }
+            ]
+          },
+          {
+            "about": "Add or remove reminders on one TaskNotes task",
+            "name": "reminder",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "Add one reminder to a TaskNotes task",
+                "name": "add",
+                "options": [
+                  {
+                    "help": "Task path, filename, alias, or title",
+                    "id": "task",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "TASK"
+                    ]
+                  },
+                  {
+                    "help": "An offset such as -15m, due-1h, or scheduled+0m (relative to due, else scheduled), or a date-time such as 2026-11-05T14:00",
+                    "id": "spec",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "SPEC"
+                    ]
+                  },
+                  {
+                    "help": "Optional reminder text",
+                    "id": "description",
+                    "long": "description",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DESCRIPTION"
+                    ]
+                  },
+                  {
+                    "help": "Report the planned change without writing the task file",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  },
+                  {
+                    "help": "Skip auto-commit even when enabled in config",
+                    "id": "no_commit",
+                    "long": "no-commit",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NO_COMMIT"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Remove one reminder from a TaskNotes task by its id",
+                "name": "remove",
+                "options": [
+                  {
+                    "help": "Task path, filename, alias, or title",
+                    "id": "task",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "TASK"
+                    ]
+                  },
+                  {
+                    "help": "Reminder id, as `tasks show` or `tasks reminders` reports it",
+                    "id": "id",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "ID"
+                    ]
+                  },
+                  {
+                    "help": "Report the planned change without writing the task file",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  },
+                  {
+                    "help": "Skip auto-commit even when enabled in config",
+                    "id": "no_commit",
+                    "long": "no-commit",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NO_COMMIT"
                     ]
                   }
                 ],

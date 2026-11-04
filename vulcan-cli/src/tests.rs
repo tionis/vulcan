@@ -428,6 +428,10 @@ fn parses_tasks_add_command() {
         "shopping",
         "--template",
         "task",
+        "--reminder",
+        "-15m",
+        "--reminder",
+        "due-1h",
         "--dry-run",
         "--no-commit",
     ])
@@ -447,8 +451,63 @@ fn parses_tasks_add_command() {
                 projects: vec!["Website".to_string()],
                 tags: vec!["shopping".to_string()],
                 template: Some("task".to_string()),
+                reminders: vec!["-15m".to_string(), "due-1h".to_string()],
                 dry_run: true,
                 no_commit: true,
+            },
+        }
+    );
+}
+
+#[test]
+fn parses_tasks_reminder_commands() {
+    let cli = Cli::try_parse_from([
+        "vulcan",
+        "tasks",
+        "reminder",
+        "add",
+        "Write Docs",
+        "-30m",
+        "--description",
+        "Start writing",
+        "--dry-run",
+    ])
+    .expect("cli should parse");
+    assert_eq!(
+        cli.command,
+        Command::Tasks {
+            command: TasksCommand::Reminder {
+                command: TasksReminderCommand::Add {
+                    task: "Write Docs".to_string(),
+                    spec: "-30m".to_string(),
+                    description: Some("Start writing".to_string()),
+                    dry_run: true,
+                    no_commit: false,
+                },
+            },
+        }
+    );
+
+    let cli = Cli::try_parse_from([
+        "vulcan",
+        "tasks",
+        "reminder",
+        "remove",
+        "Write Docs",
+        "rem-1",
+        "--no-commit",
+    ])
+    .expect("cli should parse");
+    assert_eq!(
+        cli.command,
+        Command::Tasks {
+            command: TasksCommand::Reminder {
+                command: TasksReminderCommand::Remove {
+                    task: "Write Docs".to_string(),
+                    id: "rem-1".to_string(),
+                    dry_run: false,
+                    no_commit: true,
+                },
             },
         }
     );

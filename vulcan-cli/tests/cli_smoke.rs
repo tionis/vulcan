@@ -17212,6 +17212,95 @@ fn tasks_set_json_output_updates_tasknote_frontmatter_and_rescans() {
 }
 
 #[test]
+fn tasks_reminder_commands_add_and_remove_reminders_from_the_cli() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    run_scan(&vault_root);
+    let vault = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8");
+    let run = |args: &[&str]| {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args(["--vault", vault, "--output", "json"])
+            .args(args)
+            .assert()
+            .success();
+        parse_stdout_json(&assert)
+    };
+
+    // Specs that start with `-` need no `--` separator.
+    let added = run(&[
+        "tasks",
+        "add",
+        "Call the dentist",
+        "--no-nlp",
+        "--due",
+        "2026-11-06T14:00",
+        "--reminder",
+        "-15m",
+        "--reminder",
+        "2026-11-05T09:00",
+        "--no-commit",
+    ]);
+    let reminders = added["frontmatter"]["reminders"]
+        .as_array()
+        .expect("reminders array");
+    assert_eq!(reminders.len(), 2, "{added}");
+    assert_eq!(reminders[0]["type"], "relative");
+    assert_eq!(reminders[0]["relatedTo"], "due");
+    assert_eq!(reminders[0]["offset"], "-PT15M");
+    assert_eq!(reminders[1]["type"], "absolute");
+    assert_eq!(reminders[1]["absoluteTime"], "2026-11-05T09:00");
+    let path = added["path"].as_str().expect("task path").to_string();
+
+    let report = run(&[
+        "tasks",
+        "reminder",
+        "add",
+        "Call the dentist",
+        "due-1h",
+        "--description",
+        "Leave now",
+        "--no-commit",
+    ]);
+    assert_eq!(report["action"], "reminder-add");
+    let shown = run(&["tasks", "show", "Call the dentist"]);
+    let reminders = shown["frontmatter"]["reminders"]
+        .as_array()
+        .expect("reminders array")
+        .clone();
+    assert_eq!(reminders.len(), 3, "{shown}");
+    assert_eq!(reminders[2]["offset"], "-PT1H");
+    assert_eq!(reminders[2]["description"], "Leave now");
+
+    let id = reminders[0]["id"].as_str().expect("reminder id");
+    let dry_run = run(&[
+        "tasks",
+        "reminder",
+        "remove",
+        "Call the dentist",
+        id,
+        "--dry-run",
+    ]);
+    assert_eq!(dry_run["dry_run"], true);
+    let source = fs::read_to_string(vault_root.join(&path)).expect("task source");
+    assert!(source.contains(id), "dry run must not write: {source}");
+    run(&[
+        "tasks",
+        "reminder",
+        "remove",
+        "Call the dentist",
+        id,
+        "--no-commit",
+    ]);
+    let source = fs::read_to_string(vault_root.join(&path)).expect("task source");
+    assert!(!source.contains(id), "{source}");
+    assert!(source.contains("-PT1H"), "{source}");
+}
+
+#[test]
 fn tasks_complete_json_output_marks_non_recurring_task_done() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

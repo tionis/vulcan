@@ -298,6 +298,104 @@ pub fn parse_tasknote_reminders(values: &[Value]) -> Vec<TaskNotesReminder> {
     values.iter().filter_map(parse_tasknote_reminder).collect()
 }
 
+/// A `TaskNotes` reminder object from a short spec, for creating reminders
+/// without writing YAML.
+///
+/// - Relative: an optional `due` or `scheduled` anchor and a signed offset,
+///   `-15m`, `due-1h`, `scheduled+2d`, `-1w`, or an ISO 8601 duration such as
+///   `-PT15M`; a bare anchor (`due`) fires at the anchor. Without an anchor,
+///   the reminder is relative to `default_related_to`.
+/// - Absolute: a date or date-time such as `2026-11-05T14:00`, kept as given.
+///
+/// # Errors
+///
+/// Returns a message when the spec is neither, or when a relative reminder
+/// has no anchor and no default.
+pub fn tasknote_reminder_from_spec(
+    spec: &str,
+    id: &str,
+    default_related_to: Option<&str>,
+    description: Option<&str>,
+) -> Result<Value, String> {
+    let spec = spec.trim();
+    let lowered = spec.to_ascii_lowercase();
+    let (anchor, rest) = ["scheduled", "due"]
+        .into_iter()
+        .find_map(|anchor| {
+            lowered
+                .strip_prefix(anchor)
+                .map(|_| (Some(anchor), spec[anchor.len()..].trim()))
+        })
+        .unwrap_or((None, spec));
+
+    let mut object = Map::new();
+    object.insert("id".to_string(), Value::String(id.to_string()));
+    if let Some(description) = description.map(str::trim).filter(|value| !value.is_empty()) {
+        object.insert(
+            "description".to_string(),
+            Value::String(description.to_string()),
+        );
+    }
+
+    let offset = if rest.is_empty() && anchor.is_some() {
+        Some("PT0M".to_string())
+    } else if let Some((sign, duration)) = rest
+        .strip_prefix('-')
+        .map(|duration| ("-", duration))
+        .or_else(|| rest.strip_prefix('+').map(|duration| ("", duration)))
+    {
+        Some(reminder_offset(sign, duration.trim()).ok_or_else(|| {
+            format!("invalid reminder offset `{rest}`: use e.g. -15m, -1h, -2d, -1w, or -PT15M")
+        })?)
+    } else {
+        None
+    };
+
+    match offset {
+        Some(offset) => {
+            let related_to = anchor.or(default_related_to).ok_or_else(|| {
+                format!("reminder `{spec}` is relative but the task has no due or scheduled date")
+            })?;
+            object.insert("type".to_string(), Value::String("relative".to_string()));
+            object.insert(
+                "relatedTo".to_string(),
+                Value::String(related_to.to_string()),
+            );
+            object.insert("offset".to_string(), Value::String(offset));
+        }
+        None if anchor.is_none() && parse_date_like_string(spec).is_some() => {
+            object.insert("type".to_string(), Value::String("absolute".to_string()));
+            object.insert("absoluteTime".to_string(), Value::String(spec.to_string()));
+        }
+        None => {
+            return Err(format!(
+                "invalid reminder `{spec}`: use an offset such as -15m or due-1h, or a date-time such as 2026-11-05T14:00"
+            ));
+        }
+    }
+    Ok(Value::Object(object))
+}
+
+/// An ISO 8601 offset from `15m`, `1h`, `2d`, `1w`, or an ISO duration
+/// (`PT15M`), negated by `sign` `-`.
+fn reminder_offset(sign: &str, duration: &str) -> Option<String> {
+    let upper = duration.to_ascii_uppercase();
+    if upper.starts_with('P') {
+        parse_iso8601_duration_ms(&upper)?;
+        return Some(format!("{sign}{upper}"));
+    }
+    let digits = duration.chars().take_while(char::is_ascii_digit).count();
+    let amount = duration[..digits].parse::<u64>().ok()?;
+    let iso = match duration[digits..].trim().to_ascii_lowercase().as_str() {
+        "m" | "min" | "mins" | "minute" | "minutes" => format!("PT{amount}M"),
+        "h" | "hour" | "hours" => format!("PT{amount}H"),
+        "d" | "day" | "days" => format!("P{amount}D"),
+        "w" | "week" | "weeks" => format!("P{}D", amount.checked_mul(7)?),
+        _ => return None,
+    };
+    Some(format!("{sign}{iso}"))
+}
+
 #[must_use]
 pub fn parse_iso8601_duration_ms(duration: &str) -> Option<i64> {
     let captures = Regex::new(
@@ -1304,6 +1402,45 @@ pub fn tasknote_paths_by_title(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn reminder_specs_become_tasknotes_reminder_objects() {
+        let reminder = |spec: &str, default: Option<&str>| {
+            super::tasknote_reminder_from_spec(spec, "rem_1", default, None)
+        };
+        assert_eq!(
+            reminder("-15m", Some("due")).unwrap(),
+            serde_json::json!({"id": "rem_1", "type": "relative", "relatedTo": "due", "offset": "-PT15M"})
+        );
+        assert_eq!(
+            reminder("scheduled-1h", Some("due")).unwrap()["relatedTo"],
+            "scheduled"
+        );
+        assert_eq!(reminder("due+2d", None).unwrap()["offset"], "P2D");
+        assert_eq!(reminder("-1w", Some("due")).unwrap()["offset"], "-P7D");
+        assert_eq!(reminder("-pt30m", Some("due")).unwrap()["offset"], "-PT30M");
+        assert_eq!(reminder("Due", None).unwrap()["offset"], "PT0M");
+        assert_eq!(
+            reminder("2026-11-05T14:00", None).unwrap(),
+            serde_json::json!({"id": "rem_1", "type": "absolute", "absoluteTime": "2026-11-05T14:00"})
+        );
+        assert_eq!(
+            super::tasknote_reminder_from_spec("-15m", "rem_2", Some("due"), Some(" Leave now "))
+                .unwrap()["description"],
+            "Leave now"
+        );
+
+        assert!(reminder("-15m", None)
+            .unwrap_err()
+            .contains("no due or scheduled"));
+        assert!(reminder("-15 parsecs", Some("due"))
+            .unwrap_err()
+            .contains("invalid reminder offset"));
+        assert!(reminder("whenever", Some("due"))
+            .unwrap_err()
+            .contains("invalid reminder"));
+    }
+
     use serde_json::json;
 
     use crate::config::{

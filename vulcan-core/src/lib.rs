@@ -352,7 +352,7 @@ pub use suggestions::{
 pub use tasknotes::{
     active_tasknote_time_entry, extract_tasknote, is_tasknote_document, parse_iso8601_duration_ms,
     parse_tasknote_natural_language, parse_tasknote_reminders, parse_tasknote_time_entries,
-    tasknotes_default_date_value, tasknotes_default_recurrence_rule,
+    tasknote_reminder_from_spec, tasknotes_default_date_value, tasknotes_default_recurrence_rule,
     tasknotes_default_reminder_values, tasknotes_priority_weight, tasknotes_reminder_notify_at,
     tasknotes_status_definition, tasknotes_status_state, tasknotes_total_time_minutes,
     IndexedTaskNote, ParsedTaskNoteInput, TaskNotesReminder, TaskNotesStatusState,

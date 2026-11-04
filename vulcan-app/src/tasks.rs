@@ -233,6 +233,138 @@ struct TaskMutationPlan {
     moved_to: Option<String>,
 }
 
+/// Add one reminder to a `TaskNotes` task from a spec such as `-15m`,
+/// `due-1h`, or `2026-11-05T14:00`. A relative reminder without an anchor
+/// counts from the task's due date, or its scheduled date when it has none.
+pub fn apply_task_reminder_add_with_guard(
+    paths: &VaultPaths,
+    request: &TaskReminderAddRequest,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<TaskMutationReport, AppError> {
+    apply_tasknote_mutation(
+        paths,
+        &request.task,
+        "reminder-add",
+        request.dry_run,
+        guard,
+        |frontmatter, loaded| {
+            let key = &loaded.config.tasknotes.field_mapping.reminders;
+            let mut reminders = frontmatter_reminders(frontmatter, key)?;
+            let default_related_to = if loaded.indexed.due.is_some() {
+                Some("due")
+            } else {
+                loaded.indexed.scheduled.as_ref().map(|_| "scheduled")
+            };
+            append_reminder_specs(
+                &mut reminders,
+                std::slice::from_ref(&request.spec),
+                default_related_to,
+                request.description.as_deref(),
+            )?;
+            write_reminders_plan(frontmatter, loaded, key, &reminders)
+        },
+    )
+}
+
+/// Remove the reminder with `id` from a `TaskNotes` task.
+pub fn apply_task_reminder_remove_with_guard(
+    paths: &VaultPaths,
+    request: &TaskReminderRemoveRequest,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<TaskMutationReport, AppError> {
+    apply_tasknote_mutation(
+        paths,
+        &request.task,
+        "reminder-remove",
+        request.dry_run,
+        guard,
+        |frontmatter, loaded| {
+            let key = &loaded.config.tasknotes.field_mapping.reminders;
+            let mut reminders = frontmatter_reminders(frontmatter, key)?;
+            let before = reminders.len();
+            reminders.retain(|reminder| {
+                reminder.get("id").and_then(Value::as_str) != Some(request.id.as_str())
+            });
+            if reminders.len() == before {
+                return Err(AppError::operation(format!(
+                    "task has no reminder with id `{}`",
+                    request.id
+                )));
+            }
+            write_reminders_plan(frontmatter, loaded, key, &reminders)
+        },
+    )
+}
+
+/// The task's `reminders` list as JSON objects.
+fn frontmatter_reminders(frontmatter: &YamlMapping, key: &str) -> Result<Vec<Value>, AppError> {
+    match frontmatter.get(YamlValue::String(key.to_string())) {
+        None | Some(YamlValue::Null) => Ok(Vec::new()),
+        Some(value @ YamlValue::Sequence(_)) => {
+            serde_json::from_value(serde_json::to_value(value).map_err(AppError::operation)?)
+                .map_err(AppError::operation)
+        }
+        Some(_) => Err(AppError::operation(format!(
+            "task property `{key}` is not a list of reminders"
+        ))),
+    }
+}
+
+fn write_reminders_plan(
+    frontmatter: &mut YamlMapping,
+    loaded: &LoadedTaskNote,
+    key: &str,
+    reminders: &[Value],
+) -> Result<TaskMutationPlan, AppError> {
+    let value = (!reminders.is_empty())
+        .then(|| yaml_serde::to_value(reminders))
+        .transpose()
+        .map_err(AppError::operation)?;
+    let mut changes = Vec::new();
+    if let Some(change) = set_tasknote_frontmatter_value(frontmatter, key, value) {
+        changes.push(change);
+    }
+    let modified_key = &loaded.config.tasknotes.field_mapping.date_modified;
+    if let Some(change) = set_tasknote_frontmatter_value(
+        frontmatter,
+        modified_key,
+        Some(YamlValue::String(tasknote_metadata_timestamp())),
+    ) {
+        changes.push(change);
+    }
+    Ok(TaskMutationPlan {
+        changes,
+        moved_to: None,
+    })
+}
+
+/// Append a reminder for each spec, each with a fresh `rem_<ms>_<n>` id as
+/// `TaskNotes` names them.
+fn append_reminder_specs(
+    reminders: &mut Vec<Value>,
+    specs: &[String],
+    default_related_to: Option<&str>,
+    description: Option<&str>,
+) -> Result<(), AppError> {
+    let stamp = current_utc_timestamp_ms();
+    for spec in specs {
+        // At most `len` ids are taken, so one of `len + 1` candidates is free.
+        let id = (0..=reminders.len())
+            .map(|n| format!("rem_{stamp}_{n}"))
+            .find(|id| {
+                !reminders
+                    .iter()
+                    .any(|reminder| reminder.get("id").and_then(Value::as_str) == Some(id))
+            })
+            .expect("an unused reminder id exists");
+        reminders.push(
+            vulcan_core::tasknote_reminder_from_spec(spec, &id, default_related_to, description)
+                .map_err(AppError::operation)?,
+        );
+    }
+    Ok(())
+}
+
 pub fn apply_task_set(
     paths: &VaultPaths,
     request: &TaskSetRequest,
@@ -785,8 +917,20 @@ pub fn apply_task_add_with_guard(
             YamlValue::String(recurrence.clone()),
         );
     }
-    if let Some(reminders) = default_tasknote_reminders_yaml_value(&config)? {
-        frontmatter.insert(YamlValue::String(mapping.reminders.clone()), reminders);
+    let mut reminders = tasknotes_default_reminder_values(
+        &config.tasknotes.task_creation_defaults.default_reminders,
+    );
+    let default_related_to = if due.is_some() {
+        Some("due")
+    } else {
+        scheduled.as_ref().map(|_| "scheduled")
+    };
+    append_reminder_specs(&mut reminders, &request.reminders, default_related_to, None)?;
+    if !reminders.is_empty() {
+        frontmatter.insert(
+            YamlValue::String(mapping.reminders.clone()),
+            yaml_serde::to_value(reminders).map_err(AppError::operation)?,
+        );
     }
     if config.tasknotes.identification_method
         == vulcan_core::TaskNotesIdentificationMethod::Property
@@ -1578,6 +1722,19 @@ fn task_reminders_report(
                 description: reminder.description,
                 notify_at: format_utc_timestamp_ms(notify_at),
                 overdue: notify_at < now_ms,
+                occurrence: record
+                    .indexed
+                    .recurrence
+                    .as_ref()
+                    .and(
+                        record
+                            .indexed
+                            .scheduled
+                            .as_deref()
+                            .or(record.indexed.due.as_deref()),
+                    )
+                    .and_then(date_part)
+                    .map(ToOwned::to_owned),
             });
         }
     }

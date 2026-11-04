@@ -55,6 +55,24 @@ pub struct TaskAddRequest {
     pub projects: Vec<String>,
     pub tags: Vec<String>,
     pub template: Option<String>,
+    /// Reminder specs, such as `-15m`, `due-1h`, or `2026-11-05T14:00`; see
+    /// [`vulcan_core::tasknote_reminder_from_spec`].
+    pub reminders: Vec<String>,
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct TaskReminderAddRequest {
+    pub task: String,
+    pub spec: String,
+    pub description: Option<String>,
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct TaskReminderRemoveRequest {
+    pub task: String,
+    pub id: String,
     pub dry_run: bool,
 }
 
@@ -210,6 +228,11 @@ pub struct TaskReminderItem {
     pub description: Option<String>,
     pub notify_at: String,
     pub overdue: bool,
+    /// For a recurring task, the day of the occurrence the reminder belongs
+    /// to (the task's scheduled day, else its due day): together with `path`
+    /// and `reminder_id` it identifies one delivery, and it is the instance to
+    /// pass to `tasks complete --date`.
+    pub occurrence: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

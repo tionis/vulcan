@@ -2,6 +2,7 @@ use super::{
     apply_note_frontmatter_mutation, apply_task_add, apply_task_archive, apply_task_complete,
     apply_task_complete_with_guard, apply_task_convert, apply_task_create,
     apply_task_create_with_guard, apply_task_pomodoro_start, apply_task_pomodoro_stop,
+    apply_task_reminder_add_with_guard, apply_task_reminder_remove_with_guard,
     apply_task_reschedule, apply_task_reschedule_with_guard, apply_task_set,
     apply_task_track_start, apply_task_track_stop, build_task_due_report,
     build_task_pomodoro_status_report, build_task_reminders_report, build_task_show_report,
@@ -12,8 +13,8 @@ use super::{
     process_due_tasknote_auto_archives, write_ordinary_task_conversion, TaskAddRequest,
     TaskArchiveRequest, TaskCompleteRequest, TaskConvertRequest, TaskCreateRequest,
     TaskEvalRequest, TaskListRequest, TaskPomodoroStartRequest, TaskPomodoroStopRequest,
-    TaskRescheduleRequest, TaskSetRequest, TaskTrackStartRequest, TaskTrackStopRequest,
-    TaskTrackSummaryPeriod,
+    TaskReminderAddRequest, TaskReminderRemoveRequest, TaskRescheduleRequest, TaskSetRequest,
+    TaskTrackStartRequest, TaskTrackStopRequest, TaskTrackSummaryPeriod,
 };
 use crate::templates::render_note_from_parts;
 use serde::Serialize;
@@ -1050,6 +1051,7 @@ fn guarded_task_add_uses_readable_template_without_hidden_shadowing() {
         projects: vec![],
         tags: vec![],
         template: Some("Task".into()),
+        reminders: Vec::new(),
         dry_run: true,
     };
     let report = super::apply_task_add_with_guard(&paths, &request, Some(&guard)).unwrap();
@@ -1084,6 +1086,7 @@ fn task_add_template_dry_run_cannot_create_side_notes() {
         projects: vec![],
         tags: vec![],
         template: Some("Task".into()),
+        reminders: Vec::new(),
         dry_run: true,
     };
     let _ = apply_task_add(&paths, &request);
@@ -2086,6 +2089,7 @@ fn apply_task_add_creates_tasknote_from_natural_language_input() {
             projects: Vec::new(),
             tags: Vec::new(),
             template: None,
+            reminders: Vec::new(),
             dry_run: false,
         },
     )
@@ -2136,6 +2140,7 @@ fn task_add_refuses_a_destination_created_while_waiting_for_the_vault_lock() {
                 projects: Vec::new(),
                 tags: Vec::new(),
                 template: None,
+                reminders: Vec::new(),
                 dry_run: false,
             },
         );
@@ -2179,6 +2184,7 @@ fn apply_task_add_dry_run_reports_changed_path() {
             projects: Vec::new(),
             tags: Vec::new(),
             template: None,
+            reminders: Vec::new(),
             dry_run: true,
         },
     )
@@ -2887,6 +2893,7 @@ fn managed_task_add_uses_create_journal() {
             projects: Vec::new(),
             tags: Vec::new(),
             template: None,
+            reminders: Vec::new(),
             dry_run: false,
         },
     )
@@ -4180,6 +4187,7 @@ fn task_add_uses_the_tasknotes_zettel_filename_setting() {
             projects: vec![],
             tags: vec![],
             template: None,
+            reminders: Vec::new(),
             dry_run: false,
         },
     )
@@ -4248,6 +4256,7 @@ fn tasknote_metadata_timestamps_use_local_offsets() {
             projects: vec![],
             tags: vec![],
             template: None,
+            reminders: Vec::new(),
             dry_run: false,
         },
     )
@@ -4345,4 +4354,103 @@ fn tasks_resolve_by_title_when_the_file_name_differs() {
     )
     .unwrap_err();
     assert!(!hidden.to_string().contains("Secret"), "{hidden}");
+}
+
+#[test]
+fn reminders_are_added_removed_and_report_their_occurrence() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    initialize_vulcan_dir(&paths).expect("init should succeed");
+    let config = load_vault_config(&paths).config;
+    let mapping = config.tasknotes.field_mapping.clone();
+    let string = |value: &str| YamlValue::String(value.to_string());
+    seed_tasknote(
+        &paths,
+        &config,
+        "Tasks/Standup.md",
+        "Standup",
+        "open",
+        &[
+            (
+                mapping.recurrence.as_str(),
+                string("DTSTART:20260105;FREQ=WEEKLY;BYDAY=MO"),
+            ),
+            (mapping.scheduled.as_str(), string("2026-01-05T09:00")),
+        ],
+        "",
+    )
+    .expect("seed recurring task");
+    scan_vault_with_progress(&paths, ScanMode::Incremental, |_| {}).expect("scan");
+
+    let add = |spec: &str, description: Option<&str>| {
+        apply_task_reminder_add_with_guard(
+            &paths,
+            &TaskReminderAddRequest {
+                task: "Standup".to_string(),
+                spec: spec.to_string(),
+                description: description.map(ToOwned::to_owned),
+                dry_run: false,
+            },
+            None,
+        )
+        .expect("add reminder");
+        scan_vault_with_progress(&paths, ScanMode::Incremental, |_| {}).expect("rescan");
+    };
+    add("-15m", Some("Join the call"));
+    add("2026-01-04T18:00", None);
+    let error = apply_task_reminder_add_with_guard(
+        &paths,
+        &TaskReminderAddRequest {
+            task: "Standup".to_string(),
+            spec: "soon".to_string(),
+            description: None,
+            dry_run: false,
+        },
+        None,
+    )
+    .expect_err("an unparseable spec is rejected");
+    assert!(error.to_string().contains("invalid reminder"), "{error}");
+
+    let report = build_task_reminders_report(&paths, "1d").expect("reminders report");
+    let mut reminders = report
+        .reminders
+        .iter()
+        .filter(|item| item.path == "Tasks/Standup.md")
+        .collect::<Vec<_>>();
+    reminders.sort_by(|left, right| left.notify_at.cmp(&right.notify_at));
+    assert_eq!(reminders.len(), 2, "{reminders:?}");
+    // The relative reminder follows the task's scheduled date, which a
+    // recurring task moves forward, so it names the occurrence it belongs to.
+    let relative = reminders
+        .iter()
+        .find(|item| item.reminder_type == "relative")
+        .expect("relative reminder");
+    assert_eq!(relative.related_to.as_deref(), Some("scheduled"));
+    assert_eq!(relative.description.as_deref(), Some("Join the call"));
+    assert_eq!(relative.occurrence.as_deref(), Some("2026-01-05"));
+    assert!(relative.notify_at.starts_with("2026-01-05"), "{relative:?}");
+
+    let absolute_id = reminders
+        .iter()
+        .find(|item| item.reminder_type == "absolute")
+        .expect("absolute reminder")
+        .reminder_id
+        .clone();
+    let remove = |id: &str| {
+        apply_task_reminder_remove_with_guard(
+            &paths,
+            &TaskReminderRemoveRequest {
+                task: "Standup".to_string(),
+                id: id.to_string(),
+                dry_run: false,
+            },
+            None,
+        )
+    };
+    remove(&absolute_id).expect("remove reminder");
+    let error = remove(&absolute_id).expect_err("a removed id is gone");
+    assert!(error.to_string().contains("no reminder with id"), "{error}");
+    let source = fs::read_to_string(temp_dir.path().join("Tasks/Standup.md")).unwrap();
+    assert!(!source.contains(&absolute_id), "{source}");
+    assert!(source.contains("-PT15M"), "{source}");
 }

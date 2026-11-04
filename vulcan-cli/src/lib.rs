@@ -442,12 +442,12 @@ pub use cli::{
     SkillCommand, SuggestCommand, SuggestLinkStatusArg, SyncCheckpointKindArg, SyncCommand,
     SyncConflictSideArg, SyncDeviceCommand, SyncForgeCommand, SyncScheduleCommand,
     SyncSelectionArgs, SyncTargetArgs, SyncTransportCommand, TagSortArg, TasksCommand,
-    TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg,
-    TasksViewCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TermuxNetworkArg,
-    TextBundleCommand, ToolCommand, ToolInitTemplateArg, TransportPolicyArg, TrustCommand,
-    UpdateChannelArg, UpdateChannelArgs, UpdateCommand, UpdateNetworkArg, UpdatePolicyArgs,
-    UpdateScheduleCommand, VaultCommand, VectorQueueCommand, VectorsCommand, WebCommand,
-    WebFetchMode, WikiPackageCommand, WikiSourceLocatorsArg,
+    TasksListSourceArg, TasksPomodoroCommand, TasksReminderCommand, TasksTrackCommand,
+    TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg, TemplateRenderArgs,
+    TemplateSubcommand, TermuxNetworkArg, TextBundleCommand, ToolCommand, ToolInitTemplateArg,
+    TransportPolicyArg, TrustCommand, UpdateChannelArg, UpdateChannelArgs, UpdateCommand,
+    UpdateNetworkArg, UpdatePolicyArgs, UpdateScheduleCommand, VaultCommand, VectorQueueCommand,
+    VectorsCommand, WebCommand, WebFetchMode, WikiPackageCommand, WikiSourceLocatorsArg,
 };
 use vulcan_core::Verbosity;
 

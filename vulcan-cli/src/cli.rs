@@ -6860,6 +6860,13 @@ pub enum TasksCommand {
         tags: Vec<String>,
         #[arg(long, help = "Optional note template name")]
         template: Option<String>,
+        #[arg(
+            long = "reminder",
+            allow_hyphen_values = true,
+            value_name = "SPEC",
+            help = "Reminder to add: an offset such as -15m, due-1h, or scheduled+0m (relative to due, else scheduled), or a date-time such as 2026-11-05T14:00; repeat for several"
+        )]
+        reminders: Vec<String>,
         #[arg(long, help = "Report the planned task file without writing it")]
         dry_run: bool,
         #[arg(long, help = "Skip auto-commit even when enabled in config")]
@@ -7019,6 +7026,11 @@ pub enum TasksCommand {
         #[command(subcommand)]
         command: TasksTrackCommand,
     },
+    #[command(about = "Add or remove reminders on one TaskNotes task")]
+    Reminder {
+        #[command(subcommand)]
+        command: TasksReminderCommand,
+    },
     #[command(about = "Manage TaskNotes pomodoro sessions")]
     Pomodoro {
         #[command(subcommand)]
@@ -7046,6 +7058,38 @@ pub enum TasksCommand {
     View {
         #[command(subcommand)]
         command: TasksViewCommand,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum TasksReminderCommand {
+    #[command(about = "Add one reminder to a TaskNotes task")]
+    Add {
+        #[arg(help = "Task path, filename, alias, or title")]
+        task: String,
+        #[arg(
+            allow_hyphen_values = true,
+            value_name = "SPEC",
+            help = "An offset such as -15m, due-1h, or scheduled+0m (relative to due, else scheduled), or a date-time such as 2026-11-05T14:00"
+        )]
+        spec: String,
+        #[arg(long, help = "Optional reminder text")]
+        description: Option<String>,
+        #[arg(long, help = "Report the planned change without writing the task file")]
+        dry_run: bool,
+        #[arg(long, help = "Skip auto-commit even when enabled in config")]
+        no_commit: bool,
+    },
+    #[command(about = "Remove one reminder from a TaskNotes task by its id")]
+    Remove {
+        #[arg(help = "Task path, filename, alias, or title")]
+        task: String,
+        #[arg(help = "Reminder id, as `tasks show` or `tasks reminders` reports it")]
+        id: String,
+        #[arg(long, help = "Report the planned change without writing the task file")]
+        dry_run: bool,
+        #[arg(long, help = "Skip auto-commit even when enabled in config")]
+        no_commit: bool,
     },
 }
 

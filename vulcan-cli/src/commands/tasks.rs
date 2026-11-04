@@ -6,14 +6,15 @@ use crate::output::{print_json, render_human_value, ListOutputControls};
 use crate::{
     print_bases_report, print_edit_report, refresh_after_write, resolve_cli_export,
     run_incremental_scan, warn_auto_commit_if_needed, Cli, CliError, EditReport, OutputFormat,
-    TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand,
-    TasksTrackSummaryPeriodArg, TasksViewCommand,
+    TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksReminderCommand,
+    TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand,
 };
 use serde_json::Value;
 use vulcan_app::tasks::{
     apply_task_add_with_guard, apply_task_archive_with_guard, apply_task_complete_with_guard,
     apply_task_convert_with_guard, apply_task_create_with_guard,
     apply_task_pomodoro_start_with_guard, apply_task_pomodoro_stop_with_guard,
+    apply_task_reminder_add_with_guard, apply_task_reminder_remove_with_guard,
     apply_task_reschedule_with_guard, apply_task_set_with_guard, apply_task_track_start_with_guard,
     apply_task_track_stop_with_guard, build_task_due_report_with_guard,
     build_task_pomodoro_status_report_with_guard, build_task_reminders_report_with_guard,
@@ -30,7 +31,8 @@ use vulcan_app::tasks::{
     TaskCreateRequest as AppTaskCreateRequest, TaskDueReport, TaskEvalRequest, TaskListRequest,
     TaskMutationReport, TaskNotesViewListReport, TaskPomodoroReport,
     TaskPomodoroStartRequest as AppTaskPomodoroStartRequest, TaskPomodoroStatusReport,
-    TaskPomodoroStopRequest as AppTaskPomodoroStopRequest, TaskRemindersReport,
+    TaskPomodoroStopRequest as AppTaskPomodoroStopRequest, TaskReminderAddRequest,
+    TaskReminderRemoveRequest, TaskRemindersReport,
     TaskRescheduleRequest as AppTaskRescheduleRequest, TaskSetRequest as AppTaskSetRequest,
     TaskShowReport, TaskTrackLogReport, TaskTrackReport,
     TaskTrackStartRequest as AppTaskTrackStartRequest, TaskTrackStatusReport,
@@ -79,6 +81,7 @@ pub(crate) fn handle_tasks_command(
             projects,
             tags,
             template,
+            reminders,
             dry_run,
             no_commit,
         } => {
@@ -97,6 +100,7 @@ pub(crate) fn handle_tasks_command(
                 projects,
                 tags,
                 template.as_deref(),
+                reminders,
                 *dry_run,
             )?;
             if !*dry_run {
@@ -154,6 +158,63 @@ pub(crate) fn handle_tasks_command(
                     .commit(
                         paths,
                         "tasks set",
+                        &report.changed_paths,
+                        cli.permissions.as_deref(),
+                        cli.verbosity(),
+                    )
+                    .map_err(CliError::operation)?;
+            }
+            print_task_mutation_report(cli.output, &report)
+        }
+        TasksCommand::Reminder { command } => {
+            let (task, dry_run, no_commit, action) = match command {
+                TasksReminderCommand::Add {
+                    task,
+                    dry_run,
+                    no_commit,
+                    ..
+                } => (task, *dry_run, *no_commit, "tasks reminder add"),
+                TasksReminderCommand::Remove {
+                    task,
+                    dry_run,
+                    no_commit,
+                    ..
+                } => (task, *dry_run, *no_commit, "tasks reminder remove"),
+            };
+            let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
+            let report = match command {
+                TasksReminderCommand::Add {
+                    spec, description, ..
+                } => apply_task_reminder_add_with_guard(
+                    paths,
+                    &TaskReminderAddRequest {
+                        task: task.clone(),
+                        spec: spec.clone(),
+                        description: description.clone(),
+                        dry_run,
+                    },
+                    Some(&guard),
+                ),
+                TasksReminderCommand::Remove { id, .. } => apply_task_reminder_remove_with_guard(
+                    paths,
+                    &TaskReminderRemoveRequest {
+                        task: task.clone(),
+                        id: id.clone(),
+                        dry_run,
+                    },
+                    Some(&guard),
+                ),
+            }
+            .map_err(CliError::operation)?;
+            if !report.dry_run && !report.changed_paths.is_empty() {
+                refresh_after_write(paths, &report.changed_paths)?;
+            }
+            if !dry_run {
+                auto_commit
+                    .commit(
+                        paths,
+                        action,
                         &report.changed_paths,
                         cli.permissions.as_deref(),
                         cli.verbosity(),
@@ -534,6 +595,7 @@ fn run_tasks_add_command(
     projects: &[String],
     tags: &[String],
     template: Option<&str>,
+    reminders: &[String],
     dry_run: bool,
 ) -> Result<TaskAddReport, CliError> {
     let report = apply_task_add_with_guard(
@@ -549,6 +611,7 @@ fn run_tasks_add_command(
             projects: projects.to_vec(),
             tags: tags.to_vec(),
             template: template.map(ToOwned::to_owned),
+            reminders: reminders.to_vec(),
             dry_run,
         },
         Some(guard),
@@ -1671,6 +1734,10 @@ fn should_process_tasknotes_auto_archive(command: &TasksCommand) -> bool {
         | TasksCommand::Convert { dry_run, .. }
         | TasksCommand::Create { dry_run, .. }
         | TasksCommand::Reschedule { dry_run, .. } => !*dry_run,
+        TasksCommand::Reminder { command } => match command {
+            TasksReminderCommand::Add { dry_run, .. }
+            | TasksReminderCommand::Remove { dry_run, .. } => !*dry_run,
+        },
         TasksCommand::Track { command } => match command {
             TasksTrackCommand::Start { dry_run, .. } | TasksTrackCommand::Stop { dry_run, .. } => {
                 !*dry_run
@@ -1706,6 +1773,11 @@ fn auto_archive_excluded_task(command: &TasksCommand) -> Option<&str> {
         | TasksCommand::Set { task, .. }
         | TasksCommand::Complete { task, .. }
         | TasksCommand::Reschedule { task, .. } => Some(task.as_str()),
+        TasksCommand::Reminder { command } => match command {
+            TasksReminderCommand::Add { task, .. } | TasksReminderCommand::Remove { task, .. } => {
+                Some(task.as_str())
+            }
+        },
         TasksCommand::Track { command } => match command {
             TasksTrackCommand::Start { task, .. }
             | TasksTrackCommand::Log { task }
