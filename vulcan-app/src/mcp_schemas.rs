@@ -505,6 +505,51 @@ pub fn task_reschedule_input_schema() -> Value {
     )
 }
 
+pub fn task_reminder_add_input_schema() -> Value {
+    schema_object(
+        vec![
+            (
+                "task",
+                schema_string("TaskNotes task path, file name, alias, or title."),
+            ),
+            (
+                "reminder",
+                schema_string(
+                    "An offset relative to due, else scheduled (-15m, -1h, -2d, -1w, -PT30M), an anchored offset (due-1h, scheduled+0m), or a date-time for an absolute reminder (2026-11-05T14:00).",
+                ),
+            ),
+            ("description", schema_string("Optional reminder text.")),
+            ("dry_run", schema_boolean("Preview without writing.")),
+            (
+                "no_commit",
+                schema_boolean("Suppress auto-commit for this mutation."),
+            ),
+        ],
+        &["task", "reminder"],
+    )
+}
+
+pub fn task_reminder_remove_input_schema() -> Value {
+    schema_object(
+        vec![
+            (
+                "task",
+                schema_string("TaskNotes task path, file name, alias, or title."),
+            ),
+            (
+                "id",
+                schema_string("Reminder id, as task_list or the task's frontmatter reports it."),
+            ),
+            ("dry_run", schema_boolean("Preview without writing.")),
+            (
+                "no_commit",
+                schema_boolean("Suppress auto-commit for this mutation."),
+            ),
+        ],
+        &["task", "id"],
+    )
+}
+
 pub fn note_create_input_schema() -> Value {
     schema_object(
         vec![

@@ -20317,7 +20317,9 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(
         mcp_skill.contains("used or refreshed while its profile is narrower is durably narrowed")
     );
-    assert!(mcp_skill.contains("`task_create`, `task_complete`, and `task_reschedule` recheck"));
+    assert!(mcp_skill.contains(
+        "`task_create`, `task_complete`, `task_reschedule`, `task_reminder_add`, and `task_reminder_remove` recheck"
+    ));
     assert!(mcp_skill.contains("final canonical HTTPS URL"));
     assert!(
         mcp_skill.contains("For browser-based local HTTP harnesses, send a valid `Origin` header")
@@ -35026,6 +35028,8 @@ fn mcp_server_exposes_default_read_search_status_tools_and_structured_results() 
         "task_create",
         "task_complete",
         "task_reschedule",
+        "task_reminder_add",
+        "task_reminder_remove",
         "web_search",
         "web_fetch",
         "config_show",
@@ -36409,6 +36413,8 @@ fn mcp_daily_tasks_and_query_tools_support_wiki_workflows() {
         "task_create",
         "task_complete",
         "task_reschedule",
+        "task_reminder_add",
+        "task_reminder_remove",
     ] {
         assert!(
             tools.iter().any(|tool| tool["name"] == expected),

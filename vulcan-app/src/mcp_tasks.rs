@@ -6,13 +6,15 @@ use vulcan_core::{ProfilePermissionGuard, VaultPaths};
 use crate::commit::AutoCommitPolicy;
 use crate::mcp_access::check_write_path_access;
 use crate::mcp_protocol::{
-    McpMethodError, McpTaskCompleteArgs, McpTaskCreateArgs, McpTaskRescheduleArgs,
+    McpMethodError, McpTaskCompleteArgs, McpTaskCreateArgs, McpTaskReminderAddArgs,
+    McpTaskReminderRemoveArgs, McpTaskRescheduleArgs,
 };
 use crate::scan::refresh_cache_for_paths;
 use crate::tasks::{
-    apply_task_complete_with_guard, apply_task_create_with_guard, apply_task_reschedule_with_guard,
-    TaskCompleteRequest, TaskCreateReport, TaskCreateRequest, TaskMutationReport,
-    TaskRescheduleRequest,
+    apply_task_complete_with_guard, apply_task_create_with_guard,
+    apply_task_reminder_add_with_guard, apply_task_reminder_remove_with_guard,
+    apply_task_reschedule_with_guard, TaskCompleteRequest, TaskCreateReport, TaskCreateRequest,
+    TaskMutationReport, TaskReminderAddRequest, TaskReminderRemoveRequest, TaskRescheduleRequest,
 };
 
 pub fn task_create(
@@ -106,6 +108,71 @@ pub fn task_reschedule(
         paths,
         profile_name,
         "task-reschedule",
+        &report.changed_paths,
+        args.dry_run,
+        args.no_commit,
+    )?;
+    Ok(report)
+}
+
+pub fn task_reminder_add(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    profile_name: &str,
+    args: McpTaskReminderAddArgs,
+) -> Result<TaskMutationReport, McpMethodError> {
+    let mut request = TaskReminderAddRequest {
+        task: args.task,
+        spec: args.reminder,
+        description: args.description,
+        dry_run: true,
+    };
+    if !args.dry_run {
+        let planned = apply_task_reminder_add_with_guard(paths, &request, Some(guard))
+            .map_err(|error| McpMethodError::tool(error.to_string()))?;
+        for path in &planned.changed_paths {
+            check_write_path_access(guard, path)?;
+        }
+    }
+    request.dry_run = args.dry_run;
+    let report = apply_task_reminder_add_with_guard(paths, &request, Some(guard))
+        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    refresh_and_commit(
+        paths,
+        profile_name,
+        "task-reminder-add",
+        &report.changed_paths,
+        args.dry_run,
+        args.no_commit,
+    )?;
+    Ok(report)
+}
+
+pub fn task_reminder_remove(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    profile_name: &str,
+    args: McpTaskReminderRemoveArgs,
+) -> Result<TaskMutationReport, McpMethodError> {
+    let mut request = TaskReminderRemoveRequest {
+        task: args.task,
+        id: args.id,
+        dry_run: true,
+    };
+    if !args.dry_run {
+        let planned = apply_task_reminder_remove_with_guard(paths, &request, Some(guard))
+            .map_err(|error| McpMethodError::tool(error.to_string()))?;
+        for path in &planned.changed_paths {
+            check_write_path_access(guard, path)?;
+        }
+    }
+    request.dry_run = args.dry_run;
+    let report = apply_task_reminder_remove_with_guard(paths, &request, Some(guard))
+        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    refresh_and_commit(
+        paths,
+        profile_name,
+        "task-reminder-remove",
         &report.changed_paths,
         args.dry_run,
         args.no_commit,
@@ -270,5 +337,60 @@ mod tests {
         assert!(fs::read_to_string(temporary.path().join("Tasks.md"))
             .unwrap()
             .contains("- [x]"));
+    }
+
+    #[test]
+    fn task_reminders_need_write_access_and_round_trip_under_a_writable_grant() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).unwrap();
+        fs::create_dir_all(temporary.path().join("TaskNotes/Tasks")).unwrap();
+        let task_path = temporary.path().join("TaskNotes/Tasks/Dentist.md");
+        let source =
+            "---\ntitle: Dentist\nstatus: open\ndue: 2026-11-06T14:00\ntags:\n- task\n---\n";
+        fs::write(&task_path, source).unwrap();
+        vulcan_core::scan_vault(&paths, vulcan_core::ScanMode::Full).unwrap();
+        let guard = |profile: &str| {
+            ProfilePermissionGuard::new(
+                &paths,
+                resolve_permission_profile(&paths, Some(profile)).unwrap(),
+            )
+        };
+        let (readonly, writable) = (guard("readonly"), guard("unrestricted"));
+        let add_args = || {
+            serde_json::from_value::<McpTaskReminderAddArgs>(json!({
+                "task": "Dentist", "reminder": "-1h", "description": "Leave", "no_commit": true,
+            }))
+            .unwrap()
+        };
+
+        assert!(task_reminder_add(&paths, &readonly, "readonly", add_args()).is_err());
+        assert_eq!(fs::read_to_string(&task_path).unwrap(), source);
+        let report = task_reminder_add(&paths, &writable, "unrestricted", add_args()).unwrap();
+        assert_eq!(report.changed_paths, vec!["TaskNotes/Tasks/Dentist.md"]);
+        let written = fs::read_to_string(&task_path).unwrap();
+        assert!(written.contains("offset: -PT1H"), "{written}");
+        assert!(written.contains("relatedTo: due"), "{written}");
+        let id = written
+            .lines()
+            .find_map(|line| {
+                line.trim_start()
+                    .trim_start_matches("- ")
+                    .strip_prefix("id: ")
+            })
+            .expect("reminder id")
+            .to_string();
+
+        let remove_args = |dry_run: bool| {
+            serde_json::from_value::<McpTaskReminderRemoveArgs>(json!({
+                "task": "Dentist", "id": id, "dry_run": dry_run, "no_commit": true,
+            }))
+            .unwrap()
+        };
+        assert!(task_reminder_remove(&paths, &readonly, "readonly", remove_args(false)).is_err());
+        task_reminder_remove(&paths, &writable, "unrestricted", remove_args(true)).unwrap();
+        assert_eq!(fs::read_to_string(&task_path).unwrap(), written);
+        task_reminder_remove(&paths, &writable, "unrestricted", remove_args(false)).unwrap();
+        assert!(!fs::read_to_string(&task_path).unwrap().contains(&id));
     }
 }

@@ -147,7 +147,7 @@ For daily workflow questions, prefer:
 
 - `daily` with `operation: latest|today|show|list|range` before generic reads or search. List/range calls are paginated and omit full event objects unless requested.
 - `task_list` or `task_query` for task summaries.
-- `task_create`, `task_complete`, and `task_reschedule` for task changes.
+- `task_create`, `task_complete`, and `task_reschedule` for task changes, and `task_reminder_add` and `task_reminder_remove` for TaskNotes reminders.
 - `index_scan` with `full: false` to refresh stale search/query results, or `full: true` to force a full reindex.
 - `note_append --periodic daily` as a low-risk log fallback.
 

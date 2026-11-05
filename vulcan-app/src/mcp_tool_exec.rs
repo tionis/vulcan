@@ -16,9 +16,10 @@ use crate::mcp_protocol::{
     McpNoteCreateArgs, McpNoteDeleteArgs, McpNoteGetArgs, McpNoteInfoArgs, McpNoteOutlineArgs,
     McpNotePatchArgs, McpNoteSetArgs, McpQueryArgs, McpSearchArgs, McpSuggestLinksArgs,
     McpSyncConflictsArgs, McpSyncDoctorArgs, McpSyncTargetArgs, McpTaskCompleteArgs,
-    McpTaskCreateArgs, McpTaskListArgs, McpTaskQueryArgs, McpTaskRescheduleArgs,
-    McpToolPackMutationArgs, McpToolResourceStore, McpWebFetchArgs, McpWebSearchArgs,
-    MCP_INLINE_TEXT_LIMIT, MCP_QUERY_DEFAULT_LIMIT, MCP_STRUCTURED_CONTENT_LIMIT,
+    McpTaskCreateArgs, McpTaskListArgs, McpTaskQueryArgs, McpTaskReminderAddArgs,
+    McpTaskReminderRemoveArgs, McpTaskRescheduleArgs, McpToolPackMutationArgs,
+    McpToolResourceStore, McpWebFetchArgs, McpWebSearchArgs, MCP_INLINE_TEXT_LIMIT,
+    MCP_QUERY_DEFAULT_LIMIT, MCP_STRUCTURED_CONTENT_LIMIT,
 };
 use crate::mcp_read_tools::MCP_QUERY_HARD_MAX;
 use crate::tools::CustomToolRegistryOptions;
@@ -217,6 +218,25 @@ impl McpToolExecution<'_> {
                 self.report(
                     tool.name,
                     &mcp_tasks::task_reschedule(self.paths, self.guard, self.profile_name, args)?,
+                )
+            }
+            McpToolId::TaskReminderAdd => {
+                let args: McpTaskReminderAddArgs = parse(arguments)?;
+                self.report(
+                    tool.name,
+                    &mcp_tasks::task_reminder_add(self.paths, self.guard, self.profile_name, args)?,
+                )
+            }
+            McpToolId::TaskReminderRemove => {
+                let args: McpTaskReminderRemoveArgs = parse(arguments)?;
+                self.report(
+                    tool.name,
+                    &mcp_tasks::task_reminder_remove(
+                        self.paths,
+                        self.guard,
+                        self.profile_name,
+                        args,
+                    )?,
                 )
             }
             McpToolId::NoteCreate => {

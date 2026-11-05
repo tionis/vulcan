@@ -636,6 +636,30 @@ pub struct McpTaskRescheduleArgs {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct McpTaskReminderAddArgs {
+    pub task: String,
+    pub reminder: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub no_commit: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpTaskReminderRemoveArgs {
+    pub task: String,
+    pub id: String,
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub no_commit: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpGraphCommunitiesArgs {
     #[serde(default)]
     pub community: Option<usize>,
