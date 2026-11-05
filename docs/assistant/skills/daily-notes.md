@@ -1,7 +1,7 @@
 ---
 name: daily-notes
 description: Work with daily and periodic notes, including event extraction.
-version: 4
+version: 5
 tools:
   - daily
   - daily_latest
@@ -30,7 +30,7 @@ Use this skill for daily note creation, review, journaling, and event-oriented w
 - Use CLI `today`/`daily today` only when the intent is to open or create today’s note. Use `daily show` for a read-only known-date lookup.
 - For any other day, use `daily open <date> --no-edit` (or `--dry-run` to learn the resolved path without creating it). New notes render the configured daily template with `{{date}}` set to that day.
 - CLI date arguments (`open`, `show`, `append --date`, `list --from/--to`) accept `YYYY-MM-DD`, `today`, `yesterday`, `tomorrow`, signed offsets such as `-1`, `+3`, `-2w`, `-1m`, and `last <weekday>` / `next <weekday>`, resolved against the local calendar day. Prefer an explicit `YYYY-MM-DD` when the user named a specific date.
-- Prefer `daily append` when adding log lines, follow-ups, or structured event entries. With `--heading`, entries land at the end of that section in order, and list items stay one tight list; text may start with `-` without a `--` separator.
+- Prefer `daily append` when adding log lines, follow-ups, or structured event entries. With `--heading`, entries land at the end of that section in order, and list items stay one tight list; text may start with `-` without a `--` separator. `--dry-run` reports the resulting note as `content` without writing it, and previews a missing note from its template without creating it; `periodic append --type <type>` accepts the same flag.
 - Use `daily list` when reviewing several days at once.
 - MCP `daily` list/range defaults to 20 newest-first items, omits full event objects, and returns `page.next_offset`; set `include_events: true` only when event details are needed.
 - Use `daily export-ics` only when the events need to leave the vault.

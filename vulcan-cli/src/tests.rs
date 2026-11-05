@@ -1187,6 +1187,7 @@ fn daily_append_accepts_list_items_without_a_separator() {
                 text: "- 03:00 text".to_string(),
                 heading: Some("## Notes".to_string()),
                 date: None,
+                dry_run: false,
                 no_commit: false,
             }),
         }
@@ -1204,6 +1205,7 @@ fn parses_daily_append_command() {
         "## Log",
         "--date",
         "2026-04-03",
+        "--dry-run",
         "--no-commit",
     ])
     .expect("cli should parse");
@@ -1215,6 +1217,7 @@ fn parses_daily_append_command() {
                 text: "Called Alice".to_string(),
                 heading: Some("## Log".to_string()),
                 date: Some("2026-04-03".to_string()),
+                dry_run: true,
                 no_commit: true,
             }),
         }

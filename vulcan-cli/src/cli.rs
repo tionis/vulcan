@@ -4224,6 +4224,11 @@ pub enum DailyCommand {
             help = "Date to append to, e.g. yesterday or 2026-04-03 (defaults to today)"
         )]
         date: Option<String>,
+        #[arg(
+            long,
+            help = "Report the resulting note without writing it or creating a missing one"
+        )]
+        dry_run: bool,
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
@@ -6771,6 +6776,11 @@ pub enum PeriodicSubcommand {
             help = "Target date (YYYY-MM-DD, yesterday, -1, ...); defaults to today"
         )]
         date: Option<String>,
+        #[arg(
+            long,
+            help = "Report the resulting note without writing it or creating a missing one"
+        )]
+        dry_run: bool,
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },

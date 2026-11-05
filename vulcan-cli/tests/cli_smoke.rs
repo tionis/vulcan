@@ -4210,6 +4210,57 @@ fn daily_append_creates_note_and_appends_under_heading() {
 }
 
 #[test]
+fn daily_append_dry_run_reports_the_note_without_creating_or_changing_it() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
+    let vault = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8");
+    let append = |date: &str, text: &str, dry_run: bool| {
+        let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+        command.args([
+            "--vault",
+            vault,
+            "--output",
+            "json",
+            "daily",
+            "append",
+            text,
+            "--heading",
+            "## Log",
+            "--date",
+            date,
+        ]);
+        if dry_run {
+            command.arg("--dry-run");
+        }
+        parse_stdout_json(&command.assert().success())
+    };
+
+    // A missing note is previewed, not created.
+    let preview = append("2026-04-03", "- first", true);
+    assert_eq!(preview["dry_run"], true);
+    assert_eq!(preview["created"], true);
+    assert_eq!(preview["appended"], false);
+    assert!(preview["content"]
+        .as_str()
+        .is_some_and(|content| content.contains("## Log\n- first\n")));
+    assert!(!vault_root.join("Journal/Daily/2026-04-03.md").exists());
+
+    // An existing note is left as it was.
+    append("2026-04-04", "- one", false);
+    let path = vault_root.join("Journal/Daily/2026-04-04.md");
+    let before = fs::read_to_string(&path).expect("daily note");
+    let preview = append("2026-04-04", "- two", true);
+    assert_eq!(preview["created"], false);
+    assert!(preview["content"]
+        .as_str()
+        .is_some_and(|content| content.ends_with("- one\n- two\n")));
+    assert_eq!(fs::read_to_string(&path).expect("daily note"), before);
+}
+
+#[test]
 fn appending_to_an_unreadable_note_fails_without_overwriting_it() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

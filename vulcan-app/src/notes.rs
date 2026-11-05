@@ -1837,6 +1837,25 @@ pub fn render_periodic_note_contents(
     )
 }
 
+/// Renders the template a missing periodic note would be created from,
+/// without letting the template create or change other notes, so a dry run
+/// can show the note it would write.
+pub fn preview_periodic_note_contents(
+    paths: &VaultPaths,
+    period_type: &str,
+    relative_path: &str,
+    warnings: &mut Vec<String>,
+) -> Result<String, AppError> {
+    render_periodic_note_contents_with_guard(
+        paths,
+        period_type,
+        relative_path,
+        warnings,
+        None,
+        true,
+    )
+}
+
 pub(crate) fn render_periodic_note_contents_with_guard(
     paths: &VaultPaths,
     period_type: &str,

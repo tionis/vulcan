@@ -9443,6 +9443,20 @@
                 ]
               },
               {
+                "help": "Report the resulting note without writing it or creating a missing one",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
                 "help": "Suppress auto-commit for this invocation",
                 "id": "no_commit",
                 "long": "no-commit",
@@ -16994,6 +17008,20 @@
                 "short": null,
                 "value_names": [
                   "DATE"
+                ]
+              },
+              {
+                "help": "Report the resulting note without writing it or creating a missing one",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
                 ]
               },
               {

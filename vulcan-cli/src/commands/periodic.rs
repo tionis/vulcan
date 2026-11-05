@@ -59,6 +59,11 @@ struct DailyAppendReport {
     created: bool,
     heading: Option<String>,
     appended: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    dry_run: bool,
+    /// The resulting note, reported only by a dry run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
     warnings: Vec<String>,
 }
 
@@ -178,6 +183,7 @@ pub(crate) fn handle_daily_command(
             text,
             heading,
             date,
+            dry_run,
             no_commit,
         } => {
             check_periodic_write_access(cli, paths, "daily", date.as_deref())?;
@@ -186,6 +192,7 @@ pub(crate) fn handle_daily_command(
                 text,
                 heading.as_deref(),
                 date.as_deref(),
+                *dry_run,
                 *no_commit,
                 cli.verbosity(),
                 "daily",
@@ -416,6 +423,7 @@ pub(crate) fn handle_periodic_command(
             period_type,
             heading,
             date,
+            dry_run,
             no_commit,
         }) => {
             check_periodic_write_access(cli, paths, period_type, date.as_deref())?;
@@ -424,6 +432,7 @@ pub(crate) fn handle_periodic_command(
                 text,
                 heading.as_deref(),
                 date.as_deref(),
+                *dry_run,
                 *no_commit,
                 cli.verbosity(),
                 period_type,
@@ -713,29 +722,70 @@ fn run_daily_export_ics_command(
     })
 }
 
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 fn run_daily_append_command(
     paths: &VaultPaths,
     text: &str,
     heading: Option<&str>,
     date: Option<&str>,
+    dry_run: bool,
     no_commit: bool,
     verbosity: Verbosity,
     period_type: &str,
 ) -> Result<DailyAppendReport, CliError> {
-    let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-    warn_auto_commit_if_needed(&auto_commit, verbosity);
-
     let config = load_vault_config(paths).config;
     let target = resolve_periodic_target(&config.periodic, period_type, date, true)?;
     let mut warnings = Vec::new();
+    let append = |current: &str| {
+        heading.map_or_else(
+            || append_at_end(current, text),
+            |heading| append_under_heading(current, heading, text),
+        )
+    };
+    let report = |target: PeriodicTarget, created: bool, warnings, content| DailyAppendReport {
+        period_type: target.period_type,
+        reference_date: target.reference_date,
+        start_date: target.start_date,
+        end_date: target.end_date,
+        path: target.path,
+        created,
+        heading: heading.map(ToOwned::to_owned),
+        appended: !dry_run,
+        dry_run,
+        content,
+        warnings,
+    };
+
+    if dry_run {
+        let absolute_path = paths.vault_root().join(&target.path);
+        if absolute_path.exists() && !absolute_path.is_file() {
+            return Err(CliError::operation(format!(
+                "path exists but is not a note file: {}",
+                target.path
+            )));
+        }
+        let existing = read_note_for_update(paths, &target.path).map_err(CliError::operation)?;
+        let created = existing.is_none();
+        let current = match existing {
+            Some(contents) => contents,
+            None => vulcan_app::notes::preview_periodic_note_contents(
+                paths,
+                period_type,
+                &target.path,
+                &mut warnings,
+            )
+            .map_err(CliError::operation)?,
+        };
+        let updated = append(&current);
+        return Ok(report(target, created, warnings, Some(updated)));
+    }
+
+    let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
+    warn_auto_commit_if_needed(&auto_commit, verbosity);
     let created =
         write_periodic_note_if_missing(paths, period_type, &target.path, &mut warnings, verbosity)?;
     let existing = read_note_for_update(paths, &target.path).map_err(CliError::operation)?;
-    let current = existing.as_deref().unwrap_or_default();
-    let updated = heading.map_or_else(
-        || append_at_end(current, text),
-        |heading| append_under_heading(current, heading, text),
-    );
+    let updated = append(existing.as_deref().unwrap_or_default());
     write_note_content(
         paths,
         &target.path,
@@ -749,18 +799,7 @@ fn run_daily_append_command(
 
     crate::refresh_after_write(paths, std::slice::from_ref(&target.path))?;
     commit_periodic_changes_if_needed(&auto_commit, paths, period_type, &target.path, verbosity)?;
-
-    Ok(DailyAppendReport {
-        period_type: target.period_type,
-        reference_date: target.reference_date,
-        start_date: target.start_date,
-        end_date: target.end_date,
-        path: target.path,
-        created,
-        heading: heading.map(ToOwned::to_owned),
-        appended: true,
-        warnings,
-    })
+    Ok(report(target, created, warnings, None))
 }
 
 fn validate_periodic_type(config: &PeriodicConfig, period_type: &str) -> Result<(), CliError> {
@@ -1036,6 +1075,23 @@ fn print_daily_append_report(
 ) -> Result<(), CliError> {
     match output {
         OutputFormat::Human | OutputFormat::Markdown => {
+            if report.dry_run {
+                if report.created {
+                    println!("Would create {}", report.path);
+                }
+                println!("Would append to {}", report.path);
+                if let Some(heading) = report.heading.as_deref() {
+                    println!("Heading: {heading}");
+                }
+                for warning in &report.warnings {
+                    eprintln!("Warning: {warning}");
+                }
+                if let Some(content) = report.content.as_deref() {
+                    println!();
+                    print!("{content}");
+                }
+                return Ok(());
+            }
             if report.created {
                 println!("Created {}", report.path);
             }
