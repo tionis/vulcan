@@ -13,7 +13,8 @@ pub use feature_gates::{
 };
 pub use write_repair::{
     accept_current_mdbase_write, build_mdbase_write_repair_status,
-    recover_interrupted_mdbase_write, recover_mdbase_write, MdbaseWriteAcceptCurrentReport,
+    recover_interrupted_mdbase_write, recover_interrupted_mdbase_write_with_guard,
+    recover_mdbase_write, recover_mdbase_write_with_guard, MdbaseWriteAcceptCurrentReport,
     MdbaseWriteRecoveryReport, MdbaseWriteRepairStatus,
 };
 mod bases_views;

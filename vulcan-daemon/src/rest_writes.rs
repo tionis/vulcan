@@ -164,6 +164,10 @@ fn run_write(
     let _permit = gate
         .enter()
         .map_err(|error| RestError::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string()))?;
+    // Inside the write gate, as the CLI does before each command: finish an
+    // interrupted mdbase write this registration may touch, or leave it for
+    // the write to report.
+    let _ = vulcan_app::mdbase::recover_interrupted_mdbase_write_with_guard(&paths, &guard);
     workflow(WriteRequest {
         paths: &paths,
         guard: &guard,

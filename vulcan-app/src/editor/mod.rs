@@ -165,6 +165,27 @@ impl EditorSession {
         self.permissions.as_deref()
     }
 
+    /// Whether an interrupted mdbase write is waiting for recovery. One
+    /// metadata lookup, cheap enough to ask before every request.
+    #[must_use]
+    pub fn mdbase_write_recovery_pending(&self) -> bool {
+        vulcan_core::mdbase::mdbase_write_recovery_pending(&self.paths)
+    }
+
+    /// Finish an interrupted mdbase write under this session's profile, as
+    /// the CLI does before each command. `Ok(false)` when none was pending;
+    /// an error leaves it pending (a profile that cannot read and write
+    /// every path it touched never recovers it).
+    pub fn recover_interrupted_mdbase_write(&self) -> Result<bool, AppError> {
+        let report = match self.guard() {
+            Some(guard) => {
+                crate::mdbase::recover_interrupted_mdbase_write_with_guard(&self.paths, guard)?
+            }
+            None => crate::mdbase::recover_interrupted_mdbase_write(&self.paths, None)?,
+        };
+        Ok(report.is_some_and(|report| report.review.is_some()))
+    }
+
     /// Whether the permission profile (if any) lets this session read
     /// `path`. Documents the editor itself has open are always readable to
     /// it.

@@ -1,7 +1,7 @@
 ---
 name: mdbase-collections
 description: Inspect, query, and safely edit an mdbase typed-Markdown collection (a folder with mdbase.yaml), including saved views and effective schemas.
-version: 2
+version: 3
 tools:
   - help
 metadata:
@@ -56,8 +56,9 @@ the collection keep their normal Vulcan behavior; use the other skills for them.
   contract file. Ask for an authorized profile; do not widen permissions yourself.
 - Records you cannot read behave as if they do not exist (`view_not_found`, `context_not_found`,
   absent from results and diagnostics). Do not try to infer them from failures.
-- An interrupted write is finished or rolled back automatically by the next CLI command whose
-  profile can read and write every file it touched (a stderr note names the transaction). Until
+- An interrupted write is finished or rolled back automatically by the next CLI command, MCP tool
+  call, or daemon request whose profile can read and write every file it touched (the CLI prints
+  a stderr note naming the transaction). Until
   then it blocks reads and writes of the collection, and the error names the transaction. Do not
   widen permissions to clear it.
 - A write is *blocked* when a file it touched changed since. A blocked write over records only

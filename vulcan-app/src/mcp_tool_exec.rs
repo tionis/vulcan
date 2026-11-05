@@ -48,6 +48,10 @@ impl McpToolExecution<'_> {
         name: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Value, McpMethodError> {
+        // As the CLI does before each command: finish an interrupted mdbase
+        // write this connection may touch, so it does not block the call. A
+        // failure leaves it pending for the tool to report.
+        let _ = crate::mdbase::recover_interrupted_mdbase_write_with_guard(self.paths, self.guard);
         let Some(authorized) = authorize_builtin_tool_call(
             name,
             arguments,

@@ -263,6 +263,11 @@ where
     let vault = served_vault(state, principal, id)?;
     let value = tokio::task::spawn_blocking(move || {
         let guard = vault.rest_read_guard()?;
+        // As the CLI does before each command: finish an interrupted mdbase
+        // write this registration may touch, or leave it for the read to
+        // report.
+        let _ =
+            vulcan_app::mdbase::recover_interrupted_mdbase_write_with_guard(&vault.paths, &guard);
         let value = read(&vault, &guard)?;
         serde_json::to_value(value)
             .map_err(|error| RestError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))

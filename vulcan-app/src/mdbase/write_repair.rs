@@ -54,8 +54,9 @@ pub fn build_mdbase_write_repair_status(
     paths: &VaultPaths,
     permission_profile: Option<&str>,
 ) -> Result<MdbaseWriteRepairStatus, AppError> {
-    let (_, loaded) = authorized_collection(paths, permission_profile)?;
-    let review = authorized_review(paths, &loaded, permission_profile)?;
+    let guard = profile_guard(paths, permission_profile)?;
+    let (_, loaded) = authorized_collection(paths, &guard)?;
+    let review = authorized_review(paths, &loaded, &guard)?;
     Ok(MdbaseWriteRepairStatus {
         pending: review.is_some(),
         review,
@@ -70,8 +71,18 @@ pub fn recover_mdbase_write(
     permission_profile: Option<&str>,
     dry_run: bool,
 ) -> Result<MdbaseWriteRecoveryReport, AppError> {
-    let (filter, loaded) = authorized_collection(paths, permission_profile)?;
-    let review = authorized_review(paths, &loaded, permission_profile)?;
+    recover_mdbase_write_with_guard(paths, &profile_guard(paths, permission_profile)?, dry_run)
+}
+
+/// [`recover_mdbase_write`] under an already resolved guard, for hosts such
+/// as the daemon that hold one per caller.
+pub fn recover_mdbase_write_with_guard(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    dry_run: bool,
+) -> Result<MdbaseWriteRecoveryReport, AppError> {
+    let (filter, loaded) = authorized_collection(paths, guard)?;
+    let review = authorized_review(paths, &loaded, guard)?;
     if dry_run || review.is_none() {
         return Ok(MdbaseWriteRecoveryReport {
             dry_run,
@@ -125,6 +136,19 @@ pub fn recover_interrupted_mdbase_write(
     recover_mdbase_write(paths, permission_profile, false).map(Some)
 }
 
+/// [`recover_interrupted_mdbase_write`] under an already resolved guard. Long-
+/// running hosts (MCP, the language server, the daemon) call this before each
+/// request, as the CLI does before each command.
+pub fn recover_interrupted_mdbase_write_with_guard(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+) -> Result<Option<MdbaseWriteRecoveryReport>, AppError> {
+    if !vulcan_core::mdbase::mdbase_write_recovery_pending(paths) {
+        return Ok(None);
+    }
+    recover_mdbase_write_with_guard(paths, guard, false).map(Some)
+}
+
 /// Retire a pending transaction that recovery cannot complete, keeping the
 /// current files, after a person reconciled them against `review_token`.
 pub fn accept_current_mdbase_write(
@@ -134,8 +158,9 @@ pub fn accept_current_mdbase_write(
     review_token: &str,
     dry_run: bool,
 ) -> Result<MdbaseWriteAcceptCurrentReport, AppError> {
-    let (_, loaded) = authorized_collection(paths, permission_profile)?;
-    authorized_review(paths, &loaded, permission_profile)?;
+    let guard = profile_guard(paths, permission_profile)?;
+    let (_, loaded) = authorized_collection(paths, &guard)?;
+    authorized_review(paths, &loaded, &guard)?;
     let accepted = accept_current_mdbase_write_transaction(
         paths,
         &loaded.collection,
@@ -155,10 +180,9 @@ pub fn accept_current_mdbase_write(
 /// without the consistent-read guard a pending journal would refuse.
 fn authorized_collection(
     paths: &VaultPaths,
-    permission_profile: Option<&str>,
+    guard: &ProfilePermissionGuard,
 ) -> Result<(vulcan_core::PermissionFilter, LoadedCollection), AppError> {
-    let guard = profile_guard(paths, permission_profile)?;
-    let filter = write_control_filter(&guard)?;
+    let filter = write_control_filter(guard)?;
     let collection = load_mdbase_collection(paths.vault_root())
         .map_err(AppError::operation)?
         .ok_or_else(|| AppError::operation("not an mdbase collection: missing mdbase.yaml"))?;
@@ -191,9 +215,8 @@ fn profile_guard(
 fn authorized_review(
     paths: &VaultPaths,
     loaded: &LoadedCollection,
-    permission_profile: Option<&str>,
+    guard: &ProfilePermissionGuard,
 ) -> Result<Option<MdbaseWriteReview>, AppError> {
-    let guard = profile_guard(paths, permission_profile)?;
     let review = inspect_mdbase_write_transaction(paths, &loaded.collection)
         .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
     if let Some(review) = review.as_ref() {
@@ -249,7 +272,7 @@ pub(super) fn interrupt_update_for_gate(
     )
     .map_err(text)?;
     let guard = profile_guard(paths, None).map_err(text)?;
-    let (filter, loaded) = authorized_collection(paths, None).map_err(text)?;
+    let (filter, loaded) = authorized_collection(paths, &guard).map_err(text)?;
     let permission = permission_revision(guard.selection()).map_err(text)?;
     let config = config_revision(&load_write_config(paths).map_err(text)?).map_err(text)?;
     let outcome = apply_mdbase_write_transaction_with_control_filter(
@@ -384,5 +407,83 @@ mod tests {
         let read = crate::mdbase::build_mdbase_read_report(&paths, "tasks/public.md", false, None)
             .unwrap();
         assert_eq!(read.record.frontmatter["title"], "Recovered");
+    }
+
+    #[test]
+    fn long_running_hosts_recover_before_their_requests() {
+        // The interrupt helper reuses one idempotency key, so each host gets
+        // its own interrupted collection.
+        let interrupted = || {
+            let (directory, paths) = fixture();
+            vulcan_core::initialize_vulcan_dir(&paths).unwrap();
+            fs::write(
+                paths.config_file(),
+                "[permissions.profiles.reader]\nread = \"all\"\nwrite = \"none\"\n",
+            )
+            .unwrap();
+            vulcan_core::scan_vault(&paths, vulcan_core::ScanMode::Full).unwrap();
+            interrupted_update(&paths);
+            assert!(vulcan_core::mdbase::mdbase_write_recovery_pending(&paths));
+            (directory, paths)
+        };
+        let recovered = |directory: &tempfile::TempDir, paths: &VaultPaths| {
+            !vulcan_core::mdbase::mdbase_write_recovery_pending(paths)
+                && fs::read_to_string(directory.path().join("tasks/public.md"))
+                    .unwrap()
+                    .contains("Recovered")
+        };
+
+        // The guard form (MCP tool calls, daemon REST) recovers only under a
+        // guard that may read and write the pending path.
+        let (directory, paths) = interrupted();
+        let reader = profile_guard(&paths, Some("reader")).unwrap();
+        assert!(recover_interrupted_mdbase_write_with_guard(&paths, &reader).is_err());
+        assert!(vulcan_core::mdbase::mdbase_write_recovery_pending(&paths));
+        let writer = profile_guard(&paths, None).unwrap();
+        assert!(recover_interrupted_mdbase_write_with_guard(&paths, &writer)
+            .unwrap()
+            .is_some_and(|report| report.outcome.is_some()));
+        assert!(recovered(&directory, &paths));
+
+        // `vulcan serve` and the daemon's per-vault routes.
+        let (directory, paths) = interrupted();
+        let route = |permissions: Option<&str>| {
+            crate::serve::route_request(
+                &paths,
+                &crate::serve::ServeRouteOptions {
+                    permissions: permissions.map(ToOwned::to_owned),
+                    watch_enabled: false,
+                },
+                &crate::serve::ServeHealthState::default(),
+                &crate::serve::ServeRequest {
+                    method: "GET".to_string(),
+                    path: "/".to_string(),
+                    query: std::collections::HashMap::new(),
+                },
+            )
+        };
+        route(Some("reader"));
+        assert!(vulcan_core::mdbase::mdbase_write_recovery_pending(&paths));
+        route(None);
+        assert!(recovered(&directory, &paths));
+
+        // The language server's session.
+        let (directory, paths) = interrupted();
+        // A session's profile is a device limit, defined outside synced config.
+        fs::write(
+            paths.local_config_file(),
+            "[permissions.profiles.reader]\nread = \"all\"\nwrite = \"none\"\n",
+        )
+        .unwrap();
+        let encoding = vulcan_core::editor::PositionEncoding::Utf16;
+        let mut session = crate::editor::EditorSession::new(paths.clone(), encoding);
+        assert!(session.mdbase_write_recovery_pending());
+        session.set_permission_profile("reader").unwrap();
+        assert!(session.recover_interrupted_mdbase_write().is_err());
+        assert!(session.mdbase_write_recovery_pending());
+        let session = crate::editor::EditorSession::new(paths.clone(), encoding);
+        assert!(session.recover_interrupted_mdbase_write().unwrap());
+        assert!(recovered(&directory, &paths));
+        assert!(!session.recover_interrupted_mdbase_write().unwrap());
     }
 }

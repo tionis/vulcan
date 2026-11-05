@@ -373,6 +373,10 @@ impl From<&lsp::ClientCapabilities> for ClientFeatures {
 }
 
 /// Work for the writer thread.
+/// How often a pending mdbase write that recovery could not finish is tried
+/// again on request.
+const RECOVERY_RETRY: Duration = Duration::from_secs(2);
+
 enum WriteJob {
     /// Bring the cache up to date with disk at startup.
     Refresh,
@@ -388,6 +392,8 @@ enum WriteJob {
     },
     /// Publish the link rewrites planned for a client rename that happened.
     ApplyPending { from: String, to: String },
+    /// Finish an interrupted mdbase write before reads meet it.
+    Recover,
 }
 
 /// An index change (or failure) reported to the main loop by the writer
@@ -433,6 +439,9 @@ struct Server<'c> {
     cursors: HashMap<String, TextPosition>,
     /// Documents with diagnostics due, and when.
     pending_diagnostics: HashMap<String, Instant>,
+    /// When a mdbase recovery job was last queued, so a pending write that
+    /// this profile cannot recover is retried at most every few seconds.
+    recovery_queued: Option<Instant>,
     jobs: Option<Sender<Job>>,
     writes: Option<Sender<WriteJob>>,
     indexed: Receiver<Indexed>,
@@ -541,6 +550,7 @@ impl<'c> Server<'c> {
             in_flight: Arc::new(Mutex::new(HashMap::new())),
             index_epoch: Arc::new(AtomicU64::new(0)),
             indexing: false,
+            recovery_queued: None,
             progress: Progress::None,
             stop_watching,
             owns_index,
@@ -670,6 +680,16 @@ impl<'c> Server<'c> {
                 request,
             });
             return;
+        }
+        if self
+            .recovery_queued
+            .is_none_or(|queued| queued.elapsed() >= RECOVERY_RETRY)
+            && self.session.mdbase_write_recovery_pending()
+        {
+            self.recovery_queued = Some(Instant::now());
+            // The writer recovers before later writes; reads queued now may
+            // still meet the pending write and report it.
+            self.write(WriteJob::Recover);
         }
         if request.method == "workspace/diagnostic" {
             // Refreshing makes clients re-pull every problem in the vault,
@@ -1105,8 +1125,17 @@ fn run_writer(
     events: &Sender<Indexed>,
 ) {
     for job in jobs {
+        // Every job first finishes an interrupted mdbase write, as the CLI
+        // does before each command; a failure leaves it for the job to meet.
+        let recovered = session.recover_interrupted_mdbase_write();
         let mut renames = Vec::new();
         let (startup, paths, result) = match job {
+            // A failure stays pending for the requests that meet it; it is
+            // not an indexing error.
+            WriteJob::Recover => {
+                let _ = recovered;
+                (false, Vec::new(), Ok(None))
+            }
             WriteJob::Refresh => (true, Vec::new(), session.refresh_index()),
             WriteJob::Scan { paths, renames } => {
                 let mut changed = paths.clone();

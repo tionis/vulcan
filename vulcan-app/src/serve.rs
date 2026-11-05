@@ -451,6 +451,10 @@ pub fn route_request_with_sessions(
         Ok(permissions) => permissions,
         Err(error) => return ServeResponse::error(500, error),
     };
+    // As the CLI does before each command: finish an interrupted mdbase
+    // write this profile may touch; a failure leaves it for the route to
+    // report.
+    let _ = crate::mdbase::recover_interrupted_mdbase_write_with_guard(paths, &permissions);
     let read_filter = match serve_read_filter(paths, options) {
         Ok(filter) => filter,
         Err(error) => return ServeResponse::error(500, error),
