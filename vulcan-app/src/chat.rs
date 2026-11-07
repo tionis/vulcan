@@ -43,6 +43,7 @@ pub const CHAT_INLINE_TEXT_LIMIT: usize = 3500;
 pub const CHAT_COMMANDS: &[(&str, &str)] = &[
     ("task", "Create a task, e.g. /task call Anna tomorrow 10:00"),
     ("daily", "Append a line to today's daily note"),
+    ("qa", "Run a QuickAdd choice, e.g. /qa Journal slept well"),
     ("today", "Open tasks due or scheduled up to today"),
     ("due", "Open tasks due within N days, e.g. /due 7"),
     ("reminders", "Upcoming reminders, e.g. /reminders 2d"),
@@ -65,6 +66,11 @@ pub enum ChatCommand {
     },
     Task {
         text: String,
+    },
+    /// Run the `QuickAdd` choice named at the start of `input`; list the
+    /// choices when `input` is empty.
+    QuickAdd {
+        input: String,
     },
     Today,
     Due {
@@ -104,7 +110,7 @@ impl ChatCommand {
         matches!(
             self,
             Self::Capture { .. } | Self::Daily { .. } | Self::Task { .. } | Self::Undo
-        )
+        ) || matches!(self, Self::QuickAdd { input } if !input.is_empty())
     }
 }
 
@@ -139,6 +145,9 @@ pub fn parse_chat_message(text: &str) -> ChatCommand {
         "start" | "help" => ChatCommand::Help,
         "task" | "t" => required("task", |text| ChatCommand::Task { text }),
         "daily" | "d" => required("daily", |text| ChatCommand::Daily { text }),
+        "qa" | "quickadd" => ChatCommand::QuickAdd {
+            input: args.to_string(),
+        },
         "capture" | "c" | "inbox" => required("capture", |text| ChatCommand::Capture { text }),
         "today" => ChatCommand::Today,
         "due" => match args.trim_end_matches('d') {
@@ -339,6 +348,7 @@ pub fn run_chat_command(
         ChatCommand::Capture { text } => capture(vault, text),
         ChatCommand::Daily { text } => append_daily(vault, text),
         ChatCommand::Task { text } => create_task(vault, text),
+        ChatCommand::QuickAdd { input } => quickadd(vault, input),
         ChatCommand::Today => due_tasks(vault, 0),
         ChatCommand::Due { days } => due_tasks(vault, *days),
         ChatCommand::Reminders { window } => reminders(vault, window),
@@ -761,6 +771,58 @@ fn append_daily(vault: &ChatVault<'_>, text: &str) -> Result<ChatReply, AppError
     Ok(ChatReply {
         text: format!("Added to {}", report.path),
         changed_paths: vec![report.path],
+        undo: undo.into_iter().collect(),
+        ..ChatReply::default()
+    })
+}
+
+fn quickadd(vault: &ChatVault<'_>, input: &str) -> Result<ChatReply, AppError> {
+    use crate::quickadd::{
+        match_quickadd_choice, quickadd_choices, quickadd_target_path, run_quickadd_choice,
+        QuickAddChoice,
+    };
+    let choices = quickadd_choices(&load_vault_config(vault.paths).config);
+    let list = || {
+        if choices.is_empty() {
+            return "No QuickAdd choices are configured. Import them with `vulcan config import quickadd`.".to_string();
+        }
+        let mut text = String::from("QuickAdd choices:\n");
+        for choice in &choices {
+            let kind = match choice {
+                QuickAddChoice::Capture(_) => "capture",
+                QuickAddChoice::Template(_) => "new note",
+            };
+            let _ = writeln!(text, "• {} ({kind})", choice.name());
+        }
+        text.push_str("Send /qa <choice> <text>.");
+        text
+    };
+    if input.trim().is_empty() {
+        return Ok(ChatReply::text(list()));
+    }
+    let Some((choice, value)) = match_quickadd_choice(&choices, input) else {
+        return Ok(ChatReply::text(format!(
+            "No QuickAdd choice matches.\n{}",
+            list()
+        )));
+    };
+    let (report, undo) = with_write(vault, || {
+        let target = quickadd_target_path(vault.paths, choice, &value)?;
+        let before = undo_before(vault.paths, &target);
+        let report = run_quickadd_choice(vault.paths, vault.guard, vault.profile, choice, &value)?;
+        let undo = (report.path == target && report.changed_paths == [target.clone()])
+            .then(|| undo_after(vault.paths, &report.path, before))
+            .flatten();
+        Ok((report, undo))
+    })?;
+    let verb = if report.created {
+        "Created"
+    } else {
+        "Added to"
+    };
+    Ok(ChatReply {
+        text: format!("{verb} {} ({})", report.path, report.choice),
+        changed_paths: report.changed_paths,
         undo: undo.into_iter().collect(),
         ..ChatReply::default()
     })

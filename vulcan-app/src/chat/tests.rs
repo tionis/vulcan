@@ -836,3 +836,90 @@ fn lone_links_are_captured_with_their_page_title() {
         "{inbox}"
     );
 }
+
+const QUICKADD_CONFIG: &str = r###"
+[templates]
+obsidian_folder = "Templates"
+[[quickadd.capture_choices]]
+id = "log"
+name = "Log"
+capture_to = "Journal/{{DATE:YYYY}}"
+format = "- {{VALUE}}"
+[quickadd.capture_choices.create_file_if_missing]
+enabled = true
+[quickadd.capture_choices.insert_after]
+heading = "## Log"
+
+[[quickadd.capture_choices]]
+id = "log-work"
+name = "Log work"
+capture_to = "Work.md"
+task = true
+
+[[quickadd.capture_choices]]
+id = "here"
+name = "Here"
+capture_to_active_file = true
+
+[[quickadd.template_choices]]
+id = "project"
+name = "Project"
+template_path = "Templates/Project.md"
+file_name_format = "{{VALUE}}"
+[quickadd.template_choices.folder]
+folders = ["Projects"]
+"###;
+
+#[test]
+fn quickadd_lists_and_runs_choices_by_name() {
+    let year = chrono::Local::now().format("%Y").to_string();
+    let fixture = Fixture::new(
+        QUICKADD_CONFIG,
+        &[
+            ("Work.md", "# Work\n"),
+            ("Templates/Project.md", "# Project\n\nStatus: new\n"),
+        ],
+    );
+    assert_eq!(
+        parse_chat_message("/qa"),
+        ChatCommand::QuickAdd {
+            input: String::new()
+        }
+    );
+    assert!(!parse_chat_message("/qa").writes(), "listing is a read");
+    assert!(parse_chat_message("/qa log x").writes());
+
+    let list = fixture.run("unrestricted", "/qa").unwrap();
+    assert!(list.text.contains("• Log (capture)"), "{}", list.text);
+    assert!(list.text.contains("• Project (new note)"), "{}", list.text);
+
+    // "Log work" wins over "Log" as the longer match; the choice adds a task.
+    let reply = fixture
+        .run("unrestricted", "/qa log WORK fix the build")
+        .unwrap();
+    assert_eq!(reply.text, "Added to Work.md (Log work)");
+    assert!(fixture.read("Work.md").contains("- [ ] fix the build"));
+    assert_eq!(reply.undo.len(), 1);
+
+    // A missing target is created, then the line goes under the heading.
+    let journal = format!("Journal/{year}.md");
+    let reply = fixture.run("unrestricted", "/qa Log slept well").unwrap();
+    assert_eq!(reply.text, format!("Created {journal} (Log)"));
+    assert_eq!(reply.changed_paths, vec![journal.clone()]);
+    assert!(fixture.read(&journal).contains("- slept well"));
+    assert_eq!(reply.undo[0].before, None, "undo removes the new note");
+
+    let reply = fixture.run("unrestricted", "/qa project Garden").unwrap();
+    assert_eq!(reply.text, "Created Projects/Garden.md (Project)");
+    assert!(fixture.read("Projects/Garden.md").contains("Status: new"));
+    let error = fixture
+        .run("unrestricted", "/qa project Garden")
+        .unwrap_err();
+    assert!(error.to_string().contains("already exists"), "{error}");
+
+    let error = fixture.run("unrestricted", "/qa here text").unwrap_err();
+    assert!(error.to_string().contains("active file"), "{error}");
+    let reply = fixture.run("unrestricted", "/qa nothing like it").unwrap();
+    assert!(reply.text.starts_with("No QuickAdd choice matches."));
+    assert!(fixture.run("readonly", "/qa log work x").is_err());
+}

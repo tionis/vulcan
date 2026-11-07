@@ -91,6 +91,7 @@ pub mod plugins;
 pub mod properties;
 pub mod publish;
 pub mod pull;
+pub mod quickadd;
 pub mod routed;
 pub mod scan;
 pub mod schedule_trust;

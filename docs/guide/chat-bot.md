@@ -74,6 +74,7 @@ write the task's note.
 | a photo, file, voice message, audio, or video | saved under `bot.attachment_folder` and captured as an embed, with the caption as text (files up to 20 MB) |
 | `/task <text>` | a TaskNotes task with natural-language dates (`/task call Anna tomorrow 10:00`), or an inline task in the inbox with `bot.task_target = "inline"` |
 | `/daily <text>` | appended to today's daily note |
+| `/qa [choice] [text]` | run an imported QuickAdd capture or template choice by name (`/qa Log slept well`); `/qa` alone lists them |
 | `/today`, `/due [days]` | open tasks due or scheduled by then, each with a Done button |
 | `/reminders [24h]` | upcoming reminders |
 | `/find <words>` | search results, each with a button that sends the note |
@@ -91,6 +92,24 @@ task_target = "tasknotes"           # tasknotes | inline
 attachment_folder = "Attachments"
 link_titles = true                  # fetch the title of a link sent on its own
 ```
+
+### QuickAdd choices
+
+Choices imported with `vulcan config import quickadd` can run from the chat. `/qa` lists them;
+`/qa <name> <text>` runs the choice whose name the message starts with (case doesn't matter, and the
+longest name wins, so `/qa Log work fix it` picks "Log work" over "Log"). The rest of the message
+is `{{VALUE}}`.
+
+- A capture choice renders its target (`{{DATE:...}}` tokens work), creates the note when the choice
+  says to, and adds its format as a line, after the configured heading, at the top, or at the end.
+  Task choices add `- [ ]`.
+- A template choice creates `<first folder>/<file name format>` from its template. It never
+  overwrites an existing note. The template's folder must be one of your template folders
+  (`templates.obsidian_folder` or `templates.templater_folder`).
+- Choices that need an editor are refused with a reason: capturing to the active file, picking a
+  file or folder, and macros.
+
+Replies carry an Undo button like other captures.
 
 ## Reminders
 
