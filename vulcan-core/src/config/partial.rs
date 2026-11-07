@@ -31,6 +31,13 @@ pub(super) struct PartialVulcanConfig {
     pub(super) permissions: Option<PartialPermissionsConfig>,
     pub(super) plugins: Option<BTreeMap<String, PartialPluginRegistration>>,
     pub(super) aliases: Option<BTreeMap<String, String>>,
+    pub(super) bot: Option<PartialBotConfig>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct PartialBotConfig {
+    pub(super) default_capture: Option<BotCaptureTarget>,
+    pub(super) task_target: Option<BotTaskTarget>,
 }
 
 #[derive(Debug, Deserialize, Default)]

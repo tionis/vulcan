@@ -1826,6 +1826,14 @@ fn editor_category_descriptor() -> CategoryDescriptor {
     }
 }
 
+fn bot_category_descriptor() -> CategoryDescriptor {
+    CategoryDescriptor {
+        key: "bot",
+        title: "Chat Bot",
+        description: "Where a chat bot's captures and tasks go in this vault.",
+    }
+}
+
 fn category_descriptor(display_segments: &[String]) -> CategoryDescriptor {
     match display_segments.first().map(String::as_str) {
         Some("link_resolution" | "link_style" | "attachment_folder" | "strict_line_breaks") => {
@@ -1915,6 +1923,7 @@ fn category_descriptor(display_segments: &[String]) -> CategoryDescriptor {
         },
         Some("integrations") => integration_routes_category_descriptor(),
         Some("editor") => editor_category_descriptor(),
+        Some("bot") => bot_category_descriptor(),
         Some("site") => CategoryDescriptor {
             key: "site",
             title: "Static Site",
@@ -1979,6 +1988,8 @@ fn config_path_description(path: &str) -> String {
         _ if path.starts_with("templates.") => {
             "Template discovery, file triggers, folder mappings, and shell integration.".to_string()
         }
+        "bot.default_capture" => "Where free-text chat bot messages are captured: the `[inbox]` note or today's daily note.".to_string(),
+        "bot.task_target" => "What the chat bot's `/task` creates: a TaskNotes task (with natural-language dates) or an inline task in the inbox note.".to_string(),
         _ if path.starts_with("tasks.") => {
             "Task query defaults, status sets, created-date behavior, and recurrence settings.".to_string()
         }

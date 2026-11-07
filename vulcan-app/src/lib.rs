@@ -42,6 +42,7 @@ pub mod background_policy;
 pub mod bases;
 pub mod batch_commit;
 pub mod browse;
+pub mod chat;
 pub mod checkbox;
 pub mod commit;
 pub mod config;

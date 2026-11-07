@@ -452,3 +452,7 @@ name = "{{folder_name}}"   # note stem; examples: index, README, readme, {{folde
 # interval = 2
 # anchor_date = "2026-01-05"
 # template = "sprint"
+
+# [bot]
+# default_capture = "inbox"  # inbox | daily
+# task_target = "tasknotes"  # tasknotes | inline

@@ -1092,6 +1092,17 @@ Named export profiles stored in config and managed by dedicated export commands.
   Preferred command: `vulcan export profile set`
   Example: `vulcan export profile create team-book --format epub 'from notes' -o exports/team.epub`
 
+### Chat Bot
+
+Where a chat bot's captures and tasks go in this vault.
+
+- `bot.default_capture` — type: `enum`; target: `shared|local`; default: `inbox`; values: `inbox`, `daily`
+  Where free-text chat bot messages are captured: the `[inbox]` note or today's daily note.
+  Example: `vulcan config set bot.default_capture <value>`
+- `bot.task_target` — type: `enum`; target: `shared|local`; default: `tasknotes`; values: `tasknotes`, `inline`
+  What the chat bot's `/task` creates: a TaskNotes task (with natural-language dates) or an inline task in the inbox note.
+  Example: `vulcan config set bot.task_target <value>`
+
 ### Editor
 
 Defaults for editors connected through `vulcan lsp`.

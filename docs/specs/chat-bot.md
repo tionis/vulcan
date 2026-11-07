@@ -76,9 +76,9 @@ reminders = true                        # this user receives reminders for these
 
 ```toml
 [bot]
-default_capture = "inbox"           # "inbox" | "daily" | "<QuickAdd capture choice name>"
-link_capture = "inbox"              # target for messages that are only a URL
-attachments_folder = "Attachments/Inbox"   # default: the vault's attachment folder
+default_capture = "inbox"           # "inbox" | "daily" (implemented)
+task_target = "tasknotes"           # "tasknotes" | "inline": what /task creates (implemented)
+# planned: QuickAdd capture choices by name, link_capture, attachments_folder
 
 [tasks.reminders]                   # implemented (slice 1)
 inline = true                       # parse ⏰ / (@…) / [remind:: …] on inline tasks
@@ -103,10 +103,10 @@ privacy = "title_only"
 | free text | capture to `bot.default_capture` | inbox capture / QuickAdd capture / daily append |
 | a message that is only a URL | capture to `bot.link_capture`; the title is fetched only if the profile allows network access | as above |
 | photo, document, voice | save under `attachments_folder` and capture an embed link, with the caption as text | attachment write plus capture |
-| `/c <choice> <text>` | capture with a named QuickAdd choice | QuickAdd capture |
+| `/c <text>`, `/capture <text>` | capture to the default target (QuickAdd choices by name are planned; Vulcan has no reusable QuickAdd capture workflow yet) | as free text |
 | `/daily <text>` | append to today's daily note | periodic append |
-| `/task <natural language>` | create a TaskNotes task (date, time, priority, and tags parsed as in `vulcan tasks add`) | TaskNotes create |
-| `/today`, `/due [7d]` | tasks due or scheduled in the window, each with a Done button | tasks due |
+| `/task <natural language>` | create a TaskNotes task (date, time, priority, and tags parsed as in `vulcan tasks add`), or an inline task in the inbox note with `bot.task_target = "inline"` | TaskNotes create / inline task create |
+| `/today`, `/due [7]` | open inline and TaskNotes tasks due or scheduled up to today (or N days ahead), each with a Done button | Tasks query |
 | `/reminders [24h]` | upcoming reminders | tasks reminders |
 | `/find <query>` | top 8 search hits, each with a button that sends the note | search |
 | `/note <path or title>` | send the note as text (split at 4096 characters) or as a file when it is long | note get |

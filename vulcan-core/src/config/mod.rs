@@ -2729,6 +2729,42 @@ pub struct VaultConfig {
     pub plugins: BTreeMap<String, PluginRegistration>,
     #[serde(default)]
     pub aliases: BTreeMap<String, String>,
+    #[serde(default)]
+    pub bot: BotConfig,
+}
+
+/// How a chat bot writes into this vault (`[bot]`). The bot itself, its
+/// token, and who may use it are device configuration.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BotConfig {
+    /// Where free-text messages go.
+    #[serde(default)]
+    pub default_capture: BotCaptureTarget,
+    /// What `/task` creates.
+    #[serde(default)]
+    pub task_target: BotTaskTarget,
+}
+
+/// A capture destination for bot messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum BotCaptureTarget {
+    /// The configured `[inbox]` note.
+    #[default]
+    Inbox,
+    /// Today's daily note.
+    Daily,
+}
+
+/// The kind of task `/task` creates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum BotTaskTarget {
+    /// A `TaskNotes` task note, with natural-language parsing.
+    #[default]
+    Tasknotes,
+    /// An inline task in the inbox note.
+    Inline,
 }
 
 impl Default for VaultConfig {
@@ -2764,6 +2800,7 @@ impl Default for VaultConfig {
             site: SiteConfig::default(),
             plugins: BTreeMap::new(),
             aliases: builtin_command_aliases(),
+            bot: BotConfig::default(),
         }
     }
 }
@@ -5261,6 +5298,14 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
 
     if let Some(aliases) = overrides.aliases {
         config.aliases.extend(aliases);
+    }
+    if let Some(bot) = overrides.bot {
+        if let Some(default_capture) = bot.default_capture {
+            config.bot.default_capture = default_capture;
+        }
+        if let Some(task_target) = bot.task_target {
+            config.bot.task_target = task_target;
+        }
     }
 }
 
