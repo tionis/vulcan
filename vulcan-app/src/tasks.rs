@@ -712,7 +712,7 @@ pub fn apply_task_add_with_guard(
 ) -> Result<TaskAddReport, AppError> {
     preflight_task_mutation_guard(paths, guard)?;
     let config = load_vault_config(paths).config;
-    let reference_ms = tasknote_reference_ms();
+    let reference_ms = tasknote_reference_ms(&config);
     let raw_title = request.text.trim();
     if raw_title.is_empty() {
         return Err(AppError::operation("task text cannot be empty"));
@@ -4547,7 +4547,7 @@ fn build_inline_task_create_plan(
     due: Option<&str>,
     priority: Option<&str>,
 ) -> Result<PlannedInlineTaskCreate, AppError> {
-    let reference_ms = tasknote_reference_ms();
+    let reference_ms = tasknote_reference_ms(config);
     let raw_text = text.trim();
     if raw_text.is_empty() {
         return Err(AppError::operation("task text cannot be empty"));
@@ -5012,7 +5012,7 @@ fn build_converted_tasknote(
     completed: bool,
     guard: Option<&ProfilePermissionGuard>,
 ) -> Result<PlannedConvertedTaskNote, AppError> {
-    let reference_ms = tasknote_reference_ms();
+    let reference_ms = tasknote_reference_ms(config);
     let raw_title = title_input.trim();
     if raw_title.is_empty() {
         return Err(AppError::operation("task text cannot be empty"));
@@ -7400,8 +7400,21 @@ fn current_utc_date_string() -> String {
     TemplateTimestamp::current().default_date_string()
 }
 
-fn tasknote_reference_ms() -> i64 {
-    parse_date_like_string(&TemplateTimestamp::current().default_date_string()).unwrap_or_default()
+/// Midnight UTC of today in the reminder timezone (the device's when unset):
+/// the task NLP reads "today" and "tomorrow" from the UTC day of this
+/// reference, so after local midnight it must already be the new day.
+fn tasknote_reference_ms(config: &VaultConfig) -> i64 {
+    tasknote_reference_ms_at(config, vulcan_core::current_utc_timestamp_ms())
+}
+
+fn tasknote_reference_ms_at(config: &VaultConfig, now_ms: i64) -> i64 {
+    let timezone = reminders::ReminderTimezone::from_config(&config.tasks.reminders)
+        .unwrap_or(reminders::ReminderTimezone::Local);
+    timezone
+        .date_at(now_ms)
+        .and_time(chrono::NaiveTime::MIN)
+        .and_utc()
+        .timestamp_millis()
 }
 
 fn normalize_tasknote_context(context: &str) -> Option<String> {
@@ -7468,7 +7481,7 @@ fn resolve_tasknote_date_input(
     let parsed = parse_tasknote_natural_language(
         &format!("placeholder {prefix} {trimmed}"),
         &config.tasknotes,
-        tasknote_reference_ms(),
+        tasknote_reference_ms(config),
     );
     let resolved = if scheduled {
         parsed.scheduled

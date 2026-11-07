@@ -4547,3 +4547,32 @@ fn reminders_report_includes_inline_task_reminders_in_the_vault_timezone() {
         .collect::<Vec<_>>();
     assert_eq!(titles, vec![("Only due", "2999-01-04T09:00:00Z", "due")]);
 }
+
+#[test]
+fn task_dates_are_read_from_the_local_day_after_local_midnight() {
+    let mut config = VaultConfig::default();
+    config.tasks.reminders.timezone = Some("Europe/Berlin".to_string());
+    // 00:13 in Berlin on Sunday 8 November is still Saturday in UTC.
+    let now = chrono::DateTime::parse_from_rfc3339("2026-11-07T23:13:00Z")
+        .unwrap()
+        .timestamp_millis();
+    let reference = super::tasknote_reference_ms_at(&config, now);
+    let parsed = vulcan_core::parse_tasknote_natural_language(
+        "call Anna tomorrow",
+        &config.tasknotes,
+        reference,
+    );
+    assert_eq!(
+        parsed.scheduled.or(parsed.due).as_deref(),
+        Some("2026-11-09")
+    );
+    let parsed = vulcan_core::parse_tasknote_natural_language(
+        "call Anna today",
+        &config.tasknotes,
+        reference,
+    );
+    assert_eq!(
+        parsed.scheduled.or(parsed.due).as_deref(),
+        Some("2026-11-08")
+    );
+}
