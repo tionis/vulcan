@@ -6055,6 +6055,17 @@ pub enum DaemonConfigCommand {
         profile: String,
         #[arg(long, help = "Send this user due reminders from these wikis")]
         reminders: bool,
+        #[arg(
+            long,
+            help = "Send this user sync failure, conflict, and pause alerts for these wikis"
+        )]
+        alerts: bool,
+        #[arg(
+            long,
+            value_name = "HH:MM",
+            help = "Send this user a daily digest of open tasks and reminders at this time"
+        )]
+        digest: Option<String>,
         #[arg(long, help = "Report without writing daemon configuration")]
         dry_run: bool,
     },

@@ -23,9 +23,9 @@ use vulcan_app::chat::reminders::{
 };
 use vulcan_app::chat::state::{ChatStateStore, ReminderLedgerEntry, ReminderState};
 use vulcan_app::chat::{
-    chat_help_text, chat_undo_id, chat_usage_text, parse_chat_message, run_chat_action,
-    run_chat_attachment, run_chat_command, run_chat_undo, ChatAction, ChatAttachment, ChatButton,
-    ChatCommand, ChatReply, ChatVault, CHAT_COMMANDS,
+    chat_digest, chat_help_text, chat_undo_id, chat_usage_text, parse_chat_message,
+    run_chat_action, run_chat_attachment, run_chat_command, run_chat_undo, ChatAction,
+    ChatAttachment, ChatButton, ChatCommand, ChatReply, ChatVault, CHAT_COMMANDS,
 };
 use vulcan_app::execution::MutationGate;
 use vulcan_app::tasks::ReminderSettings;
@@ -156,6 +156,7 @@ struct Bot<'a> {
     /// Each reminder recipient's plan per vault, refreshed every minute.
     plans: Vec<RecipientPlan>,
     next_plan_ms: i64,
+    next_digest_ms: i64,
 }
 
 struct RecipientPlan {
@@ -189,6 +190,7 @@ pub fn run_telegram_bot(
             .unwrap_or_default(),
         plans: Vec::new(),
         next_plan_ms: 0,
+        next_digest_ms: 0,
     };
     bot.status.state = "starting".to_string();
     bot.status.last_error = None;
@@ -236,6 +238,7 @@ pub fn run_telegram_bot(
                 // Only while this device holds the poll: a second device in
                 // conflict must not deliver the same reminders.
                 bot.deliver_reminders();
+                bot.deliver_digests();
                 bot.save_status();
             }
             Err(TelegramError::Unauthorized) => return bot.fail(&TelegramError::Unauthorized),
@@ -724,6 +727,75 @@ impl Bot<'_> {
             }
         }
         self.plans = plans;
+    }
+
+    /// Send each user with a digest time their daily digest of every vault,
+    /// once per local day, at or after that time.
+    fn deliver_digests(&mut self) {
+        let now = vulcan_core::current_utc_timestamp_ms();
+        if now < self.next_digest_ms {
+            return;
+        }
+        self.next_digest_ms = now + REPLAN_MS;
+        let Some(users) = self
+            .registry
+            .poll()
+            .ok()
+            .and_then(|config| config.bot.telegram)
+            .map(|telegram| telegram.users)
+        else {
+            return;
+        };
+        for user in &users {
+            let Some(at) = user
+                .digest
+                .as_deref()
+                .and_then(|at| chrono::NaiveTime::parse_from_str(at, "%H:%M").ok())
+            else {
+                continue;
+            };
+            for vault in &user.vaults {
+                let Ok(wiki) = self.user_vault(user, vault.as_str()) else {
+                    continue;
+                };
+                let paths = VaultPaths::new(&wiki.path);
+                let Ok(settings) = ReminderSettings::from_config(
+                    &load_vault_config(&paths).config.tasks.reminders,
+                ) else {
+                    continue;
+                };
+                let local = settings.timezone.local_datetime(now);
+                let day = local.date().format("%Y-%m-%d").to_string();
+                if local.time() < at
+                    || self
+                        .state
+                        .digest_day(PLATFORM, user.telegram_id, vault.as_str())
+                        .ok()
+                        .flatten()
+                        .as_deref()
+                        == Some(day.as_str())
+                {
+                    continue;
+                }
+                match self.with_vault(user, &wiki, |chat| chat_digest(chat, vault.as_str(), now)) {
+                    Ok(Some(reply)) => {
+                        self.send_reply(user.telegram_id, Some(vault.as_str()), &reply);
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        self.status.last_error = Some(format!("digest for {vault}: {error}"));
+                    }
+                }
+                // Once a day either way: a failing vault must not resend
+                // every minute.
+                if let Err(error) =
+                    self.state
+                        .set_digest_day(PLATFORM, user.telegram_id, vault.as_str(), &day)
+                {
+                    self.status.last_error = Some(format!("digest state: {error}"));
+                }
+            }
+        }
     }
 
     /// Plans for every allowlisted user with reminders on, per vault they

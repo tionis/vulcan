@@ -61,6 +61,8 @@ vaults = ["notes", "rpg"]               # registered vault names this user may r
 default_vault = "notes"
 profile = "bot-capture"                 # permission profile, capped by each registration's ceiling
 reminders = true                        # this user receives reminders for these vaults
+alerts = true                           # and the daemon's sync alerts for these vaults
+digest = "07:30"                        # and a daily digest at this time (each vault's timezone)
 ```
 
 - The service `worker.telegram-bot` is enabled when `[bot.telegram]` exists and the token
@@ -73,6 +75,15 @@ reminders = true                        # this user receives reminders for these
   counted in status with the user id.
 - The effective authority for a command is the intersection of the user's profile and the vault
   registration's ceiling, as for schedules. The bot can never widen what the device allows.
+- `alerts = true` adds a `telegram` sink to the alert delivery worker: failed, conflicted, and
+  paused synchronization is sent to these users for the vaults they may use, retried through the
+  durable alert ledger like webhook sinks. The sink exists while some user has `alerts`, so
+  turning it on for the first user needs a daemon restart; recipients are re-read at delivery.
+  Sending does not poll, so it works while another device holds the bot's `getUpdates`.
+- `digest = "HH:MM"` sends, once per local day per vault, the open tasks due or scheduled up to
+  today with Done buttons and the reminders still to come that day, at or after that time. A
+  vault with nothing to report sends nothing. The day sent is kept in bot state, so a restart does
+  not repeat it.
 - `bot-capture` is a suggested profile, not a built-in: read access plus writes limited to the
   inbox, daily notes, the TaskNotes folder, and attachments. The default when `profile` is
   omitted is `readonly`, so a forgotten setting cannot grant write access.

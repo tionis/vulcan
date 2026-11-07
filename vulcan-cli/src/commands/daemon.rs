@@ -122,8 +122,12 @@ pub(crate) fn handle_daemon_command(cli: &Cli, command: &DaemonCommand) -> Resul
         }
         DaemonCommand::AlertStatus => {
             let config = context.registry.load().map_err(CliError::operation)?;
-            let status = alert_delivery_status(&config.notifications, &context.state_root)
-                .map_err(CliError::operation)?;
+            let status = alert_delivery_status(
+                &config.notifications,
+                vulcan_daemon::alert_delivery::telegram_alert_sink(&config),
+                &context.state_root,
+            )
+            .map_err(CliError::operation)?;
             print_alert_delivery_status(cli.output, &status)
         }
         DaemonCommand::BotStatus => {
@@ -823,13 +827,19 @@ fn handle_bot_config(
             default_wiki,
             profile,
             reminders,
+            alerts,
+            digest,
             dry_run,
         } => bot_user(
             *telegram_id,
             wiki,
             default_wiki.as_deref(),
             profile,
-            *reminders,
+            BotUserDeliveries {
+                reminders: *reminders,
+                alerts: *alerts,
+                digest: digest.clone(),
+            },
         )
         .and_then(|user| {
             registry
@@ -847,12 +857,19 @@ fn handle_bot_config(
     Some(result)
 }
 
+/// What the bot sends a user unprompted.
+struct BotUserDeliveries {
+    reminders: bool,
+    alerts: bool,
+    digest: Option<String>,
+}
+
 fn bot_user(
     telegram_id: i64,
     wiki: &[String],
     default_wiki: Option<&str>,
     profile: &str,
-    reminders: bool,
+    deliveries: BotUserDeliveries,
 ) -> Result<DaemonBotUser, CliError> {
     Ok(DaemonBotUser {
         telegram_id,
@@ -862,7 +879,9 @@ fn bot_user(
             .transpose()
             .map_err(CliError::operation)?,
         profile: profile.to_string(),
-        reminders,
+        reminders: deliveries.reminders,
+        alerts: deliveries.alerts,
+        digest: deliveries.digest,
     })
 }
 

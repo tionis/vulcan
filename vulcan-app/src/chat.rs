@@ -827,6 +827,61 @@ fn due_tasks(vault: &ChatVault<'_>, days: u32) -> Result<ChatReply, AppError> {
     })
 }
 
+/// The daily digest of `vault`, named `vault_name`: open tasks due or
+/// scheduled up to today, with Done buttons, and the reminders still to
+/// come today. `None` when there is nothing to report.
+pub fn chat_digest(
+    vault: &ChatVault<'_>,
+    vault_name: &str,
+    now_ms: i64,
+) -> Result<Option<ChatReply>, AppError> {
+    let due = due_tasks(vault, 0)?;
+    let has_tasks = !due.buttons.is_empty();
+    let timezone =
+        ReminderTimezone::from_config(&load_vault_config(vault.paths).config.tasks.reminders)?;
+    let local_now = timezone.local_datetime(now_ms);
+    let midnight = local_now.date().succ_opt().unwrap_or(local_now.date());
+    let minutes_left = (midnight.and_time(chrono::NaiveTime::MIN) - local_now)
+        .num_minutes()
+        .max(1);
+    let report = build_task_reminders_report_with_guard(
+        vault.paths,
+        &format!("{minutes_left}m"),
+        Some(vault.guard),
+    )?;
+    let upcoming = report
+        .reminders
+        .iter()
+        .filter(|reminder| !reminder.overdue)
+        .filter_map(|reminder| {
+            let local = timezone.local_datetime(parse_date_like_string(&reminder.notify_at)?);
+            Some(format!("• {} {}", local.format("%H:%M"), reminder.title))
+        })
+        .take(CHAT_LIST_LIMIT)
+        .collect::<Vec<_>>();
+    if !has_tasks && upcoming.is_empty() {
+        return Ok(None);
+    }
+    let mut lines = vec![format!(
+        "☀️ {} · {vault_name}",
+        day_heading(vault.today, vault.today)
+    )];
+    if has_tasks {
+        lines.push(String::new());
+        lines.push(due.text);
+    }
+    if !upcoming.is_empty() {
+        lines.push(String::new());
+        lines.push("Reminders today:".to_string());
+        lines.extend(upcoming);
+    }
+    Ok(Some(ChatReply {
+        text: lines.join("\n"),
+        buttons: due.buttons,
+        ..ChatReply::default()
+    }))
+}
+
 fn reminders(vault: &ChatVault<'_>, window: &str) -> Result<ChatReply, AppError> {
     ensure_fresh(vault)?;
     let report = build_task_reminders_report_with_guard(vault.paths, window, Some(vault.guard))?;

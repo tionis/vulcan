@@ -496,9 +496,11 @@ fn daemon_worker_registrations(
     watcher_health: &crate::watcher_health::WatcherHealthRegistry,
 ) -> Result<Vec<ServiceRegistration>, DaemonProcessError> {
     validate_worker_agents(config, agents)?;
+    let telegram_alerts = crate::alert_delivery::telegram_alert_sink(config).cloned();
     let alert_enabled = config.notifications.desktop
         || !config.notifications.webhooks.is_empty()
-        || !config.notifications.commands.is_empty();
+        || !config.notifications.commands.is_empty()
+        || telegram_alerts.is_some();
     let alert_sender = Arc::new(Mutex::new(None::<AlertDeliverySender>));
     let mut registrations = Vec::new();
 
@@ -519,6 +521,7 @@ fn daemon_worker_registrations(
         move |service| {
             let (sender, worker) = match spawn_alert_delivery(
                 &alert_config,
+                telegram_alerts.as_ref(),
                 &alert_state_root,
                 alert_registry.clone(),
                 &alert_supervisor,

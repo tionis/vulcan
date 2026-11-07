@@ -221,6 +221,8 @@ fn fixture(base: &str, ceiling: Option<&str>, profile: &str) -> Fixture {
                 default_vault: None,
                 profile: profile.to_string(),
                 reminders: false,
+                alerts: false,
+                digest: None,
             },
             false,
         )
@@ -430,6 +432,7 @@ fn ignored_senders_are_counted_within_a_bound() {
         status: TelegramBotStatus::default(),
         plans: Vec::new(),
         next_plan_ms: 0,
+        next_digest_ms: 0,
     };
     for id in 1..=100 {
         bot.reject(id);
@@ -696,4 +699,99 @@ fn undo_buttons_revert_only_the_latest_capture() {
     assert_eq!(answers[2]["text"], "This button has expired.");
     stop.cancel();
     handle.join().unwrap().unwrap();
+}
+
+#[test]
+fn sync_alerts_reach_alert_users_of_the_wiki_only() {
+    let fake = Fake::default();
+    let fixture = fixture(&serve(&fake), None, "readonly");
+    // A variable only this test uses, so parallel tests cannot see it.
+    std::env::set_var("TEST_ALERT_TELEGRAM_TOKEN", TOKEN);
+    fixture
+        .registry
+        .set_telegram_bot(
+            "TEST_ALERT_TELEGRAM_TOKEN".to_string(),
+            fixture.config.api_base.clone(),
+            false,
+        )
+        .unwrap();
+    let alert = |wiki: &str| crate::alerts::SyncAlert {
+        version: 1,
+        event: "sync_conflicted".to_string(),
+        severity: crate::alerts::AlertSeverity::Warning,
+        job_id: "job-1".to_string(),
+        wiki_id: wiki.to_string(),
+        state: vulcan_sync::SyncJobState::Conflicted,
+        category: None,
+        retryable: false,
+    };
+    let config = fixture.registry.load().unwrap();
+    let telegram = config.bot.telegram.clone().unwrap();
+    assert!(
+        crate::alert_delivery::telegram_alert_sink(&config).is_none(),
+        "no user asked for alerts"
+    );
+    crate::alert_delivery::deliver_telegram(&fixture.registry, &telegram, &alert("notes")).unwrap();
+    assert!(fake.calls("sendMessage").is_empty());
+
+    let mut user = fixture.config.users[0].clone();
+    user.alerts = true;
+    fixture.registry.set_bot_user(user, false).unwrap();
+    let config = fixture.registry.load().unwrap();
+    assert!(crate::alert_delivery::telegram_alert_sink(&config).is_some());
+    crate::alert_delivery::deliver_telegram(&fixture.registry, &telegram, &alert("other")).unwrap();
+    assert!(fake.calls("sendMessage").is_empty(), "not the user's wiki");
+    crate::alert_delivery::deliver_telegram(&fixture.registry, &telegram, &alert("notes")).unwrap();
+    let sent = fake.calls("sendMessage");
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["chat_id"], json!(OWNER));
+    let text = sent[0]["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("⚠️ Vulcan sync needs resolution\nWiki `notes`"),
+        "{text}"
+    );
+}
+
+#[test]
+fn digests_arrive_once_a_day() {
+    let fake = Fake::default();
+    let fixture = fixture(&serve(&fake), None, "unrestricted");
+    let today = chrono::Utc::now().date_naive();
+    std::fs::write(
+        fixture.vault.join(".vulcan/config.toml"),
+        "[tasks.reminders]\ntimezone = \"UTC\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        fixture.vault.join("Today.md"),
+        format!("- [ ] Pay rent 📅 {today}\n"),
+    )
+    .unwrap();
+    let mut user = fixture.config.users[0].clone();
+    user.digest = Some("00:00".to_string());
+    fixture.registry.set_bot_user(user, false).unwrap();
+
+    let (stop, handle) = start(&fixture);
+    let sent = fake.wait_for("sendMessage", 1);
+    let text = sent[0]["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("☀️ Today, ") && text.contains("Pay rent"),
+        "{text}"
+    );
+    assert_eq!(
+        sent[0]["reply_markup"]["inline_keyboard"][0][0]["text"],
+        "Done: Pay rent"
+    );
+    let polls = fake.calls("getUpdates").len();
+    fake.wait_for("getUpdates", polls + 5);
+    stop.cancel();
+    handle.join().unwrap().unwrap();
+
+    // Neither a later cycle nor a restart sends it again the same day.
+    let (stop, handle) = start(&fixture);
+    let polls = fake.calls("getUpdates").len();
+    fake.wait_for("getUpdates", polls + 5);
+    stop.cancel();
+    handle.join().unwrap().unwrap();
+    assert_eq!(fake.calls("sendMessage").len(), 1);
 }

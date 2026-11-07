@@ -3174,6 +3174,9 @@ fn parses_daemon_telegram_bot_configuration() {
         "--profile",
         "agent",
         "--reminders",
+        "--alerts",
+        "--digest",
+        "07:30",
     ])
     .expect("bot user parses");
     let Command::Daemon {
@@ -3186,6 +3189,8 @@ fn parses_daemon_telegram_bot_configuration() {
                         default_wiki,
                         profile,
                         reminders,
+                        alerts,
+                        digest,
                         dry_run,
                     },
             },
@@ -3197,7 +3202,8 @@ fn parses_daemon_telegram_bot_configuration() {
     assert_eq!(wiki, vec!["notes".to_string(), "rpg".to_string()]);
     assert_eq!(default_wiki.as_deref(), Some("rpg"));
     assert_eq!(profile, "agent");
-    assert!(reminders && !dry_run);
+    assert!(reminders && alerts && !dry_run);
+    assert_eq!(digest.as_deref(), Some("07:30"));
     assert!(
         Cli::try_parse_from(["vulcan", "daemon", "config", "set-bot-user", "12345"]).is_err(),
         "a user needs at least one wiki"

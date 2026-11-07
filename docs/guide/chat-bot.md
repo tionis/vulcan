@@ -135,6 +135,23 @@ by default). A reminder that was already due when its task was created, such as 
 reminder on a task created at noon and scheduled for today, is not sent. Reminders are added when a task is created,
 so existing tasks keep theirs. Inline tasks use `⏰` instead (see above).
 
+## Alerts and the daily digest
+
+Two more things the bot can send unprompted, set per user (repeat every flag you want to keep,
+since `set-bot-user` replaces the user's entry):
+
+```sh
+vulcan daemon config set-bot-user 123456789 --wiki notes --profile bot-capture \
+  --reminders --alerts --digest 07:30
+```
+
+- `--alerts` sends the daemon's attention alerts for the user's vaults: synchronization that
+  failed, needs conflict resolution, or paused. They use the same durable, retried delivery as
+  desktop and webhook alerts. Restart the daemon after giving the first user alerts.
+- `--digest 07:30` sends a morning summary per vault: open tasks due or scheduled up to today,
+  with Done buttons, and the reminders still to come that day. It is sent once a day at or after
+  that time in the vault's reminder timezone, and skipped when there is nothing to report.
+
 ## Status and troubleshooting
 
 `vulcan daemon bot-status` shows whether the token variable is set, the allowed users, the service

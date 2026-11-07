@@ -272,6 +272,14 @@ pub struct DaemonBotUser {
     /// Deliver due reminders of these vaults to this user.
     #[serde(default, skip_serializing_if = "is_false")]
     pub reminders: bool,
+    /// Send this user the daemon's attention alerts (failed, conflicted, or
+    /// paused synchronization) for these vaults.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub alerts: bool,
+    /// Send a daily digest of open tasks and reminders at this `HH:MM`, in
+    /// each vault's reminder timezone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
 }
 
 fn default_bot_user_profile() -> String {
@@ -1458,6 +1466,14 @@ fn validate_telegram_bot_config(bot: &DaemonTelegramBotConfig) -> Result<(), Reg
             if !user.vaults.contains(default_vault) {
                 return Err(RegistryError::InvalidDaemonSetting(format!(
                     "bot user {}'s default vault `{default_vault}` is not among their vaults",
+                    user.telegram_id
+                )));
+            }
+        }
+        if let Some(digest) = &user.digest {
+            if chrono::NaiveTime::parse_from_str(digest, "%H:%M").is_err() {
+                return Err(RegistryError::InvalidDaemonSetting(format!(
+                    "bot user {}'s digest time `{digest}` must be HH:MM",
                     user.telegram_id
                 )));
             }
@@ -3128,6 +3144,8 @@ profile = "files_only"
             default_vault: None,
             profile: "readonly".to_string(),
             reminders: false,
+            alerts: false,
+            digest: None,
         };
         let invalid = |result: Result<DaemonConfig, RegistryError>| {
             matches!(result, Err(RegistryError::InvalidDaemonSetting(_)))
@@ -3164,6 +3182,19 @@ profile = "files_only"
         let mut bad_profile = user(1, &["notes"]);
         bad_profile.profile = "../x".to_string();
         assert!(invalid(registry.set_bot_user(bad_profile, false)));
+        let mut bad_digest = user(1, &["notes"]);
+        bad_digest.digest = Some("8am".to_string());
+        assert!(invalid(registry.set_bot_user(bad_digest, false)));
+        let mut digest = user(9, &["notes"]);
+        digest.digest = Some("07:30".to_string());
+        digest.alerts = true;
+        registry.set_bot_user(digest, false).unwrap();
+        let written = fs::read_to_string(registry.path()).unwrap();
+        assert!(
+            written.contains("digest = \"07:30\"") && written.contains("alerts = true"),
+            "{written}"
+        );
+        registry.remove_bot_user(9, false).unwrap();
 
         registry.set_bot_user(user(7, &["notes"]), false).unwrap();
         let mut writer = user(7, &["notes"]);

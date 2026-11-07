@@ -698,3 +698,40 @@ fn file_names_are_sanitized() {
     assert!(clean.len() <= 100, "{clean}");
     assert_eq!(clean.rsplit_once('.').map(|(_, ext)| ext), Some("ogg"));
 }
+
+#[test]
+fn digests_list_todays_tasks_and_remaining_reminders() {
+    let today = chrono::Utc::now().date_naive();
+    let fixture = Fixture::new(
+        "[tasks.reminders]\ntimezone = \"UTC\"\n",
+        &[(
+            "Today.md",
+            &format!(
+                "- [ ] Pay rent 📅 {today}\n- [ ] Call the bank ⏰ {today} 23:59\n- [ ] Next year 📅 2999-01-01\n"
+            ),
+        )],
+    );
+    let guard = fixture.guard("unrestricted");
+    let vault = vault_for(&fixture, &guard, "unrestricted");
+    let now = chrono::Utc::now().timestamp_millis();
+    let digest = chat_digest(&vault, "notes", now)
+        .unwrap()
+        .expect("something to report");
+    let text = digest.text;
+    assert!(text.starts_with("☀️ Today, "), "{text}");
+    assert!(
+        text.contains("· notes\n\nDue today (1):\n• Pay rent · Today"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Reminders today:\n• 23:59 Call the bank"),
+        "{text}"
+    );
+    assert!(!text.contains("Next year"), "{text}");
+    assert_eq!(digest.buttons.len(), 1);
+
+    let empty = Fixture::new("", &[("Later.md", "- [ ] Next year 📅 2999-01-01\n")]);
+    let guard = empty.guard("unrestricted");
+    let vault = vault_for(&empty, &guard, "unrestricted");
+    assert_eq!(chat_digest(&vault, "notes", now).unwrap(), None);
+}

@@ -2,8 +2,9 @@
 
 use crate::alerts::{deliver_desktop, DesktopNetworkPolicy, SyncAlert};
 use crate::registry::{
-    DaemonCommandNotificationConfig, DaemonNotificationConfig, DaemonWebhookFormat,
-    DaemonWebhookNotificationConfig, NetworkNotificationMode, WikiId, WikiRegistry,
+    DaemonCommandNotificationConfig, DaemonConfig, DaemonNotificationConfig,
+    DaemonTelegramBotConfig, DaemonWebhookFormat, DaemonWebhookNotificationConfig,
+    NetworkNotificationMode, WikiId, WikiRegistry,
 };
 use crate::shutdown::ShutdownSignal;
 use crate::supervisor::SyncSupervisor;
@@ -182,9 +183,10 @@ pub struct PendingAlertDelivery {
 
 pub fn alert_delivery_status(
     config: &DaemonNotificationConfig,
+    telegram: Option<&DaemonTelegramBotConfig>,
     state_root: &Path,
 ) -> Result<AlertDeliveryStatus, AlertDeliveryError> {
-    let sinks = configured_sinks(config);
+    let sinks = configured_sinks(config, telegram);
     let path = state_root.join("daemon").join(LEDGER_FILE);
     let ledger = DeliveryLedger::load(path)?;
     let pending_deliveries = ledger
@@ -227,6 +229,10 @@ pub fn alert_delivery_status(
                 DeliverySink::Command(config) => Some(AlertSinkStatus {
                     name: config.name.clone(),
                     kind: "command",
+                }),
+                DeliverySink::Telegram(_) => Some(AlertSinkStatus {
+                    name: "telegram".to_string(),
+                    kind: "telegram",
                 }),
             })
             .collect(),
@@ -282,12 +288,13 @@ pub fn spawn_best_effort_desktop_delivery(
 /// between supervisor completion and alert enqueue.
 pub fn spawn_alert_delivery(
     config: &DaemonNotificationConfig,
+    telegram: Option<&DaemonTelegramBotConfig>,
     state_root: &Path,
     registry: WikiRegistry,
     supervisor: &SyncSupervisor,
     stop: Arc<ShutdownSignal>,
 ) -> Result<Option<(AlertDeliverySender, AlertDeliveryWorker)>, AlertDeliveryError> {
-    let sinks = configured_sinks(config);
+    let sinks = configured_sinks(config, telegram);
     if sinks.is_empty() {
         return Ok(None);
     }
@@ -416,6 +423,19 @@ enum DeliverySink {
     Desktop,
     Webhook(DaemonWebhookNotificationConfig),
     Command(DaemonCommandNotificationConfig),
+    /// Chat bot users with `alerts = true`, resolved again at delivery so
+    /// allowlist changes apply.
+    Telegram(DaemonTelegramBotConfig),
+}
+
+/// The Telegram bot configuration when some bot user receives alerts.
+#[must_use]
+pub fn telegram_alert_sink(config: &DaemonConfig) -> Option<&DaemonTelegramBotConfig> {
+    config
+        .bot
+        .telegram
+        .as_ref()
+        .filter(|telegram| telegram.users.iter().any(|user| user.alerts))
 }
 
 impl DeliverySink {
@@ -424,6 +444,7 @@ impl DeliverySink {
             Self::Desktop => "desktop".to_string(),
             Self::Webhook(config) => format!("webhook:{}", config.name),
             Self::Command(config) => format!("command:{}", config.name),
+            Self::Telegram(_) => "telegram".to_string(),
         }
     }
 
@@ -432,11 +453,15 @@ impl DeliverySink {
             Self::Desktop => "desktop",
             Self::Webhook(config) => &config.name,
             Self::Command(config) => &config.name,
+            Self::Telegram(_) => "telegram",
         }
     }
 }
 
-fn configured_sinks(config: &DaemonNotificationConfig) -> Vec<DeliverySink> {
+fn configured_sinks(
+    config: &DaemonNotificationConfig,
+    telegram: Option<&DaemonTelegramBotConfig>,
+) -> Vec<DeliverySink> {
     config
         .desktop
         .then_some(DeliverySink::Desktop)
@@ -449,6 +474,7 @@ fn configured_sinks(config: &DaemonNotificationConfig) -> Vec<DeliverySink> {
                 .map(DeliverySink::Webhook)
                 .chain(config.commands.iter().cloned().map(DeliverySink::Command)),
         )
+        .chain(telegram.cloned().map(DeliverySink::Telegram))
         .collect()
 }
 
@@ -476,8 +502,10 @@ fn process_pending(
         let Some(sink) = sinks.iter().find(|sink| sink.id() == sink_id) else {
             continue;
         };
-        let result = authorize_sink(registry, &alert, sink)
-            .and_then(|()| deliver_sink(sink, &alert, client));
+        let result = authorize_sink(registry, &alert, sink).and_then(|()| match sink {
+            DeliverySink::Telegram(fallback) => deliver_telegram(registry, fallback, &alert),
+            _ => deliver_sink(sink, &alert, client),
+        });
         let update =
             ledger
                 .lock()
@@ -519,7 +547,9 @@ fn authorize_sink(
             .map_err(|_| "permission_profile_invalid")?;
     let guard = ProfilePermissionGuard::new(&paths, selection);
     match sink {
-        DeliverySink::Desktop => Ok(()),
+        // Recipients are filtered by vault at delivery, like the bot's own
+        // replies, which no network permission gates either.
+        DeliverySink::Desktop | DeliverySink::Telegram(_) => Ok(()),
         DeliverySink::Webhook(config) => guard
             .check_network(&config.url)
             .map_err(|_| "network_permission_denied"),
@@ -540,7 +570,54 @@ fn deliver_sink(
             deliver_webhook(config, alert, client.ok_or("http_client_unavailable")?)
         }
         DeliverySink::Command(config) => deliver_command(config, alert),
+        DeliverySink::Telegram(_) => Err("telegram_requires_registry"),
     }
+}
+
+/// Send `alert` to every bot user with `alerts = true` who may use its wiki,
+/// using the current allowlist.
+pub(crate) fn deliver_telegram(
+    registry: &WikiRegistry,
+    fallback: &DaemonTelegramBotConfig,
+    alert: &SyncAlert,
+) -> Result<(), &'static str> {
+    let current = registry
+        .load()
+        .map_err(|_| "registry_unavailable")?
+        .bot
+        .telegram;
+    let telegram = current.as_ref().unwrap_or(fallback);
+    let recipients = telegram
+        .users
+        .iter()
+        .filter(|user| {
+            user.alerts
+                && user
+                    .vaults
+                    .iter()
+                    .any(|wiki| wiki.as_str() == alert.wiki_id)
+        })
+        .map(|user| user.telegram_id)
+        .collect::<Vec<_>>();
+    if recipients.is_empty() || current.is_none() {
+        return Ok(());
+    }
+    let token =
+        crate::telegram_bot::telegram_bot_token(telegram).ok_or("credential_unavailable")?;
+    let client = crate::telegram_api::TelegramClient::new(telegram.api_base.as_deref(), token)
+        .map_err(|_| "http_client_unavailable")?;
+    let text = format!("⚠️ {}\n{}", alert.desktop_title(), alert.desktop_body());
+    for chat_id in recipients {
+        match client.send_message(chat_id, &text, &[]) {
+            // A user who blocked the bot must not hold back everyone else.
+            Ok(_) | Err(crate::telegram_api::TelegramError::Api { code: 403, .. }) => {}
+            Err(crate::telegram_api::TelegramError::Unauthorized) => {
+                return Err("credential_rejected")
+            }
+            Err(_) => return Err("transport_error"),
+        }
+    }
+    Ok(())
 }
 
 fn deliver_webhook(
@@ -1385,7 +1462,7 @@ mod tests {
         ledger
             .record(alert("job-1"), &["webhook:phone".to_string()])
             .expect("record");
-        let status = alert_delivery_status(&config, temporary.path()).expect("status");
+        let status = alert_delivery_status(&config, None, temporary.path()).expect("status");
         let json = serde_json::to_string(&status).expect("serialize");
         assert!(json.contains("phone"));
         assert!(json.contains("job-1"));

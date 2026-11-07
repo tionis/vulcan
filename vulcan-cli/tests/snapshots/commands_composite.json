@@ -14897,6 +14897,31 @@
                     ]
                   },
                   {
+                    "help": "Send this user sync failure, conflict, and pause alerts for these wikis",
+                    "id": "alerts",
+                    "long": "alerts",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "ALERTS"
+                    ]
+                  },
+                  {
+                    "help": "Send this user a daily digest of open tasks and reminders at this time",
+                    "id": "digest",
+                    "long": "digest",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "HH:MM"
+                    ]
+                  },
+                  {
                     "help": "Report without writing daemon configuration",
                     "id": "dry_run",
                     "long": "dry-run",

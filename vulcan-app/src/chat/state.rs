@@ -137,6 +137,40 @@ impl ChatStateStore {
             .map_err(AppError::operation)
     }
 
+    /// The local day (`YYYY-MM-DD`) a chat last got its digest of `vault`.
+    pub fn digest_day(
+        &self,
+        platform: &str,
+        chat_id: i64,
+        vault: &str,
+    ) -> Result<Option<String>, AppError> {
+        self.connection
+            .query_row(
+                "SELECT value FROM meta WHERE key = ?1",
+                params![format!("{platform}.digest.{chat_id}.{vault}")],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(AppError::operation)
+    }
+
+    pub fn set_digest_day(
+        &self,
+        platform: &str,
+        chat_id: i64,
+        vault: &str,
+        day: &str,
+    ) -> Result<(), AppError> {
+        self.connection
+            .execute(
+                "INSERT INTO meta (key, value) VALUES (?1, ?2)
+                 ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                params![format!("{platform}.digest.{chat_id}.{vault}"), day],
+            )
+            .map(|_| ())
+            .map_err(AppError::operation)
+    }
+
     /// The vault a chat switched to with `/vault`, if any.
     pub fn chat_vault(&self, platform: &str, chat_id: i64) -> Result<Option<String>, AppError> {
         self.connection
