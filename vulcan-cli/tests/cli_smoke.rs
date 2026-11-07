@@ -17295,7 +17295,8 @@ fn tasks_reminders_json_output_evaluates_relative_and_absolute_reminders() {
     assert!(reminders.iter().any(|reminder| {
         reminder["path"] == "TaskNotes/Tasks/Write Docs.md"
             && reminder["reminder_id"] == "rem-1"
-            && reminder["notify_at"] == "2026-04-09T23:45:00Z"
+            // `due: 2026-04-10` has no time, so 15 minutes before the 09:00 default time.
+            && reminder["notify_at"] == "2026-04-10T08:45:00Z"
     }));
     assert!(reminders.iter().any(|reminder| {
         reminder["path"] == "TaskNotes/Tasks/Future Reminder.md"

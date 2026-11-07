@@ -7107,7 +7107,7 @@ pub enum TasksCommand {
     },
     #[command(
         about = "List reminders due within a time window",
-        long_about = "List reminders due within a time window: TaskNotes `reminders`, and reminders on inline tasks (`⏰ 2026-11-07 10:00`, `(@2026-11-07 10:00)`, or `[remind:: 2026-11-07T10:00]`). Inline reminder times are wall-clock times in `tasks.reminders.timezone` (the device timezone when unset); a reminder without a time uses `tasks.reminders.default_time`. With `tasks.reminders.due_dates = \"notify\"`, an inline due date alone also fires at the default time. Each row carries a stable `occurrence_id` for de-duplicating deliveries."
+        long_about = "List reminders due within a time window: TaskNotes `reminders`, and reminders on inline tasks (`⏰ 2026-11-07 10:00`, `(@2026-11-07 10:00)`, or `[remind:: 2026-11-07T10:00]`). Inline reminder times are wall-clock times in `tasks.reminders.timezone` (the device timezone when unset); a reminder without a time uses `tasks.reminders.default_time`. With `tasks.reminders.due_dates = \"notify\"`, an inline due date alone also fires at the default time. TaskNotes dates without a zone are read in the same timezone, and a relative TaskNotes reminder on a bare date is anchored at the default time. Each row carries a stable `occurrence_id` for de-duplicating deliveries."
     )]
     Reminders {
         #[arg(

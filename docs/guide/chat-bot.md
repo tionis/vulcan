@@ -116,6 +116,23 @@ privacy = "title_only"
 
 Reminder times are read in `tasks.reminders.timezone`, or the device's timezone when unset.
 
+A task created with `/task` has a date, not a reminder. To be reminded at a task's time, give new
+tasks a default reminder in the vault configuration:
+
+```toml
+[[tasknotes.task_creation_defaults.default_reminders]]
+id = "at-time"
+type = "relative"
+related_to = "scheduled"   # or "due", whichever your natural-language dates fill
+offset = 0
+unit = "minutes"
+direction = "before"
+```
+
+`/task call Anna tomorrow 10:00` then reminds at 10:00. A task with a date but no time is reminded
+at `tasks.reminders.default_time` (09:00 by default). Reminders are added when a task is created,
+so existing tasks keep theirs. Inline tasks use `⏰` instead (see above).
+
 ## Status and troubleshooting
 
 `vulcan daemon bot-status` shows whether the token variable is set, the allowed users, the service

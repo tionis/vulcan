@@ -11,8 +11,9 @@ use chrono::{NaiveDate, NaiveDateTime, NaiveTime, TimeZone};
 use serde_json::Value;
 use std::collections::HashMap;
 use vulcan_core::config::{TaskDueDateReminders, TaskRemindersConfig, TasksConfig};
+use vulcan_core::expression::functions::parse_date_like_string;
 use vulcan_core::tasks::{inline_task_block_id, inline_task_title, parse_inline_reminder_value};
-use vulcan_core::NoteRecord;
+use vulcan_core::{parse_iso8601_duration_ms, IndexedTaskNote, NoteRecord, TaskNotesReminder};
 
 const OCCURRENCE_ID_DOMAIN: &str = "vulcan-reminder-occurrence-v1";
 
@@ -160,6 +161,60 @@ impl ReminderSettings {
     }
 }
 
+/// The instant (Unix ms) a `TaskNotes` reminder fires.
+///
+/// Times without a zone (`2026-11-08T12:00`) are wall-clock times in `tasks.reminders.timezone`,
+/// as `TaskNotes` reads them in the device's timezone. A relative reminder on a date without a
+/// time is anchored at `tasks.reminders.default_time` rather than midnight.
+#[must_use]
+pub fn tasknote_reminder_instant(
+    task: &IndexedTaskNote,
+    reminder: &TaskNotesReminder,
+    settings: &ReminderSettings,
+) -> Option<i64> {
+    if reminder.reminder_type.eq_ignore_ascii_case("absolute") {
+        return reminder
+            .absolute_time
+            .as_deref()
+            .and_then(|value| zoned_instant(value, settings));
+    }
+    let anchor = match reminder.related_to.as_deref() {
+        Some("scheduled") => task.scheduled.as_deref(),
+        Some("due") => task.due.as_deref(),
+        _ => None,
+    }?;
+    let offset_ms = reminder
+        .offset
+        .as_deref()
+        .and_then(parse_iso8601_duration_ms)?;
+    zoned_instant(anchor, settings).map(|anchor_ms| anchor_ms + offset_ms)
+}
+
+/// A date or date-time from task frontmatter as an instant: an explicit offset is honored, a
+/// floating time is read in the reminder timezone, and a bare date means the default time.
+fn zoned_instant(value: &str, settings: &ReminderSettings) -> Option<i64> {
+    let value = value.trim();
+    if let Ok(at) = chrono::DateTime::parse_from_rfc3339(value) {
+        return Some(at.timestamp_millis());
+    }
+    for format in [
+        "%Y-%m-%dT%H:%M:%S%.f",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+    ] {
+        if let Ok(local) = NaiveDateTime::parse_from_str(value, format) {
+            return settings.timezone.instant_ms(local);
+        }
+    }
+    if let Ok(date) = NaiveDate::parse_from_str(value, "%Y-%m-%d") {
+        return settings
+            .timezone
+            .instant_ms(date.and_time(settings.default_time));
+    }
+    parse_date_like_string(value)
+}
+
 /// Reminders of open inline tasks that fire at or before `deadline_ms`.
 pub(super) fn inline_reminder_items(
     note_index: &HashMap<String, NoteRecord>,
@@ -267,6 +322,94 @@ fn property_text(value: Option<&Value>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn berlin_settings() -> ReminderSettings {
+        ReminderSettings {
+            inline: true,
+            due_dates: false,
+            default_time: NaiveTime::from_hms_opt(9, 0, 0).expect("valid time"),
+            timezone: ReminderTimezone::Named(chrono_tz::Europe::Berlin),
+        }
+    }
+
+    fn task(scheduled: &str) -> IndexedTaskNote {
+        IndexedTaskNote {
+            title: "Think".to_string(),
+            status: "open".to_string(),
+            priority: "normal".to_string(),
+            due: None,
+            scheduled: Some(scheduled.to_string()),
+            completed_date: None,
+            date_created: None,
+            date_modified: None,
+            archived: false,
+            tags: Vec::new(),
+            contexts: Vec::new(),
+            projects: Vec::new(),
+            time_estimate: None,
+            recurrence: None,
+            recurrence_anchor: None,
+            complete_instances: Vec::new(),
+            skipped_instances: Vec::new(),
+            blocked_by: Vec::new(),
+            reminders: Vec::new(),
+            time_entries: Vec::new(),
+            custom_fields: serde_json::Map::new(),
+        }
+    }
+
+    fn relative(offset: &str) -> TaskNotesReminder {
+        TaskNotesReminder {
+            id: "r".to_string(),
+            reminder_type: "relative".to_string(),
+            related_to: Some("scheduled".to_string()),
+            offset: Some(offset.to_string()),
+            absolute_time: None,
+            description: None,
+        }
+    }
+
+    fn utc(text: &str) -> i64 {
+        chrono::DateTime::parse_from_rfc3339(text)
+            .expect("valid timestamp")
+            .timestamp_millis()
+    }
+
+    #[test]
+    fn tasknote_reminders_read_floating_times_in_the_reminder_timezone() {
+        let settings = berlin_settings();
+        // 12:00 in Berlin (CET, UTC+1) is 11:00 UTC.
+        assert_eq!(
+            tasknote_reminder_instant(&task("2026-11-08T12:00:00"), &relative("-PT0M"), &settings),
+            Some(utc("2026-11-08T11:00:00Z"))
+        );
+        assert_eq!(
+            tasknote_reminder_instant(&task("2026-11-08T12:00"), &relative("-PT15M"), &settings),
+            Some(utc("2026-11-08T10:45:00Z"))
+        );
+        // An explicit offset wins over the reminder timezone.
+        assert_eq!(
+            tasknote_reminder_instant(&task("2026-11-08T12:00:00Z"), &relative("-PT0M"), &settings),
+            Some(utc("2026-11-08T12:00:00Z"))
+        );
+        // A bare date is anchored at the default time, not midnight.
+        assert_eq!(
+            tasknote_reminder_instant(&task("2026-11-08"), &relative("-PT0M"), &settings),
+            Some(utc("2026-11-08T08:00:00Z"))
+        );
+        let absolute = TaskNotesReminder {
+            reminder_type: "absolute".to_string(),
+            related_to: None,
+            offset: None,
+            absolute_time: Some("2026-07-01T08:30:00".to_string()),
+            ..relative("-PT0M")
+        };
+        // Summer time: 08:30 CEST is 06:30 UTC.
+        assert_eq!(
+            tasknote_reminder_instant(&task("2026-11-08"), &absolute, &settings),
+            Some(utc("2026-07-01T06:30:00Z"))
+        );
+    }
 
     #[test]
     fn occurrence_ids_are_stable_and_distinct() {

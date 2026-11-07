@@ -36,9 +36,9 @@ use vulcan_core::{
     parse_tasknote_reminders, parse_tasknote_time_entries, parse_tasks_query,
     period_range_for_date, resolve_note_reference, shape_tasks_query_result,
     task_upcoming_occurrences, tasknotes_default_date_value, tasknotes_default_recurrence_rule,
-    tasknotes_default_reminder_values, tasknotes_reminder_notify_at, tasknotes_status_definition,
-    tasknotes_status_state, BasesEvalReport, BasesEvaluator, GraphQueryError, IndexedTaskNote,
-    NoteRecord, PermissionGuard, ProfilePermissionGuard, RefactorChange, TaskNotesSavedViewConfig,
+    tasknotes_default_reminder_values, tasknotes_status_definition, tasknotes_status_state,
+    BasesEvalReport, BasesEvaluator, GraphQueryError, IndexedTaskNote, NoteRecord, PermissionGuard,
+    ProfilePermissionGuard, RefactorChange, TaskNotesSavedViewConfig,
     TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksQueryResult, VaultConfig,
     VaultPaths,
 };
@@ -1740,7 +1740,9 @@ fn task_reminders_report(
         .filter(|record| !record.indexed.archived && !record.completed)
     {
         for reminder in parse_tasknote_reminders(&record.indexed.reminders) {
-            let Some(notify_at) = tasknotes_reminder_notify_at(&record.indexed, &reminder) else {
+            let Some(notify_at) =
+                reminders::tasknote_reminder_instant(&record.indexed, &reminder, &settings)
+            else {
                 continue;
             };
             if notify_at > deadline_ms {

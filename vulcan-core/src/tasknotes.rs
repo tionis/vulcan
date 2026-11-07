@@ -504,8 +504,11 @@ fn normalize_nlp_input_for_language(text: &str, language: &str) -> String {
 }
 
 fn normalize_german_nlp_input(text: &str) -> String {
+    let text = replace_case_insensitive_regex(text, r"\bin\s+(\d+)\s+tagen?\b", "in $1 days");
+    let text = replace_case_insensitive_regex(&text, r"\b(\d{1,2})\s*uhr\b", "$1:00");
+    let text = replace_case_insensitive_regex(&text, r"\bum\s+(\d{1,2}(?::\d{2})?)\b", "at $1");
     apply_nlp_replacements(
-        &replace_case_insensitive_regex(text, r"\bin\s+(\d+)\s+tagen?\b", "in $1 days"),
+        &text,
         &[
             (r"\bnächste\s+woche\b", "next week"),
             (r"\bnaechste\s+woche\b", "next week"),
@@ -859,28 +862,38 @@ fn extract_recurrence(text: &mut String) -> Option<String> {
     parse_recurrence_text(&phrase).map(|recurrence| recurrence.rule)
 }
 
+/// Date phrases the task NLP recognizes.
+const NLP_DATE_PHRASE: &str = r"today|tomorrow|next week|in \d+ days?|next monday|next tuesday|next wednesday|next thursday|next friday|next saturday|next sunday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|[0-9]{4}-[0-9]{2}-[0-9]{2}|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?(?:,\s*\d{4})?";
+
+/// An optional clock time after a date phrase: `at 3`, `at 15:30`, or, without `at`, a time that
+/// cannot be mistaken for a count (`15:30`, `3pm`, `10:00 am`), so `tomorrow 3 apples` keeps its
+/// number.
+const NLP_TIME_SUFFIX: &str = r"(?:\s+at\s+(?P<time>\d{1,2}(?::\d{2})?\s*(?:am|pm)?)|\s+(?P<bare_time>\d{1,2}:\d{2}(?:\s*(?:am|pm))?|\d{1,2}\s*(?:am|pm)))?\b";
+
 fn extract_date_value(text: &mut String, keyword: &str, reference_ms: i64) -> Option<String> {
     let regex = Regex::new(&format!(
-        r"(?i)(?P<prefix>^|\s){}(?P<separator>\s+)(?P<phrase>today|tomorrow|next week|in \d+ days?|next monday|next tuesday|next wednesday|next thursday|next friday|next saturday|next sunday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,\s*\d{{4}})?)(?:\s+at\s+(?P<time>\d{{1,2}}(?::\d{{2}})?\s*(?:am|pm)?))?",
+        r"(?i)(?P<prefix>^|\s){}(?P<separator>\s+)(?P<phrase>{NLP_DATE_PHRASE}){NLP_TIME_SUFFIX}",
         regex::escape(keyword)
     ))
     .expect("valid explicit date regex");
-    let capture = regex.captures(text)?;
-    let phrase = capture.name("phrase")?.as_str();
-    let time = capture.name("time").map(|value| value.as_str());
-    let value = parse_nlp_date_phrase(phrase, time, reference_ms)?;
-    *text = regex.replace(text, "$prefix").into_owned();
-    Some(value)
+    take_date_match(text, &regex, reference_ms)
 }
 
 fn extract_ambiguous_date_value(text: &mut String, reference_ms: i64) -> Option<String> {
-    let regex = Regex::new(
-        r"(?i)(?P<prefix>^|\s)(?P<phrase>today|tomorrow|next week|in \d+ days?|next monday|next tuesday|next wednesday|next thursday|next friday|next saturday|next sunday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|[0-9]{4}-[0-9]{2}-[0-9]{2}|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?(?:,\s*\d{4})?)(?:\s+at\s+(?P<time>\d{1,2}(?::\d{2})?\s*(?:am|pm)?))?",
-    )
+    let regex = Regex::new(&format!(
+        r"(?i)(?P<prefix>^|\s)(?P<phrase>{NLP_DATE_PHRASE}){NLP_TIME_SUFFIX}"
+    ))
     .expect("valid ambiguous date regex");
+    take_date_match(text, &regex, reference_ms)
+}
+
+fn take_date_match(text: &mut String, regex: &Regex, reference_ms: i64) -> Option<String> {
     let capture = regex.captures(text)?;
     let phrase = capture.name("phrase")?.as_str();
-    let time = capture.name("time").map(|value| value.as_str());
+    let time = capture
+        .name("time")
+        .or_else(|| capture.name("bare_time"))
+        .map(|value| value.as_str());
     let value = parse_nlp_date_phrase(phrase, time, reference_ms)?;
     *text = regex.replace(text, "$prefix").into_owned();
     Some(value)
@@ -1674,6 +1687,52 @@ mod tests {
         assert_eq!(parsed.due.as_deref(), Some("2026-04-05"));
         assert_eq!(parsed.contexts, vec!["@arbeit".to_string()]);
         assert_eq!(parsed.tags, vec!["wichtig".to_string()]);
+    }
+
+    #[test]
+    fn parses_times_after_dates_without_at() {
+        let config = TaskNotesConfig::default();
+        let reference = parse_date_like_string("2026-04-04").expect("reference date should parse");
+        let due = |text: &str| {
+            let parsed = parse_tasknote_natural_language(text, &config, reference);
+            (parsed.title, parsed.due)
+        };
+
+        for (text, expected) in [
+            ("Call Anna tomorrow 10:00", "2026-04-05T10:00:00"),
+            ("Call Anna tomorrow 3pm", "2026-04-05T15:00:00"),
+            ("Call Anna tomorrow 9:30 am", "2026-04-05T09:30:00"),
+            ("Call Anna 2026-04-10 18:15", "2026-04-10T18:15:00"),
+            ("Call Anna tomorrow at 7", "2026-04-05T07:00:00"),
+        ] {
+            assert_eq!(
+                due(text),
+                ("Call Anna".to_string(), Some(expected.to_string())),
+                "{text}"
+            );
+        }
+        // A bare number is a count, not a time.
+        assert_eq!(
+            due("Buy tomorrow 3 apples"),
+            ("Buy 3 apples".to_string(), Some("2026-04-05".to_string()))
+        );
+        // A date phrase inside a longer word is not a date.
+        assert_eq!(due("Plan mondays").1, None);
+    }
+
+    #[test]
+    fn parses_german_clock_times() {
+        let config = TaskNotesConfig {
+            nlp_language: "de".to_string(),
+            ..TaskNotesConfig::default()
+        };
+        let reference = parse_date_like_string("2026-04-04").expect("reference date should parse");
+
+        for text in ["Anna anrufen morgen um 12 Uhr", "Anna anrufen morgen 12:00"] {
+            let parsed = parse_tasknote_natural_language(text, &config, reference);
+            assert_eq!(parsed.title, "Anna anrufen", "{text}");
+            assert_eq!(parsed.due.as_deref(), Some("2026-04-05T12:00:00"), "{text}");
+        }
     }
 
     #[test]

@@ -138,6 +138,12 @@ absolute paths.
 Writes from Vulcan (snooze) use the canonical `⏰` form. Unparseable reminder values produce
 diagnostics.
 
+TaskNotes dates and times without a zone (`scheduled: 2026-11-08T12:00`) are wall-clock times in
+`tasks.reminders.timezone`, as TaskNotes reads them in the device's timezone; an explicit offset is
+honored. A relative reminder whose anchor is a bare date fires relative to `default_time`, not
+midnight. `/task` adds `tasknotes.task_creation_defaults.default_reminders`, so a default reminder
+`0 minutes before scheduled` makes `/task call Anna tomorrow 10:00` remind at 10:00.
+
 ### Occurrence identity
 
 `occurrence_id = blake3(domain ‖ task key ‖ reminder id ‖ notify instant in UTC)`, reported by
