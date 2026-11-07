@@ -687,6 +687,8 @@ pub(crate) fn ensure_fresh(vault: &ChatVault<'_>) -> Result<(), AppError> {
 }
 
 fn capture(vault: &ChatVault<'_>, text: &str) -> Result<ChatReply, AppError> {
+    let linked = links::link_with_title(vault, text);
+    let text = linked.as_deref().unwrap_or(text);
     match load_vault_config(vault.paths).config.bot.default_capture {
         BotCaptureTarget::Inbox => capture_inbox(vault, text),
         BotCaptureTarget::Daily => append_daily(vault, text),
@@ -1256,6 +1258,7 @@ fn mcp_error(error: McpMethodError) -> AppError {
     }
 }
 
+mod links;
 pub mod reminders;
 pub mod state;
 pub mod when;

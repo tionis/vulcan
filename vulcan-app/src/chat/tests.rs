@@ -770,3 +770,69 @@ fn replies_reschedule_tasks_in_their_own_date_field() {
     assert!(moved.text.contains("Due: "), "{}", moved.text);
     assert!(fixture.read("Calls.md").contains("📅 2026-12-02"));
 }
+
+/// Serve each response in turn to one connection apiece, on loopback.
+#[cfg(feature = "web")]
+fn serve_http(responses: Vec<String>) -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for response in responses {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request);
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    base
+}
+
+#[cfg(feature = "web")]
+#[test]
+fn lone_links_are_captured_with_their_page_title() {
+    let page = "<html><head><title>Rust &amp; Vulcan</title></head></html>";
+    let base = serve_http(vec![
+        "HTTP/1.1 301 Moved\r\nLocation: /article\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            .to_string(),
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
+            page.len()
+        ),
+    ]);
+    let fixture = Fixture::new(
+        "[inbox]\npath = \"Inbox.md\"\nformat = \"- {text}\"\ntimestamp = false\n",
+        &[],
+    );
+    fixture
+        .run("unrestricted", &format!("{base}/short"))
+        .unwrap();
+    assert!(
+        fixture
+            .read("Inbox.md")
+            .contains(&format!("- [Rust & Vulcan]({base}/short)")),
+        "{}",
+        fixture.read("Inbox.md")
+    );
+
+    // Off, or not a lone link: captured as sent, without fetching.
+    fs::write(
+        fixture.paths.config_file(),
+        "[inbox]\npath = \"Inbox.md\"\nformat = \"- {text}\"\ntimestamp = false\n[bot]\nlink_titles = false\n",
+    )
+    .unwrap();
+    fixture
+        .run("unrestricted", "https://example.invalid/x")
+        .unwrap();
+    fixture
+        .run("unrestricted", "see https://example.invalid/y later")
+        .unwrap();
+    let inbox = fixture.read("Inbox.md");
+    assert!(inbox.contains("- https://example.invalid/x\n"), "{inbox}");
+    assert!(
+        inbox.contains("- see https://example.invalid/y later"),
+        "{inbox}"
+    );
+}

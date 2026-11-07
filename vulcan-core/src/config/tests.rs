@@ -5272,3 +5272,31 @@ fn tasknotes_filename_format_imports_supported_formats_and_skips_custom() {
         TaskNotesFilenameFormat::Title
     );
 }
+
+#[test]
+fn bot_config_defaults_and_overrides() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path();
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+    let defaults = load_vault_config(&VaultPaths::new(vault_root)).config.bot;
+    assert_eq!(defaults.default_capture, BotCaptureTarget::Inbox);
+    assert_eq!(defaults.task_target, BotTaskTarget::Tasknotes);
+    assert_eq!(defaults.attachment_folder, "Attachments");
+    assert!(defaults.link_titles);
+    assert_eq!(defaults.reminders.snooze_options, ["1h", "tomorrow"]);
+
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[bot]\ndefault_capture = \"daily\"\nlink_titles = false\n",
+    )
+    .expect("shared config should be written");
+    fs::write(
+        vault_root.join(".vulcan/config.local.toml"),
+        "[bot]\nattachment_folder = \"Inbox/Files\"\n",
+    )
+    .expect("local config should be written");
+    let bot = load_vault_config(&VaultPaths::new(vault_root)).config.bot;
+    assert_eq!(bot.default_capture, BotCaptureTarget::Daily);
+    assert!(!bot.link_titles);
+    assert_eq!(bot.attachment_folder, "Inbox/Files");
+}

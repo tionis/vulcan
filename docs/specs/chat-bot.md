@@ -101,7 +101,7 @@ digest = "07:30"                        # and a daily digest at this time (each 
 default_capture = "inbox"           # "inbox" | "daily"
 task_target = "tasknotes"           # "tasknotes" | "inline": what /task creates
 attachment_folder = "Attachments"   # where sent files are saved
-# deferred: QuickAdd capture choices by name, link_capture
+link_titles = true                  # a lone link is captured as [Page title](url)
 
 [tasks.reminders]                   # implemented (slice 1)
 inline = true                       # parse ⏰ / (@…) / [remind:: …] on inline tasks
@@ -124,7 +124,7 @@ privacy = "title_only"
 | Input | Effect | Workflow |
 | --- | --- | --- |
 | free text | capture to `bot.default_capture` | inbox capture / QuickAdd capture / daily append |
-| a message that is only a URL | deferred: captured as text for now; planned capture to `bot.link_capture` with the title fetched only if the profile allows network access | as above |
+| a message that is only an http(s) URL | captured as `[Page title](url)` (the `og:title`, else `<title>`) when `bot.link_titles` is on and the user's profile allows network access to the page and each redirect (at most 3); otherwise, or when the page has no title, captured as sent. Built without the `web` feature, links are captured as sent | as above |
 | photo, document, voice, audio, video | save under `bot.attachment_folder` (sanitized name, never overwriting) and capture `![[path]]` with the caption as text; at most 20 MB, the Bot API's download limit | `vulcan-app::chat::run_chat_attachment` |
 | `/c <text>`, `/capture <text>` | capture to the default target (QuickAdd choices by name are planned; Vulcan has no reusable QuickAdd capture workflow yet) | as free text |
 | `/daily <text>` | append to today's daily note | periodic append |

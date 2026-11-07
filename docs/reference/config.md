@@ -1102,6 +1102,9 @@ Where a chat bot's captures and tasks go in this vault.
 - `bot.default_capture` — type: `enum`; target: `shared|local`; default: `inbox`; values: `inbox`, `daily`
   Where free-text chat bot messages are captured: the `[inbox]` note or today's daily note.
   Example: `vulcan config set bot.default_capture <value>`
+- `bot.link_titles` — type: `boolean`; target: `shared|local`; default: `true`
+  Edit `bot.link_titles` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
+  Example: `vulcan config set bot.link_titles <value>`
 - `bot.reminders.catch_up_window` — type: `string`; target: `shared|local`; default: `24h`
   How late a missed reminder may still be sent, for example after the device was off; older ones are skipped.
   Example: `vulcan config set bot.reminders.catch_up_window <value>`

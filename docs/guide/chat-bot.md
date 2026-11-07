@@ -70,6 +70,7 @@ write the task's note.
 | Send | What happens |
 | --- | --- |
 | any text | captured to the inbox, or to today's daily note with `bot.default_capture = "daily"` |
+| a lone link | captured as `[Page title](url)` when your profile allows the network access (`bot.link_titles`) |
 | a photo, file, voice message, audio, or video | saved under `bot.attachment_folder` and captured as an embed, with the caption as text (files up to 20 MB) |
 | `/task <text>` | a TaskNotes task with natural-language dates (`/task call Anna tomorrow 10:00`), or an inline task in the inbox with `bot.task_target = "inline"` |
 | `/daily <text>` | appended to today's daily note |
@@ -88,6 +89,7 @@ Vault settings live in `.vulcan/config.toml`:
 default_capture = "inbox"           # inbox | daily
 task_target = "tasknotes"           # tasknotes | inline
 attachment_folder = "Attachments"
+link_titles = true                  # fetch the title of a link sent on its own
 ```
 
 ## Reminders

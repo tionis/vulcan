@@ -2747,6 +2747,10 @@ pub struct BotConfig {
     /// saved in.
     #[serde(default = "default_bot_attachment_folder")]
     pub attachment_folder: String,
+    /// Save a message that is only a web link as `[Page title](url)`,
+    /// fetching the title when the user's profile allows the network access.
+    #[serde(default = "default_true")]
+    pub link_titles: bool,
     /// How reminders from this vault are delivered.
     #[serde(default)]
     pub reminders: BotRemindersConfig,
@@ -2789,6 +2793,7 @@ impl Default for BotConfig {
             default_capture: BotCaptureTarget::default(),
             task_target: BotTaskTarget::default(),
             attachment_folder: default_bot_attachment_folder(),
+            link_titles: true,
             reminders: BotRemindersConfig::default(),
         }
     }
@@ -5387,6 +5392,9 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
         if let Some(attachment_folder) = bot.attachment_folder {
             config.bot.attachment_folder = attachment_folder;
+        }
+        if let Some(link_titles) = bot.link_titles {
+            config.bot.link_titles = link_titles;
         }
         if let Some(reminders) = bot.reminders {
             if let Some(catch_up_window) = reminders.catch_up_window {
