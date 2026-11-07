@@ -37,7 +37,7 @@ existing finite `vulcan-app` workflow, so the bot adds no write semantics of its
 | `vulcan-core` | Inline reminder syntax and vault `[bot]` / `[tasks.reminders]` config types |
 | `vulcan-app` | The reminder occurrence planner (`tasks reminders`, TaskNotes and inline tasks). `vulcan-app::chat`: transport-neutral commands: parse a chat message into a `ChatCommand`, run it against a vault with a permission guard, return a structured `ChatReply` (text blocks, buttons, attachments wanted). Reminder dispatch, resolution, and action workflows |
 | `vulcan-daemon` | The `telegram-bot` optional service: Bot API client, long-poll loop, rendering `ChatReply` into Telegram messages, the reminder timer, and device-local state |
-| `vulcan-cli` | `vulcan bot …` setup and diagnostics; `vulcan tasks reminders` lists planned occurrences |
+| `vulcan-cli` | `vulcan daemon config set-telegram-bot|set-bot-user|…` setup, `vulcan daemon bot-status`; `vulcan tasks reminders` lists planned occurrences |
 
 The command layer never sees Telegram types, and the Telegram client never touches the vault.
 
@@ -52,9 +52,8 @@ retrying silently.
 
 ```toml
 [bot.telegram]
-enabled = true
-token_env = "VULCAN_TELEGRAM_TOKEN"     # or token_file = "~/.config/vulcan/telegram-token"
-reminders = true                        # deliver reminders for the vaults below
+token_env = "VULCAN_TELEGRAM_BOT_TOKEN" # variable holding the token; never the token itself
+# api_base = "https://api.telegram.org" # HTTPS, or loopback HTTP (a local Bot API server, tests)
 
 [[bot.telegram.users]]
 telegram_id = 123456789                 # numeric user id; usernames are mutable and not trusted
@@ -64,6 +63,12 @@ profile = "bot-capture"                 # permission profile, capped by each reg
 reminders = true                        # this user receives reminders for these vaults
 ```
 
+- The service `worker.telegram-bot` is enabled when `[bot.telegram]` exists and the token
+  variable is set, from the daemon's environment or `~/.config/vulcan/daemon.env`. There is no
+  token file: `daemon.env` already is the device's private secret file. With the section but no
+  token, the service is listed as disabled with the variable's name as the reason.
+- Bot users may name vaults that were later unregistered; the bot skips them at runtime, so
+  `vulcan vault remove` is never blocked by the allowlist. Allowlist edits apply without a restart.
 - Unknown users get no reply at all, so the bot does not confirm that it exists. Their attempts are
   counted in status with the user id.
 - The effective authority for a command is the intersection of the user's profile and the vault
@@ -179,39 +184,55 @@ results in a no-op that says so.
 
 ## Telegram transport
 
-- A minimal first-party client over the daemon's async reqwest with these methods: `getMe`,
-  `getUpdates` (long poll, 50 s, `allowed_updates = ["message", "callback_query"]`),
-  `sendMessage`, `editMessageText`, `editMessageReplyMarkup`, `answerCallbackQuery`, `getFile` plus
-  file download, `sendDocument`, and `setMyCommands`. No bot framework dependency.
-- Plain-text messages with entities, or HTML parse mode with escaping in one function. No
-  MarkdownV2.
-- The update offset is persisted after each update is handled. Handling is idempotent on
-  `update_id` for the rare redelivery after a crash.
+- A minimal first-party client (`vulcan-daemon::telegram_api`) over blocking reqwest, since the
+  service runs on its own thread like the other workers. Redirects are disabled. Methods: `getMe`,
+  `getUpdates` (long poll, 8 s so shutdown is prompt, `allowed_updates = ["message",
+  "callback_query"]`), `sendMessage`, `editMessageText`, `answerCallbackQuery`, `sendDocument`,
+  and `setMyCommands`; `getFile` arrives with attachments (slice 6). No bot framework dependency.
+- Plain-text messages only, clipped to Telegram's 4096 characters. No parse mode, so vault text
+  can never be misread as markup.
+- Only private chats are served; messages in groups and from bots are ignored.
+- Buttons carry `a:<token>`, an opaque id of an action stored in `bot.sqlite` for 30 days and
+  bound to the chat it was sent to. A token pressed in another chat, or expired, answers "This
+  button has expired." A Done button's token is removed once it ran.
+- Errors shown to users have the vault's absolute path removed.
+- The update offset is persisted after each update is handled, so a crash re-delivers at most
+  the update in flight.
 - Rate limits: honor `retry_after` on 429. Outgoing messages are serialized per chat.
-- The token never appears in logs, status, or errors; request URLs are redacted to
-  `api.telegram.org/bot<redacted>/<method>`.
-- The permission check for outbound network access to `api.telegram.org` uses the device
-  profile, like other daemon network clients.
-- Backoff with jitter on network errors. A 401 (revoked token) stops the service with a visible
-  failure instead of retrying forever.
+- The token never appears in logs, status, or errors: request errors drop their URL, and the
+  client's `Debug` output redacts it.
+- Outbound access to the Bot API is consented to by the device configuration itself, like webhook
+  alert sinks; vault permission profiles govern what users' commands may do in vaults, not the
+  daemon's own transport.
+- Exponential backoff (to 60 s) on network errors, `retry_after` on 429, 30 s on a 409 conflict.
+  A 401 (revoked token) stops the service with a visible failure instead of retrying forever; the
+  host's bounded restart policy then gives up.
 
 ## State
 
 All bot state is device-local, outside `cache.db` and outside sync, in `daemon/bot.sqlite`:
-the update offset, per-chat active vault, the last capture for `/undo`, the reminder ledger, and
-handled update ids (pruned after 7 days).
+the update offset, per-chat active vault, and button actions (slice 3); the reminder ledger
+(slice 4) and the last capture for `/undo` (slice 6). The service also writes
+`daemon/telegram-bot.json`: state (`starting`, `polling`, `backoff`, `rate_limited`, `conflict`,
+`failed`, `stopped`), bot username, last poll, last error, handled updates, and ignored senders.
 
 ## CLI
 
-- `vulcan bot status`: service state, bot identity (`getMe`), last poll, users, ledger counts, and
-  rejected users.
-- `vulcan bot test [--user ID]`: send a test message (needs the token, not the daemon).
+Bot configuration lives with the other device-local daemon settings:
+
+- `vulcan daemon config set-telegram-bot [--token-env NAME] [--api-base URL]`: enable the bot;
+  existing users are kept. `clear-telegram-bot` removes the section and its users.
+- `vulcan daemon config set-bot-user ID --wiki NAME… [--default-wiki NAME] [--profile NAME]
+  [--reminders]`: add or replace a user. Wikis must be registered. `remove-bot-user ID`.
+- `vulcan daemon bot-status`: configuration, whether the token variable is set (reading
+  `daemon.env`), users, and the service's last state, including ignored sender ids, which is how
+  a new user finds their numeric id.
 - `vulcan tasks reminders [--upcoming 24h]`: the planner, with `source`, `task`, `task_key`, and
   `occurrence_id` per row (slice 1).
-- `vulcan bot reminders [--open]`: inspect the sent-reminder ledger.
+- Planned: `vulcan daemon bot-reminders [--open]` to inspect the sent-reminder ledger (slice 4).
 
-All of them support `--output json`. Bot configuration is edited with the existing daemon config
-commands.
+All of them support `--output json` and the config commands `--dry-run`. A separate `bot test`
+command was dropped: messaging the bot and checking `bot-status` covers it.
 
 ## Slices
 
@@ -219,7 +240,7 @@ commands.
 2. **Chat command layer** in `vulcan-app::chat`: parser, capture, `/task`, `/today`, `/find`,
    `/note`, and `/vault`, tested without Telegram.
 3. **Telegram service**: client, polling, allowlist, rendering, and state, tested against a fake
-   Bot API server; `vulcan bot status|test`.
+   Bot API server; `vulcan daemon config` bot commands and `vulcan daemon bot-status`.
 4. **Reminder delivery**: timer, ledger, catch-up, and resolution edits.
 5. **Reminder actions**: done and snooze, ledger-gated.
 6. **Attachments and `/undo`**, skills and user guide.

@@ -770,7 +770,59 @@ fn daemon_worker_registrations(
         },
     ));
 
+    registrations.push(telegram_bot_registration(
+        context, config, runtime, scheduler,
+    )?);
+
     Ok(registrations)
+}
+
+/// The chat bot: enabled once `[bot.telegram]` is configured and its token
+/// variable is set (`docs/specs/chat-bot.md`).
+fn telegram_bot_registration(
+    context: &DaemonProcessContext,
+    config: &crate::registry::DaemonConfig,
+    runtime: &tokio::runtime::Handle,
+    scheduler: &Arc<MutationScheduler>,
+) -> Result<ServiceRegistration, DaemonProcessError> {
+    let telegram = config.bot.telegram.clone();
+    let token_set = telegram
+        .as_ref()
+        .and_then(crate::telegram_bot::telegram_bot_token)
+        .is_some();
+    let mut definition = worker_definition(
+        "worker.telegram-bot",
+        token_set,
+        false,
+        &[],
+        optional_worker_restart(),
+    )?;
+    if let Some(telegram) = telegram.as_ref().filter(|_| !token_set) {
+        definition.disabled_reason = Some(format!("{} is not set", telegram.token_env));
+    }
+    let registry = context.registry.clone();
+    let state_root = context.state_root.clone();
+    let gate = HostedWorkerGate::new(
+        Arc::clone(scheduler),
+        runtime.clone(),
+        "worker.telegram-bot",
+    );
+    Ok(ServiceRegistration::new(definition, move |service| {
+        let telegram = telegram
+            .as_ref()
+            .ok_or_else(|| "the Telegram bot is not configured".to_string())?;
+        let token = crate::telegram_bot::telegram_bot_token(telegram)
+            .ok_or_else(|| format!("{} is not set", telegram.token_env))?;
+        service.ready()?;
+        crate::telegram_bot::run_telegram_bot(
+            telegram,
+            token,
+            &registry,
+            &state_root,
+            Some(&gate),
+            service.stop(),
+        )
+    }))
 }
 
 fn service_id(value: &str) -> Result<ServiceId, DaemonProcessError> {
@@ -959,6 +1011,7 @@ fn graceful_shutdown_services() -> Result<BTreeSet<ServiceId>, DaemonProcessErro
         "worker.remote-notifications",
         "worker.conflict",
         "worker.semantic",
+        "worker.telegram-bot",
     ]
     .into_iter()
     .map(service_id)
@@ -2023,7 +2076,7 @@ mod tests {
         });
 
         let status = wait_until_running(&context, &result_receiver);
-        assert_eq!(status.services.len(), 9);
+        assert_eq!(status.services.len(), 10);
         assert!(status.services.iter().any(|service| {
             service.id.as_str() == "listener.test-ingress"
                 && service.state == crate::host::ServiceLifecycleState::Ready
@@ -2289,7 +2342,12 @@ mod tests {
         let status = wait_until_running(&context, &result_receiver);
         assert_eq!(status.registered_wikis.len(), 1);
         assert_eq!(status.wiki_statuses.len(), 1);
-        assert_eq!(status.services.len(), 8);
+        assert_eq!(status.services.len(), 9);
+        assert!(status.services.iter().any(|service| {
+            service.id.as_str() == "worker.telegram-bot"
+                && service.state == crate::host::ServiceLifecycleState::Disabled
+                && service.disabled_reason.is_none()
+        }));
         assert!(status
             .services
             .iter()

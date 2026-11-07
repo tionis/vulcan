@@ -32,7 +32,7 @@ use vulcan_daemon::process::{
     DaemonNotificationDiscoveryState, DaemonProcessContext, DaemonStatusReport,
 };
 use vulcan_daemon::registry::{
-    DaemonAgentConfig, DaemonAgentKind, DaemonAutoCommitAgentConfig,
+    DaemonAgentConfig, DaemonAgentKind, DaemonAutoCommitAgentConfig, DaemonBotUser,
     DaemonCommandNotificationConfig, DaemonConfig, DaemonConflictWorkerConfig,
     DaemonSemanticWorkerConfig, DaemonWebhookFormat, DaemonWebhookNotificationConfig,
     NetworkNotificationMode, WikiId,
@@ -43,6 +43,7 @@ use vulcan_daemon::service::{
     DaemonServicePlan, DaemonServicePlatform, DaemonServiceReport, DaemonServiceUser,
 };
 use vulcan_daemon::status::{DaemonSyncStatusSource, SyncState};
+use vulcan_daemon::telegram_bot::{telegram_bot_report, TelegramBotReport};
 
 const DAEMON_READINESS_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const DAEMON_LOG_TAIL_BYTES: u64 = 8 * 1024;
@@ -124,6 +125,16 @@ pub(crate) fn handle_daemon_command(cli: &Cli, command: &DaemonCommand) -> Resul
             let status = alert_delivery_status(&config.notifications, &context.state_root)
                 .map_err(CliError::operation)?;
             print_alert_delivery_status(cli.output, &status)
+        }
+        DaemonCommand::BotStatus => {
+            // The daemon reads the token from daemon.env too.
+            if let Some(directory) = context.registry.path().parent() {
+                load_daemon_environment(directory).map_err(CliError::operation)?;
+            }
+            let config = context.registry.load().map_err(CliError::operation)?;
+            let report =
+                telegram_bot_report(&config, &context.state_root).map_err(CliError::operation)?;
+            print_bot_status(cli.output, &report)
         }
         DaemonCommand::Stop => {
             let status = request_daemon_shutdown(&context).map_err(CliError::operation)?;
@@ -221,6 +232,66 @@ fn print_companion_install(
     println!(
         "Enable the plugin in Obsidian, then store the token from `vulcan daemon companion --reveal-token` in its settings."
     );
+    Ok(())
+}
+
+fn print_bot_status(output: OutputFormat, report: &TelegramBotReport) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    let Some(token_env) = &report.token_env else {
+        println!("Telegram bot: not configured (see `vulcan daemon config set-telegram-bot`)");
+        return Ok(());
+    };
+    println!(
+        "Telegram bot: token {} {}",
+        token_env,
+        if report.token_set { "set" } else { "NOT set" }
+    );
+    if report.users.is_empty() {
+        println!("Users: none (add one with `vulcan daemon config set-bot-user`)");
+    } else {
+        println!("Users:");
+        for user in &report.users {
+            println!(
+                "  {} -> {} (profile {}{}{})",
+                user.telegram_id,
+                user.vaults.join(", "),
+                user.profile,
+                user.default_vault
+                    .as_deref()
+                    .map(|vault| format!(", default {vault}"))
+                    .unwrap_or_default(),
+                if user.reminders { ", reminders" } else { "" },
+            );
+        }
+    }
+    let Some(status) = &report.status else {
+        println!("State: never started");
+        return Ok(());
+    };
+    println!(
+        "State: {}{}",
+        status.state,
+        status
+            .bot_username
+            .as_deref()
+            .map(|name| format!(" as @{name}"))
+            .unwrap_or_default()
+    );
+    if let Some(at) = status.last_poll_ms {
+        println!(
+            "Last poll: {}",
+            format_age(u64::try_from(at).unwrap_or_default())
+        );
+    }
+    println!("Handled updates: {}", status.handled_updates);
+    if let Some(error) = &status.last_error {
+        println!("Last error: {error}");
+    }
+    for (id, count) in &status.rejected_users {
+        println!("Ignored messages from user {id}: {count}");
+    }
     Ok(())
 }
 
@@ -548,6 +619,9 @@ fn handle_config(
     if let Some(config) = handle_worker_config(context, command) {
         return print_config(output, &config?);
     }
+    if let Some(config) = handle_bot_config(context, command) {
+        return print_config(output, &config?);
+    }
     let config = match command {
         DaemonConfigCommand::Show => context.registry.load().map_err(CliError::operation)?,
         DaemonConfigCommand::SetBind { bind, dry_run } => context
@@ -617,6 +691,12 @@ fn handle_config(
         | DaemonConfigCommand::SetAutoCommitAgent { .. }
         | DaemonConfigCommand::ClearAutoCommitAgent { .. } => {
             unreachable!("worker configuration is dispatched above")
+        }
+        DaemonConfigCommand::SetTelegramBot { .. }
+        | DaemonConfigCommand::ClearTelegramBot { .. }
+        | DaemonConfigCommand::SetBotUser { .. }
+        | DaemonConfigCommand::RemoveBotUser { .. } => {
+            unreachable!("bot configuration is dispatched above")
         }
         DaemonConfigCommand::SetNotifications { .. }
         | DaemonConfigCommand::SetNotificationWebhook { .. }
@@ -709,6 +789,71 @@ fn handle_worker_config(
         _ => return None,
     };
     Some(result.map_err(CliError::operation))
+}
+
+fn handle_bot_config(
+    context: &DaemonProcessContext,
+    command: &DaemonConfigCommand,
+) -> Option<Result<DaemonConfig, CliError>> {
+    let registry = &context.registry;
+    let result = match command {
+        DaemonConfigCommand::SetTelegramBot {
+            token_env,
+            api_base,
+            dry_run,
+        } => registry
+            .set_telegram_bot(token_env.clone(), api_base.clone(), *dry_run)
+            .map_err(CliError::operation),
+        DaemonConfigCommand::ClearTelegramBot { dry_run } => registry
+            .clear_telegram_bot(*dry_run)
+            .map_err(CliError::operation),
+        DaemonConfigCommand::SetBotUser {
+            telegram_id,
+            wiki,
+            default_wiki,
+            profile,
+            reminders,
+            dry_run,
+        } => bot_user(
+            *telegram_id,
+            wiki,
+            default_wiki.as_deref(),
+            profile,
+            *reminders,
+        )
+        .and_then(|user| {
+            registry
+                .set_bot_user(user, *dry_run)
+                .map_err(CliError::operation)
+        }),
+        DaemonConfigCommand::RemoveBotUser {
+            telegram_id,
+            dry_run,
+        } => registry
+            .remove_bot_user(*telegram_id, *dry_run)
+            .map_err(CliError::operation),
+        _ => return None,
+    };
+    Some(result)
+}
+
+fn bot_user(
+    telegram_id: i64,
+    wiki: &[String],
+    default_wiki: Option<&str>,
+    profile: &str,
+    reminders: bool,
+) -> Result<DaemonBotUser, CliError> {
+    Ok(DaemonBotUser {
+        telegram_id,
+        vaults: parse_worker_wikis(wiki)?,
+        default_vault: default_wiki
+            .map(WikiId::parse)
+            .transpose()
+            .map_err(CliError::operation)?,
+        profile: profile.to_string(),
+        reminders,
+    })
 }
 
 fn handle_notification_config(

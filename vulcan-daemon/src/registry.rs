@@ -219,6 +219,71 @@ pub struct DaemonConfig {
         skip_serializing_if = "vulcan_app::background_policy::BackgroundPolicy::is_unconstrained"
     )]
     pub automatic_sync: vulcan_app::background_policy::BackgroundPolicy,
+    /// Chat bots this device hosts (`docs/specs/chat-bot.md`).
+    #[serde(default, skip_serializing_if = "DaemonBotConfig::is_default")]
+    pub bot: DaemonBotConfig,
+}
+
+/// Chat bots this device hosts. A bot token permits one poller, so only
+/// one device should configure a given bot.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonBotConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telegram: Option<DaemonTelegramBotConfig>,
+}
+
+impl DaemonBotConfig {
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        self.telegram.is_none()
+    }
+}
+
+/// The Telegram bot: its token's environment variable and who may use it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonTelegramBotConfig {
+    /// Environment variable holding the bot token (also read from
+    /// `daemon.env`). The token itself is never stored here.
+    pub token_env: String,
+    /// Bot API base URL; `https://api.telegram.org` when unset. HTTPS, or
+    /// loopback HTTP for local test servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_base: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub users: Vec<DaemonBotUser>,
+}
+
+/// One person allowed to use the bot. Messages from anyone else are
+/// ignored without a reply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonBotUser {
+    /// Numeric platform user id (usernames can change hands).
+    pub telegram_id: i64,
+    /// Registered vaults this user may reach.
+    pub vaults: Vec<WikiId>,
+    /// The vault commands go to until the chat switches with `/vault`; the
+    /// first of `vaults` when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_vault: Option<WikiId>,
+    /// Permission profile the user acts with: a built-in or device-local
+    /// profile, capped by each vault registration's profile.
+    #[serde(default = "default_bot_user_profile")]
+    pub profile: String,
+    /// Deliver due reminders of these vaults to this user.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub reminders: bool,
+}
+
+fn default_bot_user_profile() -> String {
+    "readonly".to_string()
+}
+
+impl DaemonBotUser {
+    /// The vault a chat without a `/vault` choice uses.
+    #[must_use]
+    pub fn initial_vault(&self) -> Option<&WikiId> {
+        self.default_vault.as_ref().or_else(|| self.vaults.first())
+    }
 }
 
 fn default_bind() -> String {
@@ -239,6 +304,7 @@ impl Default for DaemonConfig {
             mcp_remotes: Vec::new(),
             scan_dirs: Vec::new(),
             automatic_sync: vulcan_app::background_policy::BackgroundPolicy::default(),
+            bot: DaemonBotConfig::default(),
         }
     }
 }
@@ -1055,6 +1121,88 @@ impl WikiRegistry {
         })
     }
 
+    /// Configure the Telegram bot's token variable and API base, keeping
+    /// its users.
+    pub fn set_telegram_bot(
+        &self,
+        token_env: String,
+        api_base: Option<String>,
+        dry_run: bool,
+    ) -> Result<DaemonConfig, RegistryError> {
+        self.mutate(dry_run, |config| {
+            let users = config
+                .bot
+                .telegram
+                .take()
+                .map(|bot| bot.users)
+                .unwrap_or_default();
+            let bot = DaemonTelegramBotConfig {
+                token_env,
+                api_base,
+                users,
+            };
+            validate_telegram_bot_config(&bot)?;
+            config.bot.telegram = Some(bot);
+            Ok(config.clone())
+        })
+    }
+
+    pub fn clear_telegram_bot(&self, dry_run: bool) -> Result<DaemonConfig, RegistryError> {
+        self.mutate(dry_run, |config| {
+            config.bot.telegram = None;
+            Ok(config.clone())
+        })
+    }
+
+    /// Add a bot user, or replace the one with the same id.
+    pub fn set_bot_user(
+        &self,
+        user: DaemonBotUser,
+        dry_run: bool,
+    ) -> Result<DaemonConfig, RegistryError> {
+        self.mutate(dry_run, |config| {
+            let bot = config.bot.telegram.as_mut().ok_or_else(|| {
+                RegistryError::InvalidDaemonSetting(
+                    "configure the Telegram bot first (`vulcan daemon config set-telegram-bot`)"
+                        .to_string(),
+                )
+            })?;
+            for vault in &user.vaults {
+                if !config.vaults.iter().any(|wiki| &wiki.id == vault) {
+                    return Err(RegistryError::InvalidDaemonSetting(format!(
+                        "bot user vault `{vault}` is not registered"
+                    )));
+                }
+            }
+            bot.users
+                .retain(|existing| existing.telegram_id != user.telegram_id);
+            bot.users.push(user);
+            bot.users.sort_by_key(|user| user.telegram_id);
+            validate_telegram_bot_config(bot)?;
+            Ok(config.clone())
+        })
+    }
+
+    pub fn remove_bot_user(
+        &self,
+        telegram_id: i64,
+        dry_run: bool,
+    ) -> Result<DaemonConfig, RegistryError> {
+        self.mutate(dry_run, |config| {
+            let bot = config.bot.telegram.as_mut().ok_or_else(|| {
+                RegistryError::InvalidDaemonSetting("no Telegram bot is configured".to_string())
+            })?;
+            let before = bot.users.len();
+            bot.users.retain(|user| user.telegram_id != telegram_id);
+            if bot.users.len() == before {
+                return Err(RegistryError::InvalidDaemonSetting(format!(
+                    "no bot user with Telegram id {telegram_id}"
+                )));
+            }
+            Ok(config.clone())
+        })
+    }
+
     pub fn set_conflict_worker(
         &self,
         worker: DaemonConflictWorkerConfig,
@@ -1267,6 +1415,98 @@ fn validate_daemon_config(config: &DaemonConfig) -> Result<(), RegistryError> {
     validate_worker_profiles(config)?;
     validate_notification_config(&config.notifications)?;
     validate_mcp_remotes(config)?;
+    if let Some(bot) = &config.bot.telegram {
+        validate_telegram_bot_config(bot)?;
+    }
+    Ok(())
+}
+
+/// Bot users may name vaults that were since unregistered: the bot skips
+/// them at runtime, so unregistering a vault is never blocked by the bot.
+fn validate_telegram_bot_config(bot: &DaemonTelegramBotConfig) -> Result<(), RegistryError> {
+    validate_environment_name(&bot.token_env, "Telegram bot token")?;
+    if let Some(api_base) = &bot.api_base {
+        validate_service_base_url(api_base, "Telegram bot API base")?;
+    }
+    let mut ids = BTreeSet::new();
+    for user in &bot.users {
+        if user.telegram_id <= 0 {
+            return Err(RegistryError::InvalidDaemonSetting(format!(
+                "bot user id {} must be a positive Telegram user id",
+                user.telegram_id
+            )));
+        }
+        if !ids.insert(user.telegram_id) {
+            return Err(RegistryError::InvalidDaemonSetting(format!(
+                "bot user {} is listed twice",
+                user.telegram_id
+            )));
+        }
+        if user.vaults.is_empty() {
+            return Err(RegistryError::InvalidDaemonSetting(format!(
+                "bot user {} needs at least one vault",
+                user.telegram_id
+            )));
+        }
+        if user.vaults.iter().collect::<BTreeSet<_>>().len() != user.vaults.len() {
+            return Err(RegistryError::InvalidDaemonSetting(format!(
+                "bot user {} lists a vault twice",
+                user.telegram_id
+            )));
+        }
+        if let Some(default_vault) = &user.default_vault {
+            if !user.vaults.contains(default_vault) {
+                return Err(RegistryError::InvalidDaemonSetting(format!(
+                    "bot user {}'s default vault `{default_vault}` is not among their vaults",
+                    user.telegram_id
+                )));
+            }
+        }
+        let valid_profile = !user.profile.is_empty()
+            && user.profile.len() <= 64
+            && user
+                .profile
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+        if !valid_profile {
+            return Err(RegistryError::InvalidDaemonSetting(format!(
+                "bot user {} has an invalid permission profile name `{}`",
+                user.telegram_id, user.profile
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// A service base URL: HTTPS, or HTTP to a loopback host, with a host and no
+/// credentials, query, or fragment.
+fn validate_service_base_url(value: &str, label: &str) -> Result<(), RegistryError> {
+    let url = reqwest::Url::parse(value).map_err(|error| {
+        RegistryError::InvalidDaemonSetting(format!("{label} `{value}` is invalid: {error}"))
+    })?;
+    if url.as_str().len() > 2048
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(RegistryError::InvalidDaemonSetting(format!(
+            "{label} must be a bounded host URL without credentials, query, or fragment"
+        )));
+    }
+    let loopback_http = url.scheme() == "http"
+        && (url.host_str() == Some("localhost")
+            || url
+                .host_str()
+                .map(|host| host.trim_start_matches('[').trim_end_matches(']'))
+                .and_then(|host| host.parse::<std::net::IpAddr>().ok())
+                .is_some_and(|address| address.is_loopback()));
+    if url.scheme() != "https" && !loopback_http {
+        return Err(RegistryError::InvalidDaemonSetting(format!(
+            "{label} must use HTTPS or loopback HTTP"
+        )));
+    }
     Ok(())
 }
 
@@ -2859,5 +3099,97 @@ profile = "files_only"
             registry.set_semantic_worker(invalid_worker, true),
             Err(RegistryError::InvalidDaemonSetting(_))
         ));
+    }
+
+    #[test]
+    fn telegram_bot_users_are_validated_and_survive_reconfiguration() {
+        let temporary = tempdir().unwrap();
+        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+        let vault = temporary.path().join("vault");
+        fs::create_dir_all(&vault).unwrap();
+        registry
+            .add(
+                &AddWikiRequest {
+                    profile: None,
+                    id: WikiId::parse("notes").unwrap(),
+                    path: vault,
+                    groups: vec![],
+                    git_dir: None,
+                    permissions_profile: None,
+                    sync_backend: Some("none".to_string()),
+                    platform_profile: None,
+                },
+                false,
+            )
+            .unwrap();
+        let user = |id: i64, vaults: &[&str]| DaemonBotUser {
+            telegram_id: id,
+            vaults: vaults.iter().map(|v| WikiId::parse(*v).unwrap()).collect(),
+            default_vault: None,
+            profile: "readonly".to_string(),
+            reminders: false,
+        };
+        let invalid = |result: Result<DaemonConfig, RegistryError>| {
+            matches!(result, Err(RegistryError::InvalidDaemonSetting(_)))
+        };
+
+        assert!(
+            invalid(registry.set_bot_user(user(1, &["notes"]), false)),
+            "bot first"
+        );
+        assert!(invalid(registry.set_telegram_bot(
+            "not a name".into(),
+            None,
+            false
+        )));
+        assert!(invalid(registry.set_telegram_bot(
+            "TOKEN".into(),
+            Some("http://example.com".into()),
+            false
+        )));
+        assert!(invalid(registry.set_telegram_bot(
+            "TOKEN".into(),
+            Some("https://user:pw@example.com".into()),
+            false
+        )));
+        registry
+            .set_telegram_bot("TOKEN".into(), Some("http://127.0.0.1:8081".into()), false)
+            .unwrap();
+        assert!(invalid(registry.set_bot_user(user(1, &["missing"]), false)));
+        assert!(invalid(registry.set_bot_user(user(0, &["notes"]), false)));
+        assert!(invalid(registry.set_bot_user(user(1, &[]), false)));
+        let mut bad_default = user(1, &["notes"]);
+        bad_default.default_vault = Some(WikiId::parse("other").unwrap());
+        assert!(invalid(registry.set_bot_user(bad_default, false)));
+        let mut bad_profile = user(1, &["notes"]);
+        bad_profile.profile = "../x".to_string();
+        assert!(invalid(registry.set_bot_user(bad_profile, false)));
+
+        registry.set_bot_user(user(7, &["notes"]), false).unwrap();
+        let mut writer = user(7, &["notes"]);
+        writer.profile = "agent".to_string();
+        let config = registry.set_bot_user(writer, false).unwrap();
+        let users = &config.bot.telegram.as_ref().unwrap().users;
+        assert_eq!(users.len(), 1, "same id replaces");
+        assert_eq!(users[0].profile, "agent");
+
+        // Changing the token variable keeps the allowlist.
+        let config = registry
+            .set_telegram_bot("OTHER".into(), None, false)
+            .unwrap();
+        assert_eq!(config.bot.telegram.as_ref().unwrap().users.len(), 1);
+        assert!(!fs::read_to_string(registry.path())
+            .unwrap()
+            .contains("api_base"));
+
+        // Unregistering a vault is never blocked by the bot.
+        registry
+            .remove(&WikiId::parse("notes").unwrap(), false)
+            .unwrap();
+        assert!(invalid(registry.remove_bot_user(8, false)));
+        let config = registry.remove_bot_user(7, false).unwrap();
+        assert!(config.bot.telegram.as_ref().unwrap().users.is_empty());
+        let config = registry.clear_telegram_bot(false).unwrap();
+        assert!(config.bot.is_default());
     }
 }

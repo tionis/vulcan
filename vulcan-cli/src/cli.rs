@@ -5727,6 +5727,8 @@ pub enum DaemonCommand {
     AutoCommitStatus,
     #[command(about = "Show configured notification sinks and pending deliveries")]
     AlertStatus,
+    #[command(about = "Show the Telegram chat bot's state and rejected senders")]
+    BotStatus,
     #[command(about = "Run final syncs and request graceful daemon shutdown")]
     Stop,
     #[command(about = "Show local companion connection details")]
@@ -6006,6 +6008,60 @@ pub enum DaemonConfigCommand {
     RemoveNotificationSink {
         #[arg(help = "Stable sink name")]
         name: String,
+        #[arg(long, help = "Report without writing daemon configuration")]
+        dry_run: bool,
+    },
+    #[command(
+        about = "Enable the Telegram chat bot on this device",
+        after_help = "Notes:\n  The token is never stored in configuration: put it in the named variable,\n  for example in ~/.config/vulcan/daemon.env. Only one device may run a given\n  bot. Allow users with `set-bot-user`; everyone else gets no reply.\n  Existing users are kept."
+    )]
+    SetTelegramBot {
+        #[arg(
+            long,
+            default_value = "VULCAN_TELEGRAM_BOT_TOKEN",
+            help = "Environment variable holding the bot token"
+        )]
+        token_env: String,
+        #[arg(long, help = "Bot API base URL (HTTPS, or loopback HTTP for testing)")]
+        api_base: Option<String>,
+        #[arg(long, help = "Report without writing daemon configuration")]
+        dry_run: bool,
+    },
+    #[command(about = "Disable the Telegram chat bot and forget its users")]
+    ClearTelegramBot {
+        #[arg(long, help = "Report without writing daemon configuration")]
+        dry_run: bool,
+    },
+    #[command(
+        about = "Allow a Telegram user to use the chat bot, or change their access",
+        after_help = "Notes:\n  The profile is resolved from built-in and device-local profiles and must stay\n  within each vault registration's permissions profile. Find your numeric id by\n  messaging the bot and running `vulcan daemon bot-status`."
+    )]
+    SetBotUser {
+        #[arg(help = "Numeric Telegram user id")]
+        telegram_id: i64,
+        #[arg(
+            long = "wiki",
+            required = true,
+            help = "Registered wiki ID the user may use; repeat for each wiki"
+        )]
+        wiki: Vec<String>,
+        #[arg(long, help = "Wiki selected until the user switches with /vault")]
+        default_wiki: Option<String>,
+        #[arg(
+            long,
+            default_value = "readonly",
+            help = "Permission profile the user's commands run with"
+        )]
+        profile: String,
+        #[arg(long, help = "Send this user due reminders from these wikis")]
+        reminders: bool,
+        #[arg(long, help = "Report without writing daemon configuration")]
+        dry_run: bool,
+    },
+    #[command(about = "Remove a Telegram user from the chat bot allowlist")]
+    RemoveBotUser {
+        #[arg(help = "Numeric Telegram user id")]
+        telegram_id: i64,
         #[arg(long, help = "Report without writing daemon configuration")]
         dry_run: bool,
     },

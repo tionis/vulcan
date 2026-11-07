@@ -70,6 +70,8 @@ pub mod shutdown;
 pub mod status;
 pub mod supervisor;
 pub mod sync;
+pub mod telegram_api;
+pub mod telegram_bot;
 pub mod termux_scheduler;
 pub mod update_schedule;
 pub mod vault_health;

@@ -221,7 +221,8 @@ pub struct ChatReply {
 }
 
 impl ChatReply {
-    fn text(text: impl Into<String>) -> Self {
+    #[must_use]
+    pub fn text(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
             ..Self::default()
@@ -684,6 +685,8 @@ fn mcp_error(error: McpMethodError) -> AppError {
         }
     }
 }
+
+pub mod state;
 
 #[cfg(test)]
 mod tests;

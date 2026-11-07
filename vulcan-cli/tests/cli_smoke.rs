@@ -11601,6 +11601,86 @@ fn daemon_status_human_output_explains_each_registered_wiki() {
 }
 
 #[test]
+fn daemon_bot_cli_configures_users_and_reports_without_the_token() {
+    let temporary = TempDir::new().expect("temp dir should be created");
+    let config_home = temporary.path().join("config");
+    let state_home = temporary.path().join("state");
+    let vault = temporary.path().join("vault");
+    fs::create_dir_all(&vault).expect("vault should be created");
+    fs::create_dir_all(config_home.join("vulcan")).expect("config dir should be created");
+    fs::write(
+        config_home.join("vulcan/daemon.env"),
+        "VULCAN_TELEGRAM_BOT_TOKEN=123:very-secret\n",
+    )
+    .expect("daemon.env should be written");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(
+            config_home.join("vulcan/daemon.env"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .expect("daemon.env should be private");
+    }
+    cargo_vulcan_with_xdg_config(config_home.to_str().expect("utf-8"))
+        .args([
+            "vault",
+            "add",
+            "notes",
+            vault.to_str().expect("utf-8"),
+            "--no-sync",
+        ])
+        .assert()
+        .success();
+    let daemon = |arguments: &[&str]| {
+        let output = run_daemon_test_command(&config_home, &state_home, arguments);
+        assert!(
+            output.status.success(),
+            "daemon {arguments:?} failed: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout).expect("utf-8");
+        assert!(!stdout.contains("very-secret"), "{stdout}");
+        serde_json::from_str::<Value>(&stdout).expect("JSON output")
+    };
+
+    daemon(&["config", "set-telegram-bot"]);
+    let config = daemon(&[
+        "config",
+        "set-bot-user",
+        "4242",
+        "--wiki",
+        "notes",
+        "--profile",
+        "agent",
+    ]);
+    assert_eq!(config["bot"]["telegram"]["users"][0]["telegram_id"], 4242);
+    let stored = fs::read_to_string(config_home.join("vulcan/daemon.toml")).expect("config");
+    assert!(
+        stored.contains("token_env = \"VULCAN_TELEGRAM_BOT_TOKEN\""),
+        "{stored}"
+    );
+    assert!(!stored.contains("very-secret"));
+
+    let status = daemon(&["bot-status"]);
+    assert_eq!(status["configured"], true);
+    assert_eq!(status["token_set"], true, "read from daemon.env");
+    assert_eq!(status["users"][0]["profile"], "agent");
+    assert_eq!(status["status"], Value::Null);
+
+    let output = run_daemon_test_command(
+        &config_home,
+        &state_home,
+        &["config", "set-bot-user", "4242", "--wiki", "missing"],
+    );
+    assert!(!output.status.success(), "unregistered wiki is refused");
+    daemon(&["config", "remove-bot-user", "4242"]);
+    let config = daemon(&["config", "clear-telegram-bot"]);
+    assert_eq!(config.get("bot"), None);
+}
+
+#[test]
 fn daemon_config_cli_persists_only_non_secret_agent_settings() {
     let temporary = TempDir::new().expect("temp dir should be created");
     let config_home = temporary.path().join("config");
@@ -20382,6 +20462,9 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(permission_skill.contains("vulcan schedule run <id> --dry-run"));
     assert!(permission_skill.contains("`[[schedules.jobs]]`"));
     assert!(permission_skill.contains("vulcan schedule trust status"));
+    assert!(permission_skill.contains("vulcan daemon config set-telegram-bot"));
+    assert!(permission_skill.contains("vulcan daemon bot-status"));
+    assert!(permission_skill.contains("never write, echo, or store the token"));
     let sync_skill = fs::read_to_string(vault_root.join(".agents/skills/sync-workflow/SKILL.md"))
         .expect("installed sync skill");
     assert!(sync_skill.contains("`health.state`"));

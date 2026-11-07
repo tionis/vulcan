@@ -1,0 +1,428 @@
+//! The bot against a fake Bot API on loopback.
+
+use super::*;
+use crate::registry::AddWikiRequest;
+use crate::registry::WikiId;
+use axum::extract::{Path as UrlPath, State};
+use axum::routing::post;
+use axum::{Json, Router};
+use serde_json::{json, Value};
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+const TOKEN: &str = "123:test-token";
+const OWNER: i64 = 1001;
+const STRANGER: i64 = 666;
+
+#[derive(Default)]
+struct FakeState {
+    updates: VecDeque<Value>,
+    next_update_id: i64,
+    calls: Vec<(String, Value)>,
+    offsets: Vec<Option<i64>>,
+    /// Replies to `getMe` and `getUpdates` with this status and body.
+    failure: Option<(u16, Value)>,
+}
+
+#[derive(Clone, Default)]
+struct Fake(Arc<Mutex<FakeState>>);
+
+impl Fake {
+    fn push(&self, mut update: Value) {
+        let mut state = self.0.lock().unwrap();
+        state.next_update_id += 1;
+        update["update_id"] = json!(state.next_update_id);
+        state.updates.push_back(update);
+    }
+
+    fn message(&self, from: i64, chat_type: &str, text: &str) {
+        self.push(json!({
+            "message": {
+                "message_id": 1,
+                "chat": { "id": from, "type": chat_type },
+                "from": { "id": from, "is_bot": false },
+                "text": text,
+            }
+        }));
+    }
+
+    fn press(&self, from: i64, data: &str) {
+        self.push(json!({
+            "callback_query": {
+                "id": format!("cb-{data}"),
+                "from": { "id": from, "is_bot": false },
+                "message": {
+                    "message_id": 2,
+                    "chat": { "id": from, "type": "private" },
+                },
+                "data": data,
+            }
+        }));
+    }
+
+    fn calls(&self, method: &str) -> Vec<Value> {
+        self.0
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|(name, _)| name == method)
+            .map(|(_, body)| body.clone())
+            .collect()
+    }
+
+    /// Wait until `method` has been called `count` times.
+    fn wait_for(&self, method: &str, count: usize) -> Vec<Value> {
+        let start = Instant::now();
+        loop {
+            let calls = self.calls(method);
+            if calls.len() >= count {
+                return calls;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(30),
+                "timed out waiting for {count} {method} calls; got {calls:?}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+async fn handle(
+    State(fake): State<Fake>,
+    UrlPath(path): UrlPath<String>,
+    body: axum::body::Bytes,
+) -> (axum::http::StatusCode, Json<Value>) {
+    let (status, body, idle) = respond(&fake, &path, &body);
+    if idle {
+        // An empty long poll waits a little, as Telegram's would.
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    (
+        axum::http::StatusCode::from_u16(status).unwrap(),
+        Json(body),
+    )
+}
+
+fn respond(fake: &Fake, path: &str, body: &[u8]) -> (u16, Value, bool) {
+    let (token, method) = path.split_once('/').unwrap_or((path, ""));
+    assert_eq!(token, format!("bot{TOKEN}"));
+    let body: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+    let ok = |result: Value| (200, json!({ "ok": true, "result": result }), false);
+    let mut state = fake.0.lock().unwrap();
+    state.calls.push((method.to_string(), body.clone()));
+    if matches!(method, "getMe" | "getUpdates") {
+        if let Some((code, body)) = state.failure.clone() {
+            return (code, body, method == "getUpdates");
+        }
+    }
+    match method {
+        "getMe" => ok(json!({ "id": 1, "is_bot": true, "username": "VaultBot" })),
+        "getUpdates" => {
+            let offset = body["offset"].as_i64();
+            state.offsets.push(offset);
+            let updates = state
+                .updates
+                .iter()
+                .filter(|update| {
+                    offset.is_none_or(|offset| update["update_id"].as_i64().unwrap() >= offset)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let idle = updates.is_empty();
+            (200, json!({ "ok": true, "result": updates }), idle)
+        }
+        "sendMessage" => ok(json!({
+            "message_id": 99,
+            "chat": { "id": body["chat_id"], "type": "private" },
+        })),
+        _ => ok(json!(true)),
+    }
+}
+
+/// Serve the fake on loopback and return its base URL.
+fn serve(fake: &Fake) -> String {
+    let router = Router::new()
+        .route("/{*path}", post(handle))
+        .with_state(fake.clone());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async move {
+                let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+                axum::serve(listener, router).await.unwrap();
+            });
+    });
+    format!("http://{address}")
+}
+
+struct Fixture {
+    _temporary: tempfile::TempDir,
+    registry: WikiRegistry,
+    vault: PathBuf,
+    state: PathBuf,
+    config: DaemonTelegramBotConfig,
+}
+
+fn fixture(base: &str, ceiling: Option<&str>, profile: &str) -> Fixture {
+    let temporary = tempfile::tempdir().unwrap();
+    let vault = temporary.path().join("vault");
+    std::fs::create_dir_all(vault.join(".vulcan")).unwrap();
+    std::fs::write(
+        vault.join(".vulcan/config.toml"),
+        "[inbox]\npath = \"Inbox.md\"\nformat = \"- {text}\"\ntimestamp = false\n",
+    )
+    .unwrap();
+    std::fs::write(vault.join("Garden.md"), "# Garden\n\nWater the tomatoes.\n").unwrap();
+    let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+    registry
+        .add(
+            &AddWikiRequest {
+                profile: None,
+                id: WikiId::parse("notes").unwrap(),
+                path: vault.clone(),
+                groups: vec![],
+                git_dir: None,
+                permissions_profile: ceiling.map(str::to_string),
+                sync_backend: Some("none".to_string()),
+                platform_profile: None,
+            },
+            false,
+        )
+        .unwrap();
+    registry
+        .set_telegram_bot(
+            "TEST_TELEGRAM_TOKEN".to_string(),
+            Some(base.to_string()),
+            false,
+        )
+        .unwrap();
+    let config = registry
+        .set_bot_user(
+            DaemonBotUser {
+                telegram_id: OWNER,
+                vaults: vec![WikiId::parse("notes").unwrap()],
+                default_vault: None,
+                profile: profile.to_string(),
+                reminders: false,
+            },
+            false,
+        )
+        .unwrap()
+        .bot
+        .telegram
+        .unwrap();
+    Fixture {
+        state: temporary.path().join("state"),
+        _temporary: temporary,
+        registry,
+        vault,
+        config,
+    }
+}
+
+/// Run the bot on a thread; `stop` it to get its result.
+fn start(
+    fixture: &Fixture,
+) -> (
+    Arc<ShutdownSignal>,
+    std::thread::JoinHandle<Result<(), String>>,
+) {
+    let stop = Arc::new(ShutdownSignal::default());
+    let config = fixture.config.clone();
+    let registry = fixture.registry.clone();
+    let state = fixture.state.clone();
+    let signal = Arc::clone(&stop);
+    let handle = std::thread::spawn(move || {
+        run_telegram_bot(&config, TOKEN.to_string(), &registry, &state, None, &signal)
+    });
+    (stop, handle)
+}
+
+fn texts_to(calls: &[Value], chat: i64) -> Vec<String> {
+    calls
+        .iter()
+        .filter(|call| call["chat_id"] == json!(chat))
+        .map(|call| call["text"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+#[test]
+fn answers_allowlisted_users_and_ignores_everyone_else() {
+    let fake = Fake::default();
+    let fixture = fixture(&serve(&fake), None, "unrestricted");
+    let (stop, handle) = start(&fixture);
+
+    fake.message(STRANGER, "private", "/help");
+    fake.message(OWNER, "group", "/help");
+    fake.message(OWNER, "private", "/help");
+    fake.message(OWNER, "private", "buy oat milk");
+    fake.message(OWNER, "private", "/find tomatoes");
+    let sent = fake.wait_for("sendMessage", 3);
+    assert_eq!(texts_to(&sent, STRANGER), Vec::<String>::new());
+    let owner = texts_to(&sent, OWNER);
+    assert!(owner[0].contains("/task "), "{owner:?}");
+    assert_eq!(owner[1], "Captured to Inbox.md");
+    assert!(owner[2].contains("Garden.md"), "{owner:?}");
+    assert!(std::fs::read_to_string(fixture.vault.join("Inbox.md"))
+        .unwrap()
+        .contains("- buy oat milk"));
+
+    // The search result's button carries only an opaque token.
+    let data = sent[2]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(data.starts_with("a:") && !data.contains("Garden"), "{data}");
+    fake.press(STRANGER, &data);
+    fake.press(OWNER, "a:not-a-token");
+    fake.press(OWNER, &data);
+    let sent = fake.wait_for("sendMessage", 4);
+    assert!(sent[3]["text"]
+        .as_str()
+        .unwrap()
+        .contains("Water the tomatoes"));
+    let answers = fake.wait_for("answerCallbackQuery", 2);
+    assert_eq!(answers[0]["text"], "This button has expired.");
+    assert!(!answers.iter().any(|answer| answer["callback_query_id"]
+        == json!(format!("cb-{data}"))
+        && answer["text"].is_string()));
+
+    stop.cancel();
+    handle.join().unwrap().unwrap();
+    let status = read_telegram_bot_status(&fixture.state).unwrap().unwrap();
+    assert_eq!(status.state, "stopped");
+    assert_eq!(status.bot_username.as_deref(), Some("VaultBot"));
+    assert_eq!(status.rejected_users.get(&STRANGER), Some(&2));
+    assert_eq!(status.handled_updates, 8);
+    assert!(fake.calls("setMyCommands").len() == 1);
+
+    // The offset survives a restart, so nothing is handled twice.
+    let state = ChatStateStore::open(&fixture.state).unwrap();
+    assert_eq!(state.offset(PLATFORM).unwrap(), Some(9));
+    let (stop, handle) = start(&fixture);
+    let before = fake.calls("getUpdates").len();
+    fake.wait_for("getUpdates", before + 1);
+    stop.cancel();
+    handle.join().unwrap().unwrap();
+    assert_eq!(fake.calls("sendMessage").len(), 4);
+    assert_eq!(fake.0.lock().unwrap().offsets.last(), Some(&Some(9)));
+}
+
+#[test]
+fn a_user_profile_wider_than_the_registration_is_refused() {
+    let fake = Fake::default();
+    let fixture = fixture(&serve(&fake), Some("readonly"), "unrestricted");
+    let (stop, handle) = start(&fixture);
+    fake.message(OWNER, "private", "sneaky capture");
+    let sent = fake.wait_for("sendMessage", 1);
+    assert!(
+        sent[0]["text"].as_str().unwrap().contains("exceeds"),
+        "{sent:?}"
+    );
+    assert!(!fixture.vault.join("Inbox.md").exists());
+    stop.cancel();
+    handle.join().unwrap().unwrap();
+}
+
+#[test]
+fn readonly_users_can_read_but_not_write() {
+    let fake = Fake::default();
+    let fixture = fixture(&serve(&fake), None, "readonly");
+    let (stop, handle) = start(&fixture);
+    fake.message(OWNER, "private", "a capture");
+    fake.message(OWNER, "private", "/note Garden");
+    let sent = fake.wait_for("sendMessage", 2);
+    let texts = texts_to(&sent, OWNER);
+    assert!(texts[0].starts_with("Error: "), "{texts:?}");
+    assert!(
+        !texts[0].contains(&fixture.vault.display().to_string()),
+        "errors do not reveal the vault path: {texts:?}"
+    );
+    assert!(texts[1].contains("Water the tomatoes"), "{texts:?}");
+    stop.cancel();
+    handle.join().unwrap().unwrap();
+}
+
+#[test]
+fn a_rejected_token_stops_the_service() {
+    let fake = Fake::default();
+    fake.0.lock().unwrap().failure = Some((
+        401,
+        json!({ "ok": false, "error_code": 401, "description": "Unauthorized" }),
+    ));
+    let fixture = fixture(&serve(&fake), None, "readonly");
+    let (_stop, handle) = start(&fixture);
+    let error = handle.join().unwrap().unwrap_err();
+    assert!(error.contains("token was rejected"), "{error}");
+    assert!(!error.contains("test-token"));
+    let status = read_telegram_bot_status(&fixture.state).unwrap().unwrap();
+    assert_eq!(status.state, "failed");
+}
+
+#[test]
+fn a_second_poller_is_reported_as_a_conflict() {
+    let fake = Fake::default();
+    let fixture = fixture(&serve(&fake), None, "readonly");
+    let (stop, handle) = start(&fixture);
+    fake.wait_for("getUpdates", 1);
+    fake.0.lock().unwrap().failure = Some((
+        409,
+        json!({ "ok": false, "error_code": 409, "description": "Conflict: terminated by other getUpdates request" }),
+    ));
+    let start = Instant::now();
+    loop {
+        let status = read_telegram_bot_status(&fixture.state)
+            .unwrap()
+            .unwrap_or_default();
+        if status.state == "conflict" {
+            assert!(status.last_error.unwrap().contains("only one device"));
+            break;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(30),
+            "no conflict state"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    stop.cancel();
+    handle.join().unwrap().unwrap();
+}
+
+#[test]
+fn the_report_shows_configuration_without_the_token() {
+    let fixture = fixture("http://127.0.0.1:9", None, "readonly");
+    let config = fixture.registry.load().unwrap();
+    let report = telegram_bot_report(&config, &fixture.state).unwrap();
+    assert!(report.configured);
+    assert_eq!(report.token_env.as_deref(), Some("TEST_TELEGRAM_TOKEN"));
+    assert_eq!(report.users.len(), 1);
+    assert_eq!(report.users[0].profile, "readonly");
+    assert_eq!(report.status, None);
+}
+
+#[test]
+fn ignored_senders_are_counted_within_a_bound() {
+    let temporary = tempfile::tempdir().unwrap();
+    let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+    let mut bot = Bot {
+        client: TelegramClient::new(Some("http://127.0.0.1:9"), TOKEN.to_string()).unwrap(),
+        registry: &registry,
+        state_root: temporary.path(),
+        gate: None,
+        state: ChatStateStore::open(temporary.path()).unwrap(),
+        status: TelegramBotStatus::default(),
+    };
+    for id in 1..=100 {
+        bot.reject(id);
+    }
+    bot.reject(1);
+    assert_eq!(bot.status.rejected_users.len(), MAX_REJECTED_USERS);
+    assert_eq!(bot.status.rejected_users[&1], 2);
+}

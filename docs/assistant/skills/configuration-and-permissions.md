@@ -1,7 +1,7 @@
 ---
 name: configuration-and-permissions
-description: Configure Vulcan safely, manage device-local wiki registrations and groups, inspect settings, manage permission profiles, schedule vault jobs, and understand trust boundaries. Use when the user asks about registered vaults, config, permissions, profiles, access control, sandboxing, trust, scheduled or recurring jobs, setup, or why a command/tool is denied.
-version: 33
+description: Configure Vulcan safely, manage device-local wiki registrations and groups, inspect settings, manage permission profiles, schedule vault jobs, and understand trust boundaries. Use when the user asks about registered vaults, config, permissions, profiles, access control, sandboxing, trust, scheduled or recurring jobs, the Telegram chat bot, setup, or why a command/tool is denied.
+version: 34
 tools:
   - config_show
   - config_get
@@ -64,6 +64,19 @@ permission profiles, or diagnoses permission and trust failures.
     Named issuer/client credentials use device-local SecretStore references, not local vault
     config. Stop legacy remotes and preview `remote migrate-credentials <name> --dry-run` before
     applying; never replace keys or delete fingerprint receipts to bypass a custody failure.
+20. The Telegram chat bot is device-local daemon configuration, run by one device per bot token.
+    Preview `vulcan daemon config set-telegram-bot [--token-env NAME] --dry-run`, then apply it.
+    Ask the user to put the token in that variable in `~/.config/vulcan/daemon.env` (mode 0600)
+    themselves; never write, echo, or store the token. Allow a user with
+    `daemon config set-bot-user <telegram-id> --wiki <id> [--default-wiki <id>] [--profile <name>] --dry-run`:
+    the profile defaults to `readonly` and must stay within each wiki registration's permissions
+    profile, so grant writes with a narrow device-local profile rather than `unrestricted`.
+    Restart the daemon, then check `vulcan daemon bot-status`: it shows whether the token
+    variable is set, the service state (`conflict` means another device polls the same bot), and
+    ignored sender ids, which is how a user finds their numeric id after messaging the bot.
+    Remove access with `remove-bot-user <id>` or `clear-telegram-bot`. Per-vault capture targets
+    live in shared `[bot]` config (`default_capture = "inbox" | "daily"`,
+    `task_target = "tasknotes" | "inline"`).
 
 ## Guardrails
 

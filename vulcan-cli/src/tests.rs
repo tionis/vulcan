@@ -3130,6 +3130,81 @@ fn parses_daemon_native_network_notification_policy() {
 }
 
 #[test]
+fn parses_daemon_telegram_bot_configuration() {
+    let status =
+        Cli::try_parse_from(["vulcan", "daemon", "bot-status"]).expect("bot status parses");
+    assert!(matches!(
+        status.command,
+        Command::Daemon {
+            command: DaemonCommand::BotStatus
+        }
+    ));
+
+    let bot = Cli::try_parse_from(["vulcan", "daemon", "config", "set-telegram-bot"])
+        .expect("bot parses");
+    let Command::Daemon {
+        command:
+            DaemonCommand::Config {
+                command:
+                    DaemonConfigCommand::SetTelegramBot {
+                        token_env,
+                        api_base,
+                        ..
+                    },
+            },
+    } = bot.command
+    else {
+        panic!("expected set-telegram-bot");
+    };
+    assert_eq!(token_env, "VULCAN_TELEGRAM_BOT_TOKEN");
+    assert_eq!(api_base, None);
+
+    let user = Cli::try_parse_from([
+        "vulcan",
+        "daemon",
+        "config",
+        "set-bot-user",
+        "12345",
+        "--wiki",
+        "notes",
+        "--wiki",
+        "rpg",
+        "--default-wiki",
+        "rpg",
+        "--profile",
+        "agent",
+        "--reminders",
+    ])
+    .expect("bot user parses");
+    let Command::Daemon {
+        command:
+            DaemonCommand::Config {
+                command:
+                    DaemonConfigCommand::SetBotUser {
+                        telegram_id,
+                        wiki,
+                        default_wiki,
+                        profile,
+                        reminders,
+                        dry_run,
+                    },
+            },
+    } = user.command
+    else {
+        panic!("expected set-bot-user");
+    };
+    assert_eq!(telegram_id, 12345);
+    assert_eq!(wiki, vec!["notes".to_string(), "rpg".to_string()]);
+    assert_eq!(default_wiki.as_deref(), Some("rpg"));
+    assert_eq!(profile, "agent");
+    assert!(reminders && !dry_run);
+    assert!(
+        Cli::try_parse_from(["vulcan", "daemon", "config", "set-bot-user", "12345"]).is_err(),
+        "a user needs at least one wiki"
+    );
+}
+
+#[test]
 fn parses_daemon_remote_notification_sinks() {
     let status =
         Cli::try_parse_from(["vulcan", "daemon", "alert-status"]).expect("alert status parses");

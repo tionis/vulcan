@@ -76,6 +76,16 @@ impl ReminderTimezone {
         }
     }
 
+    /// The calendar date at `now_ms` (Unix ms) in this timezone.
+    #[must_use]
+    pub fn date_at(self, now_ms: i64) -> NaiveDate {
+        let instant = chrono::DateTime::from_timestamp_millis(now_ms).unwrap_or_default();
+        match self {
+            Self::Named(tz) => instant.with_timezone(&tz).date_naive(),
+            Self::Local => instant.with_timezone(&chrono::Local).date_naive(),
+        }
+    }
+
     /// The instant (Unix ms) of a wall-clock time. A time inside a DST gap
     /// fires at the first valid minute after it; a repeated time fires at
     /// its first occurrence.

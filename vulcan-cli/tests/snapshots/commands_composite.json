@@ -13981,6 +13981,12 @@
             "subcommands": []
           },
           {
+            "about": "Show the Telegram chat bot's state and rejected senders",
+            "name": "bot-status",
+            "options": [],
+            "subcommands": []
+          },
+          {
             "about": "Run final syncs and request graceful daemon shutdown",
             "name": "stop",
             "options": [],
@@ -14743,6 +14749,183 @@
                     "short": null,
                     "value_names": [
                       "NAME"
+                    ]
+                  },
+                  {
+                    "help": "Report without writing daemon configuration",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Enable the Telegram chat bot on this device",
+                "after_help": "Notes:\n  The token is never stored in configuration: put it in the named variable,\n  for example in ~/.config/vulcan/daemon.env. Only one device may run a given\n  bot. Allow users with `set-bot-user`; everyone else gets no reply.\n  Existing users are kept.",
+                "name": "set-telegram-bot",
+                "options": [
+                  {
+                    "help": "Environment variable holding the bot token",
+                    "id": "token_env",
+                    "long": "token-env",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "TOKEN_ENV"
+                    ]
+                  },
+                  {
+                    "help": "Bot API base URL (HTTPS, or loopback HTTP for testing)",
+                    "id": "api_base",
+                    "long": "api-base",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "API_BASE"
+                    ]
+                  },
+                  {
+                    "help": "Report without writing daemon configuration",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Disable the Telegram chat bot and forget its users",
+                "name": "clear-telegram-bot",
+                "options": [
+                  {
+                    "help": "Report without writing daemon configuration",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Allow a Telegram user to use the chat bot, or change their access",
+                "after_help": "Notes:\n  The profile is resolved from built-in and device-local profiles and must stay\n  within each vault registration's permissions profile. Find your numeric id by\n  messaging the bot and running `vulcan daemon bot-status`.",
+                "name": "set-bot-user",
+                "options": [
+                  {
+                    "help": "Numeric Telegram user id",
+                    "id": "telegram_id",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "TELEGRAM_ID"
+                    ]
+                  },
+                  {
+                    "help": "Registered wiki ID the user may use; repeat for each wiki",
+                    "id": "wiki",
+                    "long": "wiki",
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "WIKI"
+                    ]
+                  },
+                  {
+                    "help": "Wiki selected until the user switches with /vault",
+                    "id": "default_wiki",
+                    "long": "default-wiki",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DEFAULT_WIKI"
+                    ]
+                  },
+                  {
+                    "help": "Permission profile the user's commands run with",
+                    "id": "profile",
+                    "long": "profile",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "PROFILE"
+                    ]
+                  },
+                  {
+                    "help": "Send this user due reminders from these wikis",
+                    "id": "reminders",
+                    "long": "reminders",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "REMINDERS"
+                    ]
+                  },
+                  {
+                    "help": "Report without writing daemon configuration",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Remove a Telegram user from the chat bot allowlist",
+                "name": "remove-bot-user",
+                "options": [
+                  {
+                    "help": "Numeric Telegram user id",
+                    "id": "telegram_id",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "TELEGRAM_ID"
                     ]
                   },
                   {
