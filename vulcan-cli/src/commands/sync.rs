@@ -4058,6 +4058,24 @@ mod sync_report_tests {
     use super::*;
 
     #[test]
+    fn missing_public_key_file_error_names_the_path_and_explains_the_argument() {
+        let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFiTCRfFzqLV";
+        let error = read_public_key_input(std::path::Path::new(key)).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains(key), "{message}");
+        assert!(message.contains("takes the path of a file"), "{message}");
+        assert!(message.contains("`-` for stdin"), "{message}");
+    }
+
+    #[test]
+    fn public_key_read_hint_is_limited_to_missing_files() {
+        let error = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let message = public_key_read_message("key.pub", &error);
+        assert!(message.starts_with("failed to read public key from key.pub: "));
+        assert!(!message.contains("takes the path"), "{message}");
+    }
+
+    #[test]
     fn sync_outcome_messages_are_compact_and_human_readable() {
         assert_eq!(
             sync_outcome_message(GitSyncOutcome::Planned, "origin"),
@@ -4424,16 +4442,35 @@ fn read_public_key_input(source: &std::path::Path) -> Result<String, CliError> {
     use std::io::Read;
     const LIMIT: u64 = 8 * 1024;
     let mut text = String::new();
-    let read = if source == std::path::Path::new("-") {
+    let from_stdin = source == std::path::Path::new("-");
+    let read = if from_stdin {
         std::io::stdin().take(LIMIT + 1).read_to_string(&mut text)
     } else {
         std::fs::File::open(source).and_then(|file| file.take(LIMIT + 1).read_to_string(&mut text))
     };
-    read.map_err(CliError::operation)?;
+    read.map_err(|error| {
+        let name = if from_stdin {
+            "standard input".to_string()
+        } else {
+            source.display().to_string()
+        };
+        CliError::operation(public_key_read_message(&name, &error))
+    })?;
     if text.len() as u64 > LIMIT {
         return Err(CliError::operation("public key input is too large"));
     }
     Ok(text)
+}
+
+fn public_key_read_message(name: &str, error: &std::io::Error) -> String {
+    let mut message = format!("failed to read public key from {name}: {error}");
+    if error.kind() == std::io::ErrorKind::NotFound {
+        message.push_str(
+            "; --public-key takes the path of a file holding the key (or `-` for stdin), \
+             not the key text itself",
+        );
+    }
+    message
 }
 
 fn print_registration_change(
