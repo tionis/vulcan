@@ -46,7 +46,7 @@ Use the CLI directly from shell or Python scripts, request JSON output, or run J
 | Daemon REST API | Programs reaching one vault over HTTP with a per-vault token |
 | Rust crates | Native integration with shared semantics and application workflows |
 
-Read the [automation overview](docs/guide/automation-surfaces.md), [scripting guide](docs/guide/scripting.md), [JavaScript API](docs/reference/js-api/index.md), and [sandbox guide](docs/guide/sandbox.md). The daemon's [REST API](docs/guide/rest-api.md) serves reads from its warm index and accepts idempotent writes, and [scheduled jobs](docs/guide/schedules.md) run scans and batched commits on chosen devices. For remote agent access with per-connection consent, see [named MCP remotes](docs/guide/mcp-remotes.md) (`vulcan help mcp-remotes`) and the [ChatGPT MCP setup guide](docs/guide/chatgpt-mcp.md).
+Read the [automation overview](docs/guide/automation-surfaces.md), [scripting guide](docs/guide/scripting.md), [JavaScript API](docs/reference/js-api/index.md), and [sandbox guide](docs/guide/sandbox.md). The daemon's [REST API](docs/guide/rest-api.md) serves reads from its warm index and accepts idempotent writes, and [scheduled jobs](docs/guide/schedules.md) run scans and batched commits on chosen devices. A daemon-hosted [Telegram bot](docs/guide/chat-bot.md) captures notes and files from a phone and delivers reminders with Done and Snooze buttons. For remote agent access with per-connection consent, see [named MCP remotes](docs/guide/mcp-remotes.md) (`vulcan help mcp-remotes`) and the [ChatGPT MCP setup guide](docs/guide/chatgpt-mcp.md).
 
 ### Publish and synchronize
 

@@ -48,6 +48,7 @@ pub const CHAT_COMMANDS: &[(&str, &str)] = &[
     ("find", "Search the vault"),
     ("note", "Show a note by path or title"),
     ("vault", "Show or switch the active vault"),
+    ("undo", "Revert the last capture from this chat"),
     ("help", "List commands"),
 ];
 
@@ -81,6 +82,9 @@ pub enum ChatCommand {
     Vault {
         name: Option<String>,
     },
+    /// Handled by the adapter, which keeps each chat's last capture; it
+    /// runs [`run_chat_undo`].
+    Undo,
     Help,
     /// A known command given without its required argument.
     Usage {
@@ -98,7 +102,7 @@ impl ChatCommand {
     pub fn writes(&self) -> bool {
         matches!(
             self,
-            Self::Capture { .. } | Self::Daily { .. } | Self::Task { .. }
+            Self::Capture { .. } | Self::Daily { .. } | Self::Task { .. } | Self::Undo
         )
     }
 }
@@ -155,6 +159,7 @@ pub fn parse_chat_message(text: &str) -> ChatCommand {
         },
         "find" | "search" | "f" => required("find", |query| ChatCommand::Find { query }),
         "note" | "n" => required("note", |reference| ChatCommand::Note { reference }),
+        "undo" => ChatCommand::Undo,
         "vault" | "v" => ChatCommand::Vault {
             name: (!args.is_empty()).then(|| args.to_string()),
         },
@@ -218,6 +223,53 @@ pub struct ChatReply {
     pub document: Option<ChatDocument>,
     /// Vault-relative paths this command wrote.
     pub changed_paths: Vec<String>,
+    /// How to revert this command's writes with [`run_chat_undo`]; empty
+    /// when it wrote nothing or cannot be undone. The adapter keeps it for
+    /// the chat's `/undo`.
+    pub undo: Vec<ChatUndo>,
+}
+
+/// One file as a capture left it: restore `before` (or remove the file
+/// when it did not exist) while its content still hashes to `after_hash`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatUndo {
+    pub path: String,
+    pub before: Option<String>,
+    pub after_hash: String,
+}
+
+/// Notes larger than this are not kept for `/undo`.
+const UNDO_LIMIT_BYTES: usize = 1024 * 1024;
+
+/// What a file held before a write.
+enum Prior {
+    Absent,
+    Content(String),
+}
+
+/// The content of `path` before a write, for undo; `None` when it is too
+/// large to keep or unreadable.
+fn undo_before(paths: &VaultPaths, path: &str) -> Option<Prior> {
+    match crate::notes::read_note_for_update(paths, path) {
+        Ok(Some(text)) if text.len() > UNDO_LIMIT_BYTES => None,
+        Ok(Some(text)) => Some(Prior::Content(text)),
+        Ok(None) => Some(Prior::Absent),
+        Err(_) => None,
+    }
+}
+
+/// The undo entry for `path` after a write, given what it held before.
+fn undo_after(paths: &VaultPaths, path: &str, before: Option<Prior>) -> Option<ChatUndo> {
+    let bytes =
+        vulcan_core::paths::secure_read(paths.vault_root(), std::path::Path::new(path)).ok()?;
+    Some(ChatUndo {
+        path: path.to_string(),
+        before: match before? {
+            Prior::Absent => None,
+            Prior::Content(text) => Some(text),
+        },
+        after_hash: blake3::hash(&bytes).to_hex().to_string(),
+    })
 }
 
 impl ChatReply {
@@ -259,9 +311,200 @@ pub fn run_chat_command(
         ChatCommand::Note { reference } => show_note(vault, reference),
         ChatCommand::Help => Ok(ChatReply::text(chat_help_text())),
         ChatCommand::Usage { command } => Ok(ChatReply::text(chat_usage_text(command))),
-        ChatCommand::Vault { .. } | ChatCommand::Unknown { .. } | ChatCommand::Empty => Err(
-            AppError::operation("this command is handled by the chat adapter"),
-        ),
+        ChatCommand::Vault { .. }
+        | ChatCommand::Undo
+        | ChatCommand::Unknown { .. }
+        | ChatCommand::Empty => Err(AppError::operation(
+            "this command is handled by the chat adapter",
+        )),
+    }
+}
+
+/// Revert a capture: every file must still be exactly as the capture
+/// left it, or nothing is changed.
+pub fn run_chat_undo(vault: &ChatVault<'_>, undo: &[ChatUndo]) -> Result<ChatReply, AppError> {
+    if undo.is_empty() {
+        return Ok(ChatReply::text("Nothing to undo."));
+    }
+    let root = vault.paths.vault_root();
+    let changed = with_write(vault, || {
+        let _lock = vulcan_core::write_lock::acquire_write_lock(vault.paths)
+            .map_err(AppError::operation)?;
+        for entry in undo {
+            vault
+                .guard
+                .check_write_path(&entry.path)
+                .map_err(AppError::operation)?;
+            let unchanged =
+                vulcan_core::paths::secure_read(root, std::path::Path::new(&entry.path))
+                    .is_ok_and(|bytes| blake3::hash(&bytes).to_hex().as_str() == entry.after_hash);
+            if !unchanged {
+                return Ok(Err(entry.path.clone()));
+            }
+        }
+        for entry in undo {
+            let path = std::path::Path::new(&entry.path);
+            match &entry.before {
+                Some(before) => {
+                    if crate::notes::note_path_is_mdbase_managed(
+                        vault.paths,
+                        &entry.path,
+                        Some(vault.profile),
+                    )? {
+                        return Err(AppError::operation(format!(
+                            "{} is managed by an mdbase collection; undo it by hand",
+                            entry.path
+                        )));
+                    }
+                    vulcan_core::paths::secure_replace(root, path, before)
+                        .map_err(AppError::operation)?;
+                }
+                None => {
+                    vulcan_core::paths::secure_remove(root, path).map_err(AppError::operation)?;
+                }
+            }
+        }
+        let changed = undo
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect::<Vec<_>>();
+        Ok(Ok(changed))
+    })?;
+    match changed {
+        Ok(changed) => {
+            finish_write(vault, "bot-undo", &changed)?;
+            Ok(ChatReply {
+                text: format!("Undone: {}", changed.join(", ")),
+                changed_paths: changed,
+                ..ChatReply::default()
+            })
+        }
+        Err(path) => Ok(ChatReply::text(format!(
+            "{path} changed since the capture; nothing was undone."
+        ))),
+    }
+}
+
+/// A file sent to the bot: a photo, document, or voice message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatAttachment {
+    /// The sender's file name, or a generated one such as
+    /// `photo-20261107-101500.jpg`. It is sanitized before use.
+    pub file_name: String,
+    pub bytes: Vec<u8>,
+    /// Text sent with the file, captured beside the embed.
+    pub caption: Option<String>,
+}
+
+/// Save an attachment under `bot.attachment_folder` and capture an embed
+/// of it, with its caption, to the default capture target.
+pub fn run_chat_attachment(
+    vault: &ChatVault<'_>,
+    attachment: &ChatAttachment,
+) -> Result<ChatReply, AppError> {
+    let config = load_vault_config(vault.paths).config;
+    let folder = match config.bot.attachment_folder.trim() {
+        "" | "." | "./" => String::new(),
+        folder => vulcan_core::paths::normalize_relative_input_path(
+            folder,
+            vulcan_core::paths::RelativePathOptions {
+                expected_extension: None,
+                append_extension_if_missing: false,
+            },
+        )
+        .map_err(|_| {
+            AppError::operation(format!(
+                "bot.attachment_folder must be a folder inside the vault: {folder}"
+            ))
+        })?,
+    };
+    let name = sanitize_file_name(&attachment.file_name);
+    let path = with_write(vault, || {
+        let root = vault.paths.vault_root();
+        let (stem, extension) = name
+            .rsplit_once('.')
+            .map_or((name.as_str(), String::new()), |(stem, extension)| {
+                (stem, format!(".{extension}"))
+            });
+        let path = (0..100)
+            .map(|attempt| {
+                let file = if attempt == 0 {
+                    name.clone()
+                } else {
+                    format!("{stem}-{attempt}{extension}")
+                };
+                if folder.is_empty() {
+                    file
+                } else {
+                    format!("{folder}/{file}")
+                }
+            })
+            .find(|path| !root.join(path).exists())
+            .ok_or_else(|| AppError::operation("could not find a free attachment file name"))?;
+        vault
+            .guard
+            .check_write_path(&path)
+            .map_err(AppError::operation)?;
+        vulcan_core::paths::secure_create_atomic(
+            root,
+            std::path::Path::new(&path),
+            &attachment.bytes,
+        )
+        .map_err(AppError::operation)?;
+        finish_write(vault, "bot-attachment", std::slice::from_ref(&path))?;
+        Ok(path)
+    })?;
+    let saved = ChatUndo {
+        path: path.clone(),
+        before: None,
+        after_hash: blake3::hash(&attachment.bytes).to_hex().to_string(),
+    };
+    let embed = format!("![[{path}]]");
+    let text = match attachment.caption.as_deref().map(str::trim) {
+        Some(caption) if !caption.is_empty() => format!("{caption} {embed}"),
+        _ => embed,
+    };
+    let mut reply = capture(vault, &text)?;
+    reply.text = format!("Saved {path}\n{}", reply.text);
+    reply.changed_paths.insert(0, path);
+    // Undo removes the file only together with the capture that embeds it.
+    if !reply.undo.is_empty() {
+        reply.undo.insert(0, saved);
+    }
+    Ok(reply)
+}
+
+/// A file name safe on every platform: letters, digits, `.`, `-`, and `_`,
+/// at most 100 characters, never hidden or empty.
+fn sanitize_file_name(name: &str) -> String {
+    let name = name.rsplit(['/', '\\']).next().unwrap_or_default();
+    let mut clean = name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    clean = clean.trim_start_matches(['.', '-']).to_string();
+    if clean.chars().count() > 100 {
+        let extension = clean
+            .rsplit_once('.')
+            .map(|(_, extension)| extension.chars().take(10).collect::<String>())
+            .unwrap_or_default();
+        let stem = clean.chars().take(88).collect::<String>();
+        clean = if extension.is_empty() {
+            stem
+        } else {
+            format!("{stem}.{extension}")
+        };
+    }
+    if clean.is_empty() || clean.starts_with('.') {
+        format!("file{clean}")
+    } else {
+        clean
     }
 }
 
@@ -339,30 +582,44 @@ fn capture(vault: &ChatVault<'_>, text: &str) -> Result<ChatReply, AppError> {
 }
 
 fn capture_inbox(vault: &ChatVault<'_>, text: &str) -> Result<ChatReply, AppError> {
-    let path = with_write(vault, || {
+    let (path, undo) = with_write(vault, || {
         let inbox = crate::inbox::inbox_path(&load_vault_config(vault.paths).config.inbox)?;
         vault
             .guard
             .check_write_path(&inbox)
             .map_err(AppError::operation)?;
+        let before = undo_before(vault.paths, &inbox);
         let path = crate::inbox::write_inbox_capture(
             vault.paths,
             text,
             Some(vault.profile),
             Verbosity::Quiet,
         )?;
+        let undo = (path == inbox)
+            .then(|| undo_after(vault.paths, &path, before))
+            .flatten();
         finish_write(vault, "bot-capture", std::slice::from_ref(&path))?;
-        Ok(path)
+        Ok((path, undo))
     })?;
     Ok(ChatReply {
         text: format!("Captured to {path}"),
         changed_paths: vec![path],
+        undo: undo.into_iter().collect(),
         ..ChatReply::default()
     })
 }
 
 fn append_daily(vault: &ChatVault<'_>, text: &str) -> Result<ChatReply, AppError> {
-    let report = with_write(vault, || {
+    let date = vault.today.format("%Y-%m-%d").to_string();
+    let expected = vulcan_core::periodic::expected_periodic_note_path(
+        &load_vault_config(vault.paths).config.periodic,
+        "daily",
+        &date,
+    );
+    let (report, undo) = with_write(vault, || {
+        let before = expected
+            .as_deref()
+            .and_then(|path| undo_before(vault.paths, path));
         crate::mcp_notes::note_append(
             vault.paths,
             vault.guard,
@@ -373,17 +630,24 @@ fn append_daily(vault: &ChatVault<'_>, text: &str) -> Result<ChatReply, AppError
                 mode: None,
                 heading: None,
                 periodic: Some("daily".to_string()),
-                date: Some(vault.today.format("%Y-%m-%d").to_string()),
+                date: Some(date.clone()),
                 vars: BTreeMap::new(),
                 check: false,
                 no_commit: false,
             },
         )
         .map_err(mcp_error)
+        .map(|report| {
+            let undo = (expected.as_deref() == Some(report.path.as_str()))
+                .then(|| undo_after(vault.paths, &report.path, before))
+                .flatten();
+            (report, undo)
+        })
     })?;
     Ok(ChatReply {
         text: format!("Added to {}", report.path),
         changed_paths: vec![report.path],
+        undo: undo.into_iter().collect(),
         ..ChatReply::default()
     })
 }
@@ -421,14 +685,21 @@ fn create_task(vault: &ChatVault<'_>, text: &str) -> Result<ChatReply, AppError>
                 lines.push(format!("Due: {due}"));
             }
             lines.push(report.path.clone());
+            // `tasks add` always creates a new note, so undo removes it.
+            let undo = undo_after(vault.paths, &report.path, Some(Prior::Absent));
             Ok(ChatReply {
                 text: lines.join("\n"),
                 changed_paths: report.changed_paths,
+                undo: undo.into_iter().collect(),
                 ..ChatReply::default()
             })
         }
         BotTaskTarget::Inline => {
-            let report = with_write(vault, || {
+            let inbox = crate::inbox::inbox_path(&load_vault_config(vault.paths).config.inbox).ok();
+            let (report, undo) = with_write(vault, || {
+                let before = inbox
+                    .as_deref()
+                    .and_then(|path| undo_before(vault.paths, path));
                 crate::mcp_tasks::task_create(
                     vault.paths,
                     vault.guard,
@@ -443,10 +714,20 @@ fn create_task(vault: &ChatVault<'_>, text: &str) -> Result<ChatReply, AppError>
                     },
                 )
                 .map_err(mcp_error)
+                .map(|report| {
+                    let undo = match (inbox.as_deref(), report.changed_paths.as_slice()) {
+                        (Some(inbox), [changed]) if changed == inbox => {
+                            undo_after(vault.paths, inbox, before)
+                        }
+                        _ => None,
+                    };
+                    (report, undo)
+                })
             })?;
             Ok(ChatReply {
                 text: format!("Task added: {}", report.task),
                 changed_paths: report.changed_paths,
+                undo: undo.into_iter().collect(),
                 ..ChatReply::default()
             })
         }

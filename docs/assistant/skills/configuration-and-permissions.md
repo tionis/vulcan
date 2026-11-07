@@ -1,7 +1,7 @@
 ---
 name: configuration-and-permissions
 description: Configure Vulcan safely, manage device-local wiki registrations and groups, inspect settings, manage permission profiles, schedule vault jobs, and understand trust boundaries. Use when the user asks about registered vaults, config, permissions, profiles, access control, sandboxing, trust, scheduled or recurring jobs, the Telegram chat bot, setup, or why a command/tool is denied.
-version: 34
+version: 35
 tools:
   - config_show
   - config_get
@@ -76,7 +76,9 @@ permission profiles, or diagnoses permission and trust failures.
     ignored sender ids, which is how a user finds their numeric id after messaging the bot.
     Remove access with `remove-bot-user <id>` or `clear-telegram-bot`. Per-vault capture targets
     live in shared `[bot]` config (`default_capture = "inbox" | "daily"`,
-    `task_target = "tasknotes" | "inline"`).
+    `task_target = "tasknotes" | "inline"`, `attachment_folder` for photos and files sent to the
+    bot). `docs/guide/chat-bot.md` is the user-facing setup guide, including a narrow
+    `bot-capture` profile example.
 
 ## Guardrails
 

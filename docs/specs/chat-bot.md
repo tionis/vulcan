@@ -81,9 +81,10 @@ reminders = true                        # this user receives reminders for these
 
 ```toml
 [bot]
-default_capture = "inbox"           # "inbox" | "daily" (implemented)
-task_target = "tasknotes"           # "tasknotes" | "inline": what /task creates (implemented)
-# planned: QuickAdd capture choices by name, link_capture, attachments_folder
+default_capture = "inbox"           # "inbox" | "daily"
+task_target = "tasknotes"           # "tasknotes" | "inline": what /task creates
+attachment_folder = "Attachments"   # where sent files are saved
+# deferred: QuickAdd capture choices by name, link_capture
 
 [tasks.reminders]                   # implemented (slice 1)
 inline = true                       # parse ⏰ / (@…) / [remind:: …] on inline tasks
@@ -106,8 +107,8 @@ privacy = "title_only"
 | Input | Effect | Workflow |
 | --- | --- | --- |
 | free text | capture to `bot.default_capture` | inbox capture / QuickAdd capture / daily append |
-| a message that is only a URL | capture to `bot.link_capture`; the title is fetched only if the profile allows network access | as above |
-| photo, document, voice | save under `attachments_folder` and capture an embed link, with the caption as text | attachment write plus capture |
+| a message that is only a URL | deferred: captured as text for now; planned capture to `bot.link_capture` with the title fetched only if the profile allows network access | as above |
+| photo, document, voice, audio, video | save under `bot.attachment_folder` (sanitized name, never overwriting) and capture `![[path]]` with the caption as text; at most 20 MB, the Bot API's download limit | `vulcan-app::chat::run_chat_attachment` |
 | `/c <text>`, `/capture <text>` | capture to the default target (QuickAdd choices by name are planned; Vulcan has no reusable QuickAdd capture workflow yet) | as free text |
 | `/daily <text>` | append to today's daily note | periodic append |
 | `/task <natural language>` | create a TaskNotes task (date, time, priority, and tags parsed as in `vulcan tasks add`), or an inline task in the inbox note with `bot.task_target = "inline"` | TaskNotes create / inline task create |
@@ -116,7 +117,7 @@ privacy = "title_only"
 | `/find <query>` | top 8 search hits, each with a button that sends the note | search |
 | `/note <path or title>` | send the note as text (split at 4096 characters) or as a file when it is long | note get |
 | `/vault [name]` | show or switch this chat's active vault | bot state |
-| `/undo` | revert the last capture made from this chat, if the file is unchanged since | bot state + note write |
+| `/undo` | revert the last capture, task, or attachment made from this chat within 7 days, all or nothing, if every file is byte-for-byte as the capture left it | bot state + `run_chat_undo` |
 | `/help` | list commands (also registered with `setMyCommands`) | — |
 
 Every write goes through the ordinary write path, so the mutation scheduler, auto-commit, and Git
@@ -231,7 +232,9 @@ so.
 
 All bot state is device-local, outside `cache.db` and outside sync, in `daemon/bot.sqlite`:
 the update offset, per-chat active vault, and button actions (slice 3); the reminder ledger
-(slice 4); and the last capture for `/undo` (slice 6). The service also writes
+(slice 4); and the last capture for `/undo` (slice 6): each written file's path, its content
+before (absent when the capture created it; notes over 1 MB are not kept), and a hash of its
+content after. The service also writes
 `daemon/telegram-bot.json`: state (`starting`, `polling`, `backoff`, `rate_limited`, `conflict`,
 `failed`, `stopped`), bot username, last poll, last error, handled updates, reminders sent, and
 ignored senders.
@@ -264,7 +267,7 @@ command was dropped: messaging the bot and checking `bot-status` covers it.
    Bot API server; `vulcan daemon config` bot commands and `vulcan daemon bot-status`.
 4. **Reminder delivery**: timer, ledger, catch-up, and resolution edits.
 5. **Reminder actions**: done and snooze, ledger-gated.
-6. **Attachments and `/undo`**, skills and user guide.
+6. **Attachments and `/undo`**, skills and user guide (`docs/guide/chat-bot.md`).
 
 ## Tests
 

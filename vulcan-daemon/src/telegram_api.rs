@@ -13,6 +13,8 @@ use std::time::Duration;
 pub const DEFAULT_TELEGRAM_API_BASE: &str = "https://api.telegram.org";
 /// Telegram rejects longer message texts.
 pub const TELEGRAM_TEXT_LIMIT: usize = 4096;
+/// The largest file the Bot API lets bots download.
+pub const TELEGRAM_FILE_LIMIT: u64 = 20 * 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +78,38 @@ pub struct TelegramMessage {
     pub text: Option<String>,
     #[serde(default)]
     pub caption: Option<String>,
+    /// The sizes of a photo, smallest first.
+    #[serde(default)]
+    pub photo: Option<Vec<TelegramFileRef>>,
+    #[serde(default)]
+    pub document: Option<TelegramFileRef>,
+    #[serde(default)]
+    pub voice: Option<TelegramFileRef>,
+    #[serde(default)]
+    pub audio: Option<TelegramFileRef>,
+    #[serde(default)]
+    pub video: Option<TelegramFileRef>,
+}
+
+/// A file attached to a message: photo size, document, voice, audio, or
+/// video.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct TelegramFileRef {
+    pub file_id: String,
+    #[serde(default)]
+    pub file_name: Option<String>,
+    #[serde(default)]
+    pub mime_type: Option<String>,
+    #[serde(default)]
+    pub file_size: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct TelegramFile {
+    #[serde(default)]
+    file_path: Option<String>,
+    #[serde(default)]
+    file_size: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -303,6 +337,43 @@ impl TelegramClient {
             .send()
             .map_err(|error| TelegramError::Network(error.without_url().to_string()))?;
         Self::decode::<Value>(response).map(|_| ())
+    }
+
+    /// Download the file `file_id`, refusing files over `limit` bytes.
+    pub fn download_file(&self, file_id: &str, limit: u64) -> Result<Vec<u8>, TelegramError> {
+        let file: TelegramFile =
+            self.call("getFile", &json!({ "file_id": file_id }), REQUEST_TIMEOUT)?;
+        let too_large = || TelegramError::Api {
+            code: 413,
+            description: format!("files over {} MB are not accepted", limit / (1024 * 1024)),
+        };
+        if file.file_size.is_some_and(|size| size > limit) {
+            return Err(too_large());
+        }
+        let path = file.file_path.ok_or_else(|| TelegramError::Api {
+            code: 400,
+            description: "Telegram returned no file path".to_string(),
+        })?;
+        let response = self
+            .http
+            .get(format!("{}/file/bot{}/{path}", self.base, self.token))
+            .timeout(Duration::from_secs(120))
+            .send()
+            .map_err(|error| TelegramError::Network(error.without_url().to_string()))?;
+        if !response.status().is_success() {
+            return Err(TelegramError::Api {
+                code: response.status().as_u16(),
+                description: "file download failed".to_string(),
+            });
+        }
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::Read::take(response, limit + 1), &mut bytes)
+            // The body error may name the URL, which holds the token.
+            .map_err(|_| TelegramError::Network("file download was interrupted".to_string()))?;
+        if bytes.len() as u64 > limit {
+            return Err(too_large());
+        }
+        Ok(bytes)
     }
 
     pub fn set_my_commands(&self, commands: &[(&str, &str)]) -> Result<(), TelegramError> {

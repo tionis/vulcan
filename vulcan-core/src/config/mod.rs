@@ -2735,7 +2735,7 @@ pub struct VaultConfig {
 
 /// How a chat bot writes into this vault (`[bot]`). The bot itself, its
 /// token, and who may use it are device configuration.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BotConfig {
     /// Where free-text messages go.
     #[serde(default)]
@@ -2743,6 +2743,10 @@ pub struct BotConfig {
     /// What `/task` creates.
     #[serde(default)]
     pub task_target: BotTaskTarget,
+    /// Folder that photos, files, and voice messages sent to the bot are
+    /// saved in.
+    #[serde(default = "default_bot_attachment_folder")]
+    pub attachment_folder: String,
     /// How reminders from this vault are delivered.
     #[serde(default)]
     pub reminders: BotRemindersConfig,
@@ -2777,6 +2781,21 @@ impl Default for BotRemindersConfig {
             privacy_overrides: Vec::new(),
         }
     }
+}
+
+impl Default for BotConfig {
+    fn default() -> Self {
+        Self {
+            default_capture: BotCaptureTarget::default(),
+            task_target: BotTaskTarget::default(),
+            attachment_folder: default_bot_attachment_folder(),
+            reminders: BotRemindersConfig::default(),
+        }
+    }
+}
+
+fn default_bot_attachment_folder() -> String {
+    "Attachments".to_string()
 }
 
 fn default_bot_catch_up_window() -> String {
@@ -5365,6 +5384,9 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
         if let Some(task_target) = bot.task_target {
             config.bot.task_target = task_target;
+        }
+        if let Some(attachment_folder) = bot.attachment_folder {
+            config.bot.attachment_folder = attachment_folder;
         }
         if let Some(reminders) = bot.reminders {
             if let Some(catch_up_window) = reminders.catch_up_window {

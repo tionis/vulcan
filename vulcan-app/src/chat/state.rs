@@ -5,13 +5,15 @@
 //! `cache.db` and outside sync. Losing it is harmless: the bot re-reads
 //! pending updates once and old buttons stop working.
 
-use super::ChatAction;
+use super::{ChatAction, ChatUndo};
 use crate::AppError;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
 const STATE_FILE: &str = "daemon/bot.sqlite";
-const STATE_VERSION: i64 = 3;
+const STATE_VERSION: i64 = 4;
+/// `/undo` reverts a capture for this long.
+pub const UNDO_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
 /// Expired and resolved reminder entries are forgotten after this.
 pub const REMINDER_RETENTION_MS: i64 = 60 * 24 * 60 * 60 * 1_000;
 /// Buttons older than this no longer work.
@@ -89,6 +91,14 @@ impl ChatStateStore {
                      updated_ms INTEGER NOT NULL,
                      actions TEXT NOT NULL DEFAULT '',
                      PRIMARY KEY (platform, chat_id, vault, occurrence_id)
+                 );
+                 CREATE TABLE IF NOT EXISTS undo (
+                     platform TEXT NOT NULL,
+                     chat_id INTEGER NOT NULL,
+                     vault TEXT NOT NULL,
+                     entries TEXT NOT NULL,
+                     created_ms INTEGER NOT NULL,
+                     PRIMARY KEY (platform, chat_id)
                  );",
             )
             .map_err(AppError::operation)?;
@@ -315,6 +325,64 @@ impl ChatStateStore {
                 params![platform, entry.chat_id, entry.vault, entry.occurrence_id],
                 |row| row.get(0),
             )
+            .map_err(AppError::operation)
+    }
+
+    /// Remember a chat's last capture for `/undo`, replacing the previous.
+    pub fn set_undo(
+        &self,
+        platform: &str,
+        chat_id: i64,
+        vault: &str,
+        undo: &[ChatUndo],
+        now_ms: i64,
+    ) -> Result<(), AppError> {
+        let entries = serde_json::to_string(undo).map_err(AppError::operation)?;
+        self.connection
+            .execute(
+                "INSERT INTO undo (platform, chat_id, vault, entries, created_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT (platform, chat_id) DO UPDATE SET
+                     vault = excluded.vault, entries = excluded.entries,
+                     created_ms = excluded.created_ms",
+                params![platform, chat_id, vault, entries, now_ms],
+            )
+            .map(|_| ())
+            .map_err(AppError::operation)
+    }
+
+    /// A chat's last capture, if it is recent enough to undo.
+    pub fn undo(
+        &self,
+        platform: &str,
+        chat_id: i64,
+        now_ms: i64,
+    ) -> Result<Option<(String, Vec<ChatUndo>)>, AppError> {
+        let row = self
+            .connection
+            .query_row(
+                "SELECT vault, entries FROM undo
+                 WHERE platform = ?1 AND chat_id = ?2 AND created_ms >= ?3",
+                params![platform, chat_id, now_ms - UNDO_RETENTION_MS],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(AppError::operation)?;
+        row.map(|(vault, entries)| {
+            serde_json::from_str(&entries)
+                .map(|entries| (vault, entries))
+                .map_err(AppError::operation)
+        })
+        .transpose()
+    }
+
+    pub fn clear_undo(&self, platform: &str, chat_id: i64) -> Result<(), AppError> {
+        self.connection
+            .execute(
+                "DELETE FROM undo WHERE platform = ?1 AND chat_id = ?2",
+                params![platform, chat_id],
+            )
+            .map(|_| ())
             .map_err(AppError::operation)
     }
 
@@ -550,5 +618,37 @@ mod tests {
             .reminder_entries("telegram", 1, "notes", 0)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn keeps_one_recent_undo_per_chat() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ChatStateStore::open(temp.path()).unwrap();
+        let entry = |path: &str| ChatUndo {
+            path: path.to_string(),
+            before: None,
+            after_hash: "h".to_string(),
+        };
+        assert_eq!(store.undo("telegram", 7, 0).unwrap(), None);
+        store
+            .set_undo("telegram", 7, "notes", &[entry("A.md")], 1_000)
+            .unwrap();
+        store
+            .set_undo("telegram", 7, "rpg", &[entry("B.md")], 2_000)
+            .unwrap();
+        assert_eq!(
+            store.undo("telegram", 7, 3_000).unwrap(),
+            Some(("rpg".to_string(), vec![entry("B.md")]))
+        );
+        assert_eq!(store.undo("telegram", 8, 3_000).unwrap(), None);
+        assert_eq!(
+            store
+                .undo("telegram", 7, 2_000 + UNDO_RETENTION_MS + 1)
+                .unwrap(),
+            None,
+            "too old"
+        );
+        store.clear_undo("telegram", 7).unwrap();
+        assert_eq!(store.undo("telegram", 7, 3_000).unwrap(), None);
     }
 }

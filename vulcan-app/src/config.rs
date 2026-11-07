@@ -1993,6 +1993,7 @@ fn config_path_description(path: &str) -> String {
         "bot.reminders.snooze_options" => "Snooze buttons on reminder messages beside Done: durations such as `1h` or `tomorrow` (the next day at `tasks.reminders.default_time`); at most three.".to_string(),
         "bot.reminders.privacy" => "What reminder messages show: `full` (task title and note path) or `title_only`.".to_string(),
         "bot.reminders.privacy_overrides" => "Per-path reminder privacy: `{ glob, privacy }` entries, first match wins.".to_string(),
+        "bot.attachment_folder" => "Folder that photos, files, and voice messages sent to the chat bot are saved in; the capture embeds them.".to_string(),
         "bot.task_target" => "What the chat bot's `/task` creates: a TaskNotes task (with natural-language dates) or an inline task in the inbox note.".to_string(),
         _ if path.starts_with("tasks.") => {
             "Task query defaults, status sets, created-date behavior, and recurrence settings.".to_string()

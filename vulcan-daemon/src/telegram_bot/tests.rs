@@ -4,7 +4,7 @@ use super::*;
 use crate::registry::AddWikiRequest;
 use crate::registry::WikiId;
 use axum::extract::{Path as UrlPath, State};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 use std::collections::VecDeque;
@@ -133,6 +133,10 @@ fn respond(fake: &Fake, path: &str, body: &[u8]) -> (u16, Value, bool) {
             let idle = updates.is_empty();
             (200, json!({ "ok": true, "result": updates }), idle)
         }
+        "getFile" => {
+            let id = body["file_id"].as_str().unwrap_or_default().to_string();
+            ok(json!({ "file_id": id, "file_path": format!("photos/{id}.jpg") }))
+        }
         "sendMessage" => ok(json!({
             "message_id": 99,
             "chat": { "id": body["chat_id"], "type": "private" },
@@ -141,9 +145,15 @@ fn respond(fake: &Fake, path: &str, body: &[u8]) -> (u16, Value, bool) {
     }
 }
 
+async fn download(UrlPath(path): UrlPath<String>) -> Vec<u8> {
+    assert!(path.starts_with(&format!("bot{TOKEN}/photos/")), "{path}");
+    b"\xFF\xD8 fake jpeg".to_vec()
+}
+
 /// Serve the fake on loopback and return its base URL.
 fn serve(fake: &Fake) -> String {
     let router = Router::new()
+        .route("/file/{*path}", get(download))
         .route("/{*path}", post(handle))
         .with_state(fake.clone());
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -585,4 +595,71 @@ fn reminder_buttons_snooze_through_the_ledger() {
         1,
         "the snoozed one is not due yet"
     );
+}
+
+#[test]
+fn photos_are_saved_with_their_caption_and_undo_reverts_them() {
+    let fake = Fake::default();
+    let fixture = fixture(&serve(&fake), None, "unrestricted");
+    fake.push(json!({
+        "message": {
+            "message_id": 1,
+            "chat": { "id": OWNER, "type": "private" },
+            "from": { "id": OWNER, "is_bot": false },
+            "caption": "Whiteboard",
+            "photo": [
+                { "file_id": "small", "file_size": 10 },
+                { "file_id": "large", "file_size": 20 },
+            ],
+        }
+    }));
+    fake.push(json!({
+        "message": {
+            "message_id": 2,
+            "chat": { "id": OWNER, "type": "private" },
+            "from": { "id": OWNER, "is_bot": false },
+            "document": { "file_id": "huge", "file_name": "movie.mkv", "file_size": 50_000_000 },
+        }
+    }));
+    let (stop, handle) = start(&fixture);
+    let sent = fake.wait_for("sendMessage", 2);
+    let saved = sent[0]["text"].as_str().unwrap();
+    assert!(saved.starts_with("Saved Attachments/photo-"), "{saved}");
+    let path = saved
+        .lines()
+        .next()
+        .unwrap()
+        .trim_start_matches("Saved ")
+        .to_string();
+    assert_eq!(
+        std::fs::read(fixture.vault.join(&path)).unwrap(),
+        b"\xFF\xD8 fake jpeg"
+    );
+    let inbox = std::fs::read_to_string(fixture.vault.join("Inbox.md")).unwrap();
+    assert!(
+        inbox.contains(&format!("- Whiteboard ![[{path}]]")),
+        "{inbox}"
+    );
+    assert_eq!(
+        sent[1]["text"],
+        "Files over 20 MB cannot be received by bots."
+    );
+    assert_eq!(
+        fake.calls("getFile").len(),
+        1,
+        "the largest photo size only; the oversized file is never fetched"
+    );
+    assert_eq!(fake.calls("getFile")[0]["file_id"], "large");
+
+    fake.message(OWNER, "private", "/undo");
+    fake.message(OWNER, "private", "/undo");
+    let sent = fake.wait_for("sendMessage", 4);
+    assert_eq!(sent[2]["text"], format!("Undone: {path}, Inbox.md"));
+    assert_eq!(sent[3]["text"], "Nothing to undo.");
+    assert!(!fixture.vault.join(&path).exists());
+    assert!(!std::fs::read_to_string(fixture.vault.join("Inbox.md"))
+        .unwrap_or_default()
+        .contains("Whiteboard"));
+    stop.cancel();
+    handle.join().unwrap().unwrap();
 }

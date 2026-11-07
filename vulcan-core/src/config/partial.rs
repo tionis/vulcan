@@ -38,6 +38,7 @@ pub(super) struct PartialVulcanConfig {
 pub(super) struct PartialBotConfig {
     pub(super) default_capture: Option<BotCaptureTarget>,
     pub(super) task_target: Option<BotTaskTarget>,
+    pub(super) attachment_folder: Option<String>,
     pub(super) reminders: Option<PartialBotRemindersConfig>,
 }
 

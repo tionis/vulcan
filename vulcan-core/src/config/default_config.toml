@@ -456,6 +456,7 @@ name = "{{folder_name}}"   # note stem; examples: index, README, readme, {{folde
 # [bot]
 # default_capture = "inbox"  # inbox | daily
 # task_target = "tasknotes"  # tasknotes | inline
+# attachment_folder = "Attachments"  # where photos, files, and voice messages are saved
 #
 # [bot.reminders]
 # catch_up_window = "24h"  # missed reminders older than this are not sent

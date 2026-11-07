@@ -454,3 +454,116 @@ fn snoozing_a_task_note_adds_an_absolute_reminder() {
         "the original and the snoozed reminder"
     );
 }
+
+#[test]
+fn undo_reverts_the_last_capture_only_while_unchanged() {
+    let fixture = Fixture::new(
+        "[inbox]\npath = \"Inbox.md\"\nformat = \"- {text}\"\ntimestamp = false\n",
+        &[("Inbox.md", "# Inbox\n")],
+    );
+    let guard = fixture.guard("unrestricted");
+    let vault = vault_for(&fixture, &guard, "unrestricted");
+    assert_eq!(parse_chat_message("/undo"), ChatCommand::Undo);
+
+    let first = fixture.run("unrestricted", "first thought").unwrap();
+    assert_eq!(first.undo.len(), 1);
+    assert_eq!(first.undo[0].before.as_deref(), Some("# Inbox\n"));
+    let reply = run_chat_undo(&vault, &first.undo).unwrap();
+    assert_eq!(reply.text, "Undone: Inbox.md");
+    assert_eq!(fixture.read("Inbox.md"), "# Inbox\n");
+    assert!(run_chat_undo(&vault, &first.undo)
+        .unwrap()
+        .text
+        .contains("changed since the capture"));
+
+    // An edit after the capture blocks the undo.
+    let second = fixture.run("unrestricted", "second thought").unwrap();
+    fs::write(
+        fixture.paths.vault_root().join("Inbox.md"),
+        format!("{}- edited by hand\n", fixture.read("Inbox.md")),
+    )
+    .unwrap();
+    let reply = run_chat_undo(&vault, &second.undo).unwrap();
+    assert_eq!(
+        reply.text,
+        "Inbox.md changed since the capture; nothing was undone."
+    );
+    assert!(fixture.read("Inbox.md").contains("edited by hand"));
+
+    // A created task note is removed again.
+    let task = fixture.run("unrestricted", "/task Renew passport").unwrap();
+    assert_eq!(task.undo[0].before, None);
+    run_chat_undo(&vault, &task.undo).unwrap();
+    assert!(!fixture
+        .paths
+        .vault_root()
+        .join(&task.changed_paths[0])
+        .exists());
+
+    // Read-only profiles cannot undo.
+    let readonly = fixture.guard("readonly");
+    let third = fixture.run("unrestricted", "third").unwrap();
+    assert!(run_chat_undo(&vault_for(&fixture, &readonly, "readonly"), &third.undo).is_err());
+}
+
+#[test]
+fn attachments_are_saved_and_embedded_with_their_caption() {
+    let fixture = Fixture::new(
+        "[inbox]\npath = \"Inbox.md\"\nformat = \"- {text}\"\ntimestamp = false\n\
+         [bot]\nattachment_folder = \"Media/Bot\"\n",
+        &[],
+    );
+    let guard = fixture.guard("unrestricted");
+    let vault = vault_for(&fixture, &guard, "unrestricted");
+    let attachment = ChatAttachment {
+        file_name: "../My receipt?.pdf".to_string(),
+        bytes: b"%PDF-1.4 fake".to_vec(),
+        caption: Some("Hardware store".to_string()),
+    };
+    let reply = run_chat_attachment(&vault, &attachment).unwrap();
+    assert_eq!(
+        reply.text,
+        "Saved Media/Bot/My-receipt-.pdf\nCaptured to Inbox.md"
+    );
+    assert_eq!(
+        fs::read(fixture.paths.vault_root().join("Media/Bot/My-receipt-.pdf")).unwrap(),
+        b"%PDF-1.4 fake"
+    );
+    assert!(fixture
+        .read("Inbox.md")
+        .contains("- Hardware store ![[Media/Bot/My-receipt-.pdf]]"));
+
+    // Same name again: a free name, not an overwrite.
+    let again = run_chat_attachment(&vault, &attachment).unwrap();
+    assert!(
+        again.text.starts_with("Saved Media/Bot/My-receipt--1.pdf"),
+        "{}",
+        again.text
+    );
+
+    // Undo removes the file together with its capture.
+    assert_eq!(again.undo.len(), 2);
+    run_chat_undo(&vault, &again.undo).unwrap();
+    assert!(!fixture
+        .paths
+        .vault_root()
+        .join("Media/Bot/My-receipt--1.pdf")
+        .exists());
+    assert!(!fixture.read("Inbox.md").contains("My-receipt--1"));
+
+    let readonly = fixture.guard("readonly");
+    assert!(run_chat_attachment(&vault_for(&fixture, &readonly, "readonly"), &attachment).is_err());
+}
+
+#[test]
+fn file_names_are_sanitized() {
+    assert_eq!(sanitize_file_name("photo.jpg"), "photo.jpg");
+    assert_eq!(sanitize_file_name("../../etc/passwd"), "passwd");
+    assert_eq!(sanitize_file_name(".hidden"), "hidden");
+    assert_eq!(sanitize_file_name("..."), "file");
+    assert_eq!(sanitize_file_name("a b:c*d.txt"), "a-b-c-d.txt");
+    let long = format!("{}.ogg", "x".repeat(200));
+    let clean = sanitize_file_name(&long);
+    assert!(clean.len() <= 100, "{clean}");
+    assert_eq!(clean.rsplit_once('.').map(|(_, ext)| ext), Some("ogg"));
+}

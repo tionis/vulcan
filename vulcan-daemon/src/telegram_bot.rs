@@ -9,8 +9,8 @@
 use crate::registry::{DaemonBotUser, DaemonTelegramBotConfig, WikiRegistration, WikiRegistry};
 use crate::shutdown::ShutdownSignal;
 use crate::telegram_api::{
-    InlineButton, TelegramCallbackQuery, TelegramClient, TelegramError, TelegramMessage,
-    TelegramUpdate,
+    InlineButton, TelegramCallbackQuery, TelegramClient, TelegramError, TelegramFileRef,
+    TelegramMessage, TelegramUpdate, TELEGRAM_FILE_LIMIT,
 };
 use crate::worker_gate::HostedWorkerGate;
 use serde::{Deserialize, Serialize};
@@ -23,8 +23,9 @@ use vulcan_app::chat::reminders::{
 };
 use vulcan_app::chat::state::{ChatStateStore, ReminderLedgerEntry, ReminderState};
 use vulcan_app::chat::{
-    chat_help_text, chat_usage_text, parse_chat_message, run_chat_action, run_chat_command,
-    ChatCommand, ChatReply, ChatVault, CHAT_COMMANDS,
+    chat_help_text, chat_usage_text, parse_chat_message, run_chat_action, run_chat_attachment,
+    run_chat_command, run_chat_undo, ChatAttachment, ChatCommand, ChatReply, ChatVault,
+    CHAT_COMMANDS,
 };
 use vulcan_app::execution::MutationGate;
 use vulcan_app::tasks::ReminderSettings;
@@ -334,6 +335,12 @@ impl Bot<'_> {
             return;
         };
         let chat_id = message.chat.id;
+        if let Some((file, file_name)) = attachment_of(message) {
+            let (reply, vault) = self.save_attachment(&user, chat_id, message, file, file_name);
+            self.remember_undo(chat_id, vault.as_deref(), &reply);
+            self.send_reply(chat_id, vault.as_deref(), &reply);
+            return;
+        }
         let text = message
             .text
             .as_deref()
@@ -342,7 +349,7 @@ impl Bot<'_> {
         // Buttons are stored against the vault the reply came from.
         let (reply, vault) = match parse_chat_message(text) {
             ChatCommand::Empty => (
-                ChatReply::text("Only text messages are supported so far."),
+                ChatReply::text("Send text, a photo, a file, or a voice message."),
                 None,
             ),
             ChatCommand::Help => (ChatReply::text(chat_help_text()), None),
@@ -356,6 +363,7 @@ impl Bot<'_> {
             ChatCommand::Vault { name } => {
                 (self.switch_vault(&user, chat_id, name.as_deref()), None)
             }
+            ChatCommand::Undo => (self.undo(&user, chat_id), None),
             command => match self.active_vault(&user, chat_id) {
                 Ok((wiki, vault_id)) => {
                     match self.with_vault(&user, &wiki, |vault| run_chat_command(vault, &command)) {
@@ -366,6 +374,7 @@ impl Bot<'_> {
                 Err(error) => (ChatReply::text(error), None),
             },
         };
+        self.remember_undo(chat_id, vault.as_deref(), &reply);
         self.send_reply(chat_id, vault.as_deref(), &reply);
     }
 
@@ -487,6 +496,77 @@ impl Bot<'_> {
         }
         // The snoozed or next occurrence is planned without waiting a minute.
         self.next_plan_ms = 0;
+    }
+
+    fn remember_undo(&mut self, chat_id: i64, vault: Option<&str>, reply: &ChatReply) {
+        if let (Some(vault), false) = (vault, reply.undo.is_empty()) {
+            let now = vulcan_core::current_utc_timestamp_ms();
+            if let Err(error) = self
+                .state
+                .set_undo(PLATFORM, chat_id, vault, &reply.undo, now)
+            {
+                self.status.last_error = Some(format!("undo state: {error}"));
+            }
+        }
+    }
+
+    /// Revert this chat's last capture, in the vault it was made in.
+    fn undo(&mut self, user: &DaemonBotUser, chat_id: i64) -> ChatReply {
+        let now = vulcan_core::current_utc_timestamp_ms();
+        let Some((vault, entries)) = self.state.undo(PLATFORM, chat_id, now).ok().flatten() else {
+            return ChatReply::text("Nothing to undo.");
+        };
+        let result = self
+            .user_vault(user, &vault)
+            .and_then(|wiki| self.with_vault(user, &wiki, |chat| run_chat_undo(chat, &entries)));
+        match result {
+            Ok(reply) => {
+                // Undone, or blocked by a later edit: either way it is spent.
+                let _ = self.state.clear_undo(PLATFORM, chat_id);
+                reply
+            }
+            Err(error) => ChatReply::text(format!("Error: {error}")),
+        }
+    }
+
+    /// Download a sent file and save it into the active vault.
+    fn save_attachment(
+        &mut self,
+        user: &DaemonBotUser,
+        chat_id: i64,
+        message: &TelegramMessage,
+        file: &TelegramFileRef,
+        file_name: String,
+    ) -> (ChatReply, Option<String>) {
+        let (wiki, vault_id) = match self.active_vault(user, chat_id) {
+            Ok(found) => found,
+            Err(error) => return (ChatReply::text(error), None),
+        };
+        if file
+            .file_size
+            .is_some_and(|size| size > TELEGRAM_FILE_LIMIT)
+        {
+            return (
+                ChatReply::text("Files over 20 MB cannot be received by bots."),
+                None,
+            );
+        }
+        let bytes = match self
+            .client
+            .download_file(&file.file_id, TELEGRAM_FILE_LIMIT)
+        {
+            Ok(bytes) => bytes,
+            Err(error) => return (ChatReply::text(format!("Error: {error}")), None),
+        };
+        let attachment = ChatAttachment {
+            file_name,
+            bytes,
+            caption: message.caption.clone(),
+        };
+        match self.with_vault(user, &wiki, |vault| run_chat_attachment(vault, &attachment)) {
+            Ok(reply) => (reply, Some(vault_id)),
+            Err(error) => (ChatReply::text(format!("Error: {error}")), None),
+        }
     }
 
     fn switch_vault(
@@ -779,6 +859,34 @@ impl Bot<'_> {
             }
         }
     }
+}
+
+/// The file a message carries, with the name to save it under: the
+/// sender's for documents, otherwise one made from the kind and time.
+fn attachment_of(message: &TelegramMessage) -> Option<(&TelegramFileRef, String)> {
+    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let named = |file: &TelegramFileRef, kind: &str, extension: &str| {
+        file.file_name
+            .clone()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| format!("{kind}-{stamp}.{extension}"))
+    };
+    if let Some(photo) = message.photo.as_ref().and_then(|sizes| sizes.last()) {
+        return Some((photo, format!("photo-{stamp}.jpg")));
+    }
+    if let Some(file) = &message.document {
+        return Some((file, named(file, "file", "bin")));
+    }
+    if let Some(file) = &message.voice {
+        return Some((file, format!("voice-{stamp}.ogg")));
+    }
+    if let Some(file) = &message.audio {
+        return Some((file, named(file, "audio", "mp3")));
+    }
+    message
+        .video
+        .as_ref()
+        .map(|file| (file, named(file, "video", "mp4")))
 }
 
 /// The user's permission guard for `wiki`: their profile, resolved from
