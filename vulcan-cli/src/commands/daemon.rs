@@ -243,8 +243,14 @@ fn print_bot_status(output: OutputFormat, report: &TelegramBotReport) -> Result<
     if output == OutputFormat::Json {
         return print_json(report);
     }
+    let print_hints = || {
+        for hint in &report.hints {
+            println!("Hint: {hint}");
+        }
+    };
     let Some(token_env) = &report.token_env else {
         println!("Telegram bot: not configured (see `vulcan daemon config set-telegram-bot`)");
+        print_hints();
         return Ok(());
     };
     println!(
@@ -253,7 +259,7 @@ fn print_bot_status(output: OutputFormat, report: &TelegramBotReport) -> Result<
         if report.token_set { "set" } else { "NOT set" }
     );
     if report.users.is_empty() {
-        println!("Users: none (add one with `vulcan daemon config set-bot-user`)");
+        println!("Users: none");
     } else {
         println!("Users:");
         for user in &report.users {
@@ -272,6 +278,7 @@ fn print_bot_status(output: OutputFormat, report: &TelegramBotReport) -> Result<
     }
     let Some(status) = &report.status else {
         println!("State: never started");
+        print_hints();
         return Ok(());
     };
     println!(
@@ -306,6 +313,7 @@ fn print_bot_status(output: OutputFormat, report: &TelegramBotReport) -> Result<
     for (id, count) in &status.rejected_users {
         println!("Ignored messages from user {id}: {count}");
     }
+    print_hints();
     Ok(())
 }
 

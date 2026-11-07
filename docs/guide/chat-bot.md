@@ -189,7 +189,10 @@ vulcan daemon config set-bot-user 123456789 --wiki notes --profile bot-capture \
 ## Status and troubleshooting
 
 `vulcan daemon bot-status` shows whether the token variable is set, the allowed users, the service
-state, the last error, ignored senders, and reminder counts. `vulcan daemon status` lists the
+state, the last error, ignored senders, and reminder counts. Lines starting with `Hint:` point at
+what to fix: a missing token, no users, two devices polling the same bot, a status so old that the
+daemon is probably down, or state left on a device after the bot moved to another one (with the
+files to delete). `vulcan daemon status` lists the
 `worker.telegram-bot` service; without the token it is disabled and names the missing variable.
 
 - **No reply at all**: the sender is not allowlisted (check ignored senders), or the chat is a group.

@@ -89,6 +89,8 @@ pub struct TelegramBotReport {
     /// Reminder ledger entries by state (`open`, `sending`, `expired`,
     /// `resolved`).
     pub reminders: BTreeMap<String, u64>,
+    /// What looks wrong and what to do about it, from [`telegram_bot_hints`].
+    pub hints: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -105,7 +107,7 @@ pub fn telegram_bot_report(
     state_root: &Path,
 ) -> Result<TelegramBotReport, String> {
     let telegram = config.bot.telegram.as_ref();
-    Ok(TelegramBotReport {
+    let mut report = TelegramBotReport {
         configured: telegram.is_some(),
         token_env: telegram.map(|telegram| telegram.token_env.clone()),
         token_set: telegram.and_then(telegram_bot_token).is_some(),
@@ -134,7 +136,71 @@ pub fn telegram_bot_report(
         } else {
             BTreeMap::new()
         },
-    })
+        hints: Vec::new(),
+    };
+    report.hints = telegram_bot_hints(&report, vulcan_core::current_utc_timestamp_ms(), state_root);
+    Ok(report)
+}
+
+/// A `polling` status older than this means the service is not running.
+const STALE_STATUS_MS: i64 = 10 * 60 * 1000;
+
+/// Hints for a report read at `now_ms`: state left behind by a bot that now
+/// runs elsewhere, two hosts polling one token, a stale status, a missing
+/// token.
+#[must_use]
+pub fn telegram_bot_hints(
+    report: &TelegramBotReport,
+    now_ms: i64,
+    state_root: &Path,
+) -> Vec<String> {
+    let mut hints = Vec::new();
+    let leftover = report.status.is_some() || !report.reminders.is_empty();
+    if !report.configured {
+        if leftover {
+            hints.push(format!(
+                "This host has state from an earlier bot run but no bot configured. If the bot \
+                 runs on another host now, this is leftover and nothing here uses it; delete {} \
+                 and {} to clear it.",
+                telegram_bot_status_path(state_root).display(),
+                ChatStateStore::path(state_root).display()
+            ));
+        }
+        return hints;
+    }
+    if !report.token_set {
+        hints.push(format!(
+            "Set {} in the daemon's environment or in daemon.env, then restart the daemon.",
+            report.token_env.as_deref().unwrap_or("the token variable")
+        ));
+    }
+    if let Some(status) = &report.status {
+        if status.state == "conflict" {
+            hints.push(
+                "Another process polls this bot token, most likely the bot configured on a \
+                 second host. Run it on one host only: `vulcan daemon config clear-telegram-bot` \
+                 on the other one, then restart its daemon."
+                    .to_string(),
+            );
+        }
+        let stale = status
+            .last_poll_ms
+            .is_some_and(|at| now_ms.saturating_sub(at) > STALE_STATUS_MS);
+        if status.state == "polling" && stale {
+            hints.push(
+                "The status has not been updated for a while; the daemon is probably not \
+                 running. Check `vulcan daemon status`."
+                    .to_string(),
+            );
+        }
+    }
+    if report.users.is_empty() {
+        hints.push(
+            "No user may use the bot yet: add one with `vulcan daemon config set-bot-user`."
+                .to_string(),
+        );
+    }
+    hints
 }
 
 /// The token for `config`, from the process environment (which includes

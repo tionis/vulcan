@@ -913,3 +913,73 @@ fn replies_with_a_time_snooze_reminders_and_move_tasks() {
     stop.cancel();
     handle.join().unwrap().unwrap();
 }
+
+#[test]
+fn hints_point_at_leftover_state_conflicts_and_stale_status() {
+    let state = Path::new("/state");
+    let status = |state: &str, last_poll_ms: i64| TelegramBotStatus {
+        state: state.to_string(),
+        bot_username: None,
+        last_poll_ms: Some(last_poll_ms),
+        last_error: None,
+        handled_updates: 0,
+        reminders_sent: 0,
+        rejected_users: BTreeMap::new(),
+    };
+    let user = TelegramBotUserSummary {
+        telegram_id: 1,
+        vaults: vec!["notes".to_string()],
+        default_vault: None,
+        profile: "agent".to_string(),
+        reminders: true,
+    };
+    let healthy = TelegramBotReport {
+        configured: true,
+        token_env: Some("TOKEN".to_string()),
+        token_set: true,
+        users: vec![user],
+        status: Some(status("polling", 1_000_000)),
+        reminders: BTreeMap::new(),
+        hints: Vec::new(),
+    };
+    assert!(telegram_bot_hints(&healthy, 1_060_000, state).is_empty());
+
+    // The bot moved to another host: this one has only its old state.
+    let moved = TelegramBotReport {
+        configured: false,
+        token_env: None,
+        token_set: false,
+        users: Vec::new(),
+        reminders: BTreeMap::from([("open".to_string(), 2)]),
+        ..healthy.clone()
+    };
+    let hints = telegram_bot_hints(&moved, 1_060_000, state);
+    assert_eq!(hints.len(), 1, "{hints:?}");
+    assert!(hints[0].contains("leftover"), "{hints:?}");
+    assert!(hints[0].contains("telegram-bot.json"), "{hints:?}");
+    let never_ran = TelegramBotReport {
+        status: None,
+        reminders: BTreeMap::new(),
+        ..moved
+    };
+    assert!(telegram_bot_hints(&never_ran, 1_060_000, state).is_empty());
+
+    let conflict = TelegramBotReport {
+        status: Some(status("conflict", 1_000_000)),
+        ..healthy.clone()
+    };
+    let hints = telegram_bot_hints(&conflict, 1_060_000, state);
+    assert!(hints[0].contains("clear-telegram-bot"), "{hints:?}");
+
+    let hints = telegram_bot_hints(&healthy, 1_000_000 + 11 * 60 * 1000, state);
+    assert!(hints[0].contains("not running"), "{hints:?}");
+
+    let unset = TelegramBotReport {
+        token_set: false,
+        users: Vec::new(),
+        ..healthy
+    };
+    let hints = telegram_bot_hints(&unset, 1_060_000, state);
+    assert!(hints[0].contains("TOKEN"), "{hints:?}");
+    assert!(hints[1].contains("set-bot-user"), "{hints:?}");
+}

@@ -276,7 +276,10 @@ Bot configuration lives with the other device-local daemon settings:
   [--reminders]`: add or replace a user. Wikis must be registered. `remove-bot-user ID`.
 - `vulcan daemon bot-status`: configuration, whether the token variable is set (reading
   `daemon.env`), users, the service's last state, including ignored sender ids, which is how a
-  new user finds their numeric id, and reminder ledger counts by state.
+  new user finds their numeric id, reminder ledger counts by state, and `hints`
+  (`telegram_bot_hints`): the token variable unset, no users, a `conflict` state (another host
+  polls the token), a `polling` status older than 10 minutes, or status and ledger state on a host
+  with no bot configured, naming the files to delete when the bot moved away.
 - `vulcan tasks reminders [--upcoming 24h]`: the planner, with `source`, `task`, `task_key`, and
   `occurrence_id` per row (slice 1).
 - A separate ledger listing command was dropped: `bot-status` shows the counts and

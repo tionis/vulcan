@@ -77,6 +77,8 @@ permission profiles, or diagnoses permission and trust failures.
     Restart the daemon, then check `vulcan daemon bot-status`: it shows whether the token
     variable is set, the service state (`conflict` means another device polls the same bot), and
     ignored sender ids, which is how a user finds their numeric id after messaging the bot.
+    Follow its `hints` (JSON) or `Hint:` lines first; they name the fix for a missing token,
+    a second polling device, a stopped daemon, or state left behind after the bot moved.
     Remove access with `remove-bot-user <id>` or `clear-telegram-bot`. Per-vault capture targets
     live in shared `[bot]` config (`default_capture = "inbox" | "daily"`,
     `task_target = "tasknotes" | "inline"`, `attachment_folder` for photos and files sent to the

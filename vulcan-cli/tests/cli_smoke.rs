@@ -11668,6 +11668,7 @@ fn daemon_bot_cli_configures_users_and_reports_without_the_token() {
     assert_eq!(status["token_set"], true, "read from daemon.env");
     assert_eq!(status["users"][0]["profile"], "agent");
     assert_eq!(status["status"], Value::Null);
+    assert_eq!(status["hints"], serde_json::json!([]), "nothing to fix");
 
     let output = run_daemon_test_command(
         &config_home,
