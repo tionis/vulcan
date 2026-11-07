@@ -83,7 +83,7 @@ Examples:
 Named remote MCP definitions are intentionally outside the vault config described below. Manage
 them with `vulcan mcp remote init/list/show/set/run/remove`; Vulcan stores them alongside daemon
 configuration in the user config directory. Each definition contains a stable instance ID, a
-loopback bind, exact public HTTPS resource URL, IndieAuth identity, and one or more registered wiki
+listener bind, exact public HTTPS resource URL, IndieAuth identity, and one or more registered wiki
 references with per-vault permission ceiling/default profile names and eligible tool packs. A
 multi-vault consent selects exactly one wiki for each grant. `remote set --add-wiki <id>` adds a
 registered wiki, `--wiki <id>` selects one for policy edits, and `--remove-wiki <id>` revokes that

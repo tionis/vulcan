@@ -18,12 +18,16 @@ vulcan mcp remote run personal-agent
 ```
 
 The defaults are a loopback bind, the `readonly` ceiling and consent profile, and
-the `notes-read,search,status` packs. `--identity` is your canonical HTTPS IndieAuth
+the `notes-read,search,status` packs. When the reverse proxy runs on another host, pass an explicit
+`--bind` such as the device's private-network address (for example a NetBird or Tailscale IP) or a
+wildcard like `0.0.0.0:8765`. Named remotes always require IndieAuth sign-in and Vulcan consent, so
+a wider bind does not admit unauthenticated requests, but the hop between proxy and Vulcan is plain
+HTTP unless the network encrypts it. `--identity` is your canonical HTTPS IndieAuth
 identity, not the MCP client's identity. Discovery does not follow redirects.
 
 Forward the exact public MCP path, its `/operations/<id>` subpath,
 `/.well-known/oauth-protected-resource/mcp`,
-`/.well-known/oauth-authorization-server/mcp`, and `/oauth/*` to the loopback
+`/.well-known/oauth-authorization-server/mcp`, and `/oauth/*` to the
 listener reported by `show`. These metadata examples assume `/mcp` as the resource
 path. Forward length-delimited request bodies with a single `Content-Length`;
 chunked request transfer encoding is unsupported. HTTPS ingress supplies transport
@@ -44,7 +48,7 @@ configuration in [ChatGPT MCP setup](chatgpt-mcp.md), also available through
 
 ## Multiple instances and vaults
 
-Different named remotes can run concurrently with distinct loopback binds and
+Different named remotes can run concurrently with distinct binds and
 non-conflicting public URLs. Use separate foreground processes, or
 `vulcan daemon start --detach` to host all configured remotes. Daemon status reports
 `listener.mcp-remotes`. A foreground process and the daemon cannot own the same

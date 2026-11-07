@@ -638,7 +638,7 @@ pub(crate) fn render_config_reference_markdown(include_title: bool) -> String {
             .to_string(),
     );
     lines.push(
-        "loopback bind, exact public HTTPS resource URL, IndieAuth identity, and one or more registered wiki"
+        "listener bind, exact public HTTPS resource URL, IndieAuth identity, and one or more registered wiki"
             .to_string(),
     );
     lines.push(

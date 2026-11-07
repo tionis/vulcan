@@ -5,7 +5,7 @@ Use this setup for a private ChatGPT Developer Mode plugin connection to a perso
 ## Recommended Server Shape
 
 Do not expose `vulcan mcp --auth-token` directly to the public internet. For ChatGPT, initialize a
-named remote. It keeps Vulcan on loopback, authenticates the approving person with IndieAuth, and
+named remote. It keeps Vulcan on loopback by default, authenticates the approving person with IndieAuth, and
 records the authority selected on Vulcan's consent page as a revocable device-local connection.
 The HTTPS reverse proxy is transport, not the authorization boundary.
 
@@ -83,7 +83,7 @@ instance-bound `file_v1` references. Init/show JSON exposes only those non-secre
 OAuth client metadata stores references instead of inline secrets. `file_v1` uses protected
 owner-only files, not a native keychain, encryption, or hardware custody. Public OAuth clients
 require no stored secret. `remote set` preserves the
-instance identity, and different remotes can run concurrently when their loopback binds and public
+instance identity, and different remotes can run concurrently when their binds and public
 URLs do not conflict.
 
 For the minimal read-only setup, multi-instance lifecycle, fingerprint-based credential recovery,

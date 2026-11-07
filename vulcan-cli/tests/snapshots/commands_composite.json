@@ -22200,7 +22200,7 @@
                     ]
                   },
                   {
-                    "help": "Loopback listener; defaults to the first available port",
+                    "help": "Listener address; defaults to the first available loopback port",
                     "id": "bind",
                     "long": "bind",
                     "possible_values": [],
@@ -22347,7 +22347,7 @@
                     ]
                   },
                   {
-                    "help": "Replacement loopback listener",
+                    "help": "Replacement listener address",
                     "id": "bind",
                     "long": "bind",
                     "possible_values": [],

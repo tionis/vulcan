@@ -189,7 +189,7 @@ pub(crate) fn validate_definition(
         )));
     }
     McpRemoteId::parse(definition.id.as_str())?;
-    validate_loopback_bind(&definition.bind)?;
+    validate_bind(&definition.bind)?;
     validate_https_url(&definition.public_url, "public URL")?;
     match &definition.authentication {
         McpRemoteAuthentication::IndieAuth { identity } => {
@@ -236,18 +236,15 @@ fn normalize_definition(
     validate_definition(definition)
 }
 
-fn validate_loopback_bind(bind: &str) -> Result<(), McpRemoteValidationError> {
-    let address = bind.parse::<SocketAddr>().map_err(|error| {
+/// Named remotes always authenticate with OAuth and Vulcan consent, so any
+/// socket address is acceptable, including a private-network address that a
+/// reverse proxy on another host reaches, or a wildcard.
+fn validate_bind(bind: &str) -> Result<(), McpRemoteValidationError> {
+    bind.parse::<SocketAddr>().map(|_| ()).map_err(|error| {
         McpRemoteValidationError::new(format!(
             "remote MCP bind address `{bind}` is invalid: {error}"
         ))
-    })?;
-    if !address.ip().is_loopback() {
-        return Err(McpRemoteValidationError::new(format!(
-            "remote MCP bind address must be loopback, got `{address}`"
-        )));
-    }
-    Ok(())
+    })
 }
 
 fn validate_https_url(value: &str, label: &str) -> Result<(), McpRemoteValidationError> {
@@ -343,7 +340,7 @@ mod tests {
     #[test]
     fn remote_definition_rejects_unsafe_network_and_authority_values() {
         let mut candidate = definition();
-        candidate.bind = "0.0.0.0:8765".to_string();
+        candidate.bind = "localhost:8765".to_string();
         assert!(validate_definition(&candidate).is_err());
 
         let mut candidate = definition();
@@ -353,6 +350,15 @@ mod tests {
         let mut candidate = definition();
         candidate.vaults[0].tool_packs = vec!["unknown".to_string()];
         assert!(validate_definition(&candidate).is_err());
+    }
+
+    #[test]
+    fn remote_definition_accepts_non_loopback_binds() {
+        for bind in ["0.0.0.0:8765", "[::]:8765", "100.102.174.182:8765"] {
+            let mut candidate = definition();
+            candidate.bind = bind.to_string();
+            assert!(validate_definition(&candidate).is_ok(), "{bind}");
+        }
     }
 
     #[test]

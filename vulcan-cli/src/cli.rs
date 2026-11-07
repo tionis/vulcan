@@ -6595,7 +6595,10 @@ pub enum McpRemoteCommand {
         identity: String,
         #[arg(long, help = "Registered wiki ID; defaults to the current vault")]
         wiki: Option<String>,
-        #[arg(long, help = "Loopback listener; defaults to the first available port")]
+        #[arg(
+            long,
+            help = "Listener address; defaults to the first available loopback port"
+        )]
         bind: Option<String>,
         #[arg(long, default_value = "readonly", help = "Maximum permission profile")]
         ceiling_profile: String,
@@ -6636,7 +6639,7 @@ pub enum McpRemoteCommand {
         add_wiki: Option<String>,
         #[arg(long, help = "Stop exposing a wiki and revoke its connection grants")]
         remove_wiki: Option<String>,
-        #[arg(long, help = "Replacement loopback listener")]
+        #[arg(long, help = "Replacement listener address")]
         bind: Option<String>,
         #[arg(long, help = "Replacement exact public HTTPS MCP resource URL")]
         public_url: Option<String>,
