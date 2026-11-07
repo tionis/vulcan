@@ -1342,14 +1342,21 @@ fn print_task_reminders_report(
     match output {
         OutputFormat::Human | OutputFormat::Markdown => {
             if report.reminders.is_empty() {
-                println!("No TaskNotes reminders due within {}.", report.upcoming);
+                println!("No reminders due within {}.", report.upcoming);
                 return Ok(());
             }
             for reminder in &report.reminders {
-                let overdue = if reminder.overdue { " overdue" } else { "" };
+                let overdue = if reminder.overdue { " (overdue)" } else { "" };
+                // TaskNotes reminders are named by note and reminder id;
+                // inline reminders by their `path:line` task reference.
+                let target = if reminder.source == "tasknote" {
+                    format!("{}#{}", reminder.path, reminder.reminder_id)
+                } else {
+                    reminder.task.clone()
+                };
                 println!(
-                    "{} {}#{}{}",
-                    reminder.notify_at, reminder.path, reminder.reminder_id, overdue
+                    "{} {} {}{}",
+                    reminder.notify_at, target, reminder.title, overdue
                 );
             }
             Ok(())

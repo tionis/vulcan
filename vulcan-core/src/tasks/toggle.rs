@@ -190,6 +190,12 @@ fn next_occurrence_line(
             next_line.replace_range(range, &moved);
         }
     }
+    // A `⏰` reminder moves with the other dates, keeping its time of day,
+    // so the next occurrence does not inherit an already past reminder.
+    if let Some((range, mut reminder)) = super::reminder::inline_reminder_marker_span(&next_line) {
+        reminder.date += chrono::Duration::days(shift);
+        next_line.replace_range(range, &reminder.to_marker());
+    }
     Some(next_line)
 }
 
@@ -291,7 +297,7 @@ fn checkbox_pattern() -> &'static Regex {
 
 const ANNOTATION_MARKERS: &[&str] = &[
     "📅", "📆", "🗓️", "🗓", "✅", "❌", "➕", "🛫", "⏳", "⌛", "⏫", "🔺", "🔼", "🔽", "⏬", "🔁",
-    "🏁", "⛔", "🆔",
+    "🏁", "⛔", "🆔", "⏰",
 ];
 
 #[cfg(test)]
@@ -337,6 +343,16 @@ mod tests {
         assert_eq!(
             done.next_occurrence.as_deref(),
             Some("- [ ] Water plants 🔁 every week ⏳ 2026-10-15 📅 2026-10-17")
+        );
+    }
+
+    #[test]
+    fn recurring_tasks_move_their_reminder_with_the_dates() {
+        let done =
+            toggle("- [ ] Pay rent 🔁 every month 📅 2026-10-10 ⏰ 2026-10-09 18:00").unwrap();
+        assert_eq!(
+            done.next_occurrence.as_deref(),
+            Some("- [ ] Pay rent 🔁 every month 📅 2026-11-10 ⏰ 2026-11-09 18:00")
         );
     }
 

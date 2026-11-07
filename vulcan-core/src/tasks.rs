@@ -2,6 +2,7 @@ mod ast;
 mod eval;
 mod parse;
 mod recurrence;
+mod reminder;
 mod toggle;
 
 use std::fmt::{Display, Formatter};
@@ -27,6 +28,10 @@ pub(crate) use recurrence::{inject_task_recurrence_fields, task_recurrence_prope
 pub use recurrence::{
     next_recurrence_occurrence, parse_recurrence_text, parse_task_recurrence,
     task_recurrence_anchor, task_upcoming_occurrences, with_recurrence_start, TaskRecurrence,
+};
+pub use reminder::{
+    extract_inline_reminder, inline_task_block_id, inline_task_title, parse_inline_reminder_value,
+    set_inline_reminder, InlineReminderTime, INLINE_REMINDER_MARKER, INLINE_REMINDER_PROPERTY,
 };
 pub use toggle::{
     apply_inline_task_toggle, complete_inline_task_line, days_between, task_line_due_date,

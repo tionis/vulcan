@@ -505,6 +505,18 @@ Task query defaults, statuses, and recurrence behavior.
 - `tasks.recurrence_on_completion` — type: `enum`; target: `shared|local`; default: `next-line`; values: `same-line`, `next-line`
   Task query defaults, status sets, created-date behavior, and recurrence settings.
   Example: `vulcan config set tasks.recurrence_on_completion <value>`
+- `tasks.reminders.default_time` — type: `string`; target: `shared|local`; default: `09:00`
+  Task query defaults, status sets, created-date behavior, and recurrence settings.
+  Example: `vulcan config set tasks.reminders.default_time <value>`
+- `tasks.reminders.due_dates` — type: `enum`; target: `shared|local`; default: `ignore`; values: `ignore`, `notify`
+  Task query defaults, status sets, created-date behavior, and recurrence settings.
+  Example: `vulcan config set tasks.reminders.due_dates <value>`
+- `tasks.reminders.inline` — type: `boolean`; target: `shared|local`; default: `true`
+  Task query defaults, status sets, created-date behavior, and recurrence settings.
+  Example: `vulcan config set tasks.reminders.inline <value>`
+- `tasks.reminders.timezone` — type: `string`; target: `shared|local`; default: `Europe/Berlin`
+  Task query defaults, status sets, created-date behavior, and recurrence settings.
+  Example: `vulcan config set tasks.reminders.timezone <value>`
 - `tasks.remove_global_filter` — type: `boolean`; target: `shared|local`; default: `false`
   Task query defaults, status sets, created-date behavior, and recurrence settings.
   Example: `vulcan config set tasks.remove_global_filter <value>`

@@ -270,6 +270,15 @@ pub(super) struct PartialTasksConfig {
     pub(super) remove_global_filter: Option<bool>,
     pub(super) set_created_date: Option<bool>,
     pub(super) recurrence_on_completion: Option<String>,
+    pub(super) reminders: Option<PartialTaskRemindersConfig>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct PartialTaskRemindersConfig {
+    pub(super) inline: Option<bool>,
+    pub(super) due_dates: Option<TaskDueDateReminders>,
+    pub(super) default_time: Option<String>,
+    pub(super) timezone: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]

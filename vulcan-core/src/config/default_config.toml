@@ -130,6 +130,12 @@ name = "{{folder_name}}"   # note stem; examples: index, README, readme, {{folde
 # name = "Important"
 # type = "TODO"
 # next_symbol = "x"
+#
+# [tasks.reminders]
+# inline = true             # read ⏰ 2026-11-07 10:00, (@2026-11-07 10:00), and [remind:: ...]
+# due_dates = "ignore"      # ignore | notify
+# default_time = "09:00"    # for reminders and due dates without a time
+# timezone = "Europe/Berlin"  # IANA name; the device's local timezone when unset
 
 # [kanban]
 # date_trigger = "@"

@@ -16,6 +16,7 @@ web = ["dep:reqwest", "vulcan-core/web"]
 blake3.workspace = true
 base64.workspace = true
 chrono = { workspace = true, features = ["clock"] }
+chrono-tz.workspace = true
 csv.workspace = true
 ed25519-dalek.workspace = true
 flate2.workspace = true

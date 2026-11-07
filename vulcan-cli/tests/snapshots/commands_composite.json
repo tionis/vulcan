@@ -3026,7 +3026,7 @@
             ]
           },
           {
-            "about": "List TaskNotes reminders due within a time window",
+            "about": "List reminders due within a time window",
             "name": "reminders",
             "options": [
               {

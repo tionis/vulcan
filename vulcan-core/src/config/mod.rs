@@ -1037,6 +1037,51 @@ pub struct TasksConfig {
     pub set_created_date: bool,
     #[serde(default)]
     pub recurrence_on_completion: Option<String>,
+    #[serde(default)]
+    pub reminders: TaskRemindersConfig,
+}
+
+/// When inline task reminders fire (`[tasks.reminders]`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskRemindersConfig {
+    /// Read `⏰ …`, `(@…)`, and `[remind:: …]` reminders on inline tasks.
+    #[serde(default = "default_true")]
+    pub inline: bool,
+    /// Whether an inline task's due date without a reminder fires at
+    /// `default_time` on that day.
+    #[serde(default)]
+    pub due_dates: TaskDueDateReminders,
+    /// Wall-clock `HH:MM` for reminders written without a time.
+    #[serde(default = "default_task_reminder_time")]
+    pub default_time: String,
+    /// IANA timezone for reminder wall-clock times; the device's local
+    /// timezone when unset.
+    #[serde(default)]
+    pub timezone: Option<String>,
+}
+
+impl Default for TaskRemindersConfig {
+    fn default() -> Self {
+        Self {
+            inline: true,
+            due_dates: TaskDueDateReminders::default(),
+            default_time: default_task_reminder_time(),
+            timezone: None,
+        }
+    }
+}
+
+fn default_task_reminder_time() -> String {
+    "09:00".to_string()
+}
+
+/// Whether due dates alone produce reminders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskDueDateReminders {
+    #[default]
+    Ignore,
+    Notify,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -4661,6 +4706,20 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         if let Some(recurrence_on_completion) = tasks.recurrence_on_completion {
             config.tasks.recurrence_on_completion =
                 normalize_optional_text(Some(recurrence_on_completion));
+        }
+        if let Some(reminders) = tasks.reminders {
+            if let Some(inline) = reminders.inline {
+                config.tasks.reminders.inline = inline;
+            }
+            if let Some(due_dates) = reminders.due_dates {
+                config.tasks.reminders.due_dates = due_dates;
+            }
+            if let Some(default_time) = reminders.default_time {
+                config.tasks.reminders.default_time = default_time;
+            }
+            if let Some(timezone) = reminders.timezone {
+                config.tasks.reminders.timezone = normalize_optional_text(Some(timezone));
+            }
         }
         if let Some(statuses) = tasks.statuses {
             if let Some(definitions) = statuses.definitions {

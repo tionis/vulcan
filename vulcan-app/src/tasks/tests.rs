@@ -4454,3 +4454,96 @@ fn reminders_are_added_removed_and_report_their_occurrence() {
     assert!(!source.contains(&absolute_id), "{source}");
     assert!(source.contains("-PT15M"), "{source}");
 }
+
+#[test]
+fn reminders_report_includes_inline_task_reminders_in_the_vault_timezone() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    initialize_vulcan_dir(&paths).expect("init should succeed");
+    fs::write(
+        paths.vault_root().join(".vulcan/config.toml"),
+        "[tasks.reminders]\ntimezone = \"Europe/Berlin\"\ndefault_time = \"08:00\"\n",
+    )
+    .expect("write config");
+    fs::create_dir_all(paths.vault_root().join("Projects")).expect("create folder");
+    fs::write(
+        paths.vault_root().join("Projects/Alpha.md"),
+        "# Alpha\n\n\
+         - [ ] Call X ⏰ 2999-01-01 10:00 🆔 call-x\n\
+         - [ ] Pay rent (@2999-01-02) #home\n\
+         - [ ] Review draft [remind:: 2999-01-03T07:15] ^review\n\
+         - [x] Finished ⏰ 2999-01-01 10:00\n\
+         - [-] Dropped ⏰ 2999-01-01 10:00\n\
+         - [ ] Only due 📅 2999-01-04\n\
+         - [ ] Invalid ⏰ 2999-13-01\n",
+    )
+    .expect("write note");
+    scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).expect("scan");
+
+    let report = build_task_reminders_report(&paths, "2000y").expect("reminders report");
+    let summary = report
+        .reminders
+        .iter()
+        .map(|item| {
+            (
+                item.title.as_str(),
+                item.notify_at.as_str(),
+                item.source.as_str(),
+                item.task.as_str(),
+                item.task_key.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+    // Berlin is UTC+1 in winter; a reminder without a time uses default_time.
+    assert_eq!(
+        summary,
+        vec![
+            (
+                "Call X",
+                "2999-01-01T09:00:00Z",
+                "inline",
+                "Projects/Alpha.md:3",
+                "id:call-x"
+            ),
+            (
+                "Pay rent #home",
+                "2999-01-02T07:00:00Z",
+                "inline",
+                "Projects/Alpha.md:4",
+                summary[1].4
+            ),
+            (
+                "Review draft",
+                "2999-01-03T06:15:00Z",
+                "inline",
+                "Projects/Alpha.md:5",
+                "block:Projects/Alpha.md#review"
+            ),
+        ]
+    );
+    assert!(summary[1].4.starts_with("text:Projects/Alpha.md:"));
+    assert!(report
+        .reminders
+        .iter()
+        .all(|item| item.occurrence_id.len() == 32));
+
+    // Due dates fire only when opted in.
+    fs::write(
+        paths.vault_root().join(".vulcan/config.toml"),
+        "[tasks.reminders]\ntimezone = \"UTC\"\ndue_dates = \"notify\"\ninline = false\n",
+    )
+    .expect("rewrite config");
+    let report = build_task_reminders_report(&paths, "2000y").expect("reminders report");
+    let titles = report
+        .reminders
+        .iter()
+        .map(|item| {
+            (
+                item.title.as_str(),
+                item.notify_at.as_str(),
+                item.reminder_id.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(titles, vec![("Only due", "2999-01-04T09:00:00Z", "due")]);
+}

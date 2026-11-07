@@ -233,6 +233,18 @@ pub struct TaskReminderItem {
     /// and `reminder_id` it identifies one delivery, and it is the instance to
     /// pass to `tasks complete --date`.
     pub occurrence: Option<String>,
+    /// `tasknote` for a `TaskNotes` reminder, `inline` for a reminder on an
+    /// inline task (`⏰`, `(@…)`, `[remind:: …]`, or a due date when
+    /// `tasks.reminders.due_dates = "notify"`).
+    pub source: String,
+    /// The task reference other task commands accept: the note path of a
+    /// `TaskNotes` task, `path:line` for an inline task.
+    pub task: String,
+    /// The task's stable identity across rescans and line moves.
+    pub task_key: String,
+    /// Stable id of this delivery (task, reminder, and firing instant), for
+    /// delivery ledgers that must not send a reminder twice.
+    pub occurrence_id: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

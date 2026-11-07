@@ -412,6 +412,6 @@ pub fn current_time_override_ms() -> Option<i64> {
     expression::functions::parse_date_like_string(trimmed).or_else(|| trimmed.parse::<i64>().ok())
 }
 
-pub const PARSER_VERSION: u32 = 11;
+pub const PARSER_VERSION: u32 = 12;
 pub const EXTRACTION_VERSION: u32 = 1;
 pub const SCHEMA_VERSION: u32 = 39;

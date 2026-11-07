@@ -17177,6 +17177,16 @@ fn tasks_reminders_json_output_evaluates_relative_and_absolute_reminders() {
         ),
     )
     .expect("future reminder task should be written");
+    fs::write(
+        vault_root.join("Inline Reminders.md"),
+        "- [ ] Call the bank ⏰ 2999-01-02 10:00 🆔 bank\n",
+    )
+    .expect("inline reminder note should be written");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should be created");
+    let config_path = vault_root.join(".vulcan/config.toml");
+    let mut config = fs::read_to_string(&config_path).unwrap_or_default();
+    config.push_str("\n[tasks.reminders]\ntimezone = \"UTC\"\n");
+    fs::write(&config_path, config).expect("config should be written");
     run_scan(&vault_root);
 
     let reminders_assert = Command::cargo_bin("vulcan")
@@ -17210,6 +17220,17 @@ fn tasks_reminders_json_output_evaluates_relative_and_absolute_reminders() {
             && reminder["reminder_id"] == "abs-1"
             && reminder["reminder_type"] == "absolute"
             && reminder["notify_at"] == "2999-01-01T09:00:00Z"
+            && reminder["source"] == "tasknote"
+    }));
+    assert!(reminders.iter().any(|reminder| {
+        reminder["source"] == "inline"
+            && reminder["task"] == "Inline Reminders.md:1"
+            && reminder["task_key"] == "id:bank"
+            && reminder["title"] == "Call the bank"
+            && reminder["notify_at"] == "2999-01-02T10:00:00Z"
+            && reminder["occurrence_id"]
+                .as_str()
+                .is_some_and(|id| id.len() == 32)
     }));
 }
 

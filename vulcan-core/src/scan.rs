@@ -2841,6 +2841,12 @@ fn extract_task_text_properties(text: &str) -> Vec<(String, String)> {
     if let Some(value) = extract_task_marker_token(text, &["🏁"]) {
         properties.push(("on-completion".to_string(), value));
     }
+    if let Some(reminder) = crate::tasks::extract_inline_reminder(text) {
+        properties.push((
+            crate::tasks::INLINE_REMINDER_PROPERTY.to_string(),
+            reminder.to_property_value(),
+        ));
+    }
 
     properties
 }
@@ -2871,7 +2877,7 @@ fn extract_task_marker_segment(text: &str, marker: &str) -> Option<String> {
 fn task_annotation_markers() -> &'static [&'static str] {
     &[
         "📅", "📆", "🗓️", "🗓", "✅", "❌", "➕", "🛫", "⏳", "⌛", "⏫", "🔺", "🔼", "🔽", "⏬",
-        "🔁", "🏁", "⛔", "🆔",
+        "🔁", "🏁", "⛔", "🆔", "⏰",
     ]
 }
 

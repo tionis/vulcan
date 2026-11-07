@@ -44,7 +44,11 @@ use vulcan_core::{
 };
 use yaml_serde::{Mapping as YamlMapping, Value as YamlValue};
 
+mod reminders;
 mod types;
+pub use reminders::{
+    inline_task_key, reminder_occurrence_id, tasknote_task_key, ReminderSettings, ReminderTimezone,
+};
 pub use types::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1683,14 +1687,20 @@ pub fn build_task_reminders_report_with_guard(
     guard: Option<&ProfilePermissionGuard>,
 ) -> Result<TaskRemindersReport, AppError> {
     with_task_read_scope(paths, guard, |scope| {
-        task_reminders_report(load_tasknote_records_with_scope(paths, scope)?, upcoming)
+        let config = load_vault_config(paths).config;
+        let note_index = scope.load_tasks(paths)?;
+        let records = tasknote_records_from_index(&note_index, &config);
+        task_reminders_report(records, &note_index, &config, upcoming)
     })
 }
 
 fn task_reminders_report(
     records: Vec<TaskNoteRecord>,
+    note_index: &HashMap<String, NoteRecord>,
+    config: &VaultConfig,
     upcoming: &str,
 ) -> Result<TaskRemindersReport, AppError> {
+    let settings = ReminderSettings::from_config(&config.tasks.reminders)?;
     let window_ms = parse_duration_string(upcoming).ok_or_else(|| {
         AppError::operation(format!(
             "failed to parse reminder window duration: {upcoming}"
@@ -1711,7 +1721,13 @@ fn task_reminders_report(
             if notify_at > deadline_ms {
                 continue;
             }
+            let task_key = tasknote_task_key(&record.path);
+            let occurrence_id = reminder_occurrence_id(&task_key, &reminder.id, notify_at);
             reminders.push(TaskReminderItem {
+                source: "tasknote".to_string(),
+                task: record.path.clone(),
+                task_key,
+                occurrence_id,
                 path: record.path.clone(),
                 title: record.indexed.title.clone(),
                 status: record.indexed.status.clone(),
@@ -1739,6 +1755,15 @@ fn task_reminders_report(
         }
     }
 
+    reminders.extend(reminders::inline_reminder_items(
+        note_index,
+        &config.tasks,
+        &settings,
+        now_ms,
+        deadline_ms,
+        format_utc_timestamp_ms,
+    ));
+
     reminders.sort_by(|left, right| {
         let left_at = parse_date_like_string(&left.notify_at).unwrap_or(i64::MAX);
         let right_at = parse_date_like_string(&right.notify_at).unwrap_or(i64::MAX);
@@ -1746,6 +1771,7 @@ fn task_reminders_report(
             .cmp(&right_at)
             .then_with(|| left.path.cmp(&right.path))
             .then_with(|| left.reminder_id.cmp(&right.reminder_id))
+            .then_with(|| left.task.cmp(&right.task))
     });
 
     Ok(TaskRemindersReport {
@@ -5829,8 +5855,15 @@ fn load_tasknote_records_with_scope(
 ) -> Result<Vec<TaskNoteRecord>, AppError> {
     let config = load_vault_config(paths).config;
     let note_index = scope.load_tasks(paths)?;
+    Ok(tasknote_records_from_index(&note_index, &config))
+}
+
+fn tasknote_records_from_index(
+    note_index: &HashMap<String, NoteRecord>,
+    config: &VaultConfig,
+) -> Vec<TaskNoteRecord> {
     let mut records = note_index
-        .into_values()
+        .values()
         .filter_map(|note| {
             let title = Path::new(&note.document_path)
                 .file_stem()
@@ -5844,14 +5877,14 @@ fn load_tasknote_records_with_scope(
             )?;
             let completed = tasknotes_status_state(&config.tasknotes, &indexed.status).completed;
             Some(TaskNoteRecord {
-                path: note.document_path,
+                path: note.document_path.clone(),
                 indexed,
                 completed,
             })
         })
         .collect::<Vec<_>>();
     records.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(records)
+    records
 }
 
 fn load_note_frontmatter_for_mutation(

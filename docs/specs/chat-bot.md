@@ -34,10 +34,10 @@ existing finite `vulcan-app` workflow, so the bot adds no write semantics of its
 
 | Layer | Owns |
 | --- | --- |
-| `vulcan-core` | Inline reminder syntax, the reminder occurrence planner (TaskNotes and inline tasks), and vault `[bot]` / `[reminders]` config types |
-| `vulcan-app::chat` | Transport-neutral commands: parse a chat message into a `ChatCommand`, run it against a vault with a permission guard, return a structured `ChatReply` (text blocks, buttons, attachments wanted). Reminder dispatch, resolution, and action workflows |
+| `vulcan-core` | Inline reminder syntax and vault `[bot]` / `[tasks.reminders]` config types |
+| `vulcan-app` | The reminder occurrence planner (`tasks reminders`, TaskNotes and inline tasks). `vulcan-app::chat`: transport-neutral commands: parse a chat message into a `ChatCommand`, run it against a vault with a permission guard, return a structured `ChatReply` (text blocks, buttons, attachments wanted). Reminder dispatch, resolution, and action workflows |
 | `vulcan-daemon` | The `telegram-bot` optional service: Bot API client, long-poll loop, rendering `ChatReply` into Telegram messages, the reminder timer, and device-local state |
-| `vulcan-cli` | `vulcan bot …` setup and diagnostics; `vulcan reminders …` daemon-less commands |
+| `vulcan-cli` | `vulcan bot …` setup and diagnostics; `vulcan tasks reminders` lists planned occurrences |
 
 The command layer never sees Telegram types, and the Telegram client never touches the vault.
 
@@ -80,16 +80,18 @@ default_capture = "inbox"           # "inbox" | "daily" | "<QuickAdd capture cho
 link_capture = "inbox"              # target for messages that are only a URL
 attachments_folder = "Attachments/Inbox"   # default: the vault's attachment folder
 
-[reminders]
+[tasks.reminders]                   # implemented (slice 1)
 inline = true                       # parse ⏰ / (@…) / [remind:: …] on inline tasks
-due_dates = "ignore"                # "ignore" | "notify": 📅 without a time fires at default_time
+due_dates = "ignore"                # "ignore" | "notify": 📅 alone fires at default_time
 default_time = "09:00"
-timezone = "Europe/Berlin"          # default: the periodic-notes timezone, then the device's
+timezone = "Europe/Berlin"          # IANA name; the device's local timezone when unset
+
+[bot.reminders]                     # planned (slice 4)
 catch_up_window = "24h"             # older missed reminders are not sent
 snooze_options = ["1h", "tomorrow"] # buttons, at most 3 besides "done"
 privacy = "full"                    # "full" | "title_only"
 
-[[reminders.privacy_overrides]]
+[[bot.reminders.privacy_overrides]]
 glob = "GM/**"
 privacy = "title_only"
 ```
@@ -132,9 +134,11 @@ diagnostics.
 
 ### Occurrence identity
 
-`occurrence_id = blake3(vault id ‖ task key ‖ notify instant in UTC)`. The task key is the TaskNotes
-file identity, otherwise a Tasks `🆔` or block id, otherwise a hash of the path and the task text
-without date and emoji fields. Editing the text of a task that has no ID therefore makes a new
+`occurrence_id = blake3(domain ‖ task key ‖ reminder id ‖ notify instant in UTC)`, reported by
+`tasks reminders`; the bot ledger keys it by vault. The task key is `tasknote:<path>` for TaskNotes,
+otherwise `id:<🆔>`, `block:<path>#<block id>`, or `text:<path>:<hash of the task title>` (the text
+without Tasks annotations, Dataview fields, reminder forms, and block id). Completing a recurring
+inline task moves its `⏰` with its other dates. Editing the text of a task that has no ID therefore makes a new
 occurrence. Vulcan never writes IDs only to make reminders work.
 
 ### Delivery
@@ -202,15 +206,16 @@ handled update ids (pruned after 7 days).
 - `vulcan bot status`: service state, bot identity (`getMe`), last poll, users, ledger counts, and
   rejected users.
 - `vulcan bot test [--user ID]`: send a test message (needs the token, not the daemon).
-- `vulcan reminders plan [--within 24h]`: dry-run of the planner with occurrence ids.
-- `vulcan reminders ledger [--open]`: inspect sent reminders.
+- `vulcan tasks reminders [--upcoming 24h]`: the planner, with `source`, `task`, `task_key`, and
+  `occurrence_id` per row (slice 1).
+- `vulcan bot reminders [--open]`: inspect the sent-reminder ledger.
 
 All of them support `--output json`. Bot configuration is edited with the existing daemon config
 commands.
 
 ## Slices
 
-1. **Inline reminder syntax and planner** in core and app; `vulcan reminders plan`.
+1. **Inline reminder syntax and planner** in core and app; inline reminders in `vulcan tasks reminders`.
 2. **Chat command layer** in `vulcan-app::chat`: parser, capture, `/task`, `/today`, `/find`,
    `/note`, and `/vault`, tested without Telegram.
 3. **Telegram service**: client, polling, allowlist, rendering, and state, tested against a fake
