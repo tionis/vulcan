@@ -4958,6 +4958,8 @@ Core reminder parsing and evaluation ship in 9.15.7. *Delivery* of reminders —
 
 **Depends on:** Phase 10 (daemon for background evaluation). Native chat adapters are optional future consumers rather than prerequisites.
 
+**Superseded by:** [10.11 Chat bot: capture and reminder delivery](#1011-chat-bot-capture-and-reminder-delivery) for Telegram delivery. Desktop, email, and WebUI channels remain deferred.
+
 ### <a id="deferred-task-daemon-api"></a>Task operations in daemon API
 
 **Deferred from:** 9.15.12
@@ -5839,6 +5841,21 @@ grants, sessions, packs, and vault ceilings; the ordinary remote setup path requ
 instance configuration plus browser consent; local stdio remains daemon-independent and behaviorally
 compatible; changing or compromising one connection cannot broaden or reuse another connection's
 authority.
+
+### 10.11 Chat bot: capture and reminder delivery
+
+**Contract:** [`docs/specs/chat-bot.md`](specs/chat-bot.md). **Replaces:** [Reminder delivery channels](#deferred-reminder-delivery) (Telegram first).
+
+A deterministic, daemon-hosted Telegram bot for allowlisted users. It captures notes, creates and lists tasks, and performs lookups through existing `vulcan-app` workflows. It also delivers reminders with Done/Snooze buttons that write back into Markdown. No LLM chat (see 9.21), no external relay, and no revival of the 9.21.12 multi-platform identity framework. The command layer is transport-neutral; the Telegram client lives in `vulcan-daemon`.
+
+- [ ] Inline reminder syntax (`⏰ YYYY-MM-DD HH:mm` canonical; `(@…)` and `[remind:: …]` also parsed), the opt-in due-date fallback, a unified occurrence planner over TaskNotes and inline tasks with stable occurrence identity, and `vulcan reminders plan`
+- [ ] `vulcan-app::chat` command layer: message parsing, capture (inbox / daily / QuickAdd choice), `/task`, `/today`, `/due`, `/reminders`, `/find`, `/note`, `/vault`, with structured replies and permission-guarded writes, tested without Telegram
+- [ ] `telegram-bot` optional daemon service: minimal Bot API client, long polling with persisted offset, user allowlist mapped to permission profiles, rendering, 409/401/429 handling, token redaction, device-local `daemon/bot.sqlite`; `vulcan bot status|test`
+- [ ] Reminder delivery: wakeable timer, sent ledger, catch-up window, and resolution edits when a task changes elsewhere
+- [ ] Reminder actions: ledger-gated done/snooze callbacks with recurrence-aware completion
+- [ ] Attachments, `/undo`, bundled skill updates, and user guide
+
+**Acceptance:** On the configured device, an allowlisted user can capture text, links, and photos, create and complete tasks, and search the vault from Telegram. Due reminders arrive once, with working Done/Snooze buttons whose effects sync to every device. Reminders completed elsewhere update their message. Unknown users get no response. Every write respects the user's profile capped by the registration ceiling, and all CLI commands keep working without the daemon.
 
 ## Phase 11: Git Auto-Versioning (Daemon-Level)
 
