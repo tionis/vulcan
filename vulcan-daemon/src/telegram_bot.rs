@@ -23,9 +23,9 @@ use vulcan_app::chat::reminders::{
 };
 use vulcan_app::chat::state::{ChatStateStore, ReminderLedgerEntry, ReminderState};
 use vulcan_app::chat::{
-    chat_help_text, chat_usage_text, parse_chat_message, run_chat_action, run_chat_attachment,
-    run_chat_command, run_chat_undo, ChatAttachment, ChatCommand, ChatReply, ChatVault,
-    CHAT_COMMANDS,
+    chat_help_text, chat_undo_id, chat_usage_text, parse_chat_message, run_chat_action,
+    run_chat_attachment, run_chat_command, run_chat_undo, ChatAction, ChatAttachment, ChatButton,
+    ChatCommand, ChatReply, ChatVault, CHAT_COMMANDS,
 };
 use vulcan_app::execution::MutationGate;
 use vulcan_app::tasks::ReminderSettings;
@@ -414,6 +414,10 @@ impl Bot<'_> {
                 .answer_callback_query(&callback.id, Some("This button has expired."));
             return;
         };
+        if let vulcan_app::chat::ChatAction::UndoCapture { id } = &stored.action {
+            self.press_undo(&user, callback, chat_id, &token, id, now);
+            return;
+        }
         let wiki = match self.user_vault(&user, &stored.vault) {
             Ok(wiki) => wiki,
             Err(error) => {
@@ -496,6 +500,36 @@ impl Bot<'_> {
         }
         // The snoozed or next occurrence is planned without waiting a minute.
         self.next_plan_ms = 0;
+    }
+
+    /// An Undo button: reverts the capture it was sent with, only while that
+    /// is still the chat's latest.
+    fn press_undo(
+        &mut self,
+        user: &DaemonBotUser,
+        callback: &TelegramCallbackQuery,
+        chat_id: i64,
+        token: &str,
+        id: &str,
+        now: i64,
+    ) {
+        let latest = self
+            .state
+            .undo(PLATFORM, chat_id, now)
+            .ok()
+            .flatten()
+            .is_some_and(|(_, entries)| chat_undo_id(&entries) == id);
+        let _ = self.state.remove_action(token);
+        if !latest {
+            let _ = self.client.answer_callback_query(
+                &callback.id,
+                Some("Only the latest capture can be undone."),
+            );
+            return;
+        }
+        let _ = self.client.answer_callback_query(&callback.id, None);
+        let reply = self.undo(user, chat_id);
+        self.send_reply(chat_id, None, &reply);
     }
 
     fn remember_undo(&mut self, chat_id: i64, vault: Option<&str>, reply: &ChatReply) {
@@ -822,10 +856,17 @@ impl Bot<'_> {
 
     fn send_reply(&mut self, chat_id: i64, vault: Option<&str>, reply: &ChatReply) {
         let now = vulcan_core::current_utc_timestamp_ms();
+        let undo = (!reply.undo.is_empty()).then(|| ChatButton {
+            label: "Undo".to_string(),
+            action: ChatAction::UndoCapture {
+                id: chat_undo_id(&reply.undo),
+            },
+        });
         let keyboard = vault.map_or_else(Vec::new, |vault| {
             reply
                 .buttons
                 .iter()
+                .chain(undo.as_ref())
                 .filter_map(|button| {
                     let token = self
                         .state

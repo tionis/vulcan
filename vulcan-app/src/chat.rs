@@ -201,6 +201,24 @@ pub enum ChatAction {
     CompleteTask { task: String, title: String },
     /// Send a note.
     ShowNote { path: String },
+    /// Revert the capture whose undo record has this [`chat_undo_id`], if it
+    /// is still the chat's latest. Handled by the adapter, which keeps the
+    /// undo record.
+    UndoCapture { id: String },
+}
+
+/// A short, stable id of an undo record, so an Undo button only reverts the
+/// capture it was sent with.
+#[must_use]
+pub fn chat_undo_id(undo: &[ChatUndo]) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for entry in undo {
+        hasher.update(entry.path.as_bytes());
+        hasher.update(&[0]);
+        hasher.update(entry.after_hash.as_bytes());
+        hasher.update(&[0]);
+    }
+    hasher.finalize().to_hex()[..16].to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -532,6 +550,9 @@ pub fn run_chat_action(vault: &ChatVault<'_>, action: &ChatAction) -> Result<Cha
             Ok(reply)
         }
         ChatAction::ShowNote { path } => show_note(vault, path),
+        ChatAction::UndoCapture { .. } => Err(AppError::operation(
+            "undo buttons are handled by the chat adapter",
+        )),
     }
 }
 
@@ -678,13 +699,17 @@ fn create_task(vault: &ChatVault<'_>, text: &str) -> Result<ChatReply, AppError>
                 finish_write(vault, "bot-task", &report.changed_paths)?;
                 Ok(report)
             })?;
-            let mut lines = vec![format!("Task: {}", report.title)];
+            let mut lines = vec![format!("Task added: {}", report.title)];
             if let Some(scheduled) = &report.scheduled {
-                lines.push(format!("Scheduled: {scheduled}"));
+                lines.push(format!(
+                    "Scheduled: {}",
+                    friendly_task_date(scheduled, vault.today)
+                ));
             }
             if let Some(due) = &report.due {
-                lines.push(format!("Due: {due}"));
+                lines.push(format!("Due: {}", friendly_task_date(due, vault.today)));
             }
+            lines.extend(task_reminder_lines(vault, &report.path));
             lines.push(report.path.clone());
             // `tasks add` always creates a new note, so undo removes it.
             let undo = undo_after(vault.paths, &report.path, Some(Prior::Absent));
@@ -726,7 +751,7 @@ fn create_task(vault: &ChatVault<'_>, text: &str) -> Result<ChatReply, AppError>
                 })
             })?;
             Ok(ChatReply {
-                text: format!("Task added: {}", report.task),
+                text: format!("Task added: {}", inline_task_title(&report.task)),
                 changed_paths: report.changed_paths,
                 undo: undo.into_iter().collect(),
                 ..ChatReply::default()
@@ -775,11 +800,12 @@ fn due_tasks(vault: &ChatVault<'_>, days: u32) -> Result<ChatReply, AppError> {
         } else {
             ""
         };
-        lines.push(format!(
-            "- {} {}{marker}",
-            row.title,
-            date.get(..10).unwrap_or(date)
-        ));
+        let when = if date.is_empty() {
+            String::new()
+        } else {
+            format!(" · {}", friendly_task_date(date, vault.today))
+        };
+        lines.push(format!("• {}{when}{marker}", row.title));
         buttons.push(ChatButton {
             label: format!("Done: {}", truncate(&row.title, 40)),
             action: ChatAction::CompleteTask {
@@ -844,18 +870,98 @@ fn reminders(vault: &ChatVault<'_>, window: &str) -> Result<ChatReply, AppError>
 
 /// `Today, Sat 7 Nov`, `Tomorrow, Sun 8 Nov`, `Tue 10 Nov`, or with the year when it differs.
 fn day_heading(date: NaiveDate, today: NaiveDate) -> String {
+    let label = calendar_date(date, today);
+    match relative_day(date, today) {
+        Some(relative) => format!("{relative}, {label}"),
+        None => label,
+    }
+}
+
+/// `Sun 8 Nov`, with the year when it is not `today`'s.
+pub(crate) fn calendar_date(date: NaiveDate, today: NaiveDate) -> String {
     let format = if date.year() == today.year() {
         "%a %-d %b"
     } else {
         "%a %-d %b %Y"
     };
-    let label = date.format(format).to_string();
+    date.format(format).to_string()
+}
+
+fn relative_day(date: NaiveDate, today: NaiveDate) -> Option<&'static str> {
     match (date - today).num_days() {
-        -1 => format!("Yesterday, {label}"),
-        0 => format!("Today, {label}"),
-        1 => format!("Tomorrow, {label}"),
-        _ => label,
+        -1 => Some("Yesterday"),
+        0 => Some("Today"),
+        1 => Some("Tomorrow"),
+        _ => None,
     }
+}
+
+/// A day relative to `today` where that is shorter: `Today`, `Tomorrow`,
+/// `Yesterday`, else `Sun 8 Nov`.
+#[must_use]
+pub fn friendly_day(date: NaiveDate, today: NaiveDate) -> String {
+    relative_day(date, today).map_or_else(|| calendar_date(date, today), ToString::to_string)
+}
+
+/// A task date or date-time as written in frontmatter or inline fields
+/// (`2026-11-08`, `2026-11-08T12:00`), as `Tomorrow` or `Tomorrow 12:00`.
+/// Anything else is returned unchanged.
+#[must_use]
+pub fn friendly_task_date(value: &str, today: NaiveDate) -> String {
+    let value = value.trim();
+    let Some(date) = value
+        .get(..10)
+        .and_then(|day| NaiveDate::parse_from_str(day, "%Y-%m-%d").ok())
+    else {
+        return value.to_string();
+    };
+    let time = value
+        .get(11..16)
+        .filter(|_| {
+            value
+                .as_bytes()
+                .get(10)
+                .is_some_and(|c| matches!(c, b'T' | b' '))
+        })
+        .and_then(|time| chrono::NaiveTime::parse_from_str(time, "%H:%M").ok());
+    match time {
+        Some(time) => format!("{} {}", friendly_day(date, today), time.format("%H:%M")),
+        None => friendly_day(date, today),
+    }
+}
+
+/// `Reminder: Tomorrow 12:00` lines for the task note at `path`, in the
+/// reminder timezone. A reminder that was already due when the task was
+/// created is not delivered, so it is shown as passed.
+fn task_reminder_lines(vault: &ChatVault<'_>, path: &str) -> Vec<String> {
+    let Ok(timezone) =
+        ReminderTimezone::from_config(&load_vault_config(vault.paths).config.tasks.reminders)
+    else {
+        return Vec::new();
+    };
+    let Ok(report) = build_task_reminders_report_with_guard(vault.paths, "400d", Some(vault.guard))
+    else {
+        return Vec::new();
+    };
+    report
+        .reminders
+        .iter()
+        .filter(|reminder| reminder.path == path)
+        .filter_map(|reminder| {
+            let at = parse_date_like_string(&reminder.notify_at)?;
+            let local = timezone.local_datetime(at);
+            let when = format!(
+                "{} {}",
+                friendly_day(local.date(), vault.today),
+                local.format("%H:%M")
+            );
+            Some(if reminder.overdue {
+                format!("Reminder: {when} (already passed, not sent)")
+            } else {
+                format!("Reminder: {when}")
+            })
+        })
+        .collect()
 }
 
 fn find(vault: &ChatVault<'_>, query: &str) -> Result<ChatReply, AppError> {

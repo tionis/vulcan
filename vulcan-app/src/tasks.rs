@@ -1755,6 +1755,11 @@ fn task_reminders_report(
                 task: record.path.clone(),
                 task_key,
                 occurrence_id,
+                created_ms: record
+                    .indexed
+                    .date_created
+                    .as_deref()
+                    .and_then(parse_date_like_string),
                 path: record.path.clone(),
                 title: record.indexed.title.clone(),
                 status: record.indexed.status.clone(),

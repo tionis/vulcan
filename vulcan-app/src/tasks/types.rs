@@ -255,6 +255,10 @@ pub struct TaskReminderItem {
     /// Stable id of this delivery (task, reminder, and firing instant), for
     /// delivery ledgers that must not send a reminder twice.
     pub occurrence_id: String,
+    /// When the task was created (Unix ms), if known: a reminder that was
+    /// already due then is not delivered as missed.
+    #[serde(skip)]
+    pub created_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

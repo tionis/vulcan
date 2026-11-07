@@ -117,7 +117,7 @@ privacy = "title_only"
 | `/find <query>` | top 8 search hits, each with a button that sends the note | search |
 | `/note <path or title>` | send the note as text (split at 4096 characters) or as a file when it is long | note get |
 | `/vault [name]` | show or switch this chat's active vault | bot state |
-| `/undo` | revert the last capture, task, or attachment made from this chat within 7 days, all or nothing, if every file is byte-for-byte as the capture left it | bot state + `run_chat_undo` |
+| `/undo` | revert the last capture, task, or attachment made from this chat within 7 days, all or nothing, if every file is byte-for-byte as the capture left it; each capture reply carries an Undo button that works only while its capture is the chat's latest | bot state + `run_chat_undo` |
 | `/help` | list commands (also registered with `setMyCommands`) | — |
 
 Every write goes through the ordinary write path, so the mutation scheduler, auto-commit, and Git
@@ -141,7 +141,8 @@ diagnostics.
 TaskNotes dates and times without a zone (`scheduled: 2026-11-08T12:00`) are wall-clock times in
 `tasks.reminders.timezone`, as TaskNotes reads them in the device's timezone; an explicit offset is
 honored. A relative reminder whose anchor is a bare date fires relative to `default_time`, not
-midnight. `/task` adds `tasknotes.task_creation_defaults.default_reminders`, so a default reminder
+midnight. A TaskNotes reminder whose time is before the task's `dateCreated` was never missed and is not
+planned. `/task` adds `tasknotes.task_creation_defaults.default_reminders`, so a default reminder
 `0 minutes before scheduled` makes `/task call Anna tomorrow 10:00` remind at 10:00.
 
 ### Occurrence identity

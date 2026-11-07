@@ -90,6 +90,11 @@ pub fn plan_chat_reminders(vault: &ChatVault<'_>) -> Result<ReminderPlan, AppErr
         .into_iter()
         .filter_map(|item| {
             let notify_ms = parse_date_like_string(&item.notify_at)?;
+            // Already due when the task was made, e.g. a default reminder on
+            // a task scheduled for today: not a reminder anyone missed.
+            if item.created_ms.is_some_and(|created| notify_ms < created) {
+                return None;
+            }
             let actions = if vault.guard.check_write_path(&item.path).is_ok() {
                 std::iter::once(DONE_ACTION.to_string())
                     .chain(snooze_options.iter().cloned())
@@ -107,7 +112,7 @@ pub fn plan_chat_reminders(vault: &ChatVault<'_>) -> Result<ReminderPlan, AppErr
                 task: item.task,
                 path: item.path,
                 notify_ms,
-                when: settings.timezone.format_local(notify_ms),
+                when: message_time(settings.timezone.local_datetime(notify_ms), vault.today),
                 heading,
                 actions,
             })
@@ -208,7 +213,20 @@ pub fn run_reminder_action(
         )
     })?;
     finish_write(vault, "task snooze", &report.changed_paths)?;
-    Ok(format!("Snoozed until {}.", until.format("%Y-%m-%d %H:%M")))
+    Ok(format!(
+        "Snoozed until {}.",
+        message_time(until, vault.today)
+    ))
+}
+
+/// A time in a message that stays in the chat: `Sun 8 Nov 12:00`, never
+/// relative, since "today" is wrong by tomorrow.
+fn message_time(at: chrono::NaiveDateTime, today: chrono::NaiveDate) -> String {
+    format!(
+        "{} {}",
+        super::calendar_date(at.date(), today),
+        at.format("%H:%M")
+    )
 }
 
 fn complete(vault: &ChatVault<'_>, item: &TaskReminderItem) -> Result<String, AppError> {

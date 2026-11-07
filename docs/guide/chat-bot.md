@@ -77,7 +77,7 @@ write the task's note.
 | `/reminders [24h]` | upcoming reminders |
 | `/find <words>` | search results, each with a button that sends the note |
 | `/note <path or title>` | the note's text, or the file when it is long |
-| `/undo` | revert the last capture, task, or attachment from this chat, if nothing changed it since |
+| `/undo` | revert the last capture, task, or attachment from this chat, if nothing changed it since; replies to captures also carry an Undo button |
 | `/vault [name]` | show or switch the vault this chat works in |
 | `/help` | the command list |
 
@@ -129,8 +129,10 @@ unit = "minutes"
 direction = "before"
 ```
 
-`/task call Anna tomorrow 10:00` then reminds at 10:00. A task with a date but no time is reminded
-at `tasks.reminders.default_time` (09:00 by default). Reminders are added when a task is created,
+`/task call Anna tomorrow 10:00` then reminds at 10:00, and the reply shows the date and reminder
+it understood. A task with a date but no time is reminded at `tasks.reminders.default_time` (09:00
+by default). A reminder that was already due when its task was created, such as a 09:00 default
+reminder on a task created at noon and scheduled for today, is not sent. Reminders are added when a task is created,
 so existing tasks keep theirs. Inline tasks use `⏰` instead (see above).
 
 ## Status and troubleshooting

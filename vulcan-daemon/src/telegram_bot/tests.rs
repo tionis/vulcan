@@ -663,3 +663,37 @@ fn photos_are_saved_with_their_caption_and_undo_reverts_them() {
     stop.cancel();
     handle.join().unwrap().unwrap();
 }
+
+#[test]
+fn undo_buttons_revert_only_the_latest_capture() {
+    let fake = Fake::default();
+    let fixture = fixture(&serve(&fake), None, "unrestricted");
+    let (stop, handle) = start(&fixture);
+    fake.message(OWNER, "private", "buy milk");
+    fake.message(OWNER, "private", "buy eggs");
+    let sent = fake.wait_for("sendMessage", 2);
+    let undo_button = |index: usize| {
+        let button = &sent[index]["reply_markup"]["inline_keyboard"][0][0];
+        assert_eq!(button["text"], "Undo", "{sent:?}");
+        button["callback_data"].as_str().unwrap().to_string()
+    };
+    let (first, second) = (undo_button(0), undo_button(1));
+
+    fake.press(OWNER, &first);
+    let answers = fake.wait_for("answerCallbackQuery", 1);
+    assert_eq!(answers[0]["text"], "Only the latest capture can be undone.");
+    fake.press(OWNER, &second);
+    let sent = fake.wait_for("sendMessage", 3);
+    assert_eq!(sent[2]["text"], "Undone: Inbox.md");
+    let inbox = std::fs::read_to_string(fixture.vault.join("Inbox.md")).unwrap();
+    assert!(
+        inbox.contains("buy milk") && !inbox.contains("buy eggs"),
+        "{inbox}"
+    );
+
+    fake.press(OWNER, &second);
+    let answers = fake.wait_for("answerCallbackQuery", 3);
+    assert_eq!(answers[2]["text"], "This button has expired.");
+    stop.cancel();
+    handle.join().unwrap().unwrap();
+}

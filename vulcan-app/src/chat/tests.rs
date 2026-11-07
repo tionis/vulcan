@@ -191,7 +191,7 @@ fn tasknotes_target_creates_a_task_note() {
     let fixture = Fixture::new("", &[]);
     let reply = fixture.run("unrestricted", "/task Renew passport").unwrap();
     assert!(
-        reply.text.starts_with("Task: Renew passport"),
+        reply.text.starts_with("Task added: Renew passport"),
         "{}",
         reply.text
     );
@@ -199,6 +199,86 @@ fn tasknotes_target_creates_a_task_note() {
     assert!(fixture
         .read(&reply.changed_paths[0])
         .contains("Renew passport"));
+}
+
+#[test]
+fn task_replies_show_dates_and_reminders_in_words() {
+    let tomorrow = chrono::Local::now().date_naive() + chrono::Duration::days(1);
+    let fixture = Fixture::new(
+        "[tasknotes]\nnlp_default_to_scheduled = true\n\
+         [[tasknotes.task_creation_defaults.default_reminders]]\n\
+         id = \"at-time\"\ntype = \"relative\"\nrelated_to = \"scheduled\"\n\
+         offset = 0\nunit = \"minutes\"\ndirection = \"before\"\n",
+        &[],
+    );
+    let guard = fixture.guard("unrestricted");
+    let vault = ChatVault {
+        today: chrono::Local::now().date_naive(),
+        ..vault_for(&fixture, &guard, "unrestricted")
+    };
+    let reply = run_chat_command(
+        &vault,
+        &parse_chat_message("/task call Anna tomorrow 10:00"),
+    )
+    .unwrap();
+    let lines = reply.text.lines().collect::<Vec<_>>();
+    assert_eq!(lines[0], "Task added: call Anna");
+    assert_eq!(lines[1], "Scheduled: Tomorrow 10:00");
+    assert_eq!(lines[2], "Reminder: Tomorrow 10:00");
+    assert_eq!(lines[3], reply.changed_paths[0], "{}", reply.text);
+    assert!(fixture.read(&reply.changed_paths[0]).contains(&format!(
+        "scheduled: {}T10:00:00",
+        tomorrow.format("%Y-%m-%d")
+    )));
+    assert_eq!(reply.undo.len(), 1, "the reply offers undo");
+}
+
+#[test]
+fn friendly_task_dates_are_relative_near_today() {
+    let today = NaiveDate::from_ymd_opt(2026, 11, 7).unwrap();
+    assert_eq!(friendly_task_date("2026-11-07", today), "Today");
+    assert_eq!(
+        friendly_task_date("2026-11-08T12:00:00", today),
+        "Tomorrow 12:00"
+    );
+    assert_eq!(
+        friendly_task_date("2026-11-06 09:30", today),
+        "Yesterday 09:30"
+    );
+    assert_eq!(friendly_task_date("2026-11-12", today), "Thu 12 Nov");
+    assert_eq!(friendly_task_date("2027-02-01", today), "Mon 1 Feb 2027");
+    assert_eq!(friendly_task_date("someday", today), "someday");
+}
+
+#[test]
+fn reminders_already_due_when_a_task_was_created_are_not_planned() {
+    let fixture = Fixture::new(
+        "[tasks.reminders]\ntimezone = \"UTC\"\n",
+        &[(
+            "Tasks/Old.md",
+            "---\ntitle: Old\nstatus: open\ntags: [task]\nscheduled: 2026-11-01T09:00:00Z\n\
+             dateCreated: 2026-11-01T10:30:00.000+01:00\nreminders:\n  - id: r\n    type: relative\n\
+             \x20   relatedTo: scheduled\n    offset: -PT0M\n---\n",
+        ), (
+            "Tasks/Missed.md",
+            "---\ntitle: Missed\nstatus: open\ntags: [task]\nscheduled: 2026-11-01T09:00:00Z\n\
+             dateCreated: 2026-10-30T10:00:00.000+01:00\nreminders:\n  - id: r\n    type: relative\n\
+             \x20   relatedTo: scheduled\n    offset: -PT0M\n---\n",
+        )],
+    );
+    let guard = fixture.guard("readonly");
+    let vault = vault_for(&fixture, &guard, "readonly");
+    let plan = reminders::plan_chat_reminders(&vault).unwrap();
+    let paths = plan
+        .reminders
+        .iter()
+        .map(|r| r.path.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        paths,
+        ["Tasks/Missed.md"],
+        "created at 09:00 UTC, after its reminder"
+    );
 }
 
 #[test]
@@ -216,8 +296,16 @@ fn today_lists_due_tasks_and_done_buttons_complete_them() {
     );
     let reply = fixture.run("unrestricted", "/today").unwrap();
     assert!(reply.text.starts_with("Due today (2):"), "{}", reply.text);
-    assert!(reply.text.contains("- Overdue thing 2026-11-01 (overdue)"));
-    assert!(reply.text.contains("- Today thing 2026-11-07"));
+    assert!(
+        reply.text.contains("• Overdue thing · Sun 1 Nov (overdue)"),
+        "{}",
+        reply.text
+    );
+    assert!(
+        reply.text.contains("• Today thing · Today"),
+        "{}",
+        reply.text
+    );
     assert!(!reply.text.contains("Later thing"));
     assert_eq!(reply.buttons.len(), 2);
 
@@ -341,12 +429,12 @@ fn reminder_plans_render_in_the_vault_timezone_with_path_privacy() {
     assert_eq!(call.task, "Calls.md:1");
     assert_eq!(
         call.message(false),
-        "⏰ Call the bank\nCalls.md\n2026-01-01 10:00",
+        "⏰ Call the bank\nCalls.md\nThu 1 Jan 10:00",
         "10:00 Berlin, shown as written"
     );
     assert_eq!(
         plan.reminders[1].message(true),
-        "⏰ Prepare the twist\n2026-01-02 11:00 (late)",
+        "⏰ Prepare the twist\nFri 2 Jan 11:00 (late)",
         "title_only hides the GM path"
     );
 
@@ -403,7 +491,17 @@ fn reminder_buttons_complete_and_snooze_inline_tasks() {
         .unwrap()
         .format("%Y-%m-%d %H:%M")
         .to_string();
-    assert_eq!(snoozed, format!("Snoozed until {expected}."));
+    let local = chrono::DateTime::from_timestamp_millis(at)
+        .unwrap()
+        .naive_utc();
+    assert_eq!(
+        snoozed,
+        format!(
+            "Snoozed until {} {}.",
+            calendar_date(local.date(), vault.today),
+            local.format("%H:%M")
+        )
+    );
     assert!(fixture
         .read("Calls.md")
         .contains(&format!("- [ ] Call the bank ⏰ {expected}")));
@@ -450,7 +548,10 @@ fn snoozing_a_task_note_adds_an_absolute_reminder() {
         &fixture.paths,
         &crate::tasks::TaskReminderAddRequest {
             task: path.clone(),
-            spec: "2026-01-01T10:00".to_string(),
+            // Later than the task's creation: an earlier one was never missed.
+            spec: (chrono::Utc::now() + chrono::Duration::days(1))
+                .format("%Y-%m-%dT10:00")
+                .to_string(),
             description: None,
             dry_run: false,
         },

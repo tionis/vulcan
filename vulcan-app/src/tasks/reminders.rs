@@ -304,6 +304,7 @@ pub(super) fn inline_reminder_items(
                 task: format!("{}:{}", note.document_path, task.line_number),
                 occurrence_id: reminder_occurrence_id(&task_key, reminder_id, notify_at),
                 task_key,
+                created_ms: None,
             });
         }
     }
