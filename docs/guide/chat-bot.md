@@ -102,6 +102,7 @@ The buttons write back to the vault:
 - **Done** completes the task, including the right occurrence of a recurring task.
 - **Snooze 1h** and **Tomorrow** move the reminder: an inline task's `⏰` is rewritten, a TaskNotes
   task gains a reminder described "Snoozed".
+- **Later…** asks when; answer with a time, or reply to the reminder itself (see below).
 
 ```toml
 [bot.reminders]
@@ -134,6 +135,18 @@ it understood. A task with a date but no time is reminded at `tasks.reminders.de
 by default). A reminder that was already due when its task was created, such as a 09:00 default
 reminder on a task created at noon and scheduled for today, is not sent. Reminders are added when a task is created,
 so existing tasks keep theirs. Inline tasks use `⏰` instead (see above).
+
+## Replying with a time
+
+Reply to one of the bot's messages with a time to act on it:
+
+- to a **reminder**: snooze it to that time. The **Later…** button asks the same question.
+- to the **"Task added"** reply: move the task. A TaskNotes task keeps its date field
+  (`scheduled` when it has only that, otherwise `due`); its relative reminders follow.
+
+A time is `in 2h`, `90m`, `15:00`, `3pm` (a time already past today means tomorrow), `tomorrow`,
+`tomorrow 9:00`, `friday at 10am`, or `2026-11-20 08:30`. A day without a time means
+`tasks.reminders.default_time`. Anything that is not just a time changes nothing.
 
 ## Alerts and the daily digest
 

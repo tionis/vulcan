@@ -246,7 +246,23 @@ pub struct ChatReply {
     /// when it wrote nothing or cannot be undone. The adapter keeps it for
     /// the chat's `/undo`.
     pub undo: Vec<ChatUndo>,
+    /// What a reply to this message acts on: the adapter records it with
+    /// the sent message's id.
+    pub reply_target: Option<ChatReplyTarget>,
 }
+
+/// What replying to a bot message with a time does.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ChatReplyTarget {
+    /// Reschedule this task (`path` or `path:line`).
+    Task { task: String },
+    /// Snooze the reminder in this ledger row (a "Later…" prompt).
+    Reminder { row: i64 },
+}
+
+/// The hint shown when a reply is not a time.
+pub const CHAT_WHEN_HINT: &str = "Reply with a time, e.g. in 2h, 15:00, or tomorrow 9:00.";
 
 /// One file as a capture left it: restore `before` (or remove the file
 /// when it did not exist) while its content still hashes to `after_hash`.
@@ -556,6 +572,80 @@ pub fn run_chat_action(vault: &ChatVault<'_>, action: &ChatAction) -> Result<Cha
     }
 }
 
+/// Move `task` to the time in `text`, a reply to the message that created
+/// it. A `TaskNotes` task keeps its date field: `scheduled` when it has only
+/// that, `due` otherwise; an inline task moves its due date.
+pub fn run_chat_reschedule(
+    vault: &ChatVault<'_>,
+    task: &str,
+    text: &str,
+    now_ms: i64,
+) -> Result<ChatReply, AppError> {
+    let config = load_vault_config(vault.paths).config;
+    let timezone = ReminderTimezone::from_config(&config.tasks.reminders)?;
+    let Some(when) = when::parse_chat_when(text, &config.tasknotes, timezone, now_ms) else {
+        return Ok(ChatReply::text(CHAT_WHEN_HINT));
+    };
+    let value = match when {
+        when::ChatWhen::At(at) => at.format("%Y-%m-%dT%H:%M").to_string(),
+        when::ChatWhen::Day(day) => day.format("%Y-%m-%d").to_string(),
+    };
+    let shown =
+        crate::tasks::build_task_show_report_with_guard(vault.paths, task, vault.guard).ok();
+    let report = with_write(vault, || {
+        let report = match &shown {
+            Some(note) if note.scheduled.is_some() && note.due.is_none() => {
+                crate::tasks::apply_task_set_with_guard(
+                    vault.paths,
+                    &crate::tasks::TaskSetRequest {
+                        task: task.to_string(),
+                        property: "scheduled".to_string(),
+                        value: value.clone(),
+                        dry_run: false,
+                    },
+                    Some(vault.guard),
+                )?
+            }
+            _ => crate::tasks::apply_task_reschedule_with_guard(
+                vault.paths,
+                &crate::tasks::TaskRescheduleRequest {
+                    task: task.to_string(),
+                    due: value.clone(),
+                    dry_run: false,
+                },
+                Some(vault.guard),
+            )?,
+        };
+        finish_write(vault, "bot-reschedule", &report.changed_paths)?;
+        Ok(report)
+    })?;
+    let field = match &shown {
+        Some(note) if note.scheduled.is_some() && note.due.is_none() => "Scheduled",
+        _ => "Due",
+    };
+    let title = shown.map_or_else(|| task.to_string(), |note| note.title);
+    let mut lines = vec![format!(
+        "Moved: {title}\n{field}: {}",
+        friendly_task_date(&value, vault.today)
+    )];
+    if shown_has_reminders(vault, task) {
+        lines.extend(task_reminder_lines(vault, task));
+    }
+    Ok(ChatReply {
+        text: lines.join("\n"),
+        changed_paths: report.changed_paths,
+        reply_target: Some(ChatReplyTarget::Task {
+            task: task.to_string(),
+        }),
+        ..ChatReply::default()
+    })
+}
+
+fn shown_has_reminders(vault: &ChatVault<'_>, task: &str) -> bool {
+    crate::tasks::build_task_show_report_with_guard(vault.paths, task, vault.guard)
+        .is_ok_and(|note| !note.reminders.is_empty())
+}
+
 /// Hold the vault's mutation permit around a write, after finishing any
 /// interrupted mdbase write, as the CLI does before each command.
 fn with_write<T>(
@@ -717,6 +807,9 @@ fn create_task(vault: &ChatVault<'_>, text: &str) -> Result<ChatReply, AppError>
                 text: lines.join("\n"),
                 changed_paths: report.changed_paths,
                 undo: undo.into_iter().collect(),
+                reply_target: Some(ChatReplyTarget::Task {
+                    task: report.path.clone(),
+                }),
                 ..ChatReply::default()
             })
         }
@@ -1165,6 +1258,7 @@ fn mcp_error(error: McpMethodError) -> AppError {
 
 pub mod reminders;
 pub mod state;
+pub mod when;
 
 #[cfg(test)]
 mod tests;

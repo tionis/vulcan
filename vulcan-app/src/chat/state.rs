@@ -5,13 +5,13 @@
 //! `cache.db` and outside sync. Losing it is harmless: the bot re-reads
 //! pending updates once and old buttons stop working.
 
-use super::{ChatAction, ChatUndo};
+use super::{ChatAction, ChatReplyTarget, ChatUndo};
 use crate::AppError;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
 const STATE_FILE: &str = "daemon/bot.sqlite";
-const STATE_VERSION: i64 = 4;
+const STATE_VERSION: i64 = 5;
 /// `/undo` reverts a capture for this long.
 pub const UNDO_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
 /// Expired and resolved reminder entries are forgotten after this.
@@ -91,6 +91,15 @@ impl ChatStateStore {
                      updated_ms INTEGER NOT NULL,
                      actions TEXT NOT NULL DEFAULT '',
                      PRIMARY KEY (platform, chat_id, vault, occurrence_id)
+                 );
+                 CREATE TABLE IF NOT EXISTS reply_targets (
+                     platform TEXT NOT NULL,
+                     chat_id INTEGER NOT NULL,
+                     message_id INTEGER NOT NULL,
+                     vault TEXT NOT NULL,
+                     target TEXT NOT NULL,
+                     created_ms INTEGER NOT NULL,
+                     PRIMARY KEY (platform, chat_id, message_id)
                  );
                  CREATE TABLE IF NOT EXISTS undo (
                      platform TEXT NOT NULL,
@@ -315,6 +324,81 @@ impl ChatStateStore {
             )
             .optional()
             .map_err(AppError::operation)
+    }
+
+    /// The reminder sent as `message_id` in this chat, with its row id.
+    pub fn reminder_by_message(
+        &self,
+        platform: &str,
+        chat_id: i64,
+        message_id: i64,
+    ) -> Result<Option<(i64, ReminderLedgerEntry)>, AppError> {
+        self.connection
+            .query_row(
+                "SELECT occurrence_id, task_key, task, path, text, notify_ms, state, message_id,
+                        updated_ms, actions, vault, rowid
+                 FROM reminders WHERE platform = ?1 AND chat_id = ?2 AND message_id = ?3",
+                params![platform, chat_id, message_id],
+                |row| Ok((row.get(11)?, ledger_row(chat_id, row)?)),
+            )
+            .optional()
+            .map_err(AppError::operation)
+    }
+
+    /// Remember what a reply to bot message `message_id` acts on.
+    pub fn set_reply_target(
+        &self,
+        platform: &str,
+        chat_id: i64,
+        message_id: i64,
+        vault: &str,
+        target: &ChatReplyTarget,
+        now_ms: i64,
+    ) -> Result<(), AppError> {
+        let target = serde_json::to_string(target).map_err(AppError::operation)?;
+        self.connection
+            .execute(
+                "DELETE FROM reply_targets WHERE created_ms < ?1",
+                params![now_ms - ACTION_RETENTION_MS],
+            )
+            .map_err(AppError::operation)?;
+        self.connection
+            .execute(
+                "INSERT INTO reply_targets (platform, chat_id, message_id, vault, target, created_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT (platform, chat_id, message_id) DO UPDATE SET
+                     vault = excluded.vault, target = excluded.target,
+                     created_ms = excluded.created_ms",
+                params![platform, chat_id, message_id, vault, target, now_ms],
+            )
+            .map(|_| ())
+            .map_err(AppError::operation)
+    }
+
+    /// What a reply to `message_id` acts on, and in which vault, if it was
+    /// recorded within the retention period.
+    pub fn reply_target(
+        &self,
+        platform: &str,
+        chat_id: i64,
+        message_id: i64,
+        now_ms: i64,
+    ) -> Result<Option<(String, ChatReplyTarget)>, AppError> {
+        let found = self
+            .connection
+            .query_row(
+                "SELECT vault, target FROM reply_targets
+                 WHERE platform = ?1 AND chat_id = ?2 AND message_id = ?3 AND created_ms >= ?4",
+                params![platform, chat_id, message_id, now_ms - ACTION_RETENTION_MS],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(AppError::operation)?;
+        Ok(found.and_then(|(vault, target)| {
+            serde_json::from_str(&target)
+                .ok()
+                .map(|target| (vault, target))
+        }))
     }
 
     /// Insert or replace a ledger entry and return its row id, which stays

@@ -18,14 +18,15 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use vulcan_app::chat::reminders::{
-    reminder_action_label, reminder_steps, run_reminder_action, PlannedReminder, ReminderPlan,
-    ReminderStep,
+    reminder_action_label, reminder_steps, run_reminder_action, run_reminder_snooze_text,
+    PlannedReminder, ReminderPlan, ReminderStep, LATER_ACTION,
 };
 use vulcan_app::chat::state::{ChatStateStore, ReminderLedgerEntry, ReminderState};
 use vulcan_app::chat::{
     chat_digest, chat_help_text, chat_undo_id, chat_usage_text, parse_chat_message,
-    run_chat_action, run_chat_attachment, run_chat_command, run_chat_undo, ChatAction,
-    ChatAttachment, ChatButton, ChatCommand, ChatReply, ChatVault, CHAT_COMMANDS,
+    run_chat_action, run_chat_attachment, run_chat_command, run_chat_reschedule, run_chat_undo,
+    ChatAction, ChatAttachment, ChatButton, ChatCommand, ChatReply, ChatReplyTarget, ChatVault,
+    CHAT_COMMANDS, CHAT_WHEN_HINT,
 };
 use vulcan_app::execution::MutationGate;
 use vulcan_app::tasks::ReminderSettings;
@@ -338,6 +339,13 @@ impl Bot<'_> {
             return;
         };
         let chat_id = message.chat.id;
+        if let (Some(replied), Some(text)) = (&message.reply_to_message, message.text.as_deref()) {
+            if !text.trim_start().starts_with('/')
+                && self.handle_reply(&user, chat_id, replied.message_id, text)
+            {
+                return;
+            }
+        }
         if let Some((file, file_name)) = attachment_of(message) {
             let (reply, vault) = self.save_attachment(&user, chat_id, message, file, file_name);
             self.remember_undo(chat_id, vault.as_deref(), &reply);
@@ -466,14 +474,19 @@ impl Bot<'_> {
             .and_then(|(row, index)| {
                 let (_, entry) = self.state.reminder_by_row(PLATFORM, chat_id, row).ok()??;
                 let action = entry.actions.get(index)?.clone();
-                (entry.state == ReminderState::Open).then_some((entry, action))
+                (entry.state == ReminderState::Open).then_some((row, entry, action))
             });
-        let Some((mut entry, action)) = found else {
+        let Some((row, entry, action)) = found else {
             let _ = self
                 .client
                 .answer_callback_query(&callback.id, Some("This reminder is no longer open."));
             return;
         };
+        if action == LATER_ACTION {
+            let _ = self.client.answer_callback_query(&callback.id, None);
+            self.prompt_later(chat_id, row, &entry, now);
+            return;
+        }
         let result = self.user_vault(user, &entry.vault).and_then(|wiki| {
             self.with_vault(user, &wiki, |vault| {
                 run_reminder_action(vault, &entry.occurrence_id, &action, now)
@@ -489,6 +502,18 @@ impl Bot<'_> {
             }
         };
         let _ = self.client.answer_callback_query(&callback.id, None);
+        self.resolve_reminder(chat_id, entry, &outcome, now);
+    }
+
+    /// Append `outcome` to an open reminder's message, drop its buttons, and
+    /// record it as resolved.
+    fn resolve_reminder(
+        &mut self,
+        chat_id: i64,
+        mut entry: ReminderLedgerEntry,
+        outcome: &str,
+        now: i64,
+    ) {
         let text = format!("{}\n\n{outcome}", entry.text);
         if let Some(message_id) = entry.message_id {
             if let Err(error) = self.client.edit_message_text(chat_id, message_id, &text) {
@@ -503,6 +528,103 @@ impl Bot<'_> {
         }
         // The snoozed or next occurrence is planned without waiting a minute.
         self.next_plan_ms = 0;
+    }
+
+    /// Ask when to remind again; the reply snoozes reminder `row`.
+    fn prompt_later(&mut self, chat_id: i64, row: i64, entry: &ReminderLedgerEntry, now: i64) {
+        let title = entry
+            .text
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim_start_matches("⏰ ");
+        let question = format!("When should I remind you about {title}?");
+        match self
+            .client
+            .send_prompt(chat_id, &question, "in 2h, 15:00, tomorrow 9:00")
+        {
+            Ok(prompt) => {
+                if let Err(error) = self.state.set_reply_target(
+                    PLATFORM,
+                    chat_id,
+                    prompt.message_id,
+                    &entry.vault,
+                    &ChatReplyTarget::Reminder { row },
+                    now,
+                ) {
+                    self.status.last_error = Some(format!("reply state: {error}"));
+                }
+            }
+            Err(error) => self.status.last_error = Some(error.to_string()),
+        }
+    }
+
+    /// A text reply to one of the bot's messages: a time for a reminder, a
+    /// "Later…" prompt, or a created task. `false` when the replied message
+    /// is none of these, so the text is handled as usual.
+    fn handle_reply(
+        &mut self,
+        user: &DaemonBotUser,
+        chat_id: i64,
+        replied_id: i64,
+        text: &str,
+    ) -> bool {
+        let now = vulcan_core::current_utc_timestamp_ms();
+        let reminder = match self
+            .state
+            .reminder_by_message(PLATFORM, chat_id, replied_id)
+        {
+            Ok(Some((_, entry))) => Some(entry),
+            _ => match self.state.reply_target(PLATFORM, chat_id, replied_id, now) {
+                Ok(Some((vault, ChatReplyTarget::Task { task }))) => {
+                    let reply = self.user_vault(user, &vault).and_then(|wiki| {
+                        self.with_vault(user, &wiki, |chat| {
+                            run_chat_reschedule(chat, &task, text, now)
+                        })
+                    });
+                    match reply {
+                        Ok(reply) => self.send_reply(chat_id, Some(&vault), &reply),
+                        Err(error) => self.send_reply(
+                            chat_id,
+                            None,
+                            &ChatReply::text(format!("Error: {error}")),
+                        ),
+                    }
+                    return true;
+                }
+                Ok(Some((_, ChatReplyTarget::Reminder { row }))) => self
+                    .state
+                    .reminder_by_row(PLATFORM, chat_id, row)
+                    .ok()
+                    .flatten()
+                    .map(|(_, entry)| entry),
+                _ => return false,
+            },
+        };
+        let Some(entry) = reminder.filter(|entry| entry.state == ReminderState::Open) else {
+            self.send_reply(
+                chat_id,
+                None,
+                &ChatReply::text("That reminder is no longer open."),
+            );
+            return true;
+        };
+        let result = self.user_vault(user, &entry.vault).and_then(|wiki| {
+            self.with_vault(user, &wiki, |vault| {
+                run_reminder_snooze_text(vault, &entry.occurrence_id, text, now)
+            })
+        });
+        match result {
+            Ok(Some(outcome)) => {
+                self.send_reply(chat_id, None, &ChatReply::text(outcome.clone()));
+                self.resolve_reminder(chat_id, entry, &outcome, now);
+            }
+            Ok(None) => self.send_reply(chat_id, None, &ChatReply::text(CHAT_WHEN_HINT)),
+            Err(error) => {
+                self.send_reply(chat_id, None, &ChatReply::text(format!("Error: {error}")));
+            }
+        }
+        true
     }
 
     /// An Undo button: reverts the capture it was sent with, only while that
@@ -957,8 +1079,22 @@ impl Bot<'_> {
             } else {
                 &reply.text
             };
-            if let Err(error) = self.client.send_message(chat_id, text, &keyboard) {
-                self.status.last_error = Some(error.to_string());
+            match self.client.send_message(chat_id, text, &keyboard) {
+                Ok(sent) => {
+                    if let (Some(target), Some(vault)) = (&reply.reply_target, vault) {
+                        if let Err(error) = self.state.set_reply_target(
+                            PLATFORM,
+                            chat_id,
+                            sent.message_id,
+                            vault,
+                            target,
+                            now,
+                        ) {
+                            self.status.last_error = Some(format!("reply state: {error}"));
+                        }
+                    }
+                }
+                Err(error) => self.status.last_error = Some(error.to_string()),
             }
         }
         if let Some(document) = &reply.document {

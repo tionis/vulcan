@@ -480,7 +480,10 @@ fn reminder_buttons_complete_and_snooze_inline_tasks() {
     let guard = fixture.guard("unrestricted");
     let vault = vault_for(&fixture, &guard, "unrestricted");
     let plan = reminders::plan_chat_reminders(&vault).unwrap();
-    assert_eq!(plan.reminders[0].actions, vec!["done", "1h", "tomorrow"]);
+    assert_eq!(
+        plan.reminders[0].actions,
+        vec!["done", "1h", "tomorrow", "later"]
+    );
     let [bank, plants, rent] = [0, 1, 2].map(|i| plan.reminders[i].occurrence_id.clone());
 
     let now = chrono::Utc::now().timestamp_millis();
@@ -734,4 +737,36 @@ fn digests_list_todays_tasks_and_remaining_reminders() {
     let guard = empty.guard("unrestricted");
     let vault = vault_for(&empty, &guard, "unrestricted");
     assert_eq!(chat_digest(&vault, "notes", now).unwrap(), None);
+}
+
+#[test]
+fn replies_reschedule_tasks_in_their_own_date_field() {
+    let fixture = Fixture::new(
+        "[tasks.reminders]\ntimezone = \"UTC\"\n[tasknotes]\nnlp_default_to_scheduled = true\n",
+        &[("Calls.md", "- [ ] Call the bank 📅 2026-11-08\n")],
+    );
+    let guard = fixture.guard("unrestricted");
+    let vault = vault_for(&fixture, &guard, "unrestricted");
+    let now = chrono::Utc::now().timestamp_millis();
+    let created =
+        run_chat_command(&vault, &parse_chat_message("/task Renew passport tomorrow")).unwrap();
+    let Some(ChatReplyTarget::Task { task }) = created.reply_target else {
+        panic!("a created task is a reply target");
+    };
+
+    let hint = run_chat_reschedule(&vault, &task, "whenever", now).unwrap();
+    assert_eq!(hint.text, CHAT_WHEN_HINT);
+    let moved = run_chat_reschedule(&vault, &task, "2026-12-01 10:00", now).unwrap();
+    assert!(
+        moved.text.starts_with("Moved: Renew passport\nScheduled: "),
+        "{}",
+        moved.text
+    );
+    let note = fixture.read(&task);
+    assert!(note.contains("scheduled: 2026-12-01T10:00"), "{note}");
+    assert!(!note.contains("due:"), "{note}");
+
+    let moved = run_chat_reschedule(&vault, "Calls.md:1", "2026-12-02", now).unwrap();
+    assert!(moved.text.contains("Due: "), "{}", moved.text);
+    assert!(fixture.read("Calls.md").contains("📅 2026-12-02"));
 }

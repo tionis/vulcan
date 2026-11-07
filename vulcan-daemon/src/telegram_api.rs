@@ -89,6 +89,9 @@ pub struct TelegramMessage {
     pub audio: Option<TelegramFileRef>,
     #[serde(default)]
     pub video: Option<TelegramFileRef>,
+    /// The message this one replies to.
+    #[serde(default)]
+    pub reply_to_message: Option<Box<TelegramMessage>>,
 }
 
 /// A file attached to a message: photo size, document, voice, audio, or
@@ -277,6 +280,25 @@ impl TelegramClient {
             body["reply_markup"] = json!({ "inline_keyboard": keyboard });
         }
         self.call("sendMessage", &body, REQUEST_TIMEOUT)
+    }
+
+    /// Send a question the user's client answers as a reply, with a
+    /// placeholder in the input field.
+    pub fn send_prompt(
+        &self,
+        chat_id: i64,
+        text: &str,
+        placeholder: &str,
+    ) -> Result<TelegramMessage, TelegramError> {
+        self.call(
+            "sendMessage",
+            &json!({
+                "chat_id": chat_id,
+                "text": clip_text(text),
+                "reply_markup": { "force_reply": true, "input_field_placeholder": placeholder },
+            }),
+            REQUEST_TIMEOUT,
+        )
     }
 
     /// Replace a message's text and drop its buttons.

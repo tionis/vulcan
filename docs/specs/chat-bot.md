@@ -80,6 +80,12 @@ digest = "07:30"                        # and a daily digest at this time (each 
   durable alert ledger like webhook sinks. The sink exists while some user has `alerts`, so
   turning it on for the first user needs a daemon restart; recipients are re-read at delivery.
   Sending does not poll, so it works while another device holds the bot's `getUpdates`.
+- Replying to a bot message with a time acts on it: a reminder is snoozed to that time, a
+  "Later…" question snoozes the reminder it asked about, and a `/task` reply reschedules that task
+  (`scheduled` when it has only that, `due` otherwise). Times are durations (`in 2h`, `90m`), clock
+  times (`15:00`, `3pm`; past today means tomorrow), or task dates (`tomorrow 9:00`, `friday`,
+  `2026-11-20 08:30`); a day without a time snoozes to `default_time`. A reply that is not just a
+  time changes nothing and gets a hint; a reply to any other message is captured as usual.
 - `digest = "HH:MM"` sends, once per local day per vault, the open tasks due or scheduled up to
   today with Done buttons and the reminders still to come that day, at or after that time. A
   vault with nothing to report sends nothing. The day sent is kept in bot state, so a restart does
@@ -252,7 +258,9 @@ All bot state is device-local, outside `cache.db` and outside sync, in `daemon/b
 the update offset, per-chat active vault, and button actions (slice 3); the reminder ledger
 (slice 4); and the last capture for `/undo` (slice 6): each written file's path, its content
 before (absent when the capture created it; notes over 1 MB are not kept), and a hash of its
-content after. The service also writes
+content after. It also keeps the day each digest was last sent and, for 30 days, what a reply to a
+bot message acts on (a created task, or a "Later…" question about a reminder). The service also
+writes
 `daemon/telegram-bot.json`: state (`starting`, `polling`, `backoff`, `rate_limited`, `conflict`,
 `failed`, `stopped`), bot username, last poll, last error, handled updates, reminders sent, and
 ignored senders.

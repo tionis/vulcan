@@ -47,6 +47,22 @@ impl Fake {
         }));
     }
 
+    /// A text reply to bot message `to`.
+    fn reply(&self, from: i64, to: i64, text: &str) {
+        self.push(json!({
+            "message": {
+                "message_id": 1,
+                "chat": { "id": from, "type": "private" },
+                "from": { "id": from, "is_bot": false },
+                "text": text,
+                "reply_to_message": {
+                    "message_id": to,
+                    "chat": { "id": from, "type": "private" },
+                },
+            }
+        }));
+    }
+
     fn press(&self, from: i64, data: &str) {
         self.push(json!({
             "callback_query": {
@@ -137,10 +153,18 @@ fn respond(fake: &Fake, path: &str, body: &[u8]) -> (u16, Value, bool) {
             let id = body["file_id"].as_str().unwrap_or_default().to_string();
             ok(json!({ "file_id": id, "file_path": format!("photos/{id}.jpg") }))
         }
-        "sendMessage" => ok(json!({
-            "message_id": 99,
-            "chat": { "id": body["chat_id"], "type": "private" },
-        })),
+        // Each sent message gets its own id, the first 99.
+        "sendMessage" => {
+            let sent = state
+                .calls
+                .iter()
+                .filter(|(name, _)| name == "sendMessage")
+                .count();
+            ok(json!({
+                "message_id": 98 + sent,
+                "chat": { "id": body["chat_id"], "type": "private" },
+            }))
+        }
         _ => ok(json!(true)),
     }
 }
@@ -255,6 +279,11 @@ fn start(
         run_telegram_bot(&config, TOKEN.to_string(), &registry, &state, None, &signal)
     });
     (stop, handle)
+}
+
+/// The message id the fake gave the `index`th `sendMessage`.
+fn sent_id(index: usize) -> i64 {
+    99 + i64::try_from(index).unwrap()
 }
 
 fn texts_to(calls: &[Value], chat: i64) -> Vec<String> {
@@ -556,7 +585,7 @@ fn reminder_buttons_snooze_through_the_ledger() {
         .iter()
         .map(|button| button["text"].as_str().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(labels, ["Done", "Snooze 2h"]);
+    assert_eq!(labels, ["Done", "Snooze 2h", "Later…"]);
     let snooze = buttons[1]["callback_data"].as_str().unwrap().to_string();
     let (row, _) = snooze.strip_prefix("r:").unwrap().split_once(':').unwrap();
     assert!(
@@ -794,4 +823,93 @@ fn digests_arrive_once_a_day() {
     stop.cancel();
     handle.join().unwrap().unwrap();
     assert_eq!(fake.calls("sendMessage").len(), 1);
+}
+
+#[test]
+fn replies_with_a_time_snooze_reminders_and_move_tasks() {
+    let fake = Fake::default();
+    let fixture = fixture(&serve(&fake), None, "unrestricted");
+    std::fs::write(
+        fixture.vault.join(".vulcan/config.toml"),
+        "[tasks.reminders]\ntimezone = \"UTC\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        fixture.vault.join("Calls.md"),
+        format!(
+            "- [ ] Call the bank ⏰ {}\n- [ ] Pay rent ⏰ {}\n",
+            remind_at(-1),
+            remind_at(-2)
+        ),
+    )
+    .unwrap();
+    let mut user = fixture.config.users[0].clone();
+    user.reminders = true;
+    fixture.registry.set_bot_user(user, false).unwrap();
+    let (stop, handle) = start(&fixture);
+    let sent = fake.wait_for("sendMessage", 2);
+    let id_of = |title: &str| {
+        let message = sent
+            .iter()
+            .position(|call| call["text"].as_str().unwrap().contains(title))
+            .unwrap();
+        sent_id(message)
+    };
+    let (bank, rent) = (id_of("Call the bank"), id_of("Pay rent"));
+
+    // A reply that is not a time keeps the reminder open.
+    fake.reply(OWNER, bank, "ok thanks");
+    let sent = fake.wait_for("sendMessage", 3);
+    assert_eq!(sent[2]["text"], CHAT_WHEN_HINT);
+    fake.reply(OWNER, bank, "tomorrow 9:00");
+    let edits = fake.wait_for("editMessageText", 1);
+    assert_eq!(edits[0]["message_id"], json!(bank));
+    let tomorrow = (chrono::Utc::now() + chrono::Duration::days(1)).date_naive();
+    let calls = std::fs::read_to_string(fixture.vault.join("Calls.md")).unwrap();
+    assert!(
+        calls.contains(&format!("Call the bank ⏰ {tomorrow} 09:00")),
+        "{calls}"
+    );
+
+    // Later… asks, and the answer to the question snoozes.
+    let rent_buttons = fake.calls("sendMessage")[usize::try_from(rent - 99).unwrap()]
+        ["reply_markup"]["inline_keyboard"][0]
+        .clone();
+    let later = rent_buttons
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|button| button["text"] == "Later…")
+        .unwrap()["callback_data"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    fake.press(OWNER, &later);
+    let sent = fake.wait_for("sendMessage", 5);
+    let prompt = sent
+        .iter()
+        .position(|call| call["reply_markup"]["force_reply"] == json!(true))
+        .expect("a force-reply question");
+    assert!(sent[prompt]["text"].as_str().unwrap().contains("Pay rent"));
+    fake.reply(OWNER, sent_id(prompt), "in 3h");
+    fake.wait_for("editMessageText", 2);
+    let calls = std::fs::read_to_string(fixture.vault.join("Calls.md")).unwrap();
+    assert!(!calls.contains(&remind_at(-2)), "{calls}");
+
+    // A reply to a created task moves it.
+    fake.message(OWNER, "private", "/task Renew passport tomorrow");
+    let count = fake.calls("sendMessage").len() + 1;
+    let sent = fake.wait_for("sendMessage", count);
+    let created = sent.len() - 1;
+    assert!(sent[created]["text"]
+        .as_str()
+        .unwrap()
+        .starts_with("Task added: Renew passport"));
+    fake.reply(OWNER, sent_id(created), "friday 10:00");
+    let sent = fake.wait_for("sendMessage", count + 1);
+    let moved = sent.last().unwrap()["text"].as_str().unwrap().to_string();
+    assert!(moved.starts_with("Moved: Renew passport\n"), "{moved}");
+    assert!(moved.contains("10:00"), "{moved}");
+    stop.cancel();
+    handle.join().unwrap().unwrap();
 }

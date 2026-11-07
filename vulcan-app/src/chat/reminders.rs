@@ -23,6 +23,8 @@ use vulcan_core::{load_vault_config, PermissionGuard};
 pub const DONE_ACTION: &str = "done";
 /// The snooze option that moves a reminder to the next day.
 pub const TOMORROW_ACTION: &str = "tomorrow";
+/// Ask when to remind again; the adapter prompts and snoozes to the reply.
+pub const LATER_ACTION: &str = "later";
 const MAX_SNOOZE_OPTIONS: usize = 3;
 
 /// How far ahead the plan looks. Reminders further out are not needed for
@@ -98,6 +100,7 @@ pub fn plan_chat_reminders(vault: &ChatVault<'_>) -> Result<ReminderPlan, AppErr
             let actions = if vault.guard.check_write_path(&item.path).is_ok() {
                 std::iter::once(DONE_ACTION.to_string())
                     .chain(snooze_options.iter().cloned())
+                    .chain(std::iter::once(LATER_ACTION.to_string()))
                     .collect()
             } else {
                 Vec::new()
@@ -156,6 +159,7 @@ pub fn reminder_action_label(action: &str) -> String {
     match action {
         DONE_ACTION => "Done".to_string(),
         TOMORROW_ACTION => "Tomorrow".to_string(),
+        LATER_ACTION => "Later…".to_string(),
         other => format!("Snooze {other}"),
     }
 }
@@ -185,6 +189,11 @@ pub fn run_reminder_action(
     if action == DONE_ACTION {
         return complete(vault, &item);
     }
+    if action == LATER_ACTION {
+        return Err(AppError::operation(
+            "the Later button is handled by the chat adapter",
+        ));
+    }
     let until = if action == TOMORROW_ACTION {
         settings
             .timezone
@@ -201,6 +210,44 @@ pub fn run_reminder_action(
         let at = at + (60_000 - at.rem_euclid(60_000)) % 60_000;
         settings.timezone.local_datetime(at)
     };
+    snooze(vault, &item, until)
+}
+
+/// Snooze the task of occurrence `occurrence_id` to the time in `text`, a
+/// reply to the reminder. `Ok(None)` when `text` is not a time.
+pub fn run_reminder_snooze_text(
+    vault: &ChatVault<'_>,
+    occurrence_id: &str,
+    text: &str,
+    now_ms: i64,
+) -> Result<Option<String>, AppError> {
+    ensure_fresh(vault)?;
+    let config = load_vault_config(vault.paths).config;
+    let settings = ReminderSettings::from_config(&config.tasks.reminders)?;
+    let Some(when) =
+        super::when::parse_chat_when(text, &config.tasknotes, settings.timezone, now_ms)
+    else {
+        return Ok(None);
+    };
+    let report =
+        build_task_reminders_report_with_guard(vault.paths, PLAN_HORIZON, Some(vault.guard))?;
+    let Some(item) = report
+        .reminders
+        .into_iter()
+        .find(|item| item.occurrence_id == occurrence_id)
+    else {
+        return Ok(Some(
+            "This task already changed; nothing was done.".to_string(),
+        ));
+    };
+    snooze(vault, &item, when.at_or(settings.default_time)).map(Some)
+}
+
+fn snooze(
+    vault: &ChatVault<'_>,
+    item: &TaskReminderItem,
+    until: chrono::NaiveDateTime,
+) -> Result<String, AppError> {
     let report = with_write(vault, || {
         apply_task_snooze_with_guard(
             vault.paths,
