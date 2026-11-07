@@ -91,10 +91,10 @@ due_dates = "ignore"                # "ignore" | "notify": 📅 alone fires at d
 default_time = "09:00"
 timezone = "Europe/Berlin"          # IANA name; the device's local timezone when unset
 
-[bot.reminders]                     # planned (slice 4)
+[bot.reminders]                     # implemented (slice 4) except snooze_options (slice 5)
 catch_up_window = "24h"             # older missed reminders are not sent
 snooze_options = ["1h", "tomorrow"] # buttons, at most 3 besides "done"
-privacy = "full"                    # "full" | "title_only"
+privacy = "full"                    # "full" (title and note path) | "title_only"
 
 [[bot.reminders.privacy_overrides]]
 glob = "GM/**"
@@ -148,23 +148,35 @@ occurrence. Vulcan never writes IDs only to make reminders work.
 
 ### Delivery
 
-- The `telegram-bot` service plans occurrences for every vault where at least one user has
-  `reminders = true`, sleeps until the next notify instant (wakeable), and replans after each scan,
-  config change, or clock jump.
-- The device-local ledger (`daemon/bot.sqlite`) records `sent(occurrence_id, vault, task key, path,
-  notify_utc, chat_id, message_id, state, actions)` before each send. After a crash, an occurrence
-  without a recorded `message_id` is sent again; a duplicate message is preferred over a lost
-  reminder.
-- Missed occurrences inside `catch_up_window` are sent and marked late. Older ones are recorded as
-  expired and not sent.
-- Message: the task text, the note path (unless `title_only`), due time, and buttons
-  `Done · Snooze 1h · Tomorrow`.
+- The `telegram-bot` service plans, once a minute, the open reminders of each vault for each
+  allowlisted user with `reminders = true`, through that user's permission guard, so a user is
+  never told about a note they may not read. Planning first proves the cache fresh or scans
+  incrementally. Due occurrences are checked on every poll cycle (at most about 8 s apart), so a
+  reminder arrives within seconds of its time and edits in the vault take effect within a minute.
+  A plain timer loop was chosen over a wakeable sleep: the poll loop already wakes that often and
+  this keeps the Telegram client and ledger on one thread.
+- Reminders are delivered only after a successful `getUpdates`: a device in conflict with another
+  poller of the same bot sends nothing, so two devices never deliver the same reminder.
+- The device-local ledger (`daemon/bot.sqlite`, table `reminders`) is keyed by chat, vault, and
+  occurrence id and stores the task key, task reference, path, message text, notify instant,
+  state (`sending`, `open`, `expired`, `resolved`), and message id. An entry is written as
+  `sending` before each send; a send that failed or was interrupted is retried after a minute, so
+  a duplicate message is preferred over a lost reminder. A 403 (the user blocked the bot) records
+  the entry as expired instead of retrying. Expired and resolved entries are pruned after 60 days;
+  open ones are kept.
+- Missed occurrences inside `catch_up_window` are sent, marked `(late)` when more than 5 minutes
+  behind. Older ones are recorded as expired and not sent.
+- Message: `⏰ <task title>`, the note path (unless `title_only` applies, by the first matching
+  `privacy_overrides` glob or else `privacy`), and the notify time in the vault's reminder
+  timezone. Done and snooze buttons arrive with slice 5.
 
 ### Resolution
 
-After each scan the service re-checks open ledger entries. A task that was completed, cancelled,
-rescheduled, or deleted by any other means has its message edited to say so, and its buttons
-removed.
+Every cycle compares open ledger entries with the latest plan. An entry whose occurrence is no
+longer planned, because its task was completed, cancelled, rescheduled, or deleted by any other
+means, has its message edited (losing any buttons) to add "Next reminder: <time>." when the task
+still has a later reminder, or "No longer open: completed, cancelled, or removed." otherwise. A
+vault whose plan fails is skipped, so a broken config never resolves its messages.
 
 ### Actions
 
@@ -212,9 +224,10 @@ results in a no-op that says so.
 
 All bot state is device-local, outside `cache.db` and outside sync, in `daemon/bot.sqlite`:
 the update offset, per-chat active vault, and button actions (slice 3); the reminder ledger
-(slice 4) and the last capture for `/undo` (slice 6). The service also writes
+(slice 4); and the last capture for `/undo` (slice 6). The service also writes
 `daemon/telegram-bot.json`: state (`starting`, `polling`, `backoff`, `rate_limited`, `conflict`,
-`failed`, `stopped`), bot username, last poll, last error, handled updates, and ignored senders.
+`failed`, `stopped`), bot username, last poll, last error, handled updates, reminders sent, and
+ignored senders.
 
 ## CLI
 
@@ -225,11 +238,12 @@ Bot configuration lives with the other device-local daemon settings:
 - `vulcan daemon config set-bot-user ID --wiki NAME… [--default-wiki NAME] [--profile NAME]
   [--reminders]`: add or replace a user. Wikis must be registered. `remove-bot-user ID`.
 - `vulcan daemon bot-status`: configuration, whether the token variable is set (reading
-  `daemon.env`), users, and the service's last state, including ignored sender ids, which is how
-  a new user finds their numeric id.
+  `daemon.env`), users, the service's last state, including ignored sender ids, which is how a
+  new user finds their numeric id, and reminder ledger counts by state.
 - `vulcan tasks reminders [--upcoming 24h]`: the planner, with `source`, `task`, `task_key`, and
   `occurrence_id` per row (slice 1).
-- Planned: `vulcan daemon bot-reminders [--open]` to inspect the sent-reminder ledger (slice 4).
+- A separate ledger listing command was dropped: `bot-status` shows the counts and
+  `vulcan tasks reminders` shows what is planned.
 
 All of them support `--output json` and the config commands `--dry-run`. A separate `bot test`
 command was dropped: messaging the bot and checking `bot-status` covers it.

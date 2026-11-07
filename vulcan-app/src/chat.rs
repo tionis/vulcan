@@ -321,7 +321,7 @@ fn finish_write(vault: &ChatVault<'_>, action: &str, changed: &[String]) -> Resu
 
 /// Reads see the vault as it is on disk: a cheap freshness proof, else an
 /// incremental scan.
-fn ensure_fresh(vault: &ChatVault<'_>) -> Result<(), AppError> {
+pub(crate) fn ensure_fresh(vault: &ChatVault<'_>) -> Result<(), AppError> {
     if matches!(
         vulcan_core::prove_note_store_fresh(vault.paths),
         Ok(vulcan_core::NoteStoreFreshness::Fresh)
@@ -686,6 +686,7 @@ fn mcp_error(error: McpMethodError) -> AppError {
     }
 }
 
+pub mod reminders;
 pub mod state;
 
 #[cfg(test)]

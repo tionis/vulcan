@@ -38,6 +38,14 @@ pub(super) struct PartialVulcanConfig {
 pub(super) struct PartialBotConfig {
     pub(super) default_capture: Option<BotCaptureTarget>,
     pub(super) task_target: Option<BotTaskTarget>,
+    pub(super) reminders: Option<PartialBotRemindersConfig>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct PartialBotRemindersConfig {
+    pub(super) catch_up_window: Option<String>,
+    pub(super) privacy: Option<BotReminderPrivacy>,
+    pub(super) privacy_overrides: Option<Vec<BotReminderPrivacyOverride>>,
 }
 
 #[derive(Debug, Deserialize, Default)]

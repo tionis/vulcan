@@ -418,6 +418,8 @@ fn ignored_senders_are_counted_within_a_bound() {
         gate: None,
         state: ChatStateStore::open(temporary.path()).unwrap(),
         status: TelegramBotStatus::default(),
+        plans: Vec::new(),
+        next_plan_ms: 0,
     };
     for id in 1..=100 {
         bot.reject(id);
@@ -425,4 +427,90 @@ fn ignored_senders_are_counted_within_a_bound() {
     bot.reject(1);
     assert_eq!(bot.status.rejected_users.len(), MAX_REJECTED_USERS);
     assert_eq!(bot.status.rejected_users[&1], 2);
+}
+
+/// `minutes` from now as a `⏰` wall-clock time in UTC.
+fn remind_at(minutes: i64) -> String {
+    (chrono::Utc::now() + chrono::Duration::minutes(minutes))
+        .format("%Y-%m-%d %H:%M")
+        .to_string()
+}
+
+#[test]
+fn delivers_due_reminders_once_and_updates_them_when_done_elsewhere() {
+    let fake = Fake::default();
+    let fixture = fixture(&serve(&fake), None, "readonly");
+    std::fs::write(
+        fixture.vault.join(".vulcan/config.toml"),
+        "[tasks.reminders]\ntimezone = \"UTC\"\n[bot.reminders]\ncatch_up_window = \"1d\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        fixture.vault.join("Calls.md"),
+        format!(
+            "- [ ] Call the bank ⏰ {}\n- [ ] Long missed ⏰ {}\n- [ ] Much later ⏰ 2999-01-01 10:00\n",
+            remind_at(-1),
+            remind_at(-3 * 24 * 60),
+        ),
+    )
+    .unwrap();
+    let mut user = fixture.config.users[0].clone();
+    user.reminders = true;
+    fixture.registry.set_bot_user(user, false).unwrap();
+
+    let (stop, handle) = start(&fixture);
+    let sent = fake.wait_for("sendMessage", 1);
+    assert_eq!(sent[0]["chat_id"], json!(OWNER));
+    let text = sent[0]["text"].as_str().unwrap();
+    assert!(text.starts_with("⏰ Call the bank\nCalls.md\n"), "{text}");
+    assert!(!text.contains("(late)"), "{text}");
+
+    // Completed in the vault: the message is edited, not resent.
+    let calls = std::fs::read_to_string(fixture.vault.join("Calls.md")).unwrap();
+    std::fs::write(
+        fixture.vault.join("Calls.md"),
+        calls.replacen("- [ ] Call the bank", "- [x] Call the bank", 1),
+    )
+    .unwrap();
+    let edits = fake.wait_for("editMessageText", 1);
+    assert_eq!(edits[0]["message_id"], json!(99));
+    assert!(
+        edits[0]["text"]
+            .as_str()
+            .unwrap()
+            .ends_with("No longer open: completed, cancelled, or removed."),
+        "{edits:?}"
+    );
+    stop.cancel();
+    handle.join().unwrap().unwrap();
+    assert_eq!(fake.calls("sendMessage").len(), 1, "the missed one expired");
+
+    // A restart neither resends nor re-resolves.
+    let (stop, handle) = start(&fixture);
+    let polls = fake.calls("getUpdates").len();
+    fake.wait_for("getUpdates", polls + 5);
+    stop.cancel();
+    handle.join().unwrap().unwrap();
+    assert_eq!(fake.calls("sendMessage").len(), 1);
+    assert_eq!(fake.calls("editMessageText").len(), 1);
+    let report = telegram_bot_report(&fixture.registry.load().unwrap(), &fixture.state).unwrap();
+    assert_eq!(report.reminders.get("expired"), Some(&1));
+    assert_eq!(report.reminders.get("resolved"), Some(&1));
+    assert_eq!(report.status.unwrap().reminders_sent, 1);
+}
+
+#[test]
+fn users_without_reminders_get_none() {
+    let fake = Fake::default();
+    let fixture = fixture(&serve(&fake), None, "readonly");
+    std::fs::write(
+        fixture.vault.join("Calls.md"),
+        format!("- [ ] Call the bank ⏰ {}\n", remind_at(-1)),
+    )
+    .unwrap();
+    let (stop, handle) = start(&fixture);
+    fake.wait_for("getUpdates", 5);
+    stop.cancel();
+    handle.join().unwrap().unwrap();
+    assert!(fake.calls("sendMessage").is_empty());
 }

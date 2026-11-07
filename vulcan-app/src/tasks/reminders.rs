@@ -86,6 +86,22 @@ impl ReminderTimezone {
         }
     }
 
+    /// `at_ms` as `YYYY-MM-DD HH:MM` wall-clock time in this timezone.
+    #[must_use]
+    pub fn format_local(self, at_ms: i64) -> String {
+        let instant = chrono::DateTime::from_timestamp_millis(at_ms).unwrap_or_default();
+        match self {
+            Self::Named(tz) => instant
+                .with_timezone(&tz)
+                .format("%Y-%m-%d %H:%M")
+                .to_string(),
+            Self::Local => instant
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string(),
+        }
+    }
+
     /// The instant (Unix ms) of a wall-clock time. A time inside a DST gap
     /// fires at the first valid minute after it; a repeated time fires at
     /// its first occurrence.

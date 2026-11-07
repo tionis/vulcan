@@ -277,3 +277,54 @@ fn reminders_lists_upcoming_inline_reminders() {
     let reply = fixture.run("readonly", "/reminders 1h").unwrap();
     assert_eq!(reply.text, "No reminders within 1h.");
 }
+
+#[test]
+fn reminder_plans_render_in_the_vault_timezone_with_path_privacy() {
+    let fixture = Fixture::new(
+        "[tasks.reminders]\ntimezone = \"Europe/Berlin\"\n\
+         [bot.reminders]\ncatch_up_window = \"2h\"\n\
+         [[bot.reminders.privacy_overrides]]\nglob = \"GM/**\"\nprivacy = \"title_only\"\n",
+        &[
+            (
+                "Calls.md",
+                "- [ ] Call the bank ⏰ 2026-01-01 10:00\n- [x] Done ⏰ 2026-01-01 09:00\n",
+            ),
+            (
+                "GM/Secrets.md",
+                "- [ ] Prepare the twist ⏰ 2026-01-02 11:00\n",
+            ),
+        ],
+    );
+    let guard = fixture.guard("readonly");
+    let vault = ChatVault {
+        paths: &fixture.paths,
+        guard: &guard,
+        profile: "readonly",
+        gate: &Ungated,
+        today: NaiveDate::from_ymd_opt(2026, 11, 7).unwrap(),
+    };
+    let plan = reminders::plan_chat_reminders(&vault).unwrap();
+    assert_eq!(plan.catch_up_ms, 2 * 60 * 60 * 1_000);
+    assert_eq!(plan.reminders.len(), 2, "{plan:?}");
+    let call = &plan.reminders[0];
+    assert_eq!(call.path, "Calls.md");
+    assert_eq!(call.task, "Calls.md:1");
+    assert_eq!(
+        call.message(false),
+        "⏰ Call the bank\nCalls.md\n2026-01-01 10:00",
+        "10:00 Berlin, shown as written"
+    );
+    assert_eq!(
+        plan.reminders[1].message(true),
+        "⏰ Prepare the twist\n2026-01-02 11:00 (late)",
+        "title_only hides the GM path"
+    );
+
+    fs::write(
+        fixture.paths.config_file(),
+        "[bot.reminders]\ncatch_up_window = \"soon\"\n",
+    )
+    .unwrap();
+    let error = reminders::plan_chat_reminders(&vault).unwrap_err();
+    assert!(error.to_string().contains("catch_up_window"), "{error}");
+}

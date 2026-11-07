@@ -1,5 +1,5 @@
 //! Device-local chat bot state: the platform's update offset, each chat's
-//! active vault, and the actions behind reply buttons.
+//! active vault, the actions behind reply buttons, and the reminder ledger.
 //!
 //! It lives in the device state directory (`daemon/bot.sqlite`), outside
 //! `cache.db` and outside sync. Losing it is harmless: the bot re-reads
@@ -11,7 +11,9 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
 const STATE_FILE: &str = "daemon/bot.sqlite";
-const STATE_VERSION: i64 = 1;
+const STATE_VERSION: i64 = 2;
+/// Expired and resolved reminder entries are forgotten after this.
+pub const REMINDER_RETENTION_MS: i64 = 60 * 24 * 60 * 60 * 1_000;
 /// Buttons older than this no longer work.
 pub const ACTION_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
 
@@ -72,7 +74,22 @@ impl ChatStateStore {
                      created_ms INTEGER NOT NULL
                  );
                  CREATE INDEX IF NOT EXISTS actions_by_age ON actions (created_ms);
-                 PRAGMA user_version = 1;",
+                 CREATE TABLE IF NOT EXISTS reminders (
+                     platform TEXT NOT NULL,
+                     chat_id INTEGER NOT NULL,
+                     vault TEXT NOT NULL,
+                     occurrence_id TEXT NOT NULL,
+                     task_key TEXT NOT NULL,
+                     task TEXT NOT NULL,
+                     path TEXT NOT NULL,
+                     text TEXT NOT NULL,
+                     notify_ms INTEGER NOT NULL,
+                     state TEXT NOT NULL,
+                     message_id INTEGER,
+                     updated_ms INTEGER NOT NULL,
+                     PRIMARY KEY (platform, chat_id, vault, occurrence_id)
+                 );
+                 PRAGMA user_version = 2;",
             )
             .map_err(AppError::operation)?;
         Ok(Self { connection })
@@ -195,6 +212,155 @@ impl ChatStateStore {
             .map(|_| ())
             .map_err(AppError::operation)
     }
+
+    /// The reminder ledger of one chat and vault. Old expired and resolved
+    /// entries are pruned first.
+    pub fn reminder_entries(
+        &self,
+        platform: &str,
+        chat_id: i64,
+        vault: &str,
+        now_ms: i64,
+    ) -> Result<Vec<ReminderLedgerEntry>, AppError> {
+        self.connection
+            .execute(
+                "DELETE FROM reminders WHERE state IN ('expired', 'resolved') AND updated_ms < ?1",
+                params![now_ms - REMINDER_RETENTION_MS],
+            )
+            .map_err(AppError::operation)?;
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT occurrence_id, task_key, task, path, text, notify_ms, state, message_id,
+                        updated_ms
+                 FROM reminders WHERE platform = ?1 AND chat_id = ?2 AND vault = ?3
+                 ORDER BY notify_ms",
+            )
+            .map_err(AppError::operation)?;
+        let rows = statement
+            .query_map(params![platform, chat_id, vault], |row| {
+                Ok(ReminderLedgerEntry {
+                    chat_id,
+                    vault: vault.to_string(),
+                    occurrence_id: row.get(0)?,
+                    task_key: row.get(1)?,
+                    task: row.get(2)?,
+                    path: row.get(3)?,
+                    text: row.get(4)?,
+                    notify_ms: row.get(5)?,
+                    state: ReminderState::parse(&row.get::<_, String>(6)?),
+                    message_id: row.get(7)?,
+                    updated_ms: row.get(8)?,
+                })
+            })
+            .map_err(AppError::operation)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(AppError::operation)
+    }
+
+    /// Insert or replace a ledger entry.
+    pub fn put_reminder(
+        &self,
+        platform: &str,
+        entry: &ReminderLedgerEntry,
+    ) -> Result<(), AppError> {
+        self.connection
+            .execute(
+                "INSERT INTO reminders (platform, chat_id, vault, occurrence_id, task_key, task,
+                                        path, text, notify_ms, state, message_id, updated_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                 ON CONFLICT (platform, chat_id, vault, occurrence_id) DO UPDATE SET
+                     task_key = excluded.task_key, task = excluded.task, path = excluded.path,
+                     text = excluded.text, notify_ms = excluded.notify_ms,
+                     state = excluded.state, message_id = excluded.message_id,
+                     updated_ms = excluded.updated_ms",
+                params![
+                    platform,
+                    entry.chat_id,
+                    entry.vault,
+                    entry.occurrence_id,
+                    entry.task_key,
+                    entry.task,
+                    entry.path,
+                    entry.text,
+                    entry.notify_ms,
+                    entry.state.as_str(),
+                    entry.message_id,
+                    entry.updated_ms,
+                ],
+            )
+            .map(|_| ())
+            .map_err(AppError::operation)
+    }
+
+    /// Counts of ledger entries by state, for status output.
+    pub fn reminder_counts(&self, platform: &str) -> Result<Vec<(String, u64)>, AppError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT state, COUNT(*) FROM reminders WHERE platform = ?1
+                 GROUP BY state ORDER BY state",
+            )
+            .map_err(AppError::operation)?;
+        let rows = statement
+            .query_map(params![platform], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(AppError::operation)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(AppError::operation)
+    }
+}
+
+/// Where one reminder delivery stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReminderState {
+    /// Recorded before sending; no message id yet. Sent again after a crash
+    /// or a failed send, since a duplicate beats a lost reminder.
+    Sending,
+    /// Delivered and still open.
+    Open,
+    /// Missed by more than the catch-up window; never sent.
+    Expired,
+    /// The task changed elsewhere and the message was updated.
+    Resolved,
+}
+
+impl ReminderState {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Sending => "sending",
+            Self::Open => "open",
+            Self::Expired => "expired",
+            Self::Resolved => "resolved",
+        }
+    }
+
+    fn parse(value: &str) -> Self {
+        match value {
+            "sending" => Self::Sending,
+            "open" => Self::Open,
+            "expired" => Self::Expired,
+            _ => Self::Resolved,
+        }
+    }
+}
+
+/// One reminder occurrence delivered (or skipped) to one chat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReminderLedgerEntry {
+    pub chat_id: i64,
+    pub vault: String,
+    pub occurrence_id: String,
+    pub task_key: String,
+    /// The task reference task commands accept (`path` or `path:line`).
+    pub task: String,
+    pub path: String,
+    /// The message text as sent.
+    pub text: String,
+    pub notify_ms: i64,
+    pub state: ReminderState,
+    pub message_id: Option<i64>,
+    pub updated_ms: i64,
 }
 
 #[cfg(test)]
@@ -247,5 +413,58 @@ mod tests {
         drop(store);
         let store = ChatStateStore::open(temp.path()).unwrap();
         assert_eq!(store.offset("telegram").unwrap(), Some(43));
+    }
+
+    #[test]
+    fn reminder_ledger_round_trips_and_prunes_finished_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ChatStateStore::open(temp.path()).unwrap();
+        let mut entry = ReminderLedgerEntry {
+            chat_id: 7,
+            vault: "notes".to_string(),
+            occurrence_id: "occ".to_string(),
+            task_key: "id:1".to_string(),
+            task: "A.md:1".to_string(),
+            path: "A.md".to_string(),
+            text: "⏰ Call".to_string(),
+            notify_ms: 1_000,
+            state: ReminderState::Sending,
+            message_id: None,
+            updated_ms: 2_000,
+        };
+        store.put_reminder("telegram", &entry).unwrap();
+        entry.state = ReminderState::Open;
+        entry.message_id = Some(55);
+        store.put_reminder("telegram", &entry).unwrap();
+        assert_eq!(
+            store
+                .reminder_entries("telegram", 7, "notes", 3_000)
+                .unwrap(),
+            vec![entry.clone()]
+        );
+        assert!(store
+            .reminder_entries("telegram", 8, "notes", 3_000)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            store.reminder_counts("telegram").unwrap(),
+            vec![("open".to_string(), 1)]
+        );
+
+        // Open entries are kept however old; finished ones are pruned.
+        let later = 2_000 + REMINDER_RETENTION_MS + 1;
+        assert_eq!(
+            store
+                .reminder_entries("telegram", 7, "notes", later)
+                .unwrap()
+                .len(),
+            1
+        );
+        entry.state = ReminderState::Resolved;
+        store.put_reminder("telegram", &entry).unwrap();
+        assert!(store
+            .reminder_entries("telegram", 7, "notes", later)
+            .unwrap()
+            .is_empty());
     }
 }

@@ -14682,6 +14682,8 @@ fn bases_evaluation_applies_read_and_policy_scope() {
     assert!(task_skill.contains("`tasks view list`"));
     assert!(task_skill.contains("also inserts its next occurrence"));
     assert!(task_skill.contains("`tasks pomodoro status` shows only sessions"));
+    assert!(task_skill.contains("set-bot-user ... --reminders"));
+    assert!(task_skill.contains("never message the bot or touch its device state"));
 }
 
 #[test]

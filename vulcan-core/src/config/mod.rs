@@ -2743,6 +2743,56 @@ pub struct BotConfig {
     /// What `/task` creates.
     #[serde(default)]
     pub task_target: BotTaskTarget,
+    /// How reminders from this vault are delivered.
+    #[serde(default)]
+    pub reminders: BotRemindersConfig,
+}
+
+/// Reminder delivery from this vault (`[bot.reminders]`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BotRemindersConfig {
+    /// Missed reminders older than this (for example while the device was
+    /// off) are not sent.
+    #[serde(default = "default_bot_catch_up_window")]
+    pub catch_up_window: String,
+    /// What a reminder message shows.
+    #[serde(default)]
+    pub privacy: BotReminderPrivacy,
+    /// Per-path privacy, first matching glob wins.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub privacy_overrides: Vec<BotReminderPrivacyOverride>,
+}
+
+impl Default for BotRemindersConfig {
+    fn default() -> Self {
+        Self {
+            catch_up_window: default_bot_catch_up_window(),
+            privacy: BotReminderPrivacy::default(),
+            privacy_overrides: Vec::new(),
+        }
+    }
+}
+
+fn default_bot_catch_up_window() -> String {
+    "24h".to_string()
+}
+
+/// How much of a task a reminder message reveals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BotReminderPrivacy {
+    /// The task title and its note path.
+    #[default]
+    Full,
+    /// The task title only.
+    TitleOnly,
+}
+
+/// A privacy setting for reminders from notes matching `glob`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BotReminderPrivacyOverride {
+    pub glob: String,
+    pub privacy: BotReminderPrivacy,
 }
 
 /// A capture destination for bot messages.
@@ -5305,6 +5355,17 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
         if let Some(task_target) = bot.task_target {
             config.bot.task_target = task_target;
+        }
+        if let Some(reminders) = bot.reminders {
+            if let Some(catch_up_window) = reminders.catch_up_window {
+                config.bot.reminders.catch_up_window = catch_up_window;
+            }
+            if let Some(privacy) = reminders.privacy {
+                config.bot.reminders.privacy = privacy;
+            }
+            if let Some(privacy_overrides) = reminders.privacy_overrides {
+                config.bot.reminders.privacy_overrides = privacy_overrides;
+            }
         }
     }
 }

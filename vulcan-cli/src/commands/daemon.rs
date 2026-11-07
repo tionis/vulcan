@@ -286,6 +286,16 @@ fn print_bot_status(output: OutputFormat, report: &TelegramBotReport) -> Result<
         );
     }
     println!("Handled updates: {}", status.handled_updates);
+    println!("Reminders sent: {}", status.reminders_sent);
+    if !report.reminders.is_empty() {
+        let counts = report
+            .reminders
+            .iter()
+            .map(|(state, count)| format!("{state} {count}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("Reminder ledger: {counts}");
+    }
     if let Some(error) = &status.last_error {
         println!("Last error: {error}");
     }
