@@ -89,8 +89,19 @@ pub struct TelegramBotReport {
     /// Reminder ledger entries by state (`open`, `sending`, `expired`,
     /// `resolved`).
     pub reminders: BTreeMap<String, u64>,
+    /// Voice transcription, when configured.
+    pub transcription: Option<TranscriptionSummary>,
     /// What looks wrong and what to do about it, from [`telegram_bot_hints`].
     pub hints: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TranscriptionSummary {
+    pub base_url: String,
+    pub model: String,
+    pub api_key_env: Option<String>,
+    /// Whether the key variable is set; true when no key is needed.
+    pub api_key_set: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -136,6 +147,16 @@ pub fn telegram_bot_report(
         } else {
             BTreeMap::new()
         },
+        transcription: config.bot.transcription.as_ref().map(|transcription| {
+            TranscriptionSummary {
+                base_url: transcription.base_url.clone(),
+                model: transcription.model.clone(),
+                api_key_env: transcription.api_key_env.clone(),
+                api_key_set: transcription.api_key_env.as_ref().is_none_or(|name| {
+                    std::env::var(name).is_ok_and(|value| !value.trim().is_empty())
+                }),
+            }
+        }),
         hints: Vec::new(),
     };
     report.hints = telegram_bot_hints(&report, vulcan_core::current_utc_timestamp_ms(), state_root);
@@ -193,6 +214,16 @@ pub fn telegram_bot_hints(
                     .to_string(),
             );
         }
+    }
+    if let Some(TranscriptionSummary {
+        api_key_env: Some(name),
+        api_key_set: false,
+        ..
+    }) = &report.transcription
+    {
+        hints.push(format!(
+            "Set {name} in the daemon's environment or in daemon.env so voice messages are transcribed."
+        ));
     }
     if report.users.is_empty() {
         hints.push(
@@ -783,14 +814,49 @@ impl Bot<'_> {
             Ok(bytes) => bytes,
             Err(error) => return (ChatReply::text(format!("Error: {error}")), None),
         };
+        let (transcript, transcript_note) = if message.voice.is_some() {
+            self.transcribe(&file_name, &bytes)
+        } else {
+            (None, None)
+        };
+        let caption = match (message.caption.as_deref().map(str::trim), &transcript) {
+            (Some(caption), Some(text)) if !caption.is_empty() => Some(format!("{caption} {text}")),
+            (_, Some(text)) => Some(text.clone()),
+            (caption, None) => caption.map(str::to_string),
+        };
         let attachment = ChatAttachment {
             file_name,
             bytes,
-            caption: message.caption.clone(),
+            caption,
         };
         match self.with_vault(user, &wiki, |vault| run_chat_attachment(vault, &attachment)) {
-            Ok(reply) => (reply, Some(vault_id)),
+            Ok(mut reply) => {
+                if let Some(note) = transcript_note {
+                    reply.text = format!("{}\n{note}", reply.text);
+                }
+                (reply, Some(vault_id))
+            }
             Err(error) => (ChatReply::text(format!("Error: {error}")), None),
+        }
+    }
+
+    /// The transcript of a voice message when transcription is configured,
+    /// and a line for the reply: the transcript, or why there is none.
+    fn transcribe(&self, file_name: &str, bytes: &[u8]) -> (Option<String>, Option<String>) {
+        let Some(config) = self
+            .registry
+            .poll()
+            .ok()
+            .and_then(|config| config.bot.transcription)
+        else {
+            return (None, None);
+        };
+        match crate::transcription::transcribe(&config, file_name, bytes.to_vec()) {
+            Ok(text) => {
+                let note = format!("Transcript: {text}");
+                (Some(text), Some(note))
+            }
+            Err(error) => (None, Some(format!("Not transcribed: {error}"))),
         }
     }
 

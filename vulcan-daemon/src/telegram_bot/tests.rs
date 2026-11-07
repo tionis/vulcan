@@ -174,9 +174,35 @@ async fn download(UrlPath(path): UrlPath<String>) -> Vec<u8> {
     b"\xFF\xD8 fake jpeg".to_vec()
 }
 
+/// A transcription service that wants the test key and a voice file.
+async fn transcribe_voice(
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> (axum::http::StatusCode, Json<Value>) {
+    let authorized = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .is_some_and(|value| value == "Bearer transcription-key");
+    if !authorized {
+        return (
+            axum::http::StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": { "message": "Incorrect API key provided" } })),
+        );
+    }
+    let body = String::from_utf8_lossy(&body);
+    assert!(
+        body.contains("whisper-1") && body.contains("filename=\"voice-"),
+        "{body}"
+    );
+    (
+        axum::http::StatusCode::OK,
+        Json(json!({ "text": " Buy milk\n and eggs. " })),
+    )
+}
+
 /// Serve the fake on loopback and return its base URL.
 fn serve(fake: &Fake) -> String {
     let router = Router::new()
+        .route("/v1/audio/transcriptions", post(transcribe_voice))
         .route("/file/{*path}", get(download))
         .route("/{*path}", post(handle))
         .with_state(fake.clone());
@@ -940,6 +966,7 @@ fn hints_point_at_leftover_state_conflicts_and_stale_status() {
         users: vec![user],
         status: Some(status("polling", 1_000_000)),
         reminders: BTreeMap::new(),
+        transcription: None,
         hints: Vec::new(),
     };
     assert!(telegram_bot_hints(&healthy, 1_060_000, state).is_empty());
@@ -982,4 +1009,73 @@ fn hints_point_at_leftover_state_conflicts_and_stale_status() {
     let hints = telegram_bot_hints(&unset, 1_060_000, state);
     assert!(hints[0].contains("TOKEN"), "{hints:?}");
     assert!(hints[1].contains("set-bot-user"), "{hints:?}");
+}
+
+#[test]
+fn voice_messages_are_transcribed_beside_the_recording() {
+    let fake = Fake::default();
+    let base = serve(&fake);
+    let fixture = fixture(&base, None, "unrestricted");
+    let transcription = |key_env: &str| crate::registry::DaemonTranscriptionConfig {
+        base_url: format!("{base}/v1"),
+        model: "whisper-1".to_string(),
+        api_key_env: Some(key_env.to_string()),
+        language: Some("en".to_string()),
+    };
+    std::env::set_var("TEST_TRANSCRIPTION_KEY", "transcription-key");
+    std::env::set_var("TEST_TRANSCRIPTION_WRONG_KEY", "wrong");
+    fixture
+        .registry
+        .set_transcription(transcription("TEST_TRANSCRIPTION_KEY"), false)
+        .unwrap();
+    let voice = |id: i64| {
+        json!({
+            "message": {
+                "message_id": id,
+                "chat": { "id": OWNER, "type": "private" },
+                "from": { "id": OWNER, "is_bot": false },
+                "voice": { "file_id": format!("voice{id}"), "file_size": 10 },
+            }
+        })
+    };
+    fake.push(voice(1));
+    let (stop, handle) = start(&fixture);
+    let sent = fake.wait_for("sendMessage", 1);
+    let reply = sent[0]["text"].as_str().unwrap();
+    assert!(
+        reply.ends_with("\nTranscript: Buy milk and eggs."),
+        "{reply}"
+    );
+    let inbox = std::fs::read_to_string(fixture.vault.join("Inbox.md")).unwrap();
+    assert!(
+        inbox.contains("- Buy milk and eggs. ![[Attachments/voice-"),
+        "{inbox}"
+    );
+
+    // A rejected key still saves the recording, and says why.
+    fixture
+        .registry
+        .set_transcription(transcription("TEST_TRANSCRIPTION_WRONG_KEY"), false)
+        .unwrap();
+    fake.push(voice(2));
+    let sent = fake.wait_for("sendMessage", 2);
+    let reply = sent[1]["text"].as_str().unwrap();
+    assert!(reply.starts_with("Saved Attachments/voice-"), "{reply}");
+    assert!(
+        reply.ends_with(
+            "Not transcribed: the service answered 401 Unauthorized: Incorrect API key provided"
+        ),
+        "{reply}"
+    );
+    assert!(
+        !reply.contains("wrong") && !reply.contains("127.0.0.1"),
+        "{reply}"
+    );
+    stop.cancel();
+    handle.join().unwrap().unwrap();
+
+    let report = telegram_bot_report(&fixture.registry.load().unwrap(), &fixture.state).unwrap();
+    let summary = report.transcription.unwrap();
+    assert_eq!(summary.model, "whisper-1");
+    assert!(summary.api_key_set);
 }

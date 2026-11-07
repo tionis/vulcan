@@ -14834,6 +14834,93 @@
                 "subcommands": []
               },
               {
+                "about": "Transcribe voice messages sent to the chat bot",
+                "after_help": "Notes:\n  Voice messages are sent to an OpenAI-compatible /audio/transcriptions endpoint,\n  for example https://api.openai.com/v1 with model whisper-1, or a local server.\n  The API key is never stored in configuration: put it in the named variable,\n  for example in ~/.config/vulcan/daemon.env. Takes effect without a restart.",
+                "name": "set-transcription",
+                "options": [
+                  {
+                    "help": "API base URL including the version, e.g. https://api.openai.com/v1",
+                    "id": "base_url",
+                    "long": "base-url",
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "BASE_URL"
+                    ]
+                  },
+                  {
+                    "help": "Model name, e.g. whisper-1",
+                    "id": "model",
+                    "long": "model",
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "MODEL"
+                    ]
+                  },
+                  {
+                    "help": "Environment variable holding the API key; omit for no authentication",
+                    "id": "api_key_env",
+                    "long": "api-key-env",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "API_KEY_ENV"
+                    ]
+                  },
+                  {
+                    "help": "ISO-639-1 language hint, e.g. de; detected when omitted",
+                    "id": "language",
+                    "long": "language",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "LANGUAGE"
+                    ]
+                  },
+                  {
+                    "help": "Report without writing daemon configuration",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Stop transcribing voice messages",
+                "name": "clear-transcription",
+                "options": [
+                  {
+                    "help": "Report without writing daemon configuration",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
                 "about": "Allow a Telegram user to use the chat bot, or change their access",
                 "after_help": "Notes:\n  The profile is resolved from built-in and device-local profiles and must stay\n  within each vault registration's permissions profile. Find your numeric id by\n  messaging the bot and running `vulcan daemon bot-status`.",
                 "name": "set-bot-user",

@@ -11670,6 +11670,28 @@ fn daemon_bot_cli_configures_users_and_reports_without_the_token() {
     assert_eq!(status["status"], Value::Null);
     assert_eq!(status["hints"], serde_json::json!([]), "nothing to fix");
 
+    let config = daemon(&[
+        "config",
+        "set-transcription",
+        "--base-url",
+        "https://api.openai.com/v1",
+        "--model",
+        "whisper-1",
+        "--api-key-env",
+        "VULCAN_TEST_UNSET_TRANSCRIPTION_KEY",
+    ]);
+    assert_eq!(config["bot"]["transcription"]["model"], "whisper-1");
+    let status = daemon(&["bot-status"]);
+    assert_eq!(status["transcription"]["api_key_set"], false);
+    assert!(
+        status["hints"][0]
+            .as_str()
+            .is_some_and(|hint| hint.contains("VULCAN_TEST_UNSET_TRANSCRIPTION_KEY")),
+        "{status}"
+    );
+    let config = daemon(&["config", "clear-transcription"]);
+    assert_eq!(config["bot"].get("transcription"), None);
+
     let output = run_daemon_test_command(
         &config_home,
         &state_home,

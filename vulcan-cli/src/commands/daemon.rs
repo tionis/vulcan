@@ -258,6 +258,25 @@ fn print_bot_status(output: OutputFormat, report: &TelegramBotReport) -> Result<
         token_env,
         if report.token_set { "set" } else { "NOT set" }
     );
+    if let Some(transcription) = &report.transcription {
+        println!(
+            "Transcription: {} at {}{}",
+            transcription.model,
+            transcription.base_url,
+            transcription
+                .api_key_env
+                .as_deref()
+                .map(|name| format!(
+                    ", key {name} {}",
+                    if transcription.api_key_set {
+                        "set"
+                    } else {
+                        "NOT set"
+                    }
+                ))
+                .unwrap_or_default()
+        );
+    }
     if report.users.is_empty() {
         println!("Users: none");
     } else {
@@ -716,6 +735,8 @@ fn handle_config(
         }
         DaemonConfigCommand::SetTelegramBot { .. }
         | DaemonConfigCommand::ClearTelegramBot { .. }
+        | DaemonConfigCommand::SetTranscription { .. }
+        | DaemonConfigCommand::ClearTranscription { .. }
         | DaemonConfigCommand::SetBotUser { .. }
         | DaemonConfigCommand::RemoveBotUser { .. } => {
             unreachable!("bot configuration is dispatched above")
@@ -828,6 +849,26 @@ fn handle_bot_config(
             .map_err(CliError::operation),
         DaemonConfigCommand::ClearTelegramBot { dry_run } => registry
             .clear_telegram_bot(*dry_run)
+            .map_err(CliError::operation),
+        DaemonConfigCommand::SetTranscription {
+            base_url,
+            model,
+            api_key_env,
+            language,
+            dry_run,
+        } => registry
+            .set_transcription(
+                vulcan_daemon::registry::DaemonTranscriptionConfig {
+                    base_url: base_url.clone(),
+                    model: model.clone(),
+                    api_key_env: api_key_env.clone(),
+                    language: language.clone(),
+                },
+                *dry_run,
+            )
+            .map_err(CliError::operation),
+        DaemonConfigCommand::ClearTranscription { dry_run } => registry
+            .clear_transcription(*dry_run)
             .map_err(CliError::operation),
         DaemonConfigCommand::SetBotUser {
             telegram_id,

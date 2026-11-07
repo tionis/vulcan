@@ -73,6 +73,7 @@ pub mod sync;
 pub mod telegram_api;
 pub mod telegram_bot;
 pub mod termux_scheduler;
+pub mod transcription;
 pub mod update_schedule;
 pub mod vault_health;
 pub mod vault_http;

@@ -230,13 +230,32 @@ pub struct DaemonConfig {
 pub struct DaemonBotConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telegram: Option<DaemonTelegramBotConfig>,
+    /// Speech-to-text for voice messages; off when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcription: Option<DaemonTranscriptionConfig>,
 }
 
 impl DaemonBotConfig {
     #[must_use]
     pub fn is_default(&self) -> bool {
-        self.telegram.is_none()
+        self.telegram.is_none() && self.transcription.is_none()
     }
+}
+
+/// An OpenAI-compatible `/audio/transcriptions` endpoint. Voice messages
+/// are sent to it, so it is configured per device by its owner.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonTranscriptionConfig {
+    /// API base including the version, e.g. `https://api.openai.com/v1`.
+    pub base_url: String,
+    pub model: String,
+    /// Environment variable holding the API key (also read from
+    /// `daemon.env`); none for a local server without authentication.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_env: Option<String>,
+    /// ISO-639-1 language hint, e.g. `de`; detected when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 /// The Telegram bot: its token's environment variable and who may use it.
@@ -1155,6 +1174,26 @@ impl WikiRegistry {
         })
     }
 
+    /// Transcribe voice messages with `transcription`.
+    pub fn set_transcription(
+        &self,
+        transcription: DaemonTranscriptionConfig,
+        dry_run: bool,
+    ) -> Result<DaemonConfig, RegistryError> {
+        self.mutate(dry_run, |config| {
+            validate_transcription_config(&transcription)?;
+            config.bot.transcription = Some(transcription);
+            Ok(config.clone())
+        })
+    }
+
+    pub fn clear_transcription(&self, dry_run: bool) -> Result<DaemonConfig, RegistryError> {
+        self.mutate(dry_run, |config| {
+            config.bot.transcription = None;
+            Ok(config.clone())
+        })
+    }
+
     pub fn clear_telegram_bot(&self, dry_run: bool) -> Result<DaemonConfig, RegistryError> {
         self.mutate(dry_run, |config| {
             config.bot.telegram = None;
@@ -1425,6 +1464,32 @@ fn validate_daemon_config(config: &DaemonConfig) -> Result<(), RegistryError> {
     validate_mcp_remotes(config)?;
     if let Some(bot) = &config.bot.telegram {
         validate_telegram_bot_config(bot)?;
+    }
+    if let Some(transcription) = &config.bot.transcription {
+        validate_transcription_config(transcription)?;
+    }
+    Ok(())
+}
+
+fn validate_transcription_config(
+    transcription: &DaemonTranscriptionConfig,
+) -> Result<(), RegistryError> {
+    validate_service_base_url(&transcription.base_url, "transcription base URL")?;
+    let model = transcription.model.trim();
+    if model.is_empty() || model.len() > 128 || model.chars().any(char::is_control) {
+        return Err(RegistryError::InvalidDaemonSetting(
+            "transcription model must be a non-empty name of at most 128 characters".to_string(),
+        ));
+    }
+    if let Some(name) = &transcription.api_key_env {
+        validate_environment_name(name, "transcription API key")?;
+    }
+    if let Some(language) = &transcription.language {
+        if !(2..=3).contains(&language.len()) || !language.bytes().all(|b| b.is_ascii_lowercase()) {
+            return Err(RegistryError::InvalidDaemonSetting(format!(
+                "transcription language `{language}` must be an ISO-639-1 code such as `de`"
+            )));
+        }
     }
     Ok(())
 }
@@ -3115,6 +3180,64 @@ profile = "files_only"
             registry.set_semantic_worker(invalid_worker, true),
             Err(RegistryError::InvalidDaemonSetting(_))
         ));
+    }
+
+    #[test]
+    fn transcription_is_validated_and_stored_without_a_key() {
+        let temporary = tempdir().unwrap();
+        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+        let valid = DaemonTranscriptionConfig {
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "whisper-1".to_string(),
+            api_key_env: Some("OPENAI_API_KEY".to_string()),
+            language: Some("de".to_string()),
+        };
+        for invalid in [
+            DaemonTranscriptionConfig {
+                base_url: "http://speech.example.com/v1".to_string(),
+                ..valid.clone()
+            },
+            DaemonTranscriptionConfig {
+                model: " ".to_string(),
+                ..valid.clone()
+            },
+            DaemonTranscriptionConfig {
+                api_key_env: Some("not a name".to_string()),
+                ..valid.clone()
+            },
+            DaemonTranscriptionConfig {
+                language: Some("German".to_string()),
+                ..valid.clone()
+            },
+        ] {
+            assert!(
+                matches!(
+                    registry.set_transcription(invalid.clone(), false),
+                    Err(RegistryError::InvalidDaemonSetting(_))
+                ),
+                "{invalid:?}"
+            );
+        }
+        // Loopback HTTP is fine for a local server without a key.
+        let local = DaemonTranscriptionConfig {
+            base_url: "http://127.0.0.1:8000/v1".to_string(),
+            api_key_env: None,
+            language: None,
+            ..valid.clone()
+        };
+        registry.set_transcription(local, false).unwrap();
+        let config = registry.set_transcription(valid.clone(), false).unwrap();
+        assert_eq!(config.bot.transcription.as_ref(), Some(&valid));
+        assert!(config.bot.telegram.is_none(), "independent of the bot");
+        let stored = fs::read_to_string(temporary.path().join("daemon.toml")).unwrap();
+        assert!(stored.contains("[bot.transcription]"), "{stored}");
+        assert!(
+            stored.contains("api_key_env = \"OPENAI_API_KEY\""),
+            "{stored}"
+        );
+        assert_eq!(registry.load().unwrap().bot.transcription, Some(valid));
+        let config = registry.clear_transcription(false).unwrap();
+        assert!(config.bot.is_default());
     }
 
     #[test]

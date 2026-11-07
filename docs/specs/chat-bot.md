@@ -21,7 +21,7 @@ existing finite `vulcan-app` workflow, so the bot adds no write semantics of its
 
 - **No LLM chat.** The embedded assistant (Phase 9.21) was built and then retired because external
   runtimes over MCP gave a better experience. The bot never forwards free text to a model;
-  free text is a capture.
+  free text is a capture. Speech-to-text for voice messages is opt-in transcription, not chat.
 - **No multi-platform identity framework.** The retired 9.21.12 transport contract (principals,
   chat spaces, identity bindings) is not revived. The bot command layer is transport-neutral so a
   Matrix or Signal adapter can reuse it later, but v1 models only "allowlisted user → permission
@@ -63,6 +63,12 @@ profile = "bot-capture"                 # permission profile, capped by each reg
 reminders = true                        # this user receives reminders for these vaults
 alerts = true                           # and the daemon's sync alerts for these vaults
 digest = "07:30"                        # and a daily digest at this time (each vault's timezone)
+
+[bot.transcription]                     # optional: speech-to-text for voice messages
+base_url = "https://api.openai.com/v1"  # OpenAI-compatible; HTTPS, or loopback HTTP
+model = "whisper-1"
+api_key_env = "OPENAI_API_KEY"          # omit for a local server without authentication
+# language = "de"                       # ISO-639-1 hint; detected when unset
 ```
 
 - The service `worker.telegram-bot` is enabled when `[bot.telegram]` exists and the token
@@ -90,6 +96,14 @@ digest = "07:30"                        # and a daily digest at this time (each 
   today with Done buttons and the reminders still to come that day, at or after that time. A
   vault with nothing to report sends nothing. The day sent is kept in bot state, so a restart does
   not repeat it.
+- `[bot.transcription]` sends each voice message (not audio files) to `<base_url>/audio/transcriptions`
+  (multipart `file`, `model`, `response_format = json`, optional `language`; 120 s timeout, no
+  redirects) with the key as a bearer token. The transcript, whitespace collapsed to one line and
+  cut at 4000 characters, becomes the capture text beside the embed (after any caption), and the
+  reply adds a `Transcript:` line. On failure the recording is still saved and the reply says
+  `Not transcribed:` with a sanitized reason (no URL or key). Voice is sent to that service, so it
+  is device configuration chosen by the device owner, outside vault permission profiles; it is
+  re-read per message. `vulcan daemon config set-transcription|clear-transcription` edits it.
 - `bot-capture` is a suggested profile, not a built-in: read access plus writes limited to the
   inbox, daily notes, the TaskNotes folder, and attachments. The default when `profile` is
   omitted is `readonly`, so a forgotten setting cannot grant write access.
@@ -125,7 +139,7 @@ privacy = "title_only"
 | --- | --- | --- |
 | free text | capture to `bot.default_capture` | inbox capture / QuickAdd capture / daily append |
 | a message that is only an http(s) URL | captured as `[Page title](url)` (the `og:title`, else `<title>`) when `bot.link_titles` is on and the user's profile allows network access to the page and each redirect (at most 3); otherwise, or when the page has no title, captured as sent. Built without the `web` feature, links are captured as sent | as above |
-| photo, document, voice, audio, video | save under `bot.attachment_folder` (sanitized name, never overwriting) and capture `![[path]]` with the caption as text; at most 20 MB, the Bot API's download limit | `vulcan-app::chat::run_chat_attachment` |
+| photo, document, voice, audio, video | save under `bot.attachment_folder` (sanitized name, never overwriting) and capture `![[path]]` with the caption as text, plus the transcript of a voice message when `[bot.transcription]` is configured; at most 20 MB, the Bot API's download limit | `vulcan-app::chat::run_chat_attachment` |
 | `/c <text>`, `/capture <text>` | capture to the default target | as free text |
 | `/daily <text>` | append to today's daily note | periodic append |
 | `/qa`, `/qa <choice> <text>` | list the configured QuickAdd choices, or run the one whose name is the longest case-insensitive prefix of the message (ending at a word boundary), with the rest as `{{VALUE}}`. Capture choices render `capture_to`, create a missing note when `create_file_if_missing` is set (optionally from its template), and add `format` (default `{{VALUE}}`, `- [ ] ` prefixed for task choices) after `insert_after.heading`, prepended, or appended. Template choices create `folder.folders[0]/<file_name_format>` from `template_path` and refuse an existing note. Active-file, file-picker, folder-picker, and macro choices are refused. Undo applies when the run wrote one note | `vulcan-app::quickadd::run_quickadd_choice` |

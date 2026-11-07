@@ -71,7 +71,7 @@ write the task's note.
 | --- | --- |
 | any text | captured to the inbox, or to today's daily note with `bot.default_capture = "daily"` |
 | a lone link | captured as `[Page title](url)` when your profile allows the network access (`bot.link_titles`) |
-| a photo, file, voice message, audio, or video | saved under `bot.attachment_folder` and captured as an embed, with the caption as text (files up to 20 MB) |
+| a photo, file, voice message, audio, or video | saved under `bot.attachment_folder` and captured as an embed, with the caption as text (files up to 20 MB); voice messages also get a transcript when [transcription](#voice-transcription) is set up |
 | `/task <text>` | a TaskNotes task with natural-language dates (`/task call Anna tomorrow 10:00`), or an inline task in the inbox with `bot.task_target = "inline"` |
 | `/daily <text>` | appended to today's daily note |
 | `/qa [choice] [text]` | run an imported QuickAdd capture or template choice by name (`/qa Log slept well`); `/qa` alone lists them |
@@ -110,6 +110,25 @@ is `{{VALUE}}`.
   file or folder, and macros.
 
 Replies carry an Undo button like other captures.
+
+### Voice transcription
+
+Voice messages can be transcribed by any OpenAI-compatible speech-to-text service: OpenAI itself,
+or a local server such as faster-whisper-server or LocalAI. Set it up on the device that runs the
+bot:
+
+```sh
+vulcan daemon config set-transcription --base-url https://api.openai.com/v1 \
+  --model whisper-1 --api-key-env OPENAI_API_KEY [--language de]
+```
+
+Put the key in `~/.config/vulcan/daemon.env` (`OPENAI_API_KEY=...`). The key is never stored in
+the configuration. Leave out `--api-key-env` for a local server without a key; HTTP is allowed
+only to localhost. The setting applies to the next voice message, with no restart needed.
+
+The transcript is captured next to the recording (`- Buy milk and eggs. ![[Attachments/voice-….ogg]]`)
+and shown in the reply. If transcription fails, the recording is still saved and the reply says
+why. Your recordings go to that service, so pick one you trust. `clear-transcription` turns it off.
 
 ## Reminders
 

@@ -79,6 +79,10 @@ permission profiles, or diagnoses permission and trust failures.
     ignored sender ids, which is how a user finds their numeric id after messaging the bot.
     Follow its `hints` (JSON) or `Hint:` lines first; they name the fix for a missing token,
     a second polling device, a stopped daemon, or state left behind after the bot moved.
+    Voice transcription is opt-in device config: `vulcan daemon config set-transcription
+    --base-url <OpenAI-compatible /v1 URL> --model <name> [--api-key-env VAR] [--language de]`;
+    the key lives only in the environment or `daemon.env`, and voice is sent to that service, so
+    confirm the provider with the user first.
     Remove access with `remove-bot-user <id>` or `clear-telegram-bot`. Per-vault capture targets
     live in shared `[bot]` config (`default_capture = "inbox" | "daily"`,
     `task_target = "tasknotes" | "inline"`, `attachment_folder` for photos and files sent to the

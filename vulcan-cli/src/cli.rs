@@ -6033,6 +6033,33 @@ pub enum DaemonConfigCommand {
         dry_run: bool,
     },
     #[command(
+        about = "Transcribe voice messages sent to the chat bot",
+        after_help = "Notes:\n  Voice messages are sent to an OpenAI-compatible /audio/transcriptions endpoint,\n  for example https://api.openai.com/v1 with model whisper-1, or a local server.\n  The API key is never stored in configuration: put it in the named variable,\n  for example in ~/.config/vulcan/daemon.env. Takes effect without a restart."
+    )]
+    SetTranscription {
+        #[arg(
+            long,
+            help = "API base URL including the version, e.g. https://api.openai.com/v1"
+        )]
+        base_url: String,
+        #[arg(long, help = "Model name, e.g. whisper-1")]
+        model: String,
+        #[arg(
+            long,
+            help = "Environment variable holding the API key; omit for no authentication"
+        )]
+        api_key_env: Option<String>,
+        #[arg(long, help = "ISO-639-1 language hint, e.g. de; detected when omitted")]
+        language: Option<String>,
+        #[arg(long, help = "Report without writing daemon configuration")]
+        dry_run: bool,
+    },
+    #[command(about = "Stop transcribing voice messages")]
+    ClearTranscription {
+        #[arg(long, help = "Report without writing daemon configuration")]
+        dry_run: bool,
+    },
+    #[command(
         about = "Allow a Telegram user to use the chat bot, or change their access",
         after_help = "Notes:\n  The profile is resolved from built-in and device-local profiles and must stay\n  within each vault registration's permissions profile. Find your numeric id by\n  messaging the bot and running `vulcan daemon bot-status`."
     )]
