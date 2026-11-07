@@ -1990,6 +1990,7 @@ fn config_path_description(path: &str) -> String {
         }
         "bot.default_capture" => "Where free-text chat bot messages are captured: the `[inbox]` note or today's daily note.".to_string(),
         "bot.reminders.catch_up_window" => "How late a missed reminder may still be sent, for example after the device was off; older ones are skipped.".to_string(),
+        "bot.reminders.snooze_options" => "Snooze buttons on reminder messages beside Done: durations such as `1h` or `tomorrow` (the next day at `tasks.reminders.default_time`); at most three.".to_string(),
         "bot.reminders.privacy" => "What reminder messages show: `full` (task title and note path) or `title_only`.".to_string(),
         "bot.reminders.privacy_overrides" => "Per-path reminder privacy: `{ glob, privacy }` entries, first match wins.".to_string(),
         "bot.task_target" => "What the chat bot's `/task` creates: a TaskNotes task (with natural-language dates) or an inline task in the inbox note.".to_string(),

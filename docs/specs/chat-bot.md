@@ -91,7 +91,7 @@ due_dates = "ignore"                # "ignore" | "notify": 📅 alone fires at d
 default_time = "09:00"
 timezone = "Europe/Berlin"          # IANA name; the device's local timezone when unset
 
-[bot.reminders]                     # implemented (slice 4) except snooze_options (slice 5)
+[bot.reminders]                     # implemented (slices 4 and 5)
 catch_up_window = "24h"             # older missed reminders are not sent
 snooze_options = ["1h", "tomorrow"] # buttons, at most 3 besides "done"
 privacy = "full"                    # "full" (title and note path) | "title_only"
@@ -168,7 +168,8 @@ occurrence. Vulcan never writes IDs only to make reminders work.
   behind. Older ones are recorded as expired and not sent.
 - Message: `⏰ <task title>`, the note path (unless `title_only` applies, by the first matching
   `privacy_overrides` glob or else `privacy`), and the notify time in the vault's reminder
-  timezone. Done and snooze buttons arrive with slice 5.
+  timezone, with buttons `Done`, then one per snooze option (`Snooze 1h`, `Tomorrow`). Buttons are
+  offered only when the user's profile may write the task's note.
 
 ### Resolution
 
@@ -180,19 +181,25 @@ vault whose plan fails is skipped, so a broken config never resolves its message
 
 ### Actions
 
-A button carries `callback_data = "r:<ledger row id>:<action>"` (≤ 64 bytes). The path, vault, and
-task come only from the ledger, never from the callback. A press is accepted only from the chat the
-reminder was sent to, only for an open entry, and only for an offered action. It is acknowledged
-with `answerCallbackQuery` either way.
+A button carries `callback_data = "r:<ledger row id>:<index>"` (≤ 64 bytes), where the index
+names one of the actions recorded with the ledger entry when it was sent. The path, vault, task,
+and action come only from the ledger, never from the callback. A press is accepted only from the
+chat the reminder was sent to, only for an open entry, and only for an offered action; anything
+else answers "This reminder is no longer open." It is acknowledged with `answerCallbackQuery`
+either way. The action re-plans the vault through the user's guard and acts on the task of the
+recorded occurrence id, so a moved line or an edited vault never redirects it.
 
 | Action | Effect |
 | --- | --- |
-| `done` | the existing completion path, including recurrence |
-| `snooze:<dur>` | set the remind time to now + duration (TaskNotes: add an absolute reminder; inline: replace or add `⏰`) |
-| `snooze:tomorrow` | next day at `default_time` in the vault timezone |
+| `done` | the existing completion path, including recurrence (a recurring task completes the occurrence the reminder belongs to) |
+| `<duration>` | set the remind time to now + duration, rounded up to the minute (TaskNotes: add an absolute reminder described "Snoozed"; inline: replace `⏰`, `(@…)`, or `remind::` with `⏰`, or add it) |
+| `tomorrow` | next day at `default_time` in the vault timezone |
 
-The message is then edited to show the outcome and loses its buttons. A task that already changed
-results in a no-op that says so.
+Snooze is the reusable `vulcan-app` workflow `apply_task_snooze_with_guard`, under the same
+mutation permit, cache refresh, and auto-commit as other bot writes. The message is then edited to
+show the outcome and loses its buttons, the entry is resolved, and the vault is re-planned at once
+so a snoozed reminder arrives on time. A task that already changed results in a no-op that says
+so.
 
 ## Telegram transport
 

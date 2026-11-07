@@ -328,3 +328,129 @@ fn reminder_plans_render_in_the_vault_timezone_with_path_privacy() {
     let error = reminders::plan_chat_reminders(&vault).unwrap_err();
     assert!(error.to_string().contains("catch_up_window"), "{error}");
 }
+
+fn vault_for<'a>(
+    fixture: &'a Fixture,
+    guard: &'a ProfilePermissionGuard,
+    profile: &'a str,
+) -> ChatVault<'a> {
+    ChatVault {
+        paths: &fixture.paths,
+        guard,
+        profile,
+        gate: &Ungated,
+        today: chrono::Utc::now().date_naive(),
+    }
+}
+
+#[test]
+fn reminder_buttons_complete_and_snooze_inline_tasks() {
+    let fixture = Fixture::new(
+        "[tasks.reminders]\ntimezone = \"UTC\"\n",
+        &[(
+            "Calls.md",
+            "- [ ] Call the bank ⏰ 2026-01-01 10:00\n- [ ] Water plants ⏰ 2026-01-01 11:00\n- [ ] Pay rent [remind:: 2026-01-01T12:00]\n",
+        )],
+    );
+    let readonly = fixture.guard("readonly");
+    let plan = reminders::plan_chat_reminders(&vault_for(&fixture, &readonly, "readonly")).unwrap();
+    assert!(
+        plan.reminders.iter().all(|r| r.actions.is_empty()),
+        "no buttons without write access"
+    );
+
+    let guard = fixture.guard("unrestricted");
+    let vault = vault_for(&fixture, &guard, "unrestricted");
+    let plan = reminders::plan_chat_reminders(&vault).unwrap();
+    assert_eq!(plan.reminders[0].actions, vec!["done", "1h", "tomorrow"]);
+    let [bank, plants, rent] = [0, 1, 2].map(|i| plan.reminders[i].occurrence_id.clone());
+
+    let now = chrono::Utc::now().timestamp_millis();
+    let snoozed = reminders::run_reminder_action(&vault, &bank, "1h", now).unwrap();
+    let at = now + 60 * 60 * 1_000;
+    let at = at + (60_000 - at % 60_000) % 60_000;
+    let expected = chrono::DateTime::from_timestamp_millis(at)
+        .unwrap()
+        .format("%Y-%m-%d %H:%M")
+        .to_string();
+    assert_eq!(snoozed, format!("Snoozed until {expected}."));
+    assert!(fixture
+        .read("Calls.md")
+        .contains(&format!("- [ ] Call the bank ⏰ {expected}")));
+    assert_eq!(
+        reminders::run_reminder_action(&vault, &bank, "1h", now).unwrap(),
+        "This task already changed; nothing was done.",
+        "a second press finds the old occurrence gone"
+    );
+
+    let tomorrow = (chrono::Utc::now().date_naive() + chrono::Duration::days(1)).format("%Y-%m-%d");
+    reminders::run_reminder_action(&vault, &rent, "tomorrow", now).unwrap();
+    assert!(
+        fixture
+            .read("Calls.md")
+            .contains(&format!("- [ ] Pay rent ⏰ {tomorrow} 09:00")),
+        "{}",
+        fixture.read("Calls.md")
+    );
+
+    assert_eq!(
+        reminders::run_reminder_action(&vault, &plants, "done", now).unwrap(),
+        "Done."
+    );
+    assert!(fixture.read("Calls.md").contains("- [x] Water plants"));
+
+    fs::write(
+        fixture.paths.config_file(),
+        "[bot.reminders]\nsnooze_options = [\"later\"]\n",
+    )
+    .unwrap();
+    let error = reminders::plan_chat_reminders(&vault).unwrap_err();
+    assert!(error.to_string().contains("snooze_options"), "{error}");
+}
+
+#[test]
+fn snoozing_a_task_note_adds_an_absolute_reminder() {
+    let fixture = Fixture::new("[tasks.reminders]\ntimezone = \"UTC\"\n", &[]);
+    let path = fixture
+        .run("unrestricted", "/task Renew passport")
+        .unwrap()
+        .changed_paths
+        .remove(0);
+    crate::tasks::apply_task_reminder_add_with_guard(
+        &fixture.paths,
+        &crate::tasks::TaskReminderAddRequest {
+            task: path.clone(),
+            spec: "2026-01-01T10:00".to_string(),
+            description: None,
+            dry_run: false,
+        },
+        None,
+    )
+    .unwrap();
+    let guard = fixture.guard("unrestricted");
+    let vault = vault_for(&fixture, &guard, "unrestricted");
+    let plan = reminders::plan_chat_reminders(&vault).unwrap();
+    let occurrence = plan
+        .reminders
+        .iter()
+        .find(|r| r.path == path)
+        .expect("task note reminder planned")
+        .occurrence_id
+        .clone();
+    let outcome = reminders::run_reminder_action(
+        &vault,
+        &occurrence,
+        "tomorrow",
+        chrono::Utc::now().timestamp_millis(),
+    )
+    .unwrap();
+    assert!(outcome.starts_with("Snoozed until "), "{outcome}");
+    let note = fixture.read(&path);
+    assert!(note.contains("Snoozed"), "{note}");
+    let plan = reminders::plan_chat_reminders(&vault).unwrap();
+    assert_eq!(
+        plan.reminders.iter().filter(|r| r.path == path).count(),
+        2,
+        "the original and the snoozed reminder"
+    );
+}

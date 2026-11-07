@@ -8,13 +8,22 @@
 //! ([`super::state::ChatStateStore::put_reminder`]).
 
 use super::state::{ReminderLedgerEntry, ReminderState};
-use super::{ensure_fresh, ChatVault};
-use crate::tasks::{build_task_reminders_report_with_guard, ReminderSettings};
+use super::{ensure_fresh, finish_write, mcp_error, with_write, ChatVault};
+use crate::tasks::{
+    apply_task_snooze_with_guard, build_task_reminders_report_with_guard, ReminderSettings,
+    TaskReminderItem, TaskSnoozeRequest,
+};
 use crate::AppError;
 use std::collections::BTreeMap;
 use vulcan_core::config::{BotReminderPrivacy, BotRemindersConfig};
 use vulcan_core::expression::functions::{parse_date_like_string, parse_duration_string};
-use vulcan_core::load_vault_config;
+use vulcan_core::{load_vault_config, PermissionGuard};
+
+/// The action code of the Done button.
+pub const DONE_ACTION: &str = "done";
+/// The snooze option that moves a reminder to the next day.
+pub const TOMORROW_ACTION: &str = "tomorrow";
+const MAX_SNOOZE_OPTIONS: usize = 3;
 
 /// How far ahead the plan looks. Reminders further out are not needed for
 /// delivery, only to tell a rescheduled task from a removed one.
@@ -37,6 +46,9 @@ pub struct PlannedReminder {
     pub when: String,
     /// The message without the time line.
     heading: String,
+    /// Button actions to offer: `done` and the snooze options, or none when
+    /// the user may not write the task's note.
+    pub actions: Vec<String>,
 }
 
 impl PlannedReminder {
@@ -70,6 +82,7 @@ pub fn plan_chat_reminders(vault: &ChatVault<'_>) -> Result<ReminderPlan, AppErr
             ))
         })?;
     let privacy = PrivacyRules::new(&config.bot.reminders)?;
+    let snooze_options = snooze_options(&config.bot.reminders)?;
     let report =
         build_task_reminders_report_with_guard(vault.paths, PLAN_HORIZON, Some(vault.guard))?;
     let reminders = report
@@ -77,6 +90,13 @@ pub fn plan_chat_reminders(vault: &ChatVault<'_>) -> Result<ReminderPlan, AppErr
         .into_iter()
         .filter_map(|item| {
             let notify_ms = parse_date_like_string(&item.notify_at)?;
+            let actions = if vault.guard.check_write_path(&item.path).is_ok() {
+                std::iter::once(DONE_ACTION.to_string())
+                    .chain(snooze_options.iter().cloned())
+                    .collect()
+            } else {
+                Vec::new()
+            };
             let heading = match privacy.for_path(&item.path) {
                 BotReminderPrivacy::Full => format!("⏰ {}\n{}", item.title, item.path),
                 BotReminderPrivacy::TitleOnly => format!("⏰ {}", item.title),
@@ -89,6 +109,7 @@ pub fn plan_chat_reminders(vault: &ChatVault<'_>) -> Result<ReminderPlan, AppErr
                 notify_ms,
                 when: settings.timezone.format_local(notify_ms),
                 heading,
+                actions,
             })
         })
         .collect();
@@ -96,6 +117,122 @@ pub fn plan_chat_reminders(vault: &ChatVault<'_>) -> Result<ReminderPlan, AppErr
         reminders,
         catch_up_ms,
     })
+}
+
+/// The configured snooze options, validated.
+fn snooze_options(config: &BotRemindersConfig) -> Result<Vec<String>, AppError> {
+    if config.snooze_options.len() > MAX_SNOOZE_OPTIONS {
+        return Err(AppError::operation(format!(
+            "bot.reminders.snooze_options allows at most {MAX_SNOOZE_OPTIONS} options"
+        )));
+    }
+    config
+        .snooze_options
+        .iter()
+        .map(|option| {
+            let option = option.trim();
+            if option == TOMORROW_ACTION
+                || parse_duration_string(option).is_some_and(|duration| duration > 0)
+                    && !option.contains(',')
+            {
+                Ok(option.to_string())
+            } else {
+                Err(AppError::operation(format!(
+                    "bot.reminders.snooze_options entry `{option}` is neither a duration nor `tomorrow`"
+                )))
+            }
+        })
+        .collect()
+}
+
+/// The button label of a reminder action.
+#[must_use]
+pub fn reminder_action_label(action: &str) -> String {
+    match action {
+        DONE_ACTION => "Done".to_string(),
+        TOMORROW_ACTION => "Tomorrow".to_string(),
+        other => format!("Snooze {other}"),
+    }
+}
+
+/// Run a reminder button's `action` (`done` or a snooze option) on the
+/// task of occurrence `occurrence_id` and return the outcome to show. When
+/// the occurrence is no longer open, nothing is written and the outcome
+/// says so.
+pub fn run_reminder_action(
+    vault: &ChatVault<'_>,
+    occurrence_id: &str,
+    action: &str,
+    now_ms: i64,
+) -> Result<String, AppError> {
+    ensure_fresh(vault)?;
+    let config = load_vault_config(vault.paths).config;
+    let settings = ReminderSettings::from_config(&config.tasks.reminders)?;
+    let report =
+        build_task_reminders_report_with_guard(vault.paths, PLAN_HORIZON, Some(vault.guard))?;
+    let Some(item) = report
+        .reminders
+        .into_iter()
+        .find(|item| item.occurrence_id == occurrence_id)
+    else {
+        return Ok("This task already changed; nothing was done.".to_string());
+    };
+    if action == DONE_ACTION {
+        return complete(vault, &item);
+    }
+    let until = if action == TOMORROW_ACTION {
+        settings
+            .timezone
+            .date_at(now_ms)
+            .succ_opt()
+            .unwrap_or_default()
+            .and_time(settings.default_time)
+    } else {
+        let duration = parse_duration_string(action)
+            .filter(|duration| *duration > 0)
+            .ok_or_else(|| AppError::operation(format!("unknown reminder action `{action}`")))?;
+        // Rounded up to the next whole minute, the precision of `⏰`.
+        let at = now_ms.saturating_add(duration);
+        let at = at + (60_000 - at.rem_euclid(60_000)) % 60_000;
+        settings.timezone.local_datetime(at)
+    };
+    let report = with_write(vault, || {
+        apply_task_snooze_with_guard(
+            vault.paths,
+            &TaskSnoozeRequest {
+                task: item.task.clone(),
+                until,
+                dry_run: false,
+            },
+            Some(vault.guard),
+        )
+    })?;
+    finish_write(vault, "task snooze", &report.changed_paths)?;
+    Ok(format!("Snoozed until {}.", until.format("%Y-%m-%d %H:%M")))
+}
+
+fn complete(vault: &ChatVault<'_>, item: &TaskReminderItem) -> Result<String, AppError> {
+    with_write(vault, || {
+        crate::mcp_tasks::task_complete(
+            vault.paths,
+            vault.guard,
+            vault.profile,
+            crate::mcp_protocol::McpTaskCompleteArgs {
+                task: item.task.clone(),
+                // A recurring task completes the instance the reminder
+                // belongs to.
+                date: Some(
+                    item.occurrence
+                        .clone()
+                        .unwrap_or_else(|| vault.today.format("%Y-%m-%d").to_string()),
+                ),
+                dry_run: false,
+                no_commit: false,
+            },
+        )
+        .map_err(mcp_error)
+    })?;
+    Ok("Done.".to_string())
 }
 
 struct PrivacyRules {
@@ -230,6 +367,7 @@ mod tests {
             notify_ms,
             when: format!("t{notify_ms}"),
             heading: format!("⏰ {key}"),
+            actions: Vec::new(),
         }
     }
 
@@ -246,6 +384,7 @@ mod tests {
             state,
             message_id: (state == ReminderState::Open).then_some(42),
             updated_ms,
+            actions: Vec::new(),
         }
     }
 

@@ -69,6 +69,16 @@ pub struct TaskReminderAddRequest {
     pub dry_run: bool,
 }
 
+/// Move a task's reminder to `until`: a `TaskNotes` task gains an absolute
+/// reminder, an inline task's reminder is set (or added) as `⏰`.
+#[derive(Debug, Clone)]
+pub struct TaskSnoozeRequest {
+    pub task: String,
+    /// Wall-clock time in the vault's reminder timezone.
+    pub until: chrono::NaiveDateTime,
+    pub dry_run: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct TaskReminderRemoveRequest {
     pub task: String,

@@ -86,6 +86,16 @@ impl ReminderTimezone {
         }
     }
 
+    /// The wall-clock time at `at_ms` in this timezone.
+    #[must_use]
+    pub fn local_datetime(self, at_ms: i64) -> NaiveDateTime {
+        let instant = chrono::DateTime::from_timestamp_millis(at_ms).unwrap_or_default();
+        match self {
+            Self::Named(tz) => instant.with_timezone(&tz).naive_local(),
+            Self::Local => instant.with_timezone(&chrono::Local).naive_local(),
+        }
+    }
+
     /// `at_ms` as `YYYY-MM-DD HH:MM` wall-clock time in this timezone.
     #[must_use]
     pub fn format_local(self, at_ms: i64) -> String {

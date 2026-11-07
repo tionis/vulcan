@@ -11,7 +11,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
 const STATE_FILE: &str = "daemon/bot.sqlite";
-const STATE_VERSION: i64 = 2;
+const STATE_VERSION: i64 = 3;
 /// Expired and resolved reminder entries are forgotten after this.
 pub const REMINDER_RETENTION_MS: i64 = 60 * 24 * 60 * 60 * 1_000;
 /// Buttons older than this no longer work.
@@ -87,10 +87,18 @@ impl ChatStateStore {
                      state TEXT NOT NULL,
                      message_id INTEGER,
                      updated_ms INTEGER NOT NULL,
+                     actions TEXT NOT NULL DEFAULT '',
                      PRIMARY KEY (platform, chat_id, vault, occurrence_id)
-                 );
-                 PRAGMA user_version = 2;",
+                 );",
             )
+            .map_err(AppError::operation)?;
+        if version == 2 {
+            connection
+                .execute_batch("ALTER TABLE reminders ADD COLUMN actions TEXT NOT NULL DEFAULT '';")
+                .map_err(AppError::operation)?;
+        }
+        connection
+            .execute_batch(&format!("PRAGMA user_version = {STATE_VERSION};"))
             .map_err(AppError::operation)?;
         Ok(Self { connection })
     }
@@ -232,48 +240,57 @@ impl ChatStateStore {
             .connection
             .prepare(
                 "SELECT occurrence_id, task_key, task, path, text, notify_ms, state, message_id,
-                        updated_ms
+                        updated_ms, actions, vault, rowid
                  FROM reminders WHERE platform = ?1 AND chat_id = ?2 AND vault = ?3
                  ORDER BY notify_ms",
             )
             .map_err(AppError::operation)?;
         let rows = statement
             .query_map(params![platform, chat_id, vault], |row| {
-                Ok(ReminderLedgerEntry {
-                    chat_id,
-                    vault: vault.to_string(),
-                    occurrence_id: row.get(0)?,
-                    task_key: row.get(1)?,
-                    task: row.get(2)?,
-                    path: row.get(3)?,
-                    text: row.get(4)?,
-                    notify_ms: row.get(5)?,
-                    state: ReminderState::parse(&row.get::<_, String>(6)?),
-                    message_id: row.get(7)?,
-                    updated_ms: row.get(8)?,
-                })
+                ledger_row(chat_id, row)
             })
             .map_err(AppError::operation)?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(AppError::operation)
     }
 
-    /// Insert or replace a ledger entry.
+    /// The entry with ledger row `row_id`, if it belongs to `chat_id`.
+    pub fn reminder_by_row(
+        &self,
+        platform: &str,
+        chat_id: i64,
+        row_id: i64,
+    ) -> Result<Option<(i64, ReminderLedgerEntry)>, AppError> {
+        self.connection
+            .query_row(
+                "SELECT occurrence_id, task_key, task, path, text, notify_ms, state, message_id,
+                        updated_ms, actions, vault, rowid
+                 FROM reminders WHERE platform = ?1 AND chat_id = ?2 AND rowid = ?3",
+                params![platform, chat_id, row_id],
+                |row| Ok((row.get(11)?, ledger_row(chat_id, row)?)),
+            )
+            .optional()
+            .map_err(AppError::operation)
+    }
+
+    /// Insert or replace a ledger entry and return its row id, which stays
+    /// the same across updates.
     pub fn put_reminder(
         &self,
         platform: &str,
         entry: &ReminderLedgerEntry,
-    ) -> Result<(), AppError> {
+    ) -> Result<i64, AppError> {
         self.connection
             .execute(
                 "INSERT INTO reminders (platform, chat_id, vault, occurrence_id, task_key, task,
-                                        path, text, notify_ms, state, message_id, updated_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                                        path, text, notify_ms, state, message_id, updated_ms,
+                                        actions)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
                  ON CONFLICT (platform, chat_id, vault, occurrence_id) DO UPDATE SET
                      task_key = excluded.task_key, task = excluded.task, path = excluded.path,
                      text = excluded.text, notify_ms = excluded.notify_ms,
                      state = excluded.state, message_id = excluded.message_id,
-                     updated_ms = excluded.updated_ms",
+                     updated_ms = excluded.updated_ms, actions = excluded.actions",
                 params![
                     platform,
                     entry.chat_id,
@@ -287,9 +304,17 @@ impl ChatStateStore {
                     entry.state.as_str(),
                     entry.message_id,
                     entry.updated_ms,
+                    entry.actions.join(","),
                 ],
             )
-            .map(|_| ())
+            .map_err(AppError::operation)?;
+        self.connection
+            .query_row(
+                "SELECT rowid FROM reminders
+                 WHERE platform = ?1 AND chat_id = ?2 AND vault = ?3 AND occurrence_id = ?4",
+                params![platform, entry.chat_id, entry.vault, entry.occurrence_id],
+                |row| row.get(0),
+            )
             .map_err(AppError::operation)
     }
 
@@ -308,6 +333,28 @@ impl ChatStateStore {
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(AppError::operation)
     }
+}
+
+fn ledger_row(chat_id: i64, row: &rusqlite::Row<'_>) -> rusqlite::Result<ReminderLedgerEntry> {
+    let actions: String = row.get(9)?;
+    Ok(ReminderLedgerEntry {
+        chat_id,
+        vault: row.get(10)?,
+        occurrence_id: row.get(0)?,
+        task_key: row.get(1)?,
+        task: row.get(2)?,
+        path: row.get(3)?,
+        text: row.get(4)?,
+        notify_ms: row.get(5)?,
+        state: ReminderState::parse(&row.get::<_, String>(6)?),
+        message_id: row.get(7)?,
+        updated_ms: row.get(8)?,
+        actions: actions
+            .split(',')
+            .filter(|action| !action.is_empty())
+            .map(ToOwned::to_owned)
+            .collect(),
+    })
 }
 
 /// Where one reminder delivery stands.
@@ -361,6 +408,9 @@ pub struct ReminderLedgerEntry {
     pub state: ReminderState,
     pub message_id: Option<i64>,
     pub updated_ms: i64,
+    /// The button actions offered with the message (`done`, `1h`,
+    /// `tomorrow`, …); a press names one by index.
+    pub actions: Vec<String>,
 }
 
 #[cfg(test)]
@@ -431,11 +481,25 @@ mod tests {
             state: ReminderState::Sending,
             message_id: None,
             updated_ms: 2_000,
+            actions: vec!["done".to_string(), "1h".to_string()],
         };
-        store.put_reminder("telegram", &entry).unwrap();
+        let row = store.put_reminder("telegram", &entry).unwrap();
         entry.state = ReminderState::Open;
         entry.message_id = Some(55);
-        store.put_reminder("telegram", &entry).unwrap();
+        assert_eq!(
+            store.put_reminder("telegram", &entry).unwrap(),
+            row,
+            "stable row id"
+        );
+        assert_eq!(
+            store.reminder_by_row("telegram", 7, row).unwrap(),
+            Some((row, entry.clone()))
+        );
+        assert_eq!(
+            store.reminder_by_row("telegram", 8, row).unwrap(),
+            None,
+            "other chat"
+        );
         assert_eq!(
             store
                 .reminder_entries("telegram", 7, "notes", 3_000)
@@ -464,6 +528,26 @@ mod tests {
         store.put_reminder("telegram", &entry).unwrap();
         assert!(store
             .reminder_entries("telegram", 7, "notes", later)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn version_two_state_gains_the_actions_column() {
+        let temp = tempfile::tempdir().unwrap();
+        drop(ChatStateStore::open(temp.path()).unwrap());
+        let raw = Connection::open(ChatStateStore::path(temp.path())).unwrap();
+        raw.execute_batch("ALTER TABLE reminders DROP COLUMN actions; PRAGMA user_version = 2;")
+            .unwrap();
+        drop(raw);
+        let store = ChatStateStore::open(temp.path()).unwrap();
+        let version: i64 = store
+            .connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, STATE_VERSION);
+        assert!(store
+            .reminder_entries("telegram", 1, "notes", 0)
             .unwrap()
             .is_empty());
     }

@@ -44,6 +44,7 @@ pub(super) struct PartialBotConfig {
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct PartialBotRemindersConfig {
     pub(super) catch_up_window: Option<String>,
+    pub(super) snooze_options: Option<Vec<String>>,
     pub(super) privacy: Option<BotReminderPrivacy>,
     pub(super) privacy_overrides: Option<Vec<BotReminderPrivacyOverride>>,
 }

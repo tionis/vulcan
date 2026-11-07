@@ -17,7 +17,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use vulcan_app::chat::reminders::{reminder_steps, PlannedReminder, ReminderPlan, ReminderStep};
+use vulcan_app::chat::reminders::{
+    reminder_action_label, reminder_steps, run_reminder_action, PlannedReminder, ReminderPlan,
+    ReminderStep,
+};
 use vulcan_app::chat::state::{ChatStateStore, ReminderLedgerEntry, ReminderState};
 use vulcan_app::chat::{
     chat_help_text, chat_usage_text, parse_chat_message, run_chat_action, run_chat_command,
@@ -34,6 +37,8 @@ const POLL_SECONDS: u64 = 8;
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 const CONFLICT_BACKOFF: Duration = Duration::from_secs(30);
 const CALLBACK_PREFIX: &str = "a:";
+/// Reminder buttons: `r:<ledger row>:<offered action index>`.
+const REMINDER_PREFIX: &str = "r:";
 const MAX_REJECTED_USERS: usize = 32;
 /// How often reminder plans are rebuilt from the vaults. Due reminders are
 /// checked on every poll cycle in between.
@@ -375,6 +380,14 @@ impl Bot<'_> {
         };
         let chat_id = message.chat.id;
         let now = vulcan_core::current_utc_timestamp_ms();
+        if let Some(press) = callback
+            .data
+            .as_deref()
+            .and_then(|data| data.strip_prefix(REMINDER_PREFIX))
+        {
+            self.handle_reminder_press(&user, callback, chat_id, press, now);
+            return;
+        }
         let stored = callback
             .data
             .as_deref()
@@ -419,6 +432,61 @@ impl Bot<'_> {
                 self.send_reply(chat_id, None, &ChatReply::text(format!("Error: {error}")));
             }
         }
+    }
+
+    /// A reminder button: accepted only from the chat the reminder went to,
+    /// for an open entry, and for an action it offered.
+    fn handle_reminder_press(
+        &mut self,
+        user: &DaemonBotUser,
+        callback: &TelegramCallbackQuery,
+        chat_id: i64,
+        press: &str,
+        now: i64,
+    ) {
+        let found = press
+            .split_once(':')
+            .and_then(|(row, index)| Some((row.parse::<i64>().ok()?, index.parse::<usize>().ok()?)))
+            .and_then(|(row, index)| {
+                let (_, entry) = self.state.reminder_by_row(PLATFORM, chat_id, row).ok()??;
+                let action = entry.actions.get(index)?.clone();
+                (entry.state == ReminderState::Open).then_some((entry, action))
+            });
+        let Some((mut entry, action)) = found else {
+            let _ = self
+                .client
+                .answer_callback_query(&callback.id, Some("This reminder is no longer open."));
+            return;
+        };
+        let result = self.user_vault(user, &entry.vault).and_then(|wiki| {
+            self.with_vault(user, &wiki, |vault| {
+                run_reminder_action(vault, &entry.occurrence_id, &action, now)
+            })
+        });
+        let outcome = match result {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                let _ = self
+                    .client
+                    .answer_callback_query(&callback.id, Some(&format!("Error: {error}")));
+                return;
+            }
+        };
+        let _ = self.client.answer_callback_query(&callback.id, None);
+        let text = format!("{}\n\n{outcome}", entry.text);
+        if let Some(message_id) = entry.message_id {
+            if let Err(error) = self.client.edit_message_text(chat_id, message_id, &text) {
+                self.status.last_error = Some(error.to_string());
+            }
+        }
+        entry.state = ReminderState::Resolved;
+        entry.text = text;
+        entry.updated_ms = now;
+        if let Err(error) = self.state.put_reminder(PLATFORM, &entry) {
+            self.status.last_error = Some(format!("reminder ledger: {error}"));
+        }
+        // The snoozed or next occurrence is planned without waiting a minute.
+        self.next_plan_ms = 0;
     }
 
     fn switch_vault(
@@ -597,18 +665,39 @@ impl Bot<'_> {
                 state,
                 message_id: None,
                 updated_ms: now,
+                actions: Vec::new(),
             };
         let result = match step {
-            ReminderStep::Expire { reminder } => self.state.put_reminder(
-                PLATFORM,
-                &entry(&reminder, reminder.message(true), ReminderState::Expired),
-            ),
+            ReminderStep::Expire { reminder } => self
+                .state
+                .put_reminder(
+                    PLATFORM,
+                    &entry(&reminder, reminder.message(true), ReminderState::Expired),
+                )
+                .map(|_| ()),
             ReminderStep::Send { reminder, late } => {
                 // Recorded first: a crash before the message id is stored
                 // sends again rather than losing the reminder.
                 let mut sent = entry(&reminder, reminder.message(late), ReminderState::Sending);
-                self.state.put_reminder(PLATFORM, &sent).and_then(|()| {
-                    match self.client.send_message(chat_id, &sent.text, &[]) {
+                sent.actions.clone_from(&reminder.actions);
+                self.state.put_reminder(PLATFORM, &sent).and_then(|row| {
+                    // The press names the ledger row and an offered action;
+                    // everything else comes from the ledger.
+                    let keyboard = vec![sent
+                        .actions
+                        .iter()
+                        .enumerate()
+                        .map(|(index, action)| InlineButton {
+                            text: reminder_action_label(action),
+                            callback_data: format!("{REMINDER_PREFIX}{row}:{index}"),
+                        })
+                        .collect::<Vec<_>>()];
+                    let keyboard = if sent.actions.is_empty() {
+                        Vec::new()
+                    } else {
+                        keyboard
+                    };
+                    match self.client.send_message(chat_id, &sent.text, &keyboard) {
                         Ok(message) => {
                             sent.state = ReminderState::Open;
                             sent.message_id = Some(message.message_id);
@@ -626,7 +715,7 @@ impl Bot<'_> {
                             return Ok(());
                         }
                     }
-                    self.state.put_reminder(PLATFORM, &sent)
+                    self.state.put_reminder(PLATFORM, &sent).map(|_| ())
                 })
             }
             ReminderStep::Resolve { mut entry, text } => {
@@ -643,7 +732,7 @@ impl Bot<'_> {
                 entry.state = ReminderState::Resolved;
                 entry.text = text;
                 entry.updated_ms = now;
-                self.state.put_reminder(PLATFORM, &entry)
+                self.state.put_reminder(PLATFORM, &entry).map(|_| ())
             }
         };
         if let Err(error) = result {

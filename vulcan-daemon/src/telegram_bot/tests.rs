@@ -514,3 +514,75 @@ fn users_without_reminders_get_none() {
     handle.join().unwrap().unwrap();
     assert!(fake.calls("sendMessage").is_empty());
 }
+
+#[test]
+fn reminder_buttons_snooze_through_the_ledger() {
+    let fake = Fake::default();
+    let fixture = fixture(&serve(&fake), None, "unrestricted");
+    std::fs::write(
+        fixture.vault.join(".vulcan/config.toml"),
+        "[tasks.reminders]\ntimezone = \"UTC\"\n[bot.reminders]\nsnooze_options = [\"2h\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        fixture.vault.join("Calls.md"),
+        format!("- [ ] Call the bank ⏰ {}\n", remind_at(-1)),
+    )
+    .unwrap();
+    let mut user = fixture.config.users[0].clone();
+    user.reminders = true;
+    fixture.registry.set_bot_user(user, false).unwrap();
+
+    let (stop, handle) = start(&fixture);
+    let sent = fake.wait_for("sendMessage", 1);
+    let buttons = sent[0]["reply_markup"]["inline_keyboard"][0]
+        .as_array()
+        .unwrap()
+        .clone();
+    let labels = buttons
+        .iter()
+        .map(|button| button["text"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(labels, ["Done", "Snooze 2h"]);
+    let snooze = buttons[1]["callback_data"].as_str().unwrap().to_string();
+    let (row, _) = snooze.strip_prefix("r:").unwrap().split_once(':').unwrap();
+    assert!(
+        !snooze.contains("Calls"),
+        "only the ledger row and an index: {snooze}"
+    );
+
+    fake.press(OWNER, &format!("r:{row}:7"));
+    fake.press(OWNER, &snooze);
+    let edits = fake.wait_for("editMessageText", 1);
+    assert!(
+        edits[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Snoozed until "),
+        "{edits:?}"
+    );
+    let calls = std::fs::read_to_string(fixture.vault.join("Calls.md")).unwrap();
+    assert!(!calls.contains(&remind_at(-1)), "{calls}");
+    fake.press(OWNER, &snooze);
+    let answers = fake.wait_for("answerCallbackQuery", 3);
+    let texts = answers
+        .iter()
+        .map(|answer| answer["text"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        texts,
+        [
+            "This reminder is no longer open.",
+            "",
+            "This reminder is no longer open."
+        ],
+        "an unoffered action and a second press are refused"
+    );
+    stop.cancel();
+    handle.join().unwrap().unwrap();
+    assert_eq!(
+        fake.calls("sendMessage").len(),
+        1,
+        "the snoozed one is not due yet"
+    );
+}

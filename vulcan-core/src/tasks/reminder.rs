@@ -75,13 +75,13 @@ pub fn extract_inline_reminder(text: &str) -> Option<InlineReminderTime> {
         })
 }
 
-/// `line` with its reminder set to `reminder`: an existing `⏰` marker or
-/// `(@…)` form is replaced in place by the canonical marker, otherwise the
-/// marker is appended before any trailing block id.
+/// `line` with its reminder set to `reminder`: an existing `⏰` marker,
+/// `(@…)` form, or `remind::` field is replaced in place by the canonical
+/// marker, otherwise the marker is appended before any trailing block id.
 #[must_use]
 pub fn set_inline_reminder(line: &str, reminder: InlineReminderTime) -> String {
     let marker = reminder.to_marker();
-    for pattern in [marker_pattern(), paren_pattern()] {
+    for pattern in [marker_pattern(), paren_pattern(), remind_field_pattern()] {
         if let Some(found) = pattern.find(line) {
             return format!("{}{marker}{}", &line[..found.start()], &line[found.end()..]);
         }
@@ -201,6 +201,13 @@ fn value_pattern() -> &'static Regex {
     })
 }
 
+fn remind_field_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| {
+        Regex::new(r"\[remind::[^\]]*\]|\(remind::[^)]*\)").expect("valid remind field pattern")
+    })
+}
+
 fn block_id_suffix() -> &'static Regex {
     static PATTERN: OnceLock<Regex> = OnceLock::new();
     PATTERN.get_or_init(|| Regex::new(r"\s\^[A-Za-z0-9-]+$").expect("valid block id pattern"))
@@ -298,6 +305,11 @@ mod tests {
         assert_eq!(
             set_inline_reminder("- [ ] Call X", snoozed),
             "- [ ] Call X ⏰ 2026-11-08 09:00"
+        );
+        assert_eq!(
+            set_inline_reminder("- [ ] Call X [remind:: 2026-11-07T10:00] #work", snoozed),
+            "- [ ] Call X ⏰ 2026-11-08 09:00 #work",
+            "the field is replaced, so only one reminder remains"
         );
     }
 }

@@ -438,6 +438,31 @@ pub fn apply_task_reschedule(
     apply_task_reschedule_with_guard(paths, request, None)
 }
 
+pub fn apply_task_snooze_with_guard(
+    paths: &VaultPaths,
+    request: &TaskSnoozeRequest,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<TaskMutationReport, AppError> {
+    preflight_task_mutation_guard(paths, guard)?;
+    if load_tasknote_note_with_guard(paths, &request.task, guard).is_ok() {
+        return apply_task_reminder_add_with_guard(
+            paths,
+            &TaskReminderAddRequest {
+                task: request.task.clone(),
+                spec: request.until.format("%Y-%m-%dT%H:%M").to_string(),
+                description: Some("Snoozed".to_string()),
+                dry_run: request.dry_run,
+            },
+            guard,
+        )
+        .map(|mut report| {
+            report.action = "snooze".to_string();
+            report
+        });
+    }
+    apply_inline_task_snooze(paths, request, guard)
+}
+
 pub fn apply_task_reschedule_with_guard(
     paths: &VaultPaths,
     request: &TaskRescheduleRequest,
@@ -6769,6 +6794,90 @@ fn apply_inline_task_reschedule(
 
     Ok(TaskMutationReport {
         action: "reschedule".to_string(),
+        dry_run: request.dry_run,
+        path: resolved.path,
+        moved_from: None,
+        moved_to: None,
+        changes,
+        changed_paths,
+    })
+}
+
+fn apply_inline_task_snooze(
+    paths: &VaultPaths,
+    request: &TaskSnoozeRequest,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<TaskMutationReport, AppError> {
+    let resolved = resolve_inline_task(paths, &request.task, guard)?;
+    if let Some(guard) = guard {
+        guard
+            .check_read_path(&resolved.path)
+            .map_err(AppError::operation)?;
+        guard
+            .check_write_path(&resolved.path)
+            .map_err(AppError::operation)?;
+    }
+    let source = read_task_source(paths, &resolved.path).map_err(AppError::operation)?;
+    let mut lines = source
+        .split('\n')
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    let index = usize::try_from(resolved.line_number.saturating_sub(1)).map_err(|_| {
+        AppError::operation(format!(
+            "invalid task line number: {}",
+            resolved.line_number
+        ))
+    })?;
+    let current = lines.get(index).cloned().ok_or_else(|| {
+        AppError::operation(format!("task line {} not found", resolved.line_number))
+    })?;
+    let updated = vulcan_core::tasks::set_inline_reminder(
+        &current,
+        vulcan_core::tasks::InlineReminderTime {
+            date: request.until.date(),
+            time: Some(request.until.time()),
+        },
+    );
+    let changes = (updated != current)
+        .then(|| RefactorChange {
+            before: current.clone(),
+            after: updated.clone(),
+        })
+        .into_iter()
+        .collect::<Vec<_>>();
+    lines[index] = updated;
+    let rendered = lines.join("\n");
+    let mut changed_paths = if changes.is_empty() {
+        Vec::new()
+    } else {
+        vec![resolved.path.clone()]
+    };
+    authorize_task_changed_paths(&mut changed_paths, guard)?;
+    let routed = if changes.is_empty() {
+        false
+    } else {
+        route_task_note_write(
+            paths,
+            &resolved.path,
+            Some(&source),
+            Some(&rendered),
+            MdbaseWriteOperation::Update,
+            request.dry_run,
+            guard,
+        )?
+    };
+    if !request.dry_run && !changes.is_empty() && !routed {
+        write_ordinary_note_if_unchanged_with_profile(
+            paths,
+            &resolved.path,
+            Some(&source),
+            &rendered,
+            "task snooze",
+            task_mutation_profile(paths, guard)?,
+        )?;
+    }
+    Ok(TaskMutationReport {
+        action: "snooze".to_string(),
         dry_run: request.dry_run,
         path: resolved.path,
         moved_from: None,

@@ -1108,6 +1108,9 @@ Where a chat bot's captures and tasks go in this vault.
 - `bot.reminders.privacy_overrides` — type: `array`; target: `shared|local`; default: `[0 items]`
   Per-path reminder privacy: `{ glob, privacy }` entries, first match wins.
   Example: `vulcan config set bot.reminders.privacy_overrides <value>`
+- `bot.reminders.snooze_options` — type: `array`; target: `shared|local`; default: `[2 items]`
+  Snooze buttons on reminder messages beside Done: durations such as `1h` or `tomorrow` (the next day at `tasks.reminders.default_time`); at most three.
+  Example: `vulcan config set bot.reminders.snooze_options <value>`
 - `bot.task_target` — type: `enum`; target: `shared|local`; default: `tasknotes`; values: `tasknotes`, `inline`
   What the chat bot's `/task` creates: a TaskNotes task (with natural-language dates) or an inline task in the inbox note.
   Example: `vulcan config set bot.task_target <value>`

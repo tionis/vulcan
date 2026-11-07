@@ -2755,6 +2755,11 @@ pub struct BotRemindersConfig {
     /// off) are not sent.
     #[serde(default = "default_bot_catch_up_window")]
     pub catch_up_window: String,
+    /// Snooze buttons offered beside Done: durations such as `1h` or
+    /// `30m`, or `tomorrow` (the next day at `tasks.reminders.default_time`).
+    /// At most three.
+    #[serde(default = "default_bot_snooze_options")]
+    pub snooze_options: Vec<String>,
     /// What a reminder message shows.
     #[serde(default)]
     pub privacy: BotReminderPrivacy,
@@ -2767,6 +2772,7 @@ impl Default for BotRemindersConfig {
     fn default() -> Self {
         Self {
             catch_up_window: default_bot_catch_up_window(),
+            snooze_options: default_bot_snooze_options(),
             privacy: BotReminderPrivacy::default(),
             privacy_overrides: Vec::new(),
         }
@@ -2775,6 +2781,10 @@ impl Default for BotRemindersConfig {
 
 fn default_bot_catch_up_window() -> String {
     "24h".to_string()
+}
+
+fn default_bot_snooze_options() -> Vec<String> {
+    vec!["1h".to_string(), "tomorrow".to_string()]
 }
 
 /// How much of a task a reminder message reveals.
@@ -5359,6 +5369,9 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         if let Some(reminders) = bot.reminders {
             if let Some(catch_up_window) = reminders.catch_up_window {
                 config.bot.reminders.catch_up_window = catch_up_window;
+            }
+            if let Some(snooze_options) = reminders.snooze_options {
+                config.bot.reminders.snooze_options = snooze_options;
             }
             if let Some(privacy) = reminders.privacy {
                 config.bot.reminders.privacy = privacy;
