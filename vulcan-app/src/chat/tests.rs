@@ -269,13 +269,43 @@ fn reminders_lists_upcoming_inline_reminders() {
         &[("Calls.md", "- [ ] Call the bank ⏰ 2999-01-01 10:00\n")],
     );
     let reply = fixture.run("readonly", "/reminders 2000y").unwrap();
-    assert!(
-        reply.text.contains("2999-01-01T10:00:00Z Call the bank"),
-        "{}",
-        reply.text
+    assert_eq!(
+        reply.text,
+        "Reminders in the next 2000y:\n\nTue 1 Jan 2999\n• 10:00 Call the bank"
     );
     let reply = fixture.run("readonly", "/reminders 1h").unwrap();
-    assert_eq!(reply.text, "No reminders within 1h.");
+    assert_eq!(reply.text, "No reminders in the next 1h.");
+}
+
+#[test]
+fn reminders_are_grouped_by_local_day() {
+    // The fixture's today is 2026-11-07; Berlin is UTC+1 in November.
+    let fixture = Fixture::new(
+        "[tasks.reminders]\ntimezone = \"Europe/Berlin\"\n",
+        &[(
+            "Calls.md",
+            "- [ ] Call the bank ⏰ 2999-01-01 10:00\n- [ ] Pay rent ⏰ 2999-01-01 08:15\n\
+             - [ ] Water plants ⏰ 2999-01-02 23:30\n",
+        )],
+    );
+    let reply = fixture.run("readonly", "/reminders 2000y").unwrap();
+    assert_eq!(
+        reply.text,
+        "Reminders in the next 2000y:\n\n\
+         Tue 1 Jan 2999\n• 08:15 Pay rent\n• 10:00 Call the bank\n\n\
+         Wed 2 Jan 2999\n• 23:30 Water plants"
+    );
+}
+
+#[test]
+fn day_headings_name_nearby_days() {
+    let today = NaiveDate::from_ymd_opt(2026, 11, 7).unwrap();
+    let day = |offset: i64| super::day_heading(today + chrono::Duration::days(offset), today);
+    assert_eq!(day(-1), "Yesterday, Fri 6 Nov");
+    assert_eq!(day(0), "Today, Sat 7 Nov");
+    assert_eq!(day(1), "Tomorrow, Sun 8 Nov");
+    assert_eq!(day(3), "Tue 10 Nov");
+    assert_eq!(day(60), "Wed 6 Jan 2027");
 }
 
 #[test]

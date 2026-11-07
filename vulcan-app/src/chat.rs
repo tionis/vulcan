@@ -15,15 +15,16 @@ use crate::notes::{read_note, NoteGetOptions, NoteReadMode};
 use crate::scan::{refresh_cache_for_paths, refresh_cache_incrementally};
 use crate::tasks::{
     apply_task_add_with_guard, build_task_reminders_report_with_guard,
-    build_tasks_query_result_with_guard, TaskAddRequest,
+    build_tasks_query_result_with_guard, ReminderTimezone, TaskAddRequest,
 };
 use crate::AppError;
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use vulcan_core::config::{BotCaptureTarget, BotTaskTarget};
+use vulcan_core::expression::functions::parse_date_like_string;
 use vulcan_core::search::{search_vault_with_filter, SearchQuery};
 use vulcan_core::tasks::inline_task_title;
 use vulcan_core::{
@@ -804,23 +805,57 @@ fn reminders(vault: &ChatVault<'_>, window: &str) -> Result<ChatReply, AppError>
     ensure_fresh(vault)?;
     let report = build_task_reminders_report_with_guard(vault.paths, window, Some(vault.guard))?;
     if report.reminders.is_empty() {
-        return Ok(ChatReply::text(format!("No reminders within {window}.")));
+        return Ok(ChatReply::text(format!(
+            "No reminders in the next {window}."
+        )));
     }
-    let mut lines = vec![format!("Reminders within {window}:")];
+    let timezone =
+        ReminderTimezone::from_config(&load_vault_config(vault.paths).config.tasks.reminders)?;
+    let mut lines = vec![format!("Reminders in the next {window}:")];
+    let mut current_day = None;
     for reminder in report.reminders.iter().take(CHAT_LIST_LIMIT) {
+        let Some(local) =
+            parse_date_like_string(&reminder.notify_at).map(|ms| timezone.local_datetime(ms))
+        else {
+            lines.push(format!("• {} {}", reminder.notify_at, reminder.title));
+            continue;
+        };
+        if current_day != Some(local.date()) {
+            current_day = Some(local.date());
+            lines.push(String::new());
+            lines.push(day_heading(local.date(), vault.today));
+        }
         let overdue = if reminder.overdue { " (overdue)" } else { "" };
         lines.push(format!(
-            "- {} {}{overdue}",
-            reminder.notify_at, reminder.title
+            "• {} {}{overdue}",
+            local.format("%H:%M"),
+            reminder.title
         ));
     }
     if report.reminders.len() > CHAT_LIST_LIMIT {
+        lines.push(String::new());
         lines.push(format!(
             "... and {} more",
             report.reminders.len() - CHAT_LIST_LIMIT
         ));
     }
     Ok(ChatReply::text(lines.join("\n")))
+}
+
+/// `Today, Sat 7 Nov`, `Tomorrow, Sun 8 Nov`, `Tue 10 Nov`, or with the year when it differs.
+fn day_heading(date: NaiveDate, today: NaiveDate) -> String {
+    let format = if date.year() == today.year() {
+        "%a %-d %b"
+    } else {
+        "%a %-d %b %Y"
+    };
+    let label = date.format(format).to_string();
+    match (date - today).num_days() {
+        -1 => format!("Yesterday, {label}"),
+        0 => format!("Today, {label}"),
+        1 => format!("Tomorrow, {label}"),
+        _ => label,
+    }
 }
 
 fn find(vault: &ChatVault<'_>, query: &str) -> Result<ChatReply, AppError> {
