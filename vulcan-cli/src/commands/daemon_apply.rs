@@ -10,10 +10,13 @@ use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 use vulcan_daemon::declarative::{
-    plan_device, prune_drift, DevicePlan, PlanAction, PlanItem, PlanKind, PlanRequest,
-    PruneOutcome, ServiceCheck,
+    plan_device, prune_drift, restart_pending_reasons, DevicePlan, PlanAction, PlanItem, PlanKind,
+    PlanRequest, PruneOutcome, ServiceCheck,
 };
-use vulcan_daemon::process::{request_daemon_shutdown, running_daemon, DaemonProcessContext};
+use vulcan_daemon::process::{
+    request_daemon_shutdown, running_daemon, DaemonProcessContext, DaemonRuntimeRecord,
+};
+use vulcan_daemon::registry::DaemonConfig;
 use vulcan_daemon::service::{
     apply_daemon_service, inspect_daemon_service, DaemonServiceAction, DaemonServicePlatform,
 };
@@ -144,7 +147,7 @@ fn run_apply(
         }
     }
     if !no_service {
-        steps.extend(converge_daemon(cli, context, &plan));
+        steps.extend(converge_daemon(cli, context, &plan, &config));
     }
     let pruned = if prune {
         prune_drift(context, &plan)
@@ -218,7 +221,12 @@ fn step(item: &PlanItem, error: Option<String>, result: Option<serde_json::Value
 
 /// Installs or refreshes the service and makes sure the daemon runs the
 /// current executable and configuration.
-fn converge_daemon(cli: &Cli, context: &DaemonProcessContext, plan: &DevicePlan) -> Vec<ApplyStep> {
+fn converge_daemon(
+    cli: &Cli,
+    context: &DaemonProcessContext,
+    plan: &DevicePlan,
+    config: &DaemonConfig,
+) -> Vec<ApplyStep> {
     let pending = |kind| {
         plan.items
             .iter()
@@ -227,57 +235,81 @@ fn converge_daemon(cli: &Cli, context: &DaemonProcessContext, plan: &DevicePlan)
     };
     let service = pending(PlanKind::Service);
     let process = pending(PlanKind::Daemon);
-    if service.is_none() && process.is_none() {
+    let Some(first) = process.or(service) else {
         return Vec::new();
-    }
-    let mut steps = Vec::new();
-    let running = running_daemon(context).is_some();
-    if running {
-        // A graceful stop runs final syncs; the service manager then starts
-        // the new process, which avoids two daemons racing for the lock.
-        let stopped = request_daemon_shutdown(context).map(|_| ());
-        if let Err(error) = stopped {
-            let item = process.or(service).expect("one pending item");
-            steps.push(step(
-                item,
-                Some(format!("could not stop the daemon: {error}")),
-                None,
-            ));
-            return steps;
+    };
+    let previous = running_daemon(context);
+    if let Some(previous) = &previous {
+        if let Err(error) = stop_daemon(context, previous) {
+            return vec![step(first, Some(error), None)];
         }
     }
-    if DaemonServicePlatform::native().is_ok() {
-        let result = native_service_plan(context, DaemonServiceAction::Restart)
+    let result = if DaemonServicePlatform::native().is_ok() {
+        native_service_plan(context, DaemonServiceAction::Restart)
             .and_then(|plan| apply_daemon_service(plan, false).map_err(CliError::operation))
-            .and_then(|_| wait_until_running(context));
-        let error = result.err().map(|error| error.to_string());
-        if let Some(item) = service {
-            steps.push(step(item, error.clone(), None));
-        }
-        if let Some(item) = process {
-            steps.push(step(item, error, None));
-        }
-    } else if let Some(item) = process {
-        let error = spawn_detached(cli, context)
-            .err()
-            .map(|error| error.to_string());
-        steps.push(step(item, error, None));
-    }
-    steps
+            .map(|_| ())
+    } else if process.is_some() {
+        spawn_detached(cli, context).map(|_| ())
+    } else {
+        return Vec::new();
+    };
+    let error = result
+        .map_err(|error| error.to_string())
+        .and_then(|()| wait_for_restart(context, previous.as_ref(), config))
+        .err();
+    [service, process]
+        .into_iter()
+        .flatten()
+        .map(|item| step(item, error.clone(), None))
+        .collect()
 }
 
-fn wait_until_running(context: &DaemonProcessContext) -> Result<(), CliError> {
+/// Asks the daemon to stop gracefully (it runs final syncs first) and
+/// confirms it did. Restarting while it still runs could start a second
+/// daemon next to a manually started one.
+fn stop_daemon(
+    context: &DaemonProcessContext,
+    previous: &DaemonRuntimeRecord,
+) -> Result<(), String> {
+    request_daemon_shutdown(context)
+        .map_err(|error| format!("could not stop the daemon: {error}"))?;
+    match running_daemon(context) {
+        Some(record)
+            if record.pid == previous.pid
+                && record.started_unix_ms == previous.started_unix_ms =>
+        {
+            Err(format!(
+                "the daemon (pid {}) is still finishing its final syncs; run `vulcan daemon apply` again once `vulcan daemon status` shows it stopped",
+                record.pid
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Waits for a new daemon that runs the current executable and
+/// configuration, so apply never reports a restart that did not happen.
+fn wait_for_restart(
+    context: &DaemonProcessContext,
+    previous: Option<&DaemonRuntimeRecord>,
+    config: &DaemonConfig,
+) -> Result<(), String> {
     let deadline = Instant::now() + READY_TIMEOUT;
+    let mut reasons = vec!["no daemon answered".to_string()];
     while Instant::now() < deadline {
-        if running_daemon(context).is_some() {
-            return Ok(());
+        if let Some(record) = running_daemon(context) {
+            reasons = restart_pending_reasons(previous, &record, config);
+            if reasons.is_empty() {
+                return Ok(());
+            }
         }
         thread::sleep(Duration::from_millis(250));
     }
-    Err(CliError::operation(format!(
-        "the daemon service did not become ready within {} seconds; see `vulcan daemon status`",
-        READY_TIMEOUT.as_secs()
-    )))
+    Err(format!(
+        "the daemon was not running the current version within {} seconds ({}); see `vulcan daemon status`",
+        READY_TIMEOUT.as_secs(),
+        reasons.join("; ")
+    ))
 }
 
 fn action_label(action: PlanAction) -> &'static str {

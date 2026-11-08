@@ -589,6 +589,27 @@ fn service_items(
     items
 }
 
+/// Why `record` is not yet the daemon `apply` waits for after a restart: a
+/// process other than `previous` that runs the current executable and
+/// configuration. Empty when it is.
+#[must_use]
+pub fn restart_pending_reasons(
+    previous: Option<&DaemonRuntimeRecord>,
+    record: &DaemonRuntimeRecord,
+    config: &DaemonConfig,
+) -> Vec<String> {
+    let same_process = previous.is_some_and(|previous| {
+        previous.pid == record.pid && previous.started_unix_ms == record.started_unix_ms
+    });
+    if same_process {
+        return vec![format!(
+            "the previous daemon (pid {}) is still running",
+            record.pid
+        )];
+    }
+    stale_reasons(record, config)
+}
+
 fn stale_reasons(record: &DaemonRuntimeRecord, config: &DaemonConfig) -> Vec<String> {
     let mut reasons = Vec::new();
     match &record.config_digest {
@@ -934,6 +955,32 @@ mod tests {
             Some("01m6sqppjpnj0tv6rmzxdckmxj".to_string())
         );
         assert_eq!(secret_instance(Path::new("/s/other.secret")), None);
+    }
+
+    #[test]
+    fn a_restart_is_done_once_a_new_process_runs_the_current_config() {
+        let config = DaemonConfig::default();
+        let record = |pid, started_unix_ms, digest: Option<&str>| DaemonRuntimeRecord {
+            version: 1,
+            pid,
+            bind: "127.0.0.1:3210".parse().unwrap(),
+            started_unix_ms,
+            credential_id: "credential".to_string(),
+            executable: None,
+            executable_modified_unix_ms: None,
+            config_digest: digest.map(ToString::to_string),
+        };
+        let current = restart_digest(&config);
+        let old = record(10, 1, Some("old"));
+
+        let still_old = restart_pending_reasons(Some(&old), &record(10, 1, Some("old")), &config);
+        assert!(still_old[0].contains("still running"), "{still_old:?}");
+        let stale = restart_pending_reasons(Some(&old), &record(11, 2, Some("old")), &config);
+        assert!(stale[0].contains("older configuration"), "{stale:?}");
+        assert!(
+            restart_pending_reasons(Some(&old), &record(11, 2, Some(&current)), &config).is_empty()
+        );
+        assert!(restart_pending_reasons(None, &record(10, 1, Some(&current)), &config).is_empty());
     }
 
     #[test]

@@ -116,8 +116,9 @@ and 1 on an error, so scripts and configuration management can use it as a check
 4. Installs the native daemon service when it is missing or outdated, and restarts the daemon
    when it runs an older configuration or executable (for example after `cargo install` or
    `self-update`), or starts it. Vault changes need no restart: the daemon picks them up while
-   running. `--no-service` leaves the service and process alone, for containers or manual
-   supervision.
+   running. `apply` succeeds only once a new daemon runs the current executable and configuration;
+   if the old one is still finishing its final syncs, it stops and asks you to run it again.
+   `--no-service` leaves the service and process alone, for containers or manual supervision.
 
 Options: `--dry-run` prints the plan only. `--file <path>` plans another file, for review before
 copying it into place; `apply --file` only checks. `--output json` gives the plan and each step.
