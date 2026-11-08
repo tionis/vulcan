@@ -1,9 +1,8 @@
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-use std::fs::{self, File, OpenOptions};
+use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -11,10 +10,12 @@ use std::time::{Duration, Instant};
 use ulid::Ulid;
 use vulcan_app::sync::{GitRefName, GitRemote};
 
-use crate::config_file::{self, Identities, McpRemoteIdentity, VaultIdentity};
 use crate::mcp_remote::{
     validate_definition as validate_mcp_remote_definition, AddMcpRemoteRequest,
     McpRemoteDefinition, McpRemoteId, UpdateMcpRemoteRequest,
+};
+use vulcan_app::daemon_config_file::{
+    self as config_file, DaemonConfigLock, Identities, McpRemoteIdentity, VaultIdentity,
 };
 
 const DAEMON_CONFIG_FILE: &str = "daemon.toml";
@@ -2315,33 +2316,21 @@ fn record_identities(
 }
 
 struct RegistryLock {
-    _file: File,
+    _lock: DaemonConfigLock,
 }
 
 impl RegistryLock {
     fn acquire(config_path: &Path) -> Result<Self, RegistryError> {
-        let parent = config_path
-            .parent()
-            .ok_or_else(|| RegistryError::InvalidConfig {
-                path: config_path.to_path_buf(),
-                detail: "registry path has no parent directory".to_string(),
-            })?;
-        fs::create_dir_all(parent)?;
-        let lock_path = parent.join("daemon.toml.lock");
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(lock_path)?;
-        file.lock_exclusive()?;
-        Ok(Self { _file: file })
+        Ok(Self {
+            _lock: DaemonConfigLock::acquire(config_path)?,
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
     use crate::mcp_remote::{McpRemoteAuthentication, McpRemoteVault, DEFAULT_MCP_TOOL_PACKS};
     use tempfile::tempdir;
 
