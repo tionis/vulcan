@@ -7,8 +7,8 @@ use crate::config_tui;
 use crate::output::print_json;
 use crate::{
     warn_auto_commit_if_needed, Cli, CliError, ConfigAliasCommand, ConfigCommand, ConfigImportArgs,
-    ConfigImportCommand, ConfigPermissionsCommand, ConfigPermissionsProfileCommand,
-    ConfigTargetArg, OutputFormat,
+    ConfigImportCommand, ConfigLocalCommand, ConfigPermissionsCommand,
+    ConfigPermissionsProfileCommand, ConfigTargetArg, OutputFormat,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -181,6 +181,16 @@ pub(crate) fn handle_config_command(
                 }
             },
         },
+        ConfigCommand::Local { command } => match command {
+            ConfigLocalCommand::Move { dry_run } => {
+                crate::selected_permission_guard(cli, paths)?
+                    .check_config_write()
+                    .map_err(CliError::operation)?;
+                let report = vulcan_app::config::plan_local_config_move(paths, *dry_run)
+                    .map_err(CliError::operation)?;
+                finish_config_move(paths, cli.output, report)
+            }
+        },
         ConfigCommand::Import(selection) => {
             crate::selected_permission_guard(cli, paths)?
                 .check_config_write()
@@ -224,10 +234,13 @@ pub(crate) fn handle_config_command(
     }
 }
 
-fn config_import_target(target: ConfigTargetArg) -> ImportTarget {
+fn config_import_target(target: ConfigTargetArg) -> Result<ImportTarget, CliError> {
     match target {
-        ConfigTargetArg::Shared => ImportTarget::Shared,
-        ConfigTargetArg::Local => ImportTarget::Local,
+        ConfigTargetArg::Shared => Ok(ImportTarget::Shared),
+        ConfigTargetArg::Local => Ok(ImportTarget::Local),
+        ConfigTargetArg::Device => Err(CliError::operation(
+            "settings imports write vault config files; use --target shared or --target local",
+        )),
     }
 }
 
@@ -287,7 +300,7 @@ fn run_config_import(
     args: &ConfigImportArgs,
     verbosity: Verbosity,
 ) -> Result<(), CliError> {
-    let target = config_import_target(args.target);
+    let target = config_import_target(args.target)?;
     let report = if args.dry_run {
         importer
             .dry_run_to(paths, target)
@@ -322,7 +335,7 @@ fn run_config_import_batch(
     args: &ConfigImportArgs,
     verbosity: Verbosity,
 ) -> Result<(), CliError> {
-    let target = config_import_target(args.target);
+    let target = config_import_target(args.target)?;
     let discovered = discover_config_importers(paths);
     let importers = discovered
         .into_iter()
@@ -827,7 +840,10 @@ fn run_config_set(
     let mut report =
         app_config::plan_config_set_report_for_target(paths, key, raw_value, target, dry_run)?;
 
-    if !dry_run && report.updated {
+    if !dry_run && report.updated && target == ConfigTarget::Device {
+        // daemon.toml is outside the vault: nothing to commit.
+        report = app_config::apply_config_set_report(paths, report)?;
+    } else if !dry_run && report.updated {
         let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
         warn_auto_commit_if_needed(&auto_commit, verbosity);
         report = app_config::apply_config_set_report(paths, report)?;
@@ -859,7 +875,10 @@ fn run_config_set_toml(
     let had_gitignore = paths.gitignore_file().exists();
     let mut report = app_config::plan_config_set_report_to(paths, key, value, target, dry_run)?;
 
-    if !dry_run && report.updated {
+    if !dry_run && report.updated && target == ConfigTarget::Device {
+        // daemon.toml is outside the vault: nothing to commit.
+        report = app_config::apply_config_set_report(paths, report)?;
+    } else if !dry_run && report.updated {
         let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
         warn_auto_commit_if_needed(&auto_commit, verbosity);
         report = app_config::apply_config_set_report(paths, report)?;
@@ -889,7 +908,10 @@ fn run_config_unset(
     let had_gitignore = paths.gitignore_file().exists();
     let mut report = app_config::plan_config_unset_report(paths, key, target, dry_run)?;
 
-    if !dry_run && report.updated {
+    if !dry_run && report.updated && target == ConfigTarget::Device {
+        // daemon.toml is outside the vault: nothing to commit.
+        report = app_config::apply_config_unset_report(paths, report)?;
+    } else if !dry_run && report.updated {
         let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
         warn_auto_commit_if_needed(&auto_commit, verbosity);
         report = app_config::apply_config_unset_report(paths, report)?;
@@ -1035,6 +1057,11 @@ fn run_config_permissions_profile(
                 verbosity,
             )
         }
+        ConfigPermissionsProfileCommand::Move { name, dry_run } => {
+            let report = vulcan_app::config::plan_permission_profile_move(paths, name, *dry_run)
+                .map_err(CliError::operation)?;
+            finish_config_move(paths, output, report)
+        }
         ConfigPermissionsProfileCommand::Delete {
             name,
             target,
@@ -1125,6 +1152,7 @@ fn print_config_list_report(
                     app_config::ConfigValueSource::ObsidianImport => "obsidian_import",
                     app_config::ConfigValueSource::SharedOverride => "shared_override",
                     app_config::ConfigValueSource::LocalOverride => "local_override",
+                    app_config::ConfigValueSource::DeviceOverride => "device_override",
                     app_config::ConfigValueSource::Unset => "unset",
                 };
                 println!(
@@ -1175,6 +1203,45 @@ fn print_config_get_report(output: OutputFormat, report: &ConfigGetReport) -> Re
             Ok(())
         }
         OutputFormat::Json => print_json(report),
+    }
+}
+
+fn finish_config_move(
+    paths: &VaultPaths,
+    output: OutputFormat,
+    report: vulcan_app::config::ConfigMoveReport,
+) -> Result<(), CliError> {
+    let report = if report.dry_run {
+        report
+    } else {
+        vulcan_app::config::apply_config_move(paths, report).map_err(CliError::operation)?
+    };
+    match output {
+        OutputFormat::Human | OutputFormat::Markdown => {
+            let verb = if report.dry_run {
+                "Would move"
+            } else {
+                "Moved"
+            };
+            println!(
+                "{verb} {} from {} to {}",
+                report.keys.join(", "),
+                report.from.display(),
+                report.to.display()
+            );
+            if report.removes_local_file {
+                let verb = if report.dry_run { "would be" } else { "was" };
+                println!(
+                    "{} {verb} removed: nothing is left in it",
+                    report.from.display()
+                );
+            }
+            for diagnostic in &report.diagnostics {
+                eprintln!("warning: {}", diagnostic.message);
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(&report),
     }
 }
 
@@ -1268,6 +1335,7 @@ fn config_target(target: ConfigTargetArg) -> ConfigTarget {
     match target {
         ConfigTargetArg::Shared => ConfigTarget::Shared,
         ConfigTargetArg::Local => ConfigTarget::Local,
+        ConfigTargetArg::Device => ConfigTarget::Device,
     }
 }
 

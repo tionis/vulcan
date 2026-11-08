@@ -144,6 +144,167 @@ pub fn render_config<T: Serialize>(existing: Option<&str>, config: &T) -> Result
     Ok(document.to_string())
 }
 
+/// The part of `daemon.toml` a `--target device` config write edits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeviceSection {
+    /// The device-global `[permissions]` table, valid for every vault.
+    Permissions,
+    /// The `config` table of the `[[vault]]` entry for this vault root.
+    Vault(PathBuf),
+}
+
+impl DeviceSection {
+    /// Permission profiles are device-wide; every other setting belongs to
+    /// the vault's own entry.
+    #[must_use]
+    pub fn for_key(storage_segments: &[&str], vault_root: &Path) -> Self {
+        if storage_segments.first() == Some(&"permissions") {
+            Self::Permissions
+        } else {
+            Self::Vault(vault_root.to_path_buf())
+        }
+    }
+}
+
+/// Reads a device section as a document with the schema of
+/// `config.local.toml` (empty when absent).
+pub fn read_device_section(
+    config_path: &Path,
+    section: &DeviceSection,
+) -> Result<toml::Value, String> {
+    let source = read_optional(config_path)?;
+    let document = match source.as_deref() {
+        Some(source) => toml::from_str::<toml::Value>(source).map_err(|error| error.to_string())?,
+        None => toml::Value::Table(toml::map::Map::new()),
+    };
+    let mut result = toml::map::Map::new();
+    match section {
+        DeviceSection::Permissions => {
+            if let Some(permissions) = document.get("permissions") {
+                result.insert("permissions".to_string(), permissions.clone());
+            }
+        }
+        DeviceSection::Vault(root) => {
+            let entry = document
+                .get("vault")
+                .and_then(toml::Value::as_array)
+                .and_then(|entries| {
+                    entries.iter().find(|entry| {
+                        entry
+                            .get("path")
+                            .and_then(toml::Value::as_str)
+                            .is_some_and(|declared| same_vault(declared, root))
+                    })
+                })
+                .ok_or_else(|| not_registered(config_path, root))?;
+            if let Some(toml::Value::Table(config)) = entry.get("config") {
+                result.clone_from(config);
+            }
+        }
+    }
+    Ok(toml::Value::Table(result))
+}
+
+/// Writes a device section back under the daemon.toml lock, keeping the
+/// rest of the file as written. An empty document removes the section.
+pub fn write_device_section(
+    config_path: &Path,
+    section: &DeviceSection,
+    document: &toml::Value,
+) -> Result<(), String> {
+    let _lock = DaemonConfigLock::acquire(config_path).map_err(|error| error.to_string())?;
+    let source = read_optional(config_path)?.unwrap_or_default();
+    let mut file = source
+        .parse::<DocumentMut>()
+        .map_err(|error| error.to_string())?;
+    let rendered = toml::to_string_pretty(document).map_err(|error| error.to_string())?;
+    let desired = rendered
+        .parse::<DocumentMut>()
+        .map_err(|error| error.to_string())?;
+    let mut next_position = max_position(file.as_table()) + 1;
+    match section {
+        DeviceSection::Permissions => {
+            match (file.get_mut("permissions"), desired.get("permissions")) {
+                (Some(current), Some(wanted)) => {
+                    merge_item(current, wanted, None, &mut next_position);
+                }
+                (None, Some(wanted)) => {
+                    let mut item = wanted.clone();
+                    place(&mut item, None, &mut next_position);
+                    file.insert("permissions", item);
+                }
+                (Some(_), None) => {
+                    file.remove("permissions");
+                }
+                (None, None) => {}
+            }
+        }
+        DeviceSection::Vault(root) => {
+            let entry = file
+                .get_mut("vault")
+                .and_then(Item::as_array_of_tables_mut)
+                .and_then(|entries| {
+                    entries.iter_mut().find(|entry| {
+                        entry
+                            .get("path")
+                            .and_then(Item::as_str)
+                            .is_some_and(|declared| same_vault(declared, root))
+                    })
+                })
+                .ok_or_else(|| not_registered(config_path, root))?;
+            let mut wanted = desired.as_table().clone();
+            // Only a header for subtables, never an empty `[vault.config]`.
+            wanted.set_implicit(true);
+            let anchor = Some(subtree_end(entry));
+            match entry.get_mut("config") {
+                _ if wanted.is_empty() => {
+                    entry.remove("config");
+                }
+                Some(current) => {
+                    merge_item(current, &Item::Table(wanted), anchor, &mut next_position);
+                }
+                None => {
+                    let mut item = Item::Table(wanted);
+                    place(&mut item, anchor, &mut next_position);
+                    entry.insert("config", item);
+                }
+            }
+        }
+    }
+    vulcan_core::durable::replace(
+        config_path,
+        file.to_string().as_bytes(),
+        vulcan_core::durable::Durability::Full,
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn read_optional(path: &Path) -> Result<Option<String>, String> {
+    match std::fs::read_to_string(path) {
+        Ok(source) => Ok(Some(source)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("failed to read {}: {error}", path.display())),
+    }
+}
+
+fn same_vault(declared: &str, root: &Path) -> bool {
+    match (
+        std::fs::canonicalize(vulcan_core::config::expand_home(declared)),
+        std::fs::canonicalize(root),
+    ) {
+        (Ok(declared), Ok(root)) => declared == root,
+        _ => false,
+    }
+}
+
+fn not_registered(config_path: &Path, root: &Path) -> String {
+    format!(
+        "{} is not registered in {}; register it with `vulcan vault add`, or use --target local",
+        root.display(),
+        config_path.display()
+    )
+}
+
 /// The serializer writes an empty `vault = []` or `mcp_remote = []` when
 /// none is declared; leave such a key out of the file instead.
 fn drop_empty_declaration_arrays(document: &mut DocumentMut) {
@@ -559,6 +720,76 @@ authentication = { identity = "https://eric.example/" }
         let rendered = render_config(Some(source), &config).unwrap();
         let reparsed: Doc = toml::from_str(&rendered).unwrap();
         assert_eq!(reparsed, config, "{rendered}");
+    }
+
+    #[test]
+    fn device_sections_round_trip_without_touching_the_rest() {
+        let temporary = tempfile::tempdir().unwrap();
+        let first = temporary.path().join("first");
+        let second = temporary.path().join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let config_path = temporary.path().join("daemon.toml");
+        let source = format!(
+            "# device\nbind = \"127.0.0.1:3210\"\n\n[[vault]]\nid = \"first\"\npath = \"{}\"\n\n[[vault]]\nid = \"second\" # keep\npath = \"{}\"\n",
+            first.display(),
+            second.display()
+        );
+        std::fs::write(&config_path, &source).unwrap();
+        let first_section = DeviceSection::Vault(first.clone());
+
+        let mut document = read_device_section(&config_path, &first_section).unwrap();
+        assert_eq!(document, toml::Value::Table(toml::map::Map::new()));
+        document.as_table_mut().unwrap().insert(
+            "chunking".to_string(),
+            toml::toml! { target_size = 256 }.into(),
+        );
+        write_device_section(&config_path, &first_section, &document).unwrap();
+        let mut permissions = toml::map::Map::new();
+        permissions.insert(
+            "permissions".to_string(),
+            toml::toml! { [profiles.device-rw]
+            read = "all" }
+            .into(),
+        );
+        write_device_section(
+            &config_path,
+            &DeviceSection::Permissions,
+            &toml::Value::Table(permissions.clone()),
+        )
+        .unwrap();
+
+        let written = std::fs::read_to_string(&config_path).unwrap();
+        assert!(written.starts_with("# device\n"), "{written}");
+        assert!(written.contains("id = \"second\" # keep"), "{written}");
+        assert!(!written.contains("[vault.config]\n"), "{written}");
+        let parsed: toml::Value = toml::from_str(&written).unwrap();
+        assert_eq!(
+            parsed["vault"][0]["config"]["chunking"]["target_size"].as_integer(),
+            Some(256),
+            "{written}"
+        );
+        assert!(parsed["vault"][1].get("config").is_none(), "{written}");
+        assert_eq!(
+            read_device_section(&config_path, &DeviceSection::Permissions).unwrap(),
+            toml::Value::Table(permissions)
+        );
+
+        // Emptying a section removes it.
+        write_device_section(
+            &config_path,
+            &first_section,
+            &toml::Value::Table(toml::map::Map::new()),
+        )
+        .unwrap();
+        let parsed: toml::Value =
+            toml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        assert!(parsed["vault"][0].get("config").is_none());
+
+        let unregistered = DeviceSection::Vault(temporary.path().to_path_buf());
+        assert!(read_device_section(&config_path, &unregistered)
+            .unwrap_err()
+            .contains("not registered"));
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use crate::daemon_config_file::{read_device_section, write_device_section, DeviceSection};
 use crate::AppError;
 use serde::Serialize;
 use serde_json::Value;
@@ -56,6 +57,8 @@ pub struct ConfigSetReport {
     pub absolute_config_path: PathBuf,
     #[serde(skip_serializing)]
     pub rendered_contents: String,
+    #[serde(skip)]
+    pub device_section: Option<DeviceSection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -76,6 +79,10 @@ pub enum ConfigValueKind {
 pub enum ConfigTarget {
     Shared,
     Local,
+    /// The device's `daemon.toml`: permission profiles go to its
+    /// device-global `[permissions]`, other settings to the vault's
+    /// `[[vault]]` entry (`docs/specs/declarative-device-config.md`).
+    Device,
 }
 
 impl ConfigTarget {
@@ -84,6 +91,16 @@ impl ConfigTarget {
         match self {
             Self::Shared => paths.config_file().to_path_buf(),
             Self::Local => paths.local_config_file().to_path_buf(),
+            Self::Device => vulcan_core::config::daemon_config_file().unwrap_or_default(),
+        }
+    }
+
+    #[must_use]
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Shared => ".vulcan/config.toml",
+            Self::Local => ".vulcan/config.local.toml",
+            Self::Device => "the device's daemon.toml",
         }
     }
 }
@@ -102,7 +119,7 @@ impl ConfigTargetSupport {
         matches!(
             (self, target),
             (Self::SharedOnly, ConfigTarget::Shared)
-                | (Self::LocalOnly, ConfigTarget::Local)
+                | (Self::LocalOnly, ConfigTarget::Local | ConfigTarget::Device)
                 | (Self::SharedAndLocal, _)
         )
     }
@@ -114,6 +131,8 @@ pub enum ConfigValueSource {
     Default,
     ObsidianImport,
     SharedOverride,
+    /// Set in the device's `daemon.toml`.
+    DeviceOverride,
     LocalOverride,
     Unset,
 }
@@ -186,6 +205,8 @@ pub struct ConfigUnsetReport {
     pub absolute_config_path: PathBuf,
     #[serde(skip_serializing)]
     pub rendered_contents: String,
+    #[serde(skip)]
+    pub device_section: Option<DeviceSection>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -449,6 +470,7 @@ pub fn plan_config_set_report_to(
         diagnostics: mutation.diagnostics,
         absolute_config_path: mutation.absolute_config_path,
         rendered_contents: mutation.rendered_contents,
+        device_section: mutation.device_section,
     })
 }
 
@@ -468,6 +490,7 @@ pub fn plan_config_unset_report(
         diagnostics: mutation.diagnostics,
         absolute_config_path: mutation.absolute_config_path,
         rendered_contents: mutation.rendered_contents,
+        device_section: mutation.device_section,
     })
 }
 
@@ -477,6 +500,7 @@ pub fn plan_config_batch_report(
     target: ConfigTarget,
     dry_run: bool,
 ) -> Result<ConfigBatchReport, AppError> {
+    reject_device_target(target)?;
     let absolute_config_path = target.path(paths);
     let created_config = !absolute_config_path.exists();
     let existing_contents = fs::read_to_string(&absolute_config_path).ok();
@@ -514,6 +538,7 @@ pub fn apply_config_set_report(
             diagnostics: report.diagnostics.clone(),
             absolute_config_path: report.absolute_config_path.clone(),
             rendered_contents: report.rendered_contents.clone(),
+            device_section: report.device_section.clone(),
         },
     )?;
     Ok(report)
@@ -532,6 +557,7 @@ pub fn apply_config_batch_report(
             diagnostics: report.diagnostics.clone(),
             absolute_config_path: report.absolute_config_path.clone(),
             rendered_contents: report.rendered_contents.clone(),
+            device_section: None,
         },
     )?;
     Ok(report)
@@ -550,6 +576,7 @@ pub fn apply_config_unset_report(
             diagnostics: report.diagnostics.clone(),
             absolute_config_path: report.absolute_config_path.clone(),
             rendered_contents: report.rendered_contents.clone(),
+            device_section: report.device_section.clone(),
         },
     )?;
     Ok(report)
@@ -567,6 +594,7 @@ pub fn plan_config_document_save_for_target(
     rendered_contents: &str,
     target: ConfigTarget,
 ) -> Result<ConfigDocumentSaveReport, AppError> {
+    reject_device_target(target)?;
     validate_vulcan_overrides_toml(rendered_contents).map_err(AppError::operation)?;
 
     let absolute_config_path = target.path(paths);
@@ -2133,6 +2161,7 @@ struct ConfigMutationPlan {
     diagnostics: Vec<ConfigDiagnostic>,
     absolute_config_path: PathBuf,
     rendered_contents: String,
+    device_section: Option<DeviceSection>,
 }
 
 pub fn build_config_list_report(
@@ -2149,7 +2178,9 @@ pub fn build_config_list_report(
         descriptors.insert(descriptor.key.clone(), descriptor.clone());
     }
 
-    let known_paths = collect_known_display_paths(&display.toml, &shared_toml, &local_toml);
+    let device_toml = load_device_toml(paths);
+    let known_paths =
+        collect_known_display_paths(&display.toml, &shared_toml, &local_toml, &device_toml);
     for path in &known_paths {
         for descriptor in catalog
             .iter()
@@ -2168,7 +2199,13 @@ pub fn build_config_list_report(
             section.is_none_or(|filter| config_key_matches_filter(&descriptor.key, filter))
         })
         .map(|descriptor| {
-            build_config_list_entry(&descriptor, &display.toml, &shared_toml, &local_toml)
+            build_config_list_entry(
+                &descriptor,
+                &display.toml,
+                &shared_toml,
+                &local_toml,
+                &device_toml,
+            )
         })
         .collect::<Result<Vec<_>, _>>()?;
     entries.sort_by(|left, right| left.key.cmp(&right.key));
@@ -2194,7 +2231,9 @@ pub fn build_config_list_report_from_overrides(
         descriptors.insert(descriptor.key.clone(), descriptor.clone());
     }
 
-    let known_paths = collect_known_display_paths(&display.toml, shared_toml, local_toml);
+    let device_toml = load_device_toml(paths);
+    let known_paths =
+        collect_known_display_paths(&display.toml, shared_toml, local_toml, &device_toml);
     for path in &known_paths {
         for descriptor in catalog
             .iter()
@@ -2213,7 +2252,13 @@ pub fn build_config_list_report_from_overrides(
             section.is_none_or(|filter| config_key_matches_filter(&descriptor.key, filter))
         })
         .map(|descriptor| {
-            build_config_list_entry(&descriptor, &display.toml, shared_toml, local_toml)
+            build_config_list_entry(
+                &descriptor,
+                &display.toml,
+                shared_toml,
+                local_toml,
+                &device_toml,
+            )
         })
         .collect::<Result<Vec<_>, _>>()?;
     entries.sort_by(|left, right| left.key.cmp(&right.key));
@@ -2225,13 +2270,20 @@ pub fn build_config_list_report_from_overrides(
     })
 }
 
+/// What `daemon.toml` contributes to this vault, or an empty table.
+fn load_device_toml(paths: &VaultPaths) -> TomlValue {
+    vulcan_core::config::device_config_toml(paths.vault_root())
+        .unwrap_or_else(|| TomlValue::Table(toml::map::Map::new()))
+}
+
 fn collect_known_display_paths(
     effective_toml: &TomlValue,
     shared_toml: &TomlValue,
     local_toml: &TomlValue,
+    device_toml: &TomlValue,
 ) -> BTreeSet<String> {
     let mut paths = BTreeSet::new();
-    for value in [effective_toml, shared_toml, local_toml] {
+    for value in [effective_toml, shared_toml, local_toml, device_toml] {
         let mut raw_paths = BTreeSet::<Vec<String>>::new();
         collect_toml_all_paths(value, &mut Vec::new(), &mut raw_paths);
         for path in raw_paths {
@@ -2326,6 +2378,7 @@ fn build_config_list_entry(
     effective_toml: &TomlValue,
     shared_toml: &TomlValue,
     local_toml: &TomlValue,
+    device_toml: &TomlValue,
 ) -> Result<ConfigListEntry, AppError> {
     let effective_value = if descriptor.key.contains('<') {
         None
@@ -2342,6 +2395,11 @@ fn build_config_list_entry(
     } else {
         get_toml_value_by_key(local_toml, &descriptor.storage_key, true)
     };
+    let device_value = if descriptor.key.contains('<') {
+        None
+    } else {
+        get_toml_value_by_key(device_toml, &descriptor.storage_key, true)
+    };
 
     let effective_json = effective_value
         .as_ref()
@@ -2349,6 +2407,8 @@ fn build_config_list_entry(
         .transpose()?;
     let value_source = if local_value.is_some() {
         ConfigValueSource::LocalOverride
+    } else if device_value.is_some() {
+        ConfigValueSource::DeviceOverride
     } else if shared_value.is_some() {
         ConfigValueSource::SharedOverride
     } else if effective_json.is_none() {
@@ -2404,46 +2464,36 @@ fn plan_config_value_write(
     _dry_run: bool,
 ) -> Result<ConfigMutationPlan, AppError> {
     let descriptor_match = resolve_config_descriptor(key)?;
-    if !descriptor_match.descriptor.target_support.allows(target) {
-        return Err(AppError::operation(format!(
-            "config key `{key}` is not writable in {}",
-            match target {
-                ConfigTarget::Shared => ".vulcan/config.toml",
-                ConfigTarget::Local => ".vulcan/config.local.toml",
-            }
-        )));
-    }
+    ensure_target_allowed(key, &descriptor_match.descriptor, target)?;
     validate_config_value(&descriptor_match.descriptor, &value)?;
 
-    let absolute_config_path = target.path(paths);
-    let created_config = !absolute_config_path.exists();
-    let existing_contents = fs::read_to_string(&absolute_config_path).ok();
-    let mut config_value = load_config_file_toml(&absolute_config_path)?;
     let storage_refs = descriptor_match
         .storage_segments
         .iter()
         .map(String::as_str)
         .collect::<Vec<_>>();
-    let existed_in_target = config_toml_path_exists(&config_value, &storage_refs);
+    let mut document = load_mutation_target(paths, target, &storage_refs)?;
+    let existed_in_target = config_toml_path_exists(&document.value, &storage_refs);
     if !descriptor_match.descriptor.creatable_when_absent && !existed_in_target {
         return Err(AppError::operation(format!(
             "config key `{key}` cannot be created when absent"
         )));
     }
 
-    set_config_toml_value(&mut config_value, &storage_refs, value)?;
-    let rendered_contents = toml::to_string_pretty(&config_value).map_err(AppError::operation)?;
+    set_config_toml_value(&mut document.value, &storage_refs, value)?;
+    let rendered_contents = toml::to_string_pretty(&document.value).map_err(AppError::operation)?;
     validate_vulcan_overrides_toml(&rendered_contents).map_err(AppError::operation)?;
-    let updated = existing_contents.as_deref() != Some(rendered_contents.as_str());
+    let updated = document.existing.as_deref() != Some(rendered_contents.as_str());
     let diagnostics = normalize_config_diagnostics(paths, &load_vault_config(paths).diagnostics);
 
     Ok(ConfigMutationPlan {
-        config_path: relativize_config_path(paths, &absolute_config_path),
-        created_config,
+        config_path: relativize_config_path(paths, &document.absolute_path),
+        created_config: document.created,
         updated,
         diagnostics,
-        absolute_config_path,
+        absolute_config_path: document.absolute_path,
         rendered_contents,
+        device_section: document.device_section,
     })
 }
 
@@ -2454,48 +2504,118 @@ fn plan_config_value_unset(
     _dry_run: bool,
 ) -> Result<(ConfigMutationPlan, bool), AppError> {
     let descriptor_match = resolve_config_descriptor(key)?;
-    if !descriptor_match.descriptor.target_support.allows(target) {
-        return Err(AppError::operation(format!(
-            "config key `{key}` is not writable in {}",
-            match target {
-                ConfigTarget::Shared => ".vulcan/config.toml",
-                ConfigTarget::Local => ".vulcan/config.local.toml",
-            }
-        )));
-    }
+    ensure_target_allowed(key, &descriptor_match.descriptor, target)?;
 
-    let absolute_config_path = target.path(paths);
-    let created_config = !absolute_config_path.exists();
-    let existing_contents = fs::read_to_string(&absolute_config_path).ok();
-    let mut config_value = load_config_file_toml(&absolute_config_path)?;
     let storage_refs = descriptor_match
         .storage_segments
         .iter()
         .map(String::as_str)
         .collect::<Vec<_>>();
-    let removed = remove_config_toml_value(&mut config_value, &storage_refs)?;
-    let rendered_contents = toml::to_string_pretty(&config_value).map_err(AppError::operation)?;
+    let mut document = load_mutation_target(paths, target, &storage_refs)?;
+    let removed = remove_config_toml_value(&mut document.value, &storage_refs)?;
+    let rendered_contents = toml::to_string_pretty(&document.value).map_err(AppError::operation)?;
     validate_vulcan_overrides_toml(&rendered_contents).map_err(AppError::operation)?;
-    let updated = removed && existing_contents.as_deref() != Some(rendered_contents.as_str());
+    let updated = removed && document.existing.as_deref() != Some(rendered_contents.as_str());
     let diagnostics = normalize_config_diagnostics(paths, &load_vault_config(paths).diagnostics);
 
     Ok((
         ConfigMutationPlan {
-            config_path: relativize_config_path(paths, &absolute_config_path),
-            created_config,
+            config_path: relativize_config_path(paths, &document.absolute_path),
+            created_config: document.created,
             updated,
             diagnostics,
-            absolute_config_path,
+            absolute_config_path: document.absolute_path,
             rendered_contents,
+            device_section: document.device_section,
         },
         removed,
     ))
+}
+
+fn ensure_target_allowed(
+    key: &str,
+    descriptor: &ConfigDescriptor,
+    target: ConfigTarget,
+) -> Result<(), AppError> {
+    if descriptor.target_support.allows(target) {
+        Ok(())
+    } else {
+        Err(AppError::operation(format!(
+            "config key `{key}` is not writable in {}",
+            target.description()
+        )))
+    }
+}
+
+fn reject_device_target(target: ConfigTarget) -> Result<(), AppError> {
+    if target == ConfigTarget::Device {
+        return Err(AppError::operation(
+            "this command cannot write the device's daemon.toml; use `vulcan config set --target device`",
+        ));
+    }
+    Ok(())
+}
+
+/// The document a mutation edits. For the device target it is one section of
+/// `daemon.toml`, rendered on its own so the comparison and preview match
+/// what is written.
+struct MutationTarget {
+    absolute_path: PathBuf,
+    created: bool,
+    existing: Option<String>,
+    value: TomlValue,
+    device_section: Option<DeviceSection>,
+}
+
+fn load_mutation_target(
+    paths: &VaultPaths,
+    target: ConfigTarget,
+    storage_refs: &[&str],
+) -> Result<MutationTarget, AppError> {
+    let absolute_path = target.path(paths);
+    if target != ConfigTarget::Device {
+        return Ok(MutationTarget {
+            created: !absolute_path.exists(),
+            existing: fs::read_to_string(&absolute_path).ok(),
+            value: load_config_file_toml(&absolute_path)?,
+            absolute_path,
+            device_section: None,
+        });
+    }
+    if absolute_path.as_os_str().is_empty() {
+        return Err(AppError::operation(
+            "no user configuration directory for the device's daemon.toml",
+        ));
+    }
+    let section = DeviceSection::for_key(storage_refs, paths.vault_root());
+    let value = read_device_section(&absolute_path, &section).map_err(AppError::operation)?;
+    Ok(MutationTarget {
+        created: !absolute_path.exists(),
+        existing: Some(toml::to_string_pretty(&value).map_err(AppError::operation)?),
+        value,
+        absolute_path,
+        device_section: Some(section),
+    })
 }
 
 fn apply_config_mutation_plan(
     paths: &VaultPaths,
     plan: &ConfigMutationPlan,
 ) -> Result<Vec<ConfigDiagnostic>, AppError> {
+    if let Some(section) = &plan.device_section {
+        if plan.updated {
+            let document = plan
+                .rendered_contents
+                .parse::<TomlValue>()
+                .map_err(AppError::operation)?;
+            write_device_section(&plan.absolute_config_path, section, &document)
+                .map_err(AppError::operation)?;
+        }
+        return Ok(normalize_config_diagnostics(
+            paths,
+            &load_vault_config(paths).diagnostics,
+        ));
+    }
     if plan.updated {
         ensure_vulcan_dir(paths).map_err(AppError::operation)?;
         let relative_path = plan
@@ -2524,15 +2644,7 @@ fn apply_config_operation_to_value(
     match operation {
         ConfigMutationOperation::Set { key, value } => {
             let descriptor_match = resolve_config_descriptor(key)?;
-            if !descriptor_match.descriptor.target_support.allows(target) {
-                return Err(AppError::operation(format!(
-                    "config key `{key}` is not writable in {}",
-                    match target {
-                        ConfigTarget::Shared => ".vulcan/config.toml",
-                        ConfigTarget::Local => ".vulcan/config.local.toml",
-                    }
-                )));
-            }
+            ensure_target_allowed(key, &descriptor_match.descriptor, target)?;
             validate_config_value(&descriptor_match.descriptor, value)?;
             let storage_refs = descriptor_match
                 .storage_segments
@@ -2549,15 +2661,7 @@ fn apply_config_operation_to_value(
         }
         ConfigMutationOperation::Unset { key } => {
             let descriptor_match = resolve_config_descriptor(key)?;
-            if !descriptor_match.descriptor.target_support.allows(target) {
-                return Err(AppError::operation(format!(
-                    "config key `{key}` is not writable in {}",
-                    match target {
-                        ConfigTarget::Shared => ".vulcan/config.toml",
-                        ConfigTarget::Local => ".vulcan/config.local.toml",
-                    }
-                )));
-            }
+            ensure_target_allowed(key, &descriptor_match.descriptor, target)?;
             let storage_refs = descriptor_match
                 .storage_segments
                 .iter()
@@ -2673,6 +2777,208 @@ fn relativize_config_path(paths: &VaultPaths, path: &Path) -> PathBuf {
         .strip_prefix(paths.vault_root())
         .map_or_else(|_| path.to_path_buf(), Path::to_path_buf);
     PathBuf::from(relative_or_original.to_string_lossy().replace('\\', "/"))
+}
+
+/// A move of device-local settings out of the vault's `config.local.toml`
+/// into the device's `daemon.toml`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ConfigMoveReport {
+    /// Moved keys, as dotted paths.
+    pub keys: Vec<String>,
+    pub from: PathBuf,
+    pub to: PathBuf,
+    /// Whether `config.local.toml` is deleted because nothing is left in it.
+    pub removes_local_file: bool,
+    pub dry_run: bool,
+    pub diagnostics: Vec<ConfigDiagnostic>,
+    #[serde(skip)]
+    device_section: Option<DeviceSection>,
+    #[serde(skip)]
+    device_document: TomlValue,
+    #[serde(skip)]
+    local_rendered: Option<String>,
+}
+
+/// Plans moving one permission profile from `config.local.toml` to the
+/// device-global `[permissions]` in `daemon.toml`, where it becomes valid as
+/// a device ceiling for every vault. An identical definition already there
+/// is fine; a different one is refused.
+pub fn plan_permission_profile_move(
+    paths: &VaultPaths,
+    name: &str,
+    dry_run: bool,
+) -> Result<ConfigMoveReport, AppError> {
+    let mut local = load_config_file_toml(paths.local_config_file())?;
+    let key = ["permissions", "profiles", name];
+    let definition = get_toml_path(&local, &key).cloned().ok_or_else(|| {
+        AppError::operation(format!(
+            "{} does not define permission profile `{name}`",
+            relativize_config_path(paths, paths.local_config_file()).display()
+        ))
+    })?;
+    let daemon_path = device_config_path()?;
+    let section = DeviceSection::Permissions;
+    let mut device = read_device_section(&daemon_path, &section).map_err(AppError::operation)?;
+    if let Some(existing) = get_toml_path(&device, &key) {
+        if existing != &definition {
+            return Err(AppError::operation(format!(
+                "{} already defines permission profile `{name}` differently; compare both and remove one",
+                daemon_path.display()
+            )));
+        }
+    }
+    set_config_toml_value(&mut device, &key, definition)?;
+    remove_config_toml_value(&mut local, &key)?;
+    finish_move_plan(
+        paths,
+        vec![key.join(".")],
+        section,
+        device,
+        &local,
+        daemon_path,
+        dry_run,
+    )
+}
+
+/// Plans moving everything in `config.local.toml` into this vault's
+/// `[[vault]]` entry in `daemon.toml`, after which the local file is
+/// deleted. Keys both already set differently are refused.
+pub fn plan_local_config_move(
+    paths: &VaultPaths,
+    dry_run: bool,
+) -> Result<ConfigMoveReport, AppError> {
+    let local = load_config_file_toml(paths.local_config_file())?;
+    let Some(local_table) = local.as_table().filter(|table| !table.is_empty()) else {
+        return Err(AppError::operation(format!(
+            "{} is empty or missing; nothing to move",
+            relativize_config_path(paths, paths.local_config_file()).display()
+        )));
+    };
+    let daemon_path = device_config_path()?;
+    let section = DeviceSection::Vault(paths.vault_root().to_path_buf());
+    let mut device = read_device_section(&daemon_path, &section).map_err(AppError::operation)?;
+    let mut keys = Vec::new();
+    let mut conflicts = Vec::new();
+    merge_moved_table(
+        device.as_table_mut().expect("device section is a table"),
+        local_table,
+        "",
+        &mut keys,
+        &mut conflicts,
+    );
+    if !conflicts.is_empty() {
+        return Err(AppError::operation(format!(
+            "{} already sets {} differently; compare and keep each setting in one place",
+            daemon_path.display(),
+            conflicts.join(", ")
+        )));
+    }
+    let empty = TomlValue::Table(toml::map::Map::new());
+    finish_move_plan(paths, keys, section, device, &empty, daemon_path, dry_run)
+}
+
+pub fn apply_config_move(
+    paths: &VaultPaths,
+    mut report: ConfigMoveReport,
+) -> Result<ConfigMoveReport, AppError> {
+    let section = report
+        .device_section
+        .as_ref()
+        .ok_or_else(|| AppError::operation("move plan has no device section"))?;
+    // Device first: if the second step fails, the setting exists in both
+    // places with the same value, which is not a conflict.
+    write_device_section(&report.to, section, &report.device_document)
+        .map_err(AppError::operation)?;
+    match &report.local_rendered {
+        Some(rendered) => {
+            let relative = paths
+                .local_config_file()
+                .strip_prefix(paths.vault_root())
+                .map_err(AppError::operation)?;
+            secure_replace(paths.vault_root(), relative, rendered).map_err(AppError::operation)?;
+        }
+        None => match fs::remove_file(paths.local_config_file()) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(AppError::operation(error)),
+        },
+    }
+    report.diagnostics = normalize_config_diagnostics(paths, &load_vault_config(paths).diagnostics);
+    Ok(report)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_move_plan(
+    paths: &VaultPaths,
+    keys: Vec<String>,
+    section: DeviceSection,
+    device_document: TomlValue,
+    local: &TomlValue,
+    daemon_path: PathBuf,
+    dry_run: bool,
+) -> Result<ConfigMoveReport, AppError> {
+    let device_rendered = toml::to_string_pretty(&device_document).map_err(AppError::operation)?;
+    validate_vulcan_overrides_toml(&device_rendered).map_err(AppError::operation)?;
+    let local_rendered = if local.as_table().is_some_and(toml::map::Map::is_empty) {
+        None
+    } else {
+        Some(toml::to_string_pretty(local).map_err(AppError::operation)?)
+    };
+    Ok(ConfigMoveReport {
+        keys,
+        from: relativize_config_path(paths, paths.local_config_file()),
+        to: daemon_path,
+        removes_local_file: local_rendered.is_none(),
+        dry_run,
+        diagnostics: normalize_config_diagnostics(paths, &load_vault_config(paths).diagnostics),
+        device_section: Some(section),
+        device_document,
+        local_rendered,
+    })
+}
+
+fn device_config_path() -> Result<PathBuf, AppError> {
+    vulcan_core::config::daemon_config_file().ok_or_else(|| {
+        AppError::operation("no user configuration directory for the device's daemon.toml")
+    })
+}
+
+fn get_toml_path<'a>(value: &'a TomlValue, path: &[&str]) -> Option<&'a TomlValue> {
+    path.iter()
+        .try_fold(value, |current, segment| current.get(*segment))
+}
+
+fn merge_moved_table(
+    target: &mut toml::map::Map<String, TomlValue>,
+    source: &toml::map::Map<String, TomlValue>,
+    prefix: &str,
+    keys: &mut Vec<String>,
+    conflicts: &mut Vec<String>,
+) {
+    for (key, value) in source {
+        let path = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{prefix}.{key}")
+        };
+        if let TomlValue::Table(source) = value {
+            if !target.contains_key(key) {
+                target.insert(key.clone(), TomlValue::Table(toml::map::Map::new()));
+            }
+            if let Some(TomlValue::Table(existing)) = target.get_mut(key) {
+                merge_moved_table(existing, source, &path, keys, conflicts);
+                continue;
+            }
+        }
+        match (target.get_mut(key), value) {
+            (Some(existing), value) if existing != value => conflicts.push(path),
+            (Some(_), _) => keys.push(path),
+            (None, value) => {
+                target.insert(key.clone(), value.clone());
+                keys.push(path);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

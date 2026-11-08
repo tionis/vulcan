@@ -898,7 +898,7 @@ Notes:
   `config list` is derived from the schema registry used by config mutation commands and the settings TUI.
   `config edit` requires an interactive terminal, is schema-driven, and can edit shared or local overrides before saving.
   Templater creation-rule rows have structured editors; folder fields suggest vault directories and still accept manual paths.
-  `config set` and `config unset` accept `--target <shared|local>`; quote strings when the shell would otherwise strip them.
+  `config set` and `config unset` accept `--target <shared|local|device>`; `device` writes this device's `daemon.toml`. Quote strings when the shell would otherwise strip them.
   Use `config alias ...`, `config permissions profile ...`, `plugin set`, and `export profile ...` when a dedicated command is available.
   Import commands preserve unrelated config sections and overwrite the mapped target keys.
   Import flags: --preview/--dry-run, --apply, --target <shared|local>, --no-commit
@@ -3296,6 +3296,9 @@ pub enum ConfigImportCommand {
 pub enum ConfigTargetArg {
     Shared,
     Local,
+    /// The device's daemon.toml: permission profiles go to its device-global
+    /// [permissions], other settings to this vault's [[vault]] entry.
+    Device,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
@@ -3360,7 +3363,7 @@ pub enum ConfigAliasCommand {
             long,
             value_enum,
             default_value_t = ConfigTargetArg::Local,
-            help = "Config file to write: shared vault config or local override"
+            help = "Config file to write: shared vault config, local override, or the device's daemon.toml"
         )]
         target: ConfigTargetArg,
         #[arg(long, help = "Preview the config change without writing files")]
@@ -3376,7 +3379,7 @@ pub enum ConfigAliasCommand {
             long,
             value_enum,
             default_value_t = ConfigTargetArg::Local,
-            help = "Config file to write: shared vault config or local override"
+            help = "Config file to write: shared vault config, local override, or the device's daemon.toml"
         )]
         target: ConfigTargetArg,
         #[arg(long, help = "Preview the config change without writing files")]
@@ -3405,7 +3408,7 @@ pub enum ConfigPermissionsProfileCommand {
             long,
             value_enum,
             default_value_t = ConfigTargetArg::Shared,
-            help = "Config file to write: shared vault config or local override"
+            help = "Config file to write: shared vault config, local override, or the device's daemon.toml"
         )]
         target: ConfigTargetArg,
         #[arg(long, help = "Preview the config change without writing files")]
@@ -3425,7 +3428,7 @@ pub enum ConfigPermissionsProfileCommand {
             long,
             value_enum,
             default_value_t = ConfigTargetArg::Shared,
-            help = "Config file to write: shared vault config or local override"
+            help = "Config file to write: shared vault config, local override, or the device's daemon.toml"
         )]
         target: ConfigTargetArg,
         #[arg(long, help = "Preview the config change without writing files")]
@@ -3443,6 +3446,16 @@ pub enum ConfigPermissionsProfileCommand {
         #[arg(long, help = "Preview the config change without writing files")]
         dry_run: bool,
     },
+    #[command(
+        about = "Move a local permission profile into this device's daemon.toml",
+        long_about = "Move a permission profile from the vault's `.vulcan/config.local.toml` to the device-global `[permissions]` table in `daemon.toml`. There it is valid as a device ceiling for every vault on this device, and it lives with the rest of the device's declarative configuration. An identical definition already in `daemon.toml` is fine; a different one is refused. Preview with `--dry-run`."
+    )]
+    Move {
+        #[arg(help = "Permission profile name")]
+        name: String,
+        #[arg(long, help = "Preview the move without writing files")]
+        dry_run: bool,
+    },
     #[command(about = "Delete one permission profile override")]
     Delete {
         #[arg(help = "Permission profile name")]
@@ -3451,7 +3464,7 @@ pub enum ConfigPermissionsProfileCommand {
             long,
             value_enum,
             default_value_t = ConfigTargetArg::Shared,
-            help = "Config file to write: shared vault config or local override"
+            help = "Config file to write: shared vault config, local override, or the device's daemon.toml"
         )]
         target: ConfigTargetArg,
         #[arg(long, help = "Preview the config change without writing files")]
@@ -3502,7 +3515,7 @@ pub enum ConfigCommand {
             long,
             value_enum,
             default_value_t = ConfigTargetArg::Shared,
-            help = "Config file to write: shared vault config or local override"
+            help = "Config file to write: shared vault config, local override, or the device's daemon.toml"
         )]
         target: ConfigTargetArg,
         #[arg(long, help = "Preview the config change without writing files")]
@@ -3518,7 +3531,7 @@ pub enum ConfigCommand {
             long,
             value_enum,
             default_value_t = ConfigTargetArg::Shared,
-            help = "Config file to write: shared vault config or local override"
+            help = "Config file to write: shared vault config, local override, or the device's daemon.toml"
         )]
         target: ConfigTargetArg,
         #[arg(long, help = "Preview the config change without writing files")]
@@ -3536,8 +3549,25 @@ pub enum ConfigCommand {
         #[command(subcommand)]
         command: ConfigPermissionsCommand,
     },
+    #[command(about = "Manage the vault's device-local config.local.toml")]
+    Local {
+        #[command(subcommand)]
+        command: ConfigLocalCommand,
+    },
     #[command(about = "Import compatible Obsidian plugin settings")]
     Import(ConfigImportSelection),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum ConfigLocalCommand {
+    #[command(
+        about = "Move config.local.toml into this vault's entry in daemon.toml",
+        long_about = "Move every setting in the vault's `.vulcan/config.local.toml` into the `config` table of this vault's `[[vault]]` entry in the device's `daemon.toml`, then delete the local file. The vault must be registered (`vulcan vault add`). Settings already present in `daemon.toml` with a different value are refused. Preview with `--dry-run`."
+    )]
+    Move {
+        #[arg(long, help = "Preview the move without writing files")]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -3552,7 +3582,7 @@ pub enum PluginCommand {
             long,
             value_enum,
             default_value_t = ConfigTargetArg::Shared,
-            help = "Config file to write: shared vault config or local override"
+            help = "Config file to write: shared vault config, local override, or the device's daemon.toml"
         )]
         target: ConfigTargetArg,
         #[arg(long, help = "Preview the config change without writing files")]
@@ -3568,7 +3598,7 @@ pub enum PluginCommand {
             long,
             value_enum,
             default_value_t = ConfigTargetArg::Shared,
-            help = "Config file to write: shared vault config or local override"
+            help = "Config file to write: shared vault config, local override, or the device's daemon.toml"
         )]
         target: ConfigTargetArg,
         #[arg(long, help = "Preview the config change without writing files")]
@@ -3629,7 +3659,7 @@ pub enum PluginCommand {
             long,
             value_enum,
             default_value_t = ConfigTargetArg::Shared,
-            help = "Config file to write: shared vault config or local override"
+            help = "Config file to write: shared vault config, local override, or the device's daemon.toml"
         )]
         target: ConfigTargetArg,
         #[arg(long, help = "Preview the config change without writing files")]
@@ -3645,7 +3675,7 @@ pub enum PluginCommand {
             long,
             value_enum,
             default_value_t = ConfigTargetArg::Shared,
-            help = "Config file to write: shared vault config or local override"
+            help = "Config file to write: shared vault config, local override, or the device's daemon.toml"
         )]
         target: ConfigTargetArg,
         #[arg(long, help = "Preview the config change without writing files")]

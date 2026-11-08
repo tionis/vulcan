@@ -81,6 +81,18 @@ pub fn daemon_config_file() -> Option<PathBuf> {
     }
 }
 
+/// The settings `daemon.toml` contributes to one vault, as raw TOML in the
+/// vault config schema: the device-global `[permissions]` merged with the
+/// vault entry's `config` table. Used to attribute effective values to the
+/// device file; unreadable files contribute nothing here and are reported
+/// by the regular config loaders.
+#[must_use]
+pub fn device_config_toml(vault_root: &Path) -> Option<TomlValue> {
+    let mut ignored = Vec::new();
+    let layer = load_device_layer(vault_root, &mut ignored)?;
+    Some(TomlValue::Table(layer.combined_raw()))
+}
+
 pub(super) fn load_device_layer(
     vault_root: &Path,
     diagnostics: &mut Vec<ConfigDiagnostic>,

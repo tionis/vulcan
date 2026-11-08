@@ -1291,11 +1291,13 @@ impl ConfigTuiState {
         ] {
             let value = match target {
                 crate::app_config::ConfigTarget::Shared => &self.shared_toml,
-                crate::app_config::ConfigTarget::Local => &self.local_toml,
+                crate::app_config::ConfigTarget::Local
+                | crate::app_config::ConfigTarget::Device => &self.local_toml,
             };
             let baseline = match target {
                 crate::app_config::ConfigTarget::Shared => &self.baseline_shared_toml,
-                crate::app_config::ConfigTarget::Local => &self.baseline_local_toml,
+                crate::app_config::ConfigTarget::Local
+                | crate::app_config::ConfigTarget::Device => &self.baseline_local_toml,
             };
             if value == baseline {
                 continue;
@@ -1387,21 +1389,27 @@ impl ConfigTuiState {
     fn selected_target_label(&self) -> &'static str {
         match self.selected_target {
             crate::app_config::ConfigTarget::Shared => "shared",
-            crate::app_config::ConfigTarget::Local => "local",
+            crate::app_config::ConfigTarget::Local | crate::app_config::ConfigTarget::Device => {
+                "local"
+            }
         }
     }
 
     fn target_toml(&self) -> &TomlValue {
         match self.selected_target {
             crate::app_config::ConfigTarget::Shared => &self.shared_toml,
-            crate::app_config::ConfigTarget::Local => &self.local_toml,
+            crate::app_config::ConfigTarget::Local | crate::app_config::ConfigTarget::Device => {
+                &self.local_toml
+            }
         }
     }
 
     fn target_toml_mut(&mut self) -> &mut TomlValue {
         match self.selected_target {
             crate::app_config::ConfigTarget::Shared => &mut self.shared_toml,
-            crate::app_config::ConfigTarget::Local => &mut self.local_toml,
+            crate::app_config::ConfigTarget::Local | crate::app_config::ConfigTarget::Device => {
+                &mut self.local_toml
+            }
         }
     }
 
@@ -1429,7 +1437,9 @@ impl ConfigTuiState {
     fn target_value(&self, entry: &ConfigEntry) -> Option<&TomlValue> {
         match self.selected_target {
             crate::app_config::ConfigTarget::Shared => self.shared_value(entry),
-            crate::app_config::ConfigTarget::Local => self.local_value(entry),
+            crate::app_config::ConfigTarget::Local | crate::app_config::ConfigTarget::Device => {
+                self.local_value(entry)
+            }
         }
     }
 
@@ -1596,7 +1606,8 @@ impl ConfigTuiState {
                     crate::app_config::ConfigTarget::Shared => {
                         crate::app_config::ConfigTarget::Local
                     }
-                    crate::app_config::ConfigTarget::Local => {
+                    crate::app_config::ConfigTarget::Local
+                    | crate::app_config::ConfigTarget::Device => {
                         crate::app_config::ConfigTarget::Shared
                     }
                 };
@@ -1632,6 +1643,7 @@ impl ConfigTuiState {
             crate::app_config::ConfigValueSource::ObsidianImport => "obsidian import",
             crate::app_config::ConfigValueSource::SharedOverride => "shared override",
             crate::app_config::ConfigValueSource::LocalOverride => "local override",
+            crate::app_config::ConfigValueSource::DeviceOverride => "device (daemon.toml)",
             crate::app_config::ConfigValueSource::Unset => "unset",
         }
     }
@@ -1642,6 +1654,7 @@ impl ConfigTuiState {
             crate::app_config::ConfigValueSource::ObsidianImport => ("import", Color::Magenta),
             crate::app_config::ConfigValueSource::SharedOverride => ("shared", Color::Green),
             crate::app_config::ConfigValueSource::LocalOverride => ("local", Color::Yellow),
+            crate::app_config::ConfigValueSource::DeviceOverride => ("device", Color::Cyan),
             crate::app_config::ConfigValueSource::Unset => ("unset", Color::DarkGray),
         }
     }

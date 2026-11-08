@@ -2330,8 +2330,8 @@ impl RegistryLock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs::File;
     use crate::mcp_remote::{McpRemoteAuthentication, McpRemoteVault, DEFAULT_MCP_TOOL_PACKS};
+    use std::fs::File;
     use tempfile::tempdir;
 
     #[test]

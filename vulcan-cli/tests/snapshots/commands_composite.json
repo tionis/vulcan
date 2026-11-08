@@ -7921,7 +7921,7 @@
       },
       {
         "about": "Inspect and import effective Vulcan configuration",
-        "after_help": "Notes:\n  `config show` merges built-in defaults with `.vulcan/config.toml` and `.vulcan/config.local.toml` when present.\n  `config list` is derived from the schema registry used by config mutation commands and the settings TUI.\n  `config edit` requires an interactive terminal, is schema-driven, and can edit shared or local overrides before saving.\n  Templater creation-rule rows have structured editors; folder fields suggest vault directories and still accept manual paths.\n  `config set` and `config unset` accept `--target <shared|local>`; quote strings when the shell would otherwise strip them.\n  Use `config alias ...`, `config permissions profile ...`, `plugin set`, and `export profile ...` when a dedicated command is available.\n  Import commands preserve unrelated config sections and overwrite the mapped target keys.\n  Import flags: --preview/--dry-run, --apply, --target <shared|local>, --no-commit\n  Use `config import --all` to apply every detected importer in registry order.\n  Use `config import --list` to inspect detectable sources without writing.\n  TaskNotes import migrates recognized generated mdbase 0.2 assets to 0.3 and disables the\n  legacy generator so it cannot overwrite the migrated type; always preview this control-file change.\n  When git auto-commit is enabled for mutations, config edits, config CRUD, plugin config changes, and config imports participate like other mutating commands.\n\nExamples:\n  vulcan config show\n  vulcan config list web\n  vulcan config show periodic.daily\n  vulcan config get periodic.daily.template\n  vulcan config edit\n  vulcan config set periodic.daily.template \"Templates/Daily\"\n  vulcan config set web.search.backend brave --target local\n  vulcan config unset web.search.backend --target local\n  vulcan config alias set ship \"query --where 'status = shipped'\"\n  vulcan config permissions profile create agent --clone readonly\n  vulcan config permissions profile set agent network '{ allow = true, domains = [\"example.com\"] }'\n  vulcan config import core --preview\n  vulcan config import core --apply\n  vulcan config import dataview\n  vulcan config import kanban\n  vulcan config import --all --preview\n  vulcan config import --list\n  vulcan config import periodic-notes\n  vulcan config import quickadd\n  vulcan config import tasknotes --preview\n  vulcan config import tasks --preview\n  vulcan config import templater --target local\n  vulcan --output json config get web.search.backend\n  vulcan --output json config list plugins\n  vulcan --output json config show web.search\n  vulcan --output json config import tasks",
+        "after_help": "Notes:\n  `config show` merges built-in defaults with `.vulcan/config.toml` and `.vulcan/config.local.toml` when present.\n  `config list` is derived from the schema registry used by config mutation commands and the settings TUI.\n  `config edit` requires an interactive terminal, is schema-driven, and can edit shared or local overrides before saving.\n  Templater creation-rule rows have structured editors; folder fields suggest vault directories and still accept manual paths.\n  `config set` and `config unset` accept `--target <shared|local|device>`; `device` writes this device's `daemon.toml`. Quote strings when the shell would otherwise strip them.\n  Use `config alias ...`, `config permissions profile ...`, `plugin set`, and `export profile ...` when a dedicated command is available.\n  Import commands preserve unrelated config sections and overwrite the mapped target keys.\n  Import flags: --preview/--dry-run, --apply, --target <shared|local>, --no-commit\n  Use `config import --all` to apply every detected importer in registry order.\n  Use `config import --list` to inspect detectable sources without writing.\n  TaskNotes import migrates recognized generated mdbase 0.2 assets to 0.3 and disables the\n  legacy generator so it cannot overwrite the migrated type; always preview this control-file change.\n  When git auto-commit is enabled for mutations, config edits, config CRUD, plugin config changes, and config imports participate like other mutating commands.\n\nExamples:\n  vulcan config show\n  vulcan config list web\n  vulcan config show periodic.daily\n  vulcan config get periodic.daily.template\n  vulcan config edit\n  vulcan config set periodic.daily.template \"Templates/Daily\"\n  vulcan config set web.search.backend brave --target local\n  vulcan config unset web.search.backend --target local\n  vulcan config alias set ship \"query --where 'status = shipped'\"\n  vulcan config permissions profile create agent --clone readonly\n  vulcan config permissions profile set agent network '{ allow = true, domains = [\"example.com\"] }'\n  vulcan config import core --preview\n  vulcan config import core --apply\n  vulcan config import dataview\n  vulcan config import kanban\n  vulcan config import --all --preview\n  vulcan config import --list\n  vulcan config import periodic-notes\n  vulcan config import quickadd\n  vulcan config import tasknotes --preview\n  vulcan config import tasks --preview\n  vulcan config import templater --target local\n  vulcan --output json config get web.search.backend\n  vulcan --output json config list plugins\n  vulcan --output json config show web.search\n  vulcan --output json config import tasks",
         "name": "config",
         "options": [],
         "subcommands": [
@@ -8027,12 +8027,13 @@
                 ]
               },
               {
-                "help": "Config file to write: shared vault config or local override",
+                "help": "Config file to write: shared vault config, local override, or the device's daemon.toml",
                 "id": "target",
                 "long": "target",
                 "possible_values": [
                   "shared",
-                  "local"
+                  "local",
+                  "device"
                 ],
                 "required": false,
                 "short": null,
@@ -8087,12 +8088,13 @@
                 ]
               },
               {
-                "help": "Config file to write: shared vault config or local override",
+                "help": "Config file to write: shared vault config, local override, or the device's daemon.toml",
                 "id": "target",
                 "long": "target",
                 "possible_values": [
                   "shared",
-                  "local"
+                  "local",
+                  "device"
                 ],
                 "required": false,
                 "short": null,
@@ -8169,12 +8171,13 @@
                     ]
                   },
                   {
-                    "help": "Config file to write: shared vault config or local override",
+                    "help": "Config file to write: shared vault config, local override, or the device's daemon.toml",
                     "id": "target",
                     "long": "target",
                     "possible_values": [
                       "shared",
-                      "local"
+                      "local",
+                      "device"
                     ],
                     "required": false,
                     "short": null,
@@ -8229,12 +8232,13 @@
                     ]
                   },
                   {
-                    "help": "Config file to write: shared vault config or local override",
+                    "help": "Config file to write: shared vault config, local override, or the device's daemon.toml",
                     "id": "target",
                     "long": "target",
                     "possible_values": [
                       "shared",
-                      "local"
+                      "local",
+                      "device"
                     ],
                     "required": false,
                     "short": null,
@@ -8336,12 +8340,13 @@
                         ]
                       },
                       {
-                        "help": "Config file to write: shared vault config or local override",
+                        "help": "Config file to write: shared vault config, local override, or the device's daemon.toml",
                         "id": "target",
                         "long": "target",
                         "possible_values": [
                           "shared",
-                          "local"
+                          "local",
+                          "device"
                         ],
                         "required": false,
                         "short": null,
@@ -8418,12 +8423,13 @@
                         ]
                       },
                       {
-                        "help": "Config file to write: shared vault config or local override",
+                        "help": "Config file to write: shared vault config, local override, or the device's daemon.toml",
                         "id": "target",
                         "long": "target",
                         "possible_values": [
                           "shared",
-                          "local"
+                          "local",
+                          "device"
                         ],
                         "required": false,
                         "short": null,
@@ -8495,6 +8501,38 @@
                     "subcommands": []
                   },
                   {
+                    "about": "Move a local permission profile into this device's daemon.toml",
+                    "name": "move",
+                    "options": [
+                      {
+                        "help": "Permission profile name",
+                        "id": "name",
+                        "long": null,
+                        "possible_values": [],
+                        "required": true,
+                        "short": null,
+                        "value_names": [
+                          "NAME"
+                        ]
+                      },
+                      {
+                        "help": "Preview the move without writing files",
+                        "id": "dry_run",
+                        "long": "dry-run",
+                        "possible_values": [
+                          "true",
+                          "false"
+                        ],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "DRY_RUN"
+                        ]
+                      }
+                    ],
+                    "subcommands": []
+                  },
+                  {
                     "about": "Delete one permission profile override",
                     "name": "delete",
                     "options": [
@@ -8510,12 +8548,13 @@
                         ]
                       },
                       {
-                        "help": "Config file to write: shared vault config or local override",
+                        "help": "Config file to write: shared vault config, local override, or the device's daemon.toml",
                         "id": "target",
                         "long": "target",
                         "possible_values": [
                           "shared",
-                          "local"
+                          "local",
+                          "device"
                         ],
                         "required": false,
                         "short": null,
@@ -8555,6 +8594,34 @@
                     "subcommands": []
                   }
                 ]
+              }
+            ]
+          },
+          {
+            "about": "Manage the vault's device-local config.local.toml",
+            "name": "local",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "Move config.local.toml into this vault's entry in daemon.toml",
+                "name": "move",
+                "options": [
+                  {
+                    "help": "Preview the move without writing files",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
               }
             ]
           },
@@ -21269,12 +21336,13 @@
                 ]
               },
               {
-                "help": "Config file to write: shared vault config or local override",
+                "help": "Config file to write: shared vault config, local override, or the device's daemon.toml",
                 "id": "target",
                 "long": "target",
                 "possible_values": [
                   "shared",
-                  "local"
+                  "local",
+                  "device"
                 ],
                 "required": false,
                 "short": null,
@@ -21329,12 +21397,13 @@
                 ]
               },
               {
-                "help": "Config file to write: shared vault config or local override",
+                "help": "Config file to write: shared vault config, local override, or the device's daemon.toml",
                 "id": "target",
                 "long": "target",
                 "possible_values": [
                   "shared",
-                  "local"
+                  "local",
+                  "device"
                 ],
                 "required": false,
                 "short": null,
@@ -21560,12 +21629,13 @@
                 ]
               },
               {
-                "help": "Config file to write: shared vault config or local override",
+                "help": "Config file to write: shared vault config, local override, or the device's daemon.toml",
                 "id": "target",
                 "long": "target",
                 "possible_values": [
                   "shared",
-                  "local"
+                  "local",
+                  "device"
                 ],
                 "required": false,
                 "short": null,
@@ -21620,12 +21690,13 @@
                 ]
               },
               {
-                "help": "Config file to write: shared vault config or local override",
+                "help": "Config file to write: shared vault config, local override, or the device's daemon.toml",
                 "id": "target",
                 "long": "target",
                 "possible_values": [
                   "shared",
-                  "local"
+                  "local",
+                  "device"
                 ],
                 "required": false,
                 "short": null,

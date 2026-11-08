@@ -7,7 +7,7 @@ Notes:
   `config list` is derived from the schema registry used by config mutation commands and the settings TUI.
   `config edit` requires an interactive terminal, is schema-driven, and can edit shared or local overrides before saving.
   Templater creation-rule rows have structured editors; folder fields suggest vault directories and still accept manual paths.
-  `config set` and `config unset` accept `--target <shared|local>`; quote strings when the shell would otherwise strip them.
+  `config set` and `config unset` accept `--target <shared|local|device>`; `device` writes this device's `daemon.toml`. Quote strings when the shell would otherwise strip them.
   Use `config alias ...`, `config permissions profile ...`, `plugin set`, and `export profile ...` when a dedicated command is available.
   Import commands preserve unrelated config sections and overwrite the mapped target keys.
   Import flags: --preview/--dry-run, --apply, --target <shared|local>, --no-commit
@@ -64,7 +64,10 @@ Examples:
         create           Create one permission profile
         set              Set one permission profile field
         pin              Accept the vault's synced definition of a permission profile for this device
+        move             Move a local permission profile into this device's daemon.toml
         delete           Delete one permission profile override
+    local            Manage the vault's device-local config.local.toml
+      move             Move config.local.toml into this vault's entry in daemon.toml
     import           Import compatible Obsidian plugin settings
       core             Import Obsidian core settings
       dataview         Import Obsidian Dataview plugin settings

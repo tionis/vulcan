@@ -1,8 +1,8 @@
 # Declarative Device Configuration
 
 Status: design for Roadmap 10.12. Phase 1 (identity split, migration, format-preserving writes) is
-implemented, and so is the reading side of phase 2 (device profiles, vault `config` tables, `~`
-paths). The commands that write those tables and everything after are not.
+implemented, and so is phase 2 (device profiles, vault `config` tables, `~` paths, `--target
+device`, `profile move`, `config local move`). Phase 3 (`daemon plan`/`apply`) and later are not.
 
 ## Problem
 
@@ -181,7 +181,7 @@ above). Unit tests of `vulcan-core` never read the developer's real `daemon.toml
 file per test. The daemon stores `[permissions]` and `config` tables opaquely and writes them back
 unchanged. `vulcan config show` reports which
 source set each key, and `vulcan config set --target device` writes to the `[[vault]]` entry.
-`vulcan config local move <vault>` moves an existing `config.local.toml` into the entry.
+`vulcan config local move` (run in the vault) moves an existing `config.local.toml` into the entry.
 
 ## Commands
 
@@ -250,7 +250,7 @@ accepted for reading for at least one release. A downgrade after migration would
 and orphan tokens and grants, which the release notes must state.
 
 Vault `config.local.toml` profiles are not moved automatically. `vulcan daemon plan` suggests the
-move for profiles used as ceilings, and `vulcan config permissions profile move <name> --to device`
+move for profiles used as ceilings, and `vulcan config permissions profile move <name>`
 does it.
 
 ## Security
