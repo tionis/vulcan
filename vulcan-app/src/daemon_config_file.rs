@@ -954,7 +954,7 @@ authentication = { identity = "https://eric.example/" }
         std::fs::create_dir_all(&second).unwrap();
         let config_path = temporary.path().join("daemon.toml");
         let source = format!(
-            "# device\nbind = \"127.0.0.1:3210\"\n\n[[vault]]\nid = \"first\"\npath = \"{}\"\n\n[[vault]]\nid = \"second\" # keep\npath = \"{}\"\n",
+            "# device\nbind = \"127.0.0.1:3210\"\n\n[[vault]]\nid = \"first\"\npath = '{}'\n\n[[vault]]\nid = \"second\" # keep\npath = '{}'\n",
             first.display(),
             second.display()
         );

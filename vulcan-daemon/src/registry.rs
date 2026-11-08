@@ -3913,7 +3913,7 @@ profile = "files_only"
         let config_path = temporary.path().join("config/daemon.toml");
         fs::create_dir_all(config_path.parent().unwrap()).unwrap();
         let source = format!(
-            "# my device\nbind = \"127.0.0.1:3210\"\n\n[[vault]]\nid = \"personal\" # main\nregistration_id = \"01M1VGCJ78TTEENPQ908PPQ6T6\"\npath = \"{}\"\n",
+            "# my device\nbind = \"127.0.0.1:3210\"\n\n[[vault]]\nid = \"personal\" # main\nregistration_id = \"01M1VGCJ78TTEENPQ908PPQ6T6\"\npath = '{}'\n",
             wiki.display()
         );
         fs::write(&config_path, &source).unwrap();
@@ -3970,7 +3970,7 @@ profile = "files_only"
         fs::write(
             &config_path,
             format!(
-                "# rendered by hand\nbind = \"127.0.0.1:3210\" # loopback\n\n[[vault]]\n# the main one\nid = \"personal\"\npath = \"{}\"\n",
+                "# rendered by hand\nbind = \"127.0.0.1:3210\" # loopback\n\n[[vault]]\n# the main one\nid = \"personal\"\npath = '{}'\n",
                 first.display()
             ),
         )
@@ -4010,7 +4010,7 @@ profile = "files_only"
         fs::write(
             registry.path(),
             format!(
-                "[[vault]]\nid = \"personal\"\npath = \"{}\"\n",
+                "[[vault]]\nid = \"personal\"\npath = '{}'\n",
                 wiki.display()
             ),
         )

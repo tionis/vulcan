@@ -31,7 +31,7 @@ impl Device {
         fs::write(
             device.daemon_toml(),
             format!(
-                "# my device\n[[vault]]\nid = \"notes\"\npath = \"{}\"\n",
+                "# my device\n[[vault]]\nid = \"notes\"\npath = '{}'\n",
                 device.vault.display()
             ),
         )
