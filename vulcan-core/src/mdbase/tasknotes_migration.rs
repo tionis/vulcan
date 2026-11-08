@@ -46,7 +46,7 @@ pub fn migrate_tasknotes_v02_type(
         return Ok(None);
     };
     if root.get("kind").and_then(Value::as_str) == Some("mdbase.type") {
-        return Ok(None);
+        return repair_migrated_tasknotes_dates(root, body);
     }
     if root.get("name").and_then(Value::as_str) != Some("task")
         || !root.get("fields").is_some_and(Value::is_object)
@@ -216,7 +216,11 @@ fn convert_field(
         }
     };
     let mut schema = Map::from_iter([("type".to_string(), Value::String(json_type.to_string()))]);
-    if kind == "date" {
+    if kind == "date" && matches!(role, Some("scheduled" | "due")) {
+        // TaskNotes declares these as dates but stores a time in them when one
+        // is given, as local `YYYY-MM-DDTHH:MM` without an offset.
+        schema.insert("anyOf".to_string(), tasknotes_date_or_time_schema());
+    } else if kind == "date" {
         schema.insert("format".to_string(), Value::String("date".to_string()));
     } else if kind == "datetime" {
         schema.insert("format".to_string(), Value::String("date-time".to_string()));
@@ -341,6 +345,75 @@ fn convert_field(
     Ok(Value::Object(schema))
 }
 
+/// Earlier migrations declared `scheduled` and `due` as plain dates, which
+/// rejects the times `TaskNotes` stores there. Widen them in a type this
+/// migration produced; `None` when nothing needs changing.
+fn repair_migrated_tasknotes_dates(
+    root: &Map<String, Value>,
+    body: &str,
+) -> Result<Option<MdbaseTaskNotesTypeMigration>, MdbaseTaskNotesMigrationError> {
+    if root
+        .get("x-tasknotes")
+        .and_then(|tasknotes| tasknotes.get("migrated_from"))
+        .and_then(Value::as_str)
+        != Some("mdbase-0.2-tasknotes")
+    {
+        return Ok(None);
+    }
+    let mut repaired = root.clone();
+    let roles = root
+        .get("x-tasknotes")
+        .and_then(|tasknotes| tasknotes.get("fields"))
+        .and_then(Value::as_object);
+    let Some(properties) = repaired
+        .get_mut("schema")
+        .and_then(|schema| schema.get_mut("value"))
+        .and_then(|value| value.get_mut("properties"))
+        .and_then(Value::as_object_mut)
+    else {
+        return Ok(None);
+    };
+    let mut changed = false;
+    for (name, property) in properties.iter_mut() {
+        let role = roles
+            .and_then(|roles| roles.get(name))
+            .and_then(|field| field.get("tn_role"))
+            .and_then(Value::as_str);
+        let Some(property) = property.as_object_mut() else {
+            continue;
+        };
+        if matches!(role, Some("scheduled" | "due"))
+            && property.get("format").and_then(Value::as_str) == Some("date")
+        {
+            property.remove("format");
+            property.insert("anyOf".to_string(), tasknotes_date_or_time_schema());
+            changed = true;
+        }
+    }
+    if !changed {
+        return Ok(None);
+    }
+    let yaml = yaml_serde::to_string(&Value::Object(repaired))
+        .map_err(MdbaseTaskNotesMigrationError::Serialize)?;
+    Ok(Some(MdbaseTaskNotesTypeMigration {
+        source_version: "0.3".to_string(),
+        rendered_source: format!("---\n{yaml}---{body}"),
+    }))
+}
+
+/// The forms `TaskNotes` writes to `scheduled` and `due`: a date, a local time
+/// without an offset, or a full RFC 3339 timestamp.
+fn tasknotes_date_or_time_schema() -> Value {
+    serde_json::json!([
+        {"format": "date"},
+        {"pattern": TASKNOTES_LOCAL_TIME_PATTERN},
+        {"format": "date-time"}
+    ])
+}
+
+const TASKNOTES_LOCAL_TIME_PATTERN: &str =
+    r"^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])T([01]\d|2[0-3]):[0-5]\d(:[0-5]\d(\.\d+)?)?$";
+
 fn add_lifecycle_event(
     lifecycle: &mut Map<String, Value>,
     event: &str,
@@ -386,6 +459,8 @@ fields:
   dateCreated: {type: datetime, required: true, generated: now, tn_role: dateCreated}
   dateModified: {type: datetime, generated: now_on_write, tn_role: dateModified}
   projects: {type: list, items: {type: link}, tn_role: projects}
+  scheduled: {type: date, tn_role: scheduled}
+  completedDate: {type: date, tn_role: completedDate}
   blockedBy:
     type: list
     tn_role: blockedBy
@@ -430,6 +505,32 @@ It conforms to mdbase-spec) v0.2.0.
             "done"
         );
         assert!(migration.rendered_source.contains("mdbase-spec) v0.3.0"));
+
+        // `scheduled` takes the times TaskNotes writes; plain date fields stay strict.
+        let note = |field: &str, date: &str| {
+            serde_json::json!({
+                "title": "t", "status": "open",
+                "dateCreated": "2026-11-07T19:43:23+01:00", field: date
+            })
+        };
+        let instance_errors = |field: &str, date: &str| {
+            validate_mdbase_schema_value(&value["schema"]["value"], &note(field, date))
+                .expect("type schema should compile")
+                .len()
+        };
+        for accepted in [
+            "2026-11-08",
+            "2026-11-08T12:00",
+            "2026-11-08T12:00:00",
+            "2026-11-08T12:00:00+01:00",
+        ] {
+            assert_eq!(instance_errors("scheduled", accepted), 0, "{accepted}");
+        }
+        for rejected in ["tomorrow", "2026-13-08T12:00", "2026-11-08T25:00"] {
+            assert_ne!(instance_errors("scheduled", rejected), 0, "{rejected}");
+        }
+        assert_eq!(instance_errors("completedDate", "2026-11-08"), 0);
+        assert_ne!(instance_errors("completedDate", "2026-11-08T12:00"), 0);
     }
 
     #[test]
@@ -444,5 +545,44 @@ It conforms to mdbase-spec) v0.2.0.
         )
         .expect("parse")
         .is_none());
+    }
+
+    #[test]
+    fn repairs_strict_dates_left_by_an_earlier_migration_once() {
+        let source = r"---
+kind: mdbase.type
+name: task
+schema:
+  value:
+    type: object
+    properties:
+      scheduled: {type: string, format: date}
+      completedDate: {type: string, format: date}
+x-tasknotes:
+  fields:
+    scheduled: {tn_role: scheduled}
+    completedDate: {tn_role: completedDate}
+  migrated_from: mdbase-0.2-tasknotes
+---
+
+# Task
+";
+        let repair = migrate_tasknotes_v02_type(source)
+            .expect("repair should succeed")
+            .expect("strict scheduled should be repaired");
+        assert_eq!(repair.source_version, "0.3");
+        assert!(repair.rendered_source.ends_with("---\n\n# Task\n"));
+        let (yaml, _) = split_frontmatter(&repair.rendered_source).expect("frontmatter");
+        let value: Value = yaml_serde::from_str(yaml).expect("repaired yaml");
+        let properties = &value["schema"]["value"]["properties"];
+        assert!(properties["scheduled"].get("format").is_none());
+        assert_eq!(
+            properties["scheduled"]["anyOf"][1]["pattern"],
+            TASKNOTES_LOCAL_TIME_PATTERN
+        );
+        assert_eq!(properties["completedDate"]["format"], "date");
+        assert!(migrate_tasknotes_v02_type(&repair.rendered_source)
+            .expect("parse")
+            .is_none());
     }
 }
