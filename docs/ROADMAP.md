@@ -5871,7 +5871,7 @@ remotes, workers, agents, notifications and bots, and leaves the daemon service 
 undeclared state is reported as drift and removed only with `--prune`. Design:
 [`docs/specs/declarative-device-config.md`](specs/declarative-device-config.md).
 
-- [ ] 10.12.1 Move `registration_id` and `instance_id` to `identities.toml` with an automatic,
+- [x] 10.12.1 Move `registration_id` and `instance_id` to `daemon.identities.toml` with an automatic,
   resumable migration, and make every `daemon.toml` write format-preserving.
 - [ ] 10.12.2 Device-global `[permissions.profiles]` in `daemon.toml` as a resolver input for
   device-local ceilings; per-vault `config` tables on `[[vault]]` as a device overlay for direct CLI

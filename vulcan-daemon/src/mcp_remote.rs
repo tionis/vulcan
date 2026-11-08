@@ -98,6 +98,9 @@ fn default_tool_packs() -> Vec<String> {
 pub struct McpRemoteDefinition {
     pub version: u32,
     pub id: McpRemoteId,
+    /// Generated identity, kept in `daemon.identities.toml` rather than in
+    /// `daemon.toml`. Older files carry it inline and are migrated on load.
+    #[serde(default)]
     pub instance_id: Ulid,
     pub bind: String,
     pub public_url: String,

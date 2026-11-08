@@ -12,6 +12,7 @@ pub mod api_tokens;
 pub mod auto_commit_worker;
 pub mod clone;
 pub mod companion;
+pub(crate) mod config_file;
 pub mod conflict_worker;
 pub mod credentials;
 pub mod daemon_host;

@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use ulid::Ulid;
 use vulcan_app::sync::{GitRefName, GitRemote};
 
+use crate::config_file::{self, Identities, McpRemoteIdentity, VaultIdentity};
 use crate::mcp_remote::{
     validate_definition as validate_mcp_remote_definition, AddMcpRemoteRequest,
     McpRemoteDefinition, McpRemoteId, UpdateMcpRemoteRequest,
@@ -54,6 +55,9 @@ impl Display for WikiId {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WikiRegistration {
     pub id: WikiId,
+    /// Generated identity, kept in `daemon.identities.toml` rather than in
+    /// `daemon.toml`. Older files carry it inline and are migrated on load.
+    #[serde(default)]
     pub registration_id: Ulid,
     /// The vault root: the unit Vulcan indexes and serves.
     pub path: PathBuf,
@@ -711,6 +715,7 @@ pub struct WikiRegistry {
 #[derive(Debug, Default)]
 struct RegistrySnapshot {
     source: Option<String>,
+    identities_source: Option<String>,
     config: Option<DaemonConfig>,
     checked: Option<Instant>,
     #[cfg(test)]
@@ -753,6 +758,16 @@ impl WikiRegistry {
     }
 
     fn load_snapshot(&self, allow_cached: bool) -> Result<DaemonConfig, RegistryError> {
+        self.load_snapshot_with(allow_cached, false)
+    }
+
+    /// `lock_held` is true when the caller already holds the registry lock,
+    /// which a load needs to persist newly allocated or migrated identities.
+    fn load_snapshot_with(
+        &self,
+        allow_cached: bool,
+        lock_held: bool,
+    ) -> Result<DaemonConfig, RegistryError> {
         let mut snapshot = self.snapshot.lock().expect("registry snapshot lock");
         if allow_cached
             && snapshot
@@ -767,15 +782,18 @@ impl WikiRegistry {
         {
             snapshot.reads += 1;
         }
-        let source = match fs::read_to_string(&self.path) {
-            Ok(source) => Some(source),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        let sources = read_optional(&self.path).and_then(|source| {
+            read_optional(&config_file::identities_path(&self.path))
+                .map(|identities| (source, identities))
+        });
+        let (source, identities_source) = match sources {
+            Ok(sources) => sources,
             Err(error) => {
                 snapshot.checked = None;
-                return Err(RegistryError::Io(error));
+                return Err(error);
             }
         };
-        if source == snapshot.source {
+        if source == snapshot.source && identities_source == snapshot.identities_source {
             if let Some(config) = snapshot.config.clone() {
                 snapshot.checked = Some(Instant::now());
                 return Ok(config);
@@ -788,12 +806,71 @@ impl WikiRegistry {
         {
             snapshot.parses += 1;
         }
-        let config = parse_config(&self.path, source.as_deref())?;
+        let (config, source, identities_source) =
+            self.resolve_identities(source, identities_source, lock_held)?;
         validate_daemon_config(&config)?;
         snapshot.source = source;
+        snapshot.identities_source = identities_source;
         snapshot.config = Some(config.clone());
         snapshot.checked = Some(Instant::now());
         Ok(config)
+    }
+
+    /// Parses both files and fills generated identities. A declaration
+    /// without one gets a new ULID, and a file that still carries identities
+    /// inline is migrated; both are persisted under the registry lock before
+    /// the result is used, so every reader sees the same identities.
+    #[allow(clippy::type_complexity)]
+    fn resolve_identities(
+        &self,
+        source: Option<String>,
+        identities_source: Option<String>,
+        lock_held: bool,
+    ) -> Result<(DaemonConfig, Option<String>, Option<String>), RegistryError> {
+        let identities_path = config_file::identities_path(&self.path);
+        let (mut config, mut identities) =
+            parse_both(&self.path, source.as_deref(), identities_source.as_deref())?;
+        let allocated = apply_identities(&mut config, &mut identities, &identities_path)?;
+        let inline = source
+            .as_deref()
+            .is_some_and(config_file::has_generated_keys);
+        if !allocated && !inline {
+            return Ok((config, source, identities_source));
+        }
+        let _lock = if lock_held {
+            None
+        } else {
+            Some(RegistryLock::acquire(&self.path)?)
+        };
+        // Re-read under the lock: another process may have allocated first.
+        let source = read_optional(&self.path)?;
+        let identities_source = read_optional(&identities_path)?;
+        let (mut config, mut identities) =
+            parse_both(&self.path, source.as_deref(), identities_source.as_deref())?;
+        let allocated = apply_identities(&mut config, &mut identities, &identities_path)?;
+        let identities_source = if allocated {
+            Some(write_identities(&identities_path, &identities)?)
+        } else {
+            identities_source
+        };
+        let source = match source {
+            Some(existing) if config_file::has_generated_keys(&existing) => {
+                let stripped = config_file::strip_generated(&existing).map_err(|detail| {
+                    RegistryError::InvalidConfig {
+                        path: self.path.clone(),
+                        detail,
+                    }
+                })?;
+                vulcan_core::durable::replace(
+                    &self.path,
+                    stripped.as_bytes(),
+                    vulcan_core::durable::Durability::Full,
+                )?;
+                Some(stripped)
+            }
+            source => source,
+        };
+        Ok((config, source, identities_source))
     }
 
     pub fn list(&self, group: Option<&str>) -> Result<Vec<WikiRegistrationStatus>, RegistryError> {
@@ -1404,11 +1481,21 @@ impl WikiRegistry {
         operation: impl FnOnce(&mut DaemonConfig) -> Result<T, RegistryError>,
     ) -> Result<T, RegistryError> {
         let _lock = RegistryLock::acquire(&self.path)?;
-        let mut config = self.load()?;
+        let before = self.load_snapshot_with(false, true)?;
+        let mut config = before.clone();
         let result = operation(&mut config)?;
         validate_daemon_config(&config)?;
         if !dry_run {
-            save_config(&self.path, &config)?;
+            let identities_path = config_file::identities_path(&self.path);
+            let (_, mut identities) = parse_both(
+                &self.path,
+                None,
+                read_optional(&identities_path)?.as_deref(),
+            )?;
+            if record_identities(&mut identities, &before, &config) {
+                write_identities(&identities_path, &identities)?;
+            }
+            save_config(&self.path, read_optional(&self.path)?.as_deref(), &config)?;
             self.snapshot
                 .lock()
                 .expect("registry snapshot lock")
@@ -2005,18 +2092,192 @@ fn parse_config(path: &Path, source: Option<&str>) -> Result<DaemonConfig, Regis
     }
 }
 
-fn save_config(path: &Path, config: &DaemonConfig) -> Result<(), RegistryError> {
-    let rendered =
-        toml::to_string_pretty(config).map_err(|error| RegistryError::InvalidConfig {
+/// Writes `daemon.toml` by merging into the existing document, so comments
+/// and formatting survive. Returns the written text.
+fn save_config(
+    path: &Path,
+    existing: Option<&str>,
+    config: &DaemonConfig,
+) -> Result<String, RegistryError> {
+    let rendered = config_file::render_config(existing, config).map_err(|detail| {
+        RegistryError::InvalidConfig {
             path: path.to_path_buf(),
-            detail: error.to_string(),
-        })?;
+            detail,
+        }
+    })?;
     vulcan_core::durable::replace(
         path,
         rendered.as_bytes(),
         vulcan_core::durable::Durability::Full,
     )
-    .map_err(RegistryError::Io)
+    .map_err(RegistryError::Io)?;
+    Ok(rendered)
+}
+
+fn write_identities(path: &Path, identities: &Identities) -> Result<String, RegistryError> {
+    let rendered = config_file::render_identities(identities).map_err(|detail| {
+        RegistryError::InvalidConfig {
+            path: path.to_path_buf(),
+            detail,
+        }
+    })?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    vulcan_core::durable::replace(
+        path,
+        rendered.as_bytes(),
+        vulcan_core::durable::Durability::Full,
+    )
+    .map_err(RegistryError::Io)?;
+    Ok(rendered)
+}
+
+fn read_optional(path: &Path) -> Result<Option<String>, RegistryError> {
+    match fs::read_to_string(path) {
+        Ok(source) => Ok(Some(source)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(RegistryError::Io(error)),
+    }
+}
+
+fn parse_both(
+    path: &Path,
+    source: Option<&str>,
+    identities_source: Option<&str>,
+) -> Result<(DaemonConfig, Identities), RegistryError> {
+    let config = parse_config(path, source)?;
+    let identities = config_file::parse_identities(identities_source).map_err(|detail| {
+        RegistryError::InvalidConfig {
+            path: config_file::identities_path(path),
+            detail,
+        }
+    })?;
+    Ok((config, identities))
+}
+
+/// Fills each declaration's identity from `identities`, taking an inline
+/// identity from an older `daemon.toml` and allocating one for a new
+/// declaration. Returns whether `identities` changed and must be written.
+fn apply_identities(
+    config: &mut DaemonConfig,
+    identities: &mut Identities,
+    identities_path: &Path,
+) -> Result<bool, RegistryError> {
+    let conflict = |kind: &str, id: &str, inline: Ulid, stored: Ulid| {
+        RegistryError::InvalidConfig {
+        path: identities_path.to_path_buf(),
+        detail: format!(
+            "{kind} `{id}` has identity {inline} in daemon.toml but {stored} in {}; remove the one in daemon.toml if {stored} is right",
+            config_file::IDENTITIES_FILE
+        ),
+    }
+    };
+    let mut changed = false;
+    let mut seen = BTreeSet::new();
+    for wiki in &mut config.vaults {
+        if !seen.insert(wiki.id.clone()) {
+            return Err(RegistryError::DuplicateId(wiki.id.clone()));
+        }
+        let inline = wiki.registration_id;
+        match identities.vaults.get(wiki.id.as_str()) {
+            Some(stored) if inline.is_nil() || inline == stored.registration_id => {
+                wiki.registration_id = stored.registration_id;
+            }
+            Some(stored) => {
+                return Err(conflict(
+                    "vault",
+                    wiki.id.as_str(),
+                    inline,
+                    stored.registration_id,
+                ));
+            }
+            None => {
+                if inline.is_nil() {
+                    wiki.registration_id = Ulid::new();
+                }
+                identities.vaults.insert(
+                    wiki.id.to_string(),
+                    VaultIdentity {
+                        registration_id: wiki.registration_id,
+                    },
+                );
+                changed = true;
+            }
+        }
+    }
+    for remote in &mut config.mcp_remotes {
+        let inline = remote.instance_id;
+        match identities.mcp_remotes.get(remote.id.as_str()) {
+            Some(stored) if inline.is_nil() || inline == stored.instance_id => {
+                remote.instance_id = stored.instance_id;
+            }
+            Some(stored) => {
+                return Err(conflict(
+                    "named remote",
+                    remote.id.as_str(),
+                    inline,
+                    stored.instance_id,
+                ));
+            }
+            None => {
+                if inline.is_nil() {
+                    remote.instance_id = Ulid::new();
+                }
+                identities.mcp_remotes.insert(
+                    remote.id.as_str().to_string(),
+                    McpRemoteIdentity {
+                        instance_id: remote.instance_id,
+                    },
+                );
+                changed = true;
+            }
+        }
+    }
+    Ok(changed)
+}
+
+/// Records identities after a CLI mutation. A declaration the command
+/// removed loses its identity, so registering the same ID again never
+/// revives old API tokens or grants; identities of entries removed from the
+/// file by hand stay until `vulcan daemon apply --prune`.
+fn record_identities(
+    identities: &mut Identities,
+    before: &DaemonConfig,
+    after: &DaemonConfig,
+) -> bool {
+    let original = identities.clone();
+    for wiki in &before.vaults {
+        if !after.vaults.iter().any(|candidate| candidate.id == wiki.id) {
+            identities.vaults.remove(wiki.id.as_str());
+        }
+    }
+    for remote in &before.mcp_remotes {
+        if !after
+            .mcp_remotes
+            .iter()
+            .any(|candidate| candidate.id == remote.id)
+        {
+            identities.mcp_remotes.remove(remote.id.as_str());
+        }
+    }
+    for wiki in &after.vaults {
+        identities.vaults.insert(
+            wiki.id.to_string(),
+            VaultIdentity {
+                registration_id: wiki.registration_id,
+            },
+        );
+    }
+    for remote in &after.mcp_remotes {
+        identities.mcp_remotes.insert(
+            remote.id.as_str().to_string(),
+            McpRemoteIdentity {
+                instance_id: remote.instance_id,
+            },
+        );
+    }
+    *identities != original
 }
 
 struct RegistryLock {
@@ -2101,13 +2362,18 @@ mod tests {
         assert_eq!(other.poll().unwrap().bind, "127.0.0.1:3212");
         let mut config = other.load().unwrap();
         config.bind = "127.0.0.1:3213".into();
-        save_config(registry.path(), &config).unwrap();
+        save_config(
+            registry.path(),
+            read_optional(registry.path()).unwrap().as_deref(),
+            &config,
+        )
+        .unwrap();
         registry.snapshot.lock().unwrap().checked = None;
         assert_eq!(other.poll().unwrap(), config);
         fs::write(registry.path(), "malformed = [").unwrap();
         assert!(registry.load().is_err());
         assert!(other.poll().is_err());
-        save_config(registry.path(), &config).unwrap();
+        save_config(registry.path(), None, &config).unwrap();
         assert_eq!(other.poll().unwrap(), config);
         fs::remove_file(registry.path()).unwrap();
         assert!(registry.load().unwrap().vaults.is_empty());
@@ -3345,5 +3611,165 @@ profile = "files_only"
         assert!(config.bot.telegram.as_ref().unwrap().users.is_empty());
         let config = registry.clear_telegram_bot(false).unwrap();
         assert!(config.bot.is_default());
+    }
+
+    fn identities_text(registry: &WikiRegistry) -> String {
+        fs::read_to_string(config_file::identities_path(registry.path())).unwrap_or_default()
+    }
+
+    #[test]
+    fn inline_identities_migrate_to_the_identities_file_once() {
+        let temporary = tempdir().unwrap();
+        let wiki = temporary.path().join("personal");
+        fs::create_dir(&wiki).unwrap();
+        let config_path = temporary.path().join("config/daemon.toml");
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        let source = format!(
+            "# my device\nbind = \"127.0.0.1:3210\"\n\n[[vault]]\nid = \"personal\" # main\nregistration_id = \"01M1VGCJ78TTEENPQ908PPQ6T6\"\npath = \"{}\"\n",
+            wiki.display()
+        );
+        fs::write(&config_path, &source).unwrap();
+        let registry = WikiRegistry::at(config_path.clone());
+
+        let loaded = registry.load().unwrap();
+        assert_eq!(
+            loaded.vaults[0].registration_id.to_string(),
+            "01M1VGCJ78TTEENPQ908PPQ6T6"
+        );
+        let migrated = fs::read_to_string(&config_path).unwrap();
+        assert_eq!(
+            migrated,
+            source.replace("registration_id = \"01M1VGCJ78TTEENPQ908PPQ6T6\"\n", "")
+        );
+        assert!(identities_text(&registry).contains("01M1VGCJ78TTEENPQ908PPQ6T6"));
+
+        // A second load changes nothing and keeps the identity.
+        let again = WikiRegistry::at(config_path.clone()).load().unwrap();
+        assert_eq!(again, loaded);
+        assert_eq!(fs::read_to_string(&config_path).unwrap(), migrated);
+    }
+
+    #[test]
+    fn conflicting_inline_and_stored_identities_fail_closed() {
+        let temporary = tempdir().unwrap();
+        let config_path = temporary.path().join("daemon.toml");
+        fs::write(
+            &config_path,
+            "[[vault]]\nid = \"personal\"\nregistration_id = \"01M1VGCJ78TTEENPQ908PPQ6T6\"\npath = \"/tmp/personal\"\n",
+        )
+        .unwrap();
+        fs::write(
+            config_file::identities_path(&config_path),
+            "[vault.personal]\nregistration_id = \"01M6SQPPJPNJ0TV6RMZXDCKMXJ\"\n",
+        )
+        .unwrap();
+        let error = WikiRegistry::at(config_path)
+            .load()
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("01M1VGCJ78TTEENPQ908PPQ6T6"), "{error}");
+        assert!(error.contains("01M6SQPPJPNJ0TV6RMZXDCKMXJ"), "{error}");
+    }
+
+    #[test]
+    fn hand_declared_entries_get_stable_identities_and_cli_edits_keep_comments() {
+        let temporary = tempdir().unwrap();
+        let first = temporary.path().join("personal");
+        let second = temporary.path().join("work");
+        fs::create_dir(&first).unwrap();
+        fs::create_dir(&second).unwrap();
+        let config_path = temporary.path().join("daemon.toml");
+        fs::write(
+            &config_path,
+            format!(
+                "# rendered by hand\nbind = \"127.0.0.1:3210\" # loopback\n\n[[vault]]\n# the main one\nid = \"personal\"\npath = \"{}\"\n",
+                first.display()
+            ),
+        )
+        .unwrap();
+        let registry = WikiRegistry::at(config_path.clone());
+        let allocated = registry.load().unwrap().vaults[0].registration_id;
+        assert!(!allocated.is_nil());
+        assert_eq!(
+            WikiRegistry::at(config_path.clone()).load().unwrap().vaults[0].registration_id,
+            allocated
+        );
+
+        registry.add(&request("work", &second), false).unwrap();
+        registry.set_bind("127.0.0.1:3211", false).unwrap();
+        let text = fs::read_to_string(&config_path).unwrap();
+        assert!(text.starts_with("# rendered by hand\nbind = \"127.0.0.1:3211\" # loopback\n"));
+        assert!(text.contains("# the main one\nid = \"personal\""));
+        assert!(!text.contains("registration_id"));
+        let loaded = registry.load().unwrap();
+        assert_eq!(loaded.vaults[0].registration_id, allocated);
+        assert_eq!(loaded.vaults[1].id.as_str(), "work");
+    }
+
+    #[test]
+    fn removal_by_command_drops_the_identity_but_a_hand_removal_keeps_it() {
+        let temporary = tempdir().unwrap();
+        let wiki = temporary.path().join("personal");
+        fs::create_dir(&wiki).unwrap();
+        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+        let first = registry.add(&request("personal", &wiki), false).unwrap();
+
+        // Deleting the entry by hand leaves its identity for a later prune,
+        // so declaring it again restores the same identity.
+        fs::write(registry.path(), "bind = \"127.0.0.1:3210\"\n").unwrap();
+        assert!(registry.load().unwrap().vaults.is_empty());
+        assert!(identities_text(&registry).contains(&first.registration_id.to_string()));
+        fs::write(
+            registry.path(),
+            format!(
+                "[[vault]]\nid = \"personal\"\npath = \"{}\"\n",
+                wiki.display()
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            registry.load().unwrap().vaults[0].registration_id,
+            first.registration_id
+        );
+
+        // `vault remove` drops it, so registering again never revives old
+        // tokens or grants.
+        registry
+            .remove(&WikiId::parse("personal").unwrap(), false)
+            .unwrap();
+        assert!(!identities_text(&registry).contains(&first.registration_id.to_string()));
+        let second = registry.add(&request("personal", &wiki), false).unwrap();
+        assert_ne!(second.registration_id, first.registration_id);
+    }
+
+    #[test]
+    fn named_remote_identities_live_outside_daemon_toml() {
+        let temporary = tempdir().unwrap();
+        let wiki = temporary.path().join("personal");
+        fs::create_dir(&wiki).unwrap();
+        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+        registry.add(&request("personal", &wiki), false).unwrap();
+        let remote = registry
+            .add_mcp_remote(
+                remote_request(
+                    "personal-chatgpt",
+                    "personal",
+                    "0.0.0.0:8765",
+                    "https://mcp.example.test/personal",
+                ),
+                false,
+            )
+            .unwrap();
+        let text = fs::read_to_string(registry.path()).unwrap();
+        assert!(!text.contains("instance_id"));
+        assert!(identities_text(&registry).contains(&remote.instance_id.to_string()));
+        assert_eq!(
+            registry.list_mcp_remotes().unwrap()[0].instance_id,
+            remote.instance_id
+        );
+        registry
+            .remove_mcp_remote(&McpRemoteId::parse("personal-chatgpt").unwrap(), false)
+            .unwrap();
+        assert!(!identities_text(&registry).contains(&remote.instance_id.to_string()));
     }
 }

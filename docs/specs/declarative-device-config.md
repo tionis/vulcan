@@ -1,6 +1,7 @@
 # Declarative Device Configuration
 
-Status: proposed design for Roadmap 10.12. Nothing here is implemented.
+Status: design for Roadmap 10.12. Phase 1 (identity split, migration, format-preserving writes) is
+implemented; the rest is not.
 
 ## Problem
 
@@ -101,9 +102,13 @@ tool_packs = ["notes-read", "search", "status"]
 - `[mcp_remote]` `bind` is required in the file. `mcp remote init` still picks a free port and
   writes it, so the interactive path stays as easy as now.
 
-### Identity and state: `$XDG_STATE_HOME/vulcan/daemon/identities.toml`
+### Identity and state: `daemon.identities.toml`
 
-Vulcan-owned, never hand-edited, never synced:
+Vulcan-owned, never hand-edited, never copied between devices. It sits beside `daemon.toml` rather
+than in the state directory: it must be backed up together with the configuration (losing it orphans
+API tokens and grants), and the many tests and setups that isolate only the configuration directory
+must not leak identities into the real state directory. Configuration management renders only
+`daemon.toml` and leaves this file alone.
 
 ```toml
 [vault.grimoire]
@@ -114,6 +119,9 @@ instance_id = "01M6..."
 
 - Identity is keyed by the declared id. A declared vault or remote without an entry gets a fresh
   ULID on first reconcile.
+- Removing an entry with `vulcan vault remove` or `vulcan mcp remote remove` deletes its identity, so
+  registering the same id again never revives old API tokens or grants. Removing it from the file
+  by hand keeps the identity as drift, so declaring it again restores it until `--prune`.
 - Renaming an id in the file is a new identity (old one becomes drift). `vulcan vault set --id`
   and `vulcan mcp remote set --id` rename both the declaration and the identity entry, which keeps
   API tokens and grants.
@@ -225,8 +233,8 @@ reports the owner so it is visible which tool to change.
 On the first load by a new version:
 
 1. Read `registration_id` and `instance_id` from the existing `daemon.toml`.
-2. Write them to `identities.toml` (atomic, under the lock).
-3. Rewrite `daemon.toml` without them, format-preserving.
+2. Write them to `daemon.identities.toml` (atomic, under the lock).
+3. Remove only those lines from `daemon.toml`; nothing else in the file changes.
 
 If step 3 fails, the old fields are still read on the next start and the migration repeats; an
 identity in both places must match or loading fails with both values named. The old fields remain

@@ -5211,6 +5211,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "toml_edit 0.22.27",
  "tower",
  "ulid",
  "url",
