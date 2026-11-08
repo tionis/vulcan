@@ -1735,6 +1735,7 @@ mod tests {
                     permissions_profile: Some(Some("no_git".to_string())),
                     sync_paused: None,
                     execution_trust: None,
+                    mcp_remote: None,
                 },
                 false,
             )

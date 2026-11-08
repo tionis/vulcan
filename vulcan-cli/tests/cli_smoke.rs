@@ -20385,6 +20385,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         .expect("MCP skill should be readable");
     assert!(mcp_skill.contains("vulcan help device-config"));
     assert!(mcp_skill.contains("vulcan help mcp-remotes"));
+    assert!(mcp_skill.contains("vulcan vault set <id> --serve-remote <bind>"));
+    assert!(mcp_skill.contains("never run `vulcan daemon apply --accept-remote` yourself"));
     assert!(mcp_skill.contains("`--tool-pack sync`"));
     assert!(mcp_skill.contains("does not expose conflict resolution"));
     assert!(mcp_skill.contains("vulcan mcp remote init <name>"));

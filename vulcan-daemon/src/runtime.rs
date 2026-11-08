@@ -1028,6 +1028,7 @@ mod tests {
             platform_profile: None,
             sync_paused: paused,
             execution_trust: None,
+            mcp_remote: None,
         }
     }
 
@@ -1279,6 +1280,7 @@ mod tests {
                     permissions_profile: None,
                     sync_paused: Some(true),
                     execution_trust: None,
+                    mcp_remote: None,
                 },
                 false,
             )
@@ -1376,6 +1378,7 @@ mod tests {
                     permissions_profile: None,
                     sync_paused: Some(false),
                     execution_trust: None,
+                    mcp_remote: None,
                 },
                 false,
             )
@@ -1506,6 +1509,7 @@ mod tests {
                     permissions_profile: None,
                     sync_paused: Some(true),
                     execution_trust: None,
+                    mcp_remote: None,
                 },
                 false,
             )

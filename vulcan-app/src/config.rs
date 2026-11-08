@@ -1885,6 +1885,22 @@ fn editor_category_descriptor() -> CategoryDescriptor {
     }
 }
 
+fn small_category_descriptor(key: &str) -> CategoryDescriptor {
+    match key {
+        "editor" => editor_category_descriptor(),
+        "bot" => bot_category_descriptor(),
+        _ => mcp_remote_category_descriptor(),
+    }
+}
+
+fn mcp_remote_category_descriptor() -> CategoryDescriptor {
+    CategoryDescriptor {
+        key: "mcp_remote",
+        title: "MCP Remote",
+        description: "The named MCP remote this vault describes; devices opt in to serve it from daemon.toml.",
+    }
+}
+
 fn bot_category_descriptor() -> CategoryDescriptor {
     CategoryDescriptor {
         key: "bot",
@@ -1981,8 +1997,7 @@ fn category_descriptor(display_segments: &[String]) -> CategoryDescriptor {
             description: "One-way remote publication profiles and reconciliation settings.",
         },
         Some("integrations") => integration_routes_category_descriptor(),
-        Some("editor") => editor_category_descriptor(),
-        Some("bot") => bot_category_descriptor(),
+        Some(key @ ("editor" | "bot" | "mcp_remote")) => small_category_descriptor(key),
         Some("site") => CategoryDescriptor {
             key: "site",
             title: "Static Site",
@@ -2047,6 +2062,11 @@ fn config_path_description(path: &str) -> String {
         _ if path.starts_with("templates.") => {
             "Template discovery, file triggers, folder mappings, and shell integration.".to_string()
         }
+        "mcp_remote.public_url" => "Public HTTPS URL of this vault's MCP remote. Devices that opt in serve it; a change applies at their next `vulcan daemon apply`.".to_string(),
+        "mcp_remote.identity" => "IndieAuth identity URL allowed to approve connections. Each device records the identity it accepted; a changed one waits for `vulcan daemon apply --accept-remote <vault>` there.".to_string(),
+        "mcp_remote.ceiling_profile" => "Maximum permission profile for remote connections; must be a built-in (such as `writer`) or defined on the device, so a push cannot widen it. `readonly` when unset.".to_string(),
+        "mcp_remote.default_profile" => "Profile preselected on the remote's consent page, within the ceiling. `readonly` when unset.".to_string(),
+        "mcp_remote.tool_packs" => "Tool packs a remote connection may choose; they select tools, the ceiling bounds authority.".to_string(),
         "bot.default_capture" => "Where free-text chat bot messages are captured: the `[inbox]` note or today's daily note.".to_string(),
         "bot.reminders.catch_up_window" => "How late a missed reminder may still be sent, for example after the device was off; older ones are skipped.".to_string(),
         "bot.reminders.snooze_options" => "Snooze buttons on reminder messages beside Done: durations such as `1h` or `tomorrow` (the next day at `tasks.reminders.default_time`); at most three.".to_string(),

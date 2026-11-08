@@ -78,6 +78,7 @@ pub mod transcription;
 pub mod update_schedule;
 pub mod vault_health;
 pub mod vault_http;
+pub mod vault_remotes;
 pub mod vault_runtime;
 pub mod vault_scan;
 pub mod watch;

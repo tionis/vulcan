@@ -32,6 +32,16 @@ pub(super) struct PartialVulcanConfig {
     pub(super) plugins: Option<BTreeMap<String, PartialPluginRegistration>>,
     pub(super) aliases: Option<BTreeMap<String, String>>,
     pub(super) bot: Option<PartialBotConfig>,
+    pub(super) mcp_remote: Option<PartialMcpRemoteConfig>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct PartialMcpRemoteConfig {
+    pub(super) public_url: Option<String>,
+    pub(super) identity: Option<String>,
+    pub(super) ceiling_profile: Option<String>,
+    pub(super) default_profile: Option<String>,
+    pub(super) tool_packs: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, Default)]

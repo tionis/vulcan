@@ -1338,6 +1338,26 @@ Named external-content topology, authority, conflict, limit, and scheduling poli
   Preferred command: `vulcan config set`
   Example: `vulcan config set integrations.routes.players.stale_attachment_policy <value>`
 
+### MCP Remote
+
+The named MCP remote this vault describes; devices opt in to serve it from daemon.toml.
+
+- `mcp_remote.ceiling_profile` — type: `string`; target: `shared|local|device`; default: `readonly`
+  Maximum permission profile for remote connections; must be a built-in (such as `writer`) or defined on the device, so a push cannot widen it. `readonly` when unset.
+  Example: `vulcan config set mcp_remote.ceiling_profile <value>`
+- `mcp_remote.default_profile` — type: `string`; target: `shared|local|device`; default: `readonly`
+  Profile preselected on the remote's consent page, within the ceiling. `readonly` when unset.
+  Example: `vulcan config set mcp_remote.default_profile <value>`
+- `mcp_remote.identity` — type: `string`; target: `shared|local|device`; default: `https://me.example.com/`
+  IndieAuth identity URL allowed to approve connections. Each device records the identity it accepted; a changed one waits for `vulcan daemon apply --accept-remote <vault>` there.
+  Example: `vulcan config set mcp_remote.identity <value>`
+- `mcp_remote.public_url` — type: `string`; target: `shared|local|device`; default: `https://notes.example.com/mcp`
+  Public HTTPS URL of this vault's MCP remote. Devices that opt in serve it; a change applies at their next `vulcan daemon apply`.
+  Example: `vulcan config set mcp_remote.public_url <value>`
+- `mcp_remote.tool_packs` — type: `array`; target: `shared|local|device`; default: `[3 items]`
+  Tool packs a remote connection may choose; they select tools, the ceiling bounds authority.
+  Example: `vulcan config set mcp_remote.tool_packs <value>`
+
 ### Publishing
 
 One-way remote publication profiles and reconciliation settings.

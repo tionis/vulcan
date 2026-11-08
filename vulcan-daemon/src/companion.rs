@@ -817,6 +817,7 @@ impl<'a> CompanionService<'a> {
                     permissions_profile: None,
                     sync_paused: Some(paused),
                     execution_trust: None,
+                    mcp_remote: None,
                 },
                 false,
             )
@@ -1451,6 +1452,7 @@ mod tests {
                     sync_paused: None,
                     profile: Some(crate::registry::ManagedDirectoryProfile::FilesOnly),
                     execution_trust: None,
+                    mcp_remote: None,
                 },
                 false,
             )

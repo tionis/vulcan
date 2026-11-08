@@ -291,10 +291,32 @@ where
     let config = context.registry.load()?;
     let agents = configured_agents(&config)?;
     agents.log_unavailable();
+    log_vault_remotes(&config);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     runtime.block_on(run_daemon(context, config, agents, additional_services))
+}
+
+/// Reports vault remotes that are not served or wait for an identity to be
+/// accepted, which `vulcan daemon plan` also shows.
+fn log_vault_remotes(config: &crate::registry::DaemonConfig) {
+    use crate::vault_remotes::VaultRemoteState;
+    for status in &config.vault_remotes {
+        let note = status.note.as_deref().unwrap_or_default();
+        match status.state {
+            VaultRemoteState::Invalid | VaultRemoteState::VaultMissing => {
+                eprintln!("MCP remote `{}` not started: {note}", status.id);
+            }
+            VaultRemoteState::Served | VaultRemoteState::Overridden => {}
+        }
+        if let Some(asked) = &status.pending_identity {
+            eprintln!(
+                "MCP remote `{}` keeps its accepted IndieAuth identity; the vault asks for {asked} (accept with `vulcan daemon apply --accept-remote {}`)",
+                status.id, status.id
+            );
+        }
+    }
 }
 
 /// The daemon's AI agent providers. An agent whose credential environment
@@ -1901,6 +1923,7 @@ mod tests {
                 platform_profile: None,
                 sync_paused: false,
                 execution_trust: None,
+                mcp_remote: None,
             }],
             ..DaemonConfig::default()
         }

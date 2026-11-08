@@ -1113,6 +1113,7 @@ mod tests {
             platform_profile: None,
             sync_paused: false,
             execution_trust: None,
+            mcp_remote: None,
         };
         let supervisor = std::sync::Arc::new(
             SyncSupervisor::at(temporary.path().join("jobs.json")).expect("supervisor"),
@@ -1251,6 +1252,7 @@ mod tests {
             platform_profile: None,
             sync_paused: false,
             execution_trust: None,
+            mcp_remote: None,
         };
         let supervisor =
             SyncSupervisor::at(temporary.path().join("jobs.json")).expect("supervisor");

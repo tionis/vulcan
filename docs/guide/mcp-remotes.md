@@ -47,6 +47,15 @@ For writable daily/task workflows, review `daily-wiki-agent` and the explicit pa
 configuration in [ChatGPT MCP setup](chatgpt-mcp.md), also available through
 `vulcan help chatgpt-mcp`.
 
+## A remote described by its vault
+
+Instead of `mcp remote init` on every device, a vault can carry its remote's settings in
+`[mcp_remote]` of its shared `.vulcan/config.toml` (public URL, IndieAuth identity, ceiling,
+default profile, tool packs). Each device opts in with `vulcan vault set <id> --serve-remote
+0.0.0.0:8765` and runs `vulcan daemon apply`. A push cannot expose the vault or widen the ceiling,
+and a changed identity waits for `vulcan daemon apply --accept-remote <id>` on each device. See
+`vulcan help device-config`.
+
 ## Multiple instances and vaults
 
 Different named remotes can run concurrently with distinct binds and

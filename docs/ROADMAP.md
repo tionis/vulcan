@@ -5903,6 +5903,14 @@ undeclared state is reported as drift and removed only with `--prune`. Design:
     labels include `device`, new tables get a blank line, and inline tables may span lines.
     Guide `docs/guide/device-config.md` (`vulcan help device-config`), skills, CLI guide.
     Differences from the spec are recorded there (whole-daemon restart, `apply --file` checks).
+- [x] 10.12.7 Remotes described by their vault: `[mcp_remote]` in the shared `.vulcan/config.toml`
+    (public URL, identity, ceiling, default profile, tool packs); a device opts in with
+    `mcp_remote = { bind = ... }` on its `[[vault]]` entry (`vault set --serve-remote`). The
+    registry builds the definition at load and never writes it back; the ceiling resolves from
+    built-in or device-local profiles; the accepted IndieAuth identity is stored per device and a
+    changed one blocks apply until `daemon apply --accept-remote <id>`; invalid settings leave only
+    that remote stopped. Built-in profiles `researcher`, `writer` and `maintainer` and
+    `profile pin --target device` came with it.
 
 **Acceptance:** Copying a `daemon.toml` to a fresh device and running `vulcan daemon apply` clones
 its vaults and defines its remotes, with ceilings from the same file; a second `plan` is empty;

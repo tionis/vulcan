@@ -1708,6 +1708,7 @@ mod tests {
                     sync_paused: Some(true),
                     profile: None,
                     execution_trust: None,
+                    mcp_remote: None,
                 },
                 false,
             )

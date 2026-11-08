@@ -1336,6 +1336,7 @@ mod tests {
                     groups_to_remove: vec![],
                     permissions_profile: None,
                     execution_trust: None,
+                    mcp_remote: None,
                 },
                 false,
             )

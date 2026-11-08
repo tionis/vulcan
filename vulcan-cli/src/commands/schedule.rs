@@ -515,6 +515,7 @@ fn trust_update(execution_trust: Option<ExecutionTrustConfig>) -> UpdateWikiRequ
         sync_paused: None,
         profile: None,
         execution_trust: Some(execution_trust),
+        mcp_remote: None,
     }
 }
 

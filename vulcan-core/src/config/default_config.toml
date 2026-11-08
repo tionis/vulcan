@@ -453,6 +453,14 @@ name = "{{folder_name}}"   # note stem; examples: index, README, readme, {{folde
 # anchor_date = "2026-01-05"
 # template = "sprint"
 
+# Served only by devices that opt in from daemon.toml (`vulcan help device-config`).
+# [mcp_remote]
+# public_url = "https://notes.example.com/mcp"
+# identity = "https://me.example.com/"
+# ceiling_profile = "readonly"  # built-in or device-local; "writer" for a remote that edits notes
+# default_profile = "readonly"
+# tool_packs = ["notes-read", "search", "status"]
+
 # [bot]
 # default_capture = "inbox"  # inbox | daily
 # task_target = "tasknotes"  # tasknotes | inline

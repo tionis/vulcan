@@ -806,6 +806,7 @@ mod tests {
                     permissions_profile: None,
                     sync_paused: None,
                     execution_trust: None,
+                    mcp_remote: None,
                 },
                 false,
             )

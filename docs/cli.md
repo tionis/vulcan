@@ -33,7 +33,7 @@ For whole-vault device synchronization, including a detached Git directory for A
 permission profiles and per-vault settings, named remotes, workers, agents, notifications and bots.
 
 - `vulcan daemon plan [--file <path>] [--prune] [--no-service]`: compare the file with the device; exits 0 when nothing would change, 2 when changes are pending, 1 on an error.
-- `vulcan daemon apply [--dry-run] [--file <path>] [--prune] [--no-service]`: store identities, clone missing vaults from `source`, install the daemon service when missing, and restart a daemon that runs an older configuration or executable. `--prune` also removes undeclared state (identities, scan state, API tokens, remote OAuth state); vault files are never deleted.
+- `vulcan daemon apply [--dry-run] [--file <path>] [--prune] [--no-service] [--accept-remote <id>]`: store identities, clone missing vaults from `source`, install the daemon service when missing, and restart a daemon that runs an older configuration or executable. `--accept-remote` accepts the IndieAuth identity that a vault's `[mcp_remote]` now asks for on this device. `--prune` also removes undeclared state (identities, scan state, API tokens, remote OAuth state); vault files are never deleted.
 - A top-level `managed_by = "<tool>"` makes CLI edits of the file refuse and print the TOML to add to that tool's source; the global `--force-local-edit` edits anyway.
 
 See [Declarative device configuration](guide/device-config.md) or `vulcan help device-config`.

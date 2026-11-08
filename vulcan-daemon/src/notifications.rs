@@ -611,6 +611,7 @@ mod tests {
             platform_profile: None,
             sync_paused: paused,
             execution_trust: None,
+            mcp_remote: None,
         };
         let desired = desired_listeners(vec![
             registration("alpha", false, None),
@@ -939,6 +940,7 @@ mod tests {
             platform_profile: None,
             sync_paused: false,
             execution_trust: None,
+            mcp_remote: None,
         };
 
         let state_store = SyncStateStore::at(temporary.path().join("state/sync/repositories"));
@@ -987,6 +989,7 @@ mod tests {
             platform_profile: None,
             sync_paused: false,
             execution_trust: None,
+            mcp_remote: None,
         };
 
         let error = refresh_for_registration(&registration, &state_store)

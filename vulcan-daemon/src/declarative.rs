@@ -9,10 +9,12 @@
 //! provides the plan and the pruning of drift.
 
 use crate::api_tokens::ApiTokenStore;
+use crate::mcp_remote::McpRemoteAuthentication;
 use crate::mcp_state::McpAuthorizationStore;
 use crate::process::{DaemonProcessContext, DaemonRuntimeRecord};
 use crate::registry::{DaemonConfig, DeclaredConfig, WikiRegistration};
 use crate::service::DaemonServiceDiagnostic;
+use crate::vault_remotes::VaultRemoteState;
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::fs;
@@ -434,6 +436,7 @@ fn remote_items(
         let id = remote.id.to_string();
         let mut problems = Vec::new();
         let mut notes = Vec::new();
+        vault_remote_notes(config, &id, &mut problems, &mut notes);
         for exposed in &remote.vaults {
             let Some(wiki) = config.vaults.iter().find(|wiki| wiki.id == exposed.wiki_id) else {
                 continue;
@@ -499,7 +502,73 @@ fn remote_items(
         };
         items.push(item);
     }
+    items.extend(unserved_vault_remotes(config, cloning));
     items
+}
+
+/// Where a remote from a vault's `[mcp_remote]` comes from, and whether its
+/// `IndieAuth` identity waits for acceptance on this device.
+fn vault_remote_notes(
+    config: &DaemonConfig,
+    id: &str,
+    problems: &mut Vec<String>,
+    notes: &mut Vec<String>,
+) {
+    let Some(status) = config.vault_remotes.iter().find(|status| status.id == id) else {
+        return;
+    };
+    match status.state {
+        VaultRemoteState::Served => {
+            notes.push(format!("from vault `{id}`'s [mcp_remote]"));
+            let identity = config
+                .mcp_remotes
+                .iter()
+                .find(|remote| remote.id.as_str() == id)
+                .map(|remote| match &remote.authentication {
+                    McpRemoteAuthentication::IndieAuth { identity } => identity.clone(),
+                })
+                .unwrap_or_default();
+            if let Some(asked) = &status.pending_identity {
+                problems.push(format!(
+                    "the vault now asks for IndieAuth identity {asked}, but this device accepted {identity}; the remote keeps {identity} until you run `vulcan daemon apply --accept-remote {id}`"
+                ));
+            } else if status.first_acceptance {
+                notes.push(format!(
+                    "accepts IndieAuth identity {identity} on this device"
+                ));
+            }
+        }
+        VaultRemoteState::Overridden => {
+            if let Some(note) = &status.note {
+                notes.push(note.clone());
+            }
+        }
+        VaultRemoteState::VaultMissing | VaultRemoteState::Invalid => {}
+    }
+}
+
+fn unserved_vault_remotes(config: &DaemonConfig, cloning: &BTreeSet<String>) -> Vec<PlanItem> {
+    config
+        .vault_remotes
+        .iter()
+        .filter_map(|status| {
+            let note = status.note.clone().unwrap_or_default();
+            let item = match status.state {
+                VaultRemoteState::Served | VaultRemoteState::Overridden => return None,
+                VaultRemoteState::VaultMissing if cloning.contains(&status.id) => {
+                    PlanItem::new(PlanKind::McpRemote, &status.id, PlanAction::Create)
+                        .because("from the vault's [mcp_remote], once it is cloned")
+                }
+                VaultRemoteState::VaultMissing => {
+                    PlanItem::new(PlanKind::McpRemote, &status.id, PlanAction::Skip).because(note)
+                }
+                VaultRemoteState::Invalid => {
+                    PlanItem::new(PlanKind::McpRemote, &status.id, PlanAction::Error).because(note)
+                }
+            };
+            Some(item)
+        })
+        .collect()
 }
 
 fn local_profile_defined(paths: &vulcan_core::VaultPaths, name: &str) -> bool {

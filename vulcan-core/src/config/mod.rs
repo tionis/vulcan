@@ -2777,6 +2777,40 @@ pub struct VaultConfig {
     pub aliases: BTreeMap<String, String>,
     #[serde(default)]
     pub bot: BotConfig,
+    #[serde(default, skip_serializing_if = "VaultMcpRemoteConfig::is_empty")]
+    pub mcp_remote: VaultMcpRemoteConfig,
+}
+
+/// The named MCP remote this vault describes (`[mcp_remote]`). It travels
+/// with the vault, but a device serves it only after opting in with
+/// `mcp_remote = { bind = "..." }` on its `[[vault]]` entry in
+/// `daemon.toml`, which also chooses the listen address. The ceiling must
+/// still be a built-in or device-local profile, and a changed `IndieAuth`
+/// identity waits for each device's `vulcan daemon apply --accept-remote`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VaultMcpRemoteConfig {
+    /// Public HTTPS MCP resource URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_url: Option<String>,
+    /// `IndieAuth` identity URL allowed to approve connections.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<String>,
+    /// Maximum permission profile; `readonly` when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ceiling_profile: Option<String>,
+    /// Profile preselected on the consent page; `readonly` when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_profile: Option<String>,
+    /// Tool packs a connection may choose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_packs: Option<Vec<String>>,
+}
+
+impl VaultMcpRemoteConfig {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
 }
 
 /// How a chat bot writes into this vault (`[bot]`). The bot itself, its
@@ -2931,6 +2965,7 @@ impl Default for VaultConfig {
             plugins: BTreeMap::new(),
             aliases: builtin_command_aliases(),
             bot: BotConfig::default(),
+            mcp_remote: VaultMcpRemoteConfig::default(),
         }
     }
 }
@@ -5522,6 +5557,14 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
                 config.bot.reminders.privacy_overrides = privacy_overrides;
             }
         }
+    }
+    if let Some(remote) = overrides.mcp_remote {
+        let target = &mut config.mcp_remote;
+        target.public_url = remote.public_url.or(target.public_url.take());
+        target.identity = remote.identity.or(target.identity.take());
+        target.ceiling_profile = remote.ceiling_profile.or(target.ceiling_profile.take());
+        target.default_profile = remote.default_profile.or(target.default_profile.take());
+        target.tool_packs = remote.tool_packs.or(target.tool_packs.take());
     }
 }
 

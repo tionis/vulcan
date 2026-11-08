@@ -14055,6 +14055,17 @@
                 "value_names": [
                   "NO_SERVICE"
                 ]
+              },
+              {
+                "help": "Accept the IndieAuth identity a vault's [mcp_remote] now asks for on this device (repeatable)",
+                "id": "accept_remote",
+                "long": "accept-remote",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "ID"
+                ]
               }
             ],
             "subcommands": []
@@ -15920,6 +15931,31 @@
                 "short": null,
                 "value_names": [
                   "CLEAR_PERMISSIONS_PROFILE"
+                ]
+              },
+              {
+                "help": "Serve the MCP remote the vault describes in its [mcp_remote], listening on this address (such as 0.0.0.0:8765)",
+                "id": "serve_remote",
+                "long": "serve-remote",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "BIND"
+                ]
+              },
+              {
+                "help": "Stop serving the vault's own MCP remote on this device",
+                "id": "no_serve_remote",
+                "long": "no-serve-remote",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_SERVE_REMOTE"
                 ]
               },
               {

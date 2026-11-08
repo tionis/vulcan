@@ -3597,6 +3597,7 @@ fn set_automatic_sync(
                 sync_paused: Some(paused),
                 profile: None,
                 execution_trust: None,
+                mcp_remote: None,
             },
             dry_run,
         )

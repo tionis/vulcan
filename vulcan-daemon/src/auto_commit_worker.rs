@@ -623,6 +623,7 @@ mod tests {
             platform_profile: None,
             sync_paused: false,
             execution_trust: None,
+            mcp_remote: None,
         }
     }
 

@@ -121,7 +121,8 @@ and 1 on an error, so scripts and configuration management can use it as a check
    `--no-service` leaves the service and process alone, for containers or manual supervision.
 
 Options: `--dry-run` prints the plan only. `--file <path>` plans another file, for review before
-copying it into place; `apply --file` only checks. `--output json` gives the plan and each step.
+copying it into place; `apply --file` only checks. `--accept-remote <id>` accepts the IndieAuth
+identity a vault's remote now asks for (see below). `--output json` gives the plan and each step.
 
 `vulcan daemon start` validates the file and stores identities but never clones; a declared vault
 that is missing shows in `vulcan daemon status` with the hint to run `vulcan daemon apply`.
@@ -189,9 +190,50 @@ device. In Ansible, render the same file with the `template` module and run
 `vulcan daemon plan` with `changed_when: result.rc == 2` and `failed_when: result.rc == 1`, then
 `vulcan daemon apply` when it changed.
 
+## A remote that travels with its vault
+
+A vault can describe its own MCP remote in its shared `.vulcan/config.toml`, so every device that
+hosts it knows the remote without copying a `[[mcp_remote]]` entry around:
+
+```toml
+[mcp_remote]                                   # in the vault's .vulcan/config.toml
+public_url = "https://grimoire.proxy.example/mcp"
+identity = "https://me.example/"
+ceiling_profile = "writer"
+default_profile = "writer"
+tool_packs = ["notes-read", "notes-write", "search", "status"]
+```
+
+A device serves it only after opting in, which also chooses where it listens:
+
+```toml
+[[vault]]                                      # in daemon.toml
+id = "grimoire"
+path = "~/wikis/grimoire"
+mcp_remote = { bind = "0.0.0.0:8765" }
+```
+
+`vulcan vault set grimoire --serve-remote 0.0.0.0:8765` writes the same, and `--no-serve-remote`
+removes it. The remote's ID is the vault's ID. `vulcan daemon apply` starts it and restarts the
+daemon whenever the vault's settings change. A `[[mcp_remote]]` with the same ID in `daemon.toml`
+wins over the vault's settings.
+
+Anyone who can push to the vault can edit these settings, so:
+
+- Only the device decides whether to serve the vault and on which address.
+- The ceiling must be a built-in profile such as `writer` or one this device defines, as for every
+  remote; tool packs and the default profile only choose within it.
+- The IndieAuth identity that may approve connections is recorded per device the first time the
+  device serves the remote. If the vault later names another identity, the remote keeps the
+  accepted one, `vulcan daemon plan` reports an error, and `vulcan daemon apply` changes nothing
+  until you run `vulcan daemon apply --accept-remote grimoire` on that device.
+- Missing or invalid settings leave that remote stopped and are reported by `plan` and in the
+  daemon log; the other vaults and remotes keep running.
+
 ## Moving a remote to another device
 
-Copy its `[[mcp_remote]]` entry, its vault (with `source`) and the ceiling profile into the other
-device's `daemon.toml` and run `vulcan daemon apply` there. OAuth state stays per device, so the
-client approves the connection once more. On the old device, remove the entry and run
-`vulcan daemon apply --prune` to drop its keys and grants.
+For a remote its vault describes, remove `mcp_remote` from the old device's `[[vault]]` entry, add
+it on the new device, and run `vulcan daemon apply` on both. For a `[[mcp_remote]]` entry, copy it,
+its vault (with `source`) and the ceiling profile into the other device's `daemon.toml` and run
+`vulcan daemon apply` there. OAuth state stays per device, so the client approves the connection
+once more. On the old device, run `vulcan daemon apply --prune` to drop its keys and grants.

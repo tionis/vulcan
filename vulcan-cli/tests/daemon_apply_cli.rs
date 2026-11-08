@@ -454,3 +454,137 @@ fn built_in_and_pinned_profiles_serve_as_remote_ceilings() {
         "ok"
     );
 }
+
+#[test]
+fn a_vault_describes_its_remote_and_each_device_opts_in() {
+    let device = Device::new();
+    let notes = opted_in_vault(&device);
+    let vault_remote = |identity: &str| write_vault_remote(&notes, identity);
+
+    let plan = device.plan(&[]);
+    assert_eq!(plan.code, 2, "{}", plan.stdout);
+    let plan_json = plan.json();
+    let reason = item(&plan_json, "mcp_remote", "notes")["reason"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        reason.contains("from vault `notes`'s [mcp_remote]"),
+        "{reason}"
+    );
+    assert!(reason.contains("accepts IndieAuth identity"), "{reason}");
+    assert_eq!(device.apply(&[]).code, 0);
+    let identities = fs::read_to_string(device.identities()).unwrap();
+    assert!(
+        identities.contains("accepted_identity = \"https://me.example.invalid/\""),
+        "{identities}"
+    );
+    assert_eq!(device.plan(&[]).code, 0);
+
+    // The remote belongs to the vault: CLI edits never write it into
+    // daemon.toml, and remote commands refuse to change it there.
+    let extra = device.vault_dir("extra");
+    let added = device.run(&["vault", "add", "extra", extra.to_str().unwrap()]);
+    assert_eq!(added.code, 0, "{}{}", added.stdout, added.stderr);
+    let written = fs::read_to_string(device.daemon_toml()).unwrap();
+    assert!(!written.contains("[[mcp_remote]]"), "{written}");
+    assert!(
+        written.contains("mcp_remote = { bind = \"127.0.0.1:18765\" }"),
+        "{written}"
+    );
+    let removed = device.run(&["mcp", "remote", "remove", "notes"]);
+    assert_ne!(removed.code, 0);
+    assert!(
+        removed
+            .stderr
+            .contains("comes from the vault's [mcp_remote]"),
+        "{}",
+        removed.stderr
+    );
+
+    // A pushed identity change blocks apply and is not used until accepted.
+    vault_remote("https://someone-else.example.invalid/");
+    let pending = device.plan(&[]);
+    assert_eq!(pending.code, 1, "{}", pending.stdout);
+    let reason = item(&pending.json(), "mcp_remote", "notes")["reason"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(reason.contains("--accept-remote notes"), "{reason}");
+    assert_eq!(device.apply(&[]).code, 1);
+    let shown = device.run(&["--output", "json", "mcp", "remote", "show", "notes"]);
+    assert!(
+        shown.stdout.contains("https://me.example.invalid/")
+            && !shown.stdout.contains("someone-else"),
+        "{}",
+        shown.stdout
+    );
+    let accepted = device.apply(&["--accept-remote", "notes"]);
+    assert_eq!(accepted.code, 0, "{}{}", accepted.stdout, accepted.stderr);
+    assert!(
+        accepted.stdout.contains("accepted IndieAuth identity"),
+        "{}",
+        accepted.stdout
+    );
+    assert!(fs::read_to_string(device.identities())
+        .unwrap()
+        .contains("someone-else"));
+    assert_eq!(device.plan(&[]).code, 0);
+}
+
+#[test]
+fn vault_set_toggles_serving_and_a_vault_without_settings_is_an_error() {
+    let device = Device::new();
+    let notes = opted_in_vault(&device);
+    assert_eq!(device.apply(&[]).code, 0);
+
+    // `vault set` toggles the opt-in, and the vault's own remote never
+    // blocks removing the vault.
+    let stopped = device.run(&["vault", "set", "notes", "--no-serve-remote"]);
+    assert_eq!(stopped.code, 0, "{}{}", stopped.stdout, stopped.stderr);
+    assert!(!fs::read_to_string(device.daemon_toml())
+        .unwrap()
+        .contains("bind = \"127.0.0.1:18765\""));
+    let served = device.run(&["vault", "set", "notes", "--serve-remote", "127.0.0.1:18766"]);
+    assert_eq!(served.code, 0, "{}{}", served.stdout, served.stderr);
+    assert!(fs::read_to_string(device.daemon_toml())
+        .unwrap()
+        .contains("127.0.0.1:18766"));
+    let bad = device.run(&["vault", "set", "notes", "--serve-remote", "nowhere"]);
+    assert_ne!(bad.code, 0);
+    let removal = device.run(&["vault", "remove", "notes", "--dry-run"]);
+    assert_eq!(removal.code, 0, "{}{}", removal.stdout, removal.stderr);
+
+    // Opting in without settings in the vault is an error, not a crash.
+    fs::write(notes.join(".vulcan/config.toml"), "").unwrap();
+    let missing = device.plan(&[]);
+    assert_eq!(missing.code, 1);
+    assert!(item(&missing.json(), "mcp_remote", "notes")["reason"]
+        .as_str()
+        .unwrap()
+        .contains("no [mcp_remote]"));
+}
+
+fn write_vault_remote(notes: &Path, identity: &str) {
+    fs::write(
+        notes.join(".vulcan/config.toml"),
+        format!(
+            "[mcp_remote]\npublic_url = \"https://notes.example.invalid/mcp\"\n\
+             identity = \"{identity}\"\nceiling_profile = \"writer\"\n\
+             default_profile = \"writer\"\ntool_packs = [\"notes-read\", \"search\"]\n"
+        ),
+    )
+    .unwrap();
+}
+
+/// A vault `notes` whose shared config describes a remote, opted in on
+/// this device at 127.0.0.1:18765.
+fn opted_in_vault(device: &Device) -> PathBuf {
+    let notes = device.vault_dir("notes");
+    write_vault_remote(&notes, "https://me.example.invalid/");
+    device.write_config(&format!(
+        "[[vault]]\nid = \"notes\"\npath = \"{}\"\nmcp_remote = {{ bind = \"127.0.0.1:18765\" }}\n",
+        notes.display()
+    ));
+    notes
+}

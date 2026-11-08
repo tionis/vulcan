@@ -5482,3 +5482,37 @@ overlap = 99
         assert_eq!(expand_home("/abs/path"), PathBuf::from("/abs/path"));
     }
 }
+
+#[test]
+fn mcp_remote_settings_travel_in_shared_config_and_merge_with_local() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let vault_root = temp_dir.path();
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir");
+    let paths = VaultPaths::new(vault_root);
+    assert!(load_vault_config(&paths).config.mcp_remote.is_empty());
+
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[mcp_remote]\npublic_url = \"https://notes.example/mcp\"\n\
+         identity = \"https://me.example/\"\nceiling_profile = \"writer\"\n\
+         tool_packs = [\"notes-read\"]\n",
+    )
+    .expect("shared config");
+    fs::write(
+        vault_root.join(".vulcan/config.local.toml"),
+        "[mcp_remote]\ntool_packs = [\"notes-read\", \"search\"]\n",
+    )
+    .expect("local config");
+    let remote = load_vault_config(&paths).config.mcp_remote;
+    assert_eq!(
+        remote.public_url.as_deref(),
+        Some("https://notes.example/mcp")
+    );
+    assert_eq!(remote.ceiling_profile.as_deref(), Some("writer"));
+    assert_eq!(remote.default_profile, None);
+    assert_eq!(
+        remote.tool_packs,
+        Some(vec!["notes-read".to_string(), "search".to_string()]),
+        "the local file wins per key"
+    );
+}

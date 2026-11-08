@@ -12,7 +12,7 @@ use vulcan_app::sync::{GitRefName, GitRemote};
 
 use crate::mcp_remote::{
     validate_definition as validate_mcp_remote_definition, AddMcpRemoteRequest,
-    McpRemoteDefinition, McpRemoteId, UpdateMcpRemoteRequest,
+    McpRemoteAuthentication, McpRemoteDefinition, McpRemoteId, UpdateMcpRemoteRequest,
 };
 use vulcan_app::daemon_config_file::{
     self as config_file, DaemonConfigLock, Identities, McpRemoteIdentity, VaultIdentity,
@@ -111,6 +111,10 @@ pub struct WikiRegistration {
     /// missing. An existing path must be a repository with this remote.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// Serve the named MCP remote the vault describes in its shared
+    /// `[mcp_remote]`, listening on this address (`crate::vault_remotes`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_remote: Option<crate::vault_remotes::VaultRemoteOptIn>,
 }
 
 /// Versioned local capability preset for a managed directory.
@@ -230,6 +234,10 @@ pub struct DaemonConfig {
     pub vaults: Vec<WikiRegistration>,
     #[serde(default, rename = "mcp_remote")]
     pub mcp_remotes: Vec<McpRemoteDefinition>,
+    /// How the remotes of opted-in vaults resolved on this load. Their
+    /// definitions are in `mcp_remotes`; neither is written to the file.
+    #[serde(skip)]
+    pub vault_remotes: Vec<crate::vault_remotes::VaultRemoteStatus>,
     /// Directories `vulcan vault discover` scans for unregistered vaults.
     /// Discovery only suggests registrations; it never adds one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -363,6 +371,7 @@ impl Default for DaemonConfig {
             notifications: DaemonNotificationConfig::default(),
             vaults: Vec::new(),
             mcp_remotes: Vec::new(),
+            vault_remotes: Vec::new(),
             scan_dirs: Vec::new(),
             automatic_sync: vulcan_app::background_policy::BackgroundPolicy::default(),
             bot: DaemonBotConfig::default(),
@@ -597,6 +606,8 @@ pub struct UpdateWikiRequest {
     pub profile: Option<ManagedDirectoryProfile>,
     /// `Some(None)` returns the vault to repository trust.
     pub execution_trust: Option<Option<vulcan_app::schedule_trust::ExecutionTrustConfig>>,
+    /// `Some(None)` stops serving the vault's own remote on this device.
+    pub mcp_remote: Option<Option<crate::vault_remotes::VaultRemoteOptIn>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -893,6 +904,7 @@ impl WikiRegistry {
         let identities_path = config_file::identities_path(&self.path);
         let (mut config, mut identities) =
             parse_both(&self.path, source.as_deref(), identities_source.as_deref())?;
+        crate::vault_remotes::expand(&mut config, &identities);
         let allocated = apply_identities(&mut config, &mut identities, &identities_path)?;
         let inline = source
             .as_deref()
@@ -910,6 +922,7 @@ impl WikiRegistry {
         let identities_source = read_optional(&identities_path)?;
         let (mut config, mut identities) =
             parse_both(&self.path, source.as_deref(), identities_source.as_deref())?;
+        crate::vault_remotes::expand(&mut config, &identities);
         let allocated = apply_identities(&mut config, &mut identities, &identities_path)?;
         let identities_source = if allocated {
             Some(write_identities(&identities_path, &identities)?)
@@ -948,6 +961,7 @@ impl WikiRegistry {
         let identities_source = read_optional(&identities_path)?;
         let (mut config, stored) =
             parse_both(&self.path, source.as_deref(), identities_source.as_deref())?;
+        crate::vault_remotes::expand(&mut config, &stored);
         let mut identities = stored.clone();
         apply_identities(&mut config, &mut identities, &identities_path)?;
         validate_daemon_config(&config)?;
@@ -969,6 +983,45 @@ impl WikiRegistry {
             new_vault_identities,
             new_remote_identities,
         })
+    }
+
+    /// Accepts the `IndieAuth` identity a vault's `[mcp_remote]` now asks for
+    /// (`vulcan daemon apply --accept-remote`). Returns the previously
+    /// accepted identity and the new one, or `None` when nothing waited.
+    pub fn accept_remote_identity(
+        &self,
+        id: &str,
+    ) -> Result<Option<(String, String)>, RegistryError> {
+        let _lock = RegistryLock::acquire(&self.path)?;
+        let config = self.load_snapshot_with(false, true)?;
+        let status = config
+            .vault_remotes
+            .iter()
+            .find(|status| status.id == id)
+            .ok_or_else(|| {
+                RegistryError::InvalidMcpRemote(format!(
+                    "no vault opts in to serve a remote `{id}` on this device"
+                ))
+            })?;
+        let Some(asked) = status.pending_identity.clone() else {
+            return Ok(None);
+        };
+        let identities_path = config_file::identities_path(&self.path);
+        let (_, mut identities) = parse_both(
+            &self.path,
+            None,
+            read_optional(&identities_path)?.as_deref(),
+        )?;
+        let stored = identities.mcp_remotes.get_mut(id).ok_or_else(|| {
+            RegistryError::InvalidMcpRemote(format!("remote `{id}` has no stored identity"))
+        })?;
+        let previous = stored.accepted_identity.replace(asked.clone());
+        write_identities(&identities_path, &identities)?;
+        self.snapshot
+            .lock()
+            .expect("registry snapshot lock")
+            .checked = None;
+        Ok(Some((previous.unwrap_or_default(), asked)))
     }
 
     /// Removes stored identities of vaults and remotes that the live file no
@@ -1106,6 +1159,7 @@ impl WikiRegistry {
                 platform_profile: request.platform_profile.clone(),
                 sync_paused: false,
                 execution_trust: None,
+                mcp_remote: None,
             };
             config.vaults.push(registration.clone());
             config.vaults.sort_by(|left, right| left.id.cmp(&right.id));
@@ -1142,6 +1196,9 @@ impl WikiRegistry {
             if let Some(trust) = &request.execution_trust {
                 wiki.execution_trust.clone_from(trust);
             }
+            if let Some(opt_in) = &request.mcp_remote {
+                wiki.mcp_remote.clone_from(opt_in);
+            }
             if let Some(profile) = request.profile {
                 wiki.profile = profile;
                 wiki.profile_version = (profile == ManagedDirectoryProfile::FilesOnly)
@@ -1153,11 +1210,11 @@ impl WikiRegistry {
 
     pub fn remove(&self, id: &WikiId, dry_run: bool) -> Result<WikiRegistration, RegistryError> {
         self.mutate(dry_run, |config| {
-            if let Some(remote) = config
-                .mcp_remotes
-                .iter()
-                .find(|remote| remote.vaults.iter().any(|vault| &vault.wiki_id == id))
-            {
+            // A vault's own remote goes with its [[vault]] entry.
+            if let Some(remote) = config.mcp_remotes.iter().find(|remote| {
+                remote.vaults.iter().any(|vault| &vault.wiki_id == id)
+                    && !crate::vault_remotes::is_vault_remote(config, remote.id.as_str())
+            }) {
                 return Err(RegistryError::McpRemoteInUse {
                     remote: remote.id.clone(),
                     wiki: id.clone(),
@@ -1168,7 +1225,16 @@ impl WikiRegistry {
                 .iter()
                 .position(|wiki| &wiki.id == id)
                 .ok_or_else(|| RegistryError::UnknownWiki(id.clone()))?;
-            Ok(config.vaults.remove(index))
+            let removed = config.vaults.remove(index);
+            if crate::vault_remotes::is_vault_remote(config, id.as_str()) {
+                config
+                    .mcp_remotes
+                    .retain(|remote| remote.id.as_str() != id.as_str());
+            }
+            config
+                .vault_remotes
+                .retain(|status| status.id != id.as_str());
+            Ok(removed)
         })
     }
 
@@ -1235,6 +1301,11 @@ impl WikiRegistry {
         dry_run: bool,
     ) -> Result<McpRemoteDefinition, RegistryError> {
         self.mutate(dry_run, |config| {
+            if crate::vault_remotes::is_vault_remote(config, id.as_str()) {
+                return Err(RegistryError::InvalidMcpRemote(format!(
+                    "remote `{id}` comes from the vault's [mcp_remote]; edit that, or `mcp_remote` on its [[vault]] entry in daemon.toml"
+                )));
+            }
             let index = config
                 .mcp_remotes
                 .iter()
@@ -1251,6 +1322,11 @@ impl WikiRegistry {
         dry_run: bool,
     ) -> Result<McpRemoteDefinition, RegistryError> {
         self.mutate(dry_run, |config| {
+            if crate::vault_remotes::is_vault_remote(config, id.as_str()) {
+                return Err(RegistryError::InvalidMcpRemote(format!(
+                    "remote `{id}` comes from the vault's [mcp_remote]; edit that, or `mcp_remote` on its [[vault]] entry in daemon.toml"
+                )));
+            }
             let index = config
                 .mcp_remotes
                 .iter()
@@ -1633,11 +1709,20 @@ impl WikiRegistry {
                 read_optional(&identities_path)?.as_deref(),
             )?;
             let existing = read_optional(&self.path)?;
-            check_managed(&self.path, existing.as_deref(), &before, &config)?;
+            check_managed(
+                &self.path,
+                existing.as_deref(),
+                &crate::vault_remotes::declared_only(&before),
+                &crate::vault_remotes::declared_only(&config),
+            )?;
             if record_identities(&mut identities, &before, &config) {
                 write_identities(&identities_path, &identities)?;
             }
-            save_config(&self.path, existing.as_deref(), &config)?;
+            save_config(
+                &self.path,
+                existing.as_deref(),
+                &crate::vault_remotes::declared_only(&config),
+            )?;
             self.snapshot
                 .lock()
                 .expect("registry snapshot lock")
@@ -2403,9 +2488,21 @@ fn apply_identities(
     }
     for remote in &mut config.mcp_remotes {
         let inline = remote.instance_id;
-        match identities.mcp_remotes.get(remote.id.as_str()) {
+        // A vault's remote records the identity this device accepts with it.
+        let accepted = config
+            .vault_remotes
+            .iter()
+            .any(|status| status.served() && status.id == remote.id.as_str())
+            .then(|| match &remote.authentication {
+                McpRemoteAuthentication::IndieAuth { identity } => identity.clone(),
+            });
+        match identities.mcp_remotes.get_mut(remote.id.as_str()) {
             Some(stored) if inline.is_nil() || inline == stored.instance_id => {
                 remote.instance_id = stored.instance_id;
+                if accepted.is_some() && stored.accepted_identity.is_none() {
+                    stored.accepted_identity = accepted;
+                    changed = true;
+                }
             }
             Some(stored) => {
                 return Err(conflict(
@@ -2423,6 +2520,7 @@ fn apply_identities(
                     remote.id.as_str().to_string(),
                     McpRemoteIdentity {
                         instance_id: remote.instance_id,
+                        accepted_identity: accepted,
                     },
                 );
                 changed = true;
@@ -2465,12 +2563,14 @@ fn record_identities(
         );
     }
     for remote in &after.mcp_remotes {
-        identities.mcp_remotes.insert(
-            remote.id.as_str().to_string(),
-            McpRemoteIdentity {
+        identities
+            .mcp_remotes
+            .entry(remote.id.as_str().to_string())
+            .and_modify(|stored| stored.instance_id = remote.instance_id)
+            .or_insert_with(|| McpRemoteIdentity {
                 instance_id: remote.instance_id,
-            },
-        );
+                accepted_identity: None,
+            });
     }
     *identities != original
 }
@@ -2646,6 +2746,7 @@ mod tests {
                     sync_paused: Some(true),
                     profile: None,
                     execution_trust: None,
+                    mcp_remote: None,
                 },
                 false,
             )
@@ -2758,6 +2859,7 @@ mod tests {
                     sync_paused: None,
                     profile: Some(ManagedDirectoryProfile::FilesOnly),
                     execution_trust: None,
+                    mcp_remote: None,
                 },
                 false,
             )
@@ -2818,6 +2920,7 @@ mod tests {
                     sync_paused: None,
                     profile: Some(ManagedDirectoryProfile::FilesOnly),
                     execution_trust: None,
+                    mcp_remote: None,
                 },
                 false,
             )

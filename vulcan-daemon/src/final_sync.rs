@@ -133,6 +133,7 @@ mod tests {
                             permissions_profile: None,
                             sync_paused: Some(true),
                             execution_trust: None,
+                            mcp_remote: None,
                         },
                         false,
                     )

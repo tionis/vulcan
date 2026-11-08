@@ -5766,6 +5766,12 @@ pub enum DaemonCommand {
             help = "Leave the daemon service and process alone, for containers or manual supervision"
         )]
         no_service: bool,
+        #[arg(
+            long = "accept-remote",
+            value_name = "ID",
+            help = "Accept the IndieAuth identity a vault's [mcp_remote] now asks for on this device (repeatable)"
+        )]
+        accept_remote: Vec<String>,
     },
     #[command(about = "Install and start the native per-user daemon service")]
     Install {
@@ -6422,6 +6428,19 @@ pub enum VaultCommand {
             help = "Remove the daemon permission-profile override"
         )]
         clear_permissions_profile: bool,
+        #[arg(
+            long,
+            value_name = "BIND",
+            conflicts_with = "no_serve_remote",
+            help = "Serve the MCP remote the vault describes in its [mcp_remote], listening on this address (such as 0.0.0.0:8765)"
+        )]
+        serve_remote: Option<String>,
+        #[arg(
+            long,
+            conflicts_with = "serve_remote",
+            help = "Stop serving the vault's own MCP remote on this device"
+        )]
+        no_serve_remote: bool,
         #[arg(long, help = "Validate and report without writing registry state")]
         dry_run: bool,
     },

@@ -1223,6 +1223,7 @@ mod tests {
                     sync_paused: None,
                     profile: None,
                     execution_trust: Some(Some(config.clone())),
+                    mcp_remote: None,
                 },
                 false,
             )
@@ -1501,6 +1502,7 @@ mod tests {
             sync_paused: None,
             profile: None,
             execution_trust: None,
+            mcp_remote: None,
         };
         fixture
             .registry

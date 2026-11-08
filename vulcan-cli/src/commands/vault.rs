@@ -205,8 +205,11 @@ pub(crate) fn handle_vault_command(cli: &Cli, command: &VaultCommand) -> Result<
             remove_group,
             permissions_profile,
             clear_permissions_profile,
+            serve_remote,
+            no_serve_remote,
             dry_run,
         } => {
+            let mcp_remote = remote_opt_in(serve_remote.as_deref(), *no_serve_remote)?;
             let permissions = if *clear_permissions_profile {
                 Some(None)
             } else {
@@ -226,6 +229,7 @@ pub(crate) fn handle_vault_command(cli: &Cli, command: &VaultCommand) -> Result<
                         sync_paused: None,
                         profile: profile.map(managed_profile),
                         execution_trust: None,
+                        mcp_remote,
                     },
                     *dry_run,
                 )
@@ -1092,4 +1096,25 @@ pub(crate) fn clone_declared_wiki(
     }
     setup.ignore_device_files(wiki, false, false);
     Ok(serde_json::json!({ "clone": clone, "setup": setup }))
+}
+
+/// `vault set --serve-remote <bind>` / `--no-serve-remote`; `Some(None)`
+/// stops serving, as in `UpdateWikiRequest`.
+#[allow(clippy::option_option)]
+fn remote_opt_in(
+    bind: Option<&str>,
+    stop: bool,
+) -> Result<Option<Option<vulcan_daemon::vault_remotes::VaultRemoteOptIn>>, CliError> {
+    if stop {
+        return Ok(Some(None));
+    }
+    let Some(bind) = bind else {
+        return Ok(None);
+    };
+    bind.parse::<std::net::SocketAddr>().map_err(|error| {
+        CliError::operation(format!("invalid listen address `{bind}`: {error}"))
+    })?;
+    Ok(Some(Some(vulcan_daemon::vault_remotes::VaultRemoteOptIn {
+        bind: bind.to_string(),
+    })))
 }

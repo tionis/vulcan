@@ -193,9 +193,14 @@ pub struct VaultIdentity {
     pub registration_id: Ulid,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpRemoteIdentity {
     pub instance_id: Ulid,
+    /// For a remote a vault describes: the `IndieAuth` identity this device
+    /// accepted. A different one in the vault waits for
+    /// `vulcan daemon apply --accept-remote`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_identity: Option<String>,
 }
 
 #[must_use]
@@ -969,6 +974,7 @@ authentication = { identity = "https://eric.example/" }
             "grimoire".to_string(),
             McpRemoteIdentity {
                 instance_id: Ulid::new(),
+                accepted_identity: None,
             },
         );
         let rendered = render_identities(&identities).unwrap();

@@ -59,7 +59,16 @@ pub(crate) fn run(
             dry_run,
             prune,
             no_service,
-        } => run_apply(cli, context, file.as_deref(), *dry_run, *prune, *no_service),
+            accept_remote,
+        } => run_apply(
+            cli,
+            context,
+            file.as_deref(),
+            *dry_run,
+            *prune,
+            *no_service,
+            accept_remote,
+        ),
         _ => unreachable!("only plan and apply are routed here"),
     }
 }
@@ -86,7 +95,14 @@ fn run_apply(
     dry_run: bool,
     prune: bool,
     no_service: bool,
+    accept_remote: &[String],
 ) -> Result<(), CliError> {
+    let writes = !dry_run && file.is_none();
+    let accepted = if writes {
+        accept_remote_identities(context, accept_remote)?
+    } else {
+        Vec::new()
+    };
     let plan = build_plan(context, file, no_service)?;
     if dry_run || file.is_some() {
         match cli.output {
@@ -123,7 +139,7 @@ fn run_apply(
         }
         return Err(CliError::reported_failure());
     }
-    let mut steps = Vec::new();
+    let mut steps = accepted;
     // Storing identities is what loading the file does.
     let config = context.registry.load();
     for item in plan.items_of(PlanKind::Identity, PlanAction::Create) {
@@ -147,7 +163,8 @@ fn run_apply(
         }
     }
     if !no_service {
-        steps.extend(converge_daemon(cli, context, &plan, &config));
+        let converged = converge_after_clones(cli, context, &plan, &steps, &config)?;
+        steps.extend(converged);
     }
     let pruned = if prune {
         prune_drift(context, &plan)
@@ -172,6 +189,56 @@ fn run_apply(
     } else {
         Ok(())
     }
+}
+
+/// Converges the daemon. A cloned vault can bring a remote from its
+/// `[mcp_remote]` that the plan, made before the clone, could not see, so
+/// the plan is rebuilt first.
+fn converge_after_clones(
+    cli: &Cli,
+    context: &DaemonProcessContext,
+    plan: &DevicePlan,
+    steps: &[ApplyStep],
+    config: &DaemonConfig,
+) -> Result<Vec<ApplyStep>, CliError> {
+    let cloned = steps
+        .iter()
+        .any(|step| step.ok && step.action == PlanAction::Clone);
+    if !cloned {
+        return Ok(converge_daemon(cli, context, plan, config));
+    }
+    let plan = build_plan(context, None, false)?;
+    let config = context.registry.load().map_err(CliError::operation)?;
+    Ok(converge_daemon(cli, context, &plan, &config))
+}
+
+/// Accepts the `IndieAuth` identities named by `--accept-remote` before the
+/// plan, so the plan and the restart use them.
+fn accept_remote_identities(
+    context: &DaemonProcessContext,
+    ids: &[String],
+) -> Result<Vec<ApplyStep>, CliError> {
+    ids.iter()
+        .map(|id| {
+            let accepted = context
+                .registry
+                .accept_remote_identity(id)
+                .map_err(CliError::operation)?;
+            Ok(ApplyStep {
+                kind: PlanKind::McpRemote,
+                id: id.clone(),
+                action: PlanAction::Update,
+                ok: true,
+                detail: Some(match accepted {
+                    Some((previous, asked)) => {
+                        format!("accepted IndieAuth identity {asked} (was {previous})")
+                    }
+                    None => "no identity change was waiting".to_string(),
+                }),
+                result: None,
+            })
+        })
+        .collect()
 }
 
 fn build_plan(

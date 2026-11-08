@@ -153,6 +153,27 @@ copies it into the device-wide `[permissions]`, so a vault can suggest a profile
 accepts it once. The general
 profile list (`--permissions <name>`) sees the same layers between the shared and local config.
 
+### Remotes described by their vault
+
+A vault's shared `.vulcan/config.toml` may describe one named MCP remote in `[mcp_remote]`
+(`public_url`, `identity`, `ceiling_profile`, `default_profile`, `tool_packs`). A device serves it
+only when its `[[vault]]` entry opts in with `mcp_remote = { bind = "<address>" }`; the remote's ID
+is the vault's ID. The registry builds the definition on every load of `daemon.toml` and never
+writes it back, so CLI edits keep the file as declared. Because a push may edit the vault's
+settings:
+
+- serving and the listen address come only from the device;
+- the ceiling resolves like every remote ceiling (built-in or device-local profiles only);
+- the IndieAuth identity is recorded with the remote's instance ID in `daemon.identities.toml`
+  the first time the device serves it. A different identity in the vault is not used: the remote
+  keeps the accepted one, `plan` reports a blocking error, and
+  `vulcan daemon apply --accept-remote <id>` accepts it;
+- missing or invalid settings leave that remote out with a plan error and a daemon log line instead
+  of failing the load.
+
+A `[[mcp_remote]]` with the same ID in `daemon.toml` wins. `vault remove` drops the vault's own
+remote with the entry, and `mcp remote update|remove` refuse to edit it.
+
 ### Per-vault device-local settings
 
 A `[[vault]]` entry may carry a `config` table with the same schema as `.vulcan/config.local.toml`
