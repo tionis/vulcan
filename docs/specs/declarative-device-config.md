@@ -1,7 +1,8 @@
 # Declarative Device Configuration
 
 Status: design for Roadmap 10.12. Phase 1 (identity split, migration, format-preserving writes) is
-implemented; the rest is not.
+implemented, and so is the reading side of phase 2 (device profiles, vault `config` tables, `~`
+paths). The commands that write those tables and everything after are not.
 
 ## Problem
 
@@ -133,17 +134,21 @@ instance_id = "01M6..."
 construction (the file is never in a vault). They are valid wherever a device-local profile is
 required today: named remote ceilings, API tokens, scheduled jobs, chat bot authority.
 
-Resolution (`resolve_device_permission_profile`) gains this source. The core resolver stays
-synchronous and receives the device-global profiles as an input from the caller; `vulcan-core`
-does not learn the daemon config path. Order:
+Resolution (`resolve_device_permission_profile`) gains this source. `vulcan-core` reads
+`daemon.toml` from the user configuration directory itself, as it already reads
+`trusted_vaults.json`, so every code path that loads profiles or vault configuration sees the same
+layers whether or not the CLI or daemon wired anything up. It reads only `[permissions]` and the
+`path` and `config` of `[[vault]]` entries and stays synchronous. Order:
 
 1. Built-in profiles.
-2. `daemon.toml` profiles.
+2. `daemon.toml` profiles, then the vault entry's `config.permissions`.
 3. The vault's `.vulcan/config.local.toml` profiles (kept for compatibility).
 
-A name defined in both 2 and 3 with different content is an error naming both files, never a
-silent precedence. A profile only in the synced vault config remains refused as a ceiling, with
-the existing `profile pin` path.
+A profile both device files define differently is reported with both file names, and because any
+diagnostic makes device-profile resolution fail, every device ceiling for that vault is unavailable
+until it is resolved: authority never depends on a silent precedence. A profile only in the synced
+vault config remains refused as a ceiling, with the existing `profile pin` path. The general
+profile list (`--permissions <name>`) sees the same layers between the shared and local config.
 
 ### Per-vault device-local settings
 
@@ -163,15 +168,18 @@ read = "all"
 ```
 
 Effective vault configuration, lowest to highest: built-in defaults, synced `.vulcan/config.toml`,
-the `[[vault]]` `config` table, `.vulcan/config.local.toml`. The two device-local sources are
-merged key by key; the same key set to different values in both is an error naming both files,
-not a silent precedence. `config.local.toml` keeps working and stays the place for settings on an
+the device-global `[permissions]`, the `[[vault]]` `config` table, `.vulcan/config.local.toml`. The
+two device-local sources are merged key by key. A setting both set to different values is reported
+with both file names and `config.local.toml` wins; failing every command over a setting would be
+worse than a visible warning. Permission profiles fail closed as described above. A vault entry
+matches when its `path` (after `~` expansion) and the vault root canonicalize to the same
+directory; `[folder_notes]` stays shared-only, as in `config.local.toml`. `config.local.toml` keeps working and stays the place for settings on an
 unregistered vault.
 
-This must hold for direct CLI use without the daemon. The CLI already reads `daemon.toml` to resolve
-registrations; it finds the registration whose path matches the selected vault and passes that
-entry's `config` table to the configuration loader as a device overlay. `vulcan-core` receives the
-overlay as an input and does not learn the daemon config path. `vulcan config show` reports which
+This holds for direct CLI use without the daemon, because `vulcan-core` reads the file itself (see
+above). Unit tests of `vulcan-core` never read the developer's real `daemon.toml`; they set a device
+file per test. The daemon stores `[permissions]` and `config` tables opaquely and writes them back
+unchanged. `vulcan config show` reports which
 source set each key, and `vulcan config set --target device` writes to the `[[vault]]` entry.
 `vulcan config local move <vault>` moves an existing `config.local.toml` into the entry.
 

@@ -1097,6 +1097,7 @@ mod tests {
         std::os::unix::fs::symlink("/nonexistent-target", vault.join("dead-link"))
             .expect("symlink");
         let registration = WikiRegistration {
+            config: None,
             profile: crate::registry::ManagedDirectoryProfile::Knowledge,
             profile_version: None,
             materialization: crate::registry::MaterializationProfile::Full,
@@ -1233,6 +1234,7 @@ mod tests {
             .expect("run git init");
         assert!(output.status.success());
         let registration = WikiRegistration {
+            config: None,
             profile: crate::registry::ManagedDirectoryProfile::Knowledge,
             profile_version: None,
             materialization: crate::registry::MaterializationProfile::Full,

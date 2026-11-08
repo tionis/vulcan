@@ -595,6 +595,7 @@ mod tests {
     #[test]
     fn desired_listener_set_and_restart_identity_follow_effective_registration() {
         let registration = |id: &str, paused: bool, backend: Option<&str>| WikiRegistration {
+            config: None,
             profile: crate::registry::ManagedDirectoryProfile::Knowledge,
             profile_version: None,
             materialization: crate::registry::MaterializationProfile::Full,
@@ -919,6 +920,7 @@ mod tests {
             "https://patch.example/private?pubsub=true",
         );
         let registration = WikiRegistration {
+            config: None,
             profile: crate::registry::ManagedDirectoryProfile::Knowledge,
             profile_version: None,
             materialization: crate::registry::MaterializationProfile::Full,
@@ -965,6 +967,7 @@ mod tests {
         fs::create_dir_all(&binding).expect("vault-local state");
         fs::write(binding.join("git-transport.json"), b"not a binding").expect("binding");
         let registration = WikiRegistration {
+            config: None,
             profile: crate::registry::ManagedDirectoryProfile::Knowledge,
             profile_version: None,
             materialization: crate::registry::MaterializationProfile::Full,

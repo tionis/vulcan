@@ -52,6 +52,15 @@ impl Display for WikiId {
     }
 }
 
+/// A TOML value the daemon stores and writes back unchanged; `vulcan-core`
+/// parses and validates it. Equality is TOML value equality (a NaN float is
+/// never equal to itself, which only makes such an entry look changed).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct OpaqueToml(pub toml::Value);
+
+impl Eq for OpaqueToml {}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WikiRegistration {
     pub id: WikiId,
@@ -92,6 +101,11 @@ pub struct WikiRegistration {
     /// repository trust; `vulcan schedule trust enable` sets trusted-commit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_trust: Option<vulcan_app::schedule_trust::ExecutionTrustConfig>,
+    /// Device-local settings for this vault, with the schema of its
+    /// `.vulcan/config.local.toml`. `vulcan-core` applies them when loading
+    /// the vault's configuration, with or without the daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<OpaqueToml>,
 }
 
 /// Versioned local capability preset for a managed directory.
@@ -226,6 +240,10 @@ pub struct DaemonConfig {
     /// Chat bots this device hosts (`docs/specs/chat-bot.md`).
     #[serde(default, skip_serializing_if = "DaemonBotConfig::is_default")]
     pub bot: DaemonBotConfig,
+    /// Device-global permission profiles, valid as device ceilings for every
+    /// vault. `vulcan-core` reads them from this file directly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<OpaqueToml>,
 }
 
 /// Chat bots this device hosts. A bot token permits one poller, so only
@@ -324,6 +342,7 @@ fn default_bind() -> String {
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
+            permissions: None,
             bind: default_bind(),
             resolution_agent: None,
             semantic_agent: None,
@@ -949,7 +968,7 @@ impl WikiRegistry {
             let mut groups = request.groups.clone();
             groups.sort();
             groups.dedup();
-            let registration = WikiRegistration {
+            let registration = WikiRegistration { config: None,
                 id: request.id.clone(),
                 registration_id: Ulid::new(),
                 path,
@@ -2080,6 +2099,13 @@ fn parse_config(path: &Path, source: Option<&str>) -> Result<DaemonConfig, Regis
             // registrations intentionally remain byte-compatible with older
             // daemon configs and continue to omit both fields.
             for wiki in &mut config.vaults {
+                expand_home_path(&mut wiki.path);
+                if let Some(work_tree) = wiki.work_tree.as_mut() {
+                    expand_home_path(work_tree);
+                }
+                if let Some(git_dir) = wiki.git_dir.as_mut() {
+                    expand_home_path(git_dir);
+                }
                 if wiki.profile == ManagedDirectoryProfile::FilesOnly
                     && wiki.profile_version.is_none()
                 {
@@ -2089,6 +2115,14 @@ fn parse_config(path: &Path, source: Option<&str>) -> Result<DaemonConfig, Regis
             Ok(config)
         }
         None => Ok(DaemonConfig::default()),
+    }
+}
+
+/// Expands a leading `~` so one `daemon.toml` fits devices with different
+/// home directories. Saving keeps the `~/...` form (see `config_file`).
+fn expand_home_path(path: &mut PathBuf) {
+    if let Some(text) = path.to_str().filter(|text| text.starts_with('~')) {
+        *path = vulcan_core::config::expand_home(text);
     }
 }
 
@@ -3771,5 +3805,30 @@ profile = "files_only"
             .remove_mcp_remote(&McpRemoteId::parse("personal-chatgpt").unwrap(), false)
             .unwrap();
         assert!(!identities_text(&registry).contains(&remote.instance_id.to_string()));
+    }
+
+    #[test]
+    fn device_tables_and_home_relative_paths_survive_cli_edits() {
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            return;
+        };
+        let temporary = tempdir().unwrap();
+        let config_path = temporary.path().join("daemon.toml");
+        // The path need not exist: loading does not check it.
+        let source = "bind = \"127.0.0.1:3210\"\n\n[permissions.profiles.device-rw]\nread = \"all\"\nwrite = \"all\"\n\n[[vault]]\nid = \"personal\"\npath = \"~/vulcan-test-missing/personal\"\n\n[vault.config.chunking]\ntarget_size = 256\n";
+        fs::write(&config_path, source).unwrap();
+        let registry = WikiRegistry::at(config_path.clone());
+        let loaded = registry.load().unwrap();
+        assert_eq!(
+            loaded.vaults[0].path,
+            home.join("vulcan-test-missing/personal")
+        );
+        assert!(loaded.permissions.is_some());
+        assert!(loaded.vaults[0].config.is_some());
+        registry.set_bind("127.0.0.1:3211", false).unwrap();
+        assert_eq!(
+            fs::read_to_string(&config_path).unwrap(),
+            source.replace("3210", "3211")
+        );
     }
 }

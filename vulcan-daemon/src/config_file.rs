@@ -101,6 +101,7 @@ pub(crate) fn render_config<T: Serialize>(
         .parse::<DocumentMut>()
         .map_err(|error| error.to_string())?;
     strip_generated_keys(&mut desired);
+    drop_empty_declaration_arrays(&mut desired);
     let Some(existing) = existing else {
         return Ok(desired.to_string());
     };
@@ -115,6 +116,21 @@ pub(crate) fn render_config<T: Serialize>(
         &mut next_position,
     );
     Ok(document.to_string())
+}
+
+/// The serializer writes an empty `vault = []` or `mcp_remote = []` when
+/// none is declared; leave such a key out of the file instead.
+fn drop_empty_declaration_arrays(document: &mut DocumentMut) {
+    for (array, _) in GENERATED_KEYS {
+        let empty = match document.get(array) {
+            Some(Item::Value(Value::Array(values))) => values.is_empty(),
+            Some(Item::ArrayOfTables(tables)) => tables.is_empty(),
+            _ => false,
+        };
+        if empty {
+            document.remove(array);
+        }
+    }
 }
 
 fn strip_generated_keys(document: &mut DocumentMut) {
@@ -175,7 +191,7 @@ fn merge_item(current: &mut Item, wanted: &Item, next_position: &mut usize) {
 }
 
 fn merge_value(current: &mut Value, wanted: &Value) {
-    if values_equal(current, wanted) {
+    if values_equal(current, wanted) || home_relative_equal(current, wanted) {
         return;
     }
     let decor = current.decor().clone();
@@ -234,6 +250,18 @@ fn in_file_order(tables: &ArrayOfTables) -> bool {
         previous_end = Some(start.max(max_position(table)));
     }
     true
+}
+
+/// A path written as `~/...` is loaded expanded; keep the owner's form when
+/// it still names the same path.
+fn home_relative_equal(current: &Value, wanted: &Value) -> bool {
+    match (current, wanted) {
+        (Value::String(current), Value::String(wanted)) => {
+            current.value().starts_with('~')
+                && vulcan_core::config::expand_home(current.value()) == Path::new(wanted.value())
+        }
+        _ => false,
+    }
 }
 
 fn table_id(table: &Table) -> Option<&str> {

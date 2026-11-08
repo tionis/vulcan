@@ -5300,3 +5300,140 @@ fn bot_config_defaults_and_overrides() {
     assert!(!bot.link_titles);
     assert_eq!(bot.attachment_folder, "Inbox/Files");
 }
+
+mod device_layers {
+    use super::*;
+
+    fn device_file(temp_dir: &TempDir, vault_root: &Path, body: &str) -> PathBuf {
+        let path = temp_dir.path().join("config/vulcan/daemon.toml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let vault = vault_root.display().to_string().replace('\\', "\\\\");
+        fs::write(&path, body.replace("{vault}", &vault)).unwrap();
+        path
+    }
+
+    fn vault(temp_dir: &TempDir) -> PathBuf {
+        let root = temp_dir.path().join("vault");
+        fs::create_dir_all(root.join(".vulcan")).unwrap();
+        root
+    }
+
+    const DEVICE: &str = r#"
+bind = "127.0.0.1:3210"
+
+[permissions.profiles.device-rw]
+read = "all"
+write = "all"
+
+[[vault]]
+id = "personal"
+path = "{vault}"
+
+[vault.config.chunking]
+target_size = 256
+
+[vault.config.permissions.profiles.vault-only]
+read = "all"
+write = "none"
+
+[[vault]]
+id = "other"
+path = "/nonexistent/other"
+
+[vault.config.chunking]
+overlap = 99
+"#;
+
+    #[test]
+    fn the_vault_entry_and_device_profiles_apply_to_config_and_ceilings() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = vault(&temp_dir);
+        let _guard = device::test_override::set(device_file(&temp_dir, &root, DEVICE));
+        let paths = VaultPaths::new(&root);
+
+        let loaded = load_vault_config(&paths);
+        assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+        assert_eq!(loaded.config.chunking.target_size, 256);
+        assert_ne!(loaded.config.chunking.overlap, 99, "another vault's entry");
+
+        let device = load_device_permission_profiles(&paths);
+        assert!(device.diagnostics.is_empty(), "{:?}", device.diagnostics);
+        assert!(device.profiles.contains_key("device-rw"));
+        assert!(device.profiles.contains_key("vault-only"));
+        let resolved =
+            crate::permissions::resolve_device_permission_profile(&paths, Some("device-rw"))
+                .expect("device-global profile is a valid ceiling");
+        assert_eq!(resolved.name, "device-rw");
+        assert!(load_permission_profiles(&paths)
+            .profiles
+            .contains_key("device-rw"));
+    }
+
+    #[test]
+    fn local_config_wins_over_the_device_entry_but_is_reported() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = vault(&temp_dir);
+        let _guard = device::test_override::set(device_file(&temp_dir, &root, DEVICE));
+        fs::write(
+            root.join(".vulcan/config.local.toml"),
+            "[chunking]\ntarget_size = 512\n",
+        )
+        .unwrap();
+        let paths = VaultPaths::new(&root);
+
+        let loaded = load_vault_config(&paths);
+        assert_eq!(loaded.config.chunking.target_size, 512);
+        assert_eq!(loaded.diagnostics.len(), 1, "{:?}", loaded.diagnostics);
+        assert!(loaded.diagnostics[0]
+            .message
+            .contains("chunking.target_size"));
+
+        // A settings conflict does not touch device profiles.
+        assert!(load_device_permission_profiles(&paths)
+            .diagnostics
+            .is_empty());
+    }
+
+    #[test]
+    fn a_profile_defined_differently_in_both_device_files_fails_closed() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = vault(&temp_dir);
+        let _guard = device::test_override::set(device_file(&temp_dir, &root, DEVICE));
+        fs::write(
+            root.join(".vulcan/config.local.toml"),
+            "[permissions.profiles.device-rw]\nread = \"all\"\nwrite = \"none\"\n",
+        )
+        .unwrap();
+        let paths = VaultPaths::new(&root);
+
+        let device = load_device_permission_profiles(&paths);
+        assert!(device.diagnostics[0]
+            .message
+            .contains("permissions.profiles.device-rw.write"));
+        assert!(
+            crate::permissions::resolve_device_permission_profile(&paths, Some("device-rw"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn no_device_file_and_home_relative_paths() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = vault(&temp_dir);
+        let paths = VaultPaths::new(&root);
+        assert!(load_vault_config(&paths).diagnostics.is_empty());
+
+        let _guard = device::test_override::set(temp_dir.path().join("missing.toml"));
+        assert!(load_device_permission_profiles(&paths)
+            .diagnostics
+            .is_empty());
+
+        if let Some(home) = std::env::var_os("HOME") {
+            assert_eq!(
+                expand_home("~/wikis/a"),
+                PathBuf::from(home).join("wikis/a")
+            );
+        }
+        assert_eq!(expand_home("/abs/path"), PathBuf::from("/abs/path"));
+    }
+}

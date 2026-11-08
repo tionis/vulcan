@@ -56,6 +56,9 @@ mod obsidian;
 
 mod partial;
 
+mod device;
+pub use device::{daemon_config_file, expand_home, DAEMON_CONFIG_FILE_NAME};
+
 #[cfg(test)]
 use importers::{
     tasknotes_migrate_mdbase_assets, tasknotes_migrate_view_files, tasknotes_skipped_settings,
@@ -3038,6 +3041,8 @@ pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
         apply_vulcan_overrides(&mut loaded.config, vulcan_config);
     }
 
+    apply_device_layers(&mut loaded.config, paths, &mut loaded.diagnostics);
+
     if let Some(mut local_config) = load_vulcan_overrides(
         paths.local_config_file(),
         "local Vulcan config",
@@ -3202,6 +3207,7 @@ pub fn load_vault_config_with_overrides(
         &mut loaded.diagnostics,
         false,
     );
+    apply_device_layers(&mut loaded.config, paths, &mut loaded.diagnostics);
     apply_vulcan_override_value(
         &mut loaded.config,
         local_override,
@@ -3294,6 +3300,8 @@ pub fn load_permission_profiles(paths: &VaultPaths) -> PermissionProfilesLoadRes
         apply_permission_profile_overrides(&mut loaded.profiles, vulcan_config.permissions);
     }
 
+    apply_device_profiles(&mut loaded.profiles, paths, &mut loaded.diagnostics);
+
     if let Some(local_config) = load_vulcan_overrides(
         paths.local_config_file(),
         "local Vulcan config",
@@ -3319,6 +3327,7 @@ pub fn load_permission_profiles_with_overrides(
         paths.config_file(),
         &mut loaded.diagnostics,
     );
+    apply_device_profiles(&mut loaded.profiles, paths, &mut loaded.diagnostics);
     apply_permission_profile_override_value(
         &mut loaded.profiles,
         local_override,
@@ -3330,11 +3339,15 @@ pub fn load_permission_profiles_with_overrides(
 }
 
 /// The profiles a device may choose as its own limit for this vault: the
-/// built-ins and the device-local `config.local.toml`. The shared
-/// `config.toml` is synced, so it never contributes.
+/// built-ins, the device-global profiles in `daemon.toml` and the vault's
+/// entry there, and the device-local `config.local.toml`. The shared
+/// `config.toml` is synced, so it never contributes. A profile both device
+/// files define differently is reported, which makes every device profile
+/// unavailable until it is resolved.
 #[must_use]
 pub fn load_device_permission_profiles(paths: &VaultPaths) -> PermissionProfilesLoadResult {
     let mut loaded = load_permission_profiles_base();
+    apply_device_profiles(&mut loaded.profiles, paths, &mut loaded.diagnostics);
     if let Some(local_config) = load_vulcan_overrides(
         paths.local_config_file(),
         "local Vulcan config",
@@ -3343,6 +3356,59 @@ pub fn load_device_permission_profiles(paths: &VaultPaths) -> PermissionProfiles
         apply_permission_profile_overrides(&mut loaded.profiles, local_config.permissions);
     }
     loaded
+}
+
+/// Applies `daemon.toml`'s device-global permissions and the vault entry's
+/// `config` table, reporting keys `config.local.toml` sets differently.
+fn apply_device_layers(
+    config: &mut VaultConfig,
+    paths: &VaultPaths,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
+) {
+    let Some(device) = device::load_device_layer(paths.vault_root(), diagnostics) else {
+        return;
+    };
+    if let Some(permissions) = device.permissions(diagnostics) {
+        apply_vulcan_overrides(
+            config,
+            PartialVulcanConfig {
+                permissions: Some(permissions),
+                ..PartialVulcanConfig::default()
+            },
+        );
+    }
+    if let Some(mut vault_config) = device.vault_config(diagnostics) {
+        if vault_config.folder_notes.take().is_some() {
+            diagnostics.push(ConfigDiagnostic::message(
+                &device.path,
+                "ignored device [folder_notes]: folder-note conventions are repository-level shared configuration",
+            ));
+        }
+        remove_local_shared_sync_policy(&mut vault_config, &device.path, diagnostics);
+        apply_vulcan_overrides(config, vault_config);
+    }
+    device::report_local_conflicts(&device, paths.local_config_file(), None, diagnostics);
+}
+
+/// The permission-profile part of [`apply_device_layers`].
+fn apply_device_profiles(
+    profiles: &mut BTreeMap<String, PermissionProfile>,
+    paths: &VaultPaths,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
+) {
+    let Some(device) = device::load_device_layer(paths.vault_root(), diagnostics) else {
+        return;
+    };
+    apply_permission_profile_overrides(profiles, device.permissions(diagnostics));
+    if let Some(vault_config) = device.vault_config(diagnostics) {
+        apply_permission_profile_overrides(profiles, vault_config.permissions);
+    }
+    device::report_local_conflicts(
+        &device,
+        paths.local_config_file(),
+        Some("permissions"),
+        diagnostics,
+    );
 }
 
 fn load_permission_profiles_base() -> PermissionProfilesLoadResult {

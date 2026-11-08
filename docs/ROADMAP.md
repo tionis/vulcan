@@ -5876,6 +5876,12 @@ undeclared state is reported as drift and removed only with `--prune`. Design:
 - [ ] 10.12.2 Device-global `[permissions.profiles]` in `daemon.toml` as a resolver input for
   device-local ceilings; per-vault `config` tables on `[[vault]]` as a device overlay for direct CLI
   and daemon; `--target device`, `profile move`, and `config local move`.
+  - Reading side done: `vulcan-core` reads device-global `[permissions]` and the matching
+    `[[vault]]` `config` table from `daemon.toml` for every config and profile load (direct CLI and
+    daemon), reports keys `config.local.toml` sets differently (local wins for settings, profiles
+    fail closed), and vault paths may start with `~`. The daemon stores the tables opaquely and keeps
+    `~` paths as written. Remaining: `--target device`, `profile move`, `config local move`, and
+    per-key sources in `config show`.
 - [ ] 10.12.3 `vulcan daemon plan` and `apply` over every `daemon.toml` section (validate, allocate
   identities, reload a running daemon) with `--dry-run`, `--file` and `--output json`.
 - [ ] 10.12.4 Vault `source` with cloning in `apply`, and missing-vault reporting at daemon start.

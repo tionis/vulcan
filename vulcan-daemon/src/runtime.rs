@@ -1012,6 +1012,7 @@ mod tests {
 
     fn registration(id: &str, paused: bool, backend: Option<&str>) -> WikiRegistration {
         WikiRegistration {
+            config: None,
             id: WikiId::parse(id).expect("wiki id"),
             registration_id: ulid::Ulid::new(),
             path: PathBuf::from(format!("/{id}")),

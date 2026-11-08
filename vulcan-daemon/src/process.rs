@@ -1858,6 +1858,7 @@ mod tests {
         DaemonConfig {
             bind: "127.0.0.1:0".to_string(),
             vaults: vec![WikiRegistration {
+                config: None,
                 profile: crate::registry::ManagedDirectoryProfile::Knowledge,
                 profile_version: None,
                 materialization: crate::registry::MaterializationProfile::Full,

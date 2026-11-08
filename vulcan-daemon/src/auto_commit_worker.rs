@@ -607,6 +607,7 @@ mod tests {
 
     fn registration(path: &Path, backend: &str) -> WikiRegistration {
         WikiRegistration {
+            config: None,
             profile: crate::registry::ManagedDirectoryProfile::Knowledge,
             profile_version: None,
             materialization: crate::registry::MaterializationProfile::Full,
