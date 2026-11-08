@@ -447,7 +447,8 @@ fn handle_add(cli: &Cli, registry: &WikiRegistry, command: &VaultCommand) -> Res
         check_device_profile(path, name)?;
     }
     let request = AddWikiRequest {
-        source: None,
+        // Recorded so the daemon.toml entry can clone the vault elsewhere.
+        source: vulcan_core::git::git_remote_url(path, git_dir.as_deref(), "origin"),
         id: parse_id(id)?,
         path: path.clone(),
         profile: Some(managed_profile(*profile)),

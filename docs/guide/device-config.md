@@ -61,7 +61,8 @@ tool_packs = ["notes-read", "notes-write", "search", "status"]
 - **Vaults.** `path` is required; `source` is optional. Without `source`, a missing path is an
   error. With it, `apply` clones the vault there, using the device key when the forge accepts it
   (see `vulcan help device-keys`), and an existing path must be a repository whose remote is
-  `source`. `vulcan vault clone` records `source` for you.
+  `source`. `vulcan vault clone` records `source` for you, and `vulcan vault add` records the
+  checkout's `origin` URL when it has one; add `source` by hand for a remote added later.
 - **Permission profiles.** Built-ins such as `readonly`, `writer` and `maintainer` (see
   `vulcan help sandbox`) need no definition. `[permissions.profiles.<name>]` defines more for every
   vault on this device. Because the file is never in a vault, a push cannot widen them, so they are

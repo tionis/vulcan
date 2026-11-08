@@ -144,7 +144,7 @@ fn apply_stores_identities_and_a_second_plan_is_empty() {
     let device = Device::new();
     let notes = device.vault_dir("notes");
     device.write_config(&format!(
-        "# hand written\n[[vault]]\nid = \"notes\"\npath = \"{}\"\n",
+        "# hand written\n[[vault]]\nid = \"notes\"\npath = '{}'\n",
         notes.display()
     ));
 
@@ -184,9 +184,9 @@ fn apply_clones_missing_vaults_and_reports_bad_ones_without_stopping() {
         &["clone", other.to_str().unwrap(), wrong.to_str().unwrap()],
     );
     device.write_config(&format!(
-        "[[vault]]\nid = \"good\"\npath = \"{}\"\nsource = \"{}\"\nsync_backend = \"git\"\n\n\
-         [[vault]]\nid = \"lost\"\npath = \"{}\"\n\n\
-         [[vault]]\nid = \"wrong\"\npath = \"{}\"\nsource = \"{}\"\n",
+        "[[vault]]\nid = \"good\"\npath = '{}'\nsource = '{}'\nsync_backend = \"git\"\n\n\
+         [[vault]]\nid = \"lost\"\npath = '{}'\n\n\
+         [[vault]]\nid = \"wrong\"\npath = '{}'\nsource = '{}'\n",
         device.path("good").display(),
         good.display(),
         device.path("lost").display(),
@@ -226,10 +226,7 @@ fn apply_clones_missing_vaults_and_reports_bad_ones_without_stopping() {
 fn a_reviewed_file_is_checked_without_touching_the_live_config() {
     let device = Device::new();
     let notes = device.vault_dir("notes");
-    let live = format!(
-        "[[vault]]\nid = \"notes\"\npath = \"{}\"\n",
-        notes.display()
-    );
+    let live = format!("[[vault]]\nid = \"notes\"\npath = '{}'\n", notes.display());
     device.write_config(&live);
     assert_eq!(device.apply(&[]).code, 0);
 
@@ -238,7 +235,7 @@ fn a_reviewed_file_is_checked_without_touching_the_live_config() {
     fs::write(
         &reviewed,
         format!(
-            "bind = \"127.0.0.1:3999\"\n{live}\n[[vault]]\nid = \"extra\"\npath = \"{}\"\n",
+            "bind = \"127.0.0.1:3999\"\n{live}\n[[vault]]\nid = \"extra\"\npath = '{}'\n",
             extra.display()
         ),
     )
@@ -265,7 +262,7 @@ fn undeclared_state_is_drift_until_pruned() {
     let notes = device.vault_dir("notes");
     let old = device.vault_dir("old");
     device.write_config(&format!(
-        "[[vault]]\nid = \"notes\"\npath = \"{}\"\n\n[[vault]]\nid = \"old\"\npath = \"{}\"\n",
+        "[[vault]]\nid = \"notes\"\npath = '{}'\n\n[[vault]]\nid = \"old\"\npath = '{}'\n",
         notes.display(),
         old.display()
     ));
@@ -276,7 +273,7 @@ fn undeclared_state_is_drift_until_pruned() {
     fs::write(&stale_scan, "{}").unwrap();
     // Remove `old` by hand: its identity stays as drift.
     device.write_config(&format!(
-        "[[vault]]\nid = \"notes\"\npath = \"{}\"\n",
+        "[[vault]]\nid = \"notes\"\npath = '{}'\n",
         notes.display()
     ));
 
@@ -312,7 +309,7 @@ fn remote_ceilings_resolve_from_daemon_toml() {
     let notes = device.vault_dir("notes");
     let config = |profiles: &str| {
         format!(
-            "[[vault]]\nid = \"notes\"\npath = \"{}\"\n\n\
+            "[[vault]]\nid = \"notes\"\npath = '{}'\n\n\
              [[mcp_remote]]\nversion = 1\nid = \"notes\"\nbind = \"127.0.0.1:18765\"\n\
              public_url = \"https://notes.example.invalid/mcp\"\n\n\
              [mcp_remote.authentication]\ntype = \"indie_auth\"\nidentity = \"https://me.example.invalid/\"\n\n\
@@ -349,7 +346,7 @@ fn a_managed_file_refuses_cli_edits_unless_forced() {
     let device = Device::new();
     let notes = device.vault_dir("notes");
     device.write_config(&format!(
-        "managed_by = \"chezmoi\"\n\n[[vault]]\nid = \"notes\"\npath = \"{}\"\n",
+        "managed_by = \"chezmoi\"\n\n[[vault]]\nid = \"notes\"\npath = '{}'\n",
         notes.display()
     ));
     let before = fs::read_to_string(device.daemon_toml()).unwrap();
@@ -405,7 +402,7 @@ fn built_in_and_pinned_profiles_serve_as_remote_ceilings() {
     let notes = device.vault_dir("notes");
     let config = |ceiling: &str| {
         format!(
-            "[[vault]]\nid = \"notes\"\npath = \"{}\"\n\n\
+            "[[vault]]\nid = \"notes\"\npath = '{}'\n\n\
              [[mcp_remote]]\nversion = 1\nid = \"notes\"\nbind = \"127.0.0.1:18765\"\n\
              public_url = \"https://notes.example.invalid/mcp\"\n\n\
              [mcp_remote.authentication]\ntype = \"indie_auth\"\nidentity = \"https://me.example.invalid/\"\n\n\
@@ -592,7 +589,7 @@ fn an_opted_in_vault_keeps_its_remote_state_while_its_settings_are_unusable() {
     let moved = notes.with_file_name("notes-away");
     fs::rename(&notes, &moved).unwrap();
     device.write_config(&format!(
-        "[[vault]]\nid = \"notes\"\npath = \"{}\"\nsource = \"{}\"\n\
+        "[[vault]]\nid = \"notes\"\npath = '{}'\nsource = '{}'\n\
          mcp_remote = {{ bind = \"127.0.0.1:18765\" }}\n",
         notes.display(),
         device.path("no-such-repository").display()
@@ -625,6 +622,60 @@ fn an_opted_in_vault_keeps_its_remote_state_while_its_settings_are_unusable() {
     assert!(identity_drift(&device.plan(&["--prune"]).json()));
 }
 
+#[test]
+fn vault_add_records_the_origin_so_the_entry_can_clone_the_vault() {
+    let device = Device::new();
+    let upstream = remote_repository(&device, "upstream");
+    let notes = device.path("notes");
+    git(
+        device.root.as_path(),
+        &[
+            "clone",
+            "--quiet",
+            upstream.to_str().unwrap(),
+            notes.to_str().unwrap(),
+        ],
+    );
+    let unversioned = device.vault_dir("plain");
+    for (id, path) in [("notes", &notes), ("plain", &unversioned)] {
+        let added = device.run(&[
+            "vault",
+            "add",
+            id,
+            path.to_str().unwrap(),
+            "--no-device-key",
+        ]);
+        assert_eq!(added.code, 0, "{}{}", added.stdout, added.stderr);
+    }
+    let written = fs::read_to_string(device.daemon_toml()).unwrap();
+    let declared: toml::Value = toml::from_str(&written).unwrap();
+    let notes_entry = declared["vault"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["id"].as_str() == Some("notes"))
+        .unwrap();
+    assert_eq!(
+        notes_entry["source"].as_str(),
+        Some(upstream.to_str().unwrap()),
+        "{written}"
+    );
+    assert_eq!(written.matches("source = ").count(), 1, "{written}");
+
+    // On a device without the vault, the same entry clones it.
+    fs::remove_dir_all(&notes).unwrap();
+    let plan = device.plan(&[]);
+    assert_eq!(
+        item(&plan.json(), "vault", "notes")["action"],
+        "clone",
+        "{}",
+        plan.stdout
+    );
+    let applied = device.apply(&[]);
+    assert_eq!(applied.code, 0, "{}{}", applied.stdout, applied.stderr);
+    assert!(notes.join(".git").exists());
+}
+
 fn write_vault_remote(notes: &Path, identity: &str) {
     fs::write(
         notes.join(".vulcan/config.toml"),
@@ -643,7 +694,7 @@ fn opted_in_vault(device: &Device) -> PathBuf {
     let notes = device.vault_dir("notes");
     write_vault_remote(&notes, "https://me.example.invalid/");
     device.write_config(&format!(
-        "[[vault]]\nid = \"notes\"\npath = \"{}\"\nmcp_remote = {{ bind = \"127.0.0.1:18765\" }}\n",
+        "[[vault]]\nid = \"notes\"\npath = '{}'\nmcp_remote = {{ bind = \"127.0.0.1:18765\" }}\n",
         notes.display()
     ));
     notes

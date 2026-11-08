@@ -92,6 +92,8 @@ both execute the same application workflow.
   result is in the `transport` and `enroll` fields (or `enroll_error`). Pass `--no-device-key` for the
   old behaviour, and never pass `--login` unattended. A vault added or cloned before this existed is
   enrolled with `vulcan vault enroll <wiki>`.
+- `vulcan vault add` records the checkout's `origin` URL as the entry's `source` in `daemon.toml`,
+  as `vault clone` does, so the entry can clone the vault on another device.
 - `vulcan vault add` on a folder that is not a Git repository still registers it, but reports
   `not_a_git_repository: true` and skips enrollment. `vault add <id> <path> --git-init` creates the
   repository first (no commit, no remote) and leaves an existing repository alone; a refused

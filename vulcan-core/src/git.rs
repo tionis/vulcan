@@ -151,6 +151,20 @@ pub fn git_repository_layout(vault_root: &Path) -> Option<GitRepositoryLayout> {
     })
 }
 
+/// The URL of `remote` in the repository holding `vault_root`, or in the
+/// detached `git_dir` when given; `None` without a repository or remote.
+#[must_use]
+pub fn git_remote_url(vault_root: &Path, git_dir: Option<&Path>, remote: &str) -> Option<String> {
+    let mut command = Command::new("git");
+    match git_dir {
+        Some(git_dir) => command.arg("--git-dir").arg(git_dir),
+        None => command.arg("-C").arg(vault_root),
+    };
+    let output = command.args(["remote", "get-url", remote]).output().ok()?;
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (output.status.success() && !url.is_empty()).then_some(url)
+}
+
 #[must_use]
 pub fn is_git_repo(vault_root: &Path) -> bool {
     Command::new("git")
@@ -1112,6 +1126,35 @@ mod tests {
             .status()
             .expect("git should launch");
         assert!(status.success(), "git command failed: {args:?}");
+    }
+
+    #[test]
+    fn git_remote_url_reads_origin_from_the_work_tree_or_a_detached_git_dir() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let root = temp_dir.path().join("repo");
+        fs::create_dir_all(root.join("docs")).expect("vault dirs");
+        assert_eq!(git_remote_url(&root, None, "origin"), None);
+        run_git_ok(&root, &["init", "--quiet"]);
+        assert_eq!(git_remote_url(&root, None, "origin"), None);
+        run_git_ok(
+            &root,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "git@forge.example.invalid:me/notes",
+            ],
+        );
+        assert_eq!(
+            git_remote_url(&root.join("docs"), None, "origin").as_deref(),
+            Some("git@forge.example.invalid:me/notes")
+        );
+        let elsewhere = temp_dir.path().join("elsewhere");
+        fs::create_dir_all(&elsewhere).expect("other dir");
+        assert_eq!(
+            git_remote_url(&elsewhere, Some(&root.join(".git")), "origin").as_deref(),
+            Some("git@forge.example.invalid:me/notes")
+        );
     }
 
     #[test]

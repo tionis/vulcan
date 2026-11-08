@@ -615,6 +615,9 @@ Notes:
   with the live remote configured. --git-init creates the repository first
   when the path is not inside one (no commit, no remote); a vault already
   inside a repository is left as it is.
+  The repository's `origin` URL, when it has one, is recorded as the entry's
+  `source` in daemon.toml, so the entry can clone the vault on another device
+  (`vulcan daemon apply`), as `vault clone` records it.
   Preview with --dry-run first; --dry-run never writes registry state.
 
 Device key:
