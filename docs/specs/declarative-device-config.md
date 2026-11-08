@@ -1,8 +1,9 @@
 # Declarative Device Configuration
 
-Status: design for Roadmap 10.12. Phase 1 (identity split, migration, format-preserving writes) is
-implemented, and so is phase 2 (device profiles, vault `config` tables, `~` paths, `--target
-device`, `profile move`, `config local move`). Phase 3 (`daemon plan`/`apply`) and later are not.
+Status: implemented (Roadmap 10.12). User guide: `docs/guide/device-config.md`
+(`vulcan help device-config`). Two points differ from the original design and are marked
+"Implemented as" below: a running daemon that needs new configuration is restarted as a whole, and
+`apply --file` only checks.
 
 ## Problem
 
@@ -190,7 +191,9 @@ vulcan daemon plan  [--output json] [--file <path>]
 vulcan daemon apply [--dry-run] [--prune] [--output json] [--file <path>]
 ```
 
-`--file` checks or applies another file without installing it (for review before copying).
+`--file` checks another file without installing it (for review before copying). Implemented as:
+`apply --file` behaves like `apply --dry-run` on that file, because applying anything but the
+installed file would leave the device running a configuration no file describes.
 
 `plan` covers every section of the file and the daemon service itself (installed, running,
 executable current). It compares the file with the device and reports, per item, one of `ok`, `create`, `update`,
@@ -208,6 +211,10 @@ change, 2 when changes are pending, 1 on an error (same convention as `picomq-to
    (`--no-service` skips this, for containers or manual supervision). A running daemon reloads its
    configuration: changed remotes, vault runtimes, workers, agents, notification sinks and bots
    restart; unchanged ones keep running. A daemon started from an older executable is restarted.
+   Implemented as: vault declarations and permission profiles are picked up while the daemon runs
+   (it polls the registry, and `vulcan-core` rereads `daemon.toml`); any other change, detected by
+   a digest of those sections in the daemon's runtime record, or a replaced executable restarts the
+   whole daemon through a graceful stop (final syncs run) and the service manager.
 5. With `--prune`: remove drift. That is identity entries, scan state and API tokens of undeclared
    vaults, and OAuth state (signing keys, clients, grants) of undeclared remotes. Each removal is
    listed in `plan` first. Working trees and Git directories are never deleted.

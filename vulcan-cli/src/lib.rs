@@ -638,6 +638,25 @@ impl CliError {
         }
     }
 
+    /// Exit code 2, no message: `daemon plan` printed pending changes.
+    pub(crate) fn changes_pending() -> Self {
+        Self {
+            exit_code: 2,
+            code: "changes_pending",
+            message: String::new(),
+        }
+    }
+
+    /// Exit code 1, no message: a report that names its own errors was
+    /// already printed.
+    pub(crate) fn reported_failure() -> Self {
+        Self {
+            exit_code: 1,
+            code: "operation_failed",
+            message: String::new(),
+        }
+    }
+
     /// Exit code 2, no message — used by `--exit-code` when query/search returns zero results.
     pub(crate) fn no_results() -> Self {
         Self {
@@ -4763,15 +4782,21 @@ where
         return Ok(());
     }
     let cli = Cli::from_arg_matches(&matches).map_err(|error| CliError::clap(&error))?;
-    if command_allows_template_prompts(&cli.command)
+    vulcan_app::daemon_config_file::allow_managed_edits(cli.force_local_edit);
+    let result = if command_allows_template_prompts(&cli.command)
         && template_prompt::interactive_prompts_available()
     {
-        return vulcan_app::templates::with_template_prompter(
+        vulcan_app::templates::with_template_prompter(
             std::rc::Rc::new(template_prompt::TerminalTemplatePrompter),
             || dispatch(&cli),
-        );
+        )
+    } else {
+        dispatch(&cli)
+    };
+    for warning in vulcan_app::daemon_config_file::take_warnings() {
+        eprintln!("warning: {warning}");
     }
-    dispatch(&cli)
+    result
 }
 
 /// Long-running servers never stop to ask the terminal; templates they render

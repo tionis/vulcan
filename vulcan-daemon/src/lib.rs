@@ -15,6 +15,7 @@ pub mod companion;
 pub mod conflict_worker;
 pub mod credentials;
 pub mod daemon_host;
+pub mod declarative;
 pub mod environment;
 pub mod final_sync;
 pub mod host;

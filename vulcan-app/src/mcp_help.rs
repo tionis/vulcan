@@ -384,6 +384,13 @@ pub fn builtin_help_topics() -> Vec<HelpTopicReport> {
             &["mcp", "chatgpt-mcp", "config", "permissions"],
         ),
         static_help_topic(
+            "device-config",
+            HelpTopicKind::Guide,
+            "Declarative daemon.toml: vaults with source, device profiles, per-vault settings, daemon plan/apply, drift and --prune, managed_by.",
+            include_str!("../../docs/guide/device-config.md"),
+            &["daemon plan", "daemon apply", "vault", "mcp remote", "config"],
+        ),
+        static_help_topic(
             "device-keys",
             HelpTopicKind::Guide,
             "Device key for Git over SSH: automatic enrollment on clone/add, forge setup, replacing and revoking keys.",

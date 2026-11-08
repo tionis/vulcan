@@ -1012,6 +1012,7 @@ mod tests {
 
     fn registration(id: &str, paused: bool, backend: Option<&str>) -> WikiRegistration {
         WikiRegistration {
+            source: None,
             config: None,
             id: WikiId::parse(id).expect("wiki id"),
             registration_id: ulid::Ulid::new(),
@@ -1174,6 +1175,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    source: None,
                     profile: None,
                     id: WikiId::parse("notes").unwrap(),
                     path: vault,
@@ -1254,6 +1256,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    source: None,
                     profile: None,
                     id: git_id.clone(),
                     path: git_vault,
@@ -1283,6 +1286,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    source: None,
                     profile: None,
                     id: WikiId::parse("plain").unwrap(),
                     path: plain_vault,
@@ -1403,6 +1407,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    source: None,
                     profile: None,
                     id: WikiId::parse("alpha").expect("wiki id"),
                     path: vault,
@@ -1478,6 +1483,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    source: None,
                     profile: None,
                     id: id.clone(),
                     path: vault,

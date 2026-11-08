@@ -107,6 +107,10 @@ pub struct WikiRegistration {
     /// the vault's configuration, with or without the daemon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<OpaqueToml>,
+    /// Git URL `vulcan daemon apply` clones the vault from when its path is
+    /// missing. An existing path must be a repository with this remote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// Versioned local capability preset for a managed directory.
@@ -245,6 +249,11 @@ pub struct DaemonConfig {
     /// vault. `vulcan-core` reads them from this file directly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permissions: Option<OpaqueToml>,
+    /// The configuration management tool that renders this file, such as
+    /// `chezmoi` or `gandalf`. CLI edits are then refused with the snippet
+    /// to add to that tool's source, unless `--force-local-edit` is given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_by: Option<String>,
 }
 
 /// Chat bots this device hosts. A bot token permits one poller, so only
@@ -344,6 +353,7 @@ impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
             permissions: None,
+            managed_by: None,
             bind: default_bind(),
             resolution_agent: None,
             semantic_agent: None,
@@ -575,6 +585,7 @@ pub struct AddWikiRequest {
     pub permissions_profile: Option<String>,
     pub sync_backend: Option<String>,
     pub platform_profile: Option<String>,
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -632,17 +643,37 @@ pub enum RegistryError {
     InvalidVaultPointer(String),
     MissingDirectory(PathBuf),
     DuplicateId(WikiId),
-    DuplicatePath { id: WikiId, path: PathBuf },
-    DuplicateGitDir { id: WikiId, path: PathBuf },
+    DuplicatePath {
+        id: WikiId,
+        path: PathBuf,
+    },
+    DuplicateGitDir {
+        id: WikiId,
+        path: PathBuf,
+    },
     DuplicateMcpRemoteId(McpRemoteId),
-    DuplicateMcpRemoteBind { id: McpRemoteId, bind: String },
-    DuplicateMcpRemoteUrl { id: McpRemoteId, public_url: String },
+    DuplicateMcpRemoteBind {
+        id: McpRemoteId,
+        bind: String,
+    },
+    DuplicateMcpRemoteUrl {
+        id: McpRemoteId,
+        public_url: String,
+    },
     UnknownMcpRemote(McpRemoteId),
-    McpRemoteInUse { remote: McpRemoteId, wiki: WikiId },
+    McpRemoteInUse {
+        remote: McpRemoteId,
+        wiki: WikiId,
+    },
     InvalidMcpRemote(String),
     UnregisteredPath(PathBuf),
     UnknownWiki(WikiId),
-    InvalidConfig { path: PathBuf, detail: String },
+    InvalidConfig {
+        path: PathBuf,
+        detail: String,
+    },
+    /// `daemon.toml` names an owner in `managed_by`.
+    Managed(String),
     Io(std::io::Error),
 }
 
@@ -663,7 +694,7 @@ impl Display for RegistryError {
             Self::InvalidDaemonSetting(detail) => {
                 write!(formatter, "invalid daemon setting: {detail}")
             }
-            Self::InvalidVaultPointer(detail) => formatter.write_str(detail),
+            Self::InvalidVaultPointer(detail) | Self::Managed(detail) => formatter.write_str(detail),
             Self::MissingDirectory(path) => {
                 write!(formatter, "wiki directory does not exist: {}", path.display())
             }
@@ -724,6 +755,18 @@ impl From<std::io::Error> for RegistryError {
     fn from(error: std::io::Error) -> Self {
         Self::Io(error)
     }
+}
+
+/// A `daemon.toml` evaluated against this device's identities.
+#[derive(Debug, Clone)]
+pub struct DeclaredConfig {
+    /// The declarations, with identities filled in; new ones are allocated
+    /// in memory and not yet stored.
+    pub config: DaemonConfig,
+    /// The identities stored on this device.
+    pub stored_identities: Identities,
+    pub new_vault_identities: Vec<String>,
+    pub new_remote_identities: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -893,6 +936,81 @@ impl WikiRegistry {
         Ok((config, source, identities_source))
     }
 
+    /// Evaluates a `daemon.toml` source (the live file when `None`) against
+    /// this device's identities without writing anything: identities for
+    /// new declarations are allocated in memory only.
+    pub fn declared(&self, source: Option<&str>) -> Result<DeclaredConfig, RegistryError> {
+        let source = match source {
+            Some(source) => Some(source.to_string()),
+            None => read_optional(&self.path)?,
+        };
+        let identities_path = config_file::identities_path(&self.path);
+        let identities_source = read_optional(&identities_path)?;
+        let (mut config, stored) =
+            parse_both(&self.path, source.as_deref(), identities_source.as_deref())?;
+        let mut identities = stored.clone();
+        apply_identities(&mut config, &mut identities, &identities_path)?;
+        validate_daemon_config(&config)?;
+        let new_vault_identities = config
+            .vaults
+            .iter()
+            .filter(|wiki| !stored.vaults.contains_key(wiki.id.as_str()))
+            .map(|wiki| wiki.id.to_string())
+            .collect();
+        let new_remote_identities = config
+            .mcp_remotes
+            .iter()
+            .filter(|remote| !stored.mcp_remotes.contains_key(remote.id.as_str()))
+            .map(|remote| remote.id.to_string())
+            .collect();
+        Ok(DeclaredConfig {
+            config,
+            stored_identities: stored,
+            new_vault_identities,
+            new_remote_identities,
+        })
+    }
+
+    /// Removes stored identities of vaults and remotes that the live file no
+    /// longer declares (`daemon apply --prune`). Declared ones are kept.
+    pub fn forget_undeclared_identities(
+        &self,
+        vaults: &[String],
+        remotes: &[String],
+    ) -> Result<(), RegistryError> {
+        let _lock = RegistryLock::acquire(&self.path)?;
+        let config = self.load_snapshot_with(false, true)?;
+        let identities_path = config_file::identities_path(&self.path);
+        let (_, mut identities) = parse_both(
+            &self.path,
+            None,
+            read_optional(&identities_path)?.as_deref(),
+        )?;
+        let before = identities.clone();
+        for id in vaults {
+            if !config.vaults.iter().any(|wiki| wiki.id.as_str() == id) {
+                identities.vaults.remove(id);
+            }
+        }
+        for id in remotes {
+            if !config
+                .mcp_remotes
+                .iter()
+                .any(|remote| remote.id.as_str() == id)
+            {
+                identities.mcp_remotes.remove(id);
+            }
+        }
+        if identities != before {
+            write_identities(&identities_path, &identities)?;
+            self.snapshot
+                .lock()
+                .expect("registry snapshot lock")
+                .checked = None;
+        }
+        Ok(())
+    }
+
     pub fn list(&self, group: Option<&str>) -> Result<Vec<WikiRegistrationStatus>, RegistryError> {
         if let Some(group) = group {
             validate_groups(&[group.to_string()])?;
@@ -969,7 +1087,9 @@ impl WikiRegistry {
             let mut groups = request.groups.clone();
             groups.sort();
             groups.dedup();
-            let registration = WikiRegistration { config: None,
+            let registration = WikiRegistration {
+                config: None,
+                source: request.source.clone(),
                 id: request.id.clone(),
                 registration_id: Ulid::new(),
                 path,
@@ -1512,10 +1632,12 @@ impl WikiRegistry {
                 None,
                 read_optional(&identities_path)?.as_deref(),
             )?;
+            let existing = read_optional(&self.path)?;
+            check_managed(&self.path, existing.as_deref(), &before, &config)?;
             if record_identities(&mut identities, &before, &config) {
                 write_identities(&identities_path, &identities)?;
             }
-            save_config(&self.path, read_optional(&self.path)?.as_deref(), &config)?;
+            save_config(&self.path, existing.as_deref(), &config)?;
             self.snapshot
                 .lock()
                 .expect("registry snapshot lock")
@@ -2129,6 +2251,44 @@ fn expand_home_path(path: &mut PathBuf) {
 
 /// Writes `daemon.toml` by merging into the existing document, so comments
 /// and formatting survive. Returns the written text.
+/// Refuses to edit a file that configuration management renders, unless
+/// `--force-local-edit` allowed it.
+fn check_managed(
+    path: &Path,
+    existing: Option<&str>,
+    before: &DaemonConfig,
+    after: &DaemonConfig,
+) -> Result<(), RegistryError> {
+    let declared = |config: &DaemonConfig| {
+        let mut value =
+            toml::Value::try_from(config).map_err(|error| RegistryError::InvalidConfig {
+                path: path.to_path_buf(),
+                detail: error.to_string(),
+            })?;
+        strip_generated_values(&mut value);
+        Ok::<_, RegistryError>(value)
+    };
+    let warning =
+        config_file::check_managed_edit(path, existing, &declared(before)?, &declared(after)?)
+            .map_err(RegistryError::Managed)?;
+    if let Some(warning) = warning {
+        config_file::push_warning(warning);
+    }
+    Ok(())
+}
+
+/// Drops generated identities from a serialized config, so a snippet shows
+/// only owner intent.
+fn strip_generated_values(value: &mut toml::Value) {
+    for (array, key) in [("vault", "registration_id"), ("mcp_remote", "instance_id")] {
+        if let Some(entries) = value.get_mut(array).and_then(toml::Value::as_array_mut) {
+            for entry in entries.iter_mut().filter_map(toml::Value::as_table_mut) {
+                entry.remove(key);
+            }
+        }
+    }
+}
+
 fn save_config(
     path: &Path,
     existing: Option<&str>,
@@ -2409,6 +2569,7 @@ mod tests {
 
     fn request(id: &str, path: &Path) -> AddWikiRequest {
         AddWikiRequest {
+            source: None,
             id: WikiId::parse(id).expect("valid ID"),
             path: path.to_path_buf(),
             profile: None,
@@ -3538,6 +3699,7 @@ profile = "files_only"
         registry
             .add(
                 &AddWikiRequest {
+                    source: None,
                     profile: None,
                     id: WikiId::parse("notes").unwrap(),
                     path: vault,

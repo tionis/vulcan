@@ -177,6 +177,7 @@ mod tests {
 
     fn registration(path: &Path, profile: Option<&str>) -> WikiRegistration {
         WikiRegistration {
+            source: None,
             config: None,
             profile: ManagedDirectoryProfile::Knowledge,
             profile_version: None,

@@ -1202,6 +1202,7 @@ mod tests {
         let wiki = registry
             .add(
                 &AddWikiRequest {
+                    source: None,
                     id: WikiId::parse("mobile").expect("wiki ID"),
                     path,
                     groups: Vec::new(),
@@ -1234,6 +1235,7 @@ mod tests {
         let wiki = registry
             .add(
                 &AddWikiRequest {
+                    source: None,
                     id: WikiId::parse("mobile").expect("wiki ID"),
                     path,
                     groups: Vec::new(),
@@ -1268,6 +1270,7 @@ mod tests {
             registry
                 .add(
                     &AddWikiRequest {
+                        source: None,
                         id: WikiId::parse(id).expect("valid ID"),
                         path,
                         groups,
@@ -1310,6 +1313,7 @@ mod tests {
             registry
                 .add(
                     &AddWikiRequest {
+                        source: None,
                         id: WikiId::parse(id).expect("wiki ID"),
                         path,
                         groups: vec!["team".to_string()],
@@ -1390,6 +1394,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    source: None,
                     id: WikiId::parse("alpha").expect("ID"),
                     path: vault.clone(),
                     groups: Vec::new(),
@@ -1483,6 +1488,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    source: None,
                     id: WikiId::parse("alpha").expect("ID"),
                     path: vault.clone(),
                     groups: Vec::new(),
@@ -1601,6 +1607,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    source: None,
                     id: WikiId::parse("alpha").expect("ID"),
                     path: vault.clone(),
                     groups: Vec::new(),
@@ -1678,6 +1685,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    source: None,
                     id: wiki.clone(),
                     path: vault.clone(),
                     groups: Vec::new(),

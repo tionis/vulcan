@@ -1154,6 +1154,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    source: None,
                     profile: None,
                     id: wiki_id.clone(),
                     path: reader,
@@ -1188,6 +1189,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    source: None,
                     profile: None,
                     id: wiki_id.clone(),
                     path: vault,
@@ -1573,6 +1575,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    source: None,
                     profile: None,
                     id: wiki_id.clone(),
                     path: vault,

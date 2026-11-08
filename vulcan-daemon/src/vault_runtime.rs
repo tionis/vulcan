@@ -267,6 +267,7 @@ mod tests {
 
     fn registration(id: &str, path: &Path, sync_backend: Option<&str>) -> WikiRegistration {
         WikiRegistration {
+            source: None,
             config: None,
             profile: crate::registry::ManagedDirectoryProfile::Knowledge,
             profile_version: None,

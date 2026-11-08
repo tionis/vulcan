@@ -67,9 +67,13 @@ impl DeviceLayer {
     }
 }
 
-/// `daemon.toml` in the user configuration directory.
+/// `daemon.toml` in the user configuration directory, or the file a caller
+/// on this thread is evaluating with [`with_daemon_config_file`].
 #[must_use]
 pub fn daemon_config_file() -> Option<PathBuf> {
+    if let Some(path) = DEVICE_FILE_OVERRIDE.with(|file| file.borrow().clone()) {
+        return Some(path);
+    }
     #[cfg(test)]
     {
         test_override::get()
@@ -79,6 +83,27 @@ pub fn daemon_config_file() -> Option<PathBuf> {
         crate::paths::vulcan_user_config_dir()
             .map(|directory| directory.join(DAEMON_CONFIG_FILE_NAME))
     }
+}
+
+thread_local! {
+    static DEVICE_FILE_OVERRIDE: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `operation` with `path` in place of the device's `daemon.toml`, so
+/// `vulcan daemon plan --file` checks profiles and settings as the reviewed
+/// file would define them, before it is installed.
+pub fn with_daemon_config_file<T>(path: &Path, operation: impl FnOnce() -> T) -> T {
+    struct Restore(Option<PathBuf>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let previous = self.0.take();
+            DEVICE_FILE_OVERRIDE.with(|file| *file.borrow_mut() = previous);
+        }
+    }
+    let previous = DEVICE_FILE_OVERRIDE.with(|file| file.borrow_mut().replace(path.to_path_buf()));
+    let _restore = Restore(previous);
+    operation()
 }
 
 /// The settings `daemon.toml` contributes to one vault, as raw TOML in the

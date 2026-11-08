@@ -216,6 +216,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    source: None,
                     id: WikiId::parse(id).unwrap(),
                     path: path.to_path_buf(),
                     profile: None,

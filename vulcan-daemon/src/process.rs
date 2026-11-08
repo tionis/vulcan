@@ -70,6 +70,16 @@ pub struct DaemonRuntimeRecord {
     pub bind: SocketAddr,
     pub started_unix_ms: u64,
     pub credential_id: String,
+    /// The executable the daemon runs and its modification time at start,
+    /// so `daemon plan` sees when an update replaced it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executable: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executable_modified_unix_ms: Option<u64>,
+    /// Digest of the configuration the daemon read at start that it does
+    /// not pick up while running (`declarative::restart_digest`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_digest: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -359,6 +369,11 @@ where
         bind,
         started_unix_ms: unix_time_ms()?,
         credential_id: credential.id.clone(),
+        executable: std::env::current_exe().ok(),
+        executable_modified_unix_ms: std::env::current_exe()
+            .ok()
+            .and_then(|path| crate::declarative::modified_unix_ms(&path)),
+        config_digest: Some(crate::declarative::restart_digest(&config)),
     };
     let state_store = Arc::new(context.sync_state_store());
     let supervisor = Arc::new(SyncSupervisor::at(
@@ -1164,6 +1179,18 @@ fn next_branch_diagnostic(
     None
 }
 
+/// The runtime record of a daemon that answers an authenticated probe, or
+/// `None`. Unlike [`daemon_status`] this does not read the registry, so it
+/// never stores identities for new declarations (`daemon plan` is
+/// read-only).
+#[must_use]
+pub fn running_daemon(context: &DaemonProcessContext) -> Option<DaemonRuntimeRecord> {
+    let record = read_runtime_record(&context.runtime_path()).ok()??;
+    authenticated_request(context, &record, "GET", "/capabilities")
+        .ok()
+        .map(|_| record)
+}
+
 pub fn daemon_status(
     context: &DaemonProcessContext,
 ) -> Result<DaemonStatusReport, DaemonProcessError> {
@@ -1858,6 +1885,7 @@ mod tests {
         DaemonConfig {
             bind: "127.0.0.1:0".to_string(),
             vaults: vec![WikiRegistration {
+                source: None,
                 config: None,
                 profile: crate::registry::ManagedDirectoryProfile::Knowledge,
                 profile_version: None,
@@ -1998,6 +2026,9 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let path = temporary.path().join("daemon").join(RUNTIME_FILE);
         let record = |pid| DaemonRuntimeRecord {
+            config_digest: None,
+            executable: None,
+            executable_modified_unix_ms: None,
             version: DAEMON_RUNTIME_VERSION,
             pid,
             bind: "127.0.0.1:1".parse().unwrap(),
@@ -2588,6 +2619,9 @@ mod tests {
         write_runtime_record(
             &context.runtime_path(),
             &DaemonRuntimeRecord {
+                config_digest: None,
+                executable: None,
+                executable_modified_unix_ms: None,
                 version: DAEMON_RUNTIME_VERSION,
                 pid: std::process::id(),
                 bind,
@@ -2613,6 +2647,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    source: None,
                     id: WikiId::parse("media").expect("wiki ID"),
                     path: directory.clone(),
                     profile: Some(ManagedDirectoryProfile::FilesOnly),

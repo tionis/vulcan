@@ -1306,6 +1306,7 @@ mod tests {
             let registration = registry
                 .add(
                     &AddWikiRequest {
+                        source: None,
                         profile: None,
                         id: WikiId::parse(id).unwrap(),
                         path: vault,

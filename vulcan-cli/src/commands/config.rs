@@ -1142,11 +1142,7 @@ fn print_config_list_report(
                     ConfigValueKind::Enum => "enum",
                     ConfigValueKind::Flexible => "flexible",
                 };
-                let target_support = match entry.target_support {
-                    app_config::ConfigTargetSupport::SharedOnly => "shared",
-                    app_config::ConfigTargetSupport::LocalOnly => "local",
-                    app_config::ConfigTargetSupport::SharedAndLocal => "shared|local",
-                };
+                let target_support = entry.target_support.label();
                 let value_source = match entry.value_source {
                     app_config::ConfigValueSource::Default => "default",
                     app_config::ConfigValueSource::ObsidianImport => "obsidian_import",

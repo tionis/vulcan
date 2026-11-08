@@ -59,6 +59,9 @@ impl DaemonServicePlatform {
 #[serde(rename_all = "snake_case")]
 pub enum DaemonServiceAction {
     Install,
+    /// Installs or refreshes the definition and restarts the service, so it
+    /// runs the current executable and configuration.
+    Restart,
     Uninstall,
 }
 
@@ -287,7 +290,7 @@ pub fn apply_daemon_service(
         });
     }
     let changed = match plan.action {
-        DaemonServiceAction::Install => {
+        DaemonServiceAction::Install | DaemonServiceAction::Restart => {
             for directory in &plan.directories {
                 ensure_directory(directory)?;
             }
@@ -402,7 +405,7 @@ fn plan_launchd_service(
     let service = format!("{domain}/{LAUNCHD_LABEL}");
     let definition_argument = definition_path.to_string_lossy().into_owned();
     let commands = match action {
-        DaemonServiceAction::Install => vec![
+        DaemonServiceAction::Install | DaemonServiceAction::Restart => vec![
             DaemonServiceCommand::new("launchctl", &["bootout", &service]).tolerant(),
             // A reinstall races launchd's asynchronous bootout: the previous
             // job may still be registered when bootstrap runs, which fails and
@@ -428,7 +431,7 @@ fn plan_launchd_service(
         executable: executable.to_path_buf(),
         directories: vec![daemon_state],
         definition_path: Some(definition_path),
-        definition: (action == DaemonServiceAction::Install).then_some(definition),
+        definition: (action != DaemonServiceAction::Uninstall).then_some(definition),
         commands,
     }
 }
@@ -536,6 +539,11 @@ fn plan_systemd_service(
             DaemonServiceCommand::new("systemctl", &["--user", "daemon-reload"]),
             DaemonServiceCommand::new("systemctl", &["--user", "enable", "--now", SYSTEMD_UNIT]),
         ],
+        DaemonServiceAction::Restart => vec![
+            DaemonServiceCommand::new("systemctl", &["--user", "daemon-reload"]),
+            DaemonServiceCommand::new("systemctl", &["--user", "enable", SYSTEMD_UNIT]),
+            DaemonServiceCommand::new("systemctl", &["--user", "restart", SYSTEMD_UNIT]),
+        ],
         DaemonServiceAction::Uninstall => vec![DaemonServiceCommand::new(
             "systemctl",
             &["--user", "disable", "--now", SYSTEMD_UNIT],
@@ -549,7 +557,7 @@ fn plan_systemd_service(
         executable: executable.to_path_buf(),
         directories: Vec::new(),
         definition_path: Some(definition_path),
-        definition: (action == DaemonServiceAction::Install).then_some(definition),
+        definition: (action != DaemonServiceAction::Uninstall).then_some(definition),
         commands,
     })
 }
@@ -584,6 +592,21 @@ fn plan_windows_task(
             ),
             DaemonServiceCommand::new("schtasks.exe", &["/Run", "/TN", &task_name]),
         ],
+        DaemonServiceAction::Restart => vec![
+            DaemonServiceCommand::new(
+                "schtasks.exe",
+                &[
+                    "/Create",
+                    "/TN",
+                    &task_name,
+                    "/XML",
+                    &definition_argument,
+                    "/F",
+                ],
+            ),
+            DaemonServiceCommand::new("schtasks.exe", &["/End", "/TN", &task_name]).tolerant(),
+            DaemonServiceCommand::new("schtasks.exe", &["/Run", "/TN", &task_name]),
+        ],
         DaemonServiceAction::Uninstall => {
             vec![
                 DaemonServiceCommand::new("schtasks.exe", &["/Delete", "/TN", &task_name, "/F"])
@@ -598,7 +621,7 @@ fn plan_windows_task(
         executable: executable.to_path_buf(),
         directories: Vec::new(),
         definition_path: Some(definition_path),
-        definition: (action == DaemonServiceAction::Install).then_some(definition),
+        definition: (action != DaemonServiceAction::Uninstall).then_some(definition),
         commands,
     })
 }

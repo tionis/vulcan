@@ -57,7 +57,10 @@ mod obsidian;
 mod partial;
 
 mod device;
-pub use device::{daemon_config_file, device_config_toml, expand_home, DAEMON_CONFIG_FILE_NAME};
+pub use device::{
+    daemon_config_file, device_config_toml, expand_home, with_daemon_config_file,
+    DAEMON_CONFIG_FILE_NAME,
+};
 
 #[cfg(test)]
 use importers::{

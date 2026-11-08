@@ -244,6 +244,7 @@ fn fixture(base: &str, ceiling: Option<&str>, profile: &str) -> Fixture {
     registry
         .add(
             &AddWikiRequest {
+                source: None,
                 profile: None,
                 id: WikiId::parse("notes").unwrap(),
                 path: vault.clone(),

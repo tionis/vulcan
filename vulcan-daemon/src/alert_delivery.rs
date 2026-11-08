@@ -1410,6 +1410,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    source: None,
                     profile: None,
                     id: WikiId::parse("alpha").expect("wiki ID"),
                     path: vault,

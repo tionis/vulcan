@@ -5712,6 +5712,47 @@ pub enum SyncCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum DaemonCommand {
+    #[command(
+        about = "Compare daemon.toml with this device and show what apply would do",
+        long_about = "Compare the declarative device configuration in daemon.toml with this device: stored identities, vault directories (and which `source` URLs apply would clone), named remotes and their ceiling profiles, the daemon service, a running daemon started with an older configuration or executable, and undeclared Vulcan state (drift: identities, scan state, API tokens, remote OAuth state). Each item is `ok`, `create`, `update`, `clone`, `drift`, `skip`, or `error`. Writes nothing. Exits 0 when apply would change nothing, 2 when changes are pending, and 1 on an error. Drift counts as pending only with `--prune`."
+    )]
+    Plan {
+        #[arg(
+            long,
+            help = "Plan this file instead of the installed daemon.toml, for review before copying it there"
+        )]
+        file: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Count undeclared state as pending changes, as `apply --prune` would remove it"
+        )]
+        prune: bool,
+        #[arg(
+            long,
+            help = "Leave the daemon service and process alone, for containers or manual supervision"
+        )]
+        no_service: bool,
+    },
+    #[command(
+        about = "Make this device match daemon.toml",
+        long_about = "Make this device match daemon.toml in one step: validate the whole file (any error stops before a change), store identities for new vaults and remotes, clone each declared vault whose path is missing from its `source`, install the native daemon service when it is missing, and restart the daemon when it runs an older configuration or executable (or start it). With `--prune`, also remove drift: identities, scan state and API tokens of undeclared vaults, and OAuth keys and grants of undeclared remotes. Working trees and Git directories are never deleted. `--dry-run` prints the plan and changes nothing. Running it twice leaves nothing to do the second time."
+    )]
+    Apply {
+        #[arg(
+            long,
+            help = "Check another file instead of the installed daemon.toml; implies --dry-run, since apply only acts on the installed file"
+        )]
+        file: Option<PathBuf>,
+        #[arg(long, help = "Print the plan without changing anything")]
+        dry_run: bool,
+        #[arg(long, help = "Also remove undeclared Vulcan state listed as drift")]
+        prune: bool,
+        #[arg(
+            long,
+            help = "Leave the daemon service and process alone, for containers or manual supervision"
+        )]
+        no_service: bool,
+    },
     #[command(about = "Install and start the native per-user daemon service")]
     Install {
         #[arg(
@@ -9783,6 +9824,13 @@ directly otherwise. Without this flag or VULCAN_ROUTE, the device's `[client] ro
         help = "Restrict the command to a named permission profile"
     )]
     pub permissions: Option<String>,
+
+    #[arg(
+        long,
+        global = true,
+        help = "Edit a daemon.toml whose `managed_by` names configuration management; its next render reverts the edit"
+    )]
+    pub force_local_edit: bool,
 
     #[arg(long, global = true, help = "Maximum number of rows to return")]
     pub limit: Option<usize>,

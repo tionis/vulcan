@@ -1630,11 +1630,7 @@ impl ConfigTuiState {
     }
 
     fn entry_target_label(entry: &ConfigEntry) -> &'static str {
-        match entry.target_support {
-            crate::app_config::ConfigTargetSupport::SharedOnly => "shared",
-            crate::app_config::ConfigTargetSupport::LocalOnly => "local",
-            crate::app_config::ConfigTargetSupport::SharedAndLocal => "shared|local",
-        }
+        entry.target_support.label()
     }
 
     fn value_source_label(entry: &ConfigEntry) -> &'static str {

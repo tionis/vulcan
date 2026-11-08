@@ -540,6 +540,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         .registry
         .add(
             &vulcan_daemon::registry::AddWikiRequest {
+                source: None,
                 id: wiki_id.clone(),
                 path: vault,
                 profile: None,
@@ -561,6 +562,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         .registry
         .add(
             &vulcan_daemon::registry::AddWikiRequest {
+                source: None,
                 id: team_id.clone(),
                 path: team_root,
                 profile: None,
@@ -4644,6 +4646,7 @@ fn named_runtime_rejects_a_definition_changed_before_listener_startup() {
         .registry
         .add(
             &vulcan_daemon::registry::AddWikiRequest {
+                source: None,
                 id: wiki_id.clone(),
                 path: vault,
                 profile: None,

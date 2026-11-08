@@ -20383,6 +20383,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(editor_skill.contains("watcher = \"client\""));
     let mcp_skill = fs::read_to_string(vault_root.join(".agents/skills/mcp-setup/SKILL.md"))
         .expect("MCP skill should be readable");
+    assert!(mcp_skill.contains("vulcan help device-config"));
     assert!(mcp_skill.contains("vulcan help mcp-remotes"));
     assert!(mcp_skill.contains("`--tool-pack sync`"));
     assert!(mcp_skill.contains("does not expose conflict resolution"));
@@ -20490,6 +20491,9 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(permission_skill.contains("vulcan schedule trust status"));
     assert!(permission_skill.contains("vulcan daemon config set-telegram-bot"));
     assert!(permission_skill.contains("vulcan daemon bot-status"));
+    assert!(permission_skill.contains("`vulcan daemon apply`"));
+    assert!(permission_skill.contains("config permissions profile move <name>"));
+    assert!(permission_skill.contains("--target device"));
     assert!(permission_skill.contains("never write, echo, or store the token"));
     let sync_skill = fs::read_to_string(vault_root.join(".agents/skills/sync-workflow/SKILL.md"))
         .expect("installed sync skill");

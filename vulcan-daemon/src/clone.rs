@@ -244,6 +244,7 @@ pub fn clone_registered_wiki_with_ssh_command(
     let wiki = registry
         .add(
             &AddWikiRequest {
+                source: Some(request.source.clone()),
                 id: request.id.clone(),
                 path: work_tree.clone(),
                 profile: Some(request.profile),
@@ -557,6 +558,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    source: None,
                     id: WikiId::parse("personal").expect("valid ID"),
                     path: other,
                     profile: None,

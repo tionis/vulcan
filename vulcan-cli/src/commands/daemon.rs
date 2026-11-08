@@ -90,6 +90,9 @@ pub(crate) fn handle_daemon_command(cli: &Cli, command: &DaemonCommand) -> Resul
                 start_foreground(cli, &context, *child)
             }
         }
+        DaemonCommand::Plan { .. } | DaemonCommand::Apply { .. } => {
+            super::daemon_apply::run(cli, &context, command)
+        }
         DaemonCommand::Status => {
             let mut status = daemon_status(&context).map_err(CliError::operation)?;
             if DaemonServicePlatform::native().is_ok() {
@@ -484,7 +487,7 @@ fn manage_service(
     print_service_report(output, &report)
 }
 
-fn native_service_plan(
+pub(crate) fn native_service_plan(
     context: &DaemonProcessContext,
     action: DaemonServiceAction,
 ) -> Result<DaemonServicePlan, CliError> {
@@ -589,6 +592,7 @@ fn print_service_report(
     }
     let action = match report.plan.action {
         DaemonServiceAction::Install => "install",
+        DaemonServiceAction::Restart => "restart",
         DaemonServiceAction::Uninstall => "uninstall",
     };
     if report.dry_run {
@@ -1072,6 +1076,15 @@ fn resident_mcp_services(
 }
 
 fn start_detached(cli: &Cli, context: &DaemonProcessContext) -> Result<(), CliError> {
+    let (pid, log_path, status) = spawn_detached(cli, context)?;
+    print_start(cli.output, true, Some(pid), Some(&log_path), &status)
+}
+
+/// Starts the daemon in the background and waits until it is ready.
+pub(crate) fn spawn_detached(
+    cli: &Cli,
+    context: &DaemonProcessContext,
+) -> Result<(u32, PathBuf, DaemonStatusReport), CliError> {
     let current = daemon_status(context).map_err(CliError::operation)?;
     if current.running {
         return Err(CliError::operation("the Vulcan daemon is already running"));
@@ -1103,7 +1116,7 @@ fn start_detached(cli: &Cli, context: &DaemonProcessContext) -> Result<(), CliEr
     }
     let mut child = command.spawn().map_err(CliError::operation)?;
     let status = wait_until_ready_child(context, &mut child, &log_path)?;
-    print_start(cli.output, true, Some(child.id()), Some(&log_path), &status)
+    Ok((child.id(), log_path, status))
 }
 
 fn wait_until_ready(
@@ -1229,6 +1242,14 @@ fn print_start(
     Ok(())
 }
 
+fn print_missing_vault(path: &Path) {
+    if !path.is_dir() {
+        println!(
+            "    Missing: the directory does not exist; run `vulcan daemon apply` to clone it from its `source`"
+        );
+    }
+}
+
 fn print_status(output: OutputFormat, status: &DaemonStatusReport) -> Result<(), CliError> {
     if output == OutputFormat::Json {
         return print_json(status);
@@ -1286,6 +1307,7 @@ fn print_status(output: OutputFormat, status: &DaemonStatusReport) -> Result<(),
         };
         println!("  {}", wiki.wiki_id);
         println!("    Path: {}", wiki.path.display());
+        print_missing_vault(&wiki.path);
         let cache_age = wiki
             .cache
             .completed_unix_ms

@@ -654,6 +654,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    source: None,
                     profile: None,
                     id: wiki.clone(),
                     path: reader.clone(),
@@ -724,6 +725,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    source: None,
                     profile: None,
                     id: wiki.clone(),
                     path: vault,

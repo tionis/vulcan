@@ -809,11 +809,7 @@ fn config_value_kind_label(kind: &app_config::ConfigValueKind) -> &'static str {
 }
 
 fn config_target_support_label(target_support: app_config::ConfigTargetSupport) -> &'static str {
-    match target_support {
-        app_config::ConfigTargetSupport::SharedOnly => "shared",
-        app_config::ConfigTargetSupport::LocalOnly => "local",
-        app_config::ConfigTargetSupport::SharedAndLocal => "shared|local",
-    }
+    target_support.label()
 }
 
 fn config_section_order(section: &str) -> usize {

@@ -923,6 +923,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    source: None,
                     profile: None,
                     id: WikiId::parse("notes").unwrap(),
                     path: vault.clone(),

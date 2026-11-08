@@ -13940,6 +13940,112 @@
         "options": [],
         "subcommands": [
           {
+            "about": "Compare daemon.toml with this device and show what apply would do",
+            "name": "plan",
+            "options": [
+              {
+                "help": "Plan this file instead of the installed daemon.toml, for review before copying it there",
+                "id": "file",
+                "long": "file",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FILE"
+                ]
+              },
+              {
+                "help": "Count undeclared state as pending changes, as `apply --prune` would remove it",
+                "id": "prune",
+                "long": "prune",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PRUNE"
+                ]
+              },
+              {
+                "help": "Leave the daemon service and process alone, for containers or manual supervision",
+                "id": "no_service",
+                "long": "no-service",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_SERVICE"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Make this device match daemon.toml",
+            "name": "apply",
+            "options": [
+              {
+                "help": "Check another file instead of the installed daemon.toml; implies --dry-run, since apply only acts on the installed file",
+                "id": "file",
+                "long": "file",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FILE"
+                ]
+              },
+              {
+                "help": "Print the plan without changing anything",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Also remove undeclared Vulcan state listed as drift",
+                "id": "prune",
+                "long": "prune",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PRUNE"
+                ]
+              },
+              {
+                "help": "Leave the daemon service and process alone, for containers or manual supervision",
+                "id": "no_service",
+                "long": "no-service",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_SERVICE"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
             "about": "Install and start the native per-user daemon service",
             "name": "install",
             "options": [
@@ -23073,6 +23179,20 @@
         "short": null,
         "value_names": [
           "PERMISSIONS"
+        ]
+      },
+      {
+        "help": "Edit a daemon.toml whose `managed_by` names configuration management; its next render reverts the edit",
+        "id": "force_local_edit",
+        "long": "force-local-edit",
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false,
+        "short": null,
+        "value_names": [
+          "FORCE_LOCAL_EDIT"
         ]
       },
       {

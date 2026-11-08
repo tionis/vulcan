@@ -443,6 +443,7 @@ fn handle_add(cli: &Cli, registry: &WikiRegistry, command: &VaultCommand) -> Res
         check_device_profile(path, name)?;
     }
     let request = AddWikiRequest {
+        source: None,
         id: parse_id(id)?,
         path: path.clone(),
         profile: Some(managed_profile(*profile)),
@@ -1021,4 +1022,74 @@ fn print_mutation(
             Ok(())
         }
     }
+}
+
+/// Clones a vault that `daemon.toml` already declares from its `source`,
+/// for `vulcan daemon apply`: the same transport, enrollment and
+/// device-file steps as `vault clone`, without registering it again.
+pub(crate) fn clone_declared_wiki(
+    cli: &Cli,
+    wiki: &WikiRegistration,
+) -> Result<serde_json::Value, CliError> {
+    use crate::commands::enroll::{enroll_registered, login_policy, prepare_clone};
+    use vulcan_app::vault_enroll::{CloneTransportRequest, EnrollRequest};
+    let source = wiki
+        .source
+        .as_deref()
+        .ok_or_else(|| CliError::operation(format!("vault `{}` has no source", wiki.id)))?;
+    let wiki_id = wiki.id.to_string();
+    let login = login_policy(false);
+    let transport = match prepare_clone(
+        cli,
+        &CloneTransportRequest {
+            source,
+            wiki: &wiki_id,
+            no_device_key: false,
+            login,
+            dry_run: false,
+        },
+        &wiki.path,
+        wiki.permissions_profile.as_deref(),
+    ) {
+        Ok(report) => Some(report),
+        Err(error) => {
+            eprintln!(
+                "note: could not prepare device-key transport for `{wiki_id}` ({error}); cloning with your own credentials"
+            );
+            None
+        }
+    };
+    let platform = match wiki.platform_profile.as_deref() {
+        Some("android_shared") => GitPlatformProfile::AndroidShared,
+        _ => GitPlatformProfile::native(),
+    };
+    let clone = vulcan_app::sync::clone_git_vault_with_ssh_command(
+        &vulcan_app::sync::GitCloneRequest {
+            source: source.to_string(),
+            work_tree: wiki.work_tree().to_path_buf(),
+            git_dir: wiki.git_dir.clone(),
+            platform,
+        },
+        transport
+            .as_ref()
+            .and_then(|report| report.ssh_command.as_deref()),
+    )
+    .map_err(CliError::operation)?;
+    let mut setup = SetupSteps::default();
+    match enroll_registered(
+        cli,
+        wiki,
+        &EnrollRequest {
+            wiki: wiki_id,
+            remote: vulcan_app::sync::GitRemote::parse("origin").map_err(CliError::operation)?,
+            no_device_key: false,
+            login,
+            dry_run: false,
+        },
+    ) {
+        Ok(done) => setup.enroll = Some(done),
+        Err(error) => setup.enroll_error = Some(error.to_string()),
+    }
+    setup.ignore_device_files(wiki, false, false);
+    Ok(serde_json::json!({ "clone": clone, "setup": setup }))
 }

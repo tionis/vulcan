@@ -1020,6 +1020,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    source: None,
                     profile: None,
                     id: WikiId::parse("notes").expect("wiki id"),
                     path: vault,
@@ -1086,6 +1087,7 @@ mod tests {
             .registry
             .add(
                 &AddWikiRequest {
+                    source: None,
                     profile: None,
                     id: WikiId::parse("other").expect("wiki id"),
                     path: other,
@@ -1206,6 +1208,7 @@ mod tests {
                     .registry
                     .add(
                         &AddWikiRequest {
+                            source: None,
                             profile: None,
                             id: WikiId::parse(format!("wiki-{index}")).unwrap(),
                             path,

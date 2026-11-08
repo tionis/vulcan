@@ -6,6 +6,7 @@ pub(crate) mod cache;
 pub(crate) mod completions;
 pub(crate) mod config;
 pub(crate) mod daemon;
+pub(crate) mod daemon_apply;
 pub(crate) mod dataview;
 pub(crate) mod device;
 pub(crate) mod devices;

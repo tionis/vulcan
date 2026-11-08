@@ -123,6 +123,17 @@ impl ConfigTargetSupport {
                 | (Self::SharedAndLocal, _)
         )
     }
+
+    /// The `--target` values the key accepts; device-local keys may also
+    /// be written to the device's `daemon.toml`.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SharedOnly => "shared",
+            Self::LocalOnly => "local|device",
+            Self::SharedAndLocal => "shared|local|device",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -820,12 +831,32 @@ fn parse_config_path<'a>(path: &'a str, kind: &str) -> Result<Vec<&'a str>, AppE
 }
 
 fn parse_config_set_value(raw_value: &str) -> TomlValue {
-    let wrapped = format!("value = {raw_value}\n");
-    wrapped
-        .parse::<TomlValue>()
-        .ok()
-        .and_then(|value| value.get("value").cloned())
+    let parse = |literal: &str| {
+        format!("value = {literal}\n")
+            .parse::<TomlValue>()
+            .ok()
+            .and_then(|value| value.get("value").cloned())
+    };
+    parse(raw_value)
+        .or_else(|| parse(&single_line_inline_table(raw_value)?))
         .unwrap_or_else(|| TomlValue::String(raw_value.to_string()))
+}
+
+/// TOML 1.0 allows no line breaks or trailing comma in an inline table, but
+/// a long one typed in a shell is easier to read across lines. Joins such a
+/// literal onto one line; anything else is left to fail as before.
+fn single_line_inline_table(raw_value: &str) -> Option<String> {
+    let trimmed = raw_value.trim();
+    if !(trimmed.starts_with('{') && trimmed.ends_with('}') && trimmed.contains('\n'))
+        || trimmed.contains("\"\"\"")
+        || trimmed.contains("'''")
+    {
+        return None;
+    }
+    let joined = trimmed.lines().map(str::trim).collect::<Vec<_>>().join(" ");
+    let body = joined[1..joined.len() - 1].trim_end();
+    let body = body.strip_suffix(',').unwrap_or(body);
+    Some(format!("{{{body} }}"))
 }
 
 #[derive(Debug, Clone)]
@@ -3025,6 +3056,20 @@ mod tests {
         assert_eq!(
             config_set_changed_files(&paths, true),
             vec![".vulcan/config.toml"]
+        );
+    }
+
+    #[test]
+    fn inline_tables_may_span_lines() {
+        let value = super::parse_config_set_value(
+            "{ read = \"all\",\n  write = \"none\",\n  cpu_limit_ms = 5000,\n}",
+        );
+        let table = value.as_table().expect("a table");
+        assert_eq!(table["read"].as_str(), Some("all"));
+        assert_eq!(table["cpu_limit_ms"].as_integer(), Some(5000));
+        assert_eq!(
+            super::parse_config_set_value("plain text"),
+            TomlValue::String("plain text".to_string())
         );
     }
 

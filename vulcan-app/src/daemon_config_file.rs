@@ -54,6 +54,128 @@ impl DaemonConfigLock {
     }
 }
 
+static MANAGED_EDITS_ALLOWED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Lets this process edit a `daemon.toml` that names an owner in
+/// `managed_by` (`--force-local-edit`). The next render by that owner
+/// reverts such an edit.
+pub fn allow_managed_edits(allowed: bool) {
+    MANAGED_EDITS_ALLOWED.store(allowed, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[must_use]
+pub fn managed_edits_allowed() -> bool {
+    MANAGED_EDITS_ALLOWED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+static PENDING_WARNINGS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Warnings from forced edits of a managed file, for the CLI to print once
+/// the command finishes.
+pub fn take_warnings() -> Vec<String> {
+    std::mem::take(&mut *PENDING_WARNINGS.lock().expect("warning queue"))
+}
+
+pub fn push_warning(warning: String) {
+    PENDING_WARNINGS
+        .lock()
+        .expect("warning queue")
+        .push(warning);
+}
+
+/// The owner a rendered `daemon.toml` names in its top-level `managed_by`.
+#[must_use]
+pub fn managed_by(source: &str) -> Option<String> {
+    toml::from_str::<toml::Value>(source)
+        .ok()?
+        .get("managed_by")?
+        .as_str()
+        .map(ToOwned::to_owned)
+}
+
+/// Refuses an edit of a file managed by configuration management, unless
+/// edits were forced, and names the TOML to add to the owner's source.
+/// Returns a warning to print when a forced edit goes ahead.
+pub fn check_managed_edit(
+    config_path: &Path,
+    existing: Option<&str>,
+    before: &toml::Value,
+    after: &toml::Value,
+) -> Result<Option<String>, String> {
+    let Some(owner) = existing.and_then(managed_by) else {
+        return Ok(None);
+    };
+    if before == after {
+        return Ok(None);
+    }
+    let snippet = change_snippet(before, after);
+    if managed_edits_allowed() {
+        return Ok(Some(format!(
+            "{} is managed by {owner}; edited it anyway, and the next render by {owner} reverts this unless its source has:\n{snippet}",
+            config_path.display()
+        )));
+    }
+    Err(format!(
+        "{} is managed by {owner}; add this to its source instead (or pass --force-local-edit for an emergency edit that its next render reverts):\n{snippet}",
+        config_path.display()
+    ))
+}
+
+/// The TOML that turns `before` into `after`: changed top-level values and
+/// tables, and of an array of tables only the entries (matched by `id`) that
+/// are new or changed. Removed entries and keys are listed as comments.
+#[must_use]
+pub fn change_snippet(before: &toml::Value, after: &toml::Value) -> String {
+    let empty = toml::map::Map::new();
+    let before = before.as_table().unwrap_or(&empty);
+    let after = after.as_table().unwrap_or(&empty);
+    let mut changed = toml::map::Map::new();
+    let mut removed = Vec::new();
+    for (key, value) in after {
+        let previous = before.get(key);
+        if previous == Some(value) {
+            continue;
+        }
+        match (value, previous) {
+            (toml::Value::Array(entries), Some(toml::Value::Array(old)))
+                if entries.iter().all(toml::Value::is_table) =>
+            {
+                let entry_id = |entry: &toml::Value| entry.get("id").cloned();
+                let fresh = entries
+                    .iter()
+                    .filter(|entry| !old.contains(entry))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for gone in old.iter().filter(|entry| {
+                    !entries
+                        .iter()
+                        .any(|candidate| entry_id(candidate) == entry_id(entry))
+                }) {
+                    let id = gone.get("id").and_then(toml::Value::as_str).unwrap_or("?");
+                    removed.push(format!("remove the [[{key}]] entry with id = \"{id}\""));
+                }
+                if !fresh.is_empty() {
+                    changed.insert(key.clone(), toml::Value::Array(fresh));
+                }
+            }
+            _ => {
+                changed.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    for key in before.keys().filter(|key| !after.contains_key(*key)) {
+        removed.push(format!("remove `{key}`"));
+    }
+    let mut snippet = toml::to_string_pretty(&toml::Value::Table(changed)).unwrap_or_default();
+    for line in removed {
+        snippet.push_str("# ");
+        snippet.push_str(&line);
+        snippet.push('\n');
+    }
+    snippet
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Identities {
     #[serde(default, rename = "vault", skip_serializing_if = "BTreeMap::is_empty")]
@@ -141,7 +263,7 @@ pub fn render_config<T: Serialize>(existing: Option<&str>, config: &T) -> Result
         None,
         &mut next_position,
     );
-    Ok(document.to_string())
+    Ok(document.to_string().trim_start_matches('\n').to_string())
 }
 
 /// The part of `daemon.toml` a `--target device` config write edits.
@@ -221,6 +343,7 @@ pub fn write_device_section(
     let desired = rendered
         .parse::<DocumentMut>()
         .map_err(|error| error.to_string())?;
+    let before_value = toml::from_str::<toml::Value>(&source).map_err(|error| error.to_string())?;
     let mut next_position = max_position(file.as_table()) + 1;
     match section {
         DeviceSection::Permissions => {
@@ -271,9 +394,17 @@ pub fn write_device_section(
             }
         }
     }
+    let rendered_file = file.to_string();
+    let after_value =
+        toml::from_str::<toml::Value>(&rendered_file).map_err(|error| error.to_string())?;
+    if let Some(warning) =
+        check_managed_edit(config_path, Some(&source), &before_value, &after_value)?
+    {
+        push_warning(warning);
+    }
     vulcan_core::durable::replace(
         config_path,
-        file.to_string().as_bytes(),
+        rendered_file.trim_start_matches('\n').as_bytes(),
         vulcan_core::durable::Durability::Full,
     )
     .map_err(|error| error.to_string())
@@ -411,8 +542,21 @@ fn pin_positions(item: &mut Item, position: usize) {
 
 fn pin_table_positions(table: &mut Table, position: usize) {
     table.set_position(position);
+    separate(table);
     for (_, item) in table.iter_mut() {
         pin_positions(item, position);
+    }
+}
+
+/// Starts a table the writer adds with a blank line, as a person would.
+fn separate(table: &mut Table) {
+    let unset = table
+        .decor()
+        .prefix()
+        .and_then(|prefix| prefix.as_str())
+        .is_none_or(str::is_empty);
+    if !table.is_implicit() && unset {
+        table.decor_mut().set_prefix("\n");
     }
 }
 
@@ -543,6 +687,7 @@ fn assign_positions(item: &mut Item, next_position: &mut usize) {
 
 fn assign_table_positions(table: &mut Table, next_position: &mut usize) {
     table.set_position(*next_position);
+    separate(table);
     *next_position += 1;
     for (_, item) in table.iter_mut() {
         assign_positions(item, next_position);

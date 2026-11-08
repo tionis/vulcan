@@ -133,6 +133,7 @@ mod tests {
 
     fn wiki(root: &std::path::Path, profile: ManagedDirectoryProfile) -> WikiRegistrationStatus {
         WikiRegistrationStatus::from_registration(&WikiRegistration {
+            source: None,
             config: None,
             profile,
             profile_version: None,

@@ -5885,14 +5885,24 @@ undeclared state is reported as drift and removed only with `--prune`. Design:
     create|set|delete --target device` (format-preserving, under the daemon config lock, never
     auto-committed), `config permissions profile move <name>`, `config local move`, and a
     `device_override` source in `config list` and the settings editor.
-- [ ] 10.12.3 `vulcan daemon plan` and `apply` over every `daemon.toml` section (validate, allocate
+- [x] 10.12.3 `vulcan daemon plan` and `apply` over every `daemon.toml` section (validate, allocate
   identities, reload a running daemon) with `--dry-run`, `--file` and `--output json`.
-- [ ] 10.12.4 Vault `source` with cloning in `apply`, and missing-vault reporting at daemon start.
-- [ ] 10.12.5 `apply --prune` for undeclared identities, scan state, tokens and remote OAuth state;
+- [x] 10.12.4 Vault `source` with cloning in `apply`, and missing-vault reporting at daemon start.
+- [x] 10.12.5 `apply --prune` for undeclared identities, scan state, tokens and remote OAuth state;
   `managed_by` with `--force-local-edit` for files owned by configuration management; service install
   and restart in `apply` (`--no-service` to skip).
-- [ ] 10.12.6 Guides, help topics, configuration reference, `mcp-setup` and configuration skills,
+- [x] 10.12.6 Guides, help topics, configuration reference, `mcp-setup` and configuration skills,
   and a rendered-file example.
+  - Done: `vulcan daemon plan|apply` (`vulcan-daemon::declarative` plans, prunes; the CLI clones
+    through the `vault clone` transport and installs/restarts the service with a new `Restart`
+    service action). The runtime record carries the executable, its modification time and a
+    digest of the restart-only configuration, so plan sees a stale daemon; `running_daemon` probes
+    without loading the registry, which keeps plan read-only. `vault clone` records `source`;
+    `daemon status` names missing vaults. `managed_by` gates registry and `--target device`
+    writes with a change snippet; `--force-local-edit` is global. Follow-ups from 10.12.2: target
+    labels include `device`, new tables get a blank line, and inline tables may span lines.
+    Guide `docs/guide/device-config.md` (`vulcan help device-config`), skills, CLI guide.
+    Differences from the spec are recorded there (whole-daemon restart, `apply --file` checks).
 
 **Acceptance:** Copying a `daemon.toml` to a fresh device and running `vulcan daemon apply` clones
 its vaults and defines its remotes, with ceilings from the same file; a second `plan` is empty;

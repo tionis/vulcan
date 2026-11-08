@@ -595,6 +595,7 @@ mod tests {
     #[test]
     fn desired_listener_set_and_restart_identity_follow_effective_registration() {
         let registration = |id: &str, paused: bool, backend: Option<&str>| WikiRegistration {
+            source: None,
             config: None,
             profile: crate::registry::ManagedDirectoryProfile::Knowledge,
             profile_version: None,
@@ -710,6 +711,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    source: None,
                     profile: None,
                     id: WikiId::parse("alpha").expect("wiki id"),
                     path: vault.clone(),
@@ -807,6 +809,7 @@ mod tests {
             registry
                 .add(
                     &AddWikiRequest {
+                        source: None,
                         profile: None,
                         id: WikiId::parse(id).expect("wiki id"),
                         path: vault,
@@ -920,6 +923,7 @@ mod tests {
             "https://patch.example/private?pubsub=true",
         );
         let registration = WikiRegistration {
+            source: None,
             config: None,
             profile: crate::registry::ManagedDirectoryProfile::Knowledge,
             profile_version: None,
@@ -967,6 +971,7 @@ mod tests {
         fs::create_dir_all(&binding).expect("vault-local state");
         fs::write(binding.join("git-transport.json"), b"not a binding").expect("binding");
         let registration = WikiRegistration {
+            source: None,
             config: None,
             profile: crate::registry::ManagedDirectoryProfile::Knowledge,
             profile_version: None,

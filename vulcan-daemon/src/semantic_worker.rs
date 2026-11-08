@@ -581,6 +581,7 @@ mod tests {
         registry
             .add(
                 &AddWikiRequest {
+                    source: None,
                     profile: None,
                     id: id.clone(),
                     path: vault,
