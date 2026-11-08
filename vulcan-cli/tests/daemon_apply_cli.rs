@@ -398,3 +398,59 @@ fn a_managed_file_refuses_cli_edits_unless_forced() {
     let plan = device.plan(&[]).json();
     assert_eq!(plan["managed_by"], "chezmoi");
 }
+
+#[test]
+fn built_in_and_pinned_profiles_serve_as_remote_ceilings() {
+    let device = Device::new();
+    let notes = device.vault_dir("notes");
+    let config = |ceiling: &str| {
+        format!(
+            "[[vault]]\nid = \"notes\"\npath = \"{}\"\n\n\
+             [[mcp_remote]]\nversion = 1\nid = \"notes\"\nbind = \"127.0.0.1:18765\"\n\
+             public_url = \"https://notes.example.invalid/mcp\"\n\n\
+             [mcp_remote.authentication]\ntype = \"indie_auth\"\nidentity = \"https://me.example.invalid/\"\n\n\
+             [[mcp_remote.vaults]]\nwiki_id = \"notes\"\nceiling_profile = \"{ceiling}\"\n\
+             default_profile = \"{ceiling}\"\ntool_packs = [\"notes-read\"]\n",
+            notes.display()
+        )
+    };
+
+    // A built-in needs no definition anywhere.
+    device.write_config(&config("writer"));
+    let plan = device.plan(&[]);
+    assert_eq!(item(&plan.json(), "mcp_remote", "notes")["action"], "ok");
+
+    // A profile the vault suggests becomes usable once pinned to the device.
+    fs::write(
+        notes.join(".vulcan/config.toml"),
+        "[permissions.profiles.suggested]\nread = \"all\"\nwrite = \"all\"\n",
+    )
+    .unwrap();
+    device.write_config(&config("suggested"));
+    assert_eq!(
+        item(&device.plan(&[]).json(), "mcp_remote", "notes")["action"],
+        "error"
+    );
+    let pinned = device.run(&[
+        "--vault",
+        notes.to_str().unwrap(),
+        "config",
+        "permissions",
+        "profile",
+        "pin",
+        "suggested",
+        "--target",
+        "device",
+    ]);
+    assert_eq!(pinned.code, 0, "{}{}", pinned.stdout, pinned.stderr);
+    let written = fs::read_to_string(device.daemon_toml()).unwrap();
+    assert!(
+        written.contains("[permissions.profiles.suggested]"),
+        "{written}"
+    );
+    assert!(!notes.join(".vulcan/config.local.toml").exists());
+    assert_eq!(
+        item(&device.plan(&[]).json(), "mcp_remote", "notes")["action"],
+        "ok"
+    );
+}

@@ -1557,6 +1557,51 @@ fn missing_files_use_builtin_permission_profiles() {
 }
 
 #[test]
+fn built_in_agent_profiles_widen_step_by_step_and_never_run_host_code() {
+    let readonly = PermissionProfile::readonly();
+    let researcher = PermissionProfile::researcher();
+    let daily = PermissionProfile::daily_wiki_agent();
+    let writer = PermissionProfile::writer();
+    let maintainer = PermissionProfile::maintainer();
+
+    assert_eq!(
+        researcher.write,
+        PathPermissionConfig::Keyword(PathPermissionKeyword::None)
+    );
+    assert_eq!(
+        researcher.network,
+        NetworkPermissionConfig::Mode(PermissionMode::Allow)
+    );
+    assert_eq!(researcher.read, readonly.read);
+    assert_eq!(writer.write, daily.write);
+    assert_eq!(writer.git, PermissionMode::Allow);
+    assert_eq!(
+        writer.refactor,
+        PathPermissionConfig::Keyword(PathPermissionKeyword::All)
+    );
+    assert_eq!(
+        writer.network,
+        NetworkPermissionConfig::Mode(PermissionMode::Deny)
+    );
+    assert_eq!(writer.config, ConfigPermissionMode::Read);
+    assert_eq!(maintainer.config, ConfigPermissionMode::Write);
+    assert_eq!(
+        maintainer.network,
+        NetworkPermissionConfig::Mode(PermissionMode::Allow)
+    );
+    for profile in [&researcher, &writer, &maintainer] {
+        assert_eq!(profile.execute, PermissionMode::Deny);
+        assert_eq!(profile.shell, PermissionMode::Deny);
+        assert_eq!(profile.cpu_limit_ms, PermissionLimit::Value(5000));
+    }
+
+    let builtins = builtin_permission_profiles();
+    for name in ["researcher", "writer", "maintainer"] {
+        assert!(builtins.contains_key(name), "{name}");
+    }
+}
+
+#[test]
 fn permission_profiles_merge_shared_and_local_overrides() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path();

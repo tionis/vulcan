@@ -62,9 +62,12 @@ tool_packs = ["notes-read", "notes-write", "search", "status"]
   error. With it, `apply` clones the vault there, using the device key when the forge accepts it
   (see `vulcan help device-keys`), and an existing path must be a repository whose remote is
   `source`. `vulcan vault clone` records `source` for you.
-- **Permission profiles.** `[permissions.profiles.<name>]` defines profiles for every vault on this
-  device. Because the file is never in a vault, a push cannot widen them, so they are valid as
-  named-remote ceilings, API token and schedule ceilings, and bot authority.
+- **Permission profiles.** Built-ins such as `readonly`, `writer` and `maintainer` (see
+  `vulcan help sandbox`) need no definition. `[permissions.profiles.<name>]` defines more for every
+  vault on this device. Because the file is never in a vault, a push cannot widen them, so they are
+  valid as named-remote ceilings, API token and schedule ceilings, and bot authority. A vault can
+  suggest a profile in its shared `config.toml`; review it and copy it here with
+  `vulcan config permissions profile pin <name> --target device`.
 - **Per-vault settings.** A `[vault.config]` table takes anything `.vulcan/config.local.toml` can
   hold, so a vault needs no local file. It applies to direct CLI runs too. A key that
   `config.local.toml` sets differently is reported and `config.local.toml` wins; a profile defined

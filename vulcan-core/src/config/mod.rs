@@ -2271,6 +2271,46 @@ impl PermissionProfile {
         }
     }
 
+    /// Reads the whole vault and the web, writes nothing.
+    #[must_use]
+    pub fn researcher() -> Self {
+        Self {
+            network: NetworkPermissionConfig::Mode(PermissionMode::Allow),
+            ..Self::agent_limits(Self::readonly())
+        }
+    }
+
+    /// Edits, moves and commits notes anywhere in the vault; no network,
+    /// host execution or config writes.
+    #[must_use]
+    pub fn writer() -> Self {
+        Self {
+            refactor: PathPermissionConfig::Keyword(PathPermissionKeyword::All),
+            git: PermissionMode::Allow,
+            ..Self::daily_wiki_agent()
+        }
+    }
+
+    /// Like [`Self::writer`], plus vault config writes and the web; still no
+    /// host execution.
+    #[must_use]
+    pub fn maintainer() -> Self {
+        Self {
+            network: NetworkPermissionConfig::Mode(PermissionMode::Allow),
+            config: ConfigPermissionMode::Write,
+            ..Self::writer()
+        }
+    }
+
+    fn agent_limits(profile: Self) -> Self {
+        Self {
+            cpu_limit_ms: PermissionLimit::Value(5000),
+            memory_limit_mb: PermissionLimit::Value(64),
+            stack_limit_kb: PermissionLimit::Value(256),
+            ..profile
+        }
+    }
+
     #[must_use]
     pub fn is_unrestricted(&self) -> bool {
         self == &Self::unrestricted()
@@ -3283,11 +3323,14 @@ pub fn builtin_permission_profiles() -> BTreeMap<String, PermissionProfile> {
         "daily-wiki-agent".to_string(),
         PermissionProfile::daily_wiki_agent(),
     );
+    profiles.insert("maintainer".to_string(), PermissionProfile::maintainer());
     profiles.insert("readonly".to_string(), PermissionProfile::readonly());
+    profiles.insert("researcher".to_string(), PermissionProfile::researcher());
     profiles.insert(
         "unrestricted".to_string(),
         PermissionProfile::unrestricted(),
     );
+    profiles.insert("writer".to_string(), PermissionProfile::writer());
     profiles
 }
 

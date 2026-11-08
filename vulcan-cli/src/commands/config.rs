@@ -8,7 +8,7 @@ use crate::output::print_json;
 use crate::{
     warn_auto_commit_if_needed, Cli, CliError, ConfigAliasCommand, ConfigCommand, ConfigImportArgs,
     ConfigImportCommand, ConfigLocalCommand, ConfigPermissionsCommand,
-    ConfigPermissionsProfileCommand, ConfigTargetArg, OutputFormat,
+    ConfigPermissionsProfileCommand, ConfigTargetArg, OutputFormat, PinTargetArg,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -1030,33 +1030,11 @@ fn run_config_permissions_profile(
             *no_commit,
             verbosity,
         ),
-        ConfigPermissionsProfileCommand::Pin { name, dry_run } => {
-            let shared = std::fs::read_to_string(paths.config_file()).unwrap_or_default();
-            let shared = shared.parse::<toml::Table>().map_err(|error| {
-                CliError::operation(format!("failed to parse config.toml: {error}"))
-            })?;
-            let definition = shared
-                .get("permissions")
-                .and_then(|permissions| permissions.get("profiles"))
-                .and_then(|profiles| profiles.get(name.as_str()))
-                .cloned()
-                .ok_or_else(|| {
-                    CliError::operation(format!(
-                        "the vault's shared config.toml does not define permission profile `{name}`"
-                    ))
-                })?;
-            // The local file is never synced or committed.
-            run_config_set_toml(
-                paths,
-                output,
-                &format!("permissions.profiles.{name}"),
-                &definition,
-                config_target(ConfigTargetArg::Local),
-                *dry_run,
-                true,
-                verbosity,
-            )
-        }
+        ConfigPermissionsProfileCommand::Pin {
+            name,
+            target,
+            dry_run,
+        } => pin_permission_profile(paths, output, name, *target, *dry_run, verbosity),
         ConfigPermissionsProfileCommand::Move { name, dry_run } => {
             let report = vulcan_app::config::plan_permission_profile_move(paths, name, *dry_run)
                 .map_err(CliError::operation)?;
@@ -1325,6 +1303,47 @@ fn print_config_unset_report(
             Ok(())
         }
     }
+}
+
+/// `config permissions profile pin`: copies the shared definition of a
+/// profile to a device-local file, which is never synced or committed.
+fn pin_permission_profile(
+    paths: &VaultPaths,
+    output: OutputFormat,
+    name: &str,
+    target: PinTargetArg,
+    dry_run: bool,
+    verbosity: Verbosity,
+) -> Result<(), CliError> {
+    let shared = std::fs::read_to_string(paths.config_file()).unwrap_or_default();
+    let shared = shared
+        .parse::<toml::Table>()
+        .map_err(|error| CliError::operation(format!("failed to parse config.toml: {error}")))?;
+    let definition = shared
+        .get("permissions")
+        .and_then(|permissions| permissions.get("profiles"))
+        .and_then(|profiles| profiles.get(name))
+        .cloned()
+        .ok_or_else(|| {
+            CliError::operation(format!(
+                "the vault's shared config.toml does not define permission profile `{name}`"
+            ))
+        })?;
+    // Neither target is synced or committed.
+    let target = match target {
+        PinTargetArg::Local => ConfigTargetArg::Local,
+        PinTargetArg::Device => ConfigTargetArg::Device,
+    };
+    run_config_set_toml(
+        paths,
+        output,
+        &format!("permissions.profiles.{name}"),
+        &definition,
+        config_target(target),
+        dry_run,
+        true,
+        verbosity,
+    )
 }
 
 fn config_target(target: ConfigTargetArg) -> ConfigTarget {

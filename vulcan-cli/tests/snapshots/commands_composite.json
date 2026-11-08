@@ -8484,6 +8484,20 @@
                         ]
                       },
                       {
+                        "help": "Where to copy it: this vault's config.local.toml, or the device-wide [permissions] in daemon.toml",
+                        "id": "target",
+                        "long": "target",
+                        "possible_values": [
+                          "local",
+                          "device"
+                        ],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "TARGET"
+                        ]
+                      },
+                      {
                         "help": "Preview the config change without writing files",
                         "id": "dry_run",
                         "long": "dry-run",

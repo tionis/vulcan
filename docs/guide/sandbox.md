@@ -45,11 +45,27 @@ Inspect the active runtime permissions from JavaScript with `vulcan.permissions(
 configuration with `vulcan config show` and use `--permissions <profile>` when selecting an
 explicit profile.
 
+### Built-in profiles
+
+| Profile | Reads | Writes | Refactor | Git | Index | Config | Network | Host execution |
+|---|---|---|---|---|---|---|---|---|
+| `readonly` | all | none | none | deny | deny | read | deny | deny |
+| `researcher` | all | none | none | deny | deny | read | allow | deny |
+| `daily-wiki-agent` | all | all | none | deny | allow | read | deny | deny |
+| `writer` | all | all | all | allow | allow | read | deny | deny |
+| `maintainer` | all | all | all | allow | allow | write | allow | deny |
+| `unrestricted` | all | all | all | allow | allow | write | allow | allow |
+
+All but `readonly` and `unrestricted` cap JavaScript at 5 s CPU, 64 MB memory and a 256 KB stack.
+`vulcan config permissions profile show <name>` prints one in full. A profile with a built-in's name
+in a vault or device file changes only the fields it sets; the rest keep the built-in's values, so
+give a tailored profile its own name.
+
 ### Whose profile it is
 
 A profile you select on this device is your limit, so it must be one this device defines: a
-built-in (`readonly`, `daily-wiki-agent`, `unrestricted`, ...) or a profile in the vault's
-`.vulcan/config.local.toml`, which is never synced. That covers `--permissions`, a registered
+built-in (below), a profile in this device's `daemon.toml` (see `vulcan help device-config`), or one
+in the vault's `.vulcan/config.local.toml`. Neither file is synced. That covers `--permissions`, a registered
 vault's `--permissions-profile`, an MCP remote's ceiling, and the scheduled-job ceiling. Anyone who
 can push to the vault can edit its shared `config.toml`, so a profile defined only there is
 refused, and so is a shared definition that widens this device's (local fields win; widening one
@@ -62,7 +78,9 @@ vulcan config permissions profile pin agent --dry-run   # shows the definition i
 vulcan config permissions profile pin agent
 ```
 
-Pinning copies the shared definition into `config.local.toml`. Profiles a vault definition names
+Pinning copies the shared definition into `config.local.toml`; `--target device` copies it into
+the device-wide `[permissions]` of `daemon.toml` instead, where every vault on the device can use it.
+A vault can therefore suggest a profile in its shared config and leave the decision to each device. Profiles a vault definition names
 for its own use, such as a scheduled job's `authority` or a plugin's profile, still come from the
 shared config, within your limit.
 

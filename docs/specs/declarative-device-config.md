@@ -148,7 +148,9 @@ layers whether or not the CLI or daemon wired anything up. It reads only `[permi
 A profile both device files define differently is reported with both file names, and because any
 diagnostic makes device-profile resolution fail, every device ceiling for that vault is unavailable
 until it is resolved: authority never depends on a silent precedence. A profile only in the synced
-vault config remains refused as a ceiling, with the existing `profile pin` path. The general
+vault config remains refused as a ceiling, with the existing `profile pin` path; `pin --target device`
+copies it into the device-wide `[permissions]`, so a vault can suggest a profile and each device
+accepts it once. The general
 profile list (`--permissions <name>`) sees the same layers between the shared and local config.
 
 ### Per-vault device-local settings
