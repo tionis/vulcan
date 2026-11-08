@@ -814,7 +814,11 @@ fn kept_remotes(declared: &DeclaredConfig) -> BTreeMap<String, String> {
 }
 
 fn scan_state_files(state_root: &Path) -> Vec<PathBuf> {
-    let directory = state_root.join("sync/repositories/daemon/scans");
+    // One component at a time, so the reported paths use the platform's
+    // separator throughout.
+    let directory = ["sync", "repositories", "daemon", "scans"]
+        .iter()
+        .fold(state_root.to_path_buf(), |path, part| path.join(part));
     let Ok(entries) = fs::read_dir(directory) else {
         return Vec::new();
     };

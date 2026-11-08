@@ -267,7 +267,9 @@ fn undeclared_state_is_drift_until_pruned() {
         old.display()
     ));
     assert_eq!(device.apply(&[]).code, 0);
-    let scans = device.path("state/vulcan/sync/repositories/daemon/scans");
+    let scans = ["vulcan", "sync", "repositories", "daemon", "scans"]
+        .iter()
+        .fold(device.path("state"), |path, part| path.join(part));
     fs::create_dir_all(&scans).unwrap();
     let stale_scan = scans.join("01ARZ3NDEKTSV4RRFFQ69G5FAV.json");
     fs::write(&stale_scan, "{}").unwrap();
