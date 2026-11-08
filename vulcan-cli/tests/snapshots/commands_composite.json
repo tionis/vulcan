@@ -22590,7 +22590,7 @@
             ]
           },
           {
-            "help": "Allowed redirect host for dynamically registered OAuth clients; repeat for multiple hosts",
+            "help": "Restrict OAuth clients (registered or identified by a metadata document URL) to HTTPS redirects on this host or its subdomains; repeat for multiple hosts. Without it any valid redirect is allowed: HTTPS, loopback http, or an app scheme, and consent shows where it goes",
             "id": "oauth_dcr_allowed_redirect_host",
             "long": "oauth-dcr-allowed-redirect-host",
             "possible_values": [],
@@ -22780,6 +22780,17 @@
                     ]
                   },
                   {
+                    "help": "Only let OAuth clients redirect to HTTPS on this host or its subdomains (repeatable); by default any valid redirect is allowed and consent shows where it goes",
+                    "id": "redirect_host",
+                    "long": "redirect-host",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "HOST"
+                    ]
+                  },
+                  {
                     "help": "Validate and report without writing device configuration",
                     "id": "dry_run",
                     "long": "dry-run",
@@ -22946,6 +22957,31 @@
                     "short": null,
                     "value_names": [
                       "TOOL_PACK"
+                    ]
+                  },
+                  {
+                    "help": "Replace the OAuth redirect hosts clients are restricted to (repeatable)",
+                    "id": "redirect_host",
+                    "long": "redirect-host",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "HOST"
+                    ]
+                  },
+                  {
+                    "help": "Drop the redirect host restriction so any valid redirect is allowed",
+                    "id": "any_redirect",
+                    "long": "any-redirect",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "ANY_REDIRECT"
                     ]
                   },
                   {

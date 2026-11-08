@@ -678,6 +678,27 @@ fn vault_add_records_the_origin_so_the_entry_can_clone_the_vault() {
     assert!(notes.join(".git").exists());
 }
 
+#[test]
+fn a_vault_remote_is_open_to_any_client_unless_it_lists_redirect_hosts() {
+    let device = Device::new();
+    let notes = opted_in_vault(&device);
+    let shown = || {
+        let run = device.run(&["--output", "json", "mcp", "remote", "show", "notes"]);
+        assert_eq!(run.code, 0, "{}{}", run.stdout, run.stderr);
+        serde_json::from_str::<Value>(&run.stdout).unwrap()
+    };
+    assert!(shown().get("redirect_hosts").is_none(), "open by default");
+
+    let config = notes.join(".vulcan/config.toml");
+    let mut text = fs::read_to_string(&config).unwrap();
+    text.push_str("redirect_hosts = [\"Claude.ai\", \"n8n.example.org\"]\n");
+    fs::write(&config, text).unwrap();
+    assert_eq!(
+        shown()["redirect_hosts"],
+        serde_json::json!(["claude.ai", "n8n.example.org"])
+    );
+}
+
 fn write_vault_remote(notes: &Path, identity: &str) {
     fs::write(
         notes.join(".vulcan/config.toml"),

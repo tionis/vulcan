@@ -460,6 +460,7 @@ name = "{{folder_name}}"   # note stem; examples: index, README, readme, {{folde
 # ceiling_profile = "readonly"  # built-in or device-local; "writer" for a remote that edits notes
 # default_profile = "readonly"
 # tool_packs = ["notes-read", "search", "status"]
+# redirect_hosts = []  # any valid redirect; list hosts such as "claude.ai" to restrict clients
 
 # [bot]
 # default_capture = "inbox"  # inbox | daily

@@ -106,6 +106,11 @@ pub struct McpRemoteDefinition {
     pub public_url: String,
     pub authentication: McpRemoteAuthentication,
     pub vaults: Vec<McpRemoteVault>,
+    /// Restricts OAuth clients to HTTPS redirects on these hosts (or their
+    /// subdomains). Empty, the default, allows any valid redirect, and the
+    /// consent page shows where the authorization goes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub redirect_hosts: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +120,7 @@ pub struct AddMcpRemoteRequest {
     pub public_url: String,
     pub authentication: McpRemoteAuthentication,
     pub vaults: Vec<McpRemoteVault>,
+    pub redirect_hosts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -123,6 +129,7 @@ pub struct UpdateMcpRemoteRequest {
     pub public_url: Option<String>,
     pub authentication: Option<McpRemoteAuthentication>,
     pub vaults: Option<Vec<McpRemoteVault>>,
+    pub redirect_hosts: Option<Vec<String>>,
 }
 
 impl AddMcpRemoteRequest {
@@ -135,6 +142,7 @@ impl AddMcpRemoteRequest {
             public_url: self.public_url,
             authentication: self.authentication,
             vaults: self.vaults,
+            redirect_hosts: self.redirect_hosts,
         };
         normalize_definition(&mut definition)?;
         Ok(definition)
@@ -157,6 +165,9 @@ impl UpdateMcpRemoteRequest {
         }
         if let Some(vaults) = self.vaults {
             definition.vaults = vaults;
+        }
+        if let Some(redirect_hosts) = self.redirect_hosts {
+            definition.redirect_hosts = redirect_hosts;
         }
         normalize_definition(&mut definition)?;
         Ok(definition)
@@ -217,7 +228,33 @@ pub(crate) fn validate_definition(
         validate_profile_name(&vault.default_profile, "default")?;
         validate_tool_packs(&vault.tool_packs)?;
     }
+    for host in &definition.redirect_hosts {
+        validate_redirect_host(host)?;
+    }
     Ok(())
+}
+
+/// A redirect host is a bare domain name or IP address: no scheme, port,
+/// path or wildcard (subdomains always match).
+fn validate_redirect_host(host: &str) -> Result<(), McpRemoteValidationError> {
+    let valid = !host.is_empty()
+        && host.len() <= 253
+        && host.chars().all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || matches!(character, '.' | '-')
+        })
+        && url::Url::parse(&format!("https://{host}/"))
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_string))
+            .is_some_and(|parsed| parsed == host);
+    if valid {
+        Ok(())
+    } else {
+        Err(McpRemoteValidationError::new(format!(
+            "redirect host `{host}` must be a bare lowercase host name such as `claude.ai`"
+        )))
+    }
 }
 
 fn normalize_definition(
@@ -233,6 +270,11 @@ fn normalize_definition(
         vault.tool_packs.sort();
         vault.tool_packs.dedup();
     }
+    for host in &mut definition.redirect_hosts {
+        *host = host.trim().to_ascii_lowercase();
+    }
+    definition.redirect_hosts.sort();
+    definition.redirect_hosts.dedup();
     definition
         .vaults
         .sort_by(|left, right| left.wiki_id.cmp(&right.wiki_id));
@@ -325,6 +367,7 @@ mod tests {
                 default_profile: "readonly".to_string(),
                 tool_packs: default_tool_packs(),
             }],
+            redirect_hosts: Vec::new(),
         }
         .into_definition()
         .expect("definition")
@@ -338,6 +381,35 @@ mod tests {
         normalize_definition(&mut request).expect("normalized definition");
         assert_eq!(request.public_url, "https://mcp.example.test/notes");
         assert_eq!(request.vaults[0].tool_packs, ["notes-read", "status"]);
+    }
+
+    #[test]
+    fn redirect_hosts_default_to_open_normalize_and_reject_urls() {
+        let open = definition();
+        assert!(open.redirect_hosts.is_empty());
+        let rendered = toml::to_string(&open).unwrap();
+        assert!(!rendered.contains("redirect_hosts"), "{rendered}");
+
+        let mut listed = definition();
+        listed.redirect_hosts = vec![
+            " Claude.AI ".into(),
+            "chatgpt.com".into(),
+            "claude.ai".into(),
+        ];
+        normalize_definition(&mut listed).expect("normalized hosts");
+        assert_eq!(listed.redirect_hosts, ["chatgpt.com", "claude.ai"]);
+
+        for host in [
+            "https://claude.ai",
+            "claude.ai/callback",
+            "claude.ai:443",
+            "*.claude.ai",
+            "",
+        ] {
+            let mut candidate = definition();
+            candidate.redirect_hosts = vec![host.to_string()];
+            assert!(validate_definition(&candidate).is_err(), "{host}");
+        }
     }
 
     #[test]

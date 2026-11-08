@@ -386,6 +386,10 @@ impl LocalOAuthIssuer {
         if config.dcr_enabled {
             authorization_server_metadata["registration_endpoint"] =
                 Value::String(format!("{origin}/oauth/register"));
+            // Public clients may also identify themselves by the HTTPS URL
+            // of a Client ID Metadata Document instead of registering.
+            authorization_server_metadata["client_id_metadata_document_supported"] =
+                Value::Bool(true);
         }
         Ok(Self {
             public_url: config.public_url,
@@ -1271,6 +1275,10 @@ mod tests {
         })
         .unwrap();
         assert!(issuer.authorization_server_metadata()["registration_endpoint"].is_string());
+        assert_eq!(
+            issuer.authorization_server_metadata()["client_id_metadata_document_supported"],
+            true
+        );
         assert!(
             issuer.authorization_server_metadata()["token_endpoint_auth_methods_supported"]
                 .as_array()

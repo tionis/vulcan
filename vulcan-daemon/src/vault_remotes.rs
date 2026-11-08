@@ -151,6 +151,7 @@ fn build(
         ceiling_profile,
         default_profile,
         tool_packs,
+        redirect_hosts,
     } = settings;
     let public_url = public_url.ok_or("the vault's [mcp_remote] sets no public_url")?;
     let identity = identity.ok_or("the vault's [mcp_remote] sets no identity")?;
@@ -170,6 +171,7 @@ fn build(
                     .collect()
             }),
         }],
+        redirect_hosts: redirect_hosts.unwrap_or_default(),
     };
     let mut definition = request
         .into_definition()

@@ -2804,6 +2804,9 @@ pub struct VaultMcpRemoteConfig {
     /// Tool packs a connection may choose.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_packs: Option<Vec<String>>,
+    /// Hosts OAuth clients may redirect to; any valid redirect when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redirect_hosts: Option<Vec<String>>,
 }
 
 impl VaultMcpRemoteConfig {
@@ -5565,6 +5568,7 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         target.ceiling_profile = remote.ceiling_profile.or(target.ceiling_profile.take());
         target.default_profile = remote.default_profile.or(target.default_profile.take());
         target.tool_packs = remote.tool_packs.or(target.tool_packs.take());
+        target.redirect_hosts = remote.redirect_hosts.or(target.redirect_hosts.take());
     }
 }
 

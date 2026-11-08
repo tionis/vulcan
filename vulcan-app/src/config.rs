@@ -2067,6 +2067,7 @@ fn config_path_description(path: &str) -> String {
         "mcp_remote.ceiling_profile" => "Maximum permission profile for remote connections; must be a built-in (such as `writer`) or defined on the device, so a push cannot widen it. `readonly` when unset.".to_string(),
         "mcp_remote.default_profile" => "Profile preselected on the remote's consent page, within the ceiling. `readonly` when unset.".to_string(),
         "mcp_remote.tool_packs" => "Tool packs a remote connection may choose; they select tools, the ceiling bounds authority.".to_string(),
+        "mcp_remote.redirect_hosts" => "Hosts OAuth clients may send the authorization to (HTTPS on the host or its subdomains). Empty, the default, allows any valid redirect: HTTPS, loopback http for desktop and command-line clients, or an app scheme; the consent page shows the destination.".to_string(),
         "bot.default_capture" => "Where free-text chat bot messages are captured: the `[inbox]` note or today's daily note.".to_string(),
         "bot.reminders.catch_up_window" => "How late a missed reminder may still be sent, for example after the device was off; older ones are skipped.".to_string(),
         "bot.reminders.snooze_options" => "Snooze buttons on reminder messages beside Done: durations such as `1h` or `tomorrow` (the next day at `tasks.reminders.default_time`); at most three.".to_string(),

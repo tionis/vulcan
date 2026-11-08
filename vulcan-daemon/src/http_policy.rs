@@ -96,44 +96,124 @@ pub fn mcp_origin_allowed(origin: &str, bind_addr: SocketAddr) -> bool {
     }
 }
 
-/// OAuth redirect targets for the MCP issuer must be complete HTTPS URLs with
-/// an unambiguous authority. Fragments cannot receive an authorization code.
-#[must_use]
-pub fn mcp_oauth_redirect_uri_valid(redirect_uri: &str) -> bool {
-    mcp_oauth_redirect_host(redirect_uri).is_some()
+/// Where an MCP OAuth client asks for its authorization code to be sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpOAuthRedirectTarget {
+    /// An HTTPS site, such as a hosted client's callback.
+    Web { host: String, origin: String },
+    /// A listener on the user's own machine (RFC 8252 loopback redirect),
+    /// as desktop and command-line clients use.
+    Loopback { origin: String },
+    /// An app registered for a private-use URI scheme (RFC 8252 §7.1).
+    App { scheme: String },
 }
 
-#[must_use]
-pub fn mcp_oauth_redirect_uri_allowed(redirect_uri: &str, allowed_hosts: &[String]) -> bool {
-    let Some(host) = mcp_oauth_redirect_host(redirect_uri) else {
-        return false;
-    };
-    allowed_hosts
-        .iter()
-        .any(|allowed| host == *allowed || host.ends_with(&format!(".{allowed}")))
+impl McpOAuthRedirectTarget {
+    /// A CSP source expression that allows navigating to this target, for
+    /// the consent form's `form-action`.
+    #[must_use]
+    pub fn csp_source(&self) -> String {
+        match self {
+            Self::Web { origin, .. } | Self::Loopback { origin } => origin.clone(),
+            Self::App { scheme } => format!("{scheme}:"),
+        }
+    }
+
+    /// How the consent page names the destination.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Web { host, .. } => host.clone(),
+            Self::Loopback { origin } => format!("this computer ({origin})"),
+            Self::App { scheme } => format!("the app registered for {scheme}: links"),
+        }
+    }
 }
 
-fn mcp_oauth_redirect_host(redirect_uri: &str) -> Option<String> {
-    if redirect_uri
-        .chars()
-        .any(|character| character.is_control() || character.is_whitespace() || character == '\\')
+/// Schemes that must never receive an authorization code: they run code,
+/// address local files, or do not navigate to a client.
+const FORBIDDEN_REDIRECT_SCHEMES: &[&str] = &[
+    "about",
+    "blob",
+    "data",
+    "file",
+    "filesystem",
+    "ftp",
+    "javascript",
+    "mailto",
+    "sms",
+    "tel",
+    "vbscript",
+    "ws",
+    "wss",
+];
+
+/// Classifies an MCP OAuth redirect URI: any HTTPS URL, `http` only to a
+/// loopback host, or a private-use app scheme. Fragments, embedded
+/// credentials, whitespace, control characters and backslashes are refused.
+#[must_use]
+pub fn mcp_oauth_redirect_target(redirect_uri: &str) -> Option<McpOAuthRedirectTarget> {
+    if redirect_uri.len() > 2048
+        || redirect_uri.chars().any(|character| {
+            character.is_control() || character.is_whitespace() || character == '\\'
+        })
     {
         return None;
     }
     let parsed = Url::parse(redirect_uri).ok()?;
-    if parsed.scheme() != "https"
-        || !parsed.username().is_empty()
-        || parsed.password().is_some()
-        || parsed.fragment().is_some()
-    {
+    if !parsed.username().is_empty() || parsed.password().is_some() || parsed.fragment().is_some() {
         return None;
     }
-    // Preserve the domain-only redirect contract; numeric IP targets have no
-    // place in the hosted-client allowlist.
-    let Host::Domain(host) = parsed.host()? else {
-        return None;
+    let scheme = parsed.scheme();
+    let loopback = match parsed.host() {
+        Some(Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
     };
-    Some(host.to_string())
+    match scheme {
+        "https" | "http" => {
+            let host = parsed.host_str()?.to_ascii_lowercase();
+            let origin = parsed.origin().ascii_serialization();
+            if loopback {
+                Some(McpOAuthRedirectTarget::Loopback { origin })
+            } else if scheme == "https" {
+                Some(McpOAuthRedirectTarget::Web { host, origin })
+            } else {
+                None
+            }
+        }
+        // A one-letter scheme is a Windows drive path, not an app.
+        _ if scheme.len() < 2 || FORBIDDEN_REDIRECT_SCHEMES.contains(&scheme) => None,
+        _ => Some(McpOAuthRedirectTarget::App {
+            scheme: scheme.to_string(),
+        }),
+    }
+}
+
+#[must_use]
+pub fn mcp_oauth_redirect_uri_valid(redirect_uri: &str) -> bool {
+    mcp_oauth_redirect_target(redirect_uri).is_some()
+}
+
+/// Whether a client may use `redirect_uri`. With no `allowed_hosts` every
+/// valid redirect is allowed; consent shows where the code goes. A list
+/// restricts redirects to HTTPS sites on those hosts or their subdomains.
+#[must_use]
+pub fn mcp_oauth_redirect_uri_allowed(redirect_uri: &str, allowed_hosts: &[String]) -> bool {
+    let Some(target) = mcp_oauth_redirect_target(redirect_uri) else {
+        return false;
+    };
+    if allowed_hosts.is_empty() {
+        return true;
+    }
+    let McpOAuthRedirectTarget::Web { host, .. } = target else {
+        return false;
+    };
+    allowed_hosts.iter().any(|allowed| {
+        let allowed = allowed.to_ascii_lowercase();
+        host == allowed || host.ends_with(&format!(".{allowed}"))
+    })
 }
 
 pub fn apply_cors_headers(
@@ -242,29 +322,67 @@ mod tests {
     use axum::http::Request;
 
     #[test]
-    fn mcp_oauth_redirects_require_valid_https_domain_urls_without_fragments() {
+    fn mcp_oauth_redirects_are_open_by_default_and_a_host_list_restricts_them() {
+        for uri in [
+            "https://chatgpt.com/callback",
+            "https://claude.ai/api/mcp/auth_callback",
+            "https://n8n.example.org/rest/oauth2-credential/callback",
+            "https://192.0.2.10/callback",
+            "http://127.0.0.1:33418/callback",
+            "http://localhost:6274/oauth/callback",
+            "http://[::1]:8080/cb",
+            "cursor://anysphere.cursor-retrieval/oauth/callback",
+            "com.example.app:/oauth2redirect",
+        ] {
+            assert!(mcp_oauth_redirect_uri_valid(uri), "{uri}");
+            assert!(mcp_oauth_redirect_uri_allowed(uri, &[]), "{uri}");
+        }
+        for uri in [
+            "http://chatgpt.com/callback",
+            "http://192.0.2.10/callback",
+            "https://chatgpt.com:bad/callback",
+            "https://chatgpt.com/callback#fragment",
+            "https://user@chatgpt.com/callback",
+            "https://chatgpt.com\\@attacker.example/callback",
+            "https://chatgpt.com/callback\r\nX-Injected: yes",
+            "javascript:alert(1)",
+            "data:text/html,hi",
+            "file:///etc/passwd",
+            "c:/callback",
+            "not a url",
+        ] {
+            assert!(!mcp_oauth_redirect_uri_valid(uri), "{uri}");
+            assert!(!mcp_oauth_redirect_uri_allowed(uri, &[]), "{uri}");
+        }
+
         let allowed = vec!["chatgpt.com".to_string()];
         for uri in [
             "https://chatgpt.com/callback",
             "https://sub.chatgpt.com/callback?source=vulcan",
         ] {
-            assert!(mcp_oauth_redirect_uri_valid(uri), "{uri}");
             assert!(mcp_oauth_redirect_uri_allowed(uri, &allowed), "{uri}");
         }
         for uri in [
-            "http://chatgpt.com/callback",
-            "https://chatgpt.com:bad/callback",
-            "https://chatgpt.com/callback#fragment",
-            "https://user@chatgpt.com/callback",
-            "https://chatgpt.com\\@attacker.example/callback",
             "https://chatgpt.com.evil.example/callback",
-            "https://127.0.0.1/callback",
+            "https://claude.ai/api/mcp/auth_callback",
+            "http://127.0.0.1:33418/callback",
+            "cursor://anysphere.cursor-retrieval/oauth/callback",
         ] {
             assert!(!mcp_oauth_redirect_uri_allowed(uri, &allowed), "{uri}");
         }
-        assert!(!mcp_oauth_redirect_uri_valid(
-            "https://chatgpt.com:bad/callback"
-        ));
+    }
+
+    #[test]
+    fn redirect_targets_describe_themselves_and_give_csp_sources() {
+        let web = mcp_oauth_redirect_target("https://Claude.ai/api/mcp/auth_callback").unwrap();
+        assert_eq!(web.describe(), "claude.ai");
+        assert_eq!(web.csp_source(), "https://claude.ai");
+        let local = mcp_oauth_redirect_target("http://127.0.0.1:33418/callback").unwrap();
+        assert_eq!(local.csp_source(), "http://127.0.0.1:33418");
+        assert!(local.describe().starts_with("this computer"));
+        let app = mcp_oauth_redirect_target("cursor://anysphere/cb").unwrap();
+        assert_eq!(app.csp_source(), "cursor:");
+        assert!(app.describe().contains("cursor:"));
     }
 
     #[test]

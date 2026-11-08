@@ -47,11 +47,40 @@ For writable daily/task workflows, review `daily-wiki-agent` and the explicit pa
 configuration in [ChatGPT MCP setup](chatgpt-mcp.md), also available through
 `vulcan help chatgpt-mcp`.
 
+## Connecting clients
+
+Give the client the public MCP URL including its path, such as `https://wiki.example.com/mcp`; the
+bare origin answers 404. Any MCP client with OAuth support can connect: hosted clients such as
+ChatGPT, claude.ai and n8n, and desktop or command-line clients such as Claude Code, Claude Desktop
+and MCP Inspector. A client either registers itself (dynamic client registration) or identifies
+itself by the HTTPS URL of a Client ID Metadata Document; the authorization-server metadata
+advertises both.
+
+By default a client may ask for the authorization to go to any valid redirect: an HTTPS URL, `http`
+to a loopback address (`127.0.0.1`, `::1` or `localhost`, as desktop and command-line clients use),
+or a private-use app scheme such as `cursor://`. Schemes that run code or open files (`javascript:`,
+`data:`, `file:` and the like), plain `http` to other hosts, fragments and embedded credentials are
+refused. Since anyone can register a client under any name, the consent page shows where the
+authorization goes. Approve only a connection you started yourself, from the client that page names
+as the destination.
+
+To restrict a remote to known clients, list their hosts; only HTTPS redirects on those hosts or
+their subdomains are then accepted:
+
+```sh
+vulcan mcp remote init personal-agent ... --redirect-host claude.ai --redirect-host chatgpt.com
+vulcan mcp remote set personal-agent --redirect-host n8n.example.org   # replaces the list
+vulcan mcp remote set personal-agent --any-redirect                    # back to the default
+```
+
+In `daemon.toml` the list is `redirect_hosts = ["claude.ai"]` on the `[[mcp_remote]]` entry, and a
+vault's `[mcp_remote]` takes the same key.
+
 ## A remote described by its vault
 
 Instead of `mcp remote init` on every device, a vault can carry its remote's settings in
 `[mcp_remote]` of its shared `.vulcan/config.toml` (public URL, IndieAuth identity, ceiling,
-default profile, tool packs). Each device opts in with `vulcan vault set <id> --serve-remote
+default profile, tool packs, and optionally `redirect_hosts`). Each device opts in with `vulcan vault set <id> --serve-remote
 0.0.0.0:8765` and runs `vulcan daemon apply`. A push cannot expose the vault or widen the ceiling,
 and a changed identity waits for `vulcan daemon apply --accept-remote <id>` on each device. See
 `vulcan help device-config`.

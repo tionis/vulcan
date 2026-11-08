@@ -381,6 +381,7 @@ mod tests {
                 default_profile: "readonly".into(),
                 tool_packs: vec!["notes-read".into()],
             }],
+            redirect_hosts: Vec::new(),
         }
         .into_definition()
         .unwrap()

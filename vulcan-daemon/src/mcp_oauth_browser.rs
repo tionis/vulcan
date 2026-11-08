@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use base64::prelude::{Engine as _, BASE64_URL_SAFE_NO_PAD};
 use subtle::ConstantTimeEq;
 
+use crate::http_policy::mcp_oauth_redirect_target;
 use crate::mcp_http_codec::McpHttpResponse;
 use crate::mcp_remote_runtime::NamedMcpRuntime;
 
@@ -174,11 +175,24 @@ pub fn render_consent_page(page: &ConsentPage<'_>) -> McpHttpResponse {
                 }
             },
         );
+    // Registration is open, and a client chooses its own name, so the page
+    // names where the authorization code goes: that is what a lookalike
+    // client cannot fake.
+    let target = mcp_oauth_redirect_target(&page.pending.redirect_uri);
+    let destination = target.as_ref().map_or_else(
+        || html_escape(&page.pending.redirect_uri),
+        |target| html_escape(&target.describe()),
+    );
+    let form_action = target.as_ref().map_or_else(
+        || "'self'".to_string(),
+        |target| format!("'self' {}", target.csp_source()),
+    );
     let body = format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><title>Authorize Vulcan MCP</title></head>\
          <body><main><h1>Authorize this MCP connection?</h1>\
+         <p><strong>Approve only if you started this connection yourself, just now, from the client that receives it.</strong></p>\
          <form method=\"post\" action=\"/oauth/consent\">\
-         <dl><dt>Client</dt><dd>{}</dd><dt>Identity</dt><dd>{}</dd>\
+         <dl><dt>Client</dt><dd>{}</dd><dt>Sends the authorization to</dt><dd><strong>{destination}</strong></dd><dt>Identity</dt><dd>{}</dd>\
          <dt>Resource</dt><dd>{}</dd><dt>Vault</dt><dd>{}</dd>\
          <dt>Permission profile</dt><dd>{}</dd><dt>Tool packs</dt><dd>{}</dd>\
          <dt>OAuth scopes</dt><dd>{}</dd></dl>\
@@ -208,8 +222,11 @@ pub fn render_consent_page(page: &ConsentPage<'_>) -> McpHttpResponse {
             ("X-Frame-Options".to_string(), "DENY".to_string()),
             (
                 "Content-Security-Policy".to_string(),
-                "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
-                    .to_string(),
+                // Browsers apply form-action to the redirect after the form
+                // posts, so the client's callback must be allowed as well.
+                format!(
+                    "default-src 'none'; form-action {form_action}; frame-ancestors 'none'; base-uri 'none'"
+                ),
             ),
         ],
     }
@@ -404,7 +421,19 @@ mod tests {
             packs: &["notes-read".into()],
             named_runtime: None,
         });
+        let csp = response
+            .extra_headers
+            .iter()
+            .find(|(name, _)| name == "Content-Security-Policy")
+            .map(|(_, value)| value.clone())
+            .unwrap();
+        assert!(
+            csp.contains("form-action 'self' https://client.example;"),
+            "{csp}"
+        );
         let html = String::from_utf8(response.body).unwrap();
+        assert!(html.contains("Sends the authorization to</dt><dd><strong>client.example</strong>"));
+        assert!(html.contains("Approve only if you started this connection yourself"));
         assert!(html.contains("&lt;bad-client&gt;"));
         assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
         assert!(html.contains("/vault&lt;&amp;&gt;"));
@@ -422,6 +451,33 @@ mod tests {
             .iter()
             .any(|(name, value)| name == "Content-Security-Policy"
                 && value.contains("frame-ancestors 'none'")));
+    }
+
+    #[test]
+    fn consent_for_a_loopback_client_names_this_computer_and_allows_only_that_origin() {
+        let mut transaction = consent();
+        transaction.redirect_uri = "http://127.0.0.1:33418/callback".into();
+        let response = render_consent_page(&ConsentPage {
+            transaction_id: "transaction",
+            pending: &transaction,
+            client_name: "Claude",
+            fallback_vault_root: "/vault",
+            profile: "readonly",
+            packs: &[],
+            named_runtime: None,
+        });
+        let csp = response
+            .extra_headers
+            .iter()
+            .find(|(name, _)| name == "Content-Security-Policy")
+            .map(|(_, value)| value.clone())
+            .unwrap();
+        assert!(
+            csp.contains("form-action 'self' http://127.0.0.1:33418;"),
+            "{csp}"
+        );
+        let html = String::from_utf8(response.body).unwrap();
+        assert!(html.contains("this computer (http://127.0.0.1:33418)"));
     }
 
     #[test]

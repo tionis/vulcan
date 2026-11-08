@@ -92,6 +92,7 @@ fn handle_remote(
             ceiling_profile,
             default_profile,
             tool_pack,
+            redirect_host,
             dry_run,
         } => {
             let registration = resolve_registration(cli, context, wiki.as_deref())?;
@@ -117,6 +118,7 @@ fn handle_remote(
                             default_profile: default_profile.clone(),
                             tool_packs: tool_pack_names(tool_pack),
                         }],
+                        redirect_hosts: redirect_host.clone(),
                     },
                     *dry_run,
                 )
@@ -154,9 +156,18 @@ fn handle_remote(
             ceiling_profile,
             default_profile,
             tool_pack,
+            redirect_host,
+            any_redirect,
             dry_run,
         } => {
             let id = McpRemoteId::parse(name).map_err(CliError::operation)?;
+            let redirect_hosts = if *any_redirect {
+                Some(Vec::new())
+            } else if redirect_host.is_empty() {
+                None
+            } else {
+                Some(redirect_host.clone())
+            };
             let _runtime_lock = if *dry_run {
                 None
             } else {
@@ -187,6 +198,7 @@ fn handle_remote(
                     || bind.is_some()
                     || public_url.is_some()
                     || identity.is_some()
+                    || redirect_hosts.is_some()
                 {
                     return Err(CliError::operation(
                         "--remove-wiki must be a separate remote set operation",
@@ -277,6 +289,7 @@ fn handle_remote(
                     }
                 }),
                 vaults: Some(vaults),
+                redirect_hosts,
             };
             context
                 .registry

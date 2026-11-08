@@ -156,7 +156,7 @@ profile list (`--permissions <name>`) sees the same layers between the shared an
 ### Remotes described by their vault
 
 A vault's shared `.vulcan/config.toml` may describe one named MCP remote in `[mcp_remote]`
-(`public_url`, `identity`, `ceiling_profile`, `default_profile`, `tool_packs`). A device serves it
+(`public_url`, `identity`, `ceiling_profile`, `default_profile`, `tool_packs`, `redirect_hosts`). A device serves it
 only when its `[[vault]]` entry opts in with `mcp_remote = { bind = "<address>" }`; the remote's ID
 is the vault's ID. The registry builds the definition on every load of `daemon.toml` and never
 writes it back, so CLI edits keep the file as declared. Because a push may edit the vault's

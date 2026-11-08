@@ -1354,6 +1354,9 @@ The named MCP remote this vault describes; devices opt in to serve it from daemo
 - `mcp_remote.public_url` — type: `string`; target: `shared|local|device`; default: `https://notes.example.com/mcp`
   Public HTTPS URL of this vault's MCP remote. Devices that opt in serve it; a change applies at their next `vulcan daemon apply`.
   Example: `vulcan config set mcp_remote.public_url <value>`
+- `mcp_remote.redirect_hosts` — type: `array`; target: `shared|local|device`; default: `[0 items]`
+  Hosts OAuth clients may send the authorization to (HTTPS on the host or its subdomains). Empty, the default, allows any valid redirect: HTTPS, loopback http for desktop and command-line clients, or an app scheme; the consent page shows the destination.
+  Example: `vulcan config set mcp_remote.redirect_hosts <value>`
 - `mcp_remote.tool_packs` — type: `array`; target: `shared|local|device`; default: `[3 items]`
   Tool packs a remote connection may choose; they select tools, the ceiling bounds authority.
   Example: `vulcan config set mcp_remote.tool_packs <value>`

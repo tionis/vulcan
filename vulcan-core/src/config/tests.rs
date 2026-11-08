@@ -5495,7 +5495,7 @@ fn mcp_remote_settings_travel_in_shared_config_and_merge_with_local() {
         vault_root.join(".vulcan/config.toml"),
         "[mcp_remote]\npublic_url = \"https://notes.example/mcp\"\n\
          identity = \"https://me.example/\"\nceiling_profile = \"writer\"\n\
-         tool_packs = [\"notes-read\"]\n",
+         tool_packs = [\"notes-read\"]\nredirect_hosts = [\"claude.ai\"]\n",
     )
     .expect("shared config");
     fs::write(
@@ -5515,4 +5515,5 @@ fn mcp_remote_settings_travel_in_shared_config_and_merge_with_local() {
         Some(vec!["notes-read".to_string(), "search".to_string()]),
         "the local file wins per key"
     );
+    assert_eq!(remote.redirect_hosts, Some(vec!["claude.ai".to_string()]));
 }

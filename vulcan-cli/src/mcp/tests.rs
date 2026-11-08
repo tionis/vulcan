@@ -612,6 +612,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
                         ],
                     },
                 ],
+                redirect_hosts: Vec::new(),
             },
             false,
         )
@@ -4618,6 +4619,7 @@ fn named_runtime_locks_conflict_per_remote_but_not_across_remotes() {
             default_profile: "readonly".to_string(),
             tool_packs: vec!["notes-read".to_string()],
         }],
+        redirect_hosts: Vec::new(),
     };
     let first = definition("first", Ulid::new());
     let second = definition("second", Ulid::new());
@@ -4676,6 +4678,7 @@ fn named_runtime_rejects_a_definition_changed_before_listener_startup() {
                     default_profile: "readonly".to_string(),
                     tool_packs: vec!["notes-read".to_string()],
                 }],
+                redirect_hosts: Vec::new(),
             },
             false,
         )
@@ -4736,6 +4739,7 @@ fn resident_mcp_service_groups_instances_and_accepts_multi_vault_definitions() {
             default_profile: "readonly".to_string(),
             tool_packs: vec!["notes-read".to_string()],
         }],
+        redirect_hosts: Vec::new(),
     };
     assert!(resident_service(&[]).expect("empty registry").is_none());
     let first = definition("first");

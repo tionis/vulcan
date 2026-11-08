@@ -282,6 +282,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn open_registration_accepts_hosted_desktop_and_app_clients() {
+        for redirect in [
+            "https://claude.ai/api/mcp/auth_callback",
+            "https://n8n.example.org/rest/oauth2-credential/callback",
+            "http://127.0.0.1:33418/callback",
+            "http://localhost:6274/oauth/callback",
+            "cursor://anysphere.cursor-retrieval/oauth/callback",
+        ] {
+            let payload = serde_json::json!({
+                "redirect_uris": [redirect],
+                "token_endpoint_auth_method": "none",
+            });
+            assert!(
+                validate_mcp_dcr_registration(&payload, &[], true).is_ok(),
+                "{redirect}"
+            );
+            let restricted = validate_mcp_dcr_registration(&payload, &["chatgpt.com".into()], true);
+            assert_eq!(
+                restricted,
+                Err(McpDcrError::InvalidRedirectUri),
+                "{redirect}"
+            );
+        }
+        let unsafe_redirect = serde_json::json!({
+            "redirect_uris": ["javascript:alert(1)"],
+            "token_endpoint_auth_method": "none",
+        });
+        assert_eq!(
+            validate_mcp_dcr_registration(&unsafe_redirect, &[], true),
+            Err(McpDcrError::InvalidRedirectUri)
+        );
+    }
+
+    #[test]
     fn dcr_metadata_rejects_partial_or_unsupported_registration() {
         let hosts = vec!["chatgpt.com".to_string()];
         let valid = serde_json::json!({

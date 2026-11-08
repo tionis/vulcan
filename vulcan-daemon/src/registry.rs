@@ -2703,6 +2703,7 @@ mod tests {
                     .map(|pack| (*pack).to_string())
                     .collect(),
             }],
+            redirect_hosts: Vec::new(),
         }
     }
 

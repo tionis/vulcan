@@ -450,7 +450,7 @@ fn run_named_mcp_remote_with_endpoints(
         oauth_local_subject: None,
         oauth_local_email: None,
         oauth_dcr: true,
-        oauth_dcr_allowed_redirect_host: vec!["chatgpt.com".to_string()],
+        oauth_dcr_allowed_redirect_host: remote.redirect_hosts.clone(),
         oauth_indieauth_authorization_endpoint: indieauth_endpoints.map(|item| item.0.clone()),
         oauth_indieauth_token_endpoint: indieauth_endpoints.map(|item| item.1.clone()),
         oauth_indieauth_client_id: None,
@@ -935,12 +935,8 @@ fn run_mcp_http_server_inner(
             #[cfg(feature = "oauth")]
             oauth_dcr_enabled: options.oauth_dcr,
             #[cfg(feature = "oauth")]
-            oauth_dcr_allowed_redirect_hosts: if options.oauth_dcr_allowed_redirect_host.is_empty()
-            {
-                vec!["chatgpt.com".to_string()]
-            } else {
-                options.oauth_dcr_allowed_redirect_host.clone()
-            },
+            // Empty means any valid redirect; consent shows where it goes.
+            oauth_dcr_allowed_redirect_hosts: options.oauth_dcr_allowed_redirect_host.clone(),
             #[cfg(feature = "oauth")]
             oauth_local_redirect_uris: options.oauth_local_redirect_uri.clone(),
             #[cfg(feature = "oauth")]

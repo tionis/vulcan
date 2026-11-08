@@ -6815,6 +6815,12 @@ pub enum McpRemoteCommand {
         tool_pack: Vec<McpToolPackArg>,
         #[arg(
             long,
+            value_name = "HOST",
+            help = "Only let OAuth clients redirect to HTTPS on this host or its subdomains (repeatable); by default any valid redirect is allowed and consent shows where it goes"
+        )]
+        redirect_host: Vec<String>,
+        #[arg(
+            long,
             help = "Validate and report without writing device configuration"
         )]
         dry_run: bool,
@@ -6857,6 +6863,18 @@ pub enum McpRemoteCommand {
             help = "Replace the tool packs eligible for consent"
         )]
         tool_pack: Vec<McpToolPackArg>,
+        #[arg(
+            long,
+            value_name = "HOST",
+            conflicts_with = "any_redirect",
+            help = "Replace the OAuth redirect hosts clients are restricted to (repeatable)"
+        )]
+        redirect_host: Vec<String>,
+        #[arg(
+            long,
+            help = "Drop the redirect host restriction so any valid redirect is allowed"
+        )]
+        any_redirect: bool,
         #[arg(long, help = "Validate and report without changing configuration")]
         dry_run: bool,
     },
@@ -9586,7 +9604,7 @@ Examples:
         oauth_dcr: bool,
         #[arg(
             long,
-            help = "Allowed redirect host for dynamically registered OAuth clients; repeat for multiple hosts"
+            help = "Restrict OAuth clients (registered or identified by a metadata document URL) to HTTPS redirects on this host or its subdomains; repeat for multiple hosts. Without it any valid redirect is allowed: HTTPS, loopback http, or an app scheme, and consent shows where it goes"
         )]
         oauth_dcr_allowed_redirect_host: Vec<String>,
         #[arg(

@@ -59,8 +59,11 @@ Vulcan owns ChatGPT-facing authorization-code + PKCE, Client ID Metadata Documen
 client registration validation, 15-minute access tokens, rotating refresh tokens, replay-driven
 token-family revocation, and bearer-token validation. The upstream IndieAuth hop also uses PKCE.
 IndieAuth authenticates the human; it does not itself grant vault access.
-Registered OAuth redirect URIs must be valid HTTPS URLs on an allowed host, without credentials or
-fragments. Existing query parameters are preserved when Vulcan redirects with an authorization code.
+Registered OAuth redirect URIs may be any HTTPS URL, `http` to a loopback address, or a private-use
+app scheme, without credentials or fragments; `--oauth-dcr-allowed-redirect-host` (or a named
+remote's `redirect_hosts`) restricts them to HTTPS on listed hosts. The consent page shows where the
+authorization goes. Existing query parameters are preserved when Vulcan redirects with an
+authorization code.
 At the token endpoint, dynamically registered clients must use their declared authentication method:
 `client_secret_basic`, `client_secret_post`, or public-client `none`. The authorization-server metadata
 advertises all three; mixed header/form credentials are rejected.
