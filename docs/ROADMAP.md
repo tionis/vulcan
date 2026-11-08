@@ -5863,6 +5863,33 @@ A deterministic, daemon-hosted Telegram bot for allowlisted users. It captures n
 
 **Acceptance:** On the configured device, an allowlisted user can capture text, links, and photos, create and complete tasks, and search the vault from Telegram. Due reminders arrive once, with working Done/Snooze buttons whose effects sync to every device. Reminders completed elsewhere update their message. Unknown users get no response. Every write respects the user's profile capped by the registration ceiling, and all CLI commands keep working without the daemon.
 
+### 10.12 Declarative device configuration
+
+**Goal:** `daemon.toml` holds only owner intent, so one file (rendered by hand, chezmoi or Ansible)
+plus `vulcan daemon apply` reproduces a device's vaults, device-local permission profiles, named
+remotes, workers, agents, notifications and bots, and leaves the daemon service installed and running. Generated identities move to a state file, CLI edits keep comments and formatting, and
+undeclared state is reported as drift and removed only with `--prune`. Design:
+[`docs/specs/declarative-device-config.md`](specs/declarative-device-config.md).
+
+- [ ] 10.12.1 Move `registration_id` and `instance_id` to `identities.toml` with an automatic,
+  resumable migration, and make every `daemon.toml` write format-preserving.
+- [ ] 10.12.2 Device-global `[permissions.profiles]` in `daemon.toml` as a resolver input for
+  device-local ceilings; per-vault `config` tables on `[[vault]]` as a device overlay for direct CLI
+  and daemon; `--target device`, `profile move`, and `config local move`.
+- [ ] 10.12.3 `vulcan daemon plan` and `apply` over every `daemon.toml` section (validate, allocate
+  identities, reload a running daemon) with `--dry-run`, `--file` and `--output json`.
+- [ ] 10.12.4 Vault `source` with cloning in `apply`, and missing-vault reporting at daemon start.
+- [ ] 10.12.5 `apply --prune` for undeclared identities, scan state, tokens and remote OAuth state;
+  `managed_by` with `--force-local-edit` for files owned by configuration management; service install
+  and restart in `apply` (`--no-service` to skip).
+- [ ] 10.12.6 Guides, help topics, configuration reference, `mcp-setup` and configuration skills,
+  and a rendered-file example.
+
+**Acceptance:** Copying a `daemon.toml` to a fresh device and running `vulcan daemon apply` clones
+its vaults and defines its remotes, with ceilings from the same file; a second `plan` is empty;
+existing installations migrate without breaking API tokens or OAuth grants; CLI mutations keep
+comments; nothing undeclared is removed without `--prune`.
+
 ## Phase 11: Git Auto-Versioning (Daemon-Level)
 
 **Goal:** Automatic version history for vault content managed by the daemon. Extends the per-vault auto-commit from Phase 9.3 to daemon-managed vaults with richer history APIs.
