@@ -169,6 +169,11 @@ pub enum DaemonServiceError {
     InvalidWindowsUserSid(String),
     UnsafeDefinitionPath(PathBuf),
     UnsafeDirectoryPath(PathBuf),
+    /// systemd runs a unit other than the one this configuration writes.
+    ForeignService {
+        loaded: PathBuf,
+        planned: PathBuf,
+    },
     CommandFailed {
         program: String,
         arguments: Vec<String>,
@@ -208,6 +213,12 @@ impl Display for DaemonServiceError {
                 formatter,
                 "refusing to use symlinked or non-directory daemon service path: {}",
                 path.display()
+            ),
+            Self::ForeignService { loaded, planned } => write!(
+                formatter,
+                "systemd runs {SYSTEMD_UNIT} from {}, not {}, which this configuration directory writes; systemd does not read units from there, so restarting would act on the daemon of another configuration. Run `vulcan daemon start` yourself for this configuration, or pass --no-service to `daemon apply`",
+                loaded.display(),
+                planned.display()
             ),
             Self::CommandFailed {
                 program,
@@ -289,6 +300,7 @@ pub fn apply_daemon_service(
             changed: false,
         });
     }
+    verify_service_target(&plan)?;
     let changed = match plan.action {
         DaemonServiceAction::Install | DaemonServiceAction::Restart => {
             for directory in &plan.directories {
@@ -320,6 +332,59 @@ pub fn apply_daemon_service(
         dry_run,
         changed,
     })
+}
+
+/// Refuses a plan whose systemd unit is not the one systemd runs. systemd
+/// reads user units only from its own search path, so the unit a
+/// configuration under another `XDG_CONFIG_HOME` writes is never loaded, and
+/// `systemctl --user restart` would restart (or `disable --now` stop) the
+/// daemon of the default configuration instead. Other platforms, and a unit
+/// systemd has not loaded at all, pass.
+///
+/// # Errors
+///
+/// `ForeignService` when systemd loaded `vulcan-daemon.service` from another
+/// file.
+pub fn verify_service_target(plan: &DaemonServicePlan) -> Result<(), DaemonServiceError> {
+    if plan.platform != DaemonServicePlatform::SystemdUser {
+        return Ok(());
+    }
+    let Some(planned) = &plan.definition_path else {
+        return Ok(());
+    };
+    // Without systemctl the service commands report the problem themselves.
+    let Ok(output) = Command::new("systemctl")
+        .args([
+            "--user",
+            "show",
+            "--property=FragmentPath",
+            "--value",
+            SYSTEMD_UNIT,
+        ])
+        .output()
+    else {
+        return Ok(());
+    };
+    if !output.status.success() {
+        return Ok(());
+    }
+    check_loaded_unit(String::from_utf8_lossy(&output.stdout).trim(), planned)
+}
+
+fn check_loaded_unit(loaded: &str, planned: &Path) -> Result<(), DaemonServiceError> {
+    if loaded.is_empty() {
+        return Ok(());
+    }
+    let loaded = PathBuf::from(loaded);
+    let resolve = |path: &Path| fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if loaded == planned || resolve(&loaded) == resolve(planned) {
+        Ok(())
+    } else {
+        Err(DaemonServiceError::ForeignService {
+            loaded,
+            planned: planned.to_path_buf(),
+        })
+    }
 }
 
 pub fn inspect_daemon_service(
@@ -871,6 +936,33 @@ mod tests {
         assert_eq!(
             plan.commands[1].arguments,
             ["--user", "enable", "--now", SYSTEMD_UNIT]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_unit_systemd_loaded_from_elsewhere_is_refused() {
+        let temporary = tempdir().expect("temporary directory");
+        let planned = temporary
+            .path()
+            .join("other/systemd/user/vulcan-daemon.service");
+        assert!(check_loaded_unit("", &planned).is_ok());
+        assert!(check_loaded_unit(&planned.to_string_lossy(), &planned).is_ok());
+        let error = check_loaded_unit(
+            "/home/someone/.config/systemd/user/vulcan-daemon.service",
+            &planned,
+        )
+        .expect_err("another unit");
+        assert!(matches!(error, DaemonServiceError::ForeignService { .. }));
+        assert!(error.to_string().contains("--no-service"));
+
+        let real = temporary.path().join("real/vulcan-daemon.service");
+        fs::create_dir_all(real.parent().unwrap()).unwrap();
+        fs::write(&real, "unit").unwrap();
+        let link = temporary.path().join("link");
+        std::os::unix::fs::symlink(real.parent().unwrap(), &link).unwrap();
+        assert!(
+            check_loaded_unit(&link.join("vulcan-daemon.service").to_string_lossy(), &real).is_ok()
         );
     }
 

@@ -119,6 +119,10 @@ and 1 on an error, so scripts and configuration management can use it as a check
    running. `apply` succeeds only once a new daemon runs the current executable and configuration;
    if the old one is still finishing its final syncs, it stops and asks you to run it again.
    `--no-service` leaves the service and process alone, for containers or manual supervision.
+   On Linux the service is the fixed user unit `vulcan-daemon.service`, which systemd loads only
+   from its own configuration directory. When `XDG_CONFIG_HOME` points elsewhere, for example for a
+   test device, `apply` refuses to restart rather than restart the daemon of your usual
+   configuration; pass `--no-service` and run `vulcan daemon start` for such a configuration.
 
 Options: `--dry-run` prints the plan only. `--file <path>` plans another file, for review before
 copying it into place; `apply --file` only checks. `--accept-remote <id>` accepts the IndieAuth
@@ -133,7 +137,10 @@ State that exists on the device but is no longer declared is drift: identities o
 remotes removed from the file by hand, scan state and API tokens of undeclared vaults, and OAuth
 keys, grants and runtime state of undeclared remotes. `plan` lists it and `apply` leaves it alone,
 so declaring an entry again restores it with its tokens and grants. `vulcan daemon apply --prune`
-removes it. Working trees and Git directories are never deleted. `vault remove` and
+removes it. Working trees and Git directories are never deleted. The remote of a vault that opts
+in to serve it (see below) is not drift while the opt-in stays, even when the vault is missing or
+its settings are broken, so pruning never makes the device forget the identity it accepted.
+`vault remove` and
 `mcp remote remove` remove the identity right away, so a later registration with the same id never
 revives old tokens or grants.
 
@@ -213,8 +220,8 @@ path = "~/wikis/grimoire"
 mcp_remote = { bind = "0.0.0.0:8765" }
 ```
 
-`vulcan vault set grimoire --serve-remote 0.0.0.0:8765` writes the same, and `--no-serve-remote`
-removes it. The remote's ID is the vault's ID. `vulcan daemon apply` starts it and restarts the
+`vulcan vault set grimoire --serve-remote 0.0.0.0:8765` writes the same line, and
+`--no-serve-remote` removes it. The remote's ID is the vault's ID. `vulcan daemon apply` starts it and restarts the
 daemon whenever the vault's settings change. A `[[mcp_remote]]` with the same ID in `daemon.toml`
 wins over the vault's settings.
 
@@ -228,7 +235,9 @@ Anyone who can push to the vault can edit these settings, so:
   accepted one, `vulcan daemon plan` reports an error, and `vulcan daemon apply` changes nothing
   until you run `vulcan daemon apply --accept-remote grimoire` on that device.
 - Missing or invalid settings leave that remote stopped and are reported by `plan` and in the
-  daemon log; the other vaults and remotes keep running.
+  daemon log; the other vaults and remotes keep running. While the opt-in stays, the remote's
+  identity, keys and grants are kept, also by `apply --prune`, so a broken or missing vault never
+  resets the accepted identity. Remove the opt-in to let `--prune` drop them.
 
 ## Moving a remote to another device
 

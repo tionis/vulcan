@@ -565,6 +565,66 @@ fn vault_set_toggles_serving_and_a_vault_without_settings_is_an_error() {
         .contains("no [mcp_remote]"));
 }
 
+#[test]
+fn an_opted_in_vault_keeps_its_remote_state_while_its_settings_are_unusable() {
+    let device = Device::new();
+    let notes = opted_in_vault(&device);
+    assert_eq!(device.apply(&[]).code, 0);
+    let recorded = fs::read_to_string(device.identities()).unwrap();
+    assert!(recorded.contains("accepted_identity"), "{recorded}");
+    let identity_drift = |plan: &serde_json::Value| {
+        plan["items"].as_array().unwrap().iter().any(|entry| {
+            entry["kind"] == "identity"
+                && entry["id"] == "mcp_remote.notes"
+                && entry["action"] == "drift"
+        })
+    };
+
+    // Broken settings are an error, and the remote's identity is no drift.
+    fs::write(notes.join(".vulcan/config.toml"), "").unwrap();
+    let broken = device.plan(&["--prune"]);
+    assert_eq!(broken.code, 1, "{}", broken.stdout);
+    assert!(!identity_drift(&broken.json()), "{}", broken.stdout);
+
+    // A vault whose clone fails does not stop apply, and pruning keeps the
+    // identity the device accepted, so a later push cannot be accepted as
+    // the first one.
+    let moved = notes.with_file_name("notes-away");
+    fs::rename(&notes, &moved).unwrap();
+    device.write_config(&format!(
+        "[[vault]]\nid = \"notes\"\npath = \"{}\"\nsource = \"{}\"\n\
+         mcp_remote = {{ bind = \"127.0.0.1:18765\" }}\n",
+        notes.display(),
+        device.path("no-such-repository").display()
+    ));
+    let missing = device.plan(&["--prune"]);
+    assert!(!identity_drift(&missing.json()), "{}", missing.stdout);
+    let pruned = device.apply(&["--prune"]);
+    assert!(
+        pruned.stdout.contains("\"pruned\""),
+        "{}{}",
+        pruned.stdout,
+        pruned.stderr
+    );
+    assert!(!notes.exists());
+    fs::rename(&moved, &notes).unwrap();
+    assert_eq!(fs::read_to_string(device.identities()).unwrap(), recorded);
+    write_vault_remote(&notes, "https://someone-else.example.invalid/");
+    let pending = device.plan(&[]);
+    assert_eq!(pending.code, 1, "{}", pending.stdout);
+    assert!(
+        pending.stdout.contains("--accept-remote notes"),
+        "{}",
+        pending.stdout
+    );
+
+    // Turning serving off makes the state drift that --prune removes.
+    write_vault_remote(&notes, "https://me.example.invalid/");
+    let stopped = device.run(&["vault", "set", "notes", "--no-serve-remote"]);
+    assert_eq!(stopped.code, 0, "{}{}", stopped.stdout, stopped.stderr);
+    assert!(identity_drift(&device.plan(&["--prune"]).json()));
+}
+
 fn write_vault_remote(notes: &Path, identity: &str) {
     fs::write(
         notes.join(".vulcan/config.toml"),

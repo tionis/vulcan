@@ -254,6 +254,7 @@ pub fn render_config<T: Serialize>(existing: Option<&str>, config: &T) -> Result
         .map_err(|error| error.to_string())?;
     strip_generated_keys(&mut desired);
     drop_empty_declaration_arrays(&mut desired);
+    inline_small_tables(&mut desired);
     let Some(existing) = existing else {
         return Ok(desired.to_string());
     };
@@ -456,6 +457,33 @@ fn drop_empty_declaration_arrays(document: &mut DocumentMut) {
     }
 }
 
+/// One-line subtables of declaration entries, written inline as the
+/// documentation shows them: `mcp_remote = { bind = "0.0.0.0:8765" }`.
+const INLINE_KEYS: &[(&str, &str)] = &[("vault", "mcp_remote")];
+
+fn inline_small_tables(document: &mut DocumentMut) {
+    for (array, key) in INLINE_KEYS {
+        let Some(tables) = document
+            .get_mut(array)
+            .and_then(Item::as_array_of_tables_mut)
+        else {
+            continue;
+        };
+        for table in tables.iter_mut() {
+            let Some(Item::Table(subtable)) = table.get(key) else {
+                continue;
+            };
+            let mut inline = subtable.clone().into_inline_table();
+            inline.fmt();
+            table[*key] = Item::Value(Value::InlineTable(inline));
+            // A subtable header leaves the key without ` = ` spacing.
+            if let Some(mut written) = table.key_mut(key) {
+                written.leaf_decor_mut().clear();
+            }
+        }
+    }
+}
+
 fn strip_generated_keys(document: &mut DocumentMut) {
     for (array, key) in GENERATED_KEYS {
         if let Some(tables) = document
@@ -489,7 +517,14 @@ fn merge_table(
     }
     for (key, wanted) in desired {
         if let Some(current) = existing.get_mut(key) {
+            let table_becomes_value = current.is_table() && wanted.is_value();
             merge_item(current, wanted, anchor, next_position);
+            // A subtable header leaves the key without ` = ` spacing.
+            if table_becomes_value {
+                if let Some(mut written) = existing.key_mut(key) {
+                    written.leaf_decor_mut().clear();
+                }
+            }
         } else {
             let mut item = wanted.clone();
             place(&mut item, anchor, next_position);
@@ -743,6 +778,13 @@ mod tests {
         path: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         groups: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mcp_remote: Option<OptIn>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    struct OptIn {
+        bind: String,
     }
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -813,6 +855,35 @@ authentication = { identity = "https://eric.example/" }
     }
 
     #[test]
+    fn a_vault_opt_in_is_written_inline_and_a_subtable_becomes_inline() {
+        let mut config = parsed(HAND_WRITTEN);
+        config.vaults[1].mcp_remote = Some(OptIn {
+            bind: "0.0.0.0:8766".to_string(),
+        });
+        let rendered = render_config(Some(HAND_WRITTEN), &config).unwrap();
+        assert!(rendered.contains(
+            "path = \"/home/eric/wikis/stories\"\nmcp_remote = { bind = \"0.0.0.0:8766\" }\n"
+        ));
+        assert!(!rendered.contains("[vault.mcp_remote]"));
+        assert_round_trip(&rendered, &config);
+
+        let fresh = render_config(None, &config).unwrap();
+        assert!(
+            fresh.contains("mcp_remote = { bind = \"0.0.0.0:8766\" }"),
+            "{fresh}"
+        );
+
+        let subtable = HAND_WRITTEN.replace(
+            "path = \"/home/eric/wikis/stories\"\n",
+            "path = \"/home/eric/wikis/stories\"\n\n[vault.mcp_remote]\nbind = \"0.0.0.0:1\"\n",
+        );
+        let rendered = render_config(Some(&subtable), &config).unwrap();
+        assert!(rendered.contains("mcp_remote = { bind = \"0.0.0.0:8766\" }"));
+        assert!(!rendered.contains("[vault.mcp_remote]"));
+        assert_round_trip(&rendered, &config);
+    }
+
+    #[test]
     fn adding_and_removing_entries_keeps_the_rest_of_the_document() {
         let mut config = parsed(HAND_WRITTEN);
         config.vaults.remove(1);
@@ -821,6 +892,7 @@ authentication = { identity = "https://eric.example/" }
             registration_id: Some("01M7AAAAAAAAAAAAAAAAAAAAAA".to_string()),
             path: "/home/eric/wikis/recipes".to_string(),
             groups: Vec::new(),
+            mcp_remote: None,
         });
         config.notifications = Some(Notifications { enabled: true });
         config.remotes[0].authentication.identity = "https://other.example/".to_string();
@@ -842,6 +914,7 @@ authentication = { identity = "https://eric.example/" }
                 registration_id: None,
                 path: "/home/eric/wikis/archive".to_string(),
                 groups: Vec::new(),
+                mcp_remote: None,
             },
         );
         let rendered = render_config(Some(HAND_WRITTEN), &config).unwrap();

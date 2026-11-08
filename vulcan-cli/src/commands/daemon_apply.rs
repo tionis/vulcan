@@ -18,7 +18,8 @@ use vulcan_daemon::process::{
 };
 use vulcan_daemon::registry::DaemonConfig;
 use vulcan_daemon::service::{
-    apply_daemon_service, inspect_daemon_service, DaemonServiceAction, DaemonServicePlatform,
+    apply_daemon_service, inspect_daemon_service, verify_service_target, DaemonServiceAction,
+    DaemonServicePlatform,
 };
 
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
@@ -305,15 +306,35 @@ fn converge_daemon(
     let Some(first) = process.or(service) else {
         return Vec::new();
     };
+    // Check the service before stopping anything, so a refusal leaves the
+    // running daemon alone.
+    let service_plan = if DaemonServicePlatform::native().is_ok() {
+        match native_service_plan(context, DaemonServiceAction::Restart).and_then(|plan| {
+            verify_service_target(&plan)
+                .map(|()| plan)
+                .map_err(CliError::operation)
+        }) {
+            Ok(plan) => Some(plan),
+            Err(error) => {
+                return [service, process]
+                    .into_iter()
+                    .flatten()
+                    .map(|item| step(item, Some(error.to_string()), None))
+                    .collect();
+            }
+        }
+    } else {
+        None
+    };
     let previous = running_daemon(context);
     if let Some(previous) = &previous {
         if let Err(error) = stop_daemon(context, previous) {
             return vec![step(first, Some(error), None)];
         }
     }
-    let result = if DaemonServicePlatform::native().is_ok() {
-        native_service_plan(context, DaemonServiceAction::Restart)
-            .and_then(|plan| apply_daemon_service(plan, false).map_err(CliError::operation))
+    let result = if let Some(plan) = service_plan {
+        apply_daemon_service(plan, false)
+            .map_err(CliError::operation)
             .map(|_| ())
     } else if process.is_some() {
         spawn_detached(cli, context).map(|_| ())

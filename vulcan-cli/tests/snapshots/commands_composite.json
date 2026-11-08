@@ -14043,7 +14043,7 @@
                 ]
               },
               {
-                "help": "Leave the daemon service and process alone, for containers or manual supervision",
+                "help": "Leave the daemon service and process alone, for containers, manual supervision, or a configuration under another XDG_CONFIG_HOME",
                 "id": "no_service",
                 "long": "no-service",
                 "possible_values": [

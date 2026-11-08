@@ -169,7 +169,11 @@ settings:
   keeps the accepted one, `plan` reports a blocking error, and
   `vulcan daemon apply --accept-remote <id>` accepts it;
 - missing or invalid settings leave that remote out with a plan error and a daemon log line instead
-  of failing the load.
+  of failing the load. As long as the entry opts in, the remote's identity, OAuth state and runtime
+  state are not drift, also while the vault is missing, so `--prune` cannot reset the accepted
+  identity and let the next push be accepted as the first;
+- `vault set --serve-remote` writes the opt-in inline, and a subtable form is rewritten inline on
+  the next CLI edit.
 
 A `[[mcp_remote]]` with the same ID in `daemon.toml` wins. `vault remove` drops the vault's own
 remote with the entry, and `mcp remote update|remove` refuse to edit it.
@@ -231,7 +235,11 @@ change, 2 when changes are pending, 1 on an error (same convention as `picomq-to
    path as `vulcan vault clone`. A path that exists must be a repository whose remote matches
    `source`, or apply reports an error for that vault and continues with the others.
 4. Make sure the daemon service is installed and running, the same work as `vulcan daemon install`
-   (`--no-service` skips this, for containers or manual supervision). A running daemon reloads its
+   (`--no-service` skips this, for containers or manual supervision). On systemd the unit name is
+   fixed and systemd reads it only from its own search path, so before stopping anything apply
+   checks that the loaded `vulcan-daemon.service` (`FragmentPath`) is the file this configuration
+   directory writes, and refuses otherwise; `vulcan daemon install|uninstall` check the same. A
+   running daemon reloads its
    configuration: changed remotes, vault runtimes, workers, agents, notification sinks and bots
    restart; unchanged ones keep running. A daemon started from an older executable is restarted.
    Implemented as: vault declarations and permission profiles are picked up while the daemon runs
@@ -239,7 +247,8 @@ change, 2 when changes are pending, 1 on an error (same convention as `picomq-to
    a digest of those sections in the daemon's runtime record, or a replaced executable restarts the
    whole daemon through a graceful stop (final syncs run) and the service manager.
 5. With `--prune`: remove drift. That is identity entries, scan state and API tokens of undeclared
-   vaults, and OAuth state (signing keys, clients, grants) of undeclared remotes. Each removal is
+   vaults, and OAuth state (signing keys, clients, grants) of undeclared remotes. A vault's own
+   remote counts as declared while its entry opts in. Each removal is
    listed in `plan` first. Working trees and Git directories are never deleted.
 
 `apply --dry-run` prints the plan and changes nothing.

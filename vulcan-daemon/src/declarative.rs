@@ -16,7 +16,7 @@ use crate::registry::{DaemonConfig, DeclaredConfig, WikiRegistration};
 use crate::service::DaemonServiceDiagnostic;
 use crate::vault_remotes::VaultRemoteState;
 use serde::Serialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -345,13 +345,9 @@ fn identity_items(declared: &DeclaredConfig) -> Vec<PlanItem> {
             );
         }
     }
+    let kept = kept_remotes(declared);
     for id in declared.stored_identities.mcp_remotes.keys() {
-        if !declared
-            .config
-            .mcp_remotes
-            .iter()
-            .any(|remote| remote.id.as_str() == id)
-        {
+        if !kept.contains_key(id) {
             items.push(
                 PlanItem::new(
                     PlanKind::Identity,
@@ -705,12 +701,8 @@ fn drift_items(context: &DaemonProcessContext, declared: &DeclaredConfig) -> Vec
         .iter()
         .map(|wiki| wiki.registration_id.to_string().to_ascii_lowercase())
         .collect::<BTreeSet<_>>();
-    let instances = declared
-        .config
-        .mcp_remotes
-        .iter()
-        .map(|remote| remote.instance_id.to_string().to_ascii_lowercase())
-        .collect::<BTreeSet<_>>();
+    let kept = kept_remotes(declared);
+    let instances = kept.values().cloned().collect::<BTreeSet<_>>();
     for path in scan_state_files(&context.state_root) {
         let stem = path
             .file_stem()
@@ -780,12 +772,7 @@ fn drift_items(context: &DaemonProcessContext, declared: &DeclaredConfig) -> Vec
     if let Ok(entries) = fs::read_dir(context.state_root.join("mcp-remotes")) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if !declared
-                .config
-                .mcp_remotes
-                .iter()
-                .any(|remote| remote.id.as_str() == name)
-            {
+            if !kept.contains_key(&name) {
                 items.push(
                     PlanItem::new(
                         PlanKind::OauthState,
@@ -798,6 +785,32 @@ fn drift_items(context: &DaemonProcessContext, declared: &DeclaredConfig) -> Vec
         }
     }
     items
+}
+
+/// The remotes whose device state is not drift, by ID, with their instance
+/// identity in lowercase: the declared remotes, and the remote of every vault
+/// that opts in to serve it even while its settings are missing or invalid.
+/// Otherwise a broken push followed by `apply --prune` would drop the
+/// identity the device accepted, and the next push would be accepted as new.
+fn kept_remotes(declared: &DeclaredConfig) -> BTreeMap<String, String> {
+    let mut kept = declared
+        .config
+        .mcp_remotes
+        .iter()
+        .map(|remote| {
+            (
+                remote.id.to_string(),
+                remote.instance_id.to_string().to_ascii_lowercase(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    for status in &declared.config.vault_remotes {
+        if let Some(stored) = declared.stored_identities.mcp_remotes.get(&status.id) {
+            kept.entry(status.id.clone())
+                .or_insert_with(|| stored.instance_id.to_string().to_ascii_lowercase());
+        }
+    }
+    kept
 }
 
 fn scan_state_files(state_root: &Path) -> Vec<PathBuf> {

@@ -5749,7 +5749,7 @@ pub enum DaemonCommand {
     },
     #[command(
         about = "Make this device match daemon.toml",
-        long_about = "Make this device match daemon.toml in one step: validate the whole file (any error stops before a change), store identities for new vaults and remotes, clone each declared vault whose path is missing from its `source`, install the native daemon service when it is missing, and restart the daemon when it runs an older configuration or executable (or start it). With `--prune`, also remove drift: identities, scan state and API tokens of undeclared vaults, and OAuth keys and grants of undeclared remotes. Working trees and Git directories are never deleted. `--dry-run` prints the plan and changes nothing. Running it twice leaves nothing to do the second time."
+        long_about = "Make this device match daemon.toml in one step: validate the whole file (any error stops before a change), store identities for new vaults and remotes, clone each declared vault whose path is missing from its `source`, install the native daemon service when it is missing, and restart the daemon when it runs an older configuration or executable (or start it). With `--prune`, also remove drift: identities, scan state and API tokens of undeclared vaults, and OAuth keys and grants of undeclared remotes. The remote of a vault that opts in to serve it is kept even while the vault is missing or its [mcp_remote] is broken, so the device never forgets the IndieAuth identity it accepted. Working trees and Git directories are never deleted. `--dry-run` prints the plan and changes nothing. Running it twice leaves nothing to do the second time. A restart goes through the native service; on Linux, apply refuses when systemd runs a `vulcan-daemon.service` other than the one this configuration directory writes (another `XDG_CONFIG_HOME`), since restarting would act on that other daemon: use `--no-service` there."
     )]
     Apply {
         #[arg(
@@ -5763,7 +5763,7 @@ pub enum DaemonCommand {
         prune: bool,
         #[arg(
             long,
-            help = "Leave the daemon service and process alone, for containers or manual supervision"
+            help = "Leave the daemon service and process alone, for containers, manual supervision, or a configuration under another XDG_CONFIG_HOME"
         )]
         no_service: bool,
         #[arg(
