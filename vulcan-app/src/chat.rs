@@ -216,6 +216,32 @@ pub enum ChatAction {
     UndoCapture { id: String },
 }
 
+const VALIDATION_PREFIX: &str = "mdbase validation rejected the managed note write: ";
+
+/// A failed request worded for a chat reader. A rejected note write names
+/// the note and field and says how to find everything wrong with it; other
+/// errors keep their message.
+pub fn chat_error_text(error: &impl std::fmt::Display) -> String {
+    let message = error.to_string();
+    let Some((_, details)) = message.split_once(VALIDATION_PREFIX) else {
+        return format!("Error: {message}");
+    };
+    // The CLI advice about raw repair is not something to do from a chat.
+    let details = details
+        .split("; use explicit raw repair")
+        .next()
+        .unwrap_or(details);
+    let problems = details
+        .split("; ")
+        .map(|problem| format!("• {problem}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "Not saved: the note would not pass its schema.\n{problems}\n\
+         Fix the frontmatter, or run `vulcan mdbase validate` to list every invalid note."
+    )
+}
+
 /// A short, stable id of an undo record, so an Undo button only reverts the
 /// capture it was sent with.
 #[must_use]

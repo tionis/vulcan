@@ -23,10 +23,10 @@ use vulcan_app::chat::reminders::{
 };
 use vulcan_app::chat::state::{ChatStateStore, ReminderLedgerEntry, ReminderState};
 use vulcan_app::chat::{
-    chat_digest, chat_help_text, chat_undo_id, chat_usage_text, parse_chat_message,
-    run_chat_action, run_chat_attachment, run_chat_command, run_chat_reschedule, run_chat_undo,
-    ChatAction, ChatAttachment, ChatButton, ChatCommand, ChatReply, ChatReplyTarget, ChatVault,
-    CHAT_COMMANDS, CHAT_WHEN_HINT,
+    chat_digest, chat_error_text, chat_help_text, chat_undo_id, chat_usage_text,
+    parse_chat_message, run_chat_action, run_chat_attachment, run_chat_command,
+    run_chat_reschedule, run_chat_undo, ChatAction, ChatAttachment, ChatButton, ChatCommand,
+    ChatReply, ChatReplyTarget, ChatVault, CHAT_COMMANDS, CHAT_WHEN_HINT,
 };
 use vulcan_app::execution::MutationGate;
 use vulcan_app::tasks::ReminderSettings;
@@ -476,7 +476,7 @@ impl Bot<'_> {
                 Ok((wiki, vault_id)) => {
                     match self.with_vault(&user, &wiki, |vault| run_chat_command(vault, &command)) {
                         Ok(reply) => (reply, Some(vault_id)),
-                        Err(error) => (ChatReply::text(format!("Error: {error}")), None),
+                        Err(error) => (ChatReply::text(chat_error_text(&error)), None),
                     }
                 }
                 Err(error) => (ChatReply::text(error), None),
@@ -550,7 +550,7 @@ impl Bot<'_> {
                 self.send_reply(chat_id, Some(&stored.vault), &reply);
             }
             Err(error) => {
-                self.send_reply(chat_id, None, &ChatReply::text(format!("Error: {error}")));
+                self.send_reply(chat_id, None, &ChatReply::text(chat_error_text(&error)));
             }
         }
     }
@@ -592,9 +592,11 @@ impl Bot<'_> {
         let outcome = match result {
             Ok(outcome) => outcome,
             Err(error) => {
+                // A pop-up is too small for the reason, so it goes in a message.
                 let _ = self
                     .client
-                    .answer_callback_query(&callback.id, Some(&format!("Error: {error}")));
+                    .answer_callback_query(&callback.id, Some("That didn't work; see below."));
+                self.send_reply(chat_id, None, &ChatReply::text(chat_error_text(&error)));
                 return;
             }
         };
@@ -684,7 +686,7 @@ impl Bot<'_> {
                         Err(error) => self.send_reply(
                             chat_id,
                             None,
-                            &ChatReply::text(format!("Error: {error}")),
+                            &ChatReply::text(chat_error_text(&error)),
                         ),
                     }
                     return true;
@@ -718,7 +720,7 @@ impl Bot<'_> {
             }
             Ok(None) => self.send_reply(chat_id, None, &ChatReply::text(CHAT_WHEN_HINT)),
             Err(error) => {
-                self.send_reply(chat_id, None, &ChatReply::text(format!("Error: {error}")));
+                self.send_reply(chat_id, None, &ChatReply::text(chat_error_text(&error)));
             }
         }
         true
@@ -781,7 +783,7 @@ impl Bot<'_> {
                 let _ = self.state.clear_undo(PLATFORM, chat_id);
                 reply
             }
-            Err(error) => ChatReply::text(format!("Error: {error}")),
+            Err(error) => ChatReply::text(chat_error_text(&error)),
         }
     }
 
@@ -812,7 +814,7 @@ impl Bot<'_> {
             .download_file(&file.file_id, TELEGRAM_FILE_LIMIT)
         {
             Ok(bytes) => bytes,
-            Err(error) => return (ChatReply::text(format!("Error: {error}")), None),
+            Err(error) => return (ChatReply::text(chat_error_text(&error)), None),
         };
         let (transcript, transcript_note) = if message.voice.is_some() {
             self.transcribe(&file_name, &bytes)
@@ -836,7 +838,7 @@ impl Bot<'_> {
                 }
                 (reply, Some(vault_id))
             }
-            Err(error) => (ChatReply::text(format!("Error: {error}")), None),
+            Err(error) => (ChatReply::text(chat_error_text(&error)), None),
         }
     }
 
@@ -889,7 +891,7 @@ impl Bot<'_> {
         match self.user_vault(user, name) {
             Ok(_) => match self.state.set_chat_vault(PLATFORM, chat_id, name) {
                 Ok(()) => ChatReply::text(format!("Active vault: {name}")),
-                Err(error) => ChatReply::text(format!("Error: {error}")),
+                Err(error) => ChatReply::text(chat_error_text(&error)),
             },
             Err(error) => ChatReply::text(error),
         }

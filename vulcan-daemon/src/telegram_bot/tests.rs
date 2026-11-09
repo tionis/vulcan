@@ -656,6 +656,50 @@ fn reminder_buttons_snooze_through_the_ledger() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn a_failed_reminder_button_explains_itself_in_a_message() {
+    let fake = Fake::default();
+    let fixture = fixture(&serve(&fake), None, "unrestricted");
+    std::fs::write(
+        fixture.vault.join(".vulcan/config.toml"),
+        "[tasks.reminders]\ntimezone = \"UTC\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        fixture.vault.join("Calls.md"),
+        format!("- [ ] Call the bank ⏰ {}\n", remind_at(-1)),
+    )
+    .unwrap();
+    let mut user = fixture.config.users[0].clone();
+    user.reminders = true;
+    fixture.registry.set_bot_user(user, false).unwrap();
+
+    let (stop, handle) = start(&fixture);
+    let sent = fake.wait_for("sendMessage", 1);
+    let done = sent[0]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // The note can no longer be replaced, so Done fails.
+    let locked = |mode| {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fixture.vault, std::fs::Permissions::from_mode(mode)).unwrap();
+    };
+    locked(0o555);
+    fake.press(OWNER, &done);
+    let answers = fake.wait_for("answerCallbackQuery", 1);
+    assert_eq!(answers[0]["text"], "That didn't work; see below.");
+    let sent = fake.wait_for("sendMessage", 2);
+    let reason = sent[1]["text"].as_str().unwrap();
+    locked(0o755);
+    assert!(reason.starts_with("Error: "), "{reason}");
+    stop.cancel();
+    handle.join().unwrap().unwrap();
+    let calls = std::fs::read_to_string(fixture.vault.join("Calls.md")).unwrap();
+    assert!(calls.contains("- [ ] Call the bank"), "{calls}");
+}
+
 #[test]
 fn photos_are_saved_with_their_caption_and_undo_reverts_them() {
     let fake = Fake::default();

@@ -221,6 +221,11 @@ files to delete). `vulcan daemon status` lists the
 - **`conflict`**: another device polls the same bot. Remove it there with
   `vulcan daemon config clear-telegram-bot`.
 - **"exceeds this device's limit"**: the user's profile is wider than the vault registration allows.
+- **"Not saved: the note would not pass its schema"**: the change would leave the note invalid
+  for its mdbase type. The reply names the note, the field, and the problem. Fix the frontmatter, or
+  run `vulcan mdbase validate` to list every invalid note. Problems a note already had do not
+  block a button such as Done; only problems the change itself introduces do. When a button fails,
+  its pop-up says so and the reason arrives as a message.
 
 Bot state (the update position, each chat's vault, button actions, the reminder ledger, and the
 last capture for `/undo`) is device-local in the daemon state directory and never syncs. Losing it

@@ -1617,7 +1617,20 @@ fn validation_error_summary(diagnostics: &[MdbaseRecordDiagnostic]) -> String {
             diagnostic.severity == vulcan_core::mdbase::MdbaseRecordDiagnosticSeverity::Error
         })
         .take(3)
-        .map(|diagnostic| format!("{}: {}", diagnostic.code, diagnostic.message))
+        .map(|diagnostic| {
+            let field = diagnostic.field.trim_start_matches('/');
+            if field.is_empty() {
+                format!(
+                    "{} in {}: {}",
+                    diagnostic.code, diagnostic.path, diagnostic.message
+                )
+            } else {
+                format!(
+                    "{} in {} ({field}): {}",
+                    diagnostic.code, diagnostic.path, diagnostic.message
+                )
+            }
+        })
         .collect::<Vec<_>>()
         .join("; ")
 }

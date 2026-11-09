@@ -923,3 +923,22 @@ fn quickadd_lists_and_runs_choices_by_name() {
     assert!(reply.text.starts_with("No QuickAdd choice matches."));
     assert!(fixture.run("readonly", "/qa log work x").is_err());
 }
+
+#[test]
+fn rejected_writes_are_explained_for_chat() {
+    let error = AppError::operation_with_code(
+        "validation_failed",
+        "mdbase validation rejected the managed note write: format_invalid in Tasks/a.md (scheduled): \"x\" is not a \"date\"; schema_required in Tasks/a.md: \"id\" is a required property; use explicit raw repair only when preserving invalid source is intentional",
+    );
+    assert_eq!(
+        chat_error_text(&error),
+        "Not saved: the note would not pass its schema.\n\
+         • format_invalid in Tasks/a.md (scheduled): \"x\" is not a \"date\"\n\
+         • schema_required in Tasks/a.md: \"id\" is a required property\n\
+         Fix the frontmatter, or run `vulcan mdbase validate` to list every invalid note."
+    );
+    assert_eq!(
+        chat_error_text(&AppError::operation("no such task")),
+        "Error: no such task"
+    );
+}
