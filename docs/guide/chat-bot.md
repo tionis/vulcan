@@ -201,6 +201,10 @@ vulcan daemon config set-bot-user 123456789 --wiki notes --profile bot-capture \
 - `--alerts` sends the daemon's attention alerts for the user's vaults: synchronization that
   failed, needs conflict resolution, or paused. They use the same durable, retried delivery as
   desktop and webhook alerts. Restart the daemon after giving the first user alerts.
+  The bot also checks these vaults' mdbase schemas every 15 minutes and sends notes that newly
+  fail validation (note, field, and problem), so a broken date or link is found before a Done
+  button trips over it. Each problem is sent once; one that is fixed and comes back is sent again.
+  `bot-status` then shows a `Hint:` with the count per vault.
 - `--digest 07:30` sends a morning summary per vault: open tasks due or scheduled up to today,
   with Done buttons, and the reminders still to come that day. It is sent once a day at or after
   that time in the vault's reminder timezone, and skipped when there is nothing to report.

@@ -180,6 +180,45 @@ impl ChatStateStore {
             .map_err(AppError::operation)
     }
 
+    /// The validation problems of `vault` last reported to a chat.
+    pub fn reported_problems(
+        &self,
+        platform: &str,
+        chat_id: i64,
+        vault: &str,
+    ) -> Result<Vec<String>, AppError> {
+        let value = self
+            .connection
+            .query_row(
+                "SELECT value FROM meta WHERE key = ?1",
+                params![format!("{platform}.problems.{chat_id}.{vault}")],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(AppError::operation)?;
+        Ok(value
+            .and_then(|value| serde_json::from_str(&value).ok())
+            .unwrap_or_default())
+    }
+
+    pub fn set_reported_problems(
+        &self,
+        platform: &str,
+        chat_id: i64,
+        vault: &str,
+        problems: &[String],
+    ) -> Result<(), AppError> {
+        let value = serde_json::to_string(problems).map_err(AppError::operation)?;
+        self.connection
+            .execute(
+                "INSERT INTO meta (key, value) VALUES (?1, ?2)
+                 ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                params![format!("{platform}.problems.{chat_id}.{vault}"), value],
+            )
+            .map(|_| ())
+            .map_err(AppError::operation)
+    }
+
     /// The vault a chat switched to with `/vault`, if any.
     pub fn chat_vault(&self, platform: &str, chat_id: i64) -> Result<Option<String>, AppError> {
         self.connection
@@ -734,6 +773,35 @@ mod tests {
         assert_eq!(version, STATE_VERSION);
         assert!(store
             .reminder_entries("telegram", 1, "notes", 0)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn reported_problems_round_trip_per_chat_and_vault() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = ChatStateStore::open(dir.path()).unwrap();
+        assert!(state
+            .reported_problems("telegram", 1, "notes")
+            .unwrap()
+            .is_empty());
+        let problems = vec!["a.md (due): bad".to_string()];
+        state
+            .set_reported_problems("telegram", 1, "notes", &problems)
+            .unwrap();
+        assert_eq!(
+            state.reported_problems("telegram", 1, "notes").unwrap(),
+            problems
+        );
+        assert!(state
+            .reported_problems("telegram", 2, "notes")
+            .unwrap()
+            .is_empty());
+        state
+            .set_reported_problems("telegram", 1, "notes", &[])
+            .unwrap();
+        assert!(state
+            .reported_problems("telegram", 1, "notes")
             .unwrap()
             .is_empty());
     }

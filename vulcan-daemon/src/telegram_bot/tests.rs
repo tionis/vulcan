@@ -489,6 +489,7 @@ fn ignored_senders_are_counted_within_a_bound() {
         plans: Vec::new(),
         next_plan_ms: 0,
         next_digest_ms: 0,
+        next_validation_ms: 0,
     };
     for id in 1..=100 {
         bot.reject(id);
@@ -653,6 +654,45 @@ fn reminder_buttons_snooze_through_the_ledger() {
         fake.calls("sendMessage").len(),
         1,
         "the snoozed one is not due yet"
+    );
+}
+
+#[test]
+fn users_with_alerts_hear_about_invalid_notes_once() {
+    let fake = Fake::default();
+    let fixture = fixture(&serve(&fake), None, "unrestricted");
+    std::fs::write(fixture.vault.join("mdbase.yaml"), "spec_version: '0.3.0'\n").unwrap();
+    std::fs::create_dir_all(fixture.vault.join("_types")).unwrap();
+    std::fs::write(
+        fixture.vault.join("_types/task.md"),
+        "---\nkind: mdbase.type\nname: task\nmatch:\n  where:\n    type: task\nschema:\n  dialect: json-schema-2020-12\n  value: {type: object, properties: {due: {type: string, format: date}}}\n---\n",
+    )
+    .unwrap();
+    std::fs::write(
+        fixture.vault.join("bad.md"),
+        "---\ntype: task\ndue: soon\n---\n",
+    )
+    .unwrap();
+    let mut user = fixture.config.users[0].clone();
+    user.alerts = true;
+    fixture.registry.set_bot_user(user, false).unwrap();
+
+    let (stop, handle) = start(&fixture);
+    let sent = fake.wait_for("sendMessage", 1);
+    let text = sent[0]["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("⚠️ Notes in notes that fail their mdbase schema:\n• bad.md (due): "),
+        "{text}"
+    );
+    // Several more checks run; the same problem is not sent again.
+    std::thread::sleep(Duration::from_millis(1_000));
+    stop.cancel();
+    handle.join().unwrap().unwrap();
+    assert_eq!(fake.calls("sendMessage").len(), 1);
+    let status = read_telegram_bot_status(&fixture.state).unwrap().unwrap();
+    assert_eq!(
+        status.invalid_notes,
+        BTreeMap::from([("notes".to_string(), 1)])
     );
 }
 
@@ -996,6 +1036,7 @@ fn hints_point_at_leftover_state_conflicts_and_stale_status() {
         handled_updates: 0,
         reminders_sent: 0,
         rejected_users: BTreeMap::new(),
+        invalid_notes: BTreeMap::new(),
     };
     let user = TelegramBotUserSummary {
         telegram_id: 1,
@@ -1045,6 +1086,17 @@ fn hints_point_at_leftover_state_conflicts_and_stale_status() {
 
     let hints = telegram_bot_hints(&healthy, 1_000_000 + 11 * 60 * 1000, state);
     assert!(hints[0].contains("not running"), "{hints:?}");
+
+    let mut invalid = status("polling", 1_000_000);
+    invalid.invalid_notes = BTreeMap::from([("mimir".to_string(), 2)]);
+    let invalid = TelegramBotReport {
+        status: Some(invalid),
+        ..healthy.clone()
+    };
+    assert_eq!(
+        telegram_bot_hints(&invalid, 1_060_000, state),
+        ["mimir has 2 mdbase validation problems; run `vulcan mdbase validate` in that vault to list them."]
+    );
 
     let unset = TelegramBotReport {
         token_set: false,

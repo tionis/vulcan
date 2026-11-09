@@ -70,7 +70,8 @@ permission profiles, or diagnoses permission and trust failures.
     themselves; never write, echo, or store the token. Allow a user with
     `daemon config set-bot-user <telegram-id> --wiki <id> [--default-wiki <id>] [--profile <name>] [--reminders] [--alerts] [--digest HH:MM] --dry-run`
     (the command replaces the user's whole entry, so repeat every flag they should keep; `--alerts`
-    sends sync failures and conflicts and needs a daemon restart when it is the first,
+    sends sync failures and conflicts and needs a daemon restart when it is the first, and also
+    reports notes that newly fail mdbase validation,
     `--digest` sends a daily summary of today's tasks and reminders):
     the profile defaults to `readonly` and must stay within each wiki registration's permissions
     profile, so grant writes with a narrow device-local profile rather than `unrestricted`.

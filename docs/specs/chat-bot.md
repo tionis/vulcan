@@ -86,6 +86,12 @@ api_key_env = "OPENAI_API_KEY"          # omit for a local server without authen
   durable alert ledger like webhook sinks. The sink exists while some user has `alerts`, so
   turning it on for the first user needs a daemon restart; recipients are re-read at delivery.
   Sending does not poll, so it works while another device holds the bot's `getUpdates`.
+  The polling bot also validates these users' vaults with `mdbase validate` semantics every 15
+  minutes, under each user's effective profile, and sends error-level problems missing from the
+  last report (`chat::validation::chat_validation_check`). The reported set is device-local chat
+  state per chat and vault, so each problem is sent once and a fixed problem that returns is
+  sent again; counts per vault go into the status file as `invalid_notes`. Vaults without
+  `mdbase.yaml` are skipped.
 - Replying to a bot message with a time acts on it: a reminder is snoozed to that time, a
   "Later…" question snoozes the reminder it asked about, and a `/task` reply reschedules that task
   (`scheduled` when it has only that, `due` otherwise). Times are durations (`in 2h`, `90m`), clock
@@ -292,8 +298,9 @@ Bot configuration lives with the other device-local daemon settings:
   `daemon.env`), users, the service's last state, including ignored sender ids, which is how a
   new user finds their numeric id, reminder ledger counts by state, and `hints`
   (`telegram_bot_hints`): the token variable unset, no users, a `conflict` state (another host
-  polls the token), a `polling` status older than 10 minutes, or status and ledger state on a host
-  with no bot configured, naming the files to delete when the bot moved away.
+  polls the token), a `polling` status older than 10 minutes, mdbase validation problems found in
+  a vault, or status and ledger state on a host with no bot configured, naming the files to
+  delete when the bot moved away.
 - `vulcan tasks reminders [--upcoming 24h]`: the planner, with `source`, `task`, `task_key`, and
   `occurrence_id` per row (slice 1).
 - A separate ledger listing command was dropped: `bot-status` shows the counts and

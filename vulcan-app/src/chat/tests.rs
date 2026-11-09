@@ -942,3 +942,58 @@ fn rejected_writes_are_explained_for_chat() {
         "Error: no such task"
     );
 }
+
+#[test]
+fn validation_checks_announce_each_new_problem_once() {
+    let task_type = "---\nkind: mdbase.type\nname: task\nmatch:\n  where:\n    type: task\nschema:\n  dialect: json-schema-2020-12\n  value: {type: object, properties: {due: {type: string, format: date}}}\n---\n";
+    let fixture = Fixture::new(
+        "",
+        &[
+            ("mdbase.yaml", "spec_version: '0.3.0'\n"),
+            ("_types/task.md", task_type),
+            ("ok.md", "---\ntype: task\ndue: 2026-11-08\n---\n"),
+            ("bad.md", "---\ntype: task\ndue: soon\n---\n"),
+        ],
+    );
+    let guard = fixture.guard("unrestricted");
+    let vault = ChatVault {
+        paths: &fixture.paths,
+        guard: &guard,
+        profile: "unrestricted",
+        gate: &Ungated,
+        today: NaiveDate::from_ymd_opt(2026, 11, 7).unwrap(),
+    };
+    let first = validation::chat_validation_check(&vault, "notes", &[]).unwrap();
+    assert_eq!(first.problems.len(), 1, "{:?}", first.problems);
+    assert!(
+        first.problems[0].starts_with("bad.md (due): "),
+        "{:?}",
+        first.problems
+    );
+    let alert = first.alert.expect("a new problem is announced").text;
+    assert!(
+        alert.starts_with("⚠️ Notes in notes that fail their mdbase schema:\n• bad.md (due): "),
+        "{alert}"
+    );
+
+    let again = validation::chat_validation_check(&vault, "notes", &first.problems).unwrap();
+    assert_eq!(again.problems, first.problems);
+    assert!(again.alert.is_none(), "a reported problem is not repeated");
+
+    fs::write(
+        fixture.paths.vault_root().join("worse.md"),
+        "---\ntype: task\ndue: later\n---\n",
+    )
+    .unwrap();
+    let next = validation::chat_validation_check(&vault, "notes", &again.problems).unwrap();
+    assert_eq!(next.problems.len(), 2);
+    let alert = next.alert.expect("the new problem is announced").text;
+    assert!(
+        alert.contains("worse.md") && !alert.contains("bad.md"),
+        "{alert}"
+    );
+
+    fs::remove_file(fixture.paths.vault_root().join("mdbase.yaml")).unwrap();
+    let none = validation::chat_validation_check(&vault, "notes", &next.problems).unwrap();
+    assert!(none.problems.is_empty() && none.alert.is_none());
+}

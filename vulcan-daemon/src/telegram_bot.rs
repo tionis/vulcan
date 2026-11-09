@@ -22,6 +22,7 @@ use vulcan_app::chat::reminders::{
     PlannedReminder, ReminderPlan, ReminderStep, LATER_ACTION,
 };
 use vulcan_app::chat::state::{ChatStateStore, ReminderLedgerEntry, ReminderState};
+use vulcan_app::chat::validation::chat_validation_check;
 use vulcan_app::chat::{
     chat_digest, chat_error_text, chat_help_text, chat_undo_id, chat_usage_text,
     parse_chat_message, run_chat_action, run_chat_attachment, run_chat_command,
@@ -45,6 +46,8 @@ const MAX_REJECTED_USERS: usize = 32;
 /// How often reminder plans are rebuilt from the vaults. Due reminders are
 /// checked on every poll cycle in between.
 const REPLAN_MS: i64 = if cfg!(test) { 200 } else { 60 * 1_000 };
+/// How often vaults are validated for users with alerts on.
+const VALIDATION_MS: i64 = if cfg!(test) { 200 } else { 15 * 60 * 1_000 };
 
 /// What `vulcan daemon bot-status` shows.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,6 +62,10 @@ pub struct TelegramBotStatus {
     pub reminders_sent: u64,
     /// Attempts by users not on the allowlist, by Telegram user id.
     pub rejected_users: BTreeMap<i64, u64>,
+    /// mdbase validation problems by vault at the last check, for vaults of
+    /// users with alerts on; vaults without problems are left out.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub invalid_notes: BTreeMap<String, u64>,
 }
 
 #[must_use]
@@ -225,6 +232,16 @@ pub fn telegram_bot_hints(
             "Set {name} in the daemon's environment or in daemon.env so voice messages are transcribed."
         ));
     }
+    if let Some(status) = &report.status {
+        for (vault, count) in &status.invalid_notes {
+            hints.push(format!(
+                "{vault} has {count} mdbase validation {}; run `vulcan mdbase validate` in that \
+                 vault to list {}.",
+                if *count == 1 { "problem" } else { "problems" },
+                if *count == 1 { "it" } else { "them" },
+            ));
+        }
+    }
     if report.users.is_empty() {
         hints.push(
             "No user may use the bot yet: add one with `vulcan daemon config set-bot-user`."
@@ -255,6 +272,7 @@ struct Bot<'a> {
     plans: Vec<RecipientPlan>,
     next_plan_ms: i64,
     next_digest_ms: i64,
+    next_validation_ms: i64,
 }
 
 struct RecipientPlan {
@@ -289,6 +307,7 @@ pub fn run_telegram_bot(
         plans: Vec::new(),
         next_plan_ms: 0,
         next_digest_ms: 0,
+        next_validation_ms: 0,
     };
     bot.status.state = "starting".to_string();
     bot.status.last_error = None;
@@ -337,6 +356,7 @@ pub fn run_telegram_bot(
                 // conflict must not deliver the same reminders.
                 bot.deliver_reminders();
                 bot.deliver_digests();
+                bot.deliver_validation_alerts();
                 bot.save_status();
             }
             Err(TelegramError::Unauthorized) => return bot.fail(&TelegramError::Unauthorized),
@@ -1052,6 +1072,63 @@ impl Bot<'_> {
                 }
             }
         }
+    }
+
+    /// Validate the vaults of each user with alerts on, and tell them about
+    /// problems that are new since the last check. Each problem is told once;
+    /// one that is fixed and comes back is told again.
+    fn deliver_validation_alerts(&mut self) {
+        let now = vulcan_core::current_utc_timestamp_ms();
+        if now < self.next_validation_ms {
+            return;
+        }
+        self.next_validation_ms = now + VALIDATION_MS;
+        let Some(users) = self
+            .registry
+            .poll()
+            .ok()
+            .and_then(|config| config.bot.telegram)
+            .map(|telegram| telegram.users)
+        else {
+            return;
+        };
+        let mut counts = BTreeMap::new();
+        for user in users.iter().filter(|user| user.alerts) {
+            for vault in &user.vaults {
+                let Ok(wiki) = self.user_vault(user, vault.as_str()) else {
+                    continue;
+                };
+                let reported = self
+                    .state
+                    .reported_problems(PLATFORM, user.telegram_id, vault.as_str())
+                    .unwrap_or_default();
+                let check = match self.with_vault(user, &wiki, |chat| {
+                    chat_validation_check(chat, vault.as_str(), &reported)
+                }) {
+                    Ok(check) => check,
+                    Err(error) => {
+                        self.status.last_error = Some(format!("validating {vault}: {error}"));
+                        continue;
+                    }
+                };
+                if !check.problems.is_empty() {
+                    let count = counts.entry(vault.to_string()).or_insert(0);
+                    *count = (*count).max(check.problems.len() as u64);
+                }
+                if let Some(alert) = &check.alert {
+                    self.send_reply(user.telegram_id, Some(vault.as_str()), alert);
+                }
+                if let Err(error) = self.state.set_reported_problems(
+                    PLATFORM,
+                    user.telegram_id,
+                    vault.as_str(),
+                    &check.problems,
+                ) {
+                    self.status.last_error = Some(format!("validation state: {error}"));
+                }
+            }
+        }
+        self.status.invalid_notes = counts;
     }
 
     /// Plans for every allowlisted user with reminders on, per vault they

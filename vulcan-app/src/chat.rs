@@ -1349,6 +1349,7 @@ fn mcp_error(error: McpMethodError) -> AppError {
 mod links;
 pub mod reminders;
 pub mod state;
+pub mod validation;
 pub mod when;
 
 #[cfg(test)]
