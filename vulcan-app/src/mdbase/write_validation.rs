@@ -109,9 +109,10 @@ pub(super) fn validate_final_state(
     Ok(diagnostics)
 }
 
-/// Records already invalid before a write must not block unrelated writes.
-/// Errors block when they sit on a changed record or did not exist in the
-/// pre-write snapshot (for example a link broken by deleting its target).
+/// A write is refused only for errors it introduces: ones absent from the
+/// pre-write snapshot, such as a link broken by deleting its target or a new
+/// invalid value. Problems a record already had, on it or elsewhere, do not
+/// block a write that leaves them as they were; they are still reported.
 fn blocking_diagnostics(
     loaded: &LoadedCollection,
     preview: &MdbaseWritePreview,
@@ -124,17 +125,11 @@ fn blocking_diagnostics(
         .flat_map(|record| record.diagnostics)
         .map(|diagnostic| diagnostic_key(&diagnostic))
         .collect();
-    let changed: BTreeSet<&str> = preview
-        .changes
-        .iter()
-        .map(|change| change.path.as_str())
-        .collect();
     Ok(diagnostics
         .iter()
         .filter(|diagnostic| {
             diagnostic.severity == vulcan_core::mdbase::MdbaseRecordDiagnosticSeverity::Error
-                && (changed.contains(diagnostic.path.as_str())
-                    || !existing.contains(&diagnostic_key(diagnostic)))
+                && !existing.contains(&diagnostic_key(diagnostic))
         })
         .cloned()
         .collect())
@@ -664,6 +659,58 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code(), Some("validation_failed"));
+    }
+
+    #[test]
+    fn updates_are_refused_only_for_problems_they_introduce() {
+        for lifecycle in [
+            "",
+            "lifecycle: {on_update: {set: {touched: {now: true}}}}\n",
+        ] {
+            let (dir, paths) = fixture("");
+            fs::write(
+                dir.path().join("_types/task.md"),
+                format!("---\nkind: mdbase.type\nname: task\n{lifecycle}schema:\n  dialect: json-schema-2020-12\n  value: {{type: object, required: [id], properties: {{scheduled: {{type: string, format: date}}}}}}\n---\n"),
+            )
+            .unwrap();
+            let note = |status: &str, scheduled: &str| {
+                format!("---\ntype: task\nid: a\nstatus: {status}\nscheduled: '{scheduled}'\n---\nBody\n")
+            };
+            fs::write(dir.path().join("a.md"), note("open", "2026-11-08T12:00")).unwrap();
+
+            // Changing another field leaves the old problem reported, not blocking.
+            let plan = plan_mdbase_write(
+                &paths,
+                &request(&[("a.md", Some(note("done", "2026-11-08T12:00")))]),
+                now(),
+            )
+            .unwrap_or_else(|error| panic!("{lifecycle:?}: {}", error.message()));
+            assert!(
+                plan.diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.field == "/scheduled"),
+                "{lifecycle:?}: the inherited problem should still be reported: {:?}",
+                plan.diagnostics
+            );
+
+            // A new invalid value, or a newly broken field, still blocks.
+            for (after, problem) in [
+                (note("done", "2026-11-09T09:00"), "2026-11-09T09:00"),
+                (
+                    note("done", "2026-11-08T12:00").replace("id: a\n", ""),
+                    "id",
+                ),
+            ] {
+                let error = plan_mdbase_write(&paths, &request(&[("a.md", Some(after))]), now())
+                    .unwrap_err();
+                assert_eq!(error.code(), Some("validation_failed"), "{lifecycle:?}");
+                assert!(
+                    error.message().contains(problem),
+                    "{lifecycle:?}: {}",
+                    error.message()
+                );
+            }
+        }
     }
 
     #[test]

@@ -100,17 +100,14 @@ pub fn prepare_mdbase_record_draft(
         &request.clock,
     );
     check_frozen_membership(&matched, &final_membership, request.path)?;
-    let mut diagnostics = Vec::new();
-    if collection.config.settings.validation != MdbaseValidationLevel::Off {
-        validate_record_schemas(
-            collection,
-            types,
-            request.path,
-            &updated,
-            &matched.types,
-            &mut diagnostics,
-        );
-    }
+    let mut diagnostics = draft_schema_diagnostics(
+        collection,
+        types,
+        request.path,
+        &updated,
+        old.as_ref(),
+        &matched.types,
+    );
     sort_record_diagnostics(&mut diagnostics);
     if diagnostics
         .iter()
@@ -139,6 +136,57 @@ pub fn prepare_mdbase_record_draft(
         generated_values: lifecycle.assignments,
         diagnostics,
     })
+}
+
+/// Schema diagnostics for `updated`, with errors `old` already had downgraded.
+fn draft_schema_diagnostics(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    path: &str,
+    updated: &Value,
+    old: Option<&Value>,
+    matched: &[String],
+) -> Vec<MdbaseRecordDiagnostic> {
+    let mut diagnostics = Vec::new();
+    if collection.config.settings.validation != MdbaseValidationLevel::Off {
+        validate_record_schemas(collection, types, path, updated, matched, &mut diagnostics);
+    }
+    if let Some(old) = old {
+        downgrade_inherited_errors(collection, types, path, old, matched, &mut diagnostics);
+    }
+    diagnostics
+}
+
+/// An update must not be refused for a problem the record already had, such
+/// as an old malformed field next to the status a button changes. Errors the
+/// old source produced identically become warnings; an error the update
+/// introduces, including a new invalid value in an already-invalid field,
+/// still blocks because its message names the value.
+fn downgrade_inherited_errors(
+    collection: &MdbaseCollection,
+    types: &MdbaseTypeRegistry,
+    path: &str,
+    old: &Value,
+    matched: &[String],
+    diagnostics: &mut [MdbaseRecordDiagnostic],
+) {
+    if collection.config.settings.validation == MdbaseValidationLevel::Off {
+        return;
+    }
+    let mut inherited = Vec::new();
+    validate_record_schemas(collection, types, path, old, matched, &mut inherited);
+    let inherited: BTreeSet<_> = inherited
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == MdbaseRecordDiagnosticSeverity::Error)
+        .map(|diagnostic| (&diagnostic.code, &diagnostic.field, &diagnostic.message))
+        .collect();
+    for diagnostic in diagnostics.iter_mut() {
+        if diagnostic.severity == MdbaseRecordDiagnosticSeverity::Error
+            && inherited.contains(&(&diagnostic.code, &diagnostic.field, &diagnostic.message))
+        {
+            diagnostic.severity = MdbaseRecordDiagnosticSeverity::Warning;
+        }
+    }
 }
 
 fn check_frozen_membership(

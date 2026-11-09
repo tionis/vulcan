@@ -143,6 +143,11 @@ inspects and resolves one that needs a decision (a touched file changed since) o
 A write that needs a decision blocks only its own files while it waits, unless it touched
 `mdbase.yaml`, a type, or a contract; every command warns about it until it is resolved.
 
+A write is refused only for problems it introduces. If a record already fails validation, for
+example an old malformed date, a write that changes some other field still succeeds and reports the
+old problem as a warning; giving the broken field a different invalid value, or breaking another
+field, is refused. Run `vulcan mdbase validate` to find such records before they surprise you.
+
 ## Permissions
 
 Every mdbase command honors `--permissions PROFILE`. Reading anything requires read access to
