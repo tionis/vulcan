@@ -533,6 +533,76 @@ It conforms to mdbase-spec) v0.2.0.
         assert_ne!(instance_errors("completedDate", "2026-11-08T12:00"), 0);
     }
 
+    /// The type `TaskNotes` generated for a real vault, and tasks in the shapes
+    /// `TaskNotes` writes them. A migrated type that rejects any of these
+    /// would make every later write to that task fail.
+    #[test]
+    fn migrated_generated_type_accepts_tasks_as_tasknotes_writes_them() {
+        let source = include_str!("../../../tests/fixtures/mdbase/tasknotes-v02-task-type.md");
+        let migration = migrate_tasknotes_v02_type(source)
+            .expect("migration should succeed")
+            .expect("the generated type should be recognized");
+        let (yaml, _) = split_frontmatter(&migration.rendered_source).expect("frontmatter");
+        let migrated: Value = yaml_serde::from_str(yaml).expect("migrated yaml");
+        let schema = &migrated["schema"]["value"];
+        let tasks = [
+            // Created with a scheduled time and the default reminder.
+            r#"title: think about master thesis topic
+status: open
+priority: "0"
+dateCreated: 2026-11-07T19:43:23.922+01:00
+dateModified: 2026-11-07T20:29:07.477+01:00
+scheduled: 2026-11-08T12:00
+tags: [task]
+timeEstimate: 0
+reminders:
+  - {id: at-time, type: relative, relatedTo: scheduled, offset: -PT0M, description: Scheduled}"#,
+            // A recurring task with a completed instance and a timed due date.
+            r#"title: Water the plants
+status: open
+priority: "1"
+dateCreated: 2026-10-01T08:00:00.000+02:00
+scheduled: 2026-11-09
+due: 2026-11-10T17:00
+recurrence: DTSTART:20261005;FREQ=WEEKLY;BYDAY=MO
+recurrence_anchor: scheduled
+complete_instances: [2026-11-02]
+skipped_instances: []
+tags: [task]"#,
+            // Done, with tracked time, a dependency, projects, contexts, and
+            // an absolute reminder.
+            r#"title: Write the report
+status: done
+priority: "2"
+dateCreated: 2026-11-01T09:00:00.000+01:00
+dateModified: 2026-11-07T18:00:00.000+01:00
+completedDate: 2026-11-07
+due: 2026-11-07
+contexts: [office]
+projects: ["[[Projects/Report|Report]]"]
+blockedBy:
+  - {uid: "[[Collect data]]", reltype: FINISHTOSTART}
+timeEstimate: 90
+timeEntries:
+  - {startTime: 2026-11-07T10:00:00.000Z, endTime: 2026-11-07T10:25:00.000Z, description: Draft}
+reminders:
+  - {id: rem1, type: absolute, absoluteTime: 2026-11-07T08:00:00.000Z}
+tags: [task, work]"#,
+        ];
+        for task in tasks {
+            let value: Value = yaml_serde::from_str(task).expect("task yaml");
+            let problems = validate_mdbase_schema_value(schema, &value).expect("schema compiles");
+            assert!(problems.is_empty(), "{task}\n{problems:?}");
+        }
+        let bad: Value = yaml_serde::from_str(
+            "title: t\nstatus: open\ndateCreated: 2026-11-07T19:43:23+01:00\nscheduled: tomorrow\n",
+        )
+        .expect("task yaml");
+        assert!(!validate_mdbase_schema_value(schema, &bad)
+            .expect("schema compiles")
+            .is_empty());
+    }
+
     #[test]
     fn leaves_non_tasknotes_and_v03_types_alone() {
         assert!(
