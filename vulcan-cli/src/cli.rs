@@ -7280,6 +7280,28 @@ pub enum TasksCommand {
         )]
         upcoming: String,
     },
+    #[command(
+        about = "Export open TaskNotes tasks as an ICS calendar, reminders as alarms",
+        long_about = "Export open TaskNotes tasks in a date window as an iCalendar feed. Each task becomes an event on its scheduled day (else its due day): timed when that date has a time, lasting its time estimate (30 minutes without one), otherwise all-day. A recurring task contributes one event per open occurrence in the window; completed and skipped instances are left out. Each TaskNotes reminder becomes an alarm firing at the instant `tasks reminders` reports, so a calendar app that subscribes to or imports the file delivers the reminders. Event UIDs are stable, so re-importing updates events instead of duplicating them. Inline tasks are not exported."
+    )]
+    ExportIcs {
+        #[arg(
+            long,
+            allow_hyphen_values = true,
+            help = "First day of the window (YYYY-MM-DD, today, -1w, ...); defaults to today"
+        )]
+        from: Option<String>,
+        #[arg(
+            long,
+            allow_hyphen_values = true,
+            help = "Last day of the window; defaults to 60 days after --from"
+        )]
+        to: Option<String>,
+        #[arg(long, help = "Write the calendar to this .ics file instead of stdout")]
+        path: Option<PathBuf>,
+        #[arg(long, help = "Calendar name to embed in the export")]
+        calendar_name: Option<String>,
+    },
     #[command(about = "List TaskNotes tasks due within a time window")]
     Due {
         #[arg(

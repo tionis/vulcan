@@ -3044,6 +3044,57 @@
             "subcommands": []
           },
           {
+            "about": "Export open TaskNotes tasks as an ICS calendar, reminders as alarms",
+            "name": "export-ics",
+            "options": [
+              {
+                "help": "First day of the window (YYYY-MM-DD, today, -1w, ...); defaults to today",
+                "id": "from",
+                "long": "from",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FROM"
+                ]
+              },
+              {
+                "help": "Last day of the window; defaults to 60 days after --from",
+                "id": "to",
+                "long": "to",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "TO"
+                ]
+              },
+              {
+                "help": "Write the calendar to this .ics file instead of stdout",
+                "id": "path",
+                "long": "path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PATH"
+                ]
+              },
+              {
+                "help": "Calendar name to embed in the export",
+                "id": "calendar_name",
+                "long": "calendar-name",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CALENDAR_NAME"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
             "about": "List TaskNotes tasks due within a time window",
             "name": "due",
             "options": [

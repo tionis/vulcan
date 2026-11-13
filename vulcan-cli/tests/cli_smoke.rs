@@ -17303,6 +17303,61 @@ fn tasks_due_json_output_lists_due_tasknotes() {
 }
 
 #[test]
+fn tasks_export_ics_writes_open_occurrences_with_reminder_alarms() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    run_scan(&vault_root);
+    let calendar = temp_dir.path().join("feeds/tasks.ics");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "tasks",
+            "export-ics",
+            "--from",
+            "2026-04-01",
+            "--to",
+            "2026-04-30",
+            "--calendar-name",
+            "Fixture tasks",
+            "--path",
+            calendar
+                .to_str()
+                .expect("calendar path should be valid utf-8"),
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    // "Write docs" recurs on Fridays from its current instance (8 April);
+    // "Prep outline" is done.
+    assert_eq!(json["task_count"], 1, "{json}");
+    assert_eq!(json["event_count"], 4, "{json}");
+    assert_eq!(json["alarm_count"], 4, "{json}");
+    let written = fs::read_to_string(&calendar).expect("calendar file");
+    assert_eq!(json["content"], written.as_str());
+    let unfolded = written.replace("\r\n ", "");
+    for day in ["20260408", "20260410", "20260417", "20260424"] {
+        assert!(
+            unfolded.contains(&format!("DTSTART;VALUE=DATE:{day}")),
+            "{day}"
+        );
+    }
+    assert!(unfolded.contains("X-WR-CALNAME:Fixture tasks\r\n"));
+    assert!(unfolded.contains("SUMMARY:Write docs\r\n"));
+    assert!(unfolded.contains("CATEGORIES:desk,work,Website,task,docs\r\n"));
+    assert!(unfolded.contains("DESCRIPTION:Finish docs\r\n"));
+    assert!(!unfolded.contains("Prep outline"));
+}
+
+#[test]
 fn tasks_reminders_json_output_evaluates_relative_and_absolute_reminders() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

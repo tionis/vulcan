@@ -192,7 +192,7 @@ pub fn tasknote_reminder_instant(
 
 /// A date or date-time from task frontmatter as an instant: an explicit offset is honored, a
 /// floating time is read in the reminder timezone, and a bare date means the default time.
-fn zoned_instant(value: &str, settings: &ReminderSettings) -> Option<i64> {
+pub(super) fn zoned_instant(value: &str, settings: &ReminderSettings) -> Option<i64> {
     let value = value.trim();
     if let Ok(at) = chrono::DateTime::parse_from_rfc3339(value) {
         return Some(at.timestamp_millis());

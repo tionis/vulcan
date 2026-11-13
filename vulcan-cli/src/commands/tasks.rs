@@ -17,22 +17,23 @@ use vulcan_app::tasks::{
     apply_task_reminder_add_with_guard, apply_task_reminder_remove_with_guard,
     apply_task_reschedule_with_guard, apply_task_set_with_guard, apply_task_track_start_with_guard,
     apply_task_track_stop_with_guard, build_task_due_report_with_guard,
-    build_task_pomodoro_status_report_with_guard, build_task_reminders_report_with_guard,
-    build_task_show_report_with_guard, build_task_track_log_report_with_guard,
-    build_task_track_status_report_with_guard, build_task_track_summary_report_with_guard,
-    build_tasks_blocked_report_with_guard, build_tasks_eval_report_with_guard,
-    build_tasks_graph_report_with_guard, build_tasks_list_report_with_guard,
-    build_tasks_next_report_with_guard, build_tasks_query_result_with_guard,
-    build_tasks_view_list_report_with_guard, build_tasks_view_report_with_guard,
+    build_task_ics_export_with_guard, build_task_pomodoro_status_report_with_guard,
+    build_task_reminders_report_with_guard, build_task_show_report_with_guard,
+    build_task_track_log_report_with_guard, build_task_track_status_report_with_guard,
+    build_task_track_summary_report_with_guard, build_tasks_blocked_report_with_guard,
+    build_tasks_eval_report_with_guard, build_tasks_graph_report_with_guard,
+    build_tasks_list_report_with_guard, build_tasks_next_report_with_guard,
+    build_tasks_query_result_with_guard, build_tasks_view_list_report_with_guard,
+    build_tasks_view_report_with_guard,
     process_due_tasknote_auto_archives_with_guard as app_process_due_tasknote_auto_archives,
     TaskAddReport, TaskAddRequest as AppTaskAddRequest,
     TaskArchiveRequest as AppTaskArchiveRequest, TaskCompleteRequest as AppTaskCompleteRequest,
     TaskConvertReport, TaskConvertRequest as AppTaskConvertRequest, TaskCreateReport,
-    TaskCreateRequest as AppTaskCreateRequest, TaskDueReport, TaskEvalRequest, TaskListRequest,
-    TaskMutationReport, TaskNotesViewListReport, TaskPomodoroReport,
-    TaskPomodoroStartRequest as AppTaskPomodoroStartRequest, TaskPomodoroStatusReport,
-    TaskPomodoroStopRequest as AppTaskPomodoroStopRequest, TaskReminderAddRequest,
-    TaskReminderRemoveRequest, TaskRemindersReport,
+    TaskCreateRequest as AppTaskCreateRequest, TaskDueReport, TaskEvalRequest, TaskIcsExport,
+    TaskIcsRequest, TaskListRequest, TaskMutationReport, TaskNotesViewListReport,
+    TaskPomodoroReport, TaskPomodoroStartRequest as AppTaskPomodoroStartRequest,
+    TaskPomodoroStatusReport, TaskPomodoroStopRequest as AppTaskPomodoroStopRequest,
+    TaskReminderAddRequest, TaskReminderRemoveRequest, TaskRemindersReport,
     TaskRescheduleRequest as AppTaskRescheduleRequest, TaskSetRequest as AppTaskSetRequest,
     TaskShowReport, TaskTrackLogReport, TaskTrackReport,
     TaskTrackStartRequest as AppTaskTrackStartRequest, TaskTrackStatusReport,
@@ -528,6 +529,34 @@ pub(crate) fn handle_tasks_command(
         TasksCommand::Reminders { upcoming } => {
             let report = run_tasks_reminders_command(paths, &guard, upcoming)?;
             print_task_reminders_report(cli.output, &report)
+        }
+        TasksCommand::ExportIcs {
+            from,
+            to,
+            path,
+            calendar_name,
+        } => {
+            let export = build_task_ics_export_with_guard(
+                paths,
+                &TaskIcsRequest {
+                    from: from.clone(),
+                    to: to.clone(),
+                    calendar_name: calendar_name.clone(),
+                },
+                Some(&guard),
+            )
+            .map_err(CliError::operation)?;
+            if let Some(path) = path {
+                if let Some(parent) = path
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                {
+                    std::fs::create_dir_all(parent).map_err(CliError::operation)?;
+                }
+                vulcan_core::paths::write_file_atomic(path, &export.content)
+                    .map_err(CliError::operation)?;
+            }
+            print_task_ics_export(cli.output, &export, path.as_deref())
         }
         TasksCommand::Due { within } => {
             let report = run_tasks_due_command(paths, &guard, within)?;
@@ -1767,6 +1796,7 @@ fn should_process_tasknotes_auto_archive(command: &TasksCommand) -> bool {
         | TasksCommand::Blocked
         | TasksCommand::Graph
         | TasksCommand::Reminders { .. }
+        | TasksCommand::ExportIcs { .. }
         | TasksCommand::Due { .. }
         | TasksCommand::View { .. } => true,
     }
@@ -1812,7 +1842,41 @@ fn auto_archive_excluded_task(command: &TasksCommand) -> Option<&str> {
         | TasksCommand::Blocked
         | TasksCommand::Graph
         | TasksCommand::Reminders { .. }
+        | TasksCommand::ExportIcs { .. }
         | TasksCommand::Due { .. }
         | TasksCommand::View { .. } => None,
+    }
+}
+
+fn print_task_ics_export(
+    output: OutputFormat,
+    export: &TaskIcsExport,
+    path: Option<&std::path::Path>,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human | OutputFormat::Markdown => {
+            if let Some(path) = path {
+                println!(
+                    "Wrote {} event(s) with {} alarm(s) from {} task(s) to {}",
+                    export.event_count,
+                    export.alarm_count,
+                    export.task_count,
+                    path.display()
+                );
+                println!("Range: {} to {}", export.from, export.to);
+                println!("Calendar: {}", export.calendar_name);
+            } else {
+                print!("{}", export.content);
+            }
+            Ok(())
+        }
+        OutputFormat::Json => {
+            let mut value = serde_json::to_value(export).map_err(CliError::operation)?;
+            value["path"] = path.map_or(Value::Null, |path| {
+                Value::String(path.to_string_lossy().into_owned())
+            });
+            value["content"] = Value::String(export.content.clone());
+            print_json(&value)
+        }
     }
 }

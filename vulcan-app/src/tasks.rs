@@ -44,8 +44,10 @@ use vulcan_core::{
 };
 use yaml_serde::{Mapping as YamlMapping, Value as YamlValue};
 
+mod ics;
 mod reminders;
 mod types;
+pub use ics::{TaskIcsExport, TaskIcsRequest, DEFAULT_TASK_ICS_WINDOW_DAYS};
 pub use reminders::{
     inline_task_key, reminder_occurrence_id, tasknote_task_key, ReminderSettings, ReminderTimezone,
 };
@@ -1716,6 +1718,30 @@ pub fn build_task_reminders_report_with_guard(
         let note_index = scope.load_tasks(paths)?;
         let records = tasknote_records_from_index(&note_index, &config);
         task_reminders_report(records, &note_index, &config, upcoming)
+    })
+}
+
+/// Open `TaskNotes` tasks in a date window as an iCalendar feed, each
+/// reminder an alarm. Only tasks readable under `guard` are included.
+pub fn build_task_ics_export_with_guard(
+    paths: &VaultPaths,
+    request: &TaskIcsRequest,
+    guard: Option<&ProfilePermissionGuard>,
+) -> Result<TaskIcsExport, AppError> {
+    with_task_read_scope(paths, guard, |scope| {
+        let config = load_vault_config(paths).config;
+        let settings = ReminderSettings::from_config(&config.tasks.reminders)?;
+        let now_ms = current_utc_timestamp_ms();
+        let window = ics::task_ics_window(request, &settings, now_ms)?;
+        let note_index = scope.load_tasks(paths)?;
+        let records = tasknote_records_from_index(&note_index, &config);
+        Ok(ics::render_task_ics(
+            &records,
+            &settings,
+            window,
+            request.calendar_name.as_deref(),
+            now_ms,
+        ))
     })
 }
 
