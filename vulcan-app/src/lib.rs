@@ -147,6 +147,7 @@ mod contract_tests {
             period_type: Some("daily".to_string()),
             reference_date: Some("2026-05-11".to_string()),
             warnings: vec!["created missing note".to_string()],
+            dry_run: false,
             changed_paths: vec!["Daily/2026-05-11.md".to_string()],
             content: "# 2026-05-11\n\n## Log\n- hello\n".to_string(),
         };

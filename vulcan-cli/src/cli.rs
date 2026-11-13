@@ -8257,6 +8257,11 @@ pub enum NoteCommand {
         vars: Vec<String>,
         #[arg(long, help = "Run non-blocking doctor-like diagnostics after append")]
         check: bool,
+        #[arg(
+            long,
+            help = "Report the resulting note without writing it or creating a missing periodic note"
+        )]
+        dry_run: bool,
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },

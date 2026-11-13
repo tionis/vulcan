@@ -783,6 +783,7 @@ fn append_daily(vault: &ChatVault<'_>, text: &str) -> Result<ChatReply, AppError
                 date: Some(date.clone()),
                 vars: BTreeMap::new(),
                 check: false,
+                dry_run: false,
                 no_commit: false,
             },
         )

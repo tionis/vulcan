@@ -125,6 +125,9 @@ pub struct NoteAppendRequest {
     pub periodic: Option<String>,
     pub date: Option<String>,
     pub vars: HashMap<String, String>,
+    /// Plan and validate the append without writing; a missing periodic
+    /// note is rendered from its template without letting it change notes.
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -139,16 +142,25 @@ pub struct NoteAppendReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reference_date: Option<String>,
     pub warnings: Vec<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub dry_run: bool,
     #[serde(skip)]
     pub changed_paths: Vec<String>,
     #[serde(skip)]
     pub content: String,
 }
 
+// Independent flags of a JSON report, not a state machine.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NoteAppendCommandReport {
     pub path: String,
     pub appended: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub dry_run: bool,
+    /// The resulting note, reported only by a dry run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
     pub mode: String,
     pub checked: bool,
     pub created: bool,
@@ -171,7 +183,9 @@ pub fn finish_note_append_report(
     };
     Ok(NoteAppendCommandReport {
         path: report.path,
-        appended: true,
+        appended: !report.dry_run,
+        dry_run: report.dry_run,
+        content: report.dry_run.then(|| report.content.clone()),
         mode: report.mode,
         checked: check,
         created: report.created,
@@ -1294,12 +1308,12 @@ pub fn apply_note_append(
                     MdbaseWriteOperation::Update
                 },
                 mode: MdbaseManagedWriteMode::Validated,
-                dry_run: false,
+                dry_run: request.dry_run,
                 permission_profile,
                 verbosity,
             },
         )?;
-    } else {
+    } else if !request.dry_run {
         dispatch_note_write_plugin_hooks(
             paths,
             permission_profile,
@@ -1337,7 +1351,12 @@ pub fn apply_note_append(
         period_type: target.period_type,
         reference_date: target.reference_date,
         warnings,
-        changed_paths: vec![target.path],
+        dry_run: request.dry_run,
+        changed_paths: if request.dry_run {
+            Vec::new()
+        } else {
+            vec![target.path]
+        },
         content,
     })
 }
@@ -1845,13 +1864,21 @@ pub fn preview_periodic_note_contents(
     period_type: &str,
     relative_path: &str,
     warnings: &mut Vec<String>,
+    permission_profile: Option<&str>,
 ) -> Result<String, AppError> {
+    let guard = permission_profile
+        .map(|profile| {
+            resolve_permission_profile(paths, Some(profile))
+                .map(|selection| ProfilePermissionGuard::new(paths, selection))
+                .map_err(AppError::operation)
+        })
+        .transpose()?;
     render_periodic_note_contents_with_guard(
         paths,
         period_type,
         relative_path,
         warnings,
-        None,
+        guard.as_ref(),
         true,
     )
 }
@@ -2698,6 +2725,17 @@ fn load_note_append_target(
                 "path exists but is not a note file: {}",
                 target.path
             )));
+        } else if request.dry_run {
+            (
+                preview_periodic_note_contents(
+                    paths,
+                    period_type,
+                    &target.path,
+                    &mut warnings,
+                    permission_profile,
+                )?,
+                true,
+            )
         } else {
             (
                 render_periodic_note_contents(
@@ -3679,6 +3717,7 @@ folder_templates = [{ folder = "Projects", template = "project" }]
                     ("title".to_string(), "Release Planning".to_string()),
                     ("due".to_string(), "2026-04-05".to_string()),
                 ]),
+                dry_run: false,
             },
             None,
             Verbosity::Quiet,
@@ -3695,6 +3734,41 @@ folder_templates = [{ folder = "Projects", template = "project" }]
             .expect("daily note")
             .replace("\r\n", "\n");
         assert!(rendered.contains("- release-planning due 2026-04-05\n"));
+    }
+
+    #[test]
+    fn apply_note_append_dry_run_previews_a_missing_periodic_note_without_creating_it() {
+        let temp_dir = tempdir().expect("temp dir");
+        let root = temp_dir.path();
+        let paths = VaultPaths::new(root);
+        initialize_vulcan_dir(&paths).expect("init should succeed");
+
+        let report = apply_note_append(
+            &paths,
+            &NoteAppendRequest {
+                note: None,
+                text: "- {{VALUE:title|case:slug}}".to_string(),
+                mode: NoteAppendMode::AfterHeading,
+                heading: Some("## Log".to_string()),
+                periodic: Some("daily".to_string()),
+                date: Some("2026-04-03".to_string()),
+                vars: HashMap::from([("title".to_string(), "Release Planning".to_string())]),
+                dry_run: true,
+            },
+            None,
+            Verbosity::Quiet,
+        )
+        .expect("append dry run");
+
+        assert!(report.dry_run && report.created);
+        assert!(report.changed_paths.is_empty());
+        assert!(
+            report.content.contains("## Log\n- release-planning\n"),
+            "{}",
+            report.content
+        );
+        assert!(!root.join("Journal/Daily/2026-04-03.md").exists());
+        assert!(!root.join("Journal").exists());
     }
 
     #[test]
@@ -4024,6 +4098,7 @@ folder_templates = [{ folder = "Projects", template = "project" }]
                     periodic: None,
                     date: None,
                     vars: HashMap::new(),
+                    dry_run: false,
                 },
                 None,
                 Verbosity::Quiet,
@@ -4167,6 +4242,7 @@ folder_templates = [{ folder = "Projects", template = "project" }]
                 periodic: None,
                 date: None,
                 vars: HashMap::new(),
+                dry_run: false,
             },
             None,
             Verbosity::Quiet,

@@ -284,10 +284,13 @@ pub(crate) fn handle_note_command(
             date,
             vars,
             check,
+            dry_run,
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
-            warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
+            if !*dry_run {
+                warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
+            }
             let (note, text) = match (*periodic, text.as_deref()) {
                 (Some(_), None) => (None, note_or_text.as_str()),
                 (None, Some(text)) => (Some(note_or_text.as_str()), text),
@@ -322,10 +325,14 @@ pub(crate) fn handle_note_command(
                     date: date.as_deref(),
                     vars,
                     check: *check,
+                    dry_run: *dry_run,
                 },
                 cli.permissions.as_deref(),
                 cli.verbosity(),
             )?;
+            if report.dry_run {
+                return print_note_append_report(cli.output, &report);
+            }
             auto_commit
                 .commit(
                     paths,
@@ -944,6 +951,7 @@ pub(crate) struct NoteAppendOptions<'a> {
     pub(crate) date: Option<&'a str>,
     pub(crate) vars: &'a [String],
     pub(crate) check: bool,
+    pub(crate) dry_run: bool,
 }
 
 pub(crate) fn run_note_append_command(
@@ -961,6 +969,7 @@ pub(crate) fn run_note_append_command(
         date,
         vars,
         check,
+        dry_run,
     } = options;
     let report = apply_note_append(
         paths,
@@ -972,13 +981,16 @@ pub(crate) fn run_note_append_command(
             periodic: periodic.map(|value| note_append_periodic_type(value).to_string()),
             date: date.map(ToOwned::to_owned),
             vars: parse_template_var_bindings(vars)?,
+            dry_run,
         },
         permission_profile,
         verbosity,
     )?;
     let changed = report.changed_paths.clone();
     let report = finish_note_append_report(paths, report, check)?;
-    refresh_after_write(paths, &changed)?;
+    if !report.dry_run {
+        refresh_after_write(paths, &changed)?;
+    }
     Ok(report)
 }
 
@@ -1497,6 +1509,29 @@ pub(crate) fn print_note_append_report(
                     }
                 },
             );
+            if report.dry_run {
+                let placement = match report.mode.as_str() {
+                    "after_heading" => {
+                        format!(" under {}", report.heading.as_deref().unwrap_or_default())
+                    }
+                    "prepend" => " (prepended)".to_string(),
+                    _ => String::new(),
+                };
+                if report.created {
+                    println!("Dry run: would create {target} and append{placement}.");
+                } else {
+                    println!("Dry run: would append to {target}{placement}.");
+                }
+                for warning in &report.warnings {
+                    eprintln!("warning: {warning}");
+                }
+                print_note_check_warnings(&report.path, &report.diagnostics);
+                if let Some(content) = report.content.as_deref() {
+                    println!();
+                    print!("{content}");
+                }
+                return Ok(());
+            }
             match report.mode.as_str() {
                 "after_heading" => println!(
                     "Appended to {} under {}.",

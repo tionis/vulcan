@@ -773,6 +773,7 @@ fn run_daily_append_command(
                 period_type,
                 &target.path,
                 &mut warnings,
+                None,
             )
             .map_err(CliError::operation)?,
         };

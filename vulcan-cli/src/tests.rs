@@ -2229,6 +2229,7 @@ fn parses_note_append_periodic_command() {
         "--prepend",
         "--var",
         "title=Release Planning",
+        "--dry-run",
     ])
     .expect("cli should parse");
 
@@ -2245,6 +2246,7 @@ fn parses_note_append_periodic_command() {
                 date: Some("2026-04-03".to_string()),
                 vars: vec!["title=Release Planning".to_string()],
                 check: false,
+                dry_run: true,
                 no_commit: false,
             },
         }

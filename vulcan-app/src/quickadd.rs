@@ -220,6 +220,7 @@ fn run_capture(
             date: None,
             vars: BTreeMap::from([("value".to_string(), value.to_string())]),
             check: false,
+            dry_run: false,
             no_commit: false,
         },
     )

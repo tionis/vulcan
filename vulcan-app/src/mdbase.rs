@@ -3401,21 +3401,37 @@ mod tests {
             Verbosity::Quiet,
         )
         .expect("managed note create should succeed");
-        apply_note_append(
-            &paths,
-            &NoteAppendRequest {
-                note: Some("tasks/new.md".to_string()),
-                text: "Extra\n".to_string(),
-                mode: NoteAppendMode::Append,
-                heading: None,
-                periodic: None,
-                date: None,
-                vars: std::collections::HashMap::default(),
-            },
-            None,
-            Verbosity::Quiet,
-        )
-        .expect("managed note append should succeed");
+        let append = |dry_run: bool| {
+            apply_note_append(
+                &paths,
+                &NoteAppendRequest {
+                    note: Some("tasks/new.md".to_string()),
+                    text: "Extra\n".to_string(),
+                    mode: NoteAppendMode::Append,
+                    heading: None,
+                    periodic: None,
+                    date: None,
+                    vars: std::collections::HashMap::default(),
+                    dry_run,
+                },
+                None,
+                Verbosity::Quiet,
+            )
+        };
+        // A dry run validates through the journal's planner but writes nothing.
+        let journaled = list_mdbase_write_outbox(&paths).expect("outbox").len();
+        let preview = append(true).expect("managed note append dry run should succeed");
+        assert!(preview.dry_run && preview.changed_paths.is_empty());
+        assert!(preview.content.contains("Extra"), "{}", preview.content);
+        assert_eq!(
+            fs::read_to_string(directory.path().join("tasks/new.md")).unwrap(),
+            created
+        );
+        assert_eq!(
+            list_mdbase_write_outbox(&paths).expect("outbox").len(),
+            journaled
+        );
+        append(false).expect("managed note append should succeed");
         apply_note_patch(
             &paths,
             &NotePatchRequest {

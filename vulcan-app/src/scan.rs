@@ -167,6 +167,7 @@ mod tests {
                 periodic: None,
                 date: None,
                 vars: HashMap::new(),
+                dry_run: false,
             },
             None,
             Verbosity::Quiet,

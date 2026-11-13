@@ -96,6 +96,7 @@ fn note_create_append_and_patch_report_policy_output_including_dry_run() {
             periodic: None,
             date: None,
             vars: std::collections::HashMap::default(),
+            dry_run: false,
         },
         None,
         Verbosity::Quiet,

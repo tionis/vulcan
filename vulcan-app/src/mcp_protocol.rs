@@ -723,6 +723,8 @@ pub struct McpNoteAppendArgs {
     #[serde(default)]
     pub check: bool,
     #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default)]
     pub no_commit: bool,
 }
 

@@ -112,6 +112,7 @@ pub fn note_append(
             periodic,
             date: args.date,
             vars,
+            dry_run: args.dry_run,
         },
         Some(profile_name),
         Verbosity::Quiet,
@@ -120,6 +121,9 @@ pub fn note_append(
     let changed = applied.changed_paths.clone();
     let report = finish_note_append_report(paths, applied, args.check)
         .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    if report.dry_run {
+        return Ok(report);
+    }
     refresh_cache_for_paths(paths, &changed)
         .map_err(|error| McpMethodError::tool(error.to_string()))?;
     AutoCommitPolicy::for_mutation(paths, args.no_commit)

@@ -626,6 +626,12 @@ pub fn note_append_input_schema() -> Value {
                 schema_boolean("Run non-blocking diagnostics on the resulting note."),
             ),
             (
+                "dry_run",
+                schema_boolean(
+                    "Report the resulting note as `content` without writing it or creating a missing periodic note.",
+                ),
+            ),
+            (
                 "no_commit",
                 schema_boolean("Suppress auto-commit for this mutation."),
             ),

@@ -5689,6 +5689,50 @@ fn note_append_under_heading_reports_check_diagnostics() {
 }
 
 #[test]
+fn note_append_dry_run_reports_content_with_diagnostics_without_writing() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    write_note_crud_sample(&vault_root);
+    run_scan(&vault_root);
+    let before = fs::read_to_string(vault_root.join("Dashboard.md")).expect("Dashboard.md");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "note",
+            "append",
+            "Dashboard",
+            "[[Missing]]",
+            "--heading",
+            "## Done",
+            "--check",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["dry_run"], true);
+    assert_eq!(json["appended"], false);
+    assert!(json["content"]
+        .as_str()
+        .is_some_and(|content| content.ends_with("[[Missing]]\n")));
+    assert!(json["diagnostics"]
+        .as_array()
+        .is_some_and(|diagnostics| !diagnostics.is_empty()));
+    assert_eq!(
+        fs::read_to_string(vault_root.join("Dashboard.md")).expect("Dashboard.md"),
+        before
+    );
+}
+
+#[test]
 fn note_append_prepend_renders_quickadd_value_tokens() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
