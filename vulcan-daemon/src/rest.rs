@@ -31,6 +31,12 @@ pub enum Principal {
         registration_id: Ulid,
         token_id: Ulid,
     },
+    /// A feed token: only the task calendar feed of one registration.
+    Feed {
+        wiki_id: String,
+        registration_id: Ulid,
+        token_id: Ulid,
+    },
 }
 
 impl Principal {
@@ -39,7 +45,7 @@ impl Principal {
     pub fn sees_wiki(&self, wiki_id: &str) -> bool {
         match self {
             Self::Device => true,
-            Self::Vault { wiki_id: own, .. } => own == wiki_id,
+            Self::Vault { wiki_id: own, .. } | Self::Feed { wiki_id: own, .. } => own == wiki_id,
         }
     }
 
@@ -48,7 +54,9 @@ impl Principal {
     pub fn idempotency_scope(&self, companion_credential_id: &str) -> String {
         match self {
             Self::Device => companion_credential_id.to_string(),
-            Self::Vault { token_id, .. } => format!("api-token:{token_id}"),
+            Self::Vault { token_id, .. } | Self::Feed { token_id, .. } => {
+                format!("api-token:{token_id}")
+            }
         }
     }
 }
@@ -80,7 +88,23 @@ pub const REST_VAULT_SEGMENTS: &[&str] = &[
     "move",
     "inbox",
     "scan",
+    TASK_FEED_SEGMENT,
 ];
+
+/// The route segment of the task calendar feed, `GET /{id}/tasks.ics`.
+pub const TASK_FEED_SEGMENT: &str = "tasks.ics";
+
+/// The wiki ID of a task calendar feed request, if `method path` is one.
+/// Calendar clients cannot send the protocol header or a bearer token, so
+/// this route takes its credential from the URL or Basic auth instead.
+#[must_use]
+pub fn task_feed_wiki<'a>(method: &Method, path: &'a str) -> Option<&'a str> {
+    if method != Method::GET {
+        return None;
+    }
+    let (id, route) = path.strip_prefix('/')?.split_once('/')?;
+    (route == TASK_FEED_SEGMENT && !id.is_empty()).then_some(id)
+}
 
 /// The REST surface this module serves, for `GET /capabilities`.
 #[must_use]
@@ -149,6 +173,7 @@ pub(crate) fn routes() -> Router<CompanionHttpState> {
         .route("/{id}/links/{*path}", get(links))
         .route("/{id}/backlinks/{*path}", get(backlinks))
         .route("/{id}/graph/{report}", get(graph))
+        .route("/{id}/tasks.ics", get(task_feed))
         .route("/{id}/history", get(history))
         .route("/{id}/history/{*path}", get(file_history))
         .route("/{id}/diff", get(diff))
@@ -275,6 +300,44 @@ where
     .await
     .map_err(|error| RestError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))??;
     Ok(Json(value))
+}
+
+/// `GET /{id}/tasks.ics`: open `TaskNotes` tasks the registration's profile can
+/// read, as `vulcan tasks export-ics` writes them, for calendar subscriptions.
+async fn task_feed(
+    State(state): State<CompanionHttpState>,
+    Extension(principal): Extension<Principal>,
+    Path(id): Path<String>,
+    uri: Uri,
+) -> Result<Response, RestError> {
+    let pairs = query_pairs(&uri);
+    let first = |key: &str| pairs.get(key).and_then(|values| values.first()).cloned();
+    let request = vulcan_app::tasks::TaskIcsRequest {
+        from: first("from"),
+        to: first("to"),
+        calendar_name: first("name").or_else(|| Some(format!("{id} tasks"))),
+    };
+    let vault = served_vault(&state, &principal, &id)?;
+    let export = tokio::task::spawn_blocking(move || {
+        let guard = vault.rest_read_guard()?;
+        let _ =
+            vulcan_app::mdbase::recover_interrupted_mdbase_write_with_guard(&vault.paths, &guard);
+        vulcan_app::tasks::build_task_ics_export_with_guard(&vault.paths, &request, Some(&guard))
+            .map_err(|error| RestError::from_message(error.to_string()))
+    })
+    .await
+    .map_err(|error| RestError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))??;
+    Ok((
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "text/calendar; charset=utf-8",
+            ),
+            (axum::http::header::CACHE_CONTROL, "no-store"),
+        ],
+        export.content,
+    )
+        .into_response())
 }
 
 /// Vault-relative paths only: no absolute paths or parent components.
@@ -1209,6 +1272,23 @@ pub fn openapi_document() -> Value {
         );
     }
     add_write_documents(&mut paths, &id_parameter);
+    paths.insert(
+        "/{id}/tasks.ics".to_string(),
+        json!({ "get": {
+            "summary": "Open TaskNotes tasks as an iCalendar feed, as `vulcan tasks export-ics` writes it. Calendar clients may authenticate with a feed token (`vulcan vault token create <id> --feed`) in `?token=` or as the Basic-auth password, and need no protocol header.",
+            "parameters": [
+                id_parameter.clone(),
+                json!({"name": "from", "in": "query", "required": false, "schema": {"type": "string"}, "description": "First day (`YYYY-MM-DD`, `today`, `-1w`); today by default"}),
+                json!({"name": "to", "in": "query", "required": false, "schema": {"type": "string"}, "description": "Last day; 60 days after `from` by default"}),
+                json!({"name": "name", "in": "query", "required": false, "schema": {"type": "string"}, "description": "Calendar display name"}),
+                json!({"name": "token", "in": "query", "required": false, "schema": {"type": "string"}, "description": "A feed token"}),
+            ],
+            "responses": { "200": {
+                "description": "An iCalendar document",
+                "content": { "text/calendar": { "schema": { "type": "string" } } }
+            } }
+        }}),
+    );
     for (route, summary) in [
         ("/health", "Daemon health and the vaults it serves"),
         ("/vaults", "Registered vaults visible to the caller"),
@@ -1346,6 +1426,7 @@ mod tests {
                 projects.registration.registration_id,
                 "projects",
                 None,
+                crate::api_tokens::ApiTokenScope::Vault,
                 false,
             )
             .unwrap()
@@ -2142,6 +2223,154 @@ mod tests {
                 vault_principal_reaches(&Method::GET, &concrete, "projects"),
                 "{route}"
             );
+        }
+    }
+
+    /// A request with only the given headers, for clients that cannot send
+    /// the protocol header; returns the status, headers, and body text.
+    async fn raw_get(
+        served: &Served,
+        uri: &str,
+        headers: &[(axum::http::HeaderName, String)],
+    ) -> (StatusCode, axum::http::HeaderMap, String) {
+        let mut builder = HttpRequest::builder().uri(uri);
+        for (name, value) in headers {
+            builder = builder.header(name, value);
+        }
+        let response = crate::http::companion_router(served.state.clone())
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let headers = response.headers().clone();
+        let body = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+            .await
+            .unwrap();
+        (status, headers, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn feed_tokens_read_only_the_task_calendar_under_the_profile() {
+        use base64::Engine as _;
+        let served = served();
+        let vault_root = served.temporary.path().join("projects");
+        for (path, title) in [
+            ("Projects/Renew.md", "Renew passport"),
+            ("Private/Secret.md", "Secret errand"),
+        ] {
+            std::fs::write(
+                vault_root.join(path),
+                format!("---\ntitle: {title}\nstatus: open\ndue: 2026-04-10\ntags: [task]\n---\n"),
+            )
+            .unwrap();
+        }
+        let projects = served
+            .state
+            .registry
+            .show(&WikiId::parse("projects").unwrap())
+            .unwrap();
+        let feed = served
+            .state
+            .api_tokens
+            .as_ref()
+            .unwrap()
+            .create(
+                projects.registration.registration_id,
+                "projects",
+                None,
+                crate::api_tokens::ApiTokenScope::Feed,
+                false,
+            )
+            .unwrap()
+            .token
+            .unwrap();
+        let window = "from=2026-04-01&to=2026-04-30";
+
+        // In the URL, with no protocol header, as a calendar app subscribes.
+        let (status, headers, body) = raw_get(
+            &served,
+            &format!("/projects/tasks.ics?{window}&token={feed}"),
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            headers[axum::http::header::CONTENT_TYPE],
+            "text/calendar; charset=utf-8"
+        );
+        assert!(body.starts_with("BEGIN:VCALENDAR\r\n"), "{body}");
+        assert!(body.contains("SUMMARY:Renew passport\r\n"), "{body}");
+        assert!(body.contains("X-WR-CALNAME:projects tasks\r\n"), "{body}");
+        // The registration's profile reads only `Projects/`.
+        assert!(!body.contains("Secret errand"), "{body}");
+
+        // As the Basic-auth password; the user name is ignored.
+        let credentials =
+            base64::engine::general_purpose::STANDARD.encode(format!("calendar:{feed}"));
+        let (status, _, body) = raw_get(
+            &served,
+            &format!("/projects/tasks.ics?{window}&name=Errands"),
+            &[(AUTHORIZATION, format!("Basic {credentials}"))],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains("X-WR-CALNAME:Errands\r\n"), "{body}");
+
+        // A vault token or the bearer header reaches the feed as usual.
+        let (status, _, _) = raw_get(
+            &served,
+            &format!("/projects/tasks.ics?{window}"),
+            &[(AUTHORIZATION, format!("Bearer {}", served.token))],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // A feed token reaches nothing else, not even as a bearer token.
+        let (status, _) = get(&served, &feed, "/projects/search?q=plan").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _, _) = raw_get(&served, &format!("/notes/tasks.ics?token={feed}"), &[]).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // Only a feed token may ride in the URL or a password.
+        for credential in [served.token.clone(), device(&served)] {
+            let (status, headers, _) = raw_get(
+                &served,
+                &format!("/projects/tasks.ics?token={credential}"),
+                &[],
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+            assert!(headers
+                .get(axum::http::header::WWW_AUTHENTICATE)
+                .is_some_and(|value| value.to_str().unwrap().starts_with("Basic ")));
+        }
+        let (status, _, _) = raw_get(&served, "/projects/tasks.ics", &[]).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // Other routes still need the protocol header, whatever the token.
+        let (status, _, _) = raw_get(
+            &served,
+            &format!("/projects/search?q=plan&token={feed}"),
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::UPGRADE_REQUIRED);
+    }
+
+    #[test]
+    fn task_feed_requests_are_recognised_by_method_and_path() {
+        assert_eq!(
+            task_feed_wiki(&Method::GET, "/notes/tasks.ics"),
+            Some("notes")
+        );
+        assert_eq!(task_feed_wiki(&Method::POST, "/notes/tasks.ics"), None);
+        for path in [
+            "/tasks.ics",
+            "//tasks.ics",
+            "/notes/tasks.ics/x",
+            "/notes/tasks",
+        ] {
+            assert_eq!(task_feed_wiki(&Method::GET, path), None, "{path}");
         }
     }
 

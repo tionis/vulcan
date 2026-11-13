@@ -275,19 +275,30 @@ fn handle_token_command(
     command: &crate::cli::VaultTokenCommand,
 ) -> Result<(), CliError> {
     use crate::cli::VaultTokenCommand;
-    use vulcan_daemon::api_tokens::ApiTokenStore;
+    use vulcan_daemon::api_tokens::{ApiTokenScope, ApiTokenStore};
 
     let context = vulcan_daemon::process::DaemonProcessContext::user_default()
         .map_err(CliError::operation)?;
     let store = ApiTokenStore::at(&context.state_root);
     match command {
-        VaultTokenCommand::Create { id, label, dry_run } => {
+        VaultTokenCommand::Create {
+            id,
+            label,
+            feed,
+            dry_run,
+        } => {
+            let scope = if *feed {
+                ApiTokenScope::Feed
+            } else {
+                ApiTokenScope::Vault
+            };
             let wiki = registry.show(&parse_id(id)?).map_err(CliError::operation)?;
             let created = store
                 .create(
                     wiki.registration.registration_id,
                     wiki.registration.id.as_str(),
                     label.as_deref(),
+                    scope,
                     *dry_run,
                 )
                 .map_err(CliError::operation)?;
@@ -297,15 +308,31 @@ fn handle_token_command(
             match &created.token {
                 Some(token) => {
                     println!(
-                        "Created API token {} for `{}`.",
-                        created.summary.id, wiki.registration.id
+                        "Created {} token {} for `{}`.",
+                        scope_noun(scope),
+                        created.summary.id,
+                        wiki.registration.id
                     );
                     println!("{token}");
                     println!(
                         "This is the only time the token is shown; store it in the client now."
                     );
+                    if scope == ApiTokenScope::Feed {
+                        println!(
+                            "Subscribe to /{}/tasks.ics?token=<token> on the daemon, or give the token as the password.",
+                            wiki.registration.id
+                        );
+                    }
                 }
-                None => println!("Would create an API token for `{}`.", wiki.registration.id),
+                None => println!(
+                    "Would create {} token for `{}`.",
+                    if scope == ApiTokenScope::Feed {
+                        "a feed"
+                    } else {
+                        "an API"
+                    },
+                    wiki.registration.id
+                ),
             }
             Ok(())
         }
@@ -377,9 +404,14 @@ fn list_tokens(
     }
     for listing in &tokens {
         println!(
-            "{} {}{}{}",
+            "{} {}{}{}{}",
             listing.token.id,
             listing.token.wiki_id,
+            if listing.token.scope == vulcan_daemon::api_tokens::ApiTokenScope::Feed {
+                " [feed]"
+            } else {
+                ""
+            },
             listing
                 .token
                 .label
@@ -394,6 +426,13 @@ fn list_tokens(
         );
     }
     Ok(())
+}
+
+fn scope_noun(scope: vulcan_daemon::api_tokens::ApiTokenScope) -> &'static str {
+    match scope {
+        vulcan_daemon::api_tokens::ApiTokenScope::Vault => "API",
+        vulcan_daemon::api_tokens::ApiTokenScope::Feed => "feed",
+    }
 }
 
 fn print_recovery(output: OutputFormat, report: &RecoverWikiGitReport) -> Result<(), CliError> {

@@ -67,6 +67,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -H "Vulcan-Protocol-Version: 1" \
 | `GET /{id}/history/{path}` | `vulcan note history`; with `?at=<commit>`, the file's content at that commit |
 | `GET /{id}/diff?path=...` | `vulcan git diff` (uncommitted changes) |
 | `GET /{id}/diff/{path}?from=<commit>&to=<commit>` | one file between two commits, or from a commit to the working tree when `to` is left out |
+| `GET /{id}/tasks.ics?from=...&to=...&name=...` | `vulcan tasks export-ics`, as an iCalendar feed (see [Calendar feed](#calendar-feed)) |
 | `GET /health` | each visible vault: whether it is served, its cache state and last scan error, and each watcher component (`observer`, `index`, `sync`, `auto-commit`) with whether it runs, how often it restarted, and its last error; `healthy` summarizes |
 | `GET /{id}/health` | the same for one vault |
 | `GET /vaults` | registered vaults visible to the token |
@@ -76,6 +77,29 @@ curl -s -H "Authorization: Bearer $TOKEN" -H "Vulcan-Protocol-Version: 1" \
 Errors are JSON objects with `kind` and `detail`: 400 for an invalid request, 401 for a missing or
 revoked token, 403 when the profile denies the operation, 404 for an unknown vault or note, and 503
 when the daemon does not index the vault (a files-only directory, or while it is starting).
+
+## Calendar feed
+
+`GET /{id}/tasks.ics` serves the vault's open TaskNotes tasks as an iCalendar feed, the same one
+`vulcan tasks export-ics` writes, so a calendar app can subscribe to it and deliver task reminders
+as alarms. It covers today through 60 days ahead unless `from` and `to` say otherwise, and shows
+only tasks the vault's permission profile may read.
+
+Calendar apps cannot send headers, so create a feed token for the subscription:
+
+```bash
+vulcan vault token create notes --feed --label phone-calendar
+```
+
+Subscribe to `http://127.0.0.1:3210/notes/tasks.ics?token=vat_...`, or to the URL without the
+token, giving the token as the password when the app asks (any user name). A feed token reads this
+feed and nothing else, and only a feed token is accepted in the URL or as a password, so a leaked
+subscription URL exposes your task list but cannot read notes or write. Revoke it with
+`vulcan vault token revoke <token-id>`.
+
+The daemon listens on loopback only. For a calendar on another device, put an HTTPS reverse proxy
+in front of the daemon that forwards only `/<id>/tasks.ics`; the token in the URL is then
+protected by TLS in transit, though the proxy and calendar provider may still store the URL.
 
 ## Writes
 

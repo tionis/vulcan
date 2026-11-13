@@ -41670,6 +41670,26 @@ fn vault_tokens_are_created_once_listed_without_secrets_and_revoked() {
     assert_eq!(listed[0]["wiki_id"], "notes");
     assert_eq!(listed[0]["label"], "phone");
     assert_eq!(listed[0]["orphaned"], false);
+    assert_eq!(listed[0]["scope"], "vault");
+    let feed = json(&["create", "notes", "--feed", "--label", "calendar"]);
+    assert_eq!(feed["scope"], "feed");
+    assert!(feed["token"]
+        .as_str()
+        .expect("feed token")
+        .starts_with("vat_"));
+    let feed_id = feed["id"].as_str().expect("feed token id").to_string();
+    assert_eq!(json(&["list", "notes"])[1]["scope"], "feed");
+    let human = cargo_vulcan_with_xdg_config(&config_home)
+        .args(["vault", "token", "list"])
+        .assert()
+        .success();
+    let human = String::from_utf8_lossy(&human.get_output().stdout).to_string();
+    assert!(
+        human.contains(&format!("{feed_id} notes [feed] (calendar)")),
+        "{human}"
+    );
+    json(&["revoke", &feed_id]);
+    let listed = json(&["list"]);
     let listing_text = listed.to_string();
     // `vat_<ulid>_<secret>`: the secret is URL-safe base64 and may itself
     // contain `_`, so split after the ID rather than at the last `_`.

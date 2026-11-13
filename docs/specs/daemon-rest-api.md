@@ -33,6 +33,7 @@ A bearer credential resolves to exactly one principal:
 | --- | --- | --- | --- |
 | Companion credential (`vulcan daemon companion`) | Device | Every route and every registered vault | The registration's `permissions_profile` (default `unrestricted`) |
 | API token (`vulcan vault token create`) | Vault | The REST routes of its own vault, `GET /capabilities`, `GET /health`, and `GET /vaults` (listing only its vault) | The registration's `permissions_profile` |
+| Feed token (`vulcan vault token create --feed`) | Feed | Only `GET /{id}/tasks.ics` of its own vault | The registration's `permissions_profile` |
 
 The registration's `permissions_profile` is the device's limit for the vault, so it resolves from
 built-in profiles and the vault's `config.local.toml` only (`resolve_device_permission_profile`).
@@ -43,7 +44,16 @@ remote ceilings and scheduled-job ceilings.
 
 An API token never reaches sync administration (pause, resume, conflict resolution, semantic
 plans), jobs, events, routed `ops`, or shutdown. Those stay device-only. A vault principal that
-names another vault's ID gets 404, so a token cannot probe other registrations.
+names another vault's ID gets 404, so a token cannot probe other registrations. A feed principal
+gets 404 for every route but its vault's calendar feed.
+
+Calendar applications cannot send headers, so `GET /{id}/tasks.ics` alone needs no protocol header
+and also accepts a credential as `?token=` or as the HTTP Basic password (the user name is
+ignored); a 401 there carries a `WWW-Authenticate: Basic` challenge. Only a feed token is accepted
+in those two places. A vault token or the companion credential still works as a bearer header, but
+never in a URL, so a subscription URL that leaks (into a calendar provider, a proxy log, or a
+synced calendar account) can read the task feed and nothing else, until the token is revoked.
+Request audit records log the path without the query string.
 
 Authorization and result filtering reuse `PermissionGuard` and `PermissionFilter`. Reads apply the
 profile's read filter, so a restricted caller only sees permitted notes. Writes, Git, and
@@ -68,7 +78,10 @@ configuration checks fail with 403 and the guard's message. The daemon adds no p
   and adding another with the same ID does not revive old tokens. Removing a registration makes
   its tokens fail; `vault token list` reports them as orphaned and `vault token revoke` deletes
   them.
-- **Commands.** `vulcan vault token create <wiki> [--label <text>] [--dry-run]`,
+- **Scope.** A token's `scope` is `vault` (the default) or `feed`. The store keeps version 1 while
+  every token has the `vault` scope and writes version 2 once a feed token exists, so a daemon that
+  predates scopes refuses the store instead of treating a feed token as a vault token.
+- **Commands.** `vulcan vault token create <wiki> [--label <text>] [--feed] [--dry-run]`,
   `vulcan vault token list [<wiki>]`, and `vulcan vault token revoke <token-id> [--dry-run]`, all
   with JSON output. Listings never include secrets or hashes.
 
@@ -124,6 +137,11 @@ indexed, under the registration's profile. Their responses are the CLI's JSON re
 - `GET /{id}/doctor`: the vault's diagnostics, as `vulcan doctor` reports them, never repairs. The
   report names every note it flags, so a profile that does not read every note, or that has a policy
   hook, is refused with 403.
+
+- `GET /{id}/tasks.ics?from=...&to=...&name=...`: the open TaskNotes tasks the profile can read, as
+  `vulcan tasks export-ics` writes them (`text/calendar`, `Cache-Control: no-store`): one event per
+  open occurrence from `from` (default today) to `to` (default 60 days later), reminders as alarms.
+  The calendar name defaults to `<id> tasks`. See the principals section for its credentials.
 
 A registered vault the daemon does not index (files-only, or while the daemon starts) answers 503.
 

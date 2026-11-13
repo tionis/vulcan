@@ -6,6 +6,10 @@
 //! cost without adding resistance (see `docs/specs/daemon-rest-api.md`).
 //! Tokens bind to a registration ID, so a re-added wiki with the same ID does
 //! not revive them.
+//!
+//! A token's scope says what it may do: a `vault` token calls the vault's REST
+//! routes, a `feed` token only reads its task calendar feed, so it can sit in
+//! a calendar subscription URL without exposing anything else.
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -19,7 +23,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 use ulid::Ulid;
 
+/// The store version written while every token has the `vault` scope, which
+/// older daemons understand.
 pub const API_TOKEN_STORE_VERSION: u32 = 1;
+/// The store version written once a `feed` token exists, so a daemon that
+/// predates scopes refuses the store instead of treating a feed token as a
+/// full vault token.
+pub const SCOPED_API_TOKEN_STORE_VERSION: u32 = 2;
 pub const API_TOKEN_PREFIX: &str = "vat_";
 const STORE_FILE: &str = "api-tokens.json";
 const LOCK_FILE: &str = "api-tokens.lock";
@@ -34,6 +44,27 @@ struct StoreFile {
     tokens: Vec<ApiTokenRecord>,
 }
 
+/// What a token may do.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiTokenScope {
+    /// The vault's REST routes, under its permission profile.
+    #[default]
+    Vault,
+    /// Only `GET /{id}/tasks.ics`, the vault's task calendar feed.
+    Feed,
+}
+
+impl ApiTokenScope {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Vault => "vault",
+            Self::Feed => "feed",
+        }
+    }
+}
+
 /// One stored token. The hash never leaves the store: listings use
 /// [`ApiTokenSummary`].
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,8 +75,15 @@ pub struct ApiTokenRecord {
     pub wiki_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "is_vault_scope")]
+    pub scope: ApiTokenScope,
     pub created_unix_ms: u64,
     secret_blake3: String,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_vault_scope(scope: &ApiTokenScope) -> bool {
+    *scope == ApiTokenScope::Vault
 }
 
 impl std::fmt::Debug for ApiTokenRecord {
@@ -56,6 +94,7 @@ impl std::fmt::Debug for ApiTokenRecord {
             .field("registration_id", &self.registration_id)
             .field("wiki_id", &self.wiki_id)
             .field("label", &self.label)
+            .field("scope", &self.scope)
             .finish_non_exhaustive()
     }
 }
@@ -67,6 +106,7 @@ pub struct ApiTokenSummary {
     pub registration_id: Ulid,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    pub scope: ApiTokenScope,
     pub created_unix_ms: u64,
 }
 
@@ -77,6 +117,7 @@ impl From<&ApiTokenRecord> for ApiTokenSummary {
             wiki_id: record.wiki_id.clone(),
             registration_id: record.registration_id,
             label: record.label.clone(),
+            scope: record.scope,
             created_unix_ms: record.created_unix_ms,
         }
     }
@@ -136,6 +177,7 @@ impl ApiTokenStore {
         registration_id: Ulid,
         wiki_id: &str,
         label: Option<&str>,
+        scope: ApiTokenScope,
         dry_run: bool,
     ) -> Result<CreatedApiToken, ApiTokenError> {
         let label = label.map(validate_label).transpose()?;
@@ -147,6 +189,7 @@ impl ApiTokenStore {
             registration_id,
             wiki_id: wiki_id.to_string(),
             label,
+            scope,
             created_unix_ms: unix_time_ms(),
             secret_blake3: blake3::hash(secret.as_bytes()).to_hex().to_string(),
         };
@@ -235,7 +278,9 @@ impl ApiTokenStore {
         validate_owner_only(&metadata, &self.path)?;
         let store: StoreFile = serde_json::from_slice(&fs::read(&self.path)?)
             .map_err(|error| ApiTokenError::Invalid(format!("API token store: {error}")))?;
-        if store.version != API_TOKEN_STORE_VERSION {
+        if store.version != API_TOKEN_STORE_VERSION
+            && store.version != SCOPED_API_TOKEN_STORE_VERSION
+        {
             return Err(ApiTokenError::Invalid(format!(
                 "unsupported API token store version {}",
                 store.version
@@ -269,6 +314,15 @@ impl ApiTokenStore {
         lock.lock_exclusive()?;
         let mut store = self.read()?;
         change(&mut store.tokens)?;
+        store.version = if store
+            .tokens
+            .iter()
+            .any(|token| token.scope != ApiTokenScope::Vault)
+        {
+            SCOPED_API_TOKEN_STORE_VERSION
+        } else {
+            API_TOKEN_STORE_VERSION
+        };
         let mut bytes = serde_json::to_vec_pretty(&store)
             .map_err(|error| ApiTokenError::Invalid(error.to_string()))?;
         bytes.push(b'\n');
@@ -383,7 +437,13 @@ mod tests {
         let store = ApiTokenStore::at(temporary.path());
         let registration = Ulid::new();
         let created = store
-            .create(registration, "notes", Some("phone"), false)
+            .create(
+                registration,
+                "notes",
+                Some("phone"),
+                ApiTokenScope::Vault,
+                false,
+            )
             .unwrap();
         let token = created.token.clone().unwrap();
         assert!(token.starts_with("vat_"));
@@ -412,14 +472,55 @@ mod tests {
     }
 
     #[test]
+    fn feed_tokens_keep_their_scope_and_mark_the_store() {
+        let temporary = tempfile::tempdir().unwrap();
+        let store = ApiTokenStore::at(temporary.path());
+        let vault = store
+            .create(Ulid::new(), "notes", None, ApiTokenScope::Vault, false)
+            .unwrap();
+        let version = || -> u32 {
+            let stored: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(store.path()).unwrap()).unwrap();
+            u32::try_from(stored["version"].as_u64().unwrap()).unwrap()
+        };
+        assert_eq!(version(), API_TOKEN_STORE_VERSION);
+        assert!(!fs::read_to_string(store.path()).unwrap().contains("scope"));
+
+        let feed = store
+            .create(
+                Ulid::new(),
+                "notes",
+                Some("phone calendar"),
+                ApiTokenScope::Feed,
+                false,
+            )
+            .unwrap();
+        assert_eq!(feed.summary.scope, ApiTokenScope::Feed);
+        // A daemon that predates scopes refuses the store rather than
+        // treating the feed token as a vault token.
+        assert_eq!(version(), SCOPED_API_TOKEN_STORE_VERSION);
+        let record = store.authenticate(&feed.token.unwrap()).unwrap().unwrap();
+        assert_eq!(record.scope, ApiTokenScope::Feed);
+        let record = store.authenticate(&vault.token.unwrap()).unwrap().unwrap();
+        assert_eq!(record.scope, ApiTokenScope::Vault);
+
+        store.revoke(feed.summary.id, false).unwrap();
+        assert_eq!(version(), API_TOKEN_STORE_VERSION);
+    }
+
+    #[test]
     fn dry_runs_neither_store_nor_reveal_a_token() {
         let temporary = tempfile::tempdir().unwrap();
         let store = ApiTokenStore::at(temporary.path());
-        let preview = store.create(Ulid::new(), "notes", None, true).unwrap();
+        let preview = store
+            .create(Ulid::new(), "notes", None, ApiTokenScope::Vault, true)
+            .unwrap();
         assert!(preview.token.is_none());
         assert!(store.list().unwrap().is_empty());
 
-        let created = store.create(Ulid::new(), "notes", None, false).unwrap();
+        let created = store
+            .create(Ulid::new(), "notes", None, ApiTokenScope::Vault, false)
+            .unwrap();
         store.revoke(created.summary.id, true).unwrap();
         assert_eq!(store.list().unwrap().len(), 1);
     }
@@ -430,7 +531,13 @@ mod tests {
         let store = ApiTokenStore::at(temporary.path());
         for label in ["", "line\nbreak", &"x".repeat(129)] {
             assert!(store
-                .create(Ulid::new(), "notes", Some(label), false)
+                .create(
+                    Ulid::new(),
+                    "notes",
+                    Some(label),
+                    ApiTokenScope::Vault,
+                    false
+                )
                 .is_err());
         }
         assert!(store.list().unwrap().is_empty());
@@ -442,7 +549,9 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let temporary = tempfile::tempdir().unwrap();
         let store = ApiTokenStore::at(temporary.path());
-        let created = store.create(Ulid::new(), "notes", None, false).unwrap();
+        let created = store
+            .create(Ulid::new(), "notes", None, ApiTokenScope::Vault, false)
+            .unwrap();
         fs::set_permissions(store.path(), fs::Permissions::from_mode(0o644)).unwrap();
         assert!(store
             .authenticate(created.token.as_deref().unwrap())

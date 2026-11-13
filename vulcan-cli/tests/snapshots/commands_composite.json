@@ -16090,6 +16090,20 @@
                     ]
                   },
                   {
+                    "help": "Create a feed token, which can only read the vault's task calendar feed (`GET /{id}/tasks.ics`) and may be put in a subscription URL",
+                    "id": "feed",
+                    "long": "feed",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "FEED"
+                    ]
+                  },
+                  {
                     "help": "Validate without creating or revealing a token",
                     "id": "dry_run",
                     "long": "dry-run",

@@ -257,7 +257,14 @@ async fn authorize_request_inner(
 
     let is_capabilities = request.uri().path() == "/capabilities";
     let is_events = request.uri().path() == "/events";
-    if !is_capabilities && !is_events && !has_protocol_version(request.headers()) {
+    // Calendar clients cannot send the protocol header or a bearer token.
+    let feed_wiki =
+        crate::rest::task_feed_wiki(request.method(), request.uri().path()).map(str::to_string);
+    if !is_capabilities
+        && !is_events
+        && feed_wiki.is_none()
+        && !has_protocol_version(request.headers())
+    {
         return api_error(
             StatusCode::UPGRADE_REQUIRED,
             CompanionErrorKind::InvalidRequest,
@@ -266,24 +273,35 @@ async fn authorize_request_inner(
     }
 
     if !is_events {
-        let principal = match resolve_principal(state, request.headers()).await {
+        let presented = match (bearer_token(request.headers()), &feed_wiki) {
+            (Some(token), _) => Some(PresentedCredential::Bearer(token.to_string())),
+            (None, Some(_)) => {
+                feed_credential(request.uri(), request.headers()).map(PresentedCredential::FeedOnly)
+            }
+            (None, None) => None,
+        };
+        let principal = match resolve_principal(state, presented).await {
             Ok(principal) => principal,
+            Err(response) if feed_wiki.is_some() => return with_basic_challenge(response),
             Err(response) => return response,
         };
-        if let Principal::Vault { wiki_id, .. } = &principal {
-            if !crate::rest::vault_principal_reaches(
+        let reaches = match &principal {
+            Principal::Device => true,
+            Principal::Vault { wiki_id, .. } => crate::rest::vault_principal_reaches(
                 request.method(),
                 request.uri().path(),
                 wiki_id,
-            ) {
-                // Not found rather than forbidden: a token cannot probe
-                // which other routes or vaults exist.
-                return api_error(
-                    StatusCode::NOT_FOUND,
-                    CompanionErrorKind::NotFound,
-                    "no such route for this API token",
-                );
-            }
+            ),
+            Principal::Feed { wiki_id, .. } => feed_wiki.as_deref() == Some(wiki_id.as_str()),
+        };
+        if !reaches {
+            // Not found rather than forbidden: a token cannot probe
+            // which other routes or vaults exist.
+            return api_error(
+                StatusCode::NOT_FOUND,
+                CompanionErrorKind::NotFound,
+                "no such route for this API token",
+            );
         }
         request.extensions_mut().insert(principal);
     }
@@ -322,11 +340,54 @@ fn has_protocol_version(headers: &HeaderMap) -> bool {
         .is_some_and(|value| value.as_bytes() == b"1")
 }
 
-/// The principal a request's bearer credential proves: the companion
-/// credential acts for the device, an API token for its registration.
+/// A credential a request presents.
+enum PresentedCredential {
+    /// An `Authorization: Bearer` header: any credential.
+    Bearer(String),
+    /// A `?token=` parameter or Basic-auth password on the calendar feed:
+    /// only a feed token, so a URL that leaks cannot reach anything else.
+    FeedOnly(String),
+}
+
+/// The feed credential in `?token=` or, failing that, the Basic-auth
+/// password (calendar apps put it there; the user name is ignored).
+fn feed_credential(uri: &axum::http::Uri, headers: &HeaderMap) -> Option<String> {
+    if let Some(token) = uri.query().and_then(|query| {
+        url::form_urlencoded::parse(query.as_bytes())
+            .find(|(key, _)| key == "token")
+            .map(|(_, value)| value.into_owned())
+    }) {
+        return Some(token);
+    }
+    let encoded = headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Basic ")?;
+    let decoded =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded.trim()).ok()?;
+    let decoded = String::from_utf8(decoded).ok()?;
+    let (_, password) = decoded.split_once(':')?;
+    Some(password.to_string())
+}
+
+/// Asks calendar clients for the feed token as a password.
+fn with_basic_challenge(mut response: Response) -> Response {
+    if response.status() == StatusCode::UNAUTHORIZED {
+        response.headers_mut().insert(
+            axum::http::header::WWW_AUTHENTICATE,
+            HeaderValue::from_static("Basic realm=\"Vulcan task feed\", charset=\"UTF-8\""),
+        );
+    }
+    response
+}
+
+/// The principal a request's credential proves: the companion credential
+/// acts for the device, an API token for its registration, and a feed token
+/// for its registration's calendar feed.
 async fn resolve_principal(
     state: &CompanionHttpState,
-    headers: &HeaderMap,
+    presented: Option<PresentedCredential>,
 ) -> Result<Principal, Response> {
     let unauthorized = || {
         api_error(
@@ -335,10 +396,13 @@ async fn resolve_principal(
             "missing or invalid bearer credential",
         )
     };
-    let Some(token) = bearer_token(headers) else {
-        return Err(unauthorized());
+    let (token, feed_only) = match presented {
+        Some(PresentedCredential::Bearer(token)) => (token, false),
+        Some(PresentedCredential::FeedOnly(token)) => (token, true),
+        None => return Err(unauthorized()),
     };
-    if state.credential.authorizes(token) {
+    let token = token.as_str();
+    if !feed_only && state.credential.authorizes(token) {
         return Ok(Principal::Device);
     }
     let Some(store) = state
@@ -363,10 +427,22 @@ async fn resolve_principal(
             .vaults
             .into_iter()
             .find(|wiki| wiki.registration_id == record.registration_id);
-        Ok::<_, String>(registration.map(|wiki| Principal::Vault {
-            wiki_id: wiki.id.to_string(),
-            registration_id: wiki.registration_id,
-            token_id: record.id,
+        Ok::<_, String>(registration.and_then(|wiki| {
+            let wiki_id = wiki.id.to_string();
+            match record.scope {
+                crate::api_tokens::ApiTokenScope::Feed => Some(Principal::Feed {
+                    wiki_id,
+                    registration_id: wiki.registration_id,
+                    token_id: record.id,
+                }),
+                // A vault token never rides in a URL.
+                crate::api_tokens::ApiTokenScope::Vault if feed_only => None,
+                crate::api_tokens::ApiTokenScope::Vault => Some(Principal::Vault {
+                    wiki_id,
+                    registration_id: wiki.registration_id,
+                    token_id: record.id,
+                }),
+            }
         }))
     })
     .await;
@@ -1107,7 +1183,13 @@ mod tests {
             .registration;
         let store = state.api_tokens.clone().unwrap();
         let created = store
-            .create(notes.registration_id, "notes", Some("test"), false)
+            .create(
+                notes.registration_id,
+                "notes",
+                Some("test"),
+                crate::api_tokens::ApiTokenScope::Vault,
+                false,
+            )
             .unwrap();
         let token = created.token.clone().unwrap();
         let router = companion_router(state.clone());
@@ -1177,7 +1259,13 @@ mod tests {
             .api_tokens
             .clone()
             .unwrap()
-            .create(notes.registration_id, "notes", None, false)
+            .create(
+                notes.registration_id,
+                "notes",
+                None,
+                crate::api_tokens::ApiTokenScope::Vault,
+                false,
+            )
             .unwrap()
             .token
             .unwrap();

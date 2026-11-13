@@ -6584,6 +6584,11 @@ pub enum VaultTokenCommand {
             help = "Label to tell the token apart, such as the client that uses it"
         )]
         label: Option<String>,
+        #[arg(
+            long,
+            help = "Create a feed token, which can only read the vault's task calendar feed (`GET /{id}/tasks.ics`) and may be put in a subscription URL"
+        )]
+        feed: bool,
         #[arg(long, help = "Validate without creating or revealing a token")]
         dry_run: bool,
     },
