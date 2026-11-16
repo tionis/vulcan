@@ -34,7 +34,10 @@ chunked request transfer encoding is unsupported. HTTPS ingress supplies transpo
 security; Vulcan still authenticates and authorizes each connection.
 
 The human signs in through IndieAuth, then separately approves a vault, permission
-profile, eligible tool packs, scopes, and expiry on Vulcan's consent page. Packs
+profile, eligible tool packs, scopes, and expiry on Vulcan's consent page. The
+approval lasts 1 hour, 1 day, 7, 30 (the default) or 90 days, or 1 year, or until the
+end of a chosen day at most a year ahead, read in the server's time zone; a longer
+connection is approved again. Packs
 select tools; permission profiles constrain authority. The server ceiling is the
 maximum, not an automatic grant. A ceiling cannot be `unrestricted`, and it must be a built-in
 profile (`writer` suits a remote that edits notes) or one defined in this device's `daemon.toml` or

@@ -1,7 +1,7 @@
 //! MCP OAuth authorization start and `IndieAuth` callback shared by listener modes.
 
 use std::collections::BTreeMap;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use vulcan_core::{exchange_indieauth_code, pkce_s256_challenge, LocalOAuthIssuer, OAuthError};
@@ -211,6 +211,7 @@ impl McpAuthorizeEndpoint<'_> {
             profile: &profile,
             packs: &self.selected_packs,
             named_runtime: self.named_runtime,
+            clock: crate::mcp_grant_expiry::GrantClock::local(current_unix_seconds()),
         })
     }
 
@@ -327,6 +328,12 @@ fn approval_form(params: &BTreeMap<String, String>) -> McpHttpResponse {
         body: html.into_bytes(),
         extra_headers: Vec::new(),
     }
+}
+
+fn current_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
 }
 
 #[cfg(test)]

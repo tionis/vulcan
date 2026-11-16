@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use ulid::Ulid;
 use vulcan_core::{resolve_device_permission_profile, resolve_permission_profile, VaultPaths};
 
+use crate::mcp_grant_expiry::{resolve_grant_expiry, GrantClock};
 use crate::mcp_remote::McpRemoteId;
 use crate::mcp_session::McpSessionAuthority;
 use crate::mcp_state::{
@@ -425,16 +426,8 @@ impl NamedMcpRuntime {
                 "select at least one eligible tool pack",
             ));
         }
-        let lifetime_days = request
-            .form
-            .get("expiry_days")
-            .and_then(|value| value.parse::<u64>().ok())
-            .filter(|days| matches!(days, 1 | 7 | 30))
-            .ok_or_else(|| NamedConsentError::bad_request("expiry must be 1, 7, or 30 days"))?;
-        let expires_at = request
-            .now
-            .checked_add(lifetime_days * 24 * 60 * 60)
-            .ok_or_else(|| NamedConsentError::internal("grant expiry is out of range"))?;
+        let expires_at = resolve_grant_expiry(request.form, &GrantClock::local(request.now))
+            .map_err(NamedConsentError::bad_request)?;
         let report = self
             .authorization_store
             .create_grant(
@@ -511,7 +504,7 @@ mod tests {
         let scopes = vec!["mcp:tools".to_string()];
         let form = BTreeMap::from([
             ("pack_notes-read".to_string(), "on".to_string()),
-            ("expiry_days".to_string(), "7".to_string()),
+            ("expiry".to_string(), "7d".to_string()),
         ]);
         let id = runtime
             .create_connection_grant(&request(instance_id, &form, &scopes))
@@ -533,13 +526,64 @@ mod tests {
     }
 
     #[test]
+    fn consent_stores_a_custom_last_day_and_refuses_invalid_expiry_without_a_grant() {
+        let (_temporary, runtime) = runtime();
+        let instance_id = Ulid::new();
+        let scopes = vec!["mcp:tools".to_string()];
+        let mut form = BTreeMap::from([
+            ("pack_notes-read".to_string(), "on".to_string()),
+            ("expiry".to_string(), "custom".to_string()),
+            ("expiry_date".to_string(), "2023-12-01".to_string()),
+        ]);
+        let id = runtime
+            .create_connection_grant(&request(instance_id, &form, &scopes))
+            .expect("custom expiry");
+        let grant = runtime
+            .authorization_store
+            .resolve_active_grant(
+                id,
+                instance_id,
+                "https://client.example/app.json",
+                "https://mcp.example/personal",
+                1_700_000_001,
+            )
+            .expect("durable grant");
+        let clock = GrantClock::local(1_700_000_000);
+        let last_day = chrono::NaiveDate::from_ymd_opt(2023, 12, 1).expect("date");
+        assert_eq!(Some(grant.expires_at), clock.end_of_day(last_day));
+
+        let (_empty_state, empty) = self::runtime();
+        for (field, value) in [
+            ("expiry_date", "2025-01-01"),
+            ("expiry_date", "2023-11-01"),
+            ("expiry", "forever"),
+        ] {
+            form.insert(field.to_string(), value.to_string());
+            let error = empty
+                .create_connection_grant(&request(Ulid::new(), &form, &scopes))
+                .expect_err(value);
+            assert_eq!(error.status, 400, "{value}");
+        }
+        form.remove("expiry");
+        form.insert("expiry_days".to_string(), "7".to_string());
+        assert!(empty
+            .create_connection_grant(&request(Ulid::new(), &form, &scopes))
+            .is_err());
+        assert!(empty
+            .authorization_store
+            .list_grants(None)
+            .expect("grant list")
+            .is_empty());
+    }
+
+    #[test]
     fn token_authority_revalidates_consent_binding_and_revocation() {
         let (_temporary, runtime) = runtime();
         let instance_id = Ulid::new();
         let scopes = vec!["mcp:tools".to_string()];
         let form = BTreeMap::from([
             ("pack_notes-read".to_string(), "on".to_string()),
-            ("expiry_days".to_string(), "7".to_string()),
+            ("expiry".to_string(), "7d".to_string()),
         ]);
         let grant_id = runtime
             .create_connection_grant(&request(instance_id, &form, &scopes))
@@ -588,7 +632,7 @@ mod tests {
         let scopes = vec!["mcp:tools".to_string()];
         let form = BTreeMap::from([
             ("pack_notes-read".to_string(), "on".to_string()),
-            ("expiry_days".to_string(), "7".to_string()),
+            ("expiry".to_string(), "7d".to_string()),
         ]);
         let grant_id = runtime
             .create_connection_grant(&request(instance_id, &form, &scopes))
@@ -658,7 +702,7 @@ mod tests {
         let scopes = vec!["mcp:tools".to_string()];
         let form = BTreeMap::from([
             ("pack_notes-read".to_string(), "on".to_string()),
-            ("expiry_days".to_string(), "7".to_string()),
+            ("expiry".to_string(), "7d".to_string()),
         ]);
         let grant_id = runtime
             .create_connection_grant(&request(instance_id, &form, &scopes))
@@ -715,7 +759,7 @@ mod tests {
         let scopes = vec!["mcp:tools".to_string()];
         let form = BTreeMap::from([
             ("pack_notes-read".to_string(), "on".to_string()),
-            ("expiry_days".to_string(), "7".to_string()),
+            ("expiry".to_string(), "7d".to_string()),
         ]);
         let grant_id = runtime
             .create_connection_grant(&request(instance_id, &form, &scopes))
@@ -835,7 +879,7 @@ mod tests {
         let scopes = vec!["mcp:tools".to_string()];
         let form = BTreeMap::from([
             ("pack_notes-read".to_string(), "on".to_string()),
-            ("expiry_days".to_string(), "7".to_string()),
+            ("expiry".to_string(), "7d".to_string()),
         ]);
         let grant_id = runtime
             .create_connection_grant(&request(instance_id, &form, &scopes))
@@ -882,7 +926,7 @@ mod tests {
         let form = BTreeMap::from([
             ("permission_profile".to_string(), "unrestricted".to_string()),
             ("pack_notes-read".to_string(), "on".to_string()),
-            ("expiry_days".to_string(), "1".to_string()),
+            ("expiry".to_string(), "1d".to_string()),
         ]);
         let error = runtime
             .create_connection_grant(&request(Ulid::new(), &form, &scopes))
@@ -892,7 +936,7 @@ mod tests {
 
         let forged = BTreeMap::from([
             ("pack_notes-write".to_string(), "on".to_string()),
-            ("expiry_days".to_string(), "1".to_string()),
+            ("expiry".to_string(), "1d".to_string()),
         ]);
         let error = runtime
             .create_connection_grant(&request(Ulid::new(), &forged, &scopes))
@@ -925,7 +969,7 @@ mod tests {
         let scopes = vec!["mcp:tools".to_string()];
         let mut form = BTreeMap::from([
             ("pack_team_search".to_string(), "on".to_string()),
-            ("expiry_days".to_string(), "30".to_string()),
+            ("expiry".to_string(), "30d".to_string()),
         ]);
         let error = runtime
             .create_connection_grant(&request(Ulid::new(), &form, &scopes))

@@ -2617,7 +2617,7 @@ fn named_listener_complete_browser_consent(
     let transaction = named_listener_hidden_value(&callback, "transaction");
     let csrf = named_listener_hidden_value(&callback, "csrf_token");
     let form = format!(
-        "transaction={transaction}&csrf_token={csrf}&decision=approve&wiki_id=personal&permission_profile_personal=readonly&pack_personal_notes-read=on&expiry_days=7"
+        "transaction={transaction}&csrf_token={csrf}&decision=approve&wiki_id=personal&permission_profile_personal=readonly&pack_personal_notes-read=on&expiry=7d"
     );
     let bad_csrf = named_listener_post(
         address,
@@ -4030,7 +4030,9 @@ fn indieauth_consent_requires_csrf_and_preserves_state_and_pkce() {
     assert!(html.contains("client-a"));
     assert!(html.contains("https://identity.example.test/alice"));
     assert!(html.contains("readonly"));
-    assert!(html.contains("notes-read, search"));
+    assert!(
+        html.contains("<span class=\"chip\">notes-read</span><span class=\"chip\">search</span>")
+    );
     assert!(form
         .extra_headers
         .iter()
@@ -4188,7 +4190,7 @@ fn named_consent_persists_and_enforces_a_revocable_grant() {
         path: "/oauth/consent".to_string(),
         query: String::new(),
         headers: BTreeMap::new(),
-        body: b"transaction=named-transaction&csrf_token=csrf-secret&decision=approve&permission_profile=agent&pack_notes-read=on&expiry_days=7".to_vec(),
+        body: b"transaction=named-transaction&csrf_token=csrf-secret&decision=approve&permission_profile=agent&pack_notes-read=on&expiry=7d".to_vec(),
     };
     {
         let mut codes = context.oauth_codes.lock().expect("codes");
@@ -4475,7 +4477,7 @@ fn named_consent_routes_each_grant_to_its_selected_vault() {
             "readonly".to_string(),
         ),
         ("pack_team_search".to_string(), "on".to_string()),
-        ("expiry_days".to_string(), "7".to_string()),
+        ("expiry".to_string(), "7d".to_string()),
     ]);
     let grant_id = create_named_connection_grant(&context, &pending, &selected)
         .expect("team consent")
@@ -4525,7 +4527,7 @@ fn named_consent_routes_each_grant_to_its_selected_vault() {
         &BTreeMap::from([
             ("wiki_id".to_string(), "personal".to_string()),
             ("pack_personal_notes-read".to_string(), "on".to_string()),
-            ("expiry_days".to_string(), "1".to_string()),
+            ("expiry".to_string(), "1d".to_string()),
         ]),
     )
     .expect("personal consent")

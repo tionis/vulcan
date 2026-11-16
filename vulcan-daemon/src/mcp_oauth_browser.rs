@@ -8,6 +8,9 @@ use base64::prelude::{Engine as _, BASE64_URL_SAFE_NO_PAD};
 use subtle::ConstantTimeEq;
 
 use crate::http_policy::mcp_oauth_redirect_target;
+use crate::mcp_grant_expiry::{
+    GrantClock, CUSTOM_EXPIRY, DEFAULT_EXPIRY, EXPIRY_DATE_FIELD, EXPIRY_FIELD, EXPIRY_PRESETS,
+};
 use crate::mcp_http_codec::McpHttpResponse;
 use crate::mcp_remote_runtime::NamedMcpRuntime;
 
@@ -131,50 +134,187 @@ pub struct ConsentPage<'a> {
     pub profile: &'a str,
     pub packs: &'a [String],
     pub named_runtime: Option<&'a NamedMcpRuntime>,
+    /// The time and time zone in which expiry choices are shown.
+    pub clock: GrantClock,
+}
+
+/// The consent page's only stylesheet. The page runs no script; its
+/// Content-Security-Policy admits this stylesheet by hash.
+const CONSENT_STYLE: &str = r#"
+:root{color-scheme:light dark;--bg:#f4f4f1;--card:#fff;--fg:#1c1c1a;--muted:#62625c;--line:#dedcd5;--accent:#2f5d50;--accent-fg:#fff;--soft:#eef3f1;--warn-bg:#fff6e0;--warn-line:#e7c36a;--warn-fg:#5a4205;--focus:#2f7d68}
+@media (prefers-color-scheme:dark){:root{--bg:#141513;--card:#1d1f1c;--fg:#ecebe6;--muted:#a3a29b;--line:#33352f;--accent:#7cc2a8;--accent-fg:#0d1a15;--soft:#22302b;--warn-bg:#2d2512;--warn-line:#7a6326;--warn-fg:#f1dca4;--focus:#9fd8c3}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:40rem;margin:0 auto;padding:2.5rem 1rem 3rem}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:1.75rem;box-shadow:0 1px 2px rgb(0 0 0/.04),0 8px 24px rgb(0 0 0/.06)}
+.eyebrow{margin:0;color:var(--muted);font-size:.8rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase}
+h1{margin:.25rem 0 1.25rem;font-size:1.5rem;line-height:1.25}
+h2{margin:0 0 .75rem;font-size:.8rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+section{border-top:1px solid var(--line);padding:1.25rem 0}
+.destination{background:var(--soft);border-radius:10px;padding:.9rem 1rem;margin-bottom:1rem}
+.destination span{display:block;color:var(--muted);font-size:.85rem}
+.destination strong{font-size:1.15rem;word-break:break-all}
+.warning{margin:0 0 1.25rem;background:var(--warn-bg);border:1px solid var(--warn-line);color:var(--warn-fg);border-radius:10px;padding:.75rem 1rem;font-size:.95rem}
+dl{display:grid;grid-template-columns:minmax(7rem,max-content) 1fr;gap:.5rem 1rem;margin:0}
+dt{color:var(--muted)}
+dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.chips{display:flex;flex-wrap:wrap;gap:.35rem}
+.chip{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:.05rem .6rem;font-size:.85rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+label.pack{display:inline-flex;align-items:center;gap:.4rem;border:1px solid var(--line);border-radius:999px;padding:.2rem .75rem .2rem .55rem;cursor:pointer}
+label.pack:has(input:checked){border-color:var(--accent);background:var(--soft)}
+fieldset{border:0;margin:0;padding:0;min-width:0}
+legend{padding:0}
+fieldset.vault{border:1px solid var(--line);border-radius:10px;padding:.75rem 1rem;margin-bottom:.75rem}
+fieldset.vault:has(> legend input:checked){border-color:var(--accent)}
+fieldset.vault legend{padding:0 .35rem;font-weight:600}
+.field{display:grid;gap:.35rem;margin:.6rem 0}
+.field>span{color:var(--muted);font-size:.9rem}
+input[type=text],input:not([type]),input[type=date]{font:inherit;color:inherit;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:.45rem .65rem;max-width:100%}
+input:focus-visible,button:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+input[type=checkbox],input[type=radio]{accent-color:var(--accent)}
+.note{color:var(--muted);font-size:.875rem;margin:.75rem 0 0}
+.choices{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.5rem}
+.choice{position:relative;display:block;cursor:pointer}
+.choice input{position:absolute;opacity:0;inset:0;margin:0;cursor:pointer}
+.choice span{display:block;height:100%;border:1px solid var(--line);border-radius:10px;padding:.55rem .75rem}
+.choice strong{display:block;font-weight:600}
+.choice small{color:var(--muted)}
+.choice input:checked+span{border-color:var(--accent);background:var(--soft);box-shadow:inset 0 0 0 1px var(--accent)}
+.choice input:focus-visible+span{outline:2px solid var(--focus);outline-offset:2px}
+.custom-date{display:none}
+.expiry:has(input[value=custom]:checked) .custom-date{display:grid}
+.actions{display:flex;justify-content:flex-end;gap:.75rem;border-top:1px solid var(--line);padding-top:1.25rem}
+button{font:inherit;font-weight:600;border-radius:10px;padding:.6rem 1.4rem;cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--fg)}
+button.approve{background:var(--accent);border-color:var(--accent);color:var(--accent-fg)}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.9em}
+@media (max-width:30rem){.card{padding:1.25rem;border-radius:0;border-left:0;border-right:0}main{padding:0 0 2rem}dl{grid-template-columns:1fr}dt{margin-top:.4rem}.actions{flex-direction:column-reverse}button{width:100%}.choices{grid-template-columns:repeat(2,minmax(0,1fr))}}
+"#;
+
+fn consent_style_hash() -> String {
+    use sha2::{Digest as _, Sha256};
+    format!(
+        "'sha256-{}'",
+        base64::prelude::BASE64_STANDARD.encode(Sha256::digest(CONSENT_STYLE.as_bytes()))
+    )
+}
+
+fn render_expiry_control(clock: &GrantClock) -> String {
+    use std::fmt::Write as _;
+
+    let mut choices = String::new();
+    for preset in EXPIRY_PRESETS {
+        let until = clock
+            .preset_end(preset)
+            .map(|end| clock.describe(end))
+            .unwrap_or_default();
+        let checked = if preset.value == DEFAULT_EXPIRY {
+            " checked"
+        } else {
+            ""
+        };
+        write!(
+            choices,
+            "<label class=\"choice\"><input type=\"radio\" name=\"{EXPIRY_FIELD}\" value=\"{}\"{checked}><span><strong>{}</strong><small>until {}</small></span></label>",
+            preset.value,
+            preset.label,
+            html_escape(&until),
+        )
+        .expect("writing to a String cannot fail");
+    }
+    let today = clock.today().format("%Y-%m-%d");
+    let latest = clock.latest_custom_date().format("%Y-%m-%d");
+    format!(
+        "<section><fieldset class=\"expiry\"><legend><h2>Expires</h2></legend>\
+         <div class=\"choices\">{choices}<label class=\"choice\"><input type=\"radio\" name=\"{EXPIRY_FIELD}\" value=\"{CUSTOM_EXPIRY}\"><span><strong>Pick a date</strong><small>up to 1 year</small></span></label></div>\
+         <label class=\"field custom-date\"><span>Last day of access</span><input type=\"date\" name=\"{EXPIRY_DATE_FIELD}\" min=\"{today}\" max=\"{latest}\"></label>\
+         <p class=\"note\">A chosen date lasts until the end of that day. Times are in this server's time zone ({}). You can revoke a connection at any time with <code>vulcan mcp connections revoke</code>.</p>\
+         </fieldset></section>",
+        html_escape(&clock.zone_label()),
+    )
+}
+
+/// Read-only chips, one per item.
+fn chips<'a>(items: impl IntoIterator<Item = &'a String>) -> String {
+    use std::fmt::Write as _;
+
+    items.into_iter().fold(String::new(), |mut output, item| {
+        write!(output, "<span class=\"chip\">{}</span>", html_escape(item))
+            .expect("writing to a String cannot fail");
+        output
+    })
+}
+
+/// The vault, permission profile, and tool pack part of the consent page.
+fn render_access(page: &ConsentPage<'_>) -> String {
+    use std::fmt::Write as _;
+
+    let Some(named) = page.named_runtime else {
+        return format!(
+            "<dl><dt>Vault</dt><dd>{}</dd><dt>Permission profile</dt><dd>{}</dd><dt>Tool packs</dt><dd><span class=\"chips\">{}</span></dd></dl>",
+            html_escape(page.fallback_vault_root),
+            html_escape(page.profile),
+            chips(page.packs),
+        );
+    };
+    let multi = named.vaults.len() > 1;
+    let mut vaults = String::new();
+    if multi {
+        vaults.push_str("<p class=\"note\">Choose the one vault this connection may use.</p>");
+    }
+    for (wiki_id, vault) in &named.vaults {
+        let wiki = html_escape(wiki_id.as_str());
+        let profile_field = if multi {
+            format!("permission_profile_{wiki}")
+        } else {
+            "permission_profile".to_string()
+        };
+        let packs = vault
+            .eligible_tool_packs
+            .iter()
+            .fold(String::new(), |mut output, pack| {
+                let field = if multi {
+                    format!("pack_{wiki}_{pack}")
+                } else {
+                    format!("pack_{pack}")
+                };
+                write!(
+                    output,
+                    "<label class=\"pack\"><input type=\"checkbox\" name=\"{}\" value=\"on\" checked> {}</label>",
+                    html_escape(&field),
+                    html_escape(pack)
+                )
+                .expect("writing to a String cannot fail");
+                output
+            });
+        let root = html_escape(&vault.paths.vault_root().display().to_string());
+        let controls = format!(
+            "<label class=\"field\"><span>Permission profile</span><input name=\"{profile_field}\" value=\"{default}\" list=\"profiles_{wiki}\" required><datalist id=\"profiles_{wiki}\"><option value=\"{default}\"><option value=\"{ceiling}\"></datalist></label>\
+             <div class=\"field\"><span>Tool packs</span><div class=\"chips\">{packs}</div></div>",
+            default = html_escape(&vault.default_profile),
+            ceiling = html_escape(&vault.ceiling_profile),
+        );
+        if multi {
+            write!(
+                vaults,
+                "<fieldset class=\"vault\"><legend><label><input type=\"radio\" name=\"wiki_id\" value=\"{wiki}\" required> {wiki}</label></legend><p class=\"note\">{root}</p>{controls}</fieldset>"
+            )
+        } else {
+            write!(
+                vaults,
+                "<dl><dt>Vault</dt><dd>{wiki} <span class=\"note\">{root}</span></dd></dl>{controls}"
+            )
+        }
+        .expect("writing to a String cannot fail");
+    }
+    vaults
 }
 
 #[must_use]
 pub fn render_consent_page(page: &ConsentPage<'_>) -> McpHttpResponse {
-    let (vault_control, profile_control, pack_controls, expiry_control) =
-        page.named_runtime.map_or_else(
-            || (
-                html_escape(page.fallback_vault_root),
-                html_escape(page.profile),
-                html_escape(&page.packs.join(", ")),
-                String::new(),
-            ),
-            |named| {
-                let multi = named.vaults.len() > 1;
-                let controls = named.vaults.iter().map(|(wiki_id, vault)| {
-                    let wiki = html_escape(wiki_id.as_str());
-                    let profile_field = if multi { format!("permission_profile_{wiki}") } else { "permission_profile".to_string() };
-                    let profile_control = format!(
-                        "<input name=\"{profile_field}\" value=\"{}\" list=\"profiles_{wiki}\" required><datalist id=\"profiles_{wiki}\"><option value=\"{}\"><option value=\"{}\"></datalist>",
-                        html_escape(&vault.default_profile),
-                        html_escape(&vault.default_profile),
-                        html_escape(&vault.ceiling_profile),
-                    );
-                    let pack_controls = vault.eligible_tool_packs.iter().map(|pack| {
-                        let field = if multi { format!("pack_{wiki}_{pack}") } else { format!("pack_{pack}") };
-                        format!("<label><input type=\"checkbox\" name=\"{}\" value=\"on\" checked> {}</label>", html_escape(&field), html_escape(pack))
-                    }).collect::<Vec<_>>().join(" ");
-                    let label = format!("{} ({})", wiki, html_escape(&vault.paths.vault_root().display().to_string()));
-                    (label, profile_control, pack_controls)
-                }).collect::<Vec<_>>();
-                let expiry = "<label>Expiry <select name=\"expiry_days\"><option value=\"1\">1 day</option><option value=\"7\">7 days</option><option value=\"30\" selected>30 days</option></select></label>".to_string();
-                if multi {
-                    use std::fmt::Write as _;
-                    let mut vaults = String::new();
-                    for ((wiki_id, _), (label, profile, packs)) in named.vaults.iter().zip(&controls) {
-                        write!(&mut vaults, "<fieldset><legend><label><input type=\"radio\" name=\"wiki_id\" value=\"{}\" required> {label}</label></legend><p>Permission profile: {profile}</p><p>Tool packs: {packs}</p></fieldset>", html_escape(wiki_id.as_str())).expect("writing to a String cannot fail");
-                    }
-                    (vaults, "Choose one vault below".to_string(), "Each vault has its own eligible packs".to_string(), expiry)
-                } else {
-                    let (label, profile, packs) = controls.into_iter().next().expect("named remote has a vault");
-                    (label, profile, packs, expiry)
-                }
-            },
-        );
+    let access = render_access(page);
+    let expiry = page
+        .named_runtime
+        .map_or_else(String::new, |_| render_expiry_control(&page.clock));
     // Registration is open, and a client chooses its own name, so the page
     // names where the authorization code goes: that is what a lookalike
     // client cannot fake.
@@ -187,31 +327,31 @@ pub fn render_consent_page(page: &ConsentPage<'_>) -> McpHttpResponse {
         || "'self'".to_string(),
         |target| format!("'self' {}", target.csp_source()),
     );
+    let scopes = chips(&page.pending.scopes);
     let body = format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Authorize Vulcan MCP</title></head>\
-         <body><main><h1>Authorize this MCP connection?</h1>\
-         <p><strong>Approve only if you started this connection yourself, just now, from the client that receives it.</strong></p>\
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+         <title>Authorize Vulcan MCP</title><style>{CONSENT_STYLE}</style></head>\
+         <body><main><div class=\"card\">\
+         <p class=\"eyebrow\">Vulcan MCP</p><h1>Authorize this MCP connection?</h1>\
+         <div class=\"destination\"><span>Sends the authorization to</span><strong>{destination}</strong></div>\
+         <p class=\"warning\"><strong>Approve only if you started this connection yourself, just now, from the client that receives it.</strong></p>\
          <form method=\"post\" action=\"/oauth/consent\">\
-         <dl><dt>Client</dt><dd>{}</dd><dt>Sends the authorization to</dt><dd><strong>{destination}</strong></dd><dt>Identity</dt><dd>{}</dd>\
-         <dt>Resource</dt><dd>{}</dd><dt>Vault</dt><dd>{}</dd>\
-         <dt>Permission profile</dt><dd>{}</dd><dt>Tool packs</dt><dd>{}</dd>\
-         <dt>OAuth scopes</dt><dd>{}</dd></dl>\
-         <p>Tool packs control discovery. The permission profile remains the authority ceiling.</p>\
+         <section><h2>Request</h2><dl><dt>Client</dt><dd>{}</dd><dt>Identity</dt><dd>{}</dd>\
+         <dt>Resource</dt><dd>{}</dd><dt>OAuth scopes</dt><dd><span class=\"chips\">{scopes}</span></dd></dl></section>\
+         <section><h2>Access</h2>{access}\
+         <p class=\"note\">Tool packs control which tools the client sees. The permission profile remains the authority ceiling.</p></section>\
+         {expiry}\
          <input type=\"hidden\" name=\"transaction\" value=\"{}\">\
          <input type=\"hidden\" name=\"csrf_token\" value=\"{}\">\
-         {}<button type=\"submit\" name=\"decision\" value=\"approve\">Approve</button>\
-         <button type=\"submit\" name=\"decision\" value=\"deny\">Deny</button>\
-         </form></main></body></html>",
+         <div class=\"actions\"><button type=\"submit\" name=\"decision\" value=\"deny\">Deny</button>\
+         <button class=\"approve\" type=\"submit\" name=\"decision\" value=\"approve\">Approve</button></div>\
+         </form></div></main></body></html>",
         html_escape(page.client_name),
         html_escape(&page.pending.subject),
         html_escape(&page.pending.resource),
-        vault_control,
-        profile_control,
-        pack_controls,
-        html_escape(&page.pending.scopes.join(" ")),
         html_escape(page.transaction_id),
         html_escape(&page.pending.csrf_token),
-        expiry_control,
     );
     McpHttpResponse {
         status: 200,
@@ -225,7 +365,8 @@ pub fn render_consent_page(page: &ConsentPage<'_>) -> McpHttpResponse {
                 // Browsers apply form-action to the redirect after the form
                 // posts, so the client's callback must be allowed as well.
                 format!(
-                    "default-src 'none'; form-action {form_action}; frame-ancestors 'none'; base-uri 'none'"
+                    "default-src 'none'; style-src {}; form-action {form_action}; frame-ancestors 'none'; base-uri 'none'",
+                    consent_style_hash()
                 ),
             ),
         ],
@@ -420,6 +561,7 @@ mod tests {
             profile: "readonly",
             packs: &["notes-read".into()],
             named_runtime: None,
+            clock: GrantClock::utc(1_794_830_400),
         });
         let csp = response
             .extra_headers
@@ -432,7 +574,9 @@ mod tests {
             "{csp}"
         );
         let html = String::from_utf8(response.body).unwrap();
-        assert!(html.contains("Sends the authorization to</dt><dd><strong>client.example</strong>"));
+        assert!(html.contains("Sends the authorization to</span><strong>client.example</strong>"));
+        // The direct issuer has no grant lifetime to choose.
+        assert!(!html.contains("name=\"expiry\""));
         assert!(html.contains("Approve only if you started this connection yourself"));
         assert!(html.contains("&lt;bad-client&gt;"));
         assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
@@ -465,6 +609,7 @@ mod tests {
             profile: "readonly",
             packs: &[],
             named_runtime: None,
+            clock: GrantClock::utc(1_794_830_400),
         });
         let csp = response
             .extra_headers
@@ -511,6 +656,7 @@ mod tests {
             profile: "ignored",
             packs: &[],
             named_runtime: Some(&named),
+            clock: GrantClock::utc(1_794_830_400),
         });
         let html = String::from_utf8(response.body).unwrap();
         assert_eq!(html.matches("name=\"wiki_id\"").count(), 2);
@@ -518,7 +664,49 @@ mod tests {
         assert!(html.contains("permission_profile_work"));
         assert!(html.contains("pack_personal_search"));
         assert!(html.contains("pack_work_search"));
-        assert!(html.contains("name=\"expiry_days\""));
+        assert!(!html.contains("expiry_days"));
+        assert_eq!(
+            html.matches("name=\"expiry\"").count(),
+            EXPIRY_PRESETS.len() + 1
+        );
+        assert!(html.contains("value=\"30d\" checked"));
+        assert!(html.contains("<small>until 16 Dec</small>"));
+        assert!(html.contains("<small>until 13:00</small>"));
+        assert!(html.contains("<small>until 16 Nov 2027</small>"));
+        assert!(html.contains("name=\"expiry_date\" min=\"2026-11-16\" max=\"2027-11-16\""));
+        assert!(html.contains("this server's time zone (UTC)"));
+    }
+
+    #[test]
+    fn consent_stylesheet_is_admitted_by_hash_and_the_page_runs_no_script() {
+        let transaction = consent();
+        let response = render_consent_page(&ConsentPage {
+            transaction_id: "transaction",
+            pending: &transaction,
+            client_name: "client",
+            fallback_vault_root: "/vault",
+            profile: "readonly",
+            packs: &[],
+            named_runtime: None,
+            clock: GrantClock::utc(1_794_830_400),
+        });
+        let csp = response
+            .extra_headers
+            .iter()
+            .find_map(|(name, value)| (name == "Content-Security-Policy").then_some(value.clone()))
+            .unwrap();
+        assert!(
+            csp.starts_with("default-src 'none'; style-src 'sha256-"),
+            "{csp}"
+        );
+        assert!(!csp.contains("unsafe-inline"));
+        assert!(!csp.contains("script-src"));
+        let html = String::from_utf8(response.body).unwrap();
+        assert_eq!(html.matches("<style>").count(), 1);
+        assert!(!html.contains(" style=\""));
+        assert!(!html.contains("<script"));
+        // Deny comes first, so pressing Enter in a field does not approve.
+        assert!(html.find("value=\"deny\"").unwrap() < html.find("value=\"approve\"").unwrap());
     }
 
     #[test]
