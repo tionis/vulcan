@@ -5597,6 +5597,8 @@ Implemented over the shared CLI/MCP workflows behind the host's mutation gate, e
 
 ### 10.9 Managed-directory capabilities and knowledge profiles
 
+> **On hold (2026-11-17).** Eric decided that geth (the Data Platform) owns vaults, replication, device and person identity, access control (Keyline) and large-collection storage, and that Vulcan becomes the knowledge layer over a directory of files (Grimoire `wiki/Architecture/Content Store Research/Sync Study 2026-11-17.md` and Data Platform Decisions of 2026-11-17, decisions 7 and 8). Vulcan's sync is frozen, not extended: shipped behaviour stays maintained, but do not start new work here until the boundary is confirmed. The shipped `knowledge` and `files-only` profiles stay; large document and media collections move to geth.
+
 **Goal:** Reuse Vulcan's daemon for local directories and Git repositories supporting knowledge workflows, including large document/media collections. Keep knowledge bases central and Markdown services optional; ship within the existing binary and workspace before considering a separate product.
 
 **Depends on:** Existing registry/direct-sync workflows and 12.1's synchronous boundary. Integrate with 10.7's shared runtime as it lands without requiring the full App platform. Full-materialization files-only management can ship before 12.20; selective materialization requires its conformance gates. Design contract: `docs/design_document.md` section 4.7.
@@ -6438,6 +6440,8 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 ### 12.16 Device key custody and secret-store foundation
 
+> **On hold (2026-11-17).** Eric decided that geth (the Data Platform) owns vaults, replication, device and person identity, access control (Keyline) and large-collection storage, and that Vulcan becomes the knowledge layer over a directory of files (Grimoire `wiki/Architecture/Content Store Research/Sync Study 2026-11-17.md` and Data Platform Decisions of 2026-11-17, decisions 7 and 8). Vulcan's sync is frozen, not extended: shipped behaviour stays maintained, but do not start new work here until the boundary is confirmed. Device identities are to be anchored in geth; reusing Vulcan's device key there is optional.
+
 **Goal:** Keep protected-file custody as the unattended baseline, add native stores independently, and support exact-key generic agents only for explicitly interactive signing. Same-key migration checks dependent usages and retains its source; no provider fallback or implicit deletion.
 
 **Design contract:** `docs/specs/device-key-custody.md`. Custody is distinct from identity, protocol usage, trust, and authorization. This phase does not rotate keys, establish trust, upload forge credentials, or enable Git signing automatically.
@@ -6493,6 +6497,8 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 - [ ] Review and update `sync-workflow`, `diagnostics-and-repair`, configuration guidance, installation/service documentation, generated CLI/schema snapshots, and installed managed-skill tests when executable custody behavior ships. This design-only item does not change current skill instructions.
 
 ### 12.17 Cryptographic key management and accepted registries
+
+> **On hold (2026-11-17).** Eric decided that geth (the Data Platform) owns vaults, replication, device and person identity, access control (Keyline) and large-collection storage, and that Vulcan becomes the knowledge layer over a directory of files (Grimoire `wiki/Architecture/Content Store Research/Sync Study 2026-11-17.md` and Data Platform Decisions of 2026-11-17, decisions 7 and 8). Vulcan's sync is frozen, not extended: shipped behaviour stays maintained, but do not start new work here until the boundary is confirmed. Superseded in direction by geth's Keyline authority graph.
 
 **Goal:** Ship a small typed key manager and administrator-signed public registry for single users and small teams. Any enrolled administrator may sign a change; devices retain last accepted permissions while offline, and revocations propagate as updates arrive.
 
@@ -6550,6 +6556,8 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 ### 12.18 Optional synced secrets with age
 
+> **On hold (2026-11-17).** Eric decided that geth (the Data Platform) owns vaults, replication, device and person identity, access control (Keyline) and large-collection storage, and that Vulcan becomes the knowledge layer over a directory of files (Grimoire `wiki/Architecture/Content Store Research/Sync Study 2026-11-17.md` and Data Platform Decisions of 2026-11-17, decisions 7 and 8). Vulcan's sync is frozen, not extended: shipped behaviour stays maintained, but do not start new work here until the boundary is confirmed. Synced secrets belong with geth's identity anchor (including for the dotfiles).
+
 **Goal:** If synced secrets are needed, encrypt each secret for one dedicated native age X25519 recipient and distribute its private identity out of band. Several secrets may share the same key. Keep this extension optional and usable offline.
 
 **Design contract:** The "Optional synced secrets with age" section of `docs/specs/key-management.md`. This design round is complete; implementation checkboxes below remain open. Secret-access registries, automatic distribution, per-user recipient management, and rotation workflows are deferred.
@@ -6564,6 +6572,8 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 - [ ] Update bundled configuration/sync skills and installed skill tests when commands ship. Keep Phase 17.4 plaintext callout/rendering restrictions separate from this encrypted secret store.
 
 ### 12.19 Deterministic artifact mergers and Git integration
+
+> **On hold (2026-11-17).** Eric decided that geth (the Data Platform) owns vaults, replication, device and person identity, access control (Keyline) and large-collection storage, and that Vulcan becomes the knowledge layer over a directory of files (Grimoire `wiki/Architecture/Content Store Research/Sync Study 2026-11-17.md` and Data Platform Decisions of 2026-11-17, decisions 7 and 8). Vulcan's sync is frozen, not extended: shipped behaviour stays maintained, but do not start new work here until the boundary is confirmed. Redirect: Vulcan's Markdown-aware mergers are to move into a crate with no Git dependency, so geth can adopt them later as a deterministic `files/2` merger registry; until then geth writes conflict copies that Vulcan resolves.
 
 **Goal:** Reuse one validated deterministic artifact-merger registry for Vulcan's internal file-tree synchronization and for ordinary Git repositories. Automatically merge only formats whose semantics make the exact conflict convergent; keep malformed, incompatible, structural, or identity-ambiguous inputs recoverable and reviewable.
 
@@ -6581,6 +6591,8 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 - [ ] Add unit, CLI JSON, installed-Git, and sync integration tests for registry selection, unsupported versions, resource ceilings, no-write-on-failure, exit codes, path quoting, spaces/non-UTF-8 diagnostics where supported, attributes/config preservation, internal-versus-driver output parity, role and arrival-order permutations, crash/retry idempotence, and exact preservation of every rejected input. Review `sync-workflow` and `diagnostics-and-repair` bundled skills when the commands ship; do not advertise planned formats before their conformance gates pass.
 
 ### 12.20 Selective materialization and large-repository synchronization
+
+> **On hold (2026-11-17).** Eric decided that geth (the Data Platform) owns vaults, replication, device and person identity, access control (Keyline) and large-collection storage, and that Vulcan becomes the knowledge layer over a directory of files (Grimoire `wiki/Architecture/Content Store Research/Sync Study 2026-11-17.md` and Data Platform Decisions of 2026-11-17, decisions 7 and 8). Vulcan's sync is frozen, not extended: shipped behaviour stays maintained, but do not start new work here until the boundary is confirmed. Partial replicas and on-demand files are geth's job.
 
 **Goal:** Synchronize large knowledge/document/media repositories while each device stores an explicit subset. Preserve one complete logical file tree, local edit authority, lossless reconciliation, direct CLI operation, and bounded offline behavior. This is planned work; installed Git support alone does not establish Vulcan compatibility.
 
@@ -7068,6 +7080,8 @@ Automerge compiles to `wasm32`, enabling browser-side editing without a live ser
 ---
 
 ## Phase 17: Identity & Delegable Capability Authorization
+
+> **On hold (2026-11-17).** Eric decided that geth (the Data Platform) owns vaults, replication, device and person identity, access control (Keyline) and large-collection storage, and that Vulcan becomes the knowledge layer over a directory of files (Grimoire `wiki/Architecture/Content Store Research/Sync Study 2026-11-17.md` and Data Platform Decisions of 2026-11-17, decisions 7 and 8). Vulcan's sync is frozen, not extended: shipped behaviour stays maintained, but do not start new work here until the boundary is confirmed. Phase 17 also covers authorization for Vulcan's own web and API surfaces, which stays Vulcan's; before building 17.1 and 17.2, reconcile its identities, grants and delegation with geth's Keyline so there is one identity system.
 
 **Goal:** Add multi-user identity and a capability-first authorization system for humans, groups, agents, automation, services, and external shares. A trusted local bootstrap creates the first canonical root grant; holders may then delegate strict subsets of delegable authority through typed wiki objects. Document-level secrets and limited bearer credentials build on the same model so every web-facing and automated workflow shares one authorization boundary.
 
