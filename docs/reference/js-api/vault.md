@@ -27,6 +27,9 @@ Available today:
 - `vault.transaction(fn)`
 - `vault.withLock(paths, fn)` reserves the concurrency-friendly shape for mutation tools; today it runs the callback in-process.
 - `vault.refactor.renameAlias(...)`, `renameHeading(...)`, `renameBlockRef(...)`, `renameProperty(...)`, `mergeTags(...)`, `move(...)`
+  Each refactor commits on its own, so it cannot run inside `vault.transaction()`. Like `vulcan
+  refactor`, a refactor or move that touches an mdbase collection record is one validated, journaled
+  mdbase write together with the other notes it rewrites; a rejection leaves every file unchanged.
 - `vault.inbox(text)`
 
 Collection results use the shared DataArray pipeline, including `.where()`, `.sortBy()`, `.limit()`, and `.forEach()`.

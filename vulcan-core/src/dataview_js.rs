@@ -70,6 +70,17 @@ pub struct DataviewJsMutationChange {
 /// behavior after restoring the staged originals.
 pub trait DataviewJsMutationCommitter: Send + Sync {
     fn commit(&self, changes: &[DataviewJsMutationChange]) -> Result<bool, String>;
+
+    /// Move a note and rewrite the links to it, for hosts whose moves must
+    /// go through their own write boundary. `None` uses the runtime's plain
+    /// move.
+    fn move_note(
+        &self,
+        _source: &str,
+        _destination: &str,
+    ) -> Option<Result<crate::MoveSummary, String>> {
+        None
+    }
 }
 
 #[derive(Clone, Default)]
@@ -300,8 +311,8 @@ mod runtime {
     use crate::permissions::{resolve_permission_profile, PermissionGuard, ProfilePermissionGuard};
     use crate::properties::NoteRecord;
     use crate::refactor::{
-        merge_tags, rename_alias, rename_block_ref, rename_heading, rename_property,
-        set_note_property,
+        plan_merge_tags, plan_rename_alias, plan_rename_block_ref, plan_rename_heading,
+        plan_rename_property, set_note_property,
     };
     use crate::resolve_note_reference;
     use crate::search::{search_vault_with_filter, SearchQuery};
@@ -5198,7 +5209,8 @@ globalThis.this = dv.current();
                     DataviewJsError::Message("DataviewJS transaction lock poisoned".to_string())
                 })?
                 .is_none();
-        if !needs_implicit_transaction {
+        // Refactors cannot join a transaction; each commits its own plan.
+        if !needs_implicit_transaction || kind.starts_with("refactor.") {
             return apply_js_mutation_inner(state, kind, payload);
         }
 
@@ -5408,11 +5420,10 @@ globalThis.this = dv.current();
                 ensure_refactor_access(state, &resolved_note, "vault.refactor.renameAlias()")?;
                 let old_alias = payload_string(&payload, "oldAlias")?;
                 let new_alias = payload_string(&payload, "newAlias")?;
-                let report = rename_alias(&state.paths, note, old_alias, new_alias, false)
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-                reload_note_index(state)?;
-                serde_json::to_value(report)
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))
+                commit_refactor_plan(
+                    state,
+                    plan_rename_alias(&state.paths, note, old_alias, new_alias),
+                )
             }
             "refactor.renameHeading" => {
                 ensure_no_transaction(state, "vault.refactor.renameHeading()")?;
@@ -5421,11 +5432,10 @@ globalThis.this = dv.current();
                 ensure_refactor_access(state, &resolved_note, "vault.refactor.renameHeading()")?;
                 let old_heading = payload_string(&payload, "oldHeading")?;
                 let new_heading = payload_string(&payload, "newHeading")?;
-                let report = rename_heading(&state.paths, note, old_heading, new_heading, false)
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-                reload_note_index(state)?;
-                serde_json::to_value(report)
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))
+                commit_refactor_plan(
+                    state,
+                    plan_rename_heading(&state.paths, note, old_heading, new_heading),
+                )
             }
             "refactor.renameBlockRef" => {
                 ensure_no_transaction(state, "vault.refactor.renameBlockRef()")?;
@@ -5434,34 +5444,24 @@ globalThis.this = dv.current();
                 ensure_refactor_access(state, &resolved_note, "vault.refactor.renameBlockRef()")?;
                 let old_block_id = payload_string(&payload, "oldBlockId")?;
                 let new_block_id = payload_string(&payload, "newBlockId")?;
-                let report =
-                    rename_block_ref(&state.paths, note, old_block_id, new_block_id, false)
-                        .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-                reload_note_index(state)?;
-                serde_json::to_value(report)
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))
+                commit_refactor_plan(
+                    state,
+                    plan_rename_block_ref(&state.paths, note, old_block_id, new_block_id),
+                )
             }
             "refactor.renameProperty" => {
                 ensure_no_transaction(state, "vault.refactor.renameProperty()")?;
                 ensure_unrestricted_refactor_scope(state, "vault.refactor.renameProperty()")?;
                 let old_key = payload_string(&payload, "oldKey")?;
                 let new_key = payload_string(&payload, "newKey")?;
-                let report = rename_property(&state.paths, old_key, new_key, false)
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-                reload_note_index(state)?;
-                serde_json::to_value(report)
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))
+                commit_refactor_plan(state, plan_rename_property(&state.paths, old_key, new_key))
             }
             "refactor.mergeTags" => {
                 ensure_no_transaction(state, "vault.refactor.mergeTags()")?;
                 ensure_unrestricted_refactor_scope(state, "vault.refactor.mergeTags()")?;
                 let from_tag = payload_string(&payload, "fromTag")?;
                 let to_tag = payload_string(&payload, "toTag")?;
-                let report = merge_tags(&state.paths, from_tag, to_tag, false)
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-                reload_note_index(state)?;
-                serde_json::to_value(report)
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))
+                commit_refactor_plan(state, plan_merge_tags(&state.paths, from_tag, to_tag))
             }
             "refactor.move" => {
                 ensure_no_transaction(state, "vault.refactor.move()")?;
@@ -5473,9 +5473,16 @@ globalThis.this = dv.current();
                     payload_string(&payload, "destination")?,
                 )?;
                 ensure_refactor_access(state, &destination, "vault.refactor.move()")?;
-                let report = move_note(&state.paths, source, &destination, false)
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-                reload_note_index(state)?;
+                let routed = state
+                    .mutation_committer
+                    .as_ref()
+                    .and_then(|committer| committer.move_note(&resolved_source, &destination));
+                let report = match routed {
+                    Some(result) => result.map_err(DataviewJsError::Message)?,
+                    None => move_note(&state.paths, source, &destination, false)
+                        .map_err(|error| DataviewJsError::Message(error.to_string()))?,
+                };
+                scan_and_reload_state(state)?;
                 serde_json::to_value(report)
                     .map_err(|error| DataviewJsError::Message(error.to_string()))
             }
@@ -5695,6 +5702,41 @@ globalThis.this = dv.current();
             }
         }
         Ok(())
+    }
+
+    /// Apply a planned refactor: through the host's committer when it
+    /// manages a touched note (an mdbase record), otherwise as an ordinary
+    /// batch that refuses files changed since planning.
+    fn commit_refactor_plan(
+        state: &JsEvalState,
+        plan: Result<crate::refactor::RefactorWritePlan, crate::refactor::RefactorError>,
+    ) -> Result<Value, DataviewJsError> {
+        let plan = plan.map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        if !plan.changes.is_empty() {
+            let changes = plan
+                .changes
+                .iter()
+                .map(|change| DataviewJsMutationChange {
+                    path: change.path.clone(),
+                    before: change.before.clone(),
+                    after: change.after.clone(),
+                })
+                .collect::<Vec<_>>();
+            let handled = match state.mutation_committer.as_ref() {
+                Some(committer) => committer
+                    .commit(&changes)
+                    .map_err(DataviewJsError::Message)?,
+                None => false,
+            };
+            if !handled {
+                crate::ordinary_write::apply_ordinary_write_batch(&state.paths, &plan.changes)
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+            }
+        }
+        scan_and_reload_state(state)?;
+        let mut report = plan.report;
+        report.dry_run = false;
+        serde_json::to_value(report).map_err(|error| DataviewJsError::Message(error.to_string()))
     }
 
     fn ensure_no_transaction(state: &JsEvalState, operation: &str) -> Result<(), DataviewJsError> {
@@ -8057,6 +8099,77 @@ cpu_limit_ms = 25
                 .expect("alpha note")
                 .contains("explicit"));
             assert!(vault_root.join("Beta.md").exists());
+        }
+
+        #[test]
+        fn dataviewjs_refactors_commit_their_plan_through_the_committer() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan directory");
+            fs::write(
+                vault_root.join("Alpha.md"),
+                "---\naliases: [Old]\n---\n# Alpha\n",
+            )
+            .expect("alpha note");
+            fs::write(vault_root.join("Beta.md"), "See [[Alpha#Alpha]].\n").expect("beta");
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+            let run = |reject, script: &str| {
+                let committer = Arc::new(RecordingMutationCommitter {
+                    calls: Mutex::new(Vec::new()),
+                    reject,
+                });
+                let result = evaluate_dataview_js_with_options(
+                    &paths,
+                    script,
+                    None,
+                    DataviewJsEvalOptions {
+                        sandbox: Some(JsRuntimeSandbox::Fs),
+                        mutation_committer: Some(committer.clone()),
+                        ..DataviewJsEvalOptions::default()
+                    },
+                );
+                let calls = committer.calls.lock().expect("calls").clone();
+                (result, calls)
+            };
+
+            // A rejected refactor writes nothing.
+            let (result, calls) = run(true, r#"vault.refactor.renameAlias("Alpha", "Old", "New")"#);
+            assert!(result.is_err());
+            assert_eq!(calls.len(), 1);
+            assert!(fs::read_to_string(vault_root.join("Alpha.md"))
+                .unwrap()
+                .contains("[Old]"));
+
+            // Unhandled changes apply as an ordinary batch, across notes.
+            let (result, calls) = run(
+                false,
+                r#"vault.refactor.renameAlias("Alpha", "Old", "New");
+                   vault.refactor.renameHeading("Alpha", "Alpha", "Top");"#,
+            );
+            result.expect("refactors apply");
+            assert_eq!(calls.len(), 2);
+            assert_eq!(
+                calls[1]
+                    .iter()
+                    .map(|change| change.path.as_str())
+                    .collect::<Vec<_>>(),
+                ["Alpha.md", "Beta.md"]
+            );
+            assert!(fs::read_to_string(vault_root.join("Alpha.md"))
+                .unwrap()
+                .contains("New"));
+            assert_eq!(
+                fs::read_to_string(vault_root.join("Beta.md")).unwrap(),
+                "See [[Alpha#Top]].\n"
+            );
+
+            // Inside an explicit transaction they are still refused.
+            let (result, _) = run(
+                false,
+                r#"vault.transaction(() => vault.refactor.renameAlias("Alpha", "New", "Newer"))"#,
+            );
+            assert!(result.is_err());
         }
 
         #[test]

@@ -240,6 +240,25 @@ impl DataviewJsMutationCommitter for MdbaseJsMutationCommitter {
         .map(|report| report.is_some())
         .map_err(|error| error.to_string())
     }
+
+    /// Moves go through the same boundary as `vulcan move`: a record moves
+    /// as one journaled mdbase rename with the links rewritten to it.
+    fn move_note(
+        &self,
+        source: &str,
+        destination: &str,
+    ) -> Option<Result<vulcan_core::MoveSummary, String>> {
+        Some(
+            crate::browse::move_note_with_profile(
+                &self.paths,
+                source,
+                destination,
+                false,
+                self.permission_profile.as_deref(),
+            )
+            .map_err(|error| error.to_string()),
+        )
+    }
 }
 
 #[must_use]
@@ -3624,6 +3643,45 @@ mod tests {
         assert_eq!(outbox.len(), 1);
         assert_eq!(outbox[0].operation, "batch");
         assert_eq!(outbox[0].paths.len(), 2);
+    }
+
+    #[test]
+    fn script_refactors_and_moves_of_records_are_validated_mdbase_writes() {
+        let (directory, paths) = fixture();
+        initialize_vulcan_dir(&paths).unwrap();
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        let run = |script: &str| {
+            evaluate_dataview_js_with_options(
+                &paths,
+                script,
+                None,
+                DataviewJsEvalOptions {
+                    sandbox: Some(JsRuntimeSandbox::Fs),
+                    mutation_committer: Some(mdbase_js_mutation_committer(
+                        &paths,
+                        None,
+                        Verbosity::Quiet,
+                    )),
+                    ..DataviewJsEvalOptions::default()
+                },
+            )
+        };
+        let original = fs::read_to_string(directory.path().join("tasks/public.md")).unwrap();
+        let error = run(r#"vault.refactor.renameProperty("title", "name")"#)
+            .expect_err("records would lose their required title");
+        assert!(error.to_string().contains("required"), "{error}");
+        assert_eq!(
+            fs::read_to_string(directory.path().join("tasks/public.md")).unwrap(),
+            original
+        );
+        assert!(list_mdbase_write_outbox(&paths).unwrap().is_empty());
+
+        run(r#"vault.refactor.move("tasks/public.md", "tasks/moved.md")"#).expect("move");
+        assert!(directory.path().join("tasks/moved.md").is_file());
+        assert!(!directory.path().join("tasks/public.md").exists());
+        let outbox = list_mdbase_write_outbox(&paths).unwrap();
+        assert_eq!(outbox.len(), 1);
+        assert_eq!(outbox[0].operation, "rename");
     }
 
     #[test]
