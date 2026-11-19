@@ -17748,6 +17748,8 @@ fn refactors_of_collection_records_are_validated_mdbase_writes() {
 /// Inbox entries, templates, Templater dates, and script captures use the
 /// device's local date and time, like daily notes. UTC+14 and UTC-12 are a
 /// day apart, so a UTC date fails in at least one of them at any hour.
+// Windows ignores `TZ`, so the zones cannot be simulated there.
+#[cfg(unix)]
 #[test]
 fn inbox_templates_and_scripts_use_the_local_date_and_offset() {
     for (zone, offset_hours, suffix) in [
@@ -17831,6 +17833,8 @@ fn inbox_templates_and_scripts_use_the_local_date_and_offset() {
 /// `completedDate` is the device's calendar day. UTC+14 and UTC-12 are a
 /// day apart from each other, so at any hour at least one of them disagrees
 /// with the UTC date.
+// Windows ignores `TZ`, so the zones cannot be simulated there.
+#[cfg(unix)]
 #[test]
 fn tasks_complete_records_the_local_completion_date() {
     for (zone, offset_hours) in [("Pacific/Kiritimati", 14), ("Etc/GMT+12", -12)] {
