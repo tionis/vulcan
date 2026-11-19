@@ -409,7 +409,7 @@ pub fn apply_task_set_with_guard(
                 let completed_key = &loaded.config.tasknotes.field_mapping.completed_date;
                 let completed_value =
                     if tasknotes_status_state(&loaded.config.tasknotes, &next_status).completed {
-                        Some(YamlValue::String(current_utc_date_string()))
+                        Some(YamlValue::String(current_task_date_string()))
                     } else {
                         None
                     };
@@ -557,7 +557,7 @@ pub fn apply_task_complete_with_guard(
                     if let Some(change) = set_tasknote_frontmatter_value(
                         frontmatter,
                         completed_key,
-                        Some(YamlValue::String(current_utc_date_string())),
+                        Some(YamlValue::String(current_task_date_string())),
                     ) {
                         changes.push(change);
                     }
@@ -3100,7 +3100,7 @@ fn tasknotes_saved_view_expression(
             "({completed_expr}) || (note.{} && note.{}.map(date(value).format(\"YYYY-MM-DD\")).contains({}))",
             tasknotes.field_mapping.complete_instances,
             tasknotes.field_mapping.complete_instances,
-            quote_saved_view_string(&current_utc_date_string())
+            quote_saved_view_string(&current_task_date_string())
         );
         return Ok(if matches!(operator, "is-not" | "is-not-checked") {
             format!("!({result})")
@@ -3456,10 +3456,7 @@ fn resolve_tasks_reference_date(from: Option<&str>) -> Result<(String, i64), App
     let reference_date = from
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map_or_else(
-            || TemplateTimestamp::current().default_date_string(),
-            ToOwned::to_owned,
-        );
+        .map_or_else(current_task_date_string, ToOwned::to_owned);
     let reference_ms = parse_date_like_string(&reference_date).ok_or_else(|| {
         AppError::operation(format!(
             "failed to parse recurrence reference date: {reference_date}"
@@ -4667,7 +4664,7 @@ fn build_inline_task_create_plan(
         tokens.push(format!("⏳ {scheduled}"));
     }
     if config.tasks.set_created_date {
-        tokens.push(format!("➕ {}", current_utc_date_string()));
+        tokens.push(format!("➕ {}", current_task_date_string()));
     }
     if let Some(priority) = priority
         .as_deref()
@@ -5297,7 +5294,7 @@ fn build_converted_tasknote(
         if let Some(change) = set_tasknote_frontmatter_value(
             &mut frontmatter,
             &mapping.completed_date,
-            Some(YamlValue::String(current_utc_date_string())),
+            Some(YamlValue::String(current_task_date_string())),
         ) {
             task_changes.push(change);
         }
@@ -6558,7 +6555,7 @@ fn resolve_task_track_summary_window(
     period: TaskTrackSummaryPeriod,
 ) -> Result<(String, String, i64, i64), AppError> {
     let now_ms = current_utc_timestamp_ms();
-    let today = current_utc_date_string();
+    let today = current_task_date_string();
 
     let (from, to) = match period {
         TaskTrackSummaryPeriod::Day => (today.clone(), today),
@@ -7146,7 +7143,7 @@ fn complete_recurring_tasknote_instance(
             // A scheduled time of day names the same instance.
             .map(|value| normalize_date_argument(Some(date_part(value).unwrap_or(value))))
             .transpose()?
-            .unwrap_or_else(current_utc_date_string),
+            .unwrap_or_else(current_task_date_string),
     };
 
     let complete_key = &loaded.config.tasknotes.field_mapping.complete_instances;
@@ -7231,7 +7228,7 @@ fn advance_recurring_tasknote(
         .as_deref()
         .is_some_and(|anchor| anchor.trim().eq_ignore_ascii_case("completion"));
     let rule = if completion_anchored {
-        let today = current_utc_date_string();
+        let today = current_task_date_string();
         let restarted = vulcan_core::tasks::with_recurrence_start(rule, &today);
         if let Some(change) = set_tasknote_frontmatter_value(
             frontmatter,
@@ -7245,7 +7242,7 @@ fn advance_recurring_tasknote(
         rule.to_string()
     };
     let after = if completion_anchored {
-        current_utc_date_string()
+        current_task_date_string()
     } else {
         completed.to_string()
     };
@@ -7433,8 +7430,11 @@ fn current_utc_timestamp_string() -> String {
     TemplateTimestamp::current().default_strings().datetime
 }
 
-fn current_utc_date_string() -> String {
-    TemplateTimestamp::current().default_date_string()
+/// Today's date on the device's calendar: completion dates, recurrence
+/// restarts and created markers follow the user's day, not UTC's, as inline
+/// task completion and daily notes already do.
+fn current_task_date_string() -> String {
+    crate::periodic::current_local_date_string()
 }
 
 /// Midnight UTC of today in the reminder timezone (the device's when unset):

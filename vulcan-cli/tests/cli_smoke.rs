@@ -17653,6 +17653,57 @@ fn tasks_complete_json_output_marks_non_recurring_task_done() {
         .is_some_and(|value| value.len() == 10));
 }
 
+/// `completedDate` is the device's calendar day. UTC+14 and UTC-12 are a
+/// day apart from each other, so at any hour at least one of them disagrees
+/// with the UTC date.
+#[test]
+fn tasks_complete_records_the_local_completion_date() {
+    for (zone, offset_hours) in [("Pacific/Kiritimati", 14), ("Etc/GMT+12", -12)] {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("tasknotes", &vault_root);
+        fs::write(
+            vault_root.join("TaskNotes/Tasks/Pay Rent.md"),
+            "---\ntitle: \"Pay rent\"\nstatus: \"open\"\npriority: \"normal\"\ntags: [\"task\"]\n---\n",
+        )
+        .expect("tasknote fixture should be written");
+        run_scan(&vault_root);
+        let vault = vault_root
+            .to_str()
+            .expect("vault path should be valid utf-8");
+        let before = (chrono::Utc::now() + chrono::Duration::hours(offset_hours)).date_naive();
+        Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .env("TZ", zone)
+            .args([
+                "--vault",
+                vault,
+                "tasks",
+                "complete",
+                "Pay Rent",
+                "--no-commit",
+            ])
+            .assert()
+            .success();
+        let after = (chrono::Utc::now() + chrono::Duration::hours(offset_hours)).date_naive();
+        let note = fs::read_to_string(vault_root.join("TaskNotes/Tasks/Pay Rent.md"))
+            .expect("task note should be readable");
+        let recorded = note
+            .lines()
+            .find_map(|line| line.strip_prefix("completedDate:"))
+            .map_or_else(
+                || panic!("no completedDate in {note}"),
+                |value| value.trim().trim_matches(['"', '\'']).to_string(),
+            );
+        assert!(
+            [before, after]
+                .iter()
+                .any(|day| day.format("%Y-%m-%d").to_string() == recorded),
+            "{zone}: {recorded} is not the local day {before}"
+        );
+    }
+}
+
 #[test]
 fn tasks_complete_json_output_records_recurring_instance_completion() {
     let temp_dir = TempDir::new().expect("temp dir should be created");

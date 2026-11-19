@@ -9,7 +9,7 @@ use super::{
     build_task_track_log_report, build_task_track_status_report, build_task_track_summary_report,
     build_tasks_blocked_report, build_tasks_eval_report, build_tasks_graph_report,
     build_tasks_list_report, build_tasks_next_report, build_tasks_view_list_report,
-    build_tasks_view_report, current_utc_date_string, move_ordinary_tasknote_if_unchanged,
+    build_tasks_view_report, current_task_date_string, move_ordinary_tasknote_if_unchanged,
     process_due_tasknote_auto_archives, write_ordinary_task_conversion, TaskAddRequest,
     TaskArchiveRequest, TaskCompleteRequest, TaskConvertRequest, TaskCreateRequest,
     TaskEvalRequest, TaskListRequest, TaskPomodoroStartRequest, TaskPomodoroStopRequest,
@@ -1661,7 +1661,7 @@ fn apply_task_set_marks_completed_tasks_with_completed_date() {
     assert!(rendered.contains(&format!(
         "{}: {}",
         config.tasknotes.field_mapping.completed_date,
-        current_utc_date_string()
+        current_task_date_string()
     )));
 }
 
@@ -1806,7 +1806,7 @@ fn completing_a_recurring_instance_advances_the_task_to_its_next_occurrence() {
     assert_eq!(field(&weekly, &mapping.status).as_deref(), Some("open"));
 
     // A completion-anchored series restarts from the day it was completed.
-    let today = super::current_utc_date_string();
+    let today = super::current_task_date_string();
     let water = complete("Tasks/Water", Some("2026-11-01"));
     assert_eq!(
         field(&water, &mapping.recurrence),
