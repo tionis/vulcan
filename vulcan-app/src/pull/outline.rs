@@ -1820,7 +1820,47 @@ fn plan_pull(
         }
     }
     actions.sort_by(|left, right| left.local_path.cmp(&right.local_path));
+    refuse_mdbase_record_writes(paths, &actions)?;
     Ok(actions)
+}
+
+/// Refuse a pull that would write, move, or rewrite an mdbase collection
+/// record. The pull applies its own journaled plan under the vault write
+/// lock, outside mdbase's validated transaction, so it must not touch a
+/// record; the destination belongs outside the collection or in its
+/// `settings.exclude`.
+fn refuse_mdbase_record_writes(
+    paths: &VaultPaths,
+    actions: &[OutlinePullAction],
+) -> Result<(), AppError> {
+    let mut touched = Vec::new();
+    for action in actions
+        .iter()
+        .filter(|action| pull_action_mutates(action.kind))
+    {
+        touched.push(action.local_path.clone());
+        if let Some(source) = action.source_local_path.as_deref() {
+            touched.push(source.to_string());
+            if matches!(
+                action.kind,
+                OutlinePullActionKind::Move | OutlinePullActionKind::ArchiveMissing
+            ) {
+                touched.extend(
+                    vulcan_core::move_rewrite::move_candidate_paths(
+                        paths,
+                        source,
+                        &action.local_path,
+                    )
+                    .map_err(AppError::operation)?,
+                );
+            }
+        }
+    }
+    crate::note_writes::refuse_mdbase_record_paths(
+        paths,
+        touched.iter().map(String::as_str),
+        "Outline pull",
+    )
 }
 
 fn generate_paths(
@@ -3573,6 +3613,40 @@ mod tests {
         .expect("idempotent pull");
         assert!(second.applied);
         assert_eq!(second.unchanged, 2);
+    }
+
+    #[test]
+    fn pull_refuses_to_write_mdbase_records_until_the_destination_is_excluded() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        fs::write(temp.path().join("mdbase.yaml"), "spec_version: '0.3.0'\n").expect("collection");
+        let api = api(vec![document("doc", "Home", "# Home\n", None)]);
+        let pull = |dry_run| {
+            pull_outline(
+                &paths,
+                &api,
+                "wiki",
+                "collection",
+                "Imported",
+                dry_run,
+                &OutlinePullConflictPolicy::abort(),
+            )
+        };
+        for dry_run in [true, false] {
+            let error = pull(dry_run).expect_err("a record would be written");
+            assert_eq!(error.code(), Some("mdbase_collection"), "{error}");
+            assert!(error.to_string().contains("settings.exclude"), "{error}");
+        }
+        assert!(!temp.path().join("Imported").exists());
+
+        fs::write(
+            temp.path().join("mdbase.yaml"),
+            "spec_version: '0.3.0'\nsettings:\n  exclude:\n  - Imported/**\n",
+        )
+        .expect("exclude the destination");
+        assert!(pull(false).expect("excluded pull").applied);
+        assert!(temp.path().join("Imported/Home.md").is_file());
     }
 
     #[test]

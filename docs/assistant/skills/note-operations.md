@@ -1,7 +1,7 @@
 ---
 name: note-operations
 description: Read, create, append, and patch notes safely through Vulcan instead of raw filesystem edits.
-version: 9
+version: 10
 tools:
   - note_outline
   - note_get
@@ -45,7 +45,7 @@ Use this skill when the task is centered on one note or a small set of notes and
 - Managed mdbase batches validate the proposed final state: duplicate values and broken declared incoming links can reject the entire edit before any file changes. A valid unique-value swap must be submitted together in one supported batch, not as sequential writes. `stale_state` means a validation dependency changed; reread and rebuild the preview instead of reusing it.
 - Managed mdbase create/update policies may generate IDs, timestamps, or other fields before validation. Read the resulting note rather than assuming the submitted frontmatter was persisted unchanged. Previews retain the generated values for apply/replay; a new preview may generate new values. A no-op policy preserves exact source; changed fields may reserialize frontmatter while preserving the body. `lifecycle_event_unsupported` blocks an optional rename/delete hook; it is not permission to bypass the managed write boundary.
 - To move many notes, pipe `source<TAB>destination` lines into `vulcan refactor move --stdin` instead of looping over `vulcan move`: the whole batch is checked first (malformed lines, repeated sources or destinations), moves run in order with one auto-commit, and the run stops at the first failed move, reporting which pair failed and that the earlier moves stayed applied. A `--dry-run` batch previews each pair against the current vault, so it cannot preview a pair that depends on an earlier one.
-- Refactors, `refactor split`, `refactor folder-notes`, Kanban card edits, language-server edits to closed notes, `web fetch --save`, and bot attachments use the same validated boundary whenever they touch a record, and commit ordinary notes they rewrite in the same transaction. A rejection means nothing was written: fix the input or the record rather than editing files directly.
+- Refactors, `refactor split`, `refactor folder-notes`, Kanban card edits, language-server edits to closed notes, `web fetch --save`, and bot attachments use the same validated boundary whenever they touch a record, and commit ordinary notes they rewrite in the same transaction. A rejection means nothing was written: fix the input or the record rather than editing files directly. Outline pull and artifact, TextBundle, or wiki-package imports refuse with `mdbase_collection` instead of writing a record; pick a destination outside the collection, or ask the owner to add it to `settings.exclude`.
 - Moving or renaming an mdbase collection record (`vulcan move`, `note rename`, `refactor move`) commits the move and every rewritten reference as one validated mdbase rename under the selected profile. A validation or permission failure leaves every file unchanged and is not retried as an ordinary move; fix the cause instead of moving the file by hand.
 - On Android, mdbase journals, staging, receipts, and outbox live in per-vault Termux-private state. A write returns `unsupported_storage` before changing records when shared storage cannot sync canonical directories; keep the worktree canonical and use a supported filesystem for that write workflow.
 - If a managed write reports `concurrent_modification`, reread the current note and rebuild the intended edit from its new revision. Never replay a stale whole-note replacement blindly.

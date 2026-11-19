@@ -154,6 +154,11 @@ command warns about it until it is resolved.
 `edit --new` and new notes from `browse` create an empty record the same way before the editor
 opens it; what the external editor saves afterwards is its own write.
 
+Outline pull and the artifact, TextBundle, and wiki-package imports publish their own plans and do
+not write records: when one would create or change a record they stop before writing anything with
+`mdbase_collection`. Pull or import into a folder outside the collection, or add that folder to
+`settings.exclude` in `mdbase.yaml`.
+
 A write is refused only for problems it introduces. If a record already fails validation, for
 example an old malformed date, a write that changes some other field still succeeds and reports the
 old problem as a warning; giving the broken field a different invalid value, or breaking another

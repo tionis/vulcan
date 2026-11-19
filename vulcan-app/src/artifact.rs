@@ -323,6 +323,11 @@ fn import_artifact_unlocked(
         .collect::<Vec<_>>();
     changed_paths.sort();
 
+    crate::note_writes::refuse_mdbase_record_paths(
+        paths,
+        plan.notes.iter().map(|note| note.path.as_str()),
+        "Artifact import",
+    )?;
     if !request.dry_run {
         apply_import(paths, &artifact, &plan, &assets, &destination)?;
     }

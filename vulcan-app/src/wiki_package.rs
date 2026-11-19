@@ -312,6 +312,11 @@ pub fn import_wiki_package(
         .map(|member| target(&member.path))
         .collect::<Vec<_>>();
     let annotations = source_annotations(&package, request.source_locators)?;
+    crate::note_writes::refuse_mdbase_record_paths(
+        paths,
+        members.iter().map(String::as_str),
+        "Wiki package import",
+    )?;
     if !request.dry_run {
         let apply = (|| -> Result<(), Box<dyn std::error::Error>> {
             for (member, target) in content.iter().zip(&members) {

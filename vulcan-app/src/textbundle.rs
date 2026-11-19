@@ -112,6 +112,11 @@ pub fn import_text_bundle(
         .collect::<Vec<_>>();
     let mut changed_paths = vec![note_path.clone()];
     changed_paths.extend(assets.iter().map(|asset| asset.vault_path.clone()));
+    crate::note_writes::refuse_mdbase_record_paths(
+        paths,
+        [note_path.as_str()],
+        "TextBundle import",
+    )?;
 
     if !request.dry_run {
         let apply = (|| -> Result<(), Box<dyn std::error::Error>> {
@@ -504,6 +509,49 @@ mod tests {
         .expect("import");
         assert!(temp.path().join(&imported.note_path).exists());
         assert!(temp.path().join(&imported.assets[0].vault_path).exists());
+    }
+
+    #[test]
+    fn import_refuses_to_create_collection_records() {
+        let temp = tempdir().expect("temp");
+        let paths = VaultPaths::new(temp.path());
+        initialize_vulcan_dir(&paths).expect("init");
+        fs::write(temp.path().join("Page.md"), "# Page\n").expect("note");
+        scan_vault(&paths, ScanMode::Full).expect("scan");
+        let package = temp.path().join("out/page.textpack");
+        export_text_bundle(
+            &paths,
+            &TextBundleExportRequest {
+                note: "Page.md".to_string(),
+                output: package.clone(),
+                dry_run: false,
+            },
+        )
+        .expect("export");
+        fs::write(temp.path().join("mdbase.yaml"), "spec_version: '0.3.0'\n").expect("collection");
+        let import = |dry_run| {
+            import_text_bundle(
+                &paths,
+                &TextBundleImportRequest {
+                    package: package.clone(),
+                    destination: "Imported".to_string(),
+                    dry_run,
+                },
+            )
+        };
+        for dry_run in [true, false] {
+            let error = import(dry_run).expect_err("a record would be created");
+            assert_eq!(error.code(), Some("mdbase_collection"), "{error}");
+        }
+        assert!(!temp.path().join("Imported").exists());
+
+        fs::write(
+            temp.path().join("mdbase.yaml"),
+            "spec_version: '0.3.0'\nsettings:\n  exclude:\n  - Imported/**\n",
+        )
+        .expect("exclude");
+        import(false).expect("excluded import");
+        assert!(temp.path().join("Imported/text.md").is_file());
     }
 
     #[test]

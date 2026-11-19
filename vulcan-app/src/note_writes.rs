@@ -178,6 +178,36 @@ fn route_through_mdbase(
     Ok(routed.is_some())
 }
 
+/// Refuse a bulk import or pull that would create or change an mdbase
+/// collection record. Such operations publish their own plan (fresh
+/// destinations, rollback, or a connector journal) under the vault write
+/// lock, outside mdbase's validated transaction, so they must keep away from
+/// records. `what` names the operation in the message.
+pub(crate) fn refuse_mdbase_record_paths<'a>(
+    paths: &VaultPaths,
+    note_paths: impl IntoIterator<Item = &'a str>,
+    what: &str,
+) -> Result<(), AppError> {
+    let Some(collection) = vulcan_core::mdbase::load_mdbase_collection(paths.vault_root())
+        .map_err(AppError::operation)?
+    else {
+        return Ok(());
+    };
+    for path in note_paths {
+        if is_mdbase_record_path(&collection, path).map_err(AppError::operation)? {
+            return Err(AppError::operation_with_code(
+                "mdbase_collection",
+                format!(
+                    "{what} would write {path}, a record of the mdbase collection; write into a \
+                     folder outside the collection or add the destination to \
+                     `settings.exclude` in mdbase.yaml"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Whether any of `changes` is an mdbase collection record, so the batch
 /// would go through mdbase.
 pub(crate) fn changes_touch_mdbase_record(
