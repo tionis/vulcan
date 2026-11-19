@@ -95,6 +95,9 @@ pub fn parse_tasknote_natural_language(
     }
 
     let mut remaining = normalize_nlp_input_for_language(original, &config.nlp_language);
+    // `in 5 minutes` is a moment, taken before a bare `5 minutes` becomes
+    // a time estimate as in TaskNotes.
+    let relative = extract_relative_moment(&mut remaining, reference_ms);
     let mut parsed = ParsedTaskNoteInput {
         contexts: extract_prefixed_values(&mut remaining, nlp_trigger(config, "contexts"), true),
         tags: extract_prefixed_values(&mut remaining, nlp_trigger(config, "tags"), false),
@@ -123,7 +126,9 @@ pub fn parse_tasknote_natural_language(
         } else {
             "due"
         };
-        if let Some(value) = extract_ambiguous_date_value(&mut remaining, reference_ms) {
+        if let Some(value) =
+            relative.or_else(|| extract_ambiguous_date_value(&mut remaining, reference_ms))
+        {
             match default_field {
                 "scheduled" => scheduled = Some(value),
                 _ => due = Some(value),
@@ -896,6 +901,45 @@ fn extract_ambiguous_date_value(text: &mut String, reference_ms: i64) -> Option<
     .expect("valid ambiguous date regex");
     take_date_match(text, &regex, reference_ms)
         .or_else(|| extract_standalone_time(text, reference_ms))
+}
+
+/// `in 5 minutes`, `in 2h`, `in 1h30m`, `in 90 min`: the reference moment
+/// plus that duration, to the minute. Days and weeks stay date phrases.
+fn extract_relative_moment(text: &mut String, reference_ms: i64) -> Option<String> {
+    let regex = Regex::new(
+        r"(?i)(?P<prefix>^|\s)in\s+(?:(?P<compact_hours>\d+)h(?P<compact_minutes>\d+)m|(?P<amount>\d+)\s*(?P<unit>h|hr|hrs|hour|hours|m|min|mins|minute|minutes))\b",
+    )
+    .expect("valid relative moment regex");
+    let capture = regex.captures(text)?;
+    let number = |name: &str| {
+        capture
+            .name(name)
+            .and_then(|value| value.as_str().parse::<i64>().ok())
+    };
+    let minutes = if let Some(hours) = number("compact_hours") {
+        hours * 60 + number("compact_minutes").unwrap_or_default()
+    } else {
+        let amount = number("amount")?;
+        if capture
+            .name("unit")?
+            .as_str()
+            .to_ascii_lowercase()
+            .starts_with('h')
+        {
+            amount * 60
+        } else {
+            amount
+        }
+    };
+    let at = reference_ms.checked_add(minutes.checked_mul(60_000)?)?;
+    let minute_of_day = (at - day_start(at)) / 60_000;
+    *text = regex.replace(text, "$prefix").into_owned();
+    Some(format!(
+        "{}T{:02}:{:02}:00",
+        format_day_ms(day_start(at)),
+        minute_of_day / 60,
+        minute_of_day % 60
+    ))
 }
 
 /// A time without a date means its next occurrence: today while it is still
@@ -1825,6 +1869,18 @@ mod tests {
             // Already past at 10:30, so tomorrow.
             ("standup 9am", "standup", "2026-04-05T09:00:00"),
             ("due by monday ship it", "ship it", "2026-04-06"),
+            (
+                "test reminder in 5 minutes",
+                "test reminder",
+                "2026-04-04T10:35:00",
+            ),
+            ("call back in 2h", "call back", "2026-04-04T12:30:00"),
+            ("stretch in 1h30m", "stretch", "2026-04-04T12:00:00"),
+            (
+                "night shift in 14 hours",
+                "night shift",
+                "2026-04-05T00:30:00",
+            ),
         ] {
             assert_eq!(
                 parse(text),
@@ -1841,6 +1897,13 @@ mod tests {
             parse("fix login (urgent)"),
             ("fix login (urgent)".to_string(), None)
         );
+        // Without `in`, a duration stays a time estimate, as in TaskNotes.
+        let estimate = parse_tasknote_natural_language("stretch 5 minutes", &config, reference);
+        assert_eq!(
+            (estimate.title.as_str(), estimate.time_estimate),
+            ("stretch", Some(5))
+        );
+        assert_eq!(estimate.due, None);
     }
 
     #[test]
