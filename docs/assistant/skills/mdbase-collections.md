@@ -1,7 +1,7 @@
 ---
 name: mdbase-collections
 description: Inspect, query, and safely edit an mdbase typed-Markdown collection (a folder with mdbase.yaml), including saved views and effective schemas.
-version: 3
+version: 4
 tools:
   - help
 metadata:
@@ -66,6 +66,8 @@ the collection keep their normal Vulcan behavior; use the other skills for them.
   `recovery_blocked`, and every command warns about it. One that touched `mdbase.yaml`, types, or
   contracts still blocks the whole collection. Run `vulcan repair mdbase-write status` to see the
   files, and use `accept-current` only when the user confirms the on-disk state is right.
+- `now` stamps and `today()` use `settings.timezone`, or the device's timezone when it is unset.
+  Suggest setting it only when devices in different timezones share the collection.
 - CEL is not Dataview or the native query DSL; do not mix their syntax. Integral numbers are CEL
   `int`, strings use double or single quotes, and `&&`/`||` combine conditions.
 

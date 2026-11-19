@@ -599,12 +599,12 @@ fn analyze_record_source_with_frontmatter(
 pub(super) fn operation_clock(collection: &MdbaseCollection) -> MdbaseCelClock {
     MdbaseCelClock::new(
         DateTime::<Utc>::from(SystemTime::now()),
-        collection
+        &collection
             .config
             .settings
             .timezone
             .as_deref()
-            .unwrap_or("UTC"),
+            .map_or_else(crate::mdbase::default_mdbase_timezone, str::to_string),
     )
     .expect("collection loading validates its IANA timezone")
 }

@@ -551,6 +551,33 @@ impl MdbaseCelContextKind {
     }
 }
 
+/// The timezone a collection uses when `mdbase.yaml` sets no
+/// `settings.timezone`: the device's, from `TZ` when it names an IANA zone,
+/// else the system setting, else UTC. Setting `settings.timezone` pins one
+/// zone for every device that shares the collection.
+#[must_use]
+pub fn default_mdbase_timezone() -> String {
+    let named = |name: &str| {
+        let name = name.trim().trim_start_matches(':');
+        name.parse::<Tz>().ok().map(|zone| zone.name().to_string())
+    };
+    std::env::var("TZ")
+        .ok()
+        .and_then(|value| named(&value))
+        .or_else(|| {
+            iana_time_zone::get_timezone()
+                .ok()
+                .and_then(|value| named(&value))
+        })
+        .unwrap_or_else(|| Tz::UTC.name().to_string())
+}
+
+/// `configured`, or the device's timezone when the collection sets none.
+#[must_use]
+pub fn mdbase_timezone_or_default(configured: Option<&str>) -> String {
+    configured.map_or_else(default_mdbase_timezone, str::to_string)
+}
+
 #[derive(Debug, Clone)]
 pub struct MdbaseCelClock {
     now_utc: DateTime<Utc>,
@@ -2196,6 +2223,14 @@ mod tests {
         assert!(result.diagnostics[0]
             .message
             .contains("link traversal budget is exhausted"));
+    }
+
+    #[test]
+    fn collections_without_a_timezone_use_a_valid_device_zone() {
+        assert_eq!(mdbase_timezone_or_default(Some("Asia/Tokyo")), "Asia/Tokyo");
+        let device = mdbase_timezone_or_default(None);
+        assert!(device.parse::<Tz>().is_ok(), "{device}");
+        assert!(MdbaseCelClock::new(Utc::now(), &device).is_ok());
     }
 
     #[test]

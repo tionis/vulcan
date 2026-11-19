@@ -40604,6 +40604,56 @@ fn mdbase_views_list_and_execute_named_views() {
     assert!(!root.join("views/extra.md").exists());
 }
 
+/// Without `settings.timezone`, lifecycle `now` stamps use the device's
+/// timezone, as `TaskNotes` does; setting it pins the zone.
+#[test]
+fn mdbase_now_stamps_default_to_the_device_timezone() {
+    for (settings, expected) in [("", "+09:00"), ("settings:\n  timezone: UTC\n", "Z")] {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let root = temp_dir.path();
+        for (path, contents) in [
+            ("mdbase.yaml", format!("spec_version: \"0.3.0\"\n{settings}")),
+            (
+                "_types/task.md",
+                "---\nkind: mdbase.type\nname: task\nmatch:\n  expr:\n    $expr: 'present.raw.title'\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\nlifecycle:\n  on_update:\n    set:\n      touched: {now: true}\n---\n".to_string(),
+            ),
+            ("tasks/a.md", "---\ntitle: A\n---\n".to_string()),
+        ] {
+            fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+            fs::write(root.join(path), contents).unwrap();
+        }
+        let vulcan = || {
+            let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+            command
+                .env("TZ", "Asia/Tokyo")
+                .args(["--vault", root.to_str().unwrap()]);
+            command
+        };
+        let read = parse_stdout_json(
+            &vulcan()
+                .args(["--output", "json", "mdbase", "read", "tasks/a.md"])
+                .assert()
+                .success(),
+        );
+        let revision = read["result"]["revision"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no revision in {read}"))
+            .to_string();
+        vulcan()
+            .args(["mdbase", "patch", "tasks/a.md", "--if-revision", &revision])
+            .args(["--set", "title=B"])
+            .assert()
+            .success();
+        let written = fs::read_to_string(root.join("tasks/a.md")).unwrap();
+        let touched = written
+            .lines()
+            .find_map(|line| line.strip_prefix("touched: "))
+            .unwrap_or_else(|| panic!("no stamp in {written}"))
+            .trim_matches(['\'', '"']);
+        assert!(touched.ends_with(expected), "{settings:?}: {touched}");
+    }
+}
+
 /// MDB.9: loading a collection is passive. Opening configuration, types with
 /// lifecycle and match expressions, contracts, provider- and workflow-shaped
 /// records, views, and records containing scripts never runs hooks,

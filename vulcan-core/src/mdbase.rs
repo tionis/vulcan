@@ -1707,12 +1707,12 @@ pub fn match_mdbase_record_types(
 ) -> MdbaseTypeMatchResult {
     let clock = MdbaseCelClock::new(
         DateTime::<Utc>::from(std::time::SystemTime::now()),
-        collection
+        &collection
             .config
             .settings
             .timezone
             .as_deref()
-            .unwrap_or("UTC"),
+            .map_or_else(default_mdbase_timezone, str::to_string),
     )
     .expect("collection loading validates its IANA timezone");
     match_mdbase_record_types_with_context(

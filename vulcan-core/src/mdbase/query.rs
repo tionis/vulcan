@@ -599,12 +599,9 @@ fn query_clock(
     collection_timezone: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<MdbaseCelClock, MdbaseQueryError> {
-    let timezone = plan
-        .timezone
-        .as_deref()
-        .or(collection_timezone)
-        .unwrap_or("UTC");
-    MdbaseCelClock::new(now, timezone)
+    let timezone =
+        crate::mdbase::mdbase_timezone_or_default(plan.timezone.as_deref().or(collection_timezone));
+    MdbaseCelClock::new(now, &timezone)
         .map_err(|error| query_error("invalid_query", error.message, Some("timezone"), None))
 }
 

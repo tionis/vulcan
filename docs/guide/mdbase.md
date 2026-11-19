@@ -21,9 +21,12 @@ views/tasks.md         a saved-view record (type: view)
 
 `settings.types_folder`, `settings.contracts_folder`, `settings.exclude`, record extensions, the
 type key, the validation level, and the collection timezone are configured in `mdbase.yaml`.
-The timezone (`settings.timezone`, an IANA name such as `Europe/Berlin`; default UTC) sets
-`today()` and lifecycle `today`, and lifecycle `now` stamps are written in it with a numeric offset
-(`2026-11-02T19:40:12.345+01:00`), or with `Z` under UTC.
+The timezone (`settings.timezone`, an IANA name such as `Europe/Berlin`) sets `today()` and
+lifecycle `today`, and lifecycle `now` stamps are written in it with a numeric offset
+(`2026-11-02T19:40:12.345+01:00`), or with `Z` under UTC. Without it, Vulcan uses the device's
+timezone (`TZ` when it names an IANA zone, else the system setting, else UTC), so stamps match
+what TaskNotes and Obsidian write on that device. Set it when devices in different timezones share
+the collection and must agree on `today()`.
 Keys starting with `x-` are extensions and never produce unknown-key warnings.
 
 ## Reading

@@ -1096,13 +1096,13 @@ fn plan_mdbase_write_in_mode(
     write_validation::reload_controls(&mut loaded)?;
     let clock = vulcan_core::mdbase::MdbaseCelClock::new(
         now,
-        loaded
+        &loaded
             .collection
             .config
             .settings
             .timezone
             .as_deref()
-            .unwrap_or("UTC"),
+            .map_or_else(vulcan_core::mdbase::default_mdbase_timezone, str::to_string),
     )
     .map_err(AppError::operation)?;
     let matched_types = write_validation::affected_membership(&loaded, &initial, &clock)?;
