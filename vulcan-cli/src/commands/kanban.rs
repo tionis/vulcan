@@ -11,9 +11,8 @@ use crate::{
 use serde::Serialize;
 use serde_json::Value;
 use vulcan_core::{
-    add_kanban_card, archive_kanban_card, list_kanban_boards, load_kanban_board, move_kanban_card,
-    KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanMoveReport,
-    KanbanTaskStatus, VaultPaths,
+    list_kanban_boards, load_kanban_board, KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord,
+    KanbanBoardSummary, KanbanMoveReport, KanbanTaskStatus, VaultPaths,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -105,7 +104,13 @@ pub(crate) fn handle_kanban_command(
                 .map_err(CliError::operation)?;
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
-            let report = run_kanban_archive_command(paths, board, card, *dry_run)?;
+            let report = run_kanban_archive_command(
+                paths,
+                board,
+                card,
+                *dry_run,
+                cli.permissions.as_deref(),
+            )?;
             if !*dry_run {
                 auto_commit
                     .commit(
@@ -131,7 +136,14 @@ pub(crate) fn handle_kanban_command(
                 .map_err(CliError::operation)?;
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
-            let report = run_kanban_move_command(paths, board, card, target_column, *dry_run)?;
+            let report = run_kanban_move_command(
+                paths,
+                board,
+                card,
+                target_column,
+                *dry_run,
+                cli.permissions.as_deref(),
+            )?;
             if !*dry_run {
                 auto_commit
                     .commit(
@@ -157,7 +169,14 @@ pub(crate) fn handle_kanban_command(
                 .map_err(CliError::operation)?;
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
-            let report = run_kanban_add_command(paths, board, column, text, *dry_run)?;
+            let report = run_kanban_add_command(
+                paths,
+                board,
+                column,
+                text,
+                *dry_run,
+                cli.permissions.as_deref(),
+            )?;
             if !*dry_run {
                 auto_commit
                     .commit(
@@ -230,8 +249,16 @@ fn run_kanban_archive_command(
     board: &str,
     card: &str,
     dry_run: bool,
+    permission_profile: Option<&str>,
 ) -> Result<KanbanArchiveReport, CliError> {
-    archive_kanban_card(paths, board, card, dry_run).map_err(CliError::operation)
+    vulcan_app::browse::archive_kanban_card_with_profile(
+        paths,
+        board,
+        card,
+        dry_run,
+        permission_profile,
+    )
+    .map_err(CliError::operation)
 }
 
 fn run_kanban_move_command(
@@ -240,8 +267,17 @@ fn run_kanban_move_command(
     card: &str,
     target_column: &str,
     dry_run: bool,
+    permission_profile: Option<&str>,
 ) -> Result<KanbanMoveReport, CliError> {
-    move_kanban_card(paths, board, card, target_column, dry_run).map_err(CliError::operation)
+    vulcan_app::browse::move_kanban_card_with_profile(
+        paths,
+        board,
+        card,
+        target_column,
+        dry_run,
+        permission_profile,
+    )
+    .map_err(CliError::operation)
 }
 
 fn run_kanban_add_command(
@@ -250,8 +286,17 @@ fn run_kanban_add_command(
     column: &str,
     text: &str,
     dry_run: bool,
+    permission_profile: Option<&str>,
 ) -> Result<KanbanAddReport, CliError> {
-    add_kanban_card(paths, board, column, text, dry_run).map_err(CliError::operation)
+    vulcan_app::browse::add_kanban_card_with_profile(
+        paths,
+        board,
+        column,
+        text,
+        dry_run,
+        permission_profile,
+    )
+    .map_err(CliError::operation)
 }
 
 fn normalize_optional_filter(value: Option<&str>) -> Option<String> {

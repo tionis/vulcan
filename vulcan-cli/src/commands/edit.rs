@@ -75,19 +75,13 @@ pub(crate) fn run_edit_command(
     let absolute_path = paths.vault_root().join(&relative_path);
     let mut created = false;
     if creating_new_note {
-        if let Some(parent) = absolute_path.parent() {
-            fs::create_dir_all(parent).map_err(CliError::operation)?;
-        }
         // Create-new never truncates a note that appeared in the meantime.
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&absolute_path)
-        {
-            Ok(_) => created = true,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(CliError::operation(error)),
-        }
+        created = vulcan_app::notes::create_empty_note_for_editor(
+            paths,
+            &relative_path,
+            cli.permissions.as_deref(),
+        )
+        .map_err(CliError::operation)?;
     } else if !absolute_path.is_file() {
         return Err(CliError::operation(format!(
             "note does not exist on disk: {relative_path}"

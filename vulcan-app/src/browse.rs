@@ -530,6 +530,85 @@ pub fn move_note_with_profile(
     core_move_note(paths, source_path, destination, dry_run).map_err(AppError::operation)
 }
 
+/// Publish a Kanban board edit through [`crate::note_writes`], so a board
+/// inside an mdbase collection is validated and journaled.
+fn routed_board_writer<'a>(
+    paths: &'a VaultPaths,
+    permission_profile: Option<&'a str>,
+) -> impl FnMut(&str, &str, &str) -> Result<(), vulcan_core::KanbanError> + 'a {
+    move |path, before, after| {
+        let changes = [vulcan_core::ordinary_write::OrdinaryWriteChange {
+            path: path.to_string(),
+            before: Some(before.to_string()),
+            after: Some(after.to_string()),
+        }];
+        crate::note_writes::apply_planned_note_write(
+            paths,
+            &crate::note_writes::PlannedNoteWrite::new(&changes, permission_profile),
+        )
+        .map(|_| ())
+        .map_err(|error| vulcan_core::KanbanError::Message(error.to_string()))
+    }
+}
+
+/// [`vulcan_core::archive_kanban_card`] under a permission profile.
+pub fn archive_kanban_card_with_profile(
+    paths: &VaultPaths,
+    board: &str,
+    card: &str,
+    dry_run: bool,
+    permission_profile: Option<&str>,
+) -> Result<vulcan_core::KanbanArchiveReport, AppError> {
+    vulcan_core::kanban::archive_kanban_card_with_writer(
+        paths,
+        board,
+        card,
+        dry_run,
+        &mut routed_board_writer(paths, permission_profile),
+    )
+    .map_err(AppError::operation)
+}
+
+/// [`vulcan_core::move_kanban_card`] under a permission profile.
+pub fn move_kanban_card_with_profile(
+    paths: &VaultPaths,
+    board: &str,
+    card: &str,
+    target_column: &str,
+    dry_run: bool,
+    permission_profile: Option<&str>,
+) -> Result<vulcan_core::KanbanMoveReport, AppError> {
+    vulcan_core::kanban::move_kanban_card_with_writer(
+        paths,
+        board,
+        card,
+        target_column,
+        dry_run,
+        &mut routed_board_writer(paths, permission_profile),
+    )
+    .map_err(AppError::operation)
+}
+
+/// [`vulcan_core::add_kanban_card`] under a permission profile.
+pub fn add_kanban_card_with_profile(
+    paths: &VaultPaths,
+    board: &str,
+    column: &str,
+    text: &str,
+    dry_run: bool,
+    permission_profile: Option<&str>,
+) -> Result<vulcan_core::KanbanAddReport, AppError> {
+    vulcan_core::kanban::add_kanban_card_with_writer(
+        paths,
+        board,
+        column,
+        text,
+        dry_run,
+        &mut routed_board_writer(paths, permission_profile),
+    )
+    .map_err(AppError::operation)
+}
+
 pub fn load_kanban_board(
     paths: &VaultPaths,
     board: &str,
@@ -916,6 +995,31 @@ mod tests {
         let paths = VaultPaths::new(dir.path());
         initialize_vulcan_dir(&paths).expect("init should succeed");
         (dir, paths)
+    }
+
+    #[test]
+    fn kanban_boards_in_a_collection_are_written_through_mdbase() {
+        let (dir, paths) = test_paths();
+        fs::write(dir.path().join("mdbase.yaml"), "spec_version: '0.3.0'\n").unwrap();
+        fs::write(
+            dir.path().join("Board.md"),
+            "---\nkanban-plugin: board\n---\n\n## Todo\n\n- Existing\n\n## Done\n",
+        )
+        .unwrap();
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        let outbox = || vulcan_core::mdbase::list_mdbase_write_outbox(&paths).unwrap();
+
+        super::add_kanban_card_with_profile(&paths, "Board", "Todo", "New card", false, None)
+            .expect("add");
+        assert!(fs::read_to_string(dir.path().join("Board.md"))
+            .unwrap()
+            .contains("- New card"));
+        assert_eq!(outbox().len(), 1);
+        super::move_kanban_card_with_profile(&paths, "Board", "New card", "Done", false, None)
+            .expect("move");
+        super::archive_kanban_card_with_profile(&paths, "Board", "Existing", false, None)
+            .expect("archive");
+        assert_eq!(outbox().len(), 3, "every edit is an mdbase write");
     }
 
     fn write_pending_journal(paths: &VaultPaths) {

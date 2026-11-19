@@ -17653,6 +17653,66 @@ fn tasks_complete_json_output_marks_non_recurring_task_done() {
         .is_some_and(|value| value.len() == 10));
 }
 
+/// Refactors over mdbase collection records are validated transactions: one
+/// that would break a record writes nothing, and a valid one is journaled.
+#[test]
+fn refactors_of_collection_records_are_validated_mdbase_writes() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let root = temp_dir.path();
+    let record = "---\ntype: task\ntitle: A\ndue: 2026-11-19\n---\nSee Guide.\n";
+    for (path, contents) in [
+        ("mdbase.yaml", "spec_version: '0.3.0'\n"),
+        (
+            "_types/task.md",
+            "---\nkind: mdbase.type\nname: task\nmatch:\n  where:\n    type: task\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    required: [title]\n    properties:\n      due: {type: string, format: date}\n---\n",
+        ),
+        ("tasks/a.md", record),
+    ] {
+        fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+        fs::write(root.join(path), contents).unwrap();
+    }
+    run_scan(root);
+    let vault = root.to_str().expect("vault path should be valid utf-8");
+    let vulcan = |args: &[&str]| {
+        let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+        command
+            .args(["--vault", vault, "--output", "json"])
+            .args(args);
+        command
+    };
+
+    let failure = vulcan(&["rename-property", "title", "name", "--no-commit"])
+        .assert()
+        .failure();
+    let output = String::from_utf8_lossy(&failure.get_output().stdout).into_owned();
+    assert!(output.contains("required"), "{output}");
+    vulcan(&[
+        "rewrite",
+        "--find",
+        "2026-11-19",
+        "--replace",
+        "soon",
+        "--no-commit",
+    ])
+    .assert()
+    .failure();
+    assert_eq!(fs::read_to_string(root.join("tasks/a.md")).unwrap(), record);
+
+    vulcan(&[
+        "rewrite",
+        "--find",
+        "Guide",
+        "--replace",
+        "Manual",
+        "--no-commit",
+    ])
+    .assert()
+    .success();
+    assert!(fs::read_to_string(root.join("tasks/a.md"))
+        .unwrap()
+        .contains("See Manual."));
+}
+
 /// `completedDate` is the device's calendar day. UTC+14 and UTC-12 are a
 /// day apart from each other, so at any hour at least one of them disagrees
 /// with the UTC date.

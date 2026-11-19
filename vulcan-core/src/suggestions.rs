@@ -3,7 +3,7 @@ use crate::parser::parse_document;
 use crate::paths::{
     normalize_relative_input_path, secure_read_to_string, secure_write, RelativePathOptions,
 };
-use crate::refactor::{RefactorChange, RefactorFileReport, RefactorReport};
+use crate::refactor::{RefactorChange, RefactorFileReport, RefactorReport, RefactorWritePlan};
 use crate::scan::{scan_vault_unlocked, ScanError, ScanMode};
 use crate::write_lock::acquire_write_lock;
 use crate::{
@@ -810,6 +810,24 @@ pub fn link_mentions(
     dry_run: bool,
 ) -> Result<RefactorReport, SuggestionError> {
     let _lock = acquire_write_lock(paths)?;
+    let plans = prepare_link_mentions(paths, note_identifier)?;
+    finalize_refactor(paths, dry_run, "link_mentions", plans)
+}
+
+/// Plan [`link_mentions`] without applying it.
+pub fn plan_link_mentions(
+    paths: &VaultPaths,
+    note_identifier: Option<&str>,
+) -> Result<RefactorWritePlan, SuggestionError> {
+    let _lock = acquire_write_lock(paths)?;
+    let plans = prepare_link_mentions(paths, note_identifier)?;
+    write_plan(paths, "link_mentions", plans)
+}
+
+fn prepare_link_mentions(
+    paths: &VaultPaths,
+    note_identifier: Option<&str>,
+) -> Result<Vec<FilePlan>, SuggestionError> {
     let config = load_vault_config(paths).config;
     let connection = open_existing_cache(paths)?;
     let notes = load_note_identities(&connection)?;
@@ -875,7 +893,7 @@ pub fn link_mentions(
         }
     }
 
-    finalize_refactor(paths, dry_run, "link_mentions", plans)
+    Ok(plans)
 }
 
 pub fn suggest_duplicates(
@@ -908,6 +926,33 @@ pub fn bulk_replace(
     }
 
     let _lock = acquire_write_lock(paths)?;
+    let plans = prepare_bulk_replace(paths, filters, find, replace)?;
+    finalize_refactor(paths, dry_run, "bulk_replace", plans)
+}
+
+/// Plan [`bulk_replace`] without applying it.
+pub fn plan_bulk_replace(
+    paths: &VaultPaths,
+    filters: &[String],
+    find: &str,
+    replace: &str,
+) -> Result<RefactorWritePlan, SuggestionError> {
+    if find.is_empty() {
+        return Err(SuggestionError::InvalidRewrite(
+            "`rewrite --find` must not be empty".to_string(),
+        ));
+    }
+    let _lock = acquire_write_lock(paths)?;
+    let plans = prepare_bulk_replace(paths, filters, find, replace)?;
+    write_plan(paths, "bulk_replace", plans)
+}
+
+fn prepare_bulk_replace(
+    paths: &VaultPaths,
+    filters: &[String],
+    find: &str,
+    replace: &str,
+) -> Result<Vec<FilePlan>, SuggestionError> {
     let notes = query_notes(
         paths,
         &NoteQuery {
@@ -922,9 +967,7 @@ pub fn bulk_replace(
         .into_iter()
         .map(|note| note.document_path)
         .collect::<Vec<_>>();
-    let plans = bulk_replace_plans(paths, &note_paths, find, replace)?;
-
-    finalize_refactor(paths, dry_run, "bulk_replace", plans)
+    bulk_replace_plans(paths, &note_paths, find, replace)
 }
 
 pub fn bulk_replace_on_paths(
@@ -943,6 +986,42 @@ pub fn bulk_replace_on_paths(
     let _lock = acquire_write_lock(paths)?;
     let plans = bulk_replace_plans(paths, note_paths, find, replace)?;
     finalize_refactor(paths, dry_run, "bulk_replace", plans)
+}
+
+/// Plan [`bulk_replace_on_paths`] without applying it.
+pub fn plan_bulk_replace_on_paths(
+    paths: &VaultPaths,
+    note_paths: &[String],
+    find: &str,
+    replace: &str,
+) -> Result<RefactorWritePlan, SuggestionError> {
+    if find.is_empty() {
+        return Err(SuggestionError::InvalidRewrite(
+            "`rewrite --find` must not be empty".to_string(),
+        ));
+    }
+    let _lock = acquire_write_lock(paths)?;
+    let plans = bulk_replace_plans(paths, note_paths, find, replace)?;
+    write_plan(paths, "bulk_replace", plans)
+}
+
+/// A refactor plan with each file's current contents as preimage.
+fn write_plan(
+    paths: &VaultPaths,
+    action: &str,
+    plans: Vec<FilePlan>,
+) -> Result<RefactorWritePlan, SuggestionError> {
+    let mut changes = Vec::with_capacity(plans.len());
+    for plan in &plans {
+        let before = fs::read_to_string(paths.vault_root().join(&plan.path))?;
+        changes.push(crate::ordinary_write::OrdinaryWriteChange {
+            path: plan.path.clone(),
+            before: Some(before),
+            after: Some(plan.updated_contents.clone()),
+        });
+    }
+    let report = finalize_refactor(paths, true, action, plans)?;
+    Ok(RefactorWritePlan { report, changes })
 }
 
 fn bulk_replace_plans(

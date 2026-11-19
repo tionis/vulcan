@@ -568,8 +568,9 @@ impl EditorSession {
     }
 
     /// Publish the plan's closed-file changes as one journaled batch and
-    /// index them. Fails without writing when any file changed since
-    /// planning.
+    /// index them. A batch touching an mdbase collection record is one
+    /// validated mdbase transaction. Fails without writing when any file
+    /// changed since planning, or when a record would become invalid.
     pub fn apply_disk_changes(
         &self,
         changes: &[OrdinaryWriteChange],
@@ -578,13 +579,17 @@ impl EditorSession {
         if changes.is_empty() {
             return Ok(());
         }
-        vulcan_core::ordinary_write::apply_ordinary_write_batch_with_renames_and_preflight(
+        crate::note_writes::apply_planned_note_write_unscanned(
             self.paths(),
-            changes,
-            renames,
-            || Ok(()),
+            &crate::note_writes::PlannedNoteWrite::new(changes, self.permission_profile())
+                .renames(renames),
         )
-        .map_err(|error| AppError::operation_with_code("conflict", error.message))?;
+        .map_err(|error| match error.code() {
+            // An mdbase rejection keeps its own code; a stale or refused
+            // ordinary batch is a conflict with what is on disk.
+            Some(code) if !code.starts_with("ordinary_write") => error,
+            _ => AppError::operation_with_code("conflict", error.to_string()),
+        })?;
         self.invalidate_cache();
         Ok(())
     }
@@ -884,6 +889,45 @@ mod tests {
             apply(unsaved, &alpha.edits),
             "# Alpha\n\n## Progress\n\nGreen, edited ^blk\n\nSee [[#Progress]].\n"
         );
+    }
+
+    #[test]
+    fn disk_changes_to_collection_records_are_validated_mdbase_writes() {
+        let task_type = "---\nkind: mdbase.type\nname: task\nmatch:\n  where:\n    type: task\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    properties:\n      due: {type: string, format: date}\n---\n";
+        let record = "---\ntype: task\ndue: 2026-11-19\n---\n# Task\n\nSee [[Home]].\n";
+        let (dir, session) = vault(&[
+            ("mdbase.yaml", "spec_version: '0.3.0'\n"),
+            ("_types/task.md", task_type),
+            ("Home.md", "# Home\n\nSee [[Task]].\n"),
+            ("Task.md", record),
+        ]);
+        let invalid = [OrdinaryWriteChange {
+            path: "Task.md".into(),
+            before: Some(record.into()),
+            after: Some(record.replace("2026-11-19", "soon")),
+        }];
+        let error = session
+            .apply_disk_changes(&invalid, &BTreeMap::new())
+            .expect_err("an invalid record is refused");
+        assert_eq!(error.code(), Some("validation_failed"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("Task.md")).unwrap(),
+            record
+        );
+
+        // A move rewrites the backlink and renames the record in one
+        // journaled mdbase transaction.
+        let plan = session.plan_note_move("Task.md", "Done.md").unwrap();
+        session
+            .apply_disk_changes(&plan.disk, &plan.disk_renames)
+            .unwrap();
+        assert!(dir.path().join("Done.md").is_file());
+        assert!(std::fs::read_to_string(dir.path().join("Home.md"))
+            .unwrap()
+            .contains("[[Done]]"));
+        let outbox = vulcan_core::mdbase::list_mdbase_write_outbox(session.paths()).unwrap();
+        assert_eq!(outbox.len(), 1);
+        assert_eq!(outbox[0].operation, "rename");
     }
 
     #[test]

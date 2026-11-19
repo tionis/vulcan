@@ -1466,6 +1466,36 @@ pub fn write_note_content(
     Ok(after.to_string())
 }
 
+/// Create an empty note for an external editor to fill, unless it exists.
+/// A collection record is created through a validated mdbase write, so it
+/// gets the collection's lifecycle defaults; returns whether it was created.
+pub fn create_empty_note_for_editor(
+    paths: &VaultPaths,
+    path: &str,
+    permission_profile: Option<&str>,
+) -> Result<bool, AppError> {
+    if paths.vault_root().join(path).exists() {
+        return Ok(false);
+    }
+    if let Some(parent) = Path::new(path).parent() {
+        fs::create_dir_all(paths.vault_root().join(parent)).map_err(AppError::operation)?;
+    }
+    match write_note_content(
+        paths,
+        path,
+        None,
+        "",
+        "create",
+        permission_profile,
+        Verbosity::Quiet,
+    ) {
+        Ok(_) => Ok(true),
+        // Created by someone else in the meantime: open what is there.
+        Err(_) if paths.vault_root().join(path).exists() => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 /// Reads a vault note for a read-modify-write: `None` when it does not exist
 /// yet. Any other failure is an error, never an empty note to overwrite.
 pub fn read_note_for_update(paths: &VaultPaths, path: &str) -> Result<Option<String>, AppError> {
@@ -2778,6 +2808,31 @@ fn load_note_append_target(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn empty_notes_for_an_editor_are_mdbase_creates_inside_a_collection() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = vulcan_core::VaultPaths::new(dir.path());
+        vulcan_core::initialize_vulcan_dir(&paths).unwrap();
+        assert!(super::create_empty_note_for_editor(&paths, "a/New.md", None).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a/New.md")).unwrap(),
+            ""
+        );
+        std::fs::write(dir.path().join("a/New.md"), "kept\n").unwrap();
+        assert!(!super::create_empty_note_for_editor(&paths, "a/New.md", None).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a/New.md")).unwrap(),
+            "kept\n"
+        );
+
+        std::fs::write(dir.path().join("mdbase.yaml"), "spec_version: '0.3.0'\n").unwrap();
+        assert!(super::create_empty_note_for_editor(&paths, "b/Record.md", None).unwrap());
+        assert!(dir.path().join("b/Record.md").is_file());
+        let outbox = vulcan_core::mdbase::list_mdbase_write_outbox(&paths).unwrap();
+        assert_eq!(outbox.len(), 1);
+        assert_eq!(outbox[0].operation, "create");
+    }
 
     #[test]
     fn heading_entries_append_at_the_end_of_the_last_section_as_a_tight_list() {

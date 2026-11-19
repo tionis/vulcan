@@ -134,18 +134,25 @@ JSON report carries the persisted revision, including any lifecycle-generated va
 defaults are never written back unless you set them explicitly.
 
 Collection records are written through one validated pipeline: `note set`, `note patch`,
-`note append`, `note create`, property `update`/`unset`, moves and renames, scripts, and
-`view-source` all plan the complete change, check permissions and uniqueness across everything they
-affect, apply lifecycle policies, journal the batch, and replace files atomically. A failure leaves
-no partial write. The next CLI command finishes or rolls back an interrupted write on its own when
-its permission profile can read and write every file the write touched; `repair` commands do not,
-so they show the transaction as found. Long-running hosts do the same before each request under
+`note append`, `note create`, property `update`/`unset`, moves and renames, the refactor commands
+(`rename-property`, `merge-tags`, `rename-alias`, `rename-heading`, `rename-block-ref`, `rewrite`,
+`link-mentions`, `refactor split`, `refactor folder-notes`), Kanban card edits, property edits in
+`bases tui`, language-server edits to closed notes, `web fetch --save`, Telegram bot captures,
+attachments and `/undo`, scripts, and `view-source` all plan the complete change, check permissions
+and uniqueness across everything they affect, apply lifecycle policies, journal the batch, and
+replace files atomically. When a change also touches ordinary notes (a refactor's rewritten links),
+they join the same transaction. A failure leaves no partial write. The next CLI command finishes
+or rolls back an interrupted write on its own when its permission profile can read and write every
+file the write touched; `repair` commands do not, so they show the transaction as found. Long-running hosts do the same before each request under
 their own profile: MCP tool calls, the language server, `vulcan serve`, and the daemon's REST API
 and per-vault routes. `vulcan repair mdbase-write status|recover|accept-current`
 inspects and resolves one that needs a decision (a touched file changed since) or a broader profile.
 A write that needs a decision blocks only its own files while it waits, records or controls alike:
 the rest of the collection reads and writes against the files as they are on disk, and every
 command warns about it until it is resolved.
+
+`edit --new` and new notes from `browse` create an empty record the same way before the editor
+opens it; what the external editor saves afterwards is its own write.
 
 A write is refused only for problems it introduces. If a record already fails validation, for
 example an old malformed date, a write that changes some other field still succeeds and reports the

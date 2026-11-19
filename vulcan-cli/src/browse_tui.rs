@@ -238,14 +238,15 @@ fn run_event_loop(
                     }
                     let paths = state.paths.clone();
                     let can_index = state.authority.can_index();
+                    let profile = state.authority.profile().map(str::to_string);
                     let create_result = with_terminal_suspended(terminal, || {
                         let absolute = paths.vault_root().join(&relative_path);
-                        if let Some(parent) = absolute.parent() {
-                            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-                        }
-                        if !absolute.exists() {
-                            fs::write(&absolute, "").map_err(|error| error.to_string())?;
-                        }
+                        vulcan_app::notes::create_empty_note_for_editor(
+                            &paths,
+                            &relative_path,
+                            profile.as_deref(),
+                        )
+                        .map_err(|error| error.to_string())?;
                         open_in_editor(&absolute)?;
                         refresh_after_change(&paths, can_index)
                     });

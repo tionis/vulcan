@@ -193,6 +193,27 @@ pub fn rename_property(
 ) -> Result<RefactorReport, RefactorError> {
     let _lock = acquire_write_lock(paths)?;
     ensure_no_pending_ordinary_write_batch(paths)?;
+    let plans = prepare_rename_property(paths, old_key, new_key)?;
+    finalize_refactor(paths, dry_run, "rename_property", plans)
+}
+
+/// Plan [`rename_property`] without applying it.
+pub fn plan_rename_property(
+    paths: &VaultPaths,
+    old_key: &str,
+    new_key: &str,
+) -> Result<RefactorWritePlan, RefactorError> {
+    let _lock = acquire_write_lock(paths)?;
+    ensure_no_pending_ordinary_write_batch(paths)?;
+    let plans = prepare_rename_property(paths, old_key, new_key)?;
+    write_plan(paths, "rename_property", plans)
+}
+
+fn prepare_rename_property(
+    paths: &VaultPaths,
+    old_key: &str,
+    new_key: &str,
+) -> Result<Vec<FilePlan>, RefactorError> {
     let mut plans = Vec::new();
 
     for path in markdown_note_paths(paths)? {
@@ -234,7 +255,7 @@ pub fn rename_property(
         }
     }
 
-    finalize_refactor(paths, dry_run, "rename_property", plans)
+    Ok(plans)
 }
 
 pub fn merge_tags(
@@ -245,6 +266,27 @@ pub fn merge_tags(
 ) -> Result<RefactorReport, RefactorError> {
     let _lock = acquire_write_lock(paths)?;
     ensure_no_pending_ordinary_write_batch(paths)?;
+    let plans = prepare_merge_tags(paths, source_tag, destination_tag)?;
+    finalize_refactor(paths, dry_run, "merge_tags", plans)
+}
+
+/// Plan [`merge_tags`] without applying it.
+pub fn plan_merge_tags(
+    paths: &VaultPaths,
+    source_tag: &str,
+    destination_tag: &str,
+) -> Result<RefactorWritePlan, RefactorError> {
+    let _lock = acquire_write_lock(paths)?;
+    ensure_no_pending_ordinary_write_batch(paths)?;
+    let plans = prepare_merge_tags(paths, source_tag, destination_tag)?;
+    write_plan(paths, "merge_tags", plans)
+}
+
+fn prepare_merge_tags(
+    paths: &VaultPaths,
+    source_tag: &str,
+    destination_tag: &str,
+) -> Result<Vec<FilePlan>, RefactorError> {
     let source_tag = normalize_tag_name(source_tag);
     let destination_tag = normalize_tag_name(destination_tag);
     let config = load_vault_config(paths).config;
@@ -300,7 +342,7 @@ pub fn merge_tags(
         }
     }
 
-    finalize_refactor(paths, dry_run, "merge_tags", plans)
+    Ok(plans)
 }
 
 pub fn rename_alias(
@@ -312,6 +354,29 @@ pub fn rename_alias(
 ) -> Result<RefactorReport, RefactorError> {
     let _lock = acquire_write_lock(paths)?;
     ensure_no_pending_ordinary_write_batch(paths)?;
+    let plans = prepare_rename_alias(paths, note_identifier, old_alias, new_alias)?;
+    finalize_refactor(paths, dry_run, "rename_alias", plans)
+}
+
+/// Plan [`rename_alias`] without applying it.
+pub fn plan_rename_alias(
+    paths: &VaultPaths,
+    note_identifier: &str,
+    old_alias: &str,
+    new_alias: &str,
+) -> Result<RefactorWritePlan, RefactorError> {
+    let _lock = acquire_write_lock(paths)?;
+    ensure_no_pending_ordinary_write_batch(paths)?;
+    let plans = prepare_rename_alias(paths, note_identifier, old_alias, new_alias)?;
+    write_plan(paths, "rename_alias", plans)
+}
+
+fn prepare_rename_alias(
+    paths: &VaultPaths,
+    note_identifier: &str,
+    old_alias: &str,
+    new_alias: &str,
+) -> Result<Vec<FilePlan>, RefactorError> {
     let note = resolve_note_reference(paths, note_identifier)?;
     let path = note.path;
     let source = fs::read_to_string(paths.vault_root().join(&path))?;
@@ -347,7 +412,7 @@ pub fn rename_alias(
         });
     };
 
-    finalize_refactor(paths, dry_run, "rename_alias", vec![plan])
+    Ok(vec![plan])
 }
 
 pub fn set_note_property(
@@ -359,6 +424,29 @@ pub fn set_note_property(
 ) -> Result<RefactorReport, RefactorError> {
     let _lock = acquire_write_lock(paths)?;
     ensure_no_pending_ordinary_write_batch(paths)?;
+    let plans = prepare_set_note_property(paths, note_identifier, key, value)?;
+    finalize_refactor(paths, dry_run, "set_note_property", plans)
+}
+
+/// Plan [`set_note_property`] without applying it.
+pub fn plan_set_note_property(
+    paths: &VaultPaths,
+    note_identifier: &str,
+    key: &str,
+    value: Option<&str>,
+) -> Result<RefactorWritePlan, RefactorError> {
+    let _lock = acquire_write_lock(paths)?;
+    ensure_no_pending_ordinary_write_batch(paths)?;
+    let plans = prepare_set_note_property(paths, note_identifier, key, value)?;
+    write_plan(paths, "set_note_property", plans)
+}
+
+fn prepare_set_note_property(
+    paths: &VaultPaths,
+    note_identifier: &str,
+    key: &str,
+    value: Option<&str>,
+) -> Result<Vec<FilePlan>, RefactorError> {
     let note = resolve_note_reference(paths, note_identifier)?;
     let path = note.path;
     let source = fs::read_to_string(paths.vault_root().join(&path))?;
@@ -367,14 +455,14 @@ pub fn set_note_property(
     let Some((edit, changes)) =
         plan_set_note_property_replacement(&source, &path, key, desired_value.as_ref())?
     else {
-        return finalize_refactor(paths, dry_run, "set_note_property", Vec::new());
+        return Ok(Vec::new());
     };
 
     let Some(plan) = build_file_plan(&path, &source, &[edit], changes) else {
-        return finalize_refactor(paths, dry_run, "set_note_property", Vec::new());
+        return Ok(Vec::new());
     };
 
-    finalize_refactor(paths, dry_run, "set_note_property", vec![plan])
+    Ok(vec![plan])
 }
 
 /// Apply a property set or unset to all notes that match the given query filters.

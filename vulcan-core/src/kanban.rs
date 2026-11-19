@@ -299,12 +299,47 @@ pub fn load_kanban_board(
     })
 }
 
-#[allow(clippy::too_many_lines)]
+/// Publishes a board's new source: `(path, before, after)`. The default
+/// writes the file and rescans; the app layer routes it through mdbase when
+/// the board is a collection record.
+pub type BoardWriter<'a> = dyn FnMut(&str, &str, &str) -> Result<(), KanbanError> + 'a;
+
+fn write_board_directly(
+    paths: &VaultPaths,
+) -> impl FnMut(&str, &str, &str) -> Result<(), KanbanError> + '_ {
+    move |path, _before, after| {
+        secure_write(paths.vault_root(), Path::new(path), after)
+            .map_err(|error| KanbanError::Message(format!("failed to write {path}: {error}")))?;
+        scan_vault(paths, ScanMode::Incremental)
+            .map_err(|error| KanbanError::Message(error.to_string()))?;
+        Ok(())
+    }
+}
+
 pub fn archive_kanban_card(
     paths: &VaultPaths,
     board: &str,
     card: &str,
     dry_run: bool,
+) -> Result<KanbanArchiveReport, KanbanError> {
+    archive_kanban_card_with_writer(
+        paths,
+        board,
+        card,
+        dry_run,
+        &mut write_board_directly(paths),
+    )
+}
+
+/// [`archive_kanban_card`], publishing the board through `write(path, before, after)`
+/// instead of writing it directly.
+#[allow(clippy::too_many_lines)]
+pub fn archive_kanban_card_with_writer(
+    paths: &VaultPaths,
+    board: &str,
+    card: &str,
+    dry_run: bool,
+    write: &mut BoardWriter<'_>,
 ) -> Result<KanbanArchiveReport, KanbanError> {
     let resolved = resolve_note_reference(paths, board)
         .map_err(|error| KanbanError::Message(error.to_string()))?;
@@ -389,11 +424,7 @@ pub fn archive_kanban_card(
     };
 
     if !dry_run {
-        secure_write(paths.vault_root(), Path::new(&board_row.path), updated).map_err(|error| {
-            KanbanError::Message(format!("failed to write {}: {error}", board_row.path))
-        })?;
-        scan_vault(paths, ScanMode::Incremental)
-            .map_err(|error| KanbanError::Message(error.to_string()))?;
+        write(&board_row.path, &source, &updated)?;
     }
 
     Ok(KanbanArchiveReport {
@@ -418,13 +449,33 @@ pub fn archive_kanban_card(
     })
 }
 
-#[allow(clippy::too_many_lines)]
 pub fn move_kanban_card(
     paths: &VaultPaths,
     board: &str,
     card: &str,
     target_column: &str,
     dry_run: bool,
+) -> Result<KanbanMoveReport, KanbanError> {
+    move_kanban_card_with_writer(
+        paths,
+        board,
+        card,
+        target_column,
+        dry_run,
+        &mut write_board_directly(paths),
+    )
+}
+
+/// [`move_kanban_card`], publishing the board through `write(path, before, after)`
+/// instead of writing it directly.
+#[allow(clippy::too_many_lines)]
+pub fn move_kanban_card_with_writer(
+    paths: &VaultPaths,
+    board: &str,
+    card: &str,
+    target_column: &str,
+    dry_run: bool,
+    write: &mut BoardWriter<'_>,
 ) -> Result<KanbanMoveReport, KanbanError> {
     let resolved = resolve_note_reference(paths, board)
         .map_err(|error| KanbanError::Message(error.to_string()))?;
@@ -503,11 +554,7 @@ pub fn move_kanban_card(
     );
 
     if !dry_run {
-        secure_write(paths.vault_root(), Path::new(&board_row.path), updated).map_err(|error| {
-            KanbanError::Message(format!("failed to write {}: {error}", board_row.path))
-        })?;
-        scan_vault(paths, ScanMode::Incremental)
-            .map_err(|error| KanbanError::Message(error.to_string()))?;
+        write(&board_row.path, &source, &updated)?;
     }
 
     Ok(KanbanMoveReport {
@@ -529,6 +576,26 @@ pub fn add_kanban_card(
     column: &str,
     text: &str,
     dry_run: bool,
+) -> Result<KanbanAddReport, KanbanError> {
+    add_kanban_card_with_writer(
+        paths,
+        board,
+        column,
+        text,
+        dry_run,
+        &mut write_board_directly(paths),
+    )
+}
+
+/// [`add_kanban_card`], publishing the board through `write(path, before, after)`
+/// instead of writing it directly.
+pub fn add_kanban_card_with_writer(
+    paths: &VaultPaths,
+    board: &str,
+    column: &str,
+    text: &str,
+    dry_run: bool,
+    write: &mut BoardWriter<'_>,
 ) -> Result<KanbanAddReport, KanbanError> {
     let resolved = resolve_note_reference(paths, board)
         .map_err(|error| KanbanError::Message(error.to_string()))?;
@@ -573,11 +640,7 @@ pub fn add_kanban_card(
     );
 
     if !dry_run {
-        secure_write(paths.vault_root(), Path::new(&board_row.path), updated).map_err(|error| {
-            KanbanError::Message(format!("failed to write {}: {error}", board_row.path))
-        })?;
-        scan_vault(paths, ScanMode::Incremental)
-            .map_err(|error| KanbanError::Message(error.to_string()))?;
+        write(&board_row.path, &source, &updated)?;
     }
 
     Ok(KanbanAddReport {

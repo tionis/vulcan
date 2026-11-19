@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 use vulcan_core::move_rewrite::rewrite_link_destination;
+use vulcan_core::ordinary_write::OrdinaryWriteChange;
 use vulcan_core::parser::{parse_document, LinkKind, RawLink};
 use vulcan_core::paths::{secure_create, secure_read_to_string, secure_write};
 use vulcan_core::{
@@ -29,6 +30,9 @@ pub struct SplitNoteRequest {
     pub missing_fragment_policy: MissingFragmentPolicy,
     pub navigation: bool,
     pub dry_run: bool,
+    /// The profile the split writes under; when it rewrites or creates an
+    /// mdbase collection record, every change is one validated mdbase write.
+    pub permission_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -100,17 +104,36 @@ pub fn split_note(
     paths: &VaultPaths,
     request: &SplitNoteRequest,
 ) -> Result<SplitNoteReport, AppError> {
-    let _lock = vulcan_core::write_lock::acquire_write_lock(paths).map_err(AppError::operation)?;
-    vulcan_core::ordinary_write::ensure_no_pending_ordinary_write_batch(paths)
-        .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
-    split_note_unlocked(paths, request)
+    let (report, managed_changes) = {
+        let _lock =
+            vulcan_core::write_lock::acquire_write_lock(paths).map_err(AppError::operation)?;
+        vulcan_core::ordinary_write::ensure_no_pending_ordinary_write_batch(paths)
+            .map_err(|error| AppError::operation_with_code(error.code, error.message))?;
+        split_note_unlocked(paths, request)?
+    };
+    // The mdbase transaction takes the write lock itself; it checks every
+    // preimage, so a note changed since planning fails the split unwritten.
+    if let Some(changes) = managed_changes {
+        crate::note_writes::apply_planned_note_write(
+            paths,
+            &crate::note_writes::PlannedNoteWrite::new(
+                &changes,
+                request.permission_profile.as_deref(),
+            )
+            .dry_run(request.dry_run),
+        )?;
+    }
+    Ok(report)
 }
 
 #[allow(clippy::too_many_lines)]
+/// Plan the split and, unless it touches an mdbase record, apply it. A
+/// split that does is returned as changes for the caller to publish after
+/// releasing the write lock.
 fn split_note_unlocked(
     paths: &VaultPaths,
     request: &SplitNoteRequest,
-) -> Result<SplitNoteReport, AppError> {
+) -> Result<(SplitNoteReport, Option<Vec<OrdinaryWriteChange>>), AppError> {
     let resolved = resolve_note_reference(paths, &request.source).map_err(AppError::operation)?;
     let source_path = resolved.path;
     let source = secure_read_to_string(paths.vault_root(), Path::new(&source_path))
@@ -282,7 +305,19 @@ fn split_note_unlocked(
         changed_paths.insert(source_path.clone());
     }
 
-    if !request.dry_run {
+    let changes = split_changes(
+        &source_path,
+        &source,
+        request.keep_source,
+        &plan,
+        &external_rewrites,
+    );
+    let managed = crate::note_writes::changes_touch_mdbase_record(
+        paths,
+        &changes,
+        request.permission_profile.as_deref(),
+    )?;
+    if !request.dry_run && !managed {
         apply_plan_and_refresh_with_rollback(
             paths,
             &source_path,
@@ -305,7 +340,7 @@ fn split_note_unlocked(
             rewritten_links: output_changes.get(&note.path).map_or(0, Vec::len),
         })
         .collect();
-    Ok(SplitNoteReport {
+    let report = SplitNoteReport {
         dry_run: request.dry_run,
         source_path,
         destination_root,
@@ -315,7 +350,53 @@ fn split_note_unlocked(
         rewritten_files,
         diagnostics: plan.diagnostics,
         changed_paths: changed_paths.into_iter().collect(),
-    })
+    };
+    Ok((report, managed.then_some(changes)))
+}
+
+/// The split as whole-file changes: created fragments, rewritten backlinks,
+/// and the source replaced by the root note or removed.
+fn split_changes(
+    source_path: &str,
+    source: &str,
+    keep_source: bool,
+    plan: &DecompositionPlan,
+    external_rewrites: &[ExternalRewritePlan],
+) -> Vec<OrdinaryWriteChange> {
+    let mut changes = plan
+        .notes
+        .iter()
+        .filter(|note| note.path != source_path)
+        .map(|note| OrdinaryWriteChange {
+            path: note.path.clone(),
+            before: None,
+            after: Some(note.content.clone()),
+        })
+        .collect::<Vec<_>>();
+    changes.extend(
+        external_rewrites
+            .iter()
+            .filter(|rewrite| rewrite.updated != rewrite.original)
+            .map(|rewrite| OrdinaryWriteChange {
+                path: rewrite.path.clone(),
+                before: Some(rewrite.original.clone()),
+                after: Some(rewrite.updated.clone()),
+            }),
+    );
+    if let Some(root_note) = plan.notes.iter().find(|note| note.path == source_path) {
+        changes.push(OrdinaryWriteChange {
+            path: source_path.to_string(),
+            before: Some(source.to_string()),
+            after: Some(root_note.content.clone()),
+        });
+    } else if !keep_source {
+        changes.push(OrdinaryWriteChange {
+            path: source_path.to_string(),
+            before: Some(source.to_string()),
+            after: None,
+        });
+    }
+    changes
 }
 
 fn default_destination_root(source_path: &str) -> String {
@@ -825,6 +906,7 @@ mod tests {
             missing_fragment_policy: MissingFragmentPolicy::Error,
             navigation: true,
             dry_run: false,
+            permission_profile: None,
         }
     }
 
@@ -901,6 +983,46 @@ mod tests {
             }
         )
         .is_ok());
+    }
+
+    #[test]
+    fn splits_inside_a_collection_are_one_mdbase_transaction() {
+        let (_temp, paths) = setup_vault();
+        let root = paths.vault_root().to_path_buf();
+        fs::write(root.join("mdbase.yaml"), "spec_version: '0.3.0'\n").expect("collection");
+        fs::write(
+            root.join("Rulebook.md"),
+            "# Rules\n\n## Combat\nText.\n\n### Damage\nHarm.\n",
+        )
+        .expect("source");
+        fs::write(root.join("Index.md"), "See [[Rulebook#Combat]].\n").expect("backlink");
+        scan_vault(&paths, ScanMode::Full).expect("scan");
+
+        let preview = split_note(
+            &paths,
+            &SplitNoteRequest {
+                dry_run: true,
+                ..request()
+            },
+        )
+        .expect("dry run");
+        assert!(preview.dry_run);
+        assert!(root.join("Rulebook.md").is_file());
+        assert!(vulcan_core::mdbase::list_mdbase_write_outbox(&paths)
+            .expect("outbox")
+            .is_empty());
+
+        let report = split_note(&paths, &request()).expect("split");
+        assert!(!root.join("Rulebook.md").exists());
+        for note in &report.notes {
+            assert!(root.join(&note.path).is_file(), "{}", note.path);
+        }
+        assert!(!fs::read_to_string(root.join("Index.md"))
+            .expect("backlink")
+            .contains("[[Rulebook#Combat]]"));
+        let outbox = vulcan_core::mdbase::list_mdbase_write_outbox(&paths).expect("outbox");
+        assert_eq!(outbox.len(), 1, "{outbox:?}");
+        assert_eq!(outbox[0].operation, "batch");
     }
 
     #[test]

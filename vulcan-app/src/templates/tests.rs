@@ -1499,6 +1499,41 @@ fn creation_trigger_writes_to_a_template_moved_target() {
     );
 }
 
+#[cfg(feature = "js_runtime")]
+#[test]
+fn template_moves_of_collection_records_are_refused_unwritten() {
+    let temp_dir = tempdir().expect("temp dir");
+    let root = temp_dir.path();
+    fs::create_dir_all(root.join(".vulcan/templates")).expect("template dir");
+    fs::create_dir_all(root.join("Projects")).expect("projects dir");
+    fs::write(root.join("mdbase.yaml"), "spec_version: '0.3.0'\n").expect("collection");
+    fs::write(
+        root.join(".vulcan/config.toml"),
+        "[templates]\ntrigger_on_file_creation = true\ntrigger_on_file_creation_mode = \"folder\"\nfolder_templates = [{ folder = \"Projects\", template = \"move\" }]\n",
+    )
+    .expect("config");
+    fs::write(
+        root.join(".vulcan/templates/move.md"),
+        "<%* await tp.file.move('Moved/Alpha'); %>Moved body",
+    )
+    .expect("template");
+    fs::write(root.join("Projects/Alpha.md"), "").expect("source");
+    let paths = VaultPaths::new(root);
+    scan_vault(&paths, ScanMode::Full).expect("scan");
+
+    // A template that moves a collection record is refused before anything
+    // is written: its staged side effects cannot join the mdbase write.
+    let error =
+        apply_template_creation_trigger(&paths, "Projects/Alpha.md", None, Verbosity::Quiet, None)
+            .expect_err("side effects on a record are refused");
+    assert!(error.to_string().contains("mdbase-managed"), "{error}");
+    assert!(root.join("Projects/Alpha.md").is_file());
+    assert!(!root.join("Moved").exists());
+    assert!(vulcan_core::mdbase::list_mdbase_write_outbox(&paths)
+        .expect("outbox")
+        .is_empty());
+}
+
 #[test]
 fn template_creation_trigger_rejects_an_invalid_file_regex() {
     let temp_dir = tempdir().expect("temp dir");

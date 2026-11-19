@@ -561,20 +561,40 @@ pub fn run_chat_attachment(
             .guard
             .check_write_path(&path)
             .map_err(AppError::operation)?;
-        vulcan_core::paths::secure_create_atomic(
-            root,
-            std::path::Path::new(&path),
-            &attachment.bytes,
-        )
-        .map_err(AppError::operation)?;
+        // A Markdown file sent into an mdbase collection becomes a record,
+        // created through a validated mdbase write.
+        if crate::notes::note_path_is_mdbase_managed(vault.paths, &path, Some(vault.profile))? {
+            let text = std::str::from_utf8(&attachment.bytes).map_err(|_| {
+                AppError::operation(format!(
+                    "{path} would be an mdbase record, but the file is not UTF-8 text"
+                ))
+            })?;
+            crate::notes::write_note_content(
+                vault.paths,
+                &path,
+                None,
+                text,
+                "bot-attachment",
+                Some(vault.profile),
+                Verbosity::Quiet,
+            )?;
+        } else {
+            vulcan_core::paths::secure_create_atomic(
+                root,
+                std::path::Path::new(&path),
+                &attachment.bytes,
+            )
+            .map_err(AppError::operation)?;
+        }
         finish_write(vault, "bot-attachment", std::slice::from_ref(&path))?;
         Ok(path)
     })?;
-    let saved = ChatUndo {
+    // Hash the file as written: an mdbase create may have added defaults.
+    let saved = undo_after(vault.paths, &path, Some(Prior::Absent)).unwrap_or_else(|| ChatUndo {
         path: path.clone(),
         before: None,
         after_hash: blake3::hash(&attachment.bytes).to_hex().to_string(),
-    };
+    });
     let embed = format!("![[{path}]]");
     let text = match attachment.caption.as_deref().map(str::trim) {
         Some(caption) if !caption.is_empty() => format!("{caption} {embed}"),

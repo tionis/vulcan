@@ -10,7 +10,6 @@ use std::process::Command as ProcessCommand;
 use std::sync::{Arc, Mutex};
 use vulcan_core::config::TemplatesConfig;
 use vulcan_core::expression::functions::{parse_date_like_string, parse_date_with_format};
-use vulcan_core::move_note;
 use vulcan_core::move_rewrite::move_note_unlocked;
 use vulcan_core::parser::parse_document;
 use vulcan_core::paths::{
@@ -748,8 +747,11 @@ fn guarded_template_move(
     destination: &str,
     guard: Option<&ProfilePermissionGuard>,
 ) -> Result<MoveSummary, String> {
+    // Moves go through the app layer, so a collection record is renamed by a
+    // validated mdbase write.
     let Some(guard) = guard else {
-        return move_note(paths, source, destination, false).map_err(|error| error.to_string());
+        return crate::browse::move_note_with_profile(paths, source, destination, false, None)
+            .map_err(|error| error.to_string());
     };
     guard
         .check_read_path(source)
@@ -758,18 +760,27 @@ fn guarded_template_move(
         .and_then(|()| guard.check_write_path(destination))
         .and_then(|()| guard.check_refactor_path(destination))
         .map_err(|error| error.to_string())?;
-    let _lock =
-        vulcan_core::write_lock::acquire_write_lock(paths).map_err(|error| error.to_string())?;
-    let plan =
-        move_note_unlocked(paths, source, destination, true).map_err(|error| error.to_string())?;
-    for rewrite in &plan.rewritten_files {
-        guard
-            .check_read_path(&rewrite.path)
-            .and_then(|()| guard.check_write_path(&rewrite.path))
-            .and_then(|()| guard.check_refactor_path(&rewrite.path))
+    {
+        let _lock = vulcan_core::write_lock::acquire_write_lock(paths)
             .map_err(|error| error.to_string())?;
+        let plan = move_note_unlocked(paths, source, destination, true)
+            .map_err(|error| error.to_string())?;
+        for rewrite in &plan.rewritten_files {
+            guard
+                .check_read_path(&rewrite.path)
+                .and_then(|()| guard.check_write_path(&rewrite.path))
+                .and_then(|()| guard.check_refactor_path(&rewrite.path))
+                .map_err(|error| error.to_string())?;
+        }
     }
-    move_note_unlocked(paths, source, destination, false).map_err(|error| error.to_string())
+    crate::browse::move_note_with_profile(
+        paths,
+        source,
+        destination,
+        false,
+        Some(&guard.selection().name),
+    )
+    .map_err(|error| error.to_string())
 }
 
 pub fn build_template_list_report(paths: &VaultPaths) -> Result<TemplateListReport, AppError> {

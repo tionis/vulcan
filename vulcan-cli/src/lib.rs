@@ -545,6 +545,10 @@ use vulcan_app::pull::outline::{
 use vulcan_app::pull::outline::{
     load_outline_pulled_bindings, outline_pull_conflict_status, remove_outline_document_binding,
 };
+use vulcan_app::refactor::{
+    bulk_replace, link_mentions, merge_tags, rename_alias, rename_block_ref, rename_heading,
+    rename_property,
+};
 use vulcan_app::scan::refresh_cache_incrementally_with_progress;
 use vulcan_app::site::{
     build_frontend_bundle as app_build_frontend_bundle,
@@ -573,24 +577,22 @@ use vulcan_core::vault_discovery::{
     discover_init_root, discover_vault_root, resolve_named_vault, VaultRootDiscovery,
 };
 use vulcan_core::{
-    bulk_replace, create_checkpoint, default_assistant_tool_reserved_names, delete_saved_report,
-    doctor_fix, doctor_vault, export_static_search_index_with_filter, link_mentions,
-    list_checkpoints, list_saved_reports, load_saved_report, load_vault_config, merge_tags,
-    query_change_report, query_notes_with_filter, rebuild_vault_with_progress, rename_alias,
-    rename_block_ref, rename_heading, rename_property, repair_fts, resolve_note_reference,
-    save_saved_report, scan_vault, scan_vault_with_progress, search_vault_with_filter,
-    verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport, BasesEvalReport,
-    BulkMutationReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
-    CheckpointRecord, DataviewJsResult, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue,
-    DoctorReport, DqlQueryResult, DuplicateSuggestionsReport, LinkSuggestion,
-    LinkSuggestionsReport, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
-    MoveSummary, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport,
-    PermissionFilter, PermissionGuard, PluginEvent, ProfilePermissionGuard, QueryReport,
-    RebuildQuery, RebuildReport, RefactorChange, RefactorReport, RepairFtsQuery, RepairFtsReport,
-    ResolvedPermissionProfile, SavedExport, SavedExportFormat, SavedReportDefinition,
-    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
-    ScanSummary, SearchHit, SearchQuery, SearchReport, SearchSort, SelectionPlan, VaultPaths,
-    WatchOptions, WatchReport,
+    create_checkpoint, default_assistant_tool_reserved_names, delete_saved_report, doctor_fix,
+    doctor_vault, export_static_search_index_with_filter, list_checkpoints, list_saved_reports,
+    load_saved_report, load_vault_config, query_change_report, query_notes_with_filter,
+    rebuild_vault_with_progress, repair_fts, resolve_note_reference, save_saved_report, scan_vault,
+    scan_vault_with_progress, search_vault_with_filter, verify_cache, watch_vault, AutoScanMode,
+    BacklinkRecord, BacklinksReport, BasesEvalReport, BulkMutationReport, CacheVerifyReport,
+    ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, DataviewJsResult,
+    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult,
+    DuplicateSuggestionsReport, LinkSuggestion, LinkSuggestionsReport, MentionSuggestion,
+    MentionSuggestionsReport, MergeCandidate, MoveSummary, NoteQuery, NoteRecord, NotesReport,
+    OutgoingLinkRecord, OutgoingLinksReport, PermissionFilter, PermissionGuard, PluginEvent,
+    ProfilePermissionGuard, QueryReport, RebuildQuery, RebuildReport, RefactorChange,
+    RefactorReport, RepairFtsQuery, RepairFtsReport, ResolvedPermissionProfile, SavedExport,
+    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
+    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
+    SearchReport, SearchSort, SelectionPlan, VaultPaths, WatchOptions, WatchReport,
 };
 #[derive(Debug)]
 pub struct CliError {
@@ -5295,7 +5297,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             }
             let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
-            let report = rename_property(&paths, old, new, dry_run).map_err(CliError::operation)?;
+            let report = rename_property(&paths, old, new, dry_run, cli.permissions.as_deref())
+                .map_err(CliError::operation)?;
             if !dry_run {
                 let changed_paths = refactor_changed_files(&report);
                 auto_commit
@@ -5336,7 +5339,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             }
             let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
-            let report = merge_tags(&paths, source, dest, dry_run).map_err(CliError::operation)?;
+            let report = merge_tags(&paths, source, dest, dry_run, cli.permissions.as_deref())
+                .map_err(CliError::operation)?;
             if !dry_run {
                 let changed_paths = refactor_changed_files(&report);
                 auto_commit
@@ -5381,8 +5385,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             selected_permission_guard(cli, &paths)?
                 .check_refactor_path(&note)
                 .map_err(CliError::operation)?;
-            let report =
-                rename_alias(&paths, &note, old, new, dry_run).map_err(CliError::operation)?;
+            let report = rename_alias(&paths, &note, old, new, dry_run, cli.permissions.as_deref())
+                .map_err(CliError::operation)?;
             if !dry_run {
                 let changed_paths = refactor_changed_files(&report);
                 auto_commit
@@ -5428,7 +5432,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 .check_refactor_path(&note)
                 .map_err(CliError::operation)?;
             let report =
-                rename_heading(&paths, &note, old, new, dry_run).map_err(CliError::operation)?;
+                rename_heading(&paths, &note, old, new, dry_run, cli.permissions.as_deref())
+                    .map_err(CliError::operation)?;
             if !dry_run {
                 let changed_paths = refactor_changed_files(&report);
                 auto_commit
@@ -5474,7 +5479,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 .check_refactor_path(&note)
                 .map_err(CliError::operation)?;
             let report =
-                rename_block_ref(&paths, &note, old, new, dry_run).map_err(CliError::operation)?;
+                rename_block_ref(&paths, &note, old, new, dry_run, cli.permissions.as_deref())
+                    .map_err(CliError::operation)?;
             if !dry_run {
                 let changed_paths = refactor_changed_files(&report);
                 auto_commit
@@ -6836,7 +6842,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             let auto_commit = AutoCommitPolicy::for_mutation(&paths, no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let report =
-                link_mentions(&paths, note.as_deref(), dry_run).map_err(CliError::operation)?;
+                link_mentions(&paths, note.as_deref(), dry_run, cli.permissions.as_deref())
+                    .map_err(CliError::operation)?;
             if !dry_run {
                 let changed_paths = refactor_changed_files(&report);
                 auto_commit
@@ -6874,11 +6881,23 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
             let selection = resolve_bulk_note_selection(filters, stdin)?;
             let report = match &selection {
-                BulkNoteSelection::Filters(filters) => {
-                    bulk_replace(&paths, filters, find, replace, dry_run)
-                }
+                BulkNoteSelection::Filters(filters) => bulk_replace(
+                    &paths,
+                    filters,
+                    find,
+                    replace,
+                    dry_run,
+                    cli.permissions.as_deref(),
+                ),
                 BulkNoteSelection::Paths(note_paths) => {
-                    vulcan_core::bulk_replace_on_paths(&paths, note_paths, find, replace, dry_run)
+                    vulcan_app::refactor::bulk_replace_on_paths(
+                        &paths,
+                        note_paths,
+                        find,
+                        replace,
+                        dry_run,
+                        cli.permissions.as_deref(),
+                    )
                 }
             }
             .map_err(CliError::operation)?;

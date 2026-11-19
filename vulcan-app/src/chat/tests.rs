@@ -681,6 +681,41 @@ fn undo_restores_and_removes_notes_an_mdbase_collection_manages() {
 }
 
 #[test]
+fn markdown_attachments_in_a_collection_are_validated_records() {
+    let fixture = Fixture::new(
+        "[inbox]\npath = \"Inbox.md\"\nformat = \"- {text}\"\ntimestamp = false\n\
+         [bot]\nattachment_folder = \"Clips\"\n",
+        &[
+            ("mdbase.yaml", "spec_version: '0.3.0'\n"),
+            (
+                "_types/clip.md",
+                "---\nkind: mdbase.type\nname: clip\nmatch:\n  where:\n    type: clip\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: object\n    required: [source]\n---\n",
+            ),
+        ],
+    );
+    let guard = fixture.guard("unrestricted");
+    let vault = vault_for(&fixture, &guard, "unrestricted");
+    let send = |bytes: &[u8]| {
+        run_chat_attachment(
+            &vault,
+            &ChatAttachment {
+                file_name: "clip.md".to_string(),
+                bytes: bytes.to_vec(),
+                caption: None,
+            },
+        )
+    };
+    let error = send(b"---\ntype: clip\n---\nText\n").expect_err("missing source");
+    assert!(error.to_string().contains("required"), "{error}");
+    assert!(!fixture.paths.vault_root().join("Clips/clip.md").exists());
+
+    let reply = send(b"---\ntype: clip\nsource: phone\n---\nText\n").expect("valid clip");
+    assert!(fixture.paths.vault_root().join("Clips/clip.md").is_file());
+    run_chat_undo(&vault, &reply.undo).expect("undo");
+    assert!(!fixture.paths.vault_root().join("Clips/clip.md").exists());
+}
+
+#[test]
 fn attachments_are_saved_and_embedded_with_their_caption() {
     let fixture = Fixture::new(
         "[inbox]\npath = \"Inbox.md\"\nformat = \"- {text}\"\ntimestamp = false\n\

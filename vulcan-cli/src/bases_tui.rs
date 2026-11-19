@@ -17,8 +17,8 @@ use serde_json::Value;
 use std::fs;
 use std::io;
 use vulcan_core::{
-    evaluate_base_file, scan_vault, set_note_property, BasesEvalReport, BasesEvaluatedView,
-    BasesRow, PermissionGuard, ProfilePermissionGuard, ScanMode, VaultPaths,
+    evaluate_base_file, scan_vault, BasesEvalReport, BasesEvaluatedView, BasesRow, PermissionGuard,
+    ProfilePermissionGuard, ScanMode, VaultPaths,
 };
 
 const MAX_TABLE_COLUMNS: usize = 5;
@@ -1018,8 +1018,21 @@ impl BasesTuiState {
         };
         let (key, value) = parse_property_edit_input(&self.property_input)?;
         self.check_write(&note_path)?;
-        let report = set_note_property(&self.paths, &note_path, &key, value.as_deref(), false)
-            .map_err(|error| error.to_string())?;
+        // Through the app layer, so a collection record is validated and
+        // journaled rather than overwritten.
+        let profile = self
+            .guard
+            .as_ref()
+            .map(|guard| guard.selection().name.clone());
+        let report = vulcan_app::refactor::set_note_property(
+            &self.paths,
+            &note_path,
+            &key,
+            value.as_deref(),
+            false,
+            profile.as_deref(),
+        )
+        .map_err(|error| error.to_string())?;
         self.reload_report()?;
         if value.is_some() {
             if report.files.is_empty() {

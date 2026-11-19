@@ -1,3 +1,4 @@
+use crate::browse::move_note_with_profile;
 use crate::config::{
     apply_config_batch_report, plan_config_batch_report, ConfigMutationOperation, ConfigTarget,
 };
@@ -8,13 +9,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 use toml::Value as TomlValue;
-use vulcan_core::{load_vault_config, move_note, FolderNotesConfig, MoveSummary, VaultPaths};
+use vulcan_core::{load_vault_config, FolderNotesConfig, MoveSummary, VaultPaths};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FolderNoteConversionRequest {
     pub source: Option<FolderNotesConfig>,
     pub destination: FolderNotesConfig,
     pub dry_run: bool,
+    /// The profile the moves run under; a collection record among them is
+    /// moved through a validated mdbase rename.
+    pub permission_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -82,8 +86,13 @@ pub fn convert_folder_notes(
     // still retryable: shared config changes only after all moves complete.
     let mut preflight = Vec::new();
     for (folder, (source_path, destination_path)) in &planned {
-        let summary =
-            move_note(paths, source_path, destination_path, true).map_err(AppError::operation)?;
+        let summary = move_note_with_profile(
+            paths,
+            source_path,
+            destination_path,
+            true,
+            request.permission_profile.as_deref(),
+        )?;
         preflight.push((
             folder.clone(),
             source_path.clone(),
@@ -100,7 +109,13 @@ pub fn convert_folder_notes(
         } = if request.dry_run {
             planned_summary
         } else {
-            move_note(paths, &source_path, &destination_path, false).map_err(AppError::operation)?
+            move_note_with_profile(
+                paths,
+                &source_path,
+                &destination_path,
+                false,
+                request.permission_profile.as_deref(),
+            )?
         };
         changed_paths.insert(source_path.clone());
         changed_paths.insert(destination_path.clone());
@@ -308,6 +323,7 @@ mod tests {
                     source: None,
                     destination: convention(FolderNotePlacement::Inside, "index"),
                     dry_run,
+                    permission_profile: None,
                 },
             )
             .expect_err("folder-note conversion must fail closed");
@@ -324,6 +340,7 @@ mod tests {
                 source: None,
                 destination: convention(FolderNotePlacement::Inside, "index"),
                 dry_run: true,
+                permission_profile: None,
             }
         )
         .is_ok());
@@ -347,6 +364,7 @@ mod tests {
                 source: None,
                 destination: convention(FolderNotePlacement::Inside, "index"),
                 dry_run: false,
+                permission_profile: None,
             },
         )
         .expect("conversion");
@@ -374,6 +392,7 @@ mod tests {
             source: None,
             destination: convention(FolderNotePlacement::Outside, "{{folder_name}}"),
             dry_run: true,
+            permission_profile: None,
         };
 
         let first = convert_folder_notes(&paths, &request).expect("first plan");
@@ -399,6 +418,7 @@ mod tests {
                 source: None,
                 destination: convention(FolderNotePlacement::Inside, "index"),
                 dry_run: true,
+                permission_profile: None,
             },
         )
         .expect_err("case conflict must fail");
@@ -434,11 +454,37 @@ mod tests {
                 source: Some(convention(FolderNotePlacement::Inside, "README")),
                 destination: convention(FolderNotePlacement::Outside, "{{folder_name}}"),
                 dry_run: false,
+                permission_profile: None,
             },
         )
         .expect("conversion");
 
         assert_eq!(report.moves[0].destination_path, "Guides.md");
         assert!(temp.path().join("Guides.md").is_file());
+    }
+
+    #[test]
+    fn collection_records_move_through_a_journaled_mdbase_rename() {
+        let (temp, paths) = initialized_vault();
+        fs::write(temp.path().join("mdbase.yaml"), "spec_version: '0.3.0'\n").expect("collection");
+        fs::create_dir_all(temp.path().join("Guides")).expect("folder");
+        fs::write(temp.path().join("Guides/README.md"), "# Guides\n").expect("source");
+        scan_vault(&paths, ScanMode::Full).expect("scan");
+
+        convert_folder_notes(
+            &paths,
+            &FolderNoteConversionRequest {
+                source: Some(convention(FolderNotePlacement::Inside, "README")),
+                destination: convention(FolderNotePlacement::Outside, "{{folder_name}}"),
+                dry_run: false,
+                permission_profile: None,
+            },
+        )
+        .expect("conversion");
+
+        assert!(temp.path().join("Guides.md").is_file());
+        let outbox = vulcan_core::mdbase::list_mdbase_write_outbox(&paths).expect("outbox");
+        assert_eq!(outbox.len(), 1, "{outbox:?}");
+        assert_eq!(outbox[0].operation, "rename");
     }
 }
