@@ -581,6 +581,20 @@ fn snoozing_a_task_note_adds_an_absolute_reminder() {
     assert!(outcome.starts_with("Snoozed until "), "{outcome}");
     let note = fixture.read(&path);
     assert!(note.contains("Snoozed"), "{note}");
+    // Absolute times are RFC 3339 instants, as TaskNotes and its mdbase
+    // schema expect, not floating `YYYY-MM-DDTHH:MM` wall-clock times.
+    let times = note
+        .lines()
+        .filter_map(|line| line.split_once("absoluteTime: ").map(|(_, time)| time))
+        .map(|time| time.trim().trim_matches(['\'', '"']))
+        .collect::<Vec<_>>();
+    assert_eq!(times.len(), 2, "{note}");
+    for time in times {
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(time).is_ok() && time.ends_with('Z'),
+            "{time} in {note}"
+        );
+    }
     let plan = reminders::plan_chat_reminders(&vault).unwrap();
     assert_eq!(
         plan.reminders.iter().filter(|r| r.path == path).count(),

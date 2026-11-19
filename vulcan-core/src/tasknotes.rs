@@ -305,7 +305,8 @@ pub fn parse_tasknote_reminders(values: &[Value]) -> Vec<TaskNotesReminder> {
 ///   `-15m`, `due-1h`, `scheduled+2d`, `-1w`, or an ISO 8601 duration such as
 ///   `-PT15M`; a bare anchor (`due`) fires at the anchor. Without an anchor,
 ///   the reminder is relative to `default_related_to`.
-/// - Absolute: a date or date-time such as `2026-11-05T14:00`, kept as given.
+/// - Absolute: a date or date-time such as `2026-11-05T14:00`, kept as given;
+///   the app layer gives a floating time the reminder timezone's offset.
 ///
 /// # Errors
 ///

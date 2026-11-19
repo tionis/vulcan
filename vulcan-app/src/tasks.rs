@@ -266,6 +266,7 @@ pub fn apply_task_reminder_add_with_guard(
                 std::slice::from_ref(&request.spec),
                 default_related_to,
                 request.description.as_deref(),
+                &loaded.config.tasks.reminders,
             )?;
             write_reminders_plan(frontmatter, loaded, key, &reminders)
         },
@@ -345,14 +346,16 @@ fn write_reminders_plan(
 }
 
 /// Append a reminder for each spec, each with a fresh `rem_<ms>_<n>` id as
-/// `TaskNotes` names them.
+/// `TaskNotes` names them. Absolute times get the reminder timezone's offset.
 fn append_reminder_specs(
     reminders: &mut Vec<Value>,
     specs: &[String],
     default_related_to: Option<&str>,
     description: Option<&str>,
+    reminder_config: &vulcan_core::config::TaskRemindersConfig,
 ) -> Result<(), AppError> {
     let stamp = current_utc_timestamp_ms();
+    let first_new = reminders.len();
     for spec in specs {
         // At most `len` ids are taken, so one of `len + 1` candidates is free.
         let id = (0..=reminders.len())
@@ -368,6 +371,7 @@ fn append_reminder_specs(
                 .map_err(AppError::operation)?,
         );
     }
+    reminders::anchor_absolute_reminders(&mut reminders[first_new..], reminder_config);
     Ok(())
 }
 
@@ -956,7 +960,14 @@ pub fn apply_task_add_with_guard(
     } else {
         scheduled.as_ref().map(|_| "scheduled")
     };
-    append_reminder_specs(&mut reminders, &request.reminders, default_related_to, None)?;
+    reminders::anchor_absolute_reminders(&mut reminders, &config.tasks.reminders);
+    append_reminder_specs(
+        &mut reminders,
+        &request.reminders,
+        default_related_to,
+        None,
+        &config.tasks.reminders,
+    )?;
     if !reminders.is_empty() {
         frontmatter.insert(
             YamlValue::String(mapping.reminders.clone()),

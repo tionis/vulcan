@@ -17529,7 +17529,16 @@ fn tasks_reminder_commands_add_and_remove_reminders_from_the_cli() {
     assert_eq!(reminders[0]["relatedTo"], "due");
     assert_eq!(reminders[0]["offset"], "-PT15M");
     assert_eq!(reminders[1]["type"], "absolute");
-    assert_eq!(reminders[1]["absoluteTime"], "2026-11-05T09:00");
+    // Stored as an RFC 3339 instant in the reminder timezone, as the
+    // TaskNotes mdbase schema requires.
+    let absolute = reminders[1]["absoluteTime"]
+        .as_str()
+        .expect("absolute time");
+    assert!(absolute.starts_with("2026-11-05T09:00:00"), "{added}");
+    assert!(
+        chrono::DateTime::parse_from_rfc3339(absolute).is_ok(),
+        "{added}"
+    );
     let path = added["path"].as_str().expect("task path").to_string();
 
     let report = run(&[

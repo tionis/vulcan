@@ -113,6 +113,20 @@ impl ReminderTimezone {
         }
     }
 
+    /// `at_ms` as an RFC 3339 date-time with this timezone's offset, such as
+    /// `2026-11-19T09:00:00+01:00` (`Z` for UTC).
+    #[must_use]
+    pub fn format_rfc3339(self, at_ms: i64) -> String {
+        let instant = chrono::DateTime::from_timestamp_millis(at_ms).unwrap_or_default();
+        let seconds = chrono::SecondsFormat::Secs;
+        match self {
+            Self::Named(tz) => instant.with_timezone(&tz).to_rfc3339_opts(seconds, true),
+            Self::Local => instant
+                .with_timezone(&chrono::Local)
+                .to_rfc3339_opts(seconds, true),
+        }
+    }
+
     /// The instant (Unix ms) of a wall-clock time. A time inside a DST gap
     /// fires at the first valid minute after it; a repeated time fires at
     /// its first occurrence.
@@ -213,6 +227,39 @@ pub(super) fn zoned_instant(value: &str, settings: &ReminderSettings) -> Option<
             .instant_ms(date.and_time(settings.default_time));
     }
     parse_date_like_string(value)
+}
+
+/// Give absolute `TaskNotes` reminders written without a zone, such as
+/// `2026-11-19T09:00` or a bare date, the explicit offset of the reminder
+/// timezone. `TaskNotes` writes absolute reminders as RFC 3339 instants and its
+/// mdbase schema requires them; a floating time fails validation. Times that
+/// already carry an offset, and reminders that are not absolute, are kept.
+pub(super) fn anchor_absolute_reminders(reminders: &mut [Value], config: &TaskRemindersConfig) {
+    let Ok(settings) = ReminderSettings::from_config(config) else {
+        return;
+    };
+    for reminder in reminders {
+        let Some(object) = reminder.as_object_mut() else {
+            continue;
+        };
+        if !object
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind.eq_ignore_ascii_case("absolute"))
+        {
+            continue;
+        }
+        let Some(time) = object.get("absoluteTime").and_then(Value::as_str) else {
+            continue;
+        };
+        if chrono::DateTime::parse_from_rfc3339(time.trim()).is_ok() {
+            continue;
+        }
+        if let Some(at_ms) = zoned_instant(time, &settings) {
+            let anchored = settings.timezone.format_rfc3339(at_ms);
+            object.insert("absoluteTime".to_string(), Value::String(anchored));
+        }
+    }
 }
 
 /// Reminders of open inline tasks that fire at or before `deadline_ms`.
@@ -479,5 +526,36 @@ mod tests {
         config.default_time = "09:00".to_string();
         config.timezone = Some("Mars/Olympus".to_string());
         assert!(ReminderSettings::from_config(&config).is_err());
+    }
+
+    #[test]
+    fn floating_absolute_reminders_get_the_reminder_timezone_offset() {
+        let config = TaskRemindersConfig {
+            timezone: Some("Europe/Berlin".to_string()),
+            default_time: "08:30".to_string(),
+            ..TaskRemindersConfig::default()
+        };
+        let mut reminders = vec![
+            serde_json::json!({"id": "a", "type": "absolute", "absoluteTime": "2026-11-19T09:00"}),
+            serde_json::json!({"id": "b", "type": "absolute", "absoluteTime": "2026-07-01T09:00:00"}),
+            serde_json::json!({"id": "c", "type": "absolute", "absoluteTime": "2026-11-20"}),
+            serde_json::json!({"id": "d", "type": "absolute", "absoluteTime": "2026-11-19T08:00:00.000Z"}),
+            serde_json::json!({"id": "e", "type": "relative", "relatedTo": "due", "offset": "-PT15M"}),
+        ];
+        let untouched = reminders[3..].to_vec();
+        anchor_absolute_reminders(&mut reminders, &config);
+        let times = reminders[..3]
+            .iter()
+            .map(|reminder| reminder["absoluteTime"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            times,
+            [
+                "2026-11-19T09:00:00+01:00",
+                "2026-07-01T09:00:00+02:00",
+                "2026-11-20T08:30:00+01:00",
+            ]
+        );
+        assert_eq!(reminders[3..], untouched[..], "zoned and relative kept");
     }
 }
