@@ -20,6 +20,26 @@
 //!   protocol, and transport boundaries are being split so Phase 10 can reuse
 //!   the concepts without importing terminal rendering or CLI-only state.
 
+// Progress and diagnostics on stderr must never abort a command: with
+// `2>&1 | head -1` the reader goes away mid-run, and std's `eprintln!`
+// panics on the broken pipe, unwinding out of a half-applied write. These
+// shadow std's macros for the whole crate and drop stderr write errors.
+macro_rules! eprintln {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        let _ = ::std::writeln!(::std::io::stderr(), $($arg)*);
+    }};
+}
+
+// Unused in some feature sets.
+#[allow(unused_macros)]
+macro_rules! eprint {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        let _ = ::std::write!(::std::io::stderr(), $($arg)*);
+    }};
+}
+
 mod bases_tui;
 mod browse_preview;
 mod browse_tui;

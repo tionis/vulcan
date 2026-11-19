@@ -42451,3 +42451,22 @@ fn a_detached_test_daemon_stops_when_its_guard_drops() {
     let status = successful_process_json(&daemon(&["status"]));
     assert_eq!(status["running"], false);
 }
+
+#[test]
+fn a_closed_stderr_does_not_abort_a_scan() {
+    // `vulcan ... 2>&1 | head -1`: the reader exits after the first line and
+    // later progress writes hit a broken pipe. They must not abort the run.
+    let temporary = TempDir::new().expect("temp dir should be created");
+    let vault = temporary.path().join("vault");
+    copy_fixture_vault("basic", &vault);
+    let mut child = ProcessCommand::new(assert_cmd::cargo::cargo_bin("vulcan"))
+        .args(["--vault", vault.to_str().expect("utf-8"), "scan"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("vulcan should start");
+    drop(child.stderr.take());
+    let status = child.wait().expect("vulcan should finish");
+    assert!(status.success(), "{status}");
+    assert!(vault.join(".vulcan/cache.db").is_file());
+}
