@@ -1,0 +1,4 @@
+---
+role: friend
+---
+# Alice
