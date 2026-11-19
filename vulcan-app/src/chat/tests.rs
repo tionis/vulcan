@@ -655,6 +655,32 @@ fn undo_reverts_the_last_capture_only_while_unchanged() {
 }
 
 #[test]
+fn undo_restores_and_removes_notes_an_mdbase_collection_manages() {
+    let fixture = Fixture::new(
+        "[inbox]\npath = \"Inbox.md\"\nformat = \"- {text}\"\ntimestamp = false\n",
+        &[
+            ("mdbase.yaml", "spec_version: '0.3.0'\n"),
+            ("Inbox.md", "# Inbox\n"),
+        ],
+    );
+    assert!(crate::notes::note_path_is_mdbase_managed(&fixture.paths, "Inbox.md", None).unwrap());
+    let guard = fixture.guard("unrestricted");
+    let vault = vault_for(&fixture, &guard, "unrestricted");
+
+    let capture = fixture.run("unrestricted", "first thought").unwrap();
+    let reply = run_chat_undo(&vault, &capture.undo).unwrap();
+    assert_eq!(reply.text, "Undone: Inbox.md");
+    assert_eq!(fixture.read("Inbox.md"), "# Inbox\n");
+
+    // A capture that created the inbox note removes it again.
+    fs::remove_file(fixture.paths.vault_root().join("Inbox.md")).unwrap();
+    let created = fixture.run("unrestricted", "second thought").unwrap();
+    assert_eq!(created.undo[0].before, None);
+    run_chat_undo(&vault, &created.undo).unwrap();
+    assert!(!fixture.paths.vault_root().join("Inbox.md").exists());
+}
+
+#[test]
 fn attachments_are_saved_and_embedded_with_their_caption() {
     let fixture = Fixture::new(
         "[inbox]\npath = \"Inbox.md\"\nformat = \"- {text}\"\ntimestamp = false\n\

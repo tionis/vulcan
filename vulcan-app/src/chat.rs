@@ -392,48 +392,32 @@ pub fn run_chat_command(
 }
 
 /// Revert a capture: every file must still be exactly as the capture
-/// left it, or nothing is changed.
+/// left it, or nothing is changed. A note an mdbase collection manages is
+/// restored through a validated mdbase write, like the capture itself.
 pub fn run_chat_undo(vault: &ChatVault<'_>, undo: &[ChatUndo]) -> Result<ChatReply, AppError> {
     if undo.is_empty() {
         return Ok(ChatReply::text("Nothing to undo."));
     }
     let root = vault.paths.vault_root();
     let changed = with_write(vault, || {
-        let _lock = vulcan_core::write_lock::acquire_write_lock(vault.paths)
-            .map_err(AppError::operation)?;
+        let mut current = Vec::with_capacity(undo.len());
         for entry in undo {
             vault
                 .guard
                 .check_write_path(&entry.path)
                 .map_err(AppError::operation)?;
-            let unchanged =
-                vulcan_core::paths::secure_read(root, std::path::Path::new(&entry.path))
-                    .is_ok_and(|bytes| blake3::hash(&bytes).to_hex().as_str() == entry.after_hash);
-            if !unchanged {
-                return Ok(Err(entry.path.clone()));
+            match vulcan_core::paths::secure_read(root, std::path::Path::new(&entry.path)) {
+                Ok(bytes) if blake3::hash(&bytes).to_hex().as_str() == entry.after_hash => {
+                    current.push(bytes);
+                }
+                _ => return Ok(Err(entry.path.clone())),
             }
         }
-        for entry in undo {
-            let path = std::path::Path::new(&entry.path);
-            match &entry.before {
-                Some(before) => {
-                    if crate::notes::note_path_is_mdbase_managed(
-                        vault.paths,
-                        &entry.path,
-                        Some(vault.profile),
-                    )? {
-                        return Err(AppError::operation(format!(
-                            "{} is managed by an mdbase collection; undo it by hand",
-                            entry.path
-                        )));
-                    }
-                    vulcan_core::paths::secure_replace(root, path, before)
-                        .map_err(AppError::operation)?;
-                }
-                None => {
-                    vulcan_core::paths::secure_remove(root, path).map_err(AppError::operation)?;
-                }
-            }
+        // Each write below checks the file still holds `now` under the
+        // write lock, so a change after this point fails rather than being
+        // overwritten.
+        for (entry, now) in undo.iter().zip(&current) {
+            restore_undo_entry(vault, entry, now)?;
         }
         let changed = undo
             .iter()
@@ -453,6 +437,64 @@ pub fn run_chat_undo(vault: &ChatVault<'_>, undo: &[ChatUndo]) -> Result<ChatRep
         Err(path) => Ok(ChatReply::text(format!(
             "{path} changed since the capture; nothing was undone."
         ))),
+    }
+}
+
+/// Put one file back as `entry` recorded it, given what it holds `now`.
+/// A note an mdbase collection manages goes through a validated mdbase
+/// write; any other file is replaced or removed while it still holds `now`.
+fn restore_undo_entry(vault: &ChatVault<'_>, entry: &ChatUndo, now: &[u8]) -> Result<(), AppError> {
+    let profile = Some(vault.profile);
+    let root = vault.paths.vault_root();
+    let path = std::path::Path::new(&entry.path);
+    if !crate::notes::note_path_is_mdbase_managed(vault.paths, &entry.path, profile)? {
+        let _lock = vulcan_core::write_lock::acquire_write_lock(vault.paths)
+            .map_err(AppError::operation)?;
+        if vulcan_core::paths::secure_read(root, path).ok().as_deref() != Some(now) {
+            return Err(AppError::operation(format!(
+                "{} changed during undo; nothing more was undone",
+                entry.path
+            )));
+        }
+        return match &entry.before {
+            Some(before) => vulcan_core::paths::secure_replace(root, path, before),
+            None => vulcan_core::paths::secure_remove(root, path),
+        }
+        .map_err(AppError::operation);
+    }
+    let now = std::str::from_utf8(now).map_err(AppError::operation)?;
+    if let Some(before) = &entry.before {
+        crate::notes::write_note_content(
+            vault.paths,
+            &entry.path,
+            Some(now),
+            before,
+            "undo",
+            profile,
+            Verbosity::Quiet,
+        )
+        .map(|_| ())
+    } else {
+        let deleted = crate::notes::apply_mdbase_note_change(
+            vault.paths,
+            &crate::mdbase::MdbaseManagedNoteWriteRequest {
+                path: &entry.path,
+                before: Some(now),
+                after: None,
+                operation: crate::mdbase::MdbaseWriteOperation::Delete,
+                mode: crate::mdbase::MdbaseManagedWriteMode::Validated,
+                dry_run: false,
+                permission_profile: profile,
+                verbosity: Verbosity::Quiet,
+            },
+        )?;
+        if deleted {
+            Ok(())
+        } else {
+            Err(AppError::operation(
+                "mdbase collection changed during undo; retry the operation",
+            ))
+        }
     }
 }
 

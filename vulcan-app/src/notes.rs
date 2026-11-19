@@ -1520,7 +1520,7 @@ pub(crate) fn write_ordinary_note_if_unchanged_with_profile(
     }
 }
 
-fn delete_ordinary_note_if_unchanged(
+pub(crate) fn delete_ordinary_note_if_unchanged(
     paths: &VaultPaths,
     path: &str,
     before: &str,
@@ -1741,7 +1741,7 @@ pub fn apply_note_delete(
     })
 }
 
-fn apply_mdbase_note_change(
+pub(crate) fn apply_mdbase_note_change(
     paths: &VaultPaths,
     request: &MdbaseManagedNoteWriteRequest<'_>,
 ) -> Result<bool, AppError> {

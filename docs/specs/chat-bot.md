@@ -155,7 +155,7 @@ privacy = "title_only"
 | `/find <query>` | top 8 search hits, each with a button that sends the note | search |
 | `/note <path or title>` | send the note as text (split at 4096 characters) or as a file when it is long | note get |
 | `/vault [name]` | show or switch this chat's active vault | bot state |
-| `/undo` | revert the last capture, task, or attachment made from this chat within 7 days, all or nothing, if every file is byte-for-byte as the capture left it; each capture reply carries an Undo button that works only while its capture is the chat's latest | bot state + `run_chat_undo` |
+| `/undo` | revert the last capture, task, or attachment made from this chat within 7 days, all or nothing, if every file is byte-for-byte as the capture left it (a note an mdbase collection manages is restored or removed through a validated mdbase write, like the capture); each capture reply carries an Undo button that works only while its capture is the chat's latest | bot state + `run_chat_undo` |
 | `/help` | list commands (also registered with `setMyCommands`) | — |
 
 Every write goes through the ordinary write path, so the mutation scheduler, auto-commit, and Git
