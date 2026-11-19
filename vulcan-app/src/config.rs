@@ -521,7 +521,8 @@ pub fn plan_config_batch_report(
         apply_config_operation_to_value(&mut config_value, operation, target)?;
     }
 
-    let rendered_contents = toml::to_string_pretty(&config_value).map_err(AppError::operation)?;
+    let rendered_contents =
+        render_config_preserving_format(existing_contents.as_deref(), &config_value)?;
     validate_vulcan_overrides_toml(&rendered_contents).map_err(AppError::operation)?;
     let updated = existing_contents.as_deref() != Some(rendered_contents.as_str());
 
@@ -2533,7 +2534,8 @@ fn plan_config_value_write(
     }
 
     set_config_toml_value(&mut document.value, &storage_refs, value)?;
-    let rendered_contents = toml::to_string_pretty(&document.value).map_err(AppError::operation)?;
+    let rendered_contents =
+        render_config_preserving_format(document.existing.as_deref(), &document.value)?;
     validate_vulcan_overrides_toml(&rendered_contents).map_err(AppError::operation)?;
     let updated = document.existing.as_deref() != Some(rendered_contents.as_str());
     let diagnostics = normalize_config_diagnostics(paths, &load_vault_config(paths).diagnostics);
@@ -2565,7 +2567,8 @@ fn plan_config_value_unset(
         .collect::<Vec<_>>();
     let mut document = load_mutation_target(paths, target, &storage_refs)?;
     let removed = remove_config_toml_value(&mut document.value, &storage_refs)?;
-    let rendered_contents = toml::to_string_pretty(&document.value).map_err(AppError::operation)?;
+    let rendered_contents =
+        render_config_preserving_format(document.existing.as_deref(), &document.value)?;
     validate_vulcan_overrides_toml(&rendered_contents).map_err(AppError::operation)?;
     let updated = removed && document.existing.as_deref() != Some(rendered_contents.as_str());
     let diagnostics = normalize_config_diagnostics(paths, &load_vault_config(paths).diagnostics);
@@ -2617,6 +2620,95 @@ struct MutationTarget {
     existing: Option<String>,
     value: TomlValue,
     device_section: Option<DeviceSection>,
+}
+
+/// Render `value` as the new contents of a config file that held `existing`,
+/// changing only the keys whose values differ: everything else keeps its
+/// exact text, so comments, key order, and inline tables survive an edit.
+/// Without readable existing contents the value is rendered from scratch.
+fn render_config_preserving_format(
+    existing: Option<&str>,
+    value: &TomlValue,
+) -> Result<String, AppError> {
+    let parsed = existing.and_then(|existing| {
+        Some((
+            existing.parse::<toml_edit::DocumentMut>().ok()?,
+            existing.parse::<TomlValue>().ok()?,
+        ))
+    });
+    let (Some((mut document, old)), TomlValue::Table(new)) = (parsed, value) else {
+        return toml::to_string_pretty(value).map_err(AppError::operation);
+    };
+    let TomlValue::Table(old) = old else {
+        return toml::to_string_pretty(value).map_err(AppError::operation);
+    };
+    sync_toml_table(document.as_table_mut(), &old, new)?;
+    Ok(document.to_string())
+}
+
+fn sync_toml_table(
+    target: &mut dyn toml_edit::TableLike,
+    old: &toml::map::Map<String, TomlValue>,
+    new: &toml::map::Map<String, TomlValue>,
+) -> Result<(), AppError> {
+    for key in old.keys().filter(|key| !new.contains_key(*key)) {
+        target.remove(key);
+    }
+    for (key, new_value) in new {
+        let old_value = old.get(key);
+        if old_value == Some(new_value) {
+            continue;
+        }
+        if let (Some(TomlValue::Table(old_table)), TomlValue::Table(new_table)) =
+            (old_value, new_value)
+        {
+            if let Some(child) = target
+                .get_mut(key)
+                .and_then(toml_edit::Item::as_table_like_mut)
+            {
+                sync_toml_table(child, old_table, new_table)?;
+                continue;
+            }
+        }
+        let inline = target.get(key).is_some_and(toml_edit::Item::is_value);
+        let mut item = toml_item(key, new_value)?;
+        if inline {
+            if let Ok(value) = item.clone().into_value() {
+                item = toml_edit::Item::Value(value);
+            }
+        }
+        target.insert(key, item);
+    }
+    Ok(())
+}
+
+/// `value` as the `toml_edit` item TOML would write for `key = value`.
+fn toml_item(key: &str, value: &TomlValue) -> Result<toml_edit::Item, AppError> {
+    let mut wrapper = toml::map::Map::new();
+    wrapper.insert(key.to_string(), value.clone());
+    let rendered =
+        toml::to_string_pretty(&TomlValue::Table(wrapper)).map_err(AppError::operation)?;
+    let mut document = rendered
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(AppError::operation)?;
+    let mut item = document
+        .as_table_mut()
+        .remove(key)
+        .ok_or_else(|| AppError::operation(format!("could not render config key `{key}`")))?;
+    separate_new_tables(&mut item);
+    Ok(item)
+}
+
+/// Start each new section on its own paragraph, as hand-written TOML does.
+fn separate_new_tables(item: &mut toml_edit::Item) {
+    if let Some(table) = item.as_table_mut() {
+        if !table.is_implicit() {
+            table.decor_mut().set_prefix("\n");
+        }
+        for (_, child) in table.iter_mut() {
+            separate_new_tables(child);
+        }
+    }
 }
 
 fn load_mutation_target(
@@ -3035,6 +3127,60 @@ fn merge_moved_table(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn config_edits_keep_comments_order_and_inline_tables() {
+        let existing = "# Vault settings\nprompts = \"P\"\ndropped = true\n\n# Served only by opted-in devices\n[mcp_remote]\ntool_packs = [\"a\", \"b\"]\n\n[tasknotes.task_creation_defaults]\ndefault_reminders = [ { id = \"at-time\", type = \"relative\" } ]\nkeep = 1\n";
+        let mut value = existing.parse::<super::TomlValue>().unwrap();
+        super::set_config_toml_value(
+            &mut value,
+            &["bot", "default_capture"],
+            super::TomlValue::from("daily"),
+        )
+        .unwrap();
+        super::set_config_toml_value(
+            &mut value,
+            &["tasknotes", "task_creation_defaults", "keep"],
+            super::TomlValue::from(2),
+        )
+        .unwrap();
+        super::set_config_toml_value(
+            &mut value,
+            &["web", "search", "backend"],
+            super::TomlValue::from("kagi"),
+        )
+        .unwrap();
+        super::remove_config_toml_value(&mut value, &["dropped"]).unwrap();
+        let rendered = super::render_config_preserving_format(Some(existing), &value).unwrap();
+        assert_eq!(
+            rendered.parse::<super::TomlValue>().unwrap(),
+            value,
+            "{rendered}"
+        );
+        for kept in [
+            "# Vault settings",
+            "# Served only by opted-in devices\n[mcp_remote]\ntool_packs = [\"a\", \"b\"]",
+            "default_reminders = [ { id = \"at-time\", type = \"relative\" } ]",
+            "keep = 2",
+        ] {
+            assert!(
+                rendered.contains(kept),
+                "{kept:?} missing from:\n{rendered}"
+            );
+        }
+        assert!(!rendered.contains("dropped"), "{rendered}");
+        assert!(rendered.contains("\n\n[bot]\n"), "{rendered}");
+        assert!(
+            rendered.find("[mcp_remote]") < rendered.find("[bot]"),
+            "{rendered}"
+        );
+
+        // Without readable contents the value is rendered from scratch.
+        assert_eq!(
+            super::render_config_preserving_format(Some("not = [toml"), &value).unwrap(),
+            toml::to_string_pretty(&value).unwrap()
+        );
+    }
     use super::{
         apply_config_document_save, apply_config_set_report, build_config_get_report,
         build_config_list_report, build_config_list_report_from_overrides,
