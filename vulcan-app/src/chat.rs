@@ -219,8 +219,9 @@ pub enum ChatAction {
 const VALIDATION_PREFIX: &str = "mdbase validation rejected the managed note write: ";
 
 /// A failed request worded for a chat reader. A rejected note write names
-/// the note and field and says how to find everything wrong with it; other
-/// errors keep their message.
+/// the note and field; only problems the write introduces reject it, so the
+/// reply points at the command's input rather than the note. Other errors
+/// keep their message.
 pub fn chat_error_text(error: &impl std::fmt::Display) -> String {
     let message = error.to_string();
     let Some((_, details)) = message.split_once(VALIDATION_PREFIX) else {
@@ -237,8 +238,10 @@ pub fn chat_error_text(error: &impl std::fmt::Display) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "Not saved: the note would not pass its schema.\n{problems}\n\
-         Fix the frontmatter, or run `vulcan mdbase validate` to list every invalid note."
+        "Not saved: this change would break the note's schema, so nothing was written.\n{problems}\n\
+         Problems the note already had do not block a change, so the value above came from \
+         this command: check what you sent. If it looks right, Vulcan wrote it wrongly; \
+         please report it."
     )
 }
 

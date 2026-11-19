@@ -972,10 +972,12 @@ fn rejected_writes_are_explained_for_chat() {
     );
     assert_eq!(
         chat_error_text(&error),
-        "Not saved: the note would not pass its schema.\n\
+        "Not saved: this change would break the note's schema, so nothing was written.\n\
          • format_invalid in Tasks/a.md (scheduled): \"x\" is not a \"date\"\n\
          • schema_required in Tasks/a.md: \"id\" is a required property\n\
-         Fix the frontmatter, or run `vulcan mdbase validate` to list every invalid note."
+         Problems the note already had do not block a change, so the value above came from \
+         this command: check what you sent. If it looks right, Vulcan wrote it wrongly; \
+         please report it."
     );
     assert_eq!(
         chat_error_text(&AppError::operation("no such task")),
