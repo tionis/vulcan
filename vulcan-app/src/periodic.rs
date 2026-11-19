@@ -58,7 +58,7 @@ pub const DATE_ARGUMENT_FORMS: &str = "YYYY-MM-DD, today, yesterday, tomorrow, \
 
 #[must_use]
 pub fn current_utc_date_string() -> String {
-    TemplateTimestamp::current().default_date_string()
+    TemplateTimestamp::current_utc().default_date_string()
 }
 
 /// Today's date in the system's local time zone.

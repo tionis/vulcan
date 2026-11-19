@@ -7427,7 +7427,7 @@ fn tasknote_metadata_timestamp() -> String {
 }
 
 fn current_utc_timestamp_string() -> String {
-    TemplateTimestamp::current().default_strings().datetime
+    TemplateTimestamp::current_utc().default_strings().datetime
 }
 
 /// Today's date on the device's calendar: completion dates, recurrence

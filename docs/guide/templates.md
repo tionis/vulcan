@@ -2,7 +2,9 @@
 
 Vulcan renders note templates with two engines: a native engine for `{{date}}`-style variables
 and QuickAdd tokens, and a Templater-compatible engine for `<% … %>` tags. `--engine auto` (the
-default) switches to Templater when a template contains a tag.
+default) switches to Templater when a template contains a tag. Dates and times (`{{date}}`,
+`{{time}}`, `tp.date.*`, `tp.file.creation_date`, and inbox `{date}`/`{time}`) follow the device's
+local time zone, as daily notes and Obsidian do; `{datetime}` and moment's `Z` carry the offset.
 
 ```bash
 vulcan template --list                      # every template from all configured folders

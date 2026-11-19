@@ -231,10 +231,13 @@ pub fn step_period_start(
     Some(next.iso_string())
 }
 
+/// Today on the device's local calendar (`YYYY-MM-DD`), as daily notes and
+/// the CLI's "today" use it.
 #[must_use]
-pub fn today_utc_string() -> String {
-    let seconds = crate::current_utc_timestamp_ms().div_euclid(1_000);
-    civil_from_days(seconds.div_euclid(86_400)).iso_string()
+pub fn today_local_string() -> String {
+    let local = crate::expression::value::DataviewTimeZone::System
+        .localize_utc_ms(crate::current_utc_timestamp_ms());
+    civil_from_days(local.div_euclid(1_000).div_euclid(86_400)).iso_string()
 }
 
 pub fn load_events_for_periodic_note(

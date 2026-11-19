@@ -88,7 +88,7 @@ fn insert_sqlite_export_meta(
     let selection_json = serde_json::to_string(&report.selection).map_err(AppError::operation)?;
     let provenance_json =
         serde_json::to_string(&report.selection_provenance).map_err(AppError::operation)?;
-    let timestamp = TemplateTimestamp::current().default_strings().datetime;
+    let timestamp = TemplateTimestamp::current_utc().default_strings().datetime;
     connection
         .execute(
             "INSERT INTO meta (key, value) VALUES

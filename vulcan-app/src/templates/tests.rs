@@ -2500,3 +2500,21 @@ fn templater_obsidian_helpers_cover_yaml_and_notices() {
     assert_eq!(rendered.content, "2|b: c|");
     assert!(rendered.diagnostics.iter().any(|d| d == "Notice: Saved"));
 }
+
+#[test]
+fn template_offsets_render_like_moment_and_rfc_3339() {
+    assert_eq!(super::utc_offset_suffix(0), "Z");
+    assert_eq!(super::utc_offset_suffix(3_600_000), "+01:00");
+    assert_eq!(
+        super::utc_offset_suffix(-(9 * 3_600_000 + 30 * 60_000)),
+        "-09:30"
+    );
+    assert_eq!(super::moment_offset(0, ":"), "+00:00");
+    assert_eq!(super::moment_offset(14 * 3_600_000, ""), "+1400");
+    assert_eq!(super::moment_offset(-12 * 3_600_000, ":"), "-12:00");
+    // Machine timestamps stay UTC.
+    assert!(super::TemplateTimestamp::current_utc()
+        .default_strings()
+        .datetime
+        .ends_with('Z'));
+}

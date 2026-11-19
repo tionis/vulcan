@@ -306,7 +306,7 @@ mod runtime {
     use crate::paths::secure_read_to_string;
     use crate::periodic::{
         list_daily_note_events, list_events_between, load_events_for_periodic_note,
-        resolve_periodic_note, today_utc_string,
+        resolve_periodic_note, today_local_string,
     };
     use crate::permissions::{resolve_permission_profile, PermissionGuard, ProfilePermissionGuard};
     use crate::properties::NoteRecord;
@@ -5367,11 +5367,11 @@ globalThis.this = dv.current();
                 let entry = render_inbox_entry(
                     &state.inbox_config.format,
                     payload_string(&payload, "text")?,
-                    &current_utc_timestamp_string(),
-                    &today_utc_string(),
+                    &current_local_timestamp_string(),
+                    &today_local_string(),
                 );
                 let rendered_entry = if state.inbox_config.timestamp {
-                    format!("{} {}", current_utc_timestamp_string(), entry)
+                    format!("{} {}", current_local_timestamp_string(), entry)
                 } else {
                     entry
                 };
@@ -5573,7 +5573,7 @@ globalThis.this = dv.current();
         if state.deterministic_static {
             return Err(static_mode_time_denied(operation));
         }
-        Ok(today_utc_string())
+        Ok(today_local_string())
     }
 
     fn ensure_fs_access(state: &JsEvalState, operation: &str) -> Result<(), DataviewJsError> {
@@ -6315,15 +6315,27 @@ globalThis.this = dv.current();
             .replace("{datetime}", datetime)
     }
 
-    fn current_utc_timestamp_string() -> String {
-        let seconds = crate::current_utc_timestamp_ms().div_euclid(1_000);
+    /// Now on the local wall clock with its UTC offset (`Z` in UTC), as the
+    /// CLI inbox renders `{datetime}`.
+    fn current_local_timestamp_string() -> String {
+        let utc = crate::current_utc_timestamp_ms();
+        let local = crate::expression::value::DataviewTimeZone::System.localize_utc_ms(utc);
+        let offset_minutes = (local - utc) / 60_000;
+        let suffix = if offset_minutes == 0 {
+            "Z".to_string()
+        } else {
+            let sign = if offset_minutes < 0 { '-' } else { '+' };
+            let minutes = offset_minutes.abs();
+            format!("{sign}{:02}:{:02}", minutes / 60, minutes % 60)
+        };
+        let seconds = local.div_euclid(1_000);
         let days_since_epoch = seconds.div_euclid(86_400);
         let seconds_of_day = seconds.rem_euclid(86_400);
         let hour = seconds_of_day / 3_600;
         let minute = (seconds_of_day % 3_600) / 60;
         let second = seconds_of_day % 60;
         let (year, month, day) = civil_from_days(days_since_epoch);
-        format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+        format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}{suffix}")
     }
 
     fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
@@ -6615,7 +6627,7 @@ globalThis.this = dv.current();
         let today = if deterministic_static {
             None
         } else {
-            Some(today_utc_string())
+            Some(today_local_string())
         };
         let from_date = match from {
             Some(value) => {
@@ -6656,7 +6668,7 @@ globalThis.this = dv.current();
             return if deterministic_static {
                 Err(static_mode_time_denied(operation))
             } else {
-                Ok(today_utc_string())
+                Ok(today_local_string())
             };
         }
         let bytes = value.as_bytes();

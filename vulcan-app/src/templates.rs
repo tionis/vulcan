@@ -1819,7 +1819,10 @@ impl<'a> TemplateSession<'a> {
     }
 
     fn timestamp_with_day_offset(&self, offset_days: i64) -> TemplateTimestamp {
-        TemplateTimestamp::from_millis(self.timestamp.to_millis() + offset_days * DAY_MS)
+        TemplateTimestamp {
+            offset_ms: self.timestamp.offset_ms,
+            ..TemplateTimestamp::from_millis(self.timestamp.to_millis() + offset_days * DAY_MS)
+        }
     }
 
     fn render_source(
@@ -5640,12 +5643,30 @@ fn file_timestamp_millis(path: &Path, creation: bool) -> Option<i64> {
         metadata.modified().ok()
     }?;
     let duration = system_time.duration_since(std::time::UNIX_EPOCH).ok()?;
-    i64::try_from(duration.as_millis()).ok()
+    i64::try_from(duration.as_millis())
+        .ok()
+        .map(local_wall_millis)
 }
 
 #[cfg(feature = "js_runtime")]
 fn current_timestamp_millis() -> i64 {
-    vulcan_core::current_utc_timestamp_ms()
+    local_wall_millis(vulcan_core::current_utc_timestamp_ms())
+}
+
+/// Template dates are wall-clock milliseconds: a UTC instant moved onto the
+/// local clock, so formatting it shows the user's local date and time.
+fn local_wall_millis(utc_ms: i64) -> i64 {
+    vulcan_core::expression::value::DataviewTimeZone::System.localize_utc_ms(utc_ms)
+}
+
+/// `Z` for UTC, otherwise `+HH:MM` or `-HH:MM`.
+fn utc_offset_suffix(offset_ms: i64) -> String {
+    if offset_ms == 0 {
+        return "Z".to_string();
+    }
+    let minutes = offset_ms.abs() / 60_000;
+    let sign = if offset_ms < 0 { '-' } else { '+' };
+    format!("{sign}{:02}:{:02}", minutes / 60, minutes % 60)
 }
 
 #[cfg(feature = "js_runtime")]
@@ -5927,6 +5948,9 @@ pub struct TemplateTimestamp {
     hour: i64,
     minute: i64,
     second: i64,
+    /// How far the wall-clock fields are ahead of UTC, for the `{time}` and
+    /// `{datetime}` suffixes.
+    offset_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6179,7 +6203,20 @@ pub fn template_variables_for_path(path: &str, timestamp: TemplateTimestamp) -> 
 
 impl TemplateTimestamp {
     #[must_use]
+    /// The current moment on the local wall clock, as Obsidian's templates
+    /// and Templater render it.
     pub fn current() -> Self {
+        let utc = vulcan_core::current_utc_timestamp_ms();
+        let wall = local_wall_millis(utc);
+        Self {
+            offset_ms: wall - utc,
+            ..Self::from_millis(wall)
+        }
+    }
+
+    /// The current moment in UTC, for machine timestamps.
+    #[must_use]
+    pub fn current_utc() -> Self {
         Self::from_millis(vulcan_core::current_utc_timestamp_ms())
     }
 
@@ -6201,13 +6238,20 @@ impl TemplateTimestamp {
             hour,
             minute,
             second,
+            offset_ms: 0,
         }
     }
 
     #[must_use]
     pub fn default_strings(self) -> TimestampStrings {
         let date = self.default_date_string();
-        let time = format!("{:02}:{:02}:{:02}Z", self.hour, self.minute, self.second);
+        let time = format!(
+            "{:02}:{:02}:{:02}{}",
+            self.hour,
+            self.minute,
+            self.second,
+            utc_offset_suffix(self.offset_ms)
+        );
         let datetime = format!("{date}T{time}");
 
         TimestampStrings {
@@ -6227,9 +6271,10 @@ impl TemplateTimestamp {
     #[must_use]
     pub fn on_date(self, date: &str) -> Option<Self> {
         let day_ms = parse_date_like_string(date)?.div_euclid(DAY_MS) * DAY_MS;
-        Some(Self::from_millis(
-            day_ms + self.to_millis().rem_euclid(DAY_MS),
-        ))
+        Some(Self {
+            offset_ms: self.offset_ms,
+            ..Self::from_millis(day_ms + self.to_millis().rem_euclid(DAY_MS))
+        })
     }
 
     #[must_use]
@@ -6371,6 +6416,10 @@ impl TemplateTimestamp {
 /// rather than a weekday, so it must not be used for `tp.*` dates.
 fn format_date(ms: i64, format: &str) -> String {
     let timestamp = TemplateTimestamp::from_millis(ms);
+    // `ms` is local wall-clock time; Unix timestamps and offsets need the
+    // instant it stands for.
+    let offset_ms = vulcan_core::expression::value::DataviewTimeZone::System.offset_ms_at(ms);
+    let instant = ms - offset_ms;
     let format = if format.is_empty() {
         "YYYY-MM-DD"
     } else {
@@ -6389,9 +6438,13 @@ fn format_date(ms: i64, format: &str) -> String {
         let (value, consumed) = if remaining.starts_with("SSS") {
             (format!("{:03}", ms.rem_euclid(1_000)), 3)
         } else if character == 'x' {
-            (ms.to_string(), 1)
+            (instant.to_string(), 1)
         } else if character == 'X' {
-            (ms.div_euclid(1_000).to_string(), 1)
+            (instant.div_euclid(1_000).to_string(), 1)
+        } else if remaining.starts_with("ZZ") {
+            (moment_offset(offset_ms, ""), 2)
+        } else if character == 'Z' {
+            (moment_offset(offset_ms, ":"), 1)
         } else if let Some(token) = TemplateTimestamp::next_obsidian_token(remaining) {
             (timestamp.token_value(token), token.len())
         } else {
@@ -6401,6 +6454,13 @@ fn format_date(ms: i64, format: &str) -> String {
         remaining = &remaining[consumed..];
     }
     rendered
+}
+
+/// A Moment.js `Z` (`+01:00`) or `ZZ` (`+0100`) offset; UTC is `+00:00`.
+fn moment_offset(offset_ms: i64, separator: &str) -> String {
+    let minutes = offset_ms.abs() / 60_000;
+    let sign = if offset_ms < 0 { '-' } else { '+' };
+    format!("{sign}{:02}{separator}{:02}", minutes / 60, minutes % 60)
 }
 
 fn ordinal_day(day: i64) -> String {

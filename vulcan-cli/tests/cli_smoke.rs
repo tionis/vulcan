@@ -17713,6 +17713,89 @@ fn refactors_of_collection_records_are_validated_mdbase_writes() {
         .contains("See Manual."));
 }
 
+/// Inbox entries, templates, Templater dates, and script captures use the
+/// device's local date and time, like daily notes. UTC+14 and UTC-12 are a
+/// day apart, so a UTC date fails in at least one of them at any hour.
+#[test]
+fn inbox_templates_and_scripts_use_the_local_date_and_offset() {
+    for (zone, offset_hours, suffix) in [
+        ("Pacific/Kiritimati", 14, "+14:00"),
+        ("Etc/GMT+12", -12, "-12:00"),
+    ] {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let root = temp_dir.path();
+        let vault = root.to_str().expect("vault path should be valid utf-8");
+        let vulcan = || {
+            let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+            command.env("TZ", zone).args(["--vault", vault]);
+            command
+        };
+        vulcan().arg("init").assert().success();
+        let mut config = fs::read_to_string(root.join(".vulcan/config.toml")).unwrap();
+        config.push_str("\n[inbox]\npath = \"Inbox.md\"\nformat = \"- {date} {time} {text}\"\ntimestamp = false\n");
+        fs::write(root.join(".vulcan/config.toml"), config).unwrap();
+        fs::create_dir_all(root.join(".vulcan/templates")).unwrap();
+        fs::write(
+            root.join(".vulcan/templates/stamp.md"),
+            "{{date}} <% tp.date.now(\"YYYY-MM-DD Z\") %> <% tp.date.now(\"X\") %>\n",
+        )
+        .unwrap();
+        fs::write(root.join("capture.js"), "vault.inbox(\"scripted\");\n").unwrap();
+
+        let local_day = || {
+            (chrono::Utc::now() + chrono::Duration::hours(offset_hours))
+                .format("%Y-%m-%d")
+                .to_string()
+        };
+        let before = local_day();
+        let started = chrono::Utc::now().timestamp();
+        vulcan()
+            .args(["inbox", "captured", "--no-commit"])
+            .assert()
+            .success();
+        vulcan()
+            .args(["template", "stamp", "--path", "Stamp.md", "--no-commit"])
+            .write_stdin("")
+            .assert()
+            .success();
+        vulcan()
+            .arg("run")
+            .arg(root.join("capture.js"))
+            .args(["--sandbox", "fs"])
+            .assert()
+            .success();
+        let after = local_day();
+        let days = [before, after];
+
+        let inbox = fs::read_to_string(root.join("Inbox.md")).unwrap();
+        let entries = inbox
+            .lines()
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(entries.len(), 2, "{inbox}");
+        for entry in entries {
+            assert!(
+                days.iter()
+                    .any(|day| entry.starts_with(&format!("- {day} "))),
+                "{zone}: {entry}"
+            );
+            assert!(entry.contains(suffix), "{zone}: {entry}");
+        }
+        let stamp = fs::read_to_string(root.join("Stamp.md")).unwrap();
+        let parts = stamp.split_whitespace().collect::<Vec<_>>();
+        assert!(
+            days.iter().any(|day| parts[0] == day && parts[1] == day),
+            "{zone}: {stamp}"
+        );
+        assert_eq!(parts[2], suffix, "{zone}: {stamp}");
+        let unix: i64 = parts[3].parse().unwrap();
+        assert!(
+            (started..=chrono::Utc::now().timestamp()).contains(&unix),
+            "{zone}: {stamp}"
+        );
+    }
+}
+
 /// `completedDate` is the device's calendar day. UTC+14 and UTC-12 are a
 /// day apart from each other, so at any hour at least one of them disagrees
 /// with the UTC date.

@@ -2428,7 +2428,7 @@ fn render_epub_ncx(book_title: &str, nodes: &[EpubNavNode], identifier: &str) ->
 }
 
 fn current_utc_timestamp_string() -> String {
-    TemplateTimestamp::current().default_strings().datetime
+    TemplateTimestamp::current_utc().default_strings().datetime
 }
 
 fn render_epub_package(
