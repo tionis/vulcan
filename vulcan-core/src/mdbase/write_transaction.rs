@@ -512,17 +512,10 @@ pub fn acquire_mdbase_consistent_read(
             let blocked = journal
                 .as_ref()
                 .is_some_and(|journal| journal.phase == JournalPhase::Blocked);
-            // A blocked transaction over records only leaves the rest of the
-            // collection readable; its own files read as they are on disk
-            // until a person resolves it. Controls stay blocking.
-            if blocked
-                && journal.as_ref().is_some_and(|journal| {
-                    matches!(
-                        super::load_mdbase_collection(paths.vault_root()),
-                        Ok(Some(collection)) if !journal_touches_controls(&collection, journal)
-                    )
-                })
-            {
+            // A blocked transaction leaves the collection readable: its own
+            // files, records or controls, read as they are on disk until a
+            // person resolves it, which is how every other tool sees them.
+            if blocked {
                 return Ok(Some(MdbaseConsistentReadGuard { _lock: lock }));
             }
             let code = if blocked {
@@ -900,30 +893,11 @@ fn load_parked_journals(
     Ok(journals)
 }
 
-/// Whether a transaction touches the collection's control files. A blocked
-/// one of those keeps the whole collection blocked: types and contracts
-/// decide how every other record reads and validates.
-fn journal_touches_controls(collection: &super::MdbaseCollection, journal: &WriteJournal) -> bool {
-    let settings = &collection.config.settings;
-    let within = |path: &str, folder: &str| {
-        let folder = folder.trim_matches('/');
-        !folder.is_empty()
-            && path
-                .strip_prefix(folder)
-                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
-    };
-    journal.preview.changes.iter().any(|change| {
-        let path = change.path.as_str();
-        path == "mdbase.yaml"
-            || path == super::MDBASE_LOCK_FILE_NAME
-            || within(path, &settings.types_folder)
-            || within(path, &settings.contracts_folder)
-    })
-}
-
-/// Move a blocked transaction that touches only records out of the active
-/// journal slot, so writes to other records can proceed. Writes to its
-/// paths stay refused until a person resolves it with accept-current.
+/// Move a blocked transaction out of the active journal slot, so writes to
+/// other files can proceed. Writes to its paths stay refused until a person
+/// resolves it with accept-current. One that touched controls is set aside
+/// too: the controls on disk are whole files, and later writes validate
+/// against them as every other reader does.
 fn park_blocked_journal(
     paths: &VaultPaths,
     collection: &super::MdbaseCollection,
@@ -931,7 +905,7 @@ fn park_blocked_journal(
     let Some(journal) = load_journal(paths)? else {
         return Ok(());
     };
-    if journal.phase != JournalPhase::Blocked || journal_touches_controls(collection, &journal) {
+    if journal.phase != JournalPhase::Blocked {
         return Ok(());
     }
     ensure_collection_identity(collection, &journal.preview.collection_root)?;
@@ -2944,23 +2918,29 @@ mod tests {
     }
 
     #[test]
-    fn a_blocked_control_write_keeps_the_collection_blocked() {
+    fn a_blocked_control_write_holds_only_its_own_paths() {
         let (directory, paths, collection) = fixture();
         write(directory.path(), "_types/task.md", "before type\n");
         blocked_write(directory.path(), &paths, &collection, "_types/task.md");
 
-        assert_eq!(
-            acquire_mdbase_consistent_read(&paths).unwrap_err().code,
-            "recovery_blocked"
-        );
-        let refused = write_one(&paths, &collection, "records/b.md", "other").unwrap_err();
-        assert_eq!(refused.code, "recovery_blocked");
+        // The collection stays readable and other files writable.
+        assert!(acquire_mdbase_consistent_read(&paths).unwrap().is_some());
+        write_one(&paths, &collection, "records/b.md", "other").expect("unrelated write");
         assert_eq!(
             fs::read_to_string(directory.path().join("records/b.md")).unwrap(),
-            "before b\n"
+            "other\n"
         );
-        let message = acquire_mdbase_consistent_read(&paths).unwrap_err().message;
-        assert!(!message.contains("_types/task.md"), "{message}");
+        assert!(load_journal(&paths).unwrap().is_none());
+
+        // The control it touched stays as it is on disk, and refused.
+        let id = review_id(&paths, &collection);
+        assert_eq!(mdbase_write_blocked_transactions(&paths), vec![id]);
+        let refused = write_one(&paths, &collection, "_types/task.md", "again").unwrap_err();
+        assert_eq!(refused.code, "recovery_blocked");
+        assert_eq!(
+            fs::read_to_string(directory.path().join("_types/task.md")).unwrap(),
+            "external\n"
+        );
     }
 
     #[test]

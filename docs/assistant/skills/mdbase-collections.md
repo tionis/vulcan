@@ -1,7 +1,7 @@
 ---
 name: mdbase-collections
 description: Inspect, query, and safely edit an mdbase typed-Markdown collection (a folder with mdbase.yaml), including saved views and effective schemas.
-version: 4
+version: 5
 tools:
   - help
 metadata:
@@ -61,10 +61,10 @@ the collection keep their normal Vulcan behavior; use the other skills for them.
   a stderr note naming the transaction). Until
   then it blocks reads and writes of the collection, and the error names the transaction. Do not
   widen permissions to clear it.
-- A write is *blocked* when a file it touched changed since. A blocked write over records only
-  holds just its own files: other records read and write normally, writes to its files fail with
-  `recovery_blocked`, and every command warns about it. One that touched `mdbase.yaml`, types, or
-  contracts still blocks the whole collection. Run `vulcan repair mdbase-write status` to see the
+- A write is *blocked* when a file it touched changed since. A blocked write holds just its own
+  files, records, `mdbase.yaml`, types, or contracts alike: everything else reads and writes
+  normally against the files on disk, writes to its files fail with `recovery_blocked`, and every
+  command warns about it. Run `vulcan repair mdbase-write status` to see the
   files, and use `accept-current` only when the user confirms the on-disk state is right.
 - `now` stamps and `today()` use `settings.timezone`, or the device's timezone when it is unset.
   Suggest setting it only when devices in different timezones share the collection.

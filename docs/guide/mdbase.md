@@ -143,8 +143,9 @@ so they show the transaction as found. Long-running hosts do the same before eac
 their own profile: MCP tool calls, the language server, `vulcan serve`, and the daemon's REST API
 and per-vault routes. `vulcan repair mdbase-write status|recover|accept-current`
 inspects and resolves one that needs a decision (a touched file changed since) or a broader profile.
-A write that needs a decision blocks only its own files while it waits, unless it touched
-`mdbase.yaml`, a type, or a contract; every command warns about it until it is resolved.
+A write that needs a decision blocks only its own files while it waits, records or controls alike:
+the rest of the collection reads and writes against the files as they are on disk, and every
+command warns about it until it is resolved.
 
 A write is refused only for problems it introduces. If a record already fails validation, for
 example an old malformed date, a write that changes some other field still succeeds and reports the
