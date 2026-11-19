@@ -141,6 +141,13 @@ while GitHub's download path catches up, clients keep seeing the previous signed
 reports that channel metadata "carries no signatures yet", retry in a few minutes instead of
 normalizing `--allow-unsigned` as the ongoing update path.
 
+A binary built locally from a Git checkout (`cargo build` or `cargo install --path vulcan-cli`)
+reports a version shaped like the rolling builds, `0.4.1-dev.<commit date>.0.g<commit>`. It sorts
+above published builds from earlier days and below any published build from the same day or later,
+so a scheduled `self-update run` leaves a newer local build alone and replaces it once `main`
+publishes a build at least as new. A build from a source archive without Git history reports the
+plain package version.
+
 The fixed rolling release page and direct assets are at
 `https://github.com/tionis/vulcan/releases/tag/rolling-main`. The `rolling-main` tag is created once
 and never moved; each build replaces the release assets in place. The channel is checked at most

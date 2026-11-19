@@ -33143,7 +33143,10 @@ fn build_command_snapshot() -> Value {
             .args(["--output", "json", "describe"])
             .assert()
             .success();
-        parse_stdout_json(&assert)
+        let mut json = parse_stdout_json(&assert);
+        // The build version names the commit for builds from a checkout.
+        json["version"] = Value::from(env!("CARGO_PKG_VERSION"));
+        json
     };
 
     let mixed_root = temp_dir.path().join("mixed");
@@ -39355,7 +39358,44 @@ fn version_uses_the_distributed_binary_name() {
         .arg("--version")
         .assert()
         .success()
-        .stdout(format!("vulcan {}\n", env!("CARGO_PKG_VERSION")));
+        .stdout(predicate::str::starts_with("vulcan "));
+}
+
+#[test]
+fn a_local_build_never_sorts_below_its_package_version() {
+    // Self-update compares versions: a local build from a newer commit must
+    // not look older than published builds of the same package version.
+    let output = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .arg("--version")
+        .output()
+        .expect("vulcan should run");
+    let printed = String::from_utf8(output.stdout).expect("utf-8");
+    let version = printed
+        .trim()
+        .strip_prefix("vulcan ")
+        .expect("binary name prefix");
+    let version = semver::Version::parse(version).expect("semver version");
+    let package = semver::Version::parse(env!("CARGO_PKG_VERSION")).expect("package version");
+    assert!(version >= package, "{version} < {package}");
+    let in_checkout = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../.git")
+        .exists();
+    if in_checkout && std::env::var_os("VULCAN_BUILD_VERSION").is_none() {
+        let head = ProcessCommand::new("git")
+            .args(["-C", env!("CARGO_MANIFEST_DIR"), "rev-parse", "HEAD"])
+            .output()
+            .expect("git should run");
+        let head = String::from_utf8(head.stdout).expect("utf-8");
+        assert!(version.pre.as_str().starts_with("dev."), "{version}");
+        assert!(
+            version
+                .pre
+                .as_str()
+                .ends_with(&format!(".0.g{}", &head.trim()[..8])),
+            "{version}"
+        );
+    }
 }
 
 fn fish_is_available() -> bool {

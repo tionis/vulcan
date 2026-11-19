@@ -5149,6 +5149,7 @@ dependencies = [
  "rquickjs",
  "rusqlite",
  "rustyline",
+ "semver",
  "serde",
  "serde_json",
  "ssh-key",

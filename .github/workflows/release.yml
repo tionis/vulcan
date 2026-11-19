@@ -70,6 +70,9 @@ jobs:
           key: release-assets
 
       - name: Build documentation generator binary
+        env:
+          # A tagged release is the plain package version, not a local dev stamp.
+          VULCAN_BUILD_VERSION: ${{ needs.gate.outputs.version }}
         run: cargo build --locked -p vulcan-cli
 
       - name: Generate completions and man page
@@ -174,6 +177,9 @@ jobs:
           path: release-assets
 
       - name: Build locked release binary
+        env:
+          # A tagged release is the plain package version, not a local dev stamp.
+          VULCAN_BUILD_VERSION: ${{ needs.gate.outputs.version }}
         run: cargo build --release --locked --target ${{ matrix.target }} -p vulcan-cli ${{ matrix.cargo_flags }}
 
       - name: Verify Windows console-allocation manifest
