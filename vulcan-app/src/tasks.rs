@@ -7444,14 +7444,13 @@ fn tasknote_reference_ms(config: &VaultConfig) -> i64 {
     tasknote_reference_ms_at(config, vulcan_core::current_utc_timestamp_ms())
 }
 
+/// The task NLP's reference moment: the vault timezone's wall-clock time as
+/// if it were UTC. Its dates use only the day; a bare time ("at 14:00")
+/// compares against the time of day to pick today or tomorrow.
 fn tasknote_reference_ms_at(config: &VaultConfig, now_ms: i64) -> i64 {
     let timezone = reminders::ReminderTimezone::from_config(&config.tasks.reminders)
         .unwrap_or(reminders::ReminderTimezone::Local);
-    timezone
-        .date_at(now_ms)
-        .and_time(chrono::NaiveTime::MIN)
-        .and_utc()
-        .timestamp_millis()
+    timezone.local_datetime(now_ms).and_utc().timestamp_millis()
 }
 
 fn normalize_tasknote_context(context: &str) -> Option<String> {

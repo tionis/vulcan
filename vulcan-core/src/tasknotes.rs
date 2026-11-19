@@ -871,9 +871,18 @@ const NLP_DATE_PHRASE: &str = r"today|tomorrow|next week|in \d+ days?|next monda
 /// number.
 const NLP_TIME_SUFFIX: &str = r"(?:\s+at\s+(?P<time>\d{1,2}(?::\d{2})?\s*(?:am|pm)?)|\s+(?P<bare_time>\d{1,2}:\d{2}(?:\s*(?:am|pm))?|\d{1,2}\s*(?:am|pm)))?\b";
 
+/// A word joining a date to the title (`pay rent by friday`), removed with
+/// the date so the title does not end in a dangling preposition.
+const NLP_DATE_CONNECTOR: &str = r"(?:(?:on|by|before|until)\s+)?";
+
+/// A clock time on its own (`at 14:00`, `14:00`, `3pm`): only shapes that
+/// cannot be a count, so `look at 3 options` keeps its number.
+const NLP_STANDALONE_TIME: &str =
+    r"(?i)(?P<prefix>^|\s)(?:at\s+)?(?P<time>\d{1,2}:\d{2}(?:\s*(?:am|pm))?|\d{1,2}\s*(?:am|pm))\b";
+
 fn extract_date_value(text: &mut String, keyword: &str, reference_ms: i64) -> Option<String> {
     let regex = Regex::new(&format!(
-        r"(?i)(?P<prefix>^|\s){}(?P<separator>\s+)(?P<phrase>{NLP_DATE_PHRASE}){NLP_TIME_SUFFIX}",
+        r"(?i)(?P<prefix>^|\s){}(?P<separator>\s+){NLP_DATE_CONNECTOR}(?P<phrase>{NLP_DATE_PHRASE}){NLP_TIME_SUFFIX}",
         regex::escape(keyword)
     ))
     .expect("valid explicit date regex");
@@ -882,10 +891,28 @@ fn extract_date_value(text: &mut String, keyword: &str, reference_ms: i64) -> Op
 
 fn extract_ambiguous_date_value(text: &mut String, reference_ms: i64) -> Option<String> {
     let regex = Regex::new(&format!(
-        r"(?i)(?P<prefix>^|\s)(?P<phrase>{NLP_DATE_PHRASE}){NLP_TIME_SUFFIX}"
+        r"(?i)(?P<prefix>^|\s){NLP_DATE_CONNECTOR}(?P<phrase>{NLP_DATE_PHRASE}){NLP_TIME_SUFFIX}"
     ))
     .expect("valid ambiguous date regex");
     take_date_match(text, &regex, reference_ms)
+        .or_else(|| extract_standalone_time(text, reference_ms))
+}
+
+/// A time without a date means its next occurrence: today while it is still
+/// ahead of `reference_ms`, otherwise tomorrow.
+fn extract_standalone_time(text: &mut String, reference_ms: i64) -> Option<String> {
+    let regex = Regex::new(NLP_STANDALONE_TIME).expect("valid standalone time regex");
+    let capture = regex.captures(text)?;
+    let (hour, minute) = parse_clock_time(capture.name("time")?.as_str())?;
+    let today = day_start(reference_ms);
+    let at = today + (hour * 60 + minute) * 60_000;
+    let day = if at > reference_ms {
+        today
+    } else {
+        today + DAY_MS
+    };
+    *text = regex.replace(text, "$prefix").into_owned();
+    Some(format!("{}T{hour:02}:{minute:02}:00", format_day_ms(day)))
 }
 
 fn take_date_match(text: &mut String, regex: &Regex, reference_ms: i64) -> Option<String> {
@@ -995,13 +1022,45 @@ fn parse_clock_time(text: &str) -> Option<(i64, i64)> {
     (hour < 24 && minute < 60).then_some((hour, minute))
 }
 
+/// Tidy what is left of the title once dates and tokens are removed: collapse
+/// spaces, close up brackets around a removed phrase (`(end of promo )`), drop
+/// emptied brackets, and trim separators and brackets left unpaired at the
+/// ends while keeping balanced ones.
 fn normalize_nlp_title(text: &str) -> String {
-    text.split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .trim_matches(|character: char| matches!(character, ',' | ';' | ':' | '-' | '(' | ')'))
-        .trim()
-        .to_string()
+    let mut title = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    for (pattern, replacement) in [
+        (r"\s+([)\],;:.!?])", "$1"),
+        (r"([(\[])\s+", "$1"),
+        (r"\(\)|\[\]", ""),
+    ] {
+        title = Regex::new(pattern)
+            .expect("valid title cleanup regex")
+            .replace_all(&title, replacement)
+            .into_owned();
+    }
+    loop {
+        let trimmed = title
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .trim_matches(|character: char| matches!(character, ',' | ';' | ':' | '-'))
+            .trim()
+            .to_string();
+        let unpaired_end = |open: char, close: char| {
+            trimmed.matches(open).count() != trimmed.matches(close).count()
+        };
+        let next = if trimmed.starts_with('(') && unpaired_end('(', ')') {
+            trimmed[1..].to_string()
+        } else if trimmed.ends_with(')') && unpaired_end('(', ')') {
+            trimmed[..trimmed.len() - 1].to_string()
+        } else {
+            trimmed
+        };
+        if next == title {
+            return title;
+        }
+        title = next;
+    }
 }
 
 fn dedup_preserve_order(values: Vec<String>) -> Vec<String> {
@@ -1719,6 +1778,69 @@ mod tests {
         );
         // A date phrase inside a longer word is not a date.
         assert_eq!(due("Plan mondays").1, None);
+    }
+
+    #[test]
+    fn date_phrases_leave_clean_titles_and_bare_times_schedule_their_next_occurrence() {
+        let config = TaskNotesConfig::default();
+        // 2026-04-04 10:30 on the vault's wall clock.
+        let reference = parse_date_like_string("2026-04-04").expect("reference date should parse")
+            + (10 * 60 + 30) * 60_000;
+        let parse = |text: &str| {
+            let parsed = parse_tasknote_natural_language(text, &config, reference);
+            (parsed.title, parsed.due)
+        };
+        for (text, title, due) in [
+            (
+                "cancel audible on 2027-01-12",
+                "cancel audible",
+                "2027-01-12",
+            ),
+            (
+                "cancel audible (end of promo 2027-01-12)",
+                "cancel audible (end of promo)",
+                "2027-01-12",
+            ),
+            ("pay rent by friday", "pay rent", "2026-04-10"),
+            (
+                "dentist on 2026-04-20 at 9:30",
+                "dentist",
+                "2026-04-20T09:30:00",
+            ),
+            (
+                "call (re: invoice) tomorrow",
+                "call (re: invoice)",
+                "2026-04-05",
+            ),
+            (
+                "take a look at Termix at 14:00",
+                "take a look at Termix",
+                "2026-04-04T14:00:00",
+            ),
+            (
+                "take a look at Termix 14:00",
+                "take a look at Termix",
+                "2026-04-04T14:00:00",
+            ),
+            // Already past at 10:30, so tomorrow.
+            ("standup 9am", "standup", "2026-04-05T09:00:00"),
+            ("due by monday ship it", "ship it", "2026-04-06"),
+        ] {
+            assert_eq!(
+                parse(text),
+                (title.to_string(), Some(due.to_string())),
+                "{text}"
+            );
+        }
+        // Counts and balanced brackets are not dates or debris.
+        assert_eq!(
+            parse("look at 3 options"),
+            ("look at 3 options".to_string(), None)
+        );
+        assert_eq!(
+            parse("fix login (urgent)"),
+            ("fix login (urgent)".to_string(), None)
+        );
     }
 
     #[test]
