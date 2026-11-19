@@ -9,12 +9,12 @@ use super::{
     build_task_track_log_report, build_task_track_status_report, build_task_track_summary_report,
     build_tasks_blocked_report, build_tasks_eval_report, build_tasks_graph_report,
     build_tasks_list_report, build_tasks_next_report, build_tasks_view_list_report,
-    build_tasks_view_report, current_task_date_string, move_ordinary_tasknote_if_unchanged,
-    process_due_tasknote_auto_archives, write_ordinary_task_conversion, TaskAddRequest,
-    TaskArchiveRequest, TaskCompleteRequest, TaskConvertRequest, TaskCreateRequest,
-    TaskEvalRequest, TaskListRequest, TaskPomodoroStartRequest, TaskPomodoroStopRequest,
-    TaskReminderAddRequest, TaskReminderRemoveRequest, TaskRescheduleRequest, TaskSetRequest,
-    TaskTrackStartRequest, TaskTrackStopRequest, TaskTrackSummaryPeriod,
+    build_tasks_view_report, current_task_date_string, process_due_tasknote_auto_archives,
+    write_ordinary_task_conversion, TaskAddRequest, TaskArchiveRequest, TaskCompleteRequest,
+    TaskConvertRequest, TaskCreateRequest, TaskEvalRequest, TaskListRequest,
+    TaskPomodoroStartRequest, TaskPomodoroStopRequest, TaskReminderAddRequest,
+    TaskReminderRemoveRequest, TaskRescheduleRequest, TaskSetRequest, TaskTrackStartRequest,
+    TaskTrackStopRequest, TaskTrackSummaryPeriod,
 };
 use crate::templates::render_note_from_parts;
 use serde::Serialize;
@@ -2793,48 +2793,67 @@ fn apply_task_archive_moves_completed_task_into_archive_folder() {
 }
 
 #[test]
-fn ordinary_task_move_refuses_stale_source_and_late_destination_collision() {
+fn archive_rewrites_the_tasks_relative_links_and_links_into_it() {
     let temp_dir = tempdir().expect("temp dir");
     let paths = VaultPaths::new(temp_dir.path());
     initialize_vulcan_dir(&paths).expect("init");
-    fs::create_dir_all(temp_dir.path().join("Tasks")).expect("task folder");
-    fs::write(temp_dir.path().join("Tasks/Done.md"), "newer task\n").expect("seed task");
-
-    let error = move_ordinary_tasknote_if_unchanged(
+    let config = load_vault_config(&paths).config;
+    seed_tasknote(
         &paths,
-        "Tasks/Done.md",
-        "old task\n",
-        "Archive/Done.md",
-        "archived task\n",
-        None,
+        &config,
+        "Tasks/A/B/Done.md",
+        "Done",
+        &first_completed_status_for_test(&config),
+        &[],
+        "See [spec](../../../Projects/spec.md).\n",
     )
-    .expect_err("stale move must fail");
-    assert_eq!(error.code(), Some("ordinary_write_stale"));
-    assert!(error
-        .to_string()
-        .contains("Tasks/Done.md changed before apply"));
-    assert!(!temp_dir.path().join("Archive/Done.md").exists());
+    .expect("seed completed task");
+    fs::create_dir_all(temp_dir.path().join("Projects")).expect("projects");
+    fs::write(temp_dir.path().join("Projects/spec.md"), "# Spec\n").expect("spec");
+    fs::write(
+        temp_dir.path().join("Index.md"),
+        "[done](Tasks/A/B/Done.md)\n",
+    )
+    .expect("index");
+    vulcan_core::scan_vault(&paths, vulcan_core::ScanMode::Full).expect("scan");
+    let archive = |dry_run| {
+        apply_task_archive(
+            &paths,
+            &TaskArchiveRequest {
+                task: "Tasks/A/B/Done".to_string(),
+                dry_run,
+            },
+        )
+    };
 
-    fs::create_dir_all(temp_dir.path().join("Archive")).expect("archive folder");
-    fs::write(temp_dir.path().join("Archive/Done.md"), "other task\n")
-        .expect("concurrent destination");
-    assert!(move_ordinary_tasknote_if_unchanged(
-        &paths,
-        "Tasks/Done.md",
-        "newer task\n",
-        "Archive/Done.md",
-        "archived task\n",
-        None,
-    )
-    .is_err());
+    // A file already at the destination stops the whole move.
+    let destination = format!("{}/Done.md", config.tasknotes.archive_folder);
+    fs::create_dir_all(temp_dir.path().join(&config.tasknotes.archive_folder)).unwrap();
+    fs::write(temp_dir.path().join(&destination), "other\n").unwrap();
+    assert!(archive(false).is_err());
+    assert!(temp_dir.path().join("Tasks/A/B/Done.md").exists());
     assert_eq!(
-        fs::read_to_string(temp_dir.path().join("Tasks/Done.md")).expect("source"),
-        "newer task\n"
+        fs::read_to_string(temp_dir.path().join("Index.md")).unwrap(),
+        "[done](Tasks/A/B/Done.md)\n"
     );
+    fs::remove_file(temp_dir.path().join(&destination)).unwrap();
+
+    let report = archive(false).expect("archive");
+    assert_eq!(report.path, destination);
+    assert!(
+        report.changed_paths.contains(&"Index.md".to_string()),
+        "{:?}",
+        report.changed_paths
+    );
+    let archived = fs::read_to_string(temp_dir.path().join(&destination)).unwrap();
+    // Rewritten the way `vulcan move` writes it (shortest form by default).
+    assert!(archived.contains("See [spec](spec.md)."), "{archived}");
+    assert!(archived.contains(&format!("- {}", config.tasknotes.field_mapping.archive_tag)));
     assert_eq!(
-        fs::read_to_string(temp_dir.path().join("Archive/Done.md")).expect("destination"),
-        "other task\n"
+        fs::read_to_string(temp_dir.path().join("Index.md")).unwrap(),
+        "[done](Done.md)\n"
     );
+    assert!(!temp_dir.path().join("Tasks/A/B/Done.md").exists());
 }
 
 #[test]

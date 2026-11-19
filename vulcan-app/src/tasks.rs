@@ -5491,39 +5491,30 @@ where
             changed_paths.push(path.clone());
         }
     }
+    // A move rewrites links like `vulcan move`: those into the task and the
+    // task's own relative links, which change meaning in another folder.
+    let move_plan = moved_to
+        .as_ref()
+        .map(|destination| plan_tasknote_move(paths, loaded, destination, &frontmatter))
+        .transpose()?;
+    if let Some(plan) = move_plan.as_ref() {
+        changed_paths.extend(plan.iter().map(|change| change.path.clone()));
+        changed_paths.sort();
+        changed_paths.dedup();
+    }
     authorize_task_changed_paths(&mut changed_paths, guard)?;
 
     let routed = if changed_paths.is_empty() {
         false
-    } else if let Some(destination) = moved_to.as_ref() {
-        let rename_changes = [
-            MdbaseManagedNoteWriteChange {
-                path: &loaded.path,
-                before: Some(&loaded.source),
-                after: None,
-            },
-            MdbaseManagedNoteWriteChange {
-                path: destination,
-                before: None,
-                after: Some(&rendered),
-            },
-        ];
-        apply_managed_mdbase_note_writes(
+    } else if let (Some(destination), Some(plan)) = (moved_to.as_ref(), move_plan.as_ref()) {
+        let renames = BTreeMap::from([(destination.clone(), loaded.path.clone())]);
+        crate::note_writes::apply_planned_note_write(
             paths,
-            &MdbaseManagedNoteWriteBatchRequest {
-                changes: &rename_changes,
-                operation: MdbaseWriteOperation::Rename {
-                    from: loaded.path.clone(),
-                    to: destination.clone(),
-                },
-                mode: MdbaseManagedWriteMode::Validated,
-                allow_mixed_paths: false,
-                dry_run,
-                permission_profile: task_mutation_profile(paths, guard)?,
-                verbosity: Verbosity::Quiet,
-            },
-        )?
-        .is_some()
+            &crate::note_writes::PlannedNoteWrite::new(plan, task_mutation_profile(paths, guard)?)
+                .renames(&renames)
+                .dry_run(dry_run),
+        )?;
+        true
     } else {
         route_task_note_write(
             paths,
@@ -5536,26 +5527,16 @@ where
         )?
     };
 
+    // Moves always go through the router above.
     if !dry_run && !changed_paths.is_empty() && !routed {
-        if let Some(destination) = moved_to.as_ref() {
-            move_ordinary_tasknote_if_unchanged(
-                paths,
-                &loaded.path,
-                &loaded.source,
-                destination,
-                &rendered,
-                task_mutation_profile(paths, guard)?,
-            )?;
-        } else {
-            write_ordinary_note_if_unchanged_with_profile(
-                paths,
-                &loaded.path,
-                Some(&loaded.source),
-                &rendered,
-                "task mutation",
-                task_mutation_profile(paths, guard)?,
-            )?;
-        }
+        write_ordinary_note_if_unchanged_with_profile(
+            paths,
+            &loaded.path,
+            Some(&loaded.source),
+            &rendered,
+            "task mutation",
+            task_mutation_profile(paths, guard)?,
+        )?;
     }
 
     if changes.is_empty() && moved_to.is_some() {
@@ -5576,44 +5557,53 @@ where
     })
 }
 
-fn move_ordinary_tasknote_if_unchanged(
+/// Every file a task move writes: the task at its destination with the
+/// mutated frontmatter and its own relative links rewritten, the emptied
+/// source, and the notes whose links into the task change.
+fn plan_tasknote_move(
     paths: &VaultPaths,
-    source_path: &str,
-    source_before: &str,
-    destination_path: &str,
-    destination_contents: &str,
-    permission_profile: Option<&str>,
-) -> Result<(), AppError> {
-    vulcan_core::initialize_vulcan_dir(paths).map_err(AppError::operation)?;
-    vulcan_core::ordinary_write::apply_ordinary_write_batch_with_preflight(
-        paths,
-        &[
+    loaded: &LoadedTaskNote,
+    destination: &str,
+    frontmatter: &YamlMapping,
+) -> Result<Vec<OrdinaryWriteChange>, AppError> {
+    let rendered =
+        render_note_from_parts(Some(frontmatter), &loaded.body).map_err(AppError::operation)?;
+    if !paths.cache_db().is_file() {
+        // Without an index there are no known links to rewrite.
+        return Ok(vec![
             OrdinaryWriteChange {
-                path: destination_path.to_string(),
-                before: None,
-                after: Some(destination_contents.to_string()),
-            },
-            OrdinaryWriteChange {
-                path: source_path.to_string(),
-                before: Some(source_before.to_string()),
+                path: loaded.path.clone(),
+                before: Some(loaded.source.clone()),
                 after: None,
             },
-        ],
-        || {
-            for path in [source_path, destination_path] {
-                if crate::notes::note_path_is_mdbase_managed(paths, path, permission_profile)
-                    .map_err(|error| error.to_string())?
-                {
-                    return Err(
-                        "mdbase collection changed during task move; retry the operation".into(),
-                    );
-                }
+            OrdinaryWriteChange {
+                path: destination.to_string(),
+                before: None,
+                after: Some(rendered),
+            },
+        ]);
+    }
+    let plan = vulcan_core::move_rewrite::plan_ordinary_note_move(paths, &loaded.path, destination)
+        .map_err(AppError::operation)?;
+    let mut changes = plan.changes;
+    for change in &mut changes {
+        if change.path == loaded.path {
+            if change.before.as_deref() != Some(loaded.source.as_str()) {
+                return Err(AppError::operation(format!(
+                    "{} changed while it was being archived; run the command again",
+                    loaded.path
+                )));
             }
-            Ok(())
-        },
-    )
-    .map(|_| ())
-    .map_err(|error| AppError::operation_with_code(error.code, error.message))
+        } else if change.path == destination {
+            let moved = change.after.as_deref().unwrap_or(&loaded.source);
+            let (_, body) =
+                parse_frontmatter_document(moved, false).map_err(AppError::operation)?;
+            change.after = Some(
+                render_note_from_parts(Some(frontmatter), &body).map_err(AppError::operation)?,
+            );
+        }
+    }
+    Ok(changes)
 }
 
 fn recover_pending_ordinary_task_write(paths: &VaultPaths) -> Result<(), AppError> {

@@ -1,7 +1,7 @@
 ---
 name: task-management
 description: Query task state across notes and periodic workflows.
-version: 19
+version: 20
 tools:
   - tasks_query
   - query
@@ -53,7 +53,7 @@ Use this skill when the task depends on extracting, filtering, reviewing, or upd
 - In an mdbase collection, task create/update/convert/archive workflows preflight proposed records and commit through the validated journal. Treat a validation failure as a schema or collection-rule conflict; do not bypass it with a direct Markdown edit.
 - If a task line is converted from an ordinary note into a managed TaskNotes record, the source rewrite and new task are one journaled change; inspect both paths if the transaction reports a conflict.
 - For a plain-Markdown line-to-task conversion, a changed source or newly occupied target fails instead of overwriting it. Its two-file create/rewrite is journaled. Guarded task commands refuse a pending journal rather than borrowing the previous writer's recovery authority. Inspect both files and preserve the journal for an authorized repair workflow; do not retry or delete it blindly.
-- Ordinary TaskNotes archive moves reject a changed source or occupied archive path. A crash can temporarily leave both files present. Inspect both paths and use `vulcan repair ordinary-write status` to review the journal; after manual reconciliation, `accept-current` requires its exact transaction ID and review token. Never delete either file or the journal blindly.
+- Archiving a TaskNote moves it like `vulcan move`: links into it and its own relative links are rewritten in the same batch, so the archive needs write access to every linking note it lists. Without an index (no `vulcan scan` yet) only the task moves. Ordinary TaskNotes archive moves reject a changed source or occupied archive path. A crash can temporarily leave both files present. Inspect both paths and use `vulcan repair ordinary-write status` to review the journal; after manual reconciliation, `accept-current` requires its exact transaction ID and review token. Never delete either file or the journal blindly.
 - Direct CLI and MCP task show, query, list, view, due, reminder, dependency, and time-tracking reports refuse a pending ordinary-write journal. Inspect it with `vulcan repair ordinary-write status` before using those reports; a task conversion or archive move may otherwise be only partly published.
 - Ordinary task edits that use the shared note-write boundary also refuse a pending journal, including writes to unrelated notes. Repair the interrupted batch before retrying those edits.
 - Completing a recurring inline task (`🔁 every week` with a due, scheduled, or start date) also inserts its next occurrence, an open copy whose dates move by the interval (counted from the completion date for `when done` rules), above the completed task, or below it with `tasks.recurrence_on_completion = "next-line"`. The copy drops the block id. Check the source note after completing a recurring task rather than adding the next occurrence by hand.
