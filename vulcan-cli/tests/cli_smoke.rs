@@ -11690,6 +11690,35 @@ fn daemon_bot_cli_configures_users_and_reports_without_the_token() {
     };
 
     daemon(&["config", "set-telegram-bot"]);
+    // Text output is the change to daemon.toml, not the whole configuration.
+    let stored_before = fs::read_to_string(config_home.join("vulcan/daemon.toml")).expect("config");
+    let preview = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_STATE_HOME", &state_home)
+        .args([
+            "daemon",
+            "config",
+            "set-bot-user",
+            "4242",
+            "--wiki",
+            "notes",
+        ])
+        .args(["--profile", "agent", "--digest", "10:00", "--dry-run"])
+        .assert()
+        .success();
+    let preview = String::from_utf8_lossy(&preview.get_output().stdout).into_owned();
+    assert!(preview.contains("+digest = \"10:00\""), "{preview}");
+    assert!(
+        preview.contains("Dry run: nothing was written."),
+        "{preview}"
+    );
+    assert!(!preview.contains("registration_id"), "{preview}");
+    assert_eq!(
+        fs::read_to_string(config_home.join("vulcan/daemon.toml")).expect("config"),
+        stored_before
+    );
+
     let config = daemon(&[
         "config",
         "set-bot-user",
@@ -11698,6 +11727,8 @@ fn daemon_bot_cli_configures_users_and_reports_without_the_token() {
         "notes",
         "--profile",
         "agent",
+        "--digest",
+        "10:00",
     ]);
     assert_eq!(config["bot"]["telegram"]["users"][0]["telegram_id"], 4242);
     let stored = fs::read_to_string(config_home.join("vulcan/daemon.toml")).expect("config");
@@ -11711,6 +11742,7 @@ fn daemon_bot_cli_configures_users_and_reports_without_the_token() {
     assert_eq!(status["configured"], true);
     assert_eq!(status["token_set"], true, "read from daemon.env");
     assert_eq!(status["users"][0]["profile"], "agent");
+    assert_eq!(status["users"][0]["digest"], "10:00");
     assert_eq!(status["status"], Value::Null);
     assert_eq!(status["hints"], serde_json::json!([]), "nothing to fix");
 

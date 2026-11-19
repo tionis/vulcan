@@ -247,7 +247,10 @@ pub fn strip_generated(source: &str) -> Result<String, String> {
 /// Renders `config` for `daemon.toml` without generated identities. With an
 /// existing document, only what changed is rewritten: comments, key order,
 /// and value formatting of unchanged entries are kept.
-pub fn render_config<T: Serialize>(existing: Option<&str>, config: &T) -> Result<String, String> {
+pub fn render_config<T: Serialize + Default>(
+    existing: Option<&str>,
+    config: &T,
+) -> Result<String, String> {
     let rendered = toml::to_string_pretty(config).map_err(|error| error.to_string())?;
     let mut desired = rendered
         .parse::<DocumentMut>()
@@ -262,6 +265,20 @@ pub fn render_config<T: Serialize>(existing: Option<&str>, config: &T) -> Result
         .parse::<DocumentMut>()
         .map_err(|error| error.to_string())?;
     strip_generated_keys(&mut document);
+    // A top-level setting the file leaves out and the config still has at
+    // its default stays out: an edit elsewhere must not write defaults in.
+    let defaults = toml::to_string_pretty(&T::default())
+        .map_err(|error| error.to_string())?
+        .parse::<toml::Table>()
+        .map_err(|error| error.to_string())?;
+    let wanted = rendered
+        .parse::<toml::Table>()
+        .map_err(|error| error.to_string())?;
+    for (key, value) in &wanted {
+        if !document.contains_key(key) && defaults.get(key) == Some(value) {
+            desired.remove(key);
+        }
+    }
     let mut next_position = max_position(document.as_table()) + 1;
     merge_table(
         document.as_table_mut(),
@@ -756,6 +773,7 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     struct Sample {
+        #[serde(default = "default_sample_bind")]
         bind: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         notifications: Option<Notifications>,
@@ -763,6 +781,42 @@ mod tests {
         vaults: Vec<Vault>,
         #[serde(default, rename = "mcp_remote")]
         remotes: Vec<Remote>,
+    }
+
+    fn default_sample_bind() -> String {
+        "127.0.0.1:3210".to_string()
+    }
+
+    impl Default for Sample {
+        fn default() -> Self {
+            Self {
+                bind: default_sample_bind(),
+                notifications: None,
+                vaults: Vec::new(),
+                remotes: Vec::new(),
+            }
+        }
+    }
+
+    #[test]
+    fn edits_do_not_write_defaults_the_file_leaves_out() {
+        let source = "# mine\n[[vault]]\nid = \"a\"\npath = \"/a\"\n";
+        let mut config = parsed(source);
+        config.notifications = Some(Notifications { enabled: true });
+        let rendered = render_config(Some(source), &config).unwrap();
+        assert!(!rendered.contains("bind"), "{rendered}");
+        assert!(rendered.starts_with("# mine\n"), "{rendered}");
+        assert!(rendered.contains("enabled = true"), "{rendered}");
+        // A non-default value is written, and an explicit default is kept.
+        config.bind = "0.0.0.0:1".to_string();
+        assert!(render_config(Some(source), &config)
+            .unwrap()
+            .contains("bind = \"0.0.0.0:1\""));
+        let explicit = format!("bind = \"127.0.0.1:3210\"\n{source}");
+        config.bind = default_sample_bind();
+        assert!(render_config(Some(&explicit), &config)
+            .unwrap()
+            .contains("bind = \"127.0.0.1:3210\""));
     }
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -930,7 +984,7 @@ authentication = { identity = "https://eric.example/" }
             #[serde(default, skip_serializing_if = "Option::is_none")]
             trust: Option<Notifications>,
         }
-        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+        #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
         struct Doc {
             #[serde(rename = "vault")]
             vaults: Vec<Trusted>,

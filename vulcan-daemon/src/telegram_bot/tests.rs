@@ -1044,6 +1044,8 @@ fn hints_point_at_leftover_state_conflicts_and_stale_status() {
         default_vault: None,
         profile: "agent".to_string(),
         reminders: true,
+        alerts: false,
+        digest: Some("10:00".to_string()),
     };
     let healthy = TelegramBotReport {
         configured: true,

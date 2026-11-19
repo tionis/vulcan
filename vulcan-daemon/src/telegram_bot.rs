@@ -118,6 +118,9 @@ pub struct TelegramBotUserSummary {
     pub default_vault: Option<String>,
     pub profile: String,
     pub reminders: bool,
+    pub alerts: bool,
+    /// Local time of the daily digest, `HH:MM`.
+    pub digest: Option<String>,
 }
 
 pub fn telegram_bot_report(
@@ -140,6 +143,8 @@ pub fn telegram_bot_report(
                         default_vault: user.default_vault.as_ref().map(ToString::to_string),
                         profile: user.profile.clone(),
                         reminders: user.reminders,
+                        alerts: user.alerts,
+                        digest: user.digest.clone(),
                     })
                     .collect()
             })

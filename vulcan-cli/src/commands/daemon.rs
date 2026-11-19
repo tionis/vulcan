@@ -286,7 +286,7 @@ fn print_bot_status(output: OutputFormat, report: &TelegramBotReport) -> Result<
         println!("Users:");
         for user in &report.users {
             println!(
-                "  {} -> {} (profile {}{}{})",
+                "  {} -> {} (profile {}{}{}{}{})",
                 user.telegram_id,
                 user.vaults.join(", "),
                 user.profile,
@@ -295,6 +295,11 @@ fn print_bot_status(output: OutputFormat, report: &TelegramBotReport) -> Result<
                     .map(|vault| format!(", default {vault}"))
                     .unwrap_or_default(),
                 if user.reminders { ", reminders" } else { "" },
+                if user.alerts { ", alerts" } else { "" },
+                user.digest
+                    .as_deref()
+                    .map(|time| format!(", digest {time}"))
+                    .unwrap_or_default(),
             );
         }
     }
@@ -658,17 +663,59 @@ fn handle_config(
     context: &DaemonProcessContext,
     command: &DaemonConfigCommand,
 ) -> Result<(), CliError> {
+    if matches!(command, DaemonConfigCommand::Show) {
+        let config = context.registry.load().map_err(CliError::operation)?;
+        return print_config(output, &config);
+    }
+    let before = std::fs::read_to_string(context.registry.path()).ok();
+    let config = mutate_config(context, command)?;
+    if output == OutputFormat::Json {
+        return print_json(&config);
+    }
+    print_config_change(&context.registry, before.as_deref(), &config)
+}
+
+/// What a config command changed in `daemon.toml`, or would change under
+/// `--dry-run`: the file diff, not the whole effective configuration.
+fn print_config_change(
+    registry: &vulcan_daemon::registry::WikiRegistry,
+    before: Option<&str>,
+    config: &DaemonConfig,
+) -> Result<(), CliError> {
+    let path = registry.path().display().to_string();
+    let after = registry
+        .render_file(before, config)
+        .map_err(CliError::operation)?;
+    if before == Some(after.as_str()) {
+        println!("No change to {path}");
+        return Ok(());
+    }
+    let written = std::fs::read_to_string(registry.path()).ok();
+    print!(
+        "{}",
+        vulcan_app::helix_config::line_diff(&path, before.unwrap_or_default(), &after)
+    );
+    if written.as_deref() != Some(after.as_str()) {
+        println!("Dry run: nothing was written.");
+    }
+    Ok(())
+}
+
+fn mutate_config(
+    context: &DaemonProcessContext,
+    command: &DaemonConfigCommand,
+) -> Result<DaemonConfig, CliError> {
     if let Some(config) = handle_notification_config(context, command) {
-        return print_config(output, &config?);
+        return config;
     }
     if let Some(config) = handle_worker_config(context, command) {
-        return print_config(output, &config?);
+        return config;
     }
     if let Some(config) = handle_bot_config(context, command) {
-        return print_config(output, &config?);
+        return config;
     }
     let config = match command {
-        DaemonConfigCommand::Show => context.registry.load().map_err(CliError::operation)?,
+        DaemonConfigCommand::Show => unreachable!("show is handled by handle_config"),
         DaemonConfigCommand::SetBind { bind, dry_run } => context
             .registry
             .set_bind(bind, *dry_run)
@@ -752,7 +799,7 @@ fn handle_config(
             unreachable!("notification configuration is dispatched above")
         }
     };
-    print_config(output, &config)
+    Ok(config)
 }
 
 fn parse_worker_wikis(wiki: &[String]) -> Result<Vec<WikiId>, CliError> {

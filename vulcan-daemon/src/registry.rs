@@ -818,6 +818,24 @@ impl WikiRegistry {
         &self.path
     }
 
+    /// The `daemon.toml` text that saving `config` over `existing` writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `existing` is not valid TOML.
+    pub fn render_file(
+        &self,
+        existing: Option<&str>,
+        config: &DaemonConfig,
+    ) -> Result<String, RegistryError> {
+        config_file::render_config(existing, &crate::vault_remotes::declared_only(config)).map_err(
+            |detail| RegistryError::InvalidConfig {
+                path: self.path.clone(),
+                detail,
+            },
+        )
+    }
+
     pub fn load(&self) -> Result<DaemonConfig, RegistryError> {
         self.load_snapshot(false)
     }

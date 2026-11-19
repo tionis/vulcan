@@ -737,7 +737,8 @@ fn write_atomically(path: &Path, contents: &[u8]) -> Result<(), AppError> {
 }
 
 /// A unified-style line diff with two lines of context.
-fn line_diff(file: &str, before: &str, after: &str) -> String {
+#[must_use]
+pub fn line_diff(file: &str, before: &str, after: &str) -> String {
     let old = before.lines().collect::<Vec<_>>();
     let new = after.lines().collect::<Vec<_>>();
     // Longest common subsequence table, from the end.
