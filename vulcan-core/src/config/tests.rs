@@ -5328,11 +5328,13 @@ fn bot_config_defaults_and_overrides() {
     assert_eq!(defaults.task_target, BotTaskTarget::Tasknotes);
     assert_eq!(defaults.attachment_folder, "Attachments");
     assert!(defaults.link_titles);
+    assert_eq!(defaults.daily_heading, None);
+    assert_eq!(defaults.daily_format, "{text}");
     assert_eq!(defaults.reminders.snooze_options, ["1h", "tomorrow"]);
 
     fs::write(
         vault_root.join(".vulcan/config.toml"),
-        "[bot]\ndefault_capture = \"daily\"\nlink_titles = false\n",
+        "[bot]\ndefault_capture = \"daily\"\nlink_titles = false\ndaily_heading = \"## Notes\"\ndaily_format = \"- {time} {text}\"\n",
     )
     .expect("shared config should be written");
     fs::write(
@@ -5344,6 +5346,8 @@ fn bot_config_defaults_and_overrides() {
     assert_eq!(bot.default_capture, BotCaptureTarget::Daily);
     assert!(!bot.link_titles);
     assert_eq!(bot.attachment_folder, "Inbox/Files");
+    assert_eq!(bot.daily_heading.as_deref(), Some("## Notes"));
+    assert_eq!(bot.daily_format, "- {time} {text}");
 }
 
 mod device_layers {

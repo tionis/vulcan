@@ -2834,6 +2834,15 @@ pub struct BotConfig {
     /// fetching the title when the user's profile allows the network access.
     #[serde(default = "default_true")]
     pub link_titles: bool,
+    /// Heading that daily-note captures go under, at the end of its section,
+    /// created when missing. Unset appends to the end of the note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daily_heading: Option<String>,
+    /// How a daily-note capture is written: `{text}`, `{date}`, `{time}`
+    /// (`templates.time_format`, `HH:mm` by default), and `{datetime}`, in
+    /// the vault's local time.
+    #[serde(default = "default_bot_daily_format")]
+    pub daily_format: String,
     /// How reminders from this vault are delivered.
     #[serde(default)]
     pub reminders: BotRemindersConfig,
@@ -2877,9 +2886,15 @@ impl Default for BotConfig {
             task_target: BotTaskTarget::default(),
             attachment_folder: default_bot_attachment_folder(),
             link_titles: true,
+            daily_heading: None,
+            daily_format: default_bot_daily_format(),
             reminders: BotRemindersConfig::default(),
         }
     }
+}
+
+fn default_bot_daily_format() -> String {
+    "{text}".to_string()
 }
 
 fn default_bot_attachment_folder() -> String {
@@ -5545,6 +5560,12 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
         if let Some(link_titles) = bot.link_titles {
             config.bot.link_titles = link_titles;
+        }
+        if let Some(daily_heading) = bot.daily_heading {
+            config.bot.daily_heading = Some(daily_heading).filter(|heading| !heading.is_empty());
+        }
+        if let Some(daily_format) = bot.daily_format {
+            config.bot.daily_format = daily_format;
         }
         if let Some(reminders) = bot.reminders {
             if let Some(catch_up_window) = reminders.catch_up_window {

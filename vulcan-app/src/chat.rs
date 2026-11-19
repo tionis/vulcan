@@ -826,11 +826,11 @@ fn capture_inbox(vault: &ChatVault<'_>, text: &str) -> Result<ChatReply, AppErro
 
 fn append_daily(vault: &ChatVault<'_>, text: &str) -> Result<ChatReply, AppError> {
     let date = vault.today.format("%Y-%m-%d").to_string();
-    let expected = vulcan_core::periodic::expected_periodic_note_path(
-        &load_vault_config(vault.paths).config.periodic,
-        "daily",
-        &date,
-    );
+    let config = load_vault_config(vault.paths).config;
+    let expected =
+        vulcan_core::periodic::expected_periodic_note_path(&config.periodic, "daily", &date);
+    let entry = render_daily_capture(&config, expected.as_deref().unwrap_or_default(), text);
+    let heading = config.bot.daily_heading.clone();
     let (report, undo) = with_write(vault, || {
         let before = expected
             .as_deref()
@@ -841,9 +841,9 @@ fn append_daily(vault: &ChatVault<'_>, text: &str) -> Result<ChatReply, AppError
             vault.profile,
             McpNoteAppendArgs {
                 note: None,
-                text: text.to_string(),
+                text: entry.clone(),
                 mode: None,
-                heading: None,
+                heading: heading.clone(),
                 periodic: Some("daily".to_string()),
                 date: Some(date.clone()),
                 vars: BTreeMap::new(),
@@ -866,6 +866,21 @@ fn append_daily(vault: &ChatVault<'_>, text: &str) -> Result<ChatReply, AppError
         undo: undo.into_iter().collect(),
         ..ChatReply::default()
     })
+}
+
+/// A daily capture as `bot.daily_format` renders it, with times on the
+/// vault's reminder-timezone wall clock (the clock `vault.today` follows).
+fn render_daily_capture(config: &vulcan_core::VaultConfig, path: &str, text: &str) -> String {
+    let now = vulcan_core::current_utc_timestamp_ms();
+    let timezone = crate::tasks::reminders::ReminderTimezone::from_config(&config.tasks.reminders)
+        .unwrap_or(crate::tasks::reminders::ReminderTimezone::Local);
+    let wall = timezone.local_datetime(now).and_utc().timestamp_millis();
+    let timestamp = crate::templates::TemplateTimestamp::from_wall_millis(wall, wall - now);
+    let mut variables = crate::templates::template_variables_for_path(path, timestamp);
+    // `{time}` is the clock time a reader expects in a note, as `{{time}}`
+    // renders it in templates; `{datetime}` keeps the full timestamp.
+    variables.time = timestamp.format_obsidian(config.templates.time_format.trim());
+    crate::inbox::render_inbox_entry(&config.bot.daily_format, text, &variables)
 }
 
 fn quickadd(vault: &ChatVault<'_>, input: &str) -> Result<ChatReply, AppError> {

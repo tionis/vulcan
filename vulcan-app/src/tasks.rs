@@ -45,7 +45,7 @@ use vulcan_core::{
 use yaml_serde::{Mapping as YamlMapping, Value as YamlValue};
 
 mod ics;
-mod reminders;
+pub(crate) mod reminders;
 mod types;
 pub use ics::{TaskIcsExport, TaskIcsRequest, DEFAULT_TASK_ICS_WINDOW_DAYS};
 pub use reminders::{

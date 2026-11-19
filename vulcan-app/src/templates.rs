@@ -6214,6 +6214,16 @@ impl TemplateTimestamp {
         }
     }
 
+    /// A wall-clock moment `offset_ms` ahead of UTC, such as the current time
+    /// in a configured timezone.
+    #[must_use]
+    pub fn from_wall_millis(wall_ms: i64, offset_ms: i64) -> Self {
+        Self {
+            offset_ms,
+            ..Self::from_millis(wall_ms)
+        }
+    }
+
     /// The current moment in UTC, for machine timestamps.
     #[must_use]
     pub fn current_utc() -> Self {

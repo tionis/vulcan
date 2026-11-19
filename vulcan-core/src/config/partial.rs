@@ -51,6 +51,8 @@ pub(super) struct PartialBotConfig {
     pub(super) task_target: Option<BotTaskTarget>,
     pub(super) attachment_folder: Option<String>,
     pub(super) link_titles: Option<bool>,
+    pub(super) daily_heading: Option<String>,
+    pub(super) daily_format: Option<String>,
     pub(super) reminders: Option<PartialBotRemindersConfig>,
 }
 

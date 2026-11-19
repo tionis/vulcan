@@ -162,6 +162,50 @@ fn captures_go_to_the_daily_note_when_configured() {
 }
 
 #[test]
+fn daily_captures_use_the_configured_heading_and_format_in_local_time() {
+    let fixture = Fixture::new(
+        "[bot]\ndefault_capture = \"daily\"\ndaily_heading = \"## Notes\"\ndaily_format = \"- {time} {text}\"\n\
+         [periodic.daily]\nfolder = \"Journal\"\n[tasks.reminders]\ntimezone = \"Pacific/Kiritimati\"\n",
+        &[("Journal/2026-11-07.md", "# 2026-11-07\n\n## Notes\n- 08:00 earlier\n\n## Tasks\n- [ ] keep\n")],
+    );
+    let before = (chrono::Utc::now() + chrono::Duration::hours(14))
+        .format("%H:%M")
+        .to_string();
+    let reply = fixture.run("unrestricted", "met Anna for lunch").unwrap();
+    let after = (chrono::Utc::now() + chrono::Duration::hours(14))
+        .format("%H:%M")
+        .to_string();
+    let note = fixture.read("Journal/2026-11-07.md");
+    let line = note.lines().nth(4).unwrap_or_default().to_string();
+    assert!(
+        [before, after]
+            .iter()
+            .any(|time| line == format!("- {time} met Anna for lunch")),
+        "{note}"
+    );
+    assert!(note.ends_with("\n## Tasks\n- [ ] keep\n"), "{note}");
+
+    let guard = fixture.guard("unrestricted");
+    let vault = ChatVault {
+        today: NaiveDate::from_ymd_opt(2026, 11, 7).unwrap(),
+        ..vault_for(&fixture, &guard, "unrestricted")
+    };
+    super::run_chat_undo(&vault, &reply.undo).expect("undo");
+    assert!(!fixture.read("Journal/2026-11-07.md").contains("Anna"));
+
+    // A missing heading is created; /daily uses the same settings.
+    let fixture = Fixture::new(
+        "[bot]\ndaily_heading = \"## Notes\"\ndaily_format = \"* {text}\"\n[periodic.daily]\nfolder = \"Journal\"\n",
+        &[("Journal/2026-11-07.md", "# 2026-11-07\n")],
+    );
+    fixture.run("unrestricted", "/daily idea").unwrap();
+    assert_eq!(
+        fixture.read("Journal/2026-11-07.md"),
+        "# 2026-11-07\n\n## Notes\n* idea\n"
+    );
+}
+
+#[test]
 fn writes_are_refused_outside_the_profile() {
     let fixture = Fixture::new("[inbox]\npath = \"Inbox.md\"\n", &[]);
     let error = fixture.run("readonly", "sneaky capture").unwrap_err();

@@ -467,6 +467,8 @@ name = "{{folder_name}}"   # note stem; examples: index, README, readme, {{folde
 # task_target = "tasknotes"  # tasknotes | inline
 # attachment_folder = "Attachments"  # where photos, files, and voice messages are saved
 # link_titles = true  # save a lone link as [Page title](url), if the profile allows network access
+# daily_heading = "## Notes"  # daily captures go at the end of this section; unset: end of note
+# daily_format = "{text}"  # e.g. "- {time} {text}"; {text} {date} {time} (HH:mm) {datetime}, local time
 #
 # [bot.reminders]
 # catch_up_window = "24h"  # missed reminders older than this are not sent

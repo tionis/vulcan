@@ -1102,6 +1102,12 @@ Where a chat bot's captures and tasks go in this vault.
 - `bot.attachment_folder` — type: `string`; target: `shared|local|device`; default: `Attachments`
   Folder that photos, files, and voice messages sent to the chat bot are saved in; the capture embeds them.
   Example: `vulcan config set bot.attachment_folder <value>`
+- `bot.daily_format` — type: `string`; target: `shared|local|device`; default: `{text}`
+  Edit `bot.daily_format` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
+  Example: `vulcan config set bot.daily_format <value>`
+- `bot.daily_heading` — type: `string`; target: `shared|local|device`; default: `## Notes`
+  Edit `bot.daily_heading` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
+  Example: `vulcan config set bot.daily_heading <value>`
 - `bot.default_capture` — type: `enum`; target: `shared|local|device`; default: `inbox`; values: `inbox`, `daily`
   Where free-text chat bot messages are captured: the `[inbox]` note or today's daily note.
   Example: `vulcan config set bot.default_capture <value>`

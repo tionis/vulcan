@@ -91,7 +91,14 @@ default_capture = "inbox"           # inbox | daily
 task_target = "tasknotes"           # tasknotes | inline
 attachment_folder = "Attachments"
 link_titles = true                  # fetch the title of a link sent on its own
+daily_heading = "## Notes"          # daily captures go at the end of this section (created if missing)
+daily_format = "- {time} {text}"    # default "{text}"; also {date} and {datetime}
 ```
+
+Daily captures (free text with `default_capture = "daily"`, and `/daily`) are written with
+`daily_format` under `daily_heading`, or at the end of the note when no heading is set. `{time}` is
+`HH:mm` (`templates.time_format`) and all placeholders use the vault's reminder timezone, the same
+clock that decides which day's note is "today". `/undo` removes the entry again.
 
 ### QuickAdd choices
 

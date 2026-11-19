@@ -122,6 +122,8 @@ default_capture = "inbox"           # "inbox" | "daily"
 task_target = "tasknotes"           # "tasknotes" | "inline": what /task creates
 attachment_folder = "Attachments"   # where sent files are saved
 link_titles = true                  # a lone link is captured as [Page title](url)
+daily_heading = "## Notes"          # optional: daily captures go at the end of this section
+daily_format = "{text}"             # {text} {date} {time} (HH:mm) {datetime}, reminder timezone
 
 [tasks.reminders]                   # implemented (slice 1)
 inline = true                       # parse ⏰ / (@…) / [remind:: …] on inline tasks
