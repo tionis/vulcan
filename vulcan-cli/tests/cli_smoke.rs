@@ -40077,6 +40077,33 @@ fn repair_mdbase_write_reports_an_empty_journal() {
         .output()
         .expect("repair runs");
     assert!(!unconfirmed.status.success());
+    assert!(
+        String::from_utf8_lossy(&unconfirmed.stdout).contains("requires --confirm")
+            || String::from_utf8_lossy(&unconfirmed.stderr).contains("requires --confirm")
+    );
+    // A dry run only reviews, so it gets past the confirmation and reaches
+    // the (absent) transaction.
+    let preview = Command::cargo_bin("vulcan")
+        .expect("binary")
+        .arg("--vault")
+        .arg(&vault_root)
+        .args([
+            "repair",
+            "mdbase-write",
+            "accept-current",
+            "tx",
+            "--review-token",
+            "t",
+            "--dry-run",
+        ])
+        .output()
+        .expect("repair runs");
+    let printed = format!(
+        "{}{}",
+        String::from_utf8_lossy(&preview.stdout),
+        String::from_utf8_lossy(&preview.stderr)
+    );
+    assert!(!printed.contains("requires --confirm"), "{printed}");
 }
 
 /// Moving a collection record is a validated mdbase rename; rewritten

@@ -240,7 +240,8 @@ fn handle_mdbase_write_repair(
             confirm,
             dry_run,
         } => {
-            if !confirm {
+            // A dry run only reviews, so it needs no confirmation.
+            if !confirm && !dry_run {
                 return Err(CliError::operation(
                     "accept-current requires --confirm after reviewing every affected file",
                 ));
@@ -338,7 +339,8 @@ fn handle_ordinary_write_repair(
             confirm,
             dry_run,
         } => {
-            if !confirm {
+            // A dry run only reviews, so it needs no confirmation.
+            if !confirm && !dry_run {
                 return Err(CliError::operation(
                     "accept-current requires --confirm after reviewing every affected file",
                 ));
