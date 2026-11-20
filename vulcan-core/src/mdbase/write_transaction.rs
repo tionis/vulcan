@@ -1263,7 +1263,7 @@ fn apply_change(
             &change.path,
         ));
     }
-    write_desired(
+    let written_at = write_desired(
         paths,
         collection,
         journal,
@@ -1271,10 +1271,18 @@ fn apply_change(
         desired,
         expected.is_none(),
     )?;
+    #[cfg(test)]
+    AFTER_WRITE.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().as_mut() {
+            hook(&collection.root.join(&change.path));
+        }
+    });
     let observed = read_optional(collection, &change.path).map_err(|error| {
         MdbaseWriteTransactionError::io("failed to verify a transaction path", error)
     })?;
-    if observed.as_deref() != desired {
+    if observed.as_deref() != desired
+        && !(observed.is_some() && edited_after(collection, &change.path, written_at))
+    {
         block_journal(paths, journal, &change.path, observed)?;
         return Err(MdbaseWriteTransactionError::blocked(
             &journal.transaction_id,
@@ -1284,6 +1292,36 @@ fn apply_change(
     Ok(())
 }
 
+#[cfg(test)]
+type AfterWriteHook = Option<Box<dyn FnMut(&Path)>>;
+
+#[cfg(test)]
+thread_local! {
+    /// Runs between writing a replacement and reading it back.
+    static AFTER_WRITE: std::cell::RefCell<AfterWriteHook> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Whether the file at `path` was modified after the replacement written at
+/// `written_at` landed: another program (an editor reformatting the note on
+/// change, say) saved over it. The write is then applied and the newer edit
+/// wins, as with any edit made after the transaction. Equal or unknown times
+/// stay ambiguous, so the read-back still blocks on them.
+fn edited_after(
+    collection: &super::MdbaseCollection,
+    path: &str,
+    written_at: Option<SystemTime>,
+) -> bool {
+    let Some(written_at) = written_at else {
+        return false;
+    };
+    fs::metadata(collection.root.join(path))
+        .and_then(|metadata| metadata.modified())
+        .is_ok_and(|modified| modified > written_at)
+}
+
+/// Writes `desired` (or removes the file) and returns the modification time
+/// of the written replacement.
 fn write_desired(
     paths: &VaultPaths,
     collection: &super::MdbaseCollection,
@@ -1291,7 +1329,7 @@ fn write_desired(
     change: &MdbaseWritePreviewChange,
     desired: Option<&str>,
     create_without_clobber: bool,
-) -> Result<(), MdbaseWriteTransactionError> {
+) -> Result<Option<SystemTime>, MdbaseWriteTransactionError> {
     let target = collection.root.join(&change.path);
     let parent = target.parent().ok_or_else(|| {
         MdbaseWriteTransactionError::new("invalid_request", "changed path has no parent")
@@ -1319,6 +1357,11 @@ fn write_desired(
         temporary.as_file().sync_all().map_err(|error| {
             MdbaseWriteTransactionError::io("failed to sync replacement file", error)
         })?;
+        let written_at = temporary
+            .as_file()
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok();
         if create_without_clobber {
             temporary.persist_noclobber(&target).map_err(|error| {
                 MdbaseWriteTransactionError::io(
@@ -1332,13 +1375,14 @@ fn write_desired(
             })?;
         }
         sync_directory(parent)?;
+        Ok(written_at)
     } else {
         fs::remove_file(&target).map_err(|error| {
             MdbaseWriteTransactionError::io("failed to remove transaction file", error)
         })?;
         sync_directory(parent)?;
+        Ok(None)
     }
-    Ok(())
 }
 
 fn stage_replacements(
@@ -2941,6 +2985,61 @@ mod tests {
             fs::read_to_string(directory.path().join("_types/task.md")).unwrap(),
             "external\n"
         );
+    }
+
+    /// An editor that reformats a note as soon as it changes saves over the
+    /// replacement before the read-back. That newer edit wins and the write
+    /// commits; a mismatch the file's time does not explain still blocks.
+    #[test]
+    fn an_edit_saved_right_after_the_write_lets_it_commit() {
+        let run = |key: &'static str, later: bool| {
+            let (directory, paths, collection) = fixture();
+            let preview = self::preview(
+                &collection,
+                vec![MdbaseWritePreviewChangeRequest {
+                    path: "records/a.md".to_string(),
+                    after: Some("after a\n".to_string()),
+                    if_revision: None,
+                }],
+            );
+            AFTER_WRITE.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move |path: &Path| {
+                    let written = fs::metadata(path).unwrap().modified().unwrap();
+                    fs::write(path, "reformatted\n").unwrap();
+                    let file = File::options().write(true).open(path).unwrap();
+                    file.set_modified(if later {
+                        written + std::time::Duration::from_secs(1)
+                    } else {
+                        written
+                    })
+                    .unwrap();
+                }));
+            });
+            let result = apply_mdbase_write_transaction(
+                &paths,
+                &collection,
+                &MdbaseWriteApplyRequest {
+                    preview: &preview,
+                    verification: verification(),
+                    idempotency_key: key,
+                },
+                |_| Ok(()),
+            );
+            AFTER_WRITE.with(|hook| *hook.borrow_mut() = None);
+            assert_eq!(
+                fs::read_to_string(directory.path().join("records/a.md")).unwrap(),
+                "reformatted\n"
+            );
+            (result, load_journal(&paths).unwrap(), directory)
+        };
+
+        let (result, journal, _directory) = run("edited-after", true);
+        assert_eq!(result.unwrap().status, MdbaseWriteOutcomeStatus::Committed);
+        assert!(journal.is_none(), "no transaction is left behind");
+
+        let (result, journal, _directory) = run("unexplained", false);
+        assert_eq!(result.unwrap_err().code, "recovery_blocked");
+        assert_eq!(journal.unwrap().phase, JournalPhase::Blocked);
     }
 
     #[test]
