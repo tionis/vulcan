@@ -920,6 +920,10 @@ fn plan_set_note_property_replacement(
         if surgical.is_some() {
             return Ok(surgical);
         }
+        let appended = try_surgical_append_in_yaml(block, raw_yaml, key, value);
+        if appended.is_some() {
+            return Ok(appended);
+        }
 
         // Fall back to full round-trip (handles complex types, new-key append, etc.).
         let mut frontmatter = yaml_serde::from_str::<YamlValue>(raw_yaml)?;
@@ -957,6 +961,56 @@ fn plan_set_note_property_replacement(
             after: format!("{key}: {}", summarize_yaml_value(value)),
         }],
     )))
+}
+
+/// Append a key the frontmatter does not have yet after its existing YAML,
+/// leaving every other byte as it is. `None` (fall back to the full
+/// round-trip) when the key is present, the value cannot be formatted on its
+/// own, or the result would not read back with exactly that value added.
+fn try_surgical_append_in_yaml(
+    block: FrontmatterBlock,
+    raw_yaml: &str,
+    key: &str,
+    value: Option<&YamlValue>,
+) -> Option<(TextEdit, Vec<RefactorChange>)> {
+    let value = value?;
+    // The block is rewritten with `\n` line endings; leave CRLF files to the
+    // full round-trip rather than mix endings.
+    if raw_yaml.contains('\r') {
+        return None;
+    }
+    let existing = yaml_serde::from_str::<YamlValue>(raw_yaml).ok()?;
+    let existing = match existing {
+        YamlValue::Null => yaml_serde::Mapping::new(),
+        YamlValue::Mapping(mapping) => mapping,
+        _ => return None,
+    };
+    let key_value = YamlValue::String(key.to_string());
+    if existing.contains_key(&key_value) || find_yaml_key_span(raw_yaml, key).is_some() {
+        return None;
+    }
+    let separator = if raw_yaml.is_empty() || raw_yaml.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    let new_yaml = format!("{raw_yaml}{separator}{}", format_yaml_kv_block(key, value)?);
+    let mut expected = existing;
+    expected.insert(key_value, value.clone());
+    if yaml_serde::from_str::<YamlValue>(&new_yaml).ok()? != YamlValue::Mapping(expected) {
+        return None;
+    }
+    Some((
+        TextEdit {
+            start: block.full_start,
+            end: block.full_end,
+            replacement: format!("---\n{new_yaml}---\n"),
+        },
+        vec![RefactorChange {
+            before: format!("{key}: <missing>"),
+            after: format!("{key}: {}", summarize_yaml_value(value)),
+        }],
+    ))
 }
 
 /// Try a surgical set/remove within a frontmatter block's raw YAML.
@@ -1858,6 +1912,45 @@ mod tests {
     use serde::Serialize;
     use std::path::Path;
     use tempfile::TempDir;
+
+    #[test]
+    fn patching_in_a_new_key_keeps_the_existing_yaml_bytes() {
+        let source = "---\npriority: \"0\"\ntags:\n  - task\n---\n\nBody\n";
+        let patched = patch_frontmatter_source(
+            source,
+            "t.md",
+            &[
+                (
+                    "priority".to_string(),
+                    Some(YamlValue::String("1".to_string())),
+                ),
+                (
+                    "done".to_string(),
+                    Some(YamlValue::String("2026-11-20".to_string())),
+                ),
+                (
+                    "aliases".to_string(),
+                    Some(YamlValue::Sequence(vec![YamlValue::String(
+                        "A".to_string(),
+                    )])),
+                ),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            patched,
+            "---\npriority: '1'\ntags:\n  - task\ndone: 2026-11-20\naliases:\n- A\n---\n\nBody\n"
+        );
+        // CRLF frontmatter is left to the full round-trip, so endings stay uniform.
+        let crlf = "---\r\ntags:\r\n  - task\r\n---\r\nBody\r\n";
+        let patched = patch_frontmatter_source(
+            crlf,
+            "t.md",
+            &[("done".to_string(), Some(YamlValue::Bool(true)))],
+        )
+        .unwrap();
+        assert!(patched.contains("done: true"), "{patched:?}");
+    }
 
     #[test]
     #[allow(clippy::too_many_lines)] // Each public refactor path must reject the same pending journal.

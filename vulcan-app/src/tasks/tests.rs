@@ -4595,3 +4595,29 @@ fn task_dates_are_read_from_the_local_day_after_local_midnight() {
         Some("2026-11-08")
     );
 }
+
+#[test]
+fn tasknote_updates_keep_the_notes_yaml_style_and_body() {
+    let source = "---\ntitle: Inplement VM systemd generator\nstatus: open\npriority: \"0\"\ndateCreated: 2026-08-08T04:03:51.536+02:00\ndateModified: 2026-08-10T17:11:24.126+02:00\ntags:\n  - task\nprojects:\n  - \"[[my infrastructure|infrastructure]]\"\n---\n\nhttps://example.com\n";
+    let (Some(mut frontmatter), body) = super::parse_frontmatter_document(source, false).unwrap()
+    else {
+        panic!("frontmatter");
+    };
+    frontmatter.insert(
+        YamlValue::String("status".to_string()),
+        YamlValue::String("done".to_string()),
+    );
+    frontmatter.insert(
+        YamlValue::String("dateModified".to_string()),
+        YamlValue::String("2026-11-20T02:47:42.671+01:00".to_string()),
+    );
+    frontmatter.insert(
+        YamlValue::String("completedDate".to_string()),
+        YamlValue::String("2026-11-20".to_string()),
+    );
+    let rendered = super::render_frontmatter_update(source, "t.md", &frontmatter, &body).unwrap();
+    assert_eq!(
+        rendered,
+        "---\ntitle: Inplement VM systemd generator\nstatus: done\npriority: \"0\"\ndateCreated: 2026-08-08T04:03:51.536+02:00\ndateModified: 2026-11-20T02:47:42.671+01:00\ntags:\n  - task\nprojects:\n  - \"[[my infrastructure|infrastructure]]\"\ncompletedDate: 2026-11-20\n---\n\nhttps://example.com\n"
+    );
+}

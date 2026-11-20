@@ -1194,8 +1194,7 @@ pub fn apply_task_convert_with_guard(
         &config.tasknotes,
     )
     .ok_or_else(|| AppError::operation("failed to convert note into a TaskNotes task"))?;
-    let rendered =
-        render_note_from_parts(Some(&frontmatter), &body).map_err(AppError::operation)?;
+    let rendered = render_frontmatter_update(&source, &relative_path, &frontmatter, &body)?;
     let changed_paths = if task_changes.is_empty() {
         Vec::new()
     } else {
@@ -5482,7 +5481,7 @@ where
     } = mutate(&mut frontmatter, loaded)?;
     let moved_to = moved_to.filter(|path| path != &loaded.path);
     let rendered =
-        render_note_from_parts(Some(&frontmatter), &loaded.body).map_err(AppError::operation)?;
+        render_frontmatter_update(&loaded.source, &loaded.path, &frontmatter, &loaded.body)?;
 
     let mut changed_paths = Vec::new();
     if !changes.is_empty() || moved_to.is_some() {
@@ -5557,6 +5556,52 @@ where
     })
 }
 
+/// `source` with its frontmatter changed to `frontmatter`, editing only the
+/// keys that differ: everything else keeps its bytes (quoting, list
+/// indentation, the blank line before the body), so a `TaskNote` stays in the
+/// style `TaskNotes` and Obsidian write. Falls back to rendering the whole note
+/// from `frontmatter` and `body` when the source cannot be patched.
+fn render_frontmatter_update(
+    source: &str,
+    path: &str,
+    frontmatter: &YamlMapping,
+    body: &str,
+) -> Result<String, AppError> {
+    let render = || render_note_from_parts(Some(frontmatter), body).map_err(AppError::operation);
+    let Ok((Some(original), _)) = parse_frontmatter_document(source, false) else {
+        return render();
+    };
+    let mut changes = Vec::new();
+    for (key, value) in frontmatter {
+        if original.get(key) != Some(value) {
+            let Some(key) = key.as_str() else {
+                return render();
+            };
+            changes.push((key.to_string(), Some(value.clone())));
+        }
+    }
+    for key in original.keys() {
+        if !frontmatter.contains_key(key) {
+            let Some(key) = key.as_str() else {
+                return render();
+            };
+            changes.push((key.to_string(), None));
+        }
+    }
+    if changes.is_empty() {
+        return Ok(source.to_string());
+    }
+    let Ok(patched) = vulcan_core::refactor::patch_frontmatter_source(source, path, &changes)
+    else {
+        return render();
+    };
+    // Only use the patch when it means exactly the intended frontmatter.
+    match parse_frontmatter_document(&patched, false) {
+        Ok((Some(result), _)) if &result == frontmatter => Ok(patched),
+        _ => render(),
+    }
+}
+
 /// Every file a task move writes: the task at its destination with the
 /// mutated frontmatter and its own relative links rewritten, the emptied
 /// source, and the notes whose links into the task change.
@@ -5567,7 +5612,7 @@ fn plan_tasknote_move(
     frontmatter: &YamlMapping,
 ) -> Result<Vec<OrdinaryWriteChange>, AppError> {
     let rendered =
-        render_note_from_parts(Some(frontmatter), &loaded.body).map_err(AppError::operation)?;
+        render_frontmatter_update(&loaded.source, &loaded.path, frontmatter, &loaded.body)?;
     if !paths.cache_db().is_file() {
         // Without an index there are no known links to rewrite.
         return Ok(vec![
@@ -5595,12 +5640,18 @@ fn plan_tasknote_move(
                 )));
             }
         } else if change.path == destination {
-            let moved = change.after.as_deref().unwrap_or(&loaded.source);
+            let moved = change
+                .after
+                .clone()
+                .unwrap_or_else(|| loaded.source.clone());
             let (_, body) =
-                parse_frontmatter_document(moved, false).map_err(AppError::operation)?;
-            change.after = Some(
-                render_note_from_parts(Some(frontmatter), &body).map_err(AppError::operation)?,
-            );
+                parse_frontmatter_document(&moved, false).map_err(AppError::operation)?;
+            change.after = Some(render_frontmatter_update(
+                &moved,
+                destination,
+                frontmatter,
+                &body,
+            )?);
         }
     }
     Ok(changes)
@@ -6034,7 +6085,7 @@ where
     let mut frontmatter = loaded.frontmatter.clone();
     let mut changes = mutate(&mut frontmatter, &loaded)?;
     let rendered =
-        render_note_from_parts(Some(&frontmatter), &loaded.body).map_err(AppError::operation)?;
+        render_frontmatter_update(&loaded.source, &loaded.path, &frontmatter, &loaded.body)?;
 
     let has_writes = loaded.created || !changes.is_empty();
     let changed_paths = if has_writes {
