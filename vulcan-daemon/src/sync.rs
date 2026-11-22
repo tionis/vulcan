@@ -21,8 +21,8 @@ use vulcan_core::{
     ProfilePermissionGuard, VaultPaths,
 };
 use vulcan_sync::{
-    GitBranchSync, GitBranchSyncAction, GitCliEngine, GitRemoteObservation, GitSyncObserver,
-    SyncError, SyncErrorCategory, SyncJobState, SyncState, SyncStatus, WorktreeSyncMode,
+    GitBranchSync, GitBranchSyncAction, GitCliEngine, GitSyncObserver, SyncError,
+    SyncErrorCategory, SyncJobState, SyncState, SyncStatus, WorktreeSyncMode,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -308,11 +308,10 @@ fn execute_claimed_job(
     if let Err(error) = check_registration_permission(&paths, &registration) {
         return complete_execution_error(supervisor, &id, error);
     }
-    let mut options = match options_for_registration(options, &registration) {
+    let options = match options_for_registration(options, &registration) {
         Ok(options) => options,
         Err(error) => return complete_execution_error(supervisor, &id, error),
     };
-    options.remote_observation = remote_observation_for_triggers(&claimed.job.triggers);
     let engine = vulcan_app::sync_transport::apply_transport_with_state(
         engine
             .clone()
@@ -382,16 +381,6 @@ fn daemon_sync_error(error: &vulcan_app::AppError, cancelled: bool) -> SyncError
             .sync_error()
             .cloned()
             .unwrap_or_else(|| SyncError::new(SyncErrorCategory::Unknown, error.to_string(), true))
-    }
-}
-
-fn remote_observation_for_triggers(
-    triggers: &[vulcan_sync::SyncJobTrigger],
-) -> GitRemoteObservation {
-    if triggers.contains(&vulcan_sync::SyncJobTrigger::RemoteNotification) {
-        GitRemoteObservation::Fetch
-    } else {
-        GitRemoteObservation::Query
     }
 }
 
@@ -932,12 +921,12 @@ mod tests {
                 wiki_id: wiki_id.map(str::to_string),
                 backend: "git".to_string(),
                 vault: Path::new("/vault").to_path_buf(),
-                trigger: SyncJobTrigger::RemoteNotification,
+                trigger: SyncJobTrigger::Watch,
                 state,
                 status: None,
                 error: None,
             },
-            triggers: vec![SyncJobTrigger::RemoteNotification],
+            triggers: vec![SyncJobTrigger::Watch],
             watch: None,
         };
         let line = format_sync_execution(&DaemonSyncExecution {
@@ -946,7 +935,7 @@ mod tests {
         });
         assert!(line.contains("alpha"), "line should name the wiki: {line}");
         assert!(
-            line.contains("RemoteNotification"),
+            line.contains("Watch"),
             "line should name the trigger: {line}"
         );
         assert!(
@@ -1156,25 +1145,6 @@ mod tests {
             WorktreeSyncMode::All
         )
         .is_none());
-    }
-
-    #[test]
-    fn only_remote_notification_jobs_select_fetch_first_observation() {
-        assert_eq!(
-            remote_observation_for_triggers(&[SyncJobTrigger::RemoteNotification]),
-            GitRemoteObservation::Fetch
-        );
-        assert_eq!(
-            remote_observation_for_triggers(&[SyncJobTrigger::Poll, SyncJobTrigger::Watch]),
-            GitRemoteObservation::Query
-        );
-        assert_eq!(
-            remote_observation_for_triggers(&[
-                SyncJobTrigger::Watch,
-                SyncJobTrigger::RemoteNotification,
-            ]),
-            GitRemoteObservation::Fetch
-        );
     }
 
     #[test]
@@ -1550,7 +1520,6 @@ mod tests {
         for trigger in [
             SyncJobTrigger::Poll,
             SyncJobTrigger::Watch,
-            SyncJobTrigger::RemoteNotification,
             SyncJobTrigger::Resume,
         ] {
             assert_eq!(

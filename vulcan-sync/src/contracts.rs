@@ -160,6 +160,8 @@ pub enum SyncJobTrigger {
     Manual,
     Poll,
     Watch,
+    /// Retired with the HTTPS wake-up advertisement; nothing enqueues it.
+    /// Kept so job ledgers retained by older daemons still deserialize.
     RemoteNotification,
     Resume,
     Recovery,
