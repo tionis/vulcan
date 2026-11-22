@@ -143,6 +143,70 @@ pub struct GitSyncOptions {
     pub scope: Option<GitWorktreeScope>,
     /// Whether cycles publish local commits to the branch upstream.
     pub branch_push: bool,
+    /// How cycles reconcile the checked-out branch with its upstream.
+    pub branch_pull: BranchPullPolicy,
+}
+
+/// How the branch lane reconciles the checked-out branch with its upstream.
+///
+/// `Git` follows the device's Git configuration exactly as `git pull`
+/// reads it. The other values fix the strategy for the repository, so a
+/// vault's shared configuration can require it on every device regardless
+/// of local or global Git settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum BranchPullPolicy {
+    /// Follow `branch.<name>.rebase`, `pull.rebase`, and `pull.ff`.
+    #[default]
+    Git,
+    /// Fast-forward only; a diverged branch pauses the lane.
+    FfOnly,
+    /// Fast-forward when possible, merge otherwise.
+    Merge,
+    /// Rebase local commits onto the upstream.
+    Rebase,
+}
+
+impl BranchPullPolicy {
+    #[must_use]
+    pub const fn is_git(&self) -> bool {
+        matches!(self, Self::Git)
+    }
+
+    /// The strategy this policy fixes, or `None` when Git configuration
+    /// decides.
+    #[must_use]
+    pub const fn fixed(self) -> Option<BranchPullConfig> {
+        match self {
+            Self::Git => None,
+            Self::FfOnly => Some(BranchPullConfig {
+                fast_forward: PullFastForward::Only,
+                rebase: PullRebase::Never,
+            }),
+            Self::Merge => Some(BranchPullConfig {
+                fast_forward: PullFastForward::Always,
+                rebase: PullRebase::Never,
+            }),
+            Self::Rebase => Some(BranchPullConfig {
+                fast_forward: PullFastForward::Always,
+                rebase: PullRebase::Yes,
+            }),
+        }
+    }
+}
+
+/// Resolves the branch pull strategy: a fixed vault policy wins, so a
+/// malformed device Git setting cannot fail a lane the vault already decided.
+fn resolve_branch_pull_config(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    branch: &GitRefName,
+    policy: BranchPullPolicy,
+) -> Result<BranchPullConfig, GitEngineError> {
+    match policy.fixed() {
+        Some(config) => Ok(config),
+        None => engine.branch_pull_config(repository, branch),
+    }
 }
 
 /// What a cycle synchronizes besides the checked-out branch.
@@ -189,6 +253,7 @@ impl Default for GitSyncOptions {
             worktree: WorktreeSyncMode::All,
             scope: None,
             branch_push: true,
+            branch_pull: BranchPullPolicy::Git,
         }
     }
 }
@@ -1209,7 +1274,13 @@ pub fn sync_git_once_with_control(
             ),
             worktree_matches_local,
         });
-        preview_branch_pull(engine, &mut report, upstream, upstream_tip)?;
+        preview_branch_pull(
+            engine,
+            &mut report,
+            upstream,
+            upstream_tip,
+            options.branch_pull,
+        )?;
         emit_progress(observer, GitSyncPhase::Completed, 0, &report, None)?;
         return Ok(report);
     }
@@ -1744,6 +1815,7 @@ fn pull_branch_lane(
     report: &mut GitSyncReport,
     remote: &mut AttemptRemote,
     capture: &GitOid,
+    policy: BranchPullPolicy,
 ) -> Result<(), GitSyncError> {
     // Branch operations must not start while another Git operation owns the
     // worktree; the live pause check then reports it with guidance. Pure
@@ -1820,7 +1892,7 @@ fn pull_branch_lane(
         }
     }
     let repository = &report.repository;
-    let config = match engine.branch_pull_config(repository, &branch) {
+    let config = match resolve_branch_pull_config(engine, repository, &branch, policy) {
         Ok(config) => config,
         // An unreadable pull strategy (e.g. a typo'd pull.ff value) fails
         // only the branch lane; the file lane proceeds.
@@ -1846,7 +1918,7 @@ fn pull_branch_lane(
         report.branch = Some(lane);
         return Ok(());
     }
-    pull_branch_with_strategy(engine, report, &fetched, config, &mut lane)?;
+    pull_branch_with_strategy(engine, report, &fetched, config, policy, &mut lane)?;
     report.branch = Some(lane);
     Ok(())
 }
@@ -2071,6 +2143,7 @@ fn pull_branch_with_strategy(
     report: &mut GitSyncReport,
     fetched: &GitOid,
     config: BranchPullConfig,
+    policy: BranchPullPolicy,
     lane: &mut GitBranchSync,
 ) -> Result<(), GitSyncError> {
     match config.rebase {
@@ -2106,8 +2179,15 @@ fn pull_branch_with_strategy(
         PullRebase::Never => {
             if config.fast_forward == PullFastForward::Only {
                 lane.action = GitBranchSyncAction::Paused;
-                lane.detail =
-                    Some("branch diverged and pull.ff=only refuses non-fast-forward".to_string());
+                let setting = if policy == BranchPullPolicy::FfOnly {
+                    "sync.branch_pull = \"ff-only\""
+                } else {
+                    "pull.ff=only"
+                };
+                lane.detail = Some(format!(
+                    "branch diverged and {setting} refuses non-fast-forward; rebase the local \
+                     commits onto the upstream and push to continue"
+                ));
             } else {
                 let no_ff = config.fast_forward == PullFastForward::Never;
                 match engine.merge_branch(&report.repository, fetched, no_ff)? {
@@ -2171,6 +2251,7 @@ fn preview_branch_pull(
     report: &mut GitSyncReport,
     upstream: Option<GitBranchUpstream>,
     observed_tip: Option<ObservedTip>,
+    policy: BranchPullPolicy,
 ) -> Result<(), GitSyncError> {
     let repository = &report.repository;
     let Some(branch) = report.head_ref_before.clone() else {
@@ -2195,7 +2276,7 @@ fn preview_branch_pull(
             )),
         ),
         _ => {
-            let config = match engine.branch_pull_config(repository, &branch) {
+            let config = match resolve_branch_pull_config(engine, repository, &branch, policy) {
                 Ok(config) => config,
                 Err(error) => {
                     report.branch = Some(GitBranchSync {
@@ -2638,7 +2719,7 @@ fn pull_branch_and_refresh_device_backup(
     base: Option<GitOid>,
 ) -> Result<Option<crate::GitCapture>, GitSyncError> {
     control.check()?;
-    pull_branch_lane(engine, report, remote, &capture.commit)?;
+    pull_branch_lane(engine, report, remote, &capture.commit, options.branch_pull)?;
     push_branch_lane(engine, options, report)?;
     let may_have_rewritten_worktree = report.branch.as_ref().is_some_and(|branch| {
         matches!(
@@ -7946,6 +8027,61 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
             "pause detail should name the blocking configuration"
         );
         assert_ne!(report.outcome, GitSyncOutcome::Paused);
+    }
+
+    #[test]
+    fn vault_branch_pull_policy_overrides_device_git_configuration() {
+        let (temporary, remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap sync");
+        // The device would rebase, and a malformed pull.ff must not matter
+        // once the vault fixes the strategy.
+        run_git(&writer, &["config", "pull.rebase", "true"]);
+        run_git(&writer, &["config", "pull.ff", "bogus"]);
+        fs::write(writer.join("Local.md"), "local\n").expect("local note");
+        commit_all(&writer, "local");
+        let local = git_stdout(&writer, &["rev-parse", "HEAD"]);
+        advance_remote_branch(&temporary, &remote, "advanced\n");
+        let ff_only = GitSyncOptions {
+            branch_pull: BranchPullPolicy::FfOnly,
+            ..GitSyncOptions::default()
+        };
+
+        let preview = sync_git_once(
+            &engine,
+            &writer,
+            &GitSyncOptions {
+                dry_run: true,
+                ..ff_only.clone()
+            },
+        )
+        .expect("preview with vault policy");
+        let (_, detail) = branch_action(&preview);
+        assert!(
+            detail.is_some_and(|detail| detail.contains("fast-forward only")),
+            "preview should report the vault strategy"
+        );
+
+        let report = sync_git_once(&engine, &writer, &ff_only).expect("sync with vault ff-only");
+        let (action, detail) = branch_action(&report);
+        assert_eq!(action, GitBranchSyncAction::Paused);
+        assert!(
+            detail.is_some_and(|detail| detail.contains("sync.branch_pull")),
+            "pause detail should name the vault setting"
+        );
+        assert_eq!(git_stdout(&writer, &["rev-parse", "HEAD"]), local);
+
+        let report = sync_git_once(
+            &engine,
+            &writer,
+            &GitSyncOptions {
+                branch_pull: BranchPullPolicy::Merge,
+                ..GitSyncOptions::default()
+            },
+        )
+        .expect("sync with vault merge");
+        let (action, _) = branch_action(&report);
+        assert_eq!(action, GitBranchSyncAction::Merged);
     }
 
     #[test]

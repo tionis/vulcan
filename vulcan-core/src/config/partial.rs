@@ -157,6 +157,7 @@ pub(super) struct PartialSyncConfig {
     pub(super) worktree: Option<WorktreeSyncMode>,
     pub(super) paths: Option<Vec<String>>,
     pub(super) branch_push: Option<bool>,
+    pub(super) branch_pull: Option<BranchPullPolicy>,
     pub(super) poll_min_seconds: Option<u64>,
     pub(super) poll_max_seconds: Option<u64>,
 }

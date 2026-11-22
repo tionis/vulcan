@@ -194,6 +194,7 @@ committed history instead:
 # .vulcan/config.toml (shared, committed)
 [sync]
 worktree = "none"     # default "all"
+branch_pull = "ff-only" # optional: never merge or rebase for you; default "git"
 # branch_push = false # optional: fetch and fast-forward, but push yourself
 ```
 
@@ -205,7 +206,17 @@ are. The daemon also notices new commits, since it watches the Git directory's `
 
 A device can opt out of worktree synchronization alone with `worktree = "none"` in
 `.vulcan/config.local.toml`; it cannot turn a shared `"none"` back into `"all"`. `branch_push` may be
-set in either file. Conflict resolution, checkpoints, retention, and semantic history apply only to
+set in either file.
+
+When sync cannot fast-forward because the branch diverged, it follows `sync.branch_pull`. The
+default, `git`, uses each device's own `pull.rebase` and `pull.ff`, so a global `pull.rebase = true`
+makes the daemon rebase your commits in the background. `ff-only`, `merge`, or `rebase` fixes the
+strategy for every device, whatever their Git configuration says. `ff-only` suits repositories where
+agents commit: sync never rewrites or creates a commit, and a divergence pauses the branch until
+whoever made the local commits runs `git pull --rebase` and pushes. A merge or rebase that sync
+starts and that conflicts is always aborted, leaving the branch as it was.
+
+Conflict resolution, checkpoints, retention, and semantic history apply only to
 the default mode and refuse here; earlier live state is left untouched for when the mode switches
 back.
 

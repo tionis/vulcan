@@ -2237,6 +2237,9 @@ pub fn configured_git_sync_options_for_profile(
         effective.scope = worktree_scope_from_config(&config)?;
     }
     effective.branch_push = options.branch_push && config.sync.branch_push;
+    if !config.sync.branch_pull.is_git() {
+        effective.branch_pull = config.sync.branch_pull;
+    }
     effective
         .merge_policy
         .validate()
@@ -3764,6 +3767,23 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             .expect("configured options");
         assert_eq!(configured.worktree, WorktreeSyncMode::None);
         assert!(!configured.branch_push);
+        assert_eq!(
+            configured.branch_pull,
+            vulcan_sync::BranchPullPolicy::Git,
+            "an unset branch_pull leaves the device's Git configuration in charge"
+        );
+
+        fs::write(
+            temporary.path().join(".vulcan/config.toml"),
+            "[sync]\nbranch_pull = \"ff-only\"\n",
+        )
+        .expect("shared branch pull policy");
+        let configured = configured_git_sync_options(&paths, &GitSyncOptions::default())
+            .expect("configured branch pull policy");
+        assert_eq!(
+            configured.branch_pull,
+            vulcan_sync::BranchPullPolicy::FfOnly
+        );
     }
 
     #[test]

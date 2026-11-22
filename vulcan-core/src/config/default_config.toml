@@ -95,6 +95,7 @@ name = "{{folder_name}}"   # note stem; examples: index, README, readme, {{folde
 # worktree = "all" # all: snapshot the worktree | none: synchronize commits only | paths: snapshot sync.paths only
 # paths = ["wiki", "Home.md"] # shared only: repository-relative files or directories for worktree = "paths"
 # branch_push = true # publish local commits to the branch upstream (local may override)
+# branch_pull = "git" # git: follow each device's pull.rebase/pull.ff | ff-only | merge | rebase
 # poll_min_seconds = 15 # daemon: remote check interval after activity (floor 5; local may override)
 # poll_max_seconds = 900 # daemon: idle remote checks back off up to this interval
 #

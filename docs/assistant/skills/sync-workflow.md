@@ -344,10 +344,13 @@ it with the repository. Never hand-edit a pointer to name a directory outside th
 ## Branch lane
 
 After publishing the pre-operation device safety head, every finite cycle also pulls the checked-out
-branch from its upstream before the canonical hidden live ref moves, following the repository's own pull configuration (`pull.ff`, `pull.rebase`,
-`branch.<name>.rebase`) with `--no-edit` and no implicit autostash. Watch the human output or
+branch from its upstream before the canonical hidden live ref moves, following the vault's `sync.branch_pull` (`ff-only`, `merge`, or `rebase`) or, when that is
+`git` (the default), the repository's own pull configuration (`pull.ff`, `pull.rebase`,
+`branch.<name>.rebase`) with `--no-edit` and no implicit autostash. In a repository where agents
+commit, prefer `sync.branch_pull = "ff-only"` in the shared config so sync never rewrites your
+commits; after a divergence pause, run `git pull --rebase` and push yourself. Watch the human output or
 the JSON `branch` report for `fast-forwarded`, `merged`, `rebased`, `paused` (diverged past
-`pull.ff=only`, interactive rebase, or a merge/rebase conflict, which sync aborts so the checkout is left as it was; integrate the upstream yourself with ordinary Git),
+fast-forward only, interactive rebase, or a merge/rebase conflict, which sync aborts so the checkout is left as it was; integrate the upstream yourself with ordinary Git),
 `adopted` (the upstream tip had already reached this worktree through live, so only the branch and
 normal index moved and no file was rewritten), `deferred` (dirty worktree or a staged entry that
 conflicts with the upstream, retried next cycle), or `skipped` (no upstream, deleted upstream,
@@ -379,8 +382,9 @@ by `worktree: "none"` in the JSON report or the `Worktree: not synchronized` lin
 
 - Commit your own work in such a repository; nothing else carries it to other devices. Sync then
   publishes the commits (unless `sync.branch_push = false`, in which case push deliberately).
-- A paused cycle with reason `branch_paused` means the branch diverged past `pull.ff=only` or an
-  interactive rebase was requested; reconcile with ordinary Git. A cycle without a checked-out branch
+- A paused cycle with reason `branch_paused` means the branch diverged under fast-forward-only
+  pulls (`sync.branch_pull = "ff-only"` or `pull.ff=only`), a conflicted pull was aborted, or an
+  interactive rebase was requested; run `git pull --rebase` and push. A cycle without a checked-out branch
   or upstream fails as unsupported configuration; push the branch once with `git push -u`.
 - Conflict resolution, checkpoints, retention, and semantic history refuse in this mode, and
   `sync doctor` reports `sync.worktree` instead of live ref checks.

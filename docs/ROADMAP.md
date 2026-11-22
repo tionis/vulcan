@@ -6781,6 +6781,7 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 - [x] Live-ref workflows report the mode instead of acting; the CLI and doctor explain it.
 - [x] The daemon treats branch-ref changes in the Git directory as sync triggers for Git-synced wikis (both modes).
 - [x] Update the `sync-workflow` skill and the sync guide.
+- [x] `sync.branch_pull = "git" | "ff-only" | "merge" | "rebase"` (default `git`, shared or local) fixes the branch lane's strategy for every device instead of each device's `pull.rebase`/`pull.ff`, so a repository where agents commit can require fast-forward-only pulls without per-clone Git configuration. A fixed policy skips reading the Git pull settings; the preview and pause detail name the setting. Tests for the engine override (including a malformed device `pull.ff`), config loading, and effective options.
 
 #### 12.23.2 Path-scoped worktree sync
 

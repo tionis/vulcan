@@ -5523,6 +5523,33 @@ fn mcp_remote_settings_travel_in_shared_config_and_merge_with_local() {
 }
 
 #[test]
+fn sync_branch_pull_defaults_to_git_and_reads_shared_and_local_values() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let paths = VaultPaths::new(temporary.path());
+    fs::create_dir(paths.vulcan_dir()).expect("Vulcan directory");
+    assert_eq!(
+        load_vault_config(&paths).config.sync.branch_pull,
+        BranchPullPolicy::Git
+    );
+
+    fs::write(paths.config_file(), "[sync]\nbranch_pull = \"ff-only\"\n").expect("shared config");
+    assert_eq!(
+        load_vault_config(&paths).config.sync.branch_pull,
+        BranchPullPolicy::FfOnly
+    );
+
+    fs::write(
+        paths.local_config_file(),
+        "[sync]\nbranch_pull = \"merge\"\n",
+    )
+    .expect("local config");
+    assert_eq!(
+        load_vault_config(&paths).config.sync.branch_pull,
+        BranchPullPolicy::Merge
+    );
+}
+
+#[test]
 fn sync_poll_bounds_default_override_locally_and_clamp() {
     let temporary = TempDir::new().expect("temporary directory");
     let paths = VaultPaths::new(temporary.path());
