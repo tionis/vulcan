@@ -25,7 +25,7 @@ Typical first run against a vault:
 ./target/release/vulcan --vault ~/wikis/mimir browse
 ```
 
-For whole-vault device synchronization, including a detached Git directory for Android shared storage, see [Git-backed device synchronization](guide/git-sync.md). Git-over-SSH authentication (the device key, enrollment on `vault clone`/`add`, `device replace`, `devices revoke`) is covered in [Device keys](guide/device-keys.md) and `vulcan help device-keys`. `vulcan sync run` is a finite direct workflow and does not require the daemon.
+For whole-vault device synchronization, including a detached Git directory for Android shared storage, see [Git-backed device synchronization](guide/git-sync.md). Git-over-SSH authentication (the device key, enrollment on `vault clone`/`add`, `device replace`, `devices revoke`) is covered in [Device keys](guide/device-keys.md) and `vulcan help device-keys`. `vulcan sync run` is a finite direct workflow and does not require the daemon. `vulcan sync refresh` asks the daemon to bring a wiki up to date before work starts and reports a paused branch; agent session hooks run it (see `vulcan agent print-config`).
 
 ### Declarative device setup
 
@@ -1373,6 +1373,7 @@ The embedded `vulcan assistant` host was removed. Use MCP or an external runtime
 vulcan agent install                         # write AGENTS.md, default skills, and prompts
 vulcan agent install --reset vault-query     # replace and re-enroll one bundled skill
 vulcan agent print-config --runtime generic  # wrapper contract for external runtimes
+vulcan agent print-config --runtime claude-code  # includes a session-start hook running `sync refresh`
 vulcan skill list                            # discover installed skills
 vulcan skill run conversation-export export  # archive a chat transcript as Markdown
 vulcan mcp --transport http                  # expose the curated MCP tool surface

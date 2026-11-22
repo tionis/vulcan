@@ -22084,6 +22084,51 @@ fn agent_print_config_reports_runtime_contract() {
     assert!(json["snippets"]["write_enabled"]
         .as_str()
         .is_some_and(|value| value.contains("describe --format openai-tools")));
+    assert!(json["snippets"]["session_start_hook"]
+        .as_str()
+        .is_some_and(|value| value.contains("sync refresh")));
+
+    // Each harness gets configuration it can load, running the refresh.
+    let hook = |runtime: &str| {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                vault_root.to_str().expect("utf-8"),
+                "--output",
+                "json",
+                "agent",
+                "print-config",
+                "--runtime",
+                runtime,
+            ])
+            .assert()
+            .success();
+        let snippet = parse_stdout_json(&assert)["snippets"]["session_start_hook"]
+            .as_str()
+            .expect("session start hook")
+            .to_string();
+        snippet
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let claude: Value = serde_json::from_str(&hook("claude-code")).expect("Claude Code JSON");
+    assert!(claude["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        .as_str()
+        .is_some_and(|command| command.contains("sync refresh")));
+    let gemini: Value = serde_json::from_str(&hook("gemini-cli")).expect("Gemini CLI JSON");
+    assert!(
+        gemini["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+            .as_str()
+            .is_some_and(|command| command.ends_with("1>&2")),
+        "Gemini CLI reads only JSON from stdout"
+    );
+    let codex: toml::Value = toml::from_str(&hook("codex")).expect("Codex TOML");
+    assert!(codex["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        .as_str()
+        .is_some_and(|command| command.contains("sync refresh")));
 }
 
 #[test]

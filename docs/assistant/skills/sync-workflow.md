@@ -505,6 +505,7 @@ commits and is never written from live.
   ran in the last 30 seconds, waits up to `--wait-seconds` (default 15), and prints each wiki's
   state. A `sync paused` line with diverged local commits means: run `git pull --rebase && git push`
   in the wiki. Without a daemon it syncs directly; it never exits non-zero for a sync outcome.
+  `vulcan agent print-config --runtime <harness>` prints a session-start hook that runs it.
 - Repositories that still carry a `refs/vulcan/notifications` ref from the retired wake-up
   advertisement can drop it with ordinary Git (`git push origin :refs/vulcan/notifications`);
   Vulcan no longer reads it.

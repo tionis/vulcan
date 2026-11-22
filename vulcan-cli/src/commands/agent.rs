@@ -963,6 +963,10 @@ struct AgentPrintConfigCommands {
 struct AgentPrintConfigSnippets {
     write_enabled: String,
     readonly: String,
+    /// Harness configuration that runs `vulcan sync refresh` when a session
+    /// starts, so the agent works on a current checkout and sees a paused
+    /// branch.
+    session_start_hook: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1092,6 +1096,7 @@ fn build_agent_print_config_report(
             &agent_print_config_commands_for_profile(paths, "readonly"),
             "readonly",
         ),
+        session_start_hook: session_start_hook_snippet(runtime, paths),
     };
 
     Ok(AgentPrintConfigReport {
@@ -1164,6 +1169,9 @@ fn print_agent_print_config_report(
             println!();
             println!("Readonly snippet:");
             println!("{}", report.snippets.readonly);
+            println!();
+            println!("Session start hook:");
+            println!("{}", report.snippets.session_start_hook);
             Ok(())
         }
     }
@@ -1796,6 +1804,38 @@ fn runtime_snippet(
             commands.describe_openai_tools,
             commands.help_json,
             commands.skill_get,
+        ),
+    }
+}
+
+/// The harness configuration that refreshes the vault when a session
+/// starts. Claude Code and Codex add a hook's stdout to the model's context;
+/// Gemini CLI requires JSON on stdout, so its hook reports on stderr.
+fn session_start_hook_snippet(runtime: AgentRuntimeArg, paths: &VaultPaths) -> String {
+    let refresh = format!(
+        "vulcan --vault {} sync refresh --wait-seconds 10",
+        shell_quote(paths.vault_root())
+    );
+    let json_command = serde_json::to_string(&refresh).unwrap_or_default();
+    match runtime {
+        AgentRuntimeArg::ClaudeCode => format!(
+            "# .claude/settings.json in the vault, or ~/.claude/settings.json with `vulcan sync refresh --all`\n\
+             {{\n  \"hooks\": {{\n    \"SessionStart\": [\n      {{\n        \"matcher\": \"startup|resume\",\n        \"hooks\": [{{ \"type\": \"command\", \"command\": {json_command} }}]\n      }}\n    ]\n  }}\n}}"
+        ),
+        AgentRuntimeArg::Codex => format!(
+            "# .codex/config.toml in the vault, or ~/.codex/config.toml with `vulcan sync refresh --all`\n\
+             [[hooks.SessionStart]]\nmatcher = \"startup|resume\"\n\n[[hooks.SessionStart.hooks]]\ntype = \"command\"\ncommand = {json_command}"
+        ),
+        AgentRuntimeArg::GeminiCli => {
+            let command = serde_json::to_string(&format!("{refresh} 1>&2")).unwrap_or_default();
+            format!(
+                "# .gemini/settings.json in the vault, or ~/.gemini/settings.json with `vulcan sync refresh --all`\n\
+                 # Gemini CLI reads only JSON from a hook's stdout, so the report goes to stderr.\n\
+                 {{\n  \"hooks\": {{\n    \"SessionStart\": [\n      {{\n        \"matcher\": \"startup\",\n        \"hooks\": [{{ \"name\": \"vulcan-sync-refresh\", \"type\": \"command\", \"command\": {command} }}]\n      }}\n    ]\n  }}\n}}"
+            )
+        }
+        AgentRuntimeArg::Generic | AgentRuntimeArg::Pi => format!(
+            "# Run at the start of every session (MCP sessions already do this):\n{refresh}"
         ),
     }
 }
