@@ -2038,6 +2038,31 @@ fn try_branch_fast_forward(
     }
 }
 
+/// Backs out a merge or rebase the branch lane started and that conflicted.
+///
+/// An unattended checkout must not be left mid-operation: anything that
+/// commits there next (an agent, an editor hook) would commit conflict
+/// markers or finish the rebase by accident. Aborting restores the exact
+/// pre-pull branch and worktree, which the device backup already holds.
+/// Only if the abort itself fails does the conflict stay for the live pause
+/// check to report.
+fn abort_conflicted_branch_operation(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    operation: &str,
+) -> String {
+    match engine.abort_branch_operation(repository) {
+        Ok(_) => format!(
+            "branch diverged and an automatic {operation} conflicted; the {operation} was \
+             aborted and the branch left as it was; integrate the upstream with ordinary Git"
+        ),
+        Err(error) => format!(
+            "branch {operation} conflicted and could not be aborted ({error}); resolve with \
+             ordinary Git"
+        ),
+    }
+}
+
 /// Applies the configured rebase-or-merge strategy after fast-forward was
 /// impossible or disabled. Conflicts pause the lane; the live pause check
 /// then pauses the attempt on the resulting operation state.
@@ -2064,8 +2089,11 @@ fn pull_branch_with_strategy(
                 }
                 RebaseOutcome::Conflicted => {
                     lane.action = GitBranchSyncAction::Paused;
-                    lane.detail =
-                        Some("branch rebase conflicted; resolve with ordinary Git".to_string());
+                    lane.detail = Some(abort_conflicted_branch_operation(
+                        engine,
+                        &report.repository,
+                        "rebase",
+                    ));
                 }
                 RebaseOutcome::BlockedDirty => {
                     lane.action = GitBranchSyncAction::Deferred;
@@ -2089,8 +2117,11 @@ fn pull_branch_with_strategy(
                     }
                     MergeBranchOutcome::Conflicted => {
                         lane.action = GitBranchSyncAction::Paused;
-                        lane.detail =
-                            Some("branch merge conflicted; resolve with ordinary Git".to_string());
+                        lane.detail = Some(abort_conflicted_branch_operation(
+                            engine,
+                            &report.repository,
+                            "merge",
+                        ));
                     }
                     MergeBranchOutcome::BlockedDirty => {
                         lane.action = GitBranchSyncAction::Deferred;
@@ -7918,7 +7949,7 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
     }
 
     #[test]
-    fn branch_pull_conflict_pauses_the_attempt() {
+    fn branch_pull_conflict_is_aborted_and_leaves_the_branch_as_it_was() {
         let (temporary, remote, writer) = setup_tracked_branch();
         let engine = GitCliEngine::default();
         sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap sync");
@@ -7931,19 +7962,30 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
             .expect("sync with branch conflict reports normally");
 
-        let (action, _) = branch_action(&report);
+        let (action, detail) = branch_action(&report);
         assert_eq!(action, GitBranchSyncAction::Paused);
-        assert_eq!(report.outcome, GitSyncOutcome::Paused);
+        assert!(
+            detail.is_some_and(|detail| detail.contains("aborted")),
+            "pause detail should say the conflicted merge was backed out"
+        );
         assert!(
             !report.branch.as_ref().expect("branch lane report").pushed,
             "a conflicted branch must not publish"
         );
-        assert_eq!(
-            report.pause.as_ref().map(|pause| pause.reason),
-            Some(GitSyncPauseReason::OperationInProgress)
-        );
         let repository = engine.discover_repository(&writer).expect("repository");
-        assert!(repository.git_dir.join("MERGE_HEAD").exists());
+        assert!(
+            !repository.git_dir.join("MERGE_HEAD").exists(),
+            "an unattended checkout must not be left mid-merge"
+        );
+        assert_eq!(
+            GitOid::parse(git_stdout(&writer, &["rev-parse", "HEAD"])).expect("head"),
+            local_before_pull,
+            "aborting restores the pre-pull branch"
+        );
+        assert_eq!(
+            fs::read_to_string(writer.join("Home.md")).expect("local note"),
+            "local conflict\n"
+        );
         let pre_pull_tree = engine
             .tree_oid(&repository, &local_before_pull)
             .expect("pre-pull tree");
@@ -7959,7 +8001,7 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
             reachable_trees
                 .lines()
                 .any(|tree| tree == pre_pull_tree.as_str()),
-            "the exact pre-pull tree bytes must remain reachable after Git enters conflict"
+            "the exact pre-pull tree bytes must remain reachable after a conflicted pull"
         );
         assert_eq!(
             engine
@@ -8588,6 +8630,44 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         assert!(pause
             .detail
             .is_some_and(|detail| detail.contains("pull.ff=only")));
+    }
+
+    #[test]
+    fn committed_history_only_aborts_a_conflicted_rebase_and_pauses() {
+        let (temporary, remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        run_git(&writer, &["config", "pull.rebase", "true"]);
+        fs::write(writer.join("Home.md"), "local conflict\n").expect("conflict note");
+        commit_all(&writer, "local conflict");
+        let local_before_pull =
+            GitOid::parse(git_stdout(&writer, &["rev-parse", "HEAD"])).expect("local revision");
+        advance_remote_branch(&temporary, &remote, "remote conflict\n");
+
+        let report = sync_git_once(&engine, &writer, &commits_only()).expect("sync");
+
+        assert_eq!(report.outcome, GitSyncOutcome::Paused);
+        let pause = report.pause.expect("pause");
+        assert_eq!(pause.reason, GitSyncPauseReason::BranchPaused);
+        assert!(pause
+            .detail
+            .is_some_and(|detail| detail.contains("rebase") && detail.contains("aborted")));
+        let repository = engine.discover_repository(&writer).expect("repository");
+        assert!(
+            !repository.git_dir.join("rebase-merge").exists()
+                && !repository.git_dir.join("rebase-apply").exists(),
+            "an unattended checkout must not be left mid-rebase"
+        );
+        assert_eq!(
+            GitOid::parse(git_stdout(&writer, &["rev-parse", "HEAD"])).expect("head"),
+            local_before_pull
+        );
+        assert_eq!(
+            fs::read_to_string(writer.join("Home.md")).expect("local note"),
+            "local conflict\n"
+        );
+        assert!(git_stdout(&writer, &["status", "--porcelain"])
+            .trim()
+            .is_empty());
     }
 
     #[test]

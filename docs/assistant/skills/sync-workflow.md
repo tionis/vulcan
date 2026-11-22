@@ -349,7 +349,7 @@ After publishing the pre-operation device safety head, every finite cycle also p
 branch from its upstream before the canonical hidden live ref moves, following the repository's own pull configuration (`pull.ff`, `pull.rebase`,
 `branch.<name>.rebase`) with `--no-edit` and no implicit autostash. Watch the human output or
 the JSON `branch` report for `fast-forwarded`, `merged`, `rebased`, `paused` (diverged past
-`pull.ff=only`, interactive rebase, or a merge/rebase conflict left for ordinary Git),
+`pull.ff=only`, interactive rebase, or a merge/rebase conflict, which sync aborts so the checkout is left as it was; integrate the upstream yourself with ordinary Git),
 `adopted` (the upstream tip had already reached this worktree through live, so only the branch and
 normal index moved and no file was rewritten), `deferred` (dirty worktree or a staged entry that
 conflicts with the upstream, retried next cycle), or `skipped` (no upstream, deleted upstream,

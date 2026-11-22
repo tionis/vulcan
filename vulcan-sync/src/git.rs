@@ -804,6 +804,12 @@ pub trait GitEngine: Send + Sync {
         merges: bool,
     ) -> Result<RebaseOutcome, GitEngineError>;
 
+    /// Aborts a conflicted merge or rebase that `merge_branch` or
+    /// `rebase_branch` left in place, restoring the branch, index, and
+    /// worktree to their state before the operation started. Returns
+    /// whether an operation was aborted.
+    fn abort_branch_operation(&self, repository: &GitRepository) -> Result<bool, GitEngineError>;
+
     /// Fast-forwards the checked-out branch from `expected` to `target`
     /// without touching worktree bytes. The normal index takes the two-way
     /// index-only merge of a fast-forward checkout: entries equal to
@@ -5470,6 +5476,27 @@ impl GitEngine for GitCliEngine {
         Err(command_failed("rebase the branch", &output))
     }
 
+    fn abort_branch_operation(&self, repository: &GitRepository) -> Result<bool, GitEngineError> {
+        repository.require_work_tree()?;
+        let operation = if repository.git_dir.join("rebase-merge").exists()
+            || repository.git_dir.join("rebase-apply").exists()
+        {
+            "rebase"
+        } else if repository.git_dir.join("MERGE_HEAD").exists() {
+            "merge"
+        } else {
+            return Ok(false);
+        };
+        let mut command = self.repository_command(repository);
+        command.arg(operation).arg("--abort");
+        let output = self.execute(command)?;
+        if output.status.success() {
+            Ok(true)
+        } else {
+            Err(command_failed("abort the branch operation", &output))
+        }
+    }
+
     fn advance_checked_out_branch(
         &self,
         repository: &GitRepository,
@@ -8577,6 +8604,18 @@ mod tests {
             MergeBranchOutcome::Conflicted
         );
         assert!(repository.git_dir.join("MERGE_HEAD").exists());
+
+        assert!(engine
+            .abort_branch_operation(&repository)
+            .expect("abort merge"));
+        assert!(!repository.git_dir.join("MERGE_HEAD").exists());
+        assert_eq!(
+            fs::read_to_string(writer.join("Home.md")).expect("restored note"),
+            "local conflict\n"
+        );
+        assert!(!engine
+            .abort_branch_operation(&repository)
+            .expect("nothing left to abort"));
     }
 
     #[test]
