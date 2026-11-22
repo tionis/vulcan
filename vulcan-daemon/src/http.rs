@@ -133,6 +133,7 @@ pub fn companion_router(state: CompanionHttpState) -> Router {
         .route("/sync", post(enqueue_sync_selection))
         .route("/{id}/sync/status", get(sync_status))
         .route("/{id}/sync", post(enqueue_sync))
+        .route("/{id}/sync/activity", post(report_activity))
         .route("/{id}/sync/pause", post(pause_sync))
         .route("/{id}/sync/resume", post(resume_sync))
         .route("/{id}/sync/conflicts", get(list_conflicts))
@@ -720,6 +721,15 @@ async fn enqueue_sync_selection(
     ))
 }
 
+async fn report_activity(
+    State(state): State<CompanionHttpState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let id = parse_wiki_id(id)?;
+    let result = blocking(move || state.service().report_activity(&id)).await?;
+    Ok(Json(serde_json::to_value(result).map_err(json_error)?))
+}
+
 async fn pause_sync(
     State(state): State<CompanionHttpState>,
     Path(id): Path<String>,
@@ -1222,6 +1232,7 @@ mod tests {
         for (method, uri) in [
             (Method::GET, "/notes/sync/status"),
             (Method::POST, "/notes/sync/pause"),
+            (Method::POST, "/notes/sync/activity"),
             (Method::GET, "/other/sync/status"),
             (Method::GET, "/other/search"),
             (Method::POST, "/shutdown"),
@@ -1926,6 +1937,43 @@ mod tests {
             .insert(IDEMPOTENCY_KEY_HEADER, HeaderValue::from_static("sync-1"));
         let replay = router.oneshot(replay).await.expect("response");
         assert_eq!(body_json(replay).await["replay"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn activity_queues_one_sync_and_joins_it_until_it_finishes() {
+        let (_temporary, state) = fixture();
+        let router = companion_router(state.clone());
+        let first = router
+            .clone()
+            .oneshot(request(&state, Method::POST, "/notes/sync/activity"))
+            .await
+            .expect("response");
+        assert_eq!(first.status(), StatusCode::OK);
+        let first = body_json(first).await;
+        assert_eq!(first["wiki_id"], json!("notes"));
+        assert_eq!(first["outcome"], json!("queued"));
+        assert_eq!(first["job"]["trigger"], json!("activity"));
+
+        let second = body_json(
+            router
+                .clone()
+                .oneshot(request(&state, Method::POST, "/notes/sync/activity"))
+                .await
+                .expect("response"),
+        )
+        .await;
+        assert_eq!(second["outcome"], json!("pending"));
+        assert_eq!(second["job"]["id"], first["job"]["id"]);
+
+        let job = router
+            .oneshot(request(
+                &state,
+                Method::GET,
+                &format!("/jobs/{}", first["job"]["id"].as_str().unwrap()),
+            ))
+            .await
+            .expect("response");
+        assert_eq!(body_json(job).await["state"], json!("queued"));
     }
 
     #[tokio::test]

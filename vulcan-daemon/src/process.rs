@@ -1579,6 +1579,37 @@ pub fn request_queued_sync(
     }
 }
 
+/// Tell the running daemon that someone is about to use `wiki_id`: it
+/// queues an automatic sync unless one is queued, running, or recent, and
+/// returns at once. Safe to repeat; nothing runs in this process.
+pub fn request_wiki_activity(
+    context: &DaemonProcessContext,
+    wiki_id: &str,
+) -> Result<crate::companion::WikiActivityReport, QueuedSyncError> {
+    daemon_json(context, "POST", &format!("/{wiki_id}/sync/activity"))
+}
+
+/// Read one retained sync job from the running daemon.
+pub fn request_sync_job(
+    context: &DaemonProcessContext,
+    job_id: &str,
+) -> Result<crate::supervisor::SupervisedSyncJob, QueuedSyncError> {
+    daemon_json(context, "GET", &format!("/jobs/{job_id}"))
+}
+
+fn daemon_json<T: serde::de::DeserializeOwned>(
+    context: &DaemonProcessContext,
+    method: &str,
+    path: &str,
+) -> Result<T, QueuedSyncError> {
+    let transport = |error: DaemonProcessError| QueuedSyncError::Transport(error.to_string());
+    let record = read_runtime_record(&context.runtime_path())
+        .map_err(transport)?
+        .ok_or(QueuedSyncError::NotRunning)?;
+    let body = authenticated_request(context, &record, method, path).map_err(transport)?;
+    serde_json::from_slice(&body).map_err(|error| QueuedSyncError::Transport(error.to_string()))
+}
+
 /// POST `body` as JSON with the extra `headers` and return the status and
 /// body.
 fn send_http_json(

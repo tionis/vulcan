@@ -9,8 +9,8 @@ use crate::registry::{
 };
 use crate::status::{wiki_sync_status, DaemonSyncStatusError, DaemonWikiSyncStatus};
 use crate::supervisor::{
-    AggregateSyncJob, IdempotentEnqueueAggregateSyncReport, IdempotentEnqueueSyncReport,
-    SupervisedSyncJob, SupervisorError, SyncSupervisor,
+    ActivityOutcome, AggregateSyncJob, IdempotentEnqueueAggregateSyncReport,
+    IdempotentEnqueueSyncReport, SupervisedSyncJob, SupervisorError, SyncSupervisor,
 };
 use crate::sync::{enqueue_registered_wikis, RegisteredSyncError, RegisteredSyncSelection};
 use serde::{Deserialize, Serialize};
@@ -55,6 +55,8 @@ pub enum CompanionOperation {
     SyncStatus,
     SyncPause,
     SyncResume,
+    /// `POST /{id}/sync/activity`: someone is about to use the wiki.
+    SyncActivity,
     ConflictList,
     ConflictDetail,
     ConflictProposalCreate,
@@ -144,6 +146,32 @@ pub struct CompanionConflictCapabilities {
 #[serde(rename_all = "snake_case")]
 pub enum CompanionProposalClaimScope {
     DaemonProcess,
+}
+
+/// How recently a sync must have started for an activity signal to skip a
+/// new one: long enough to absorb a burst of sessions and editors, short
+/// enough that a session starts from a current checkout.
+pub const ACTIVITY_FRESHNESS: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// What an activity signal did for one wiki.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WikiActivityOutcome {
+    Queued,
+    Pending,
+    Fresh,
+    /// Automatic synchronization is paused for the wiki.
+    Paused,
+    /// The wiki is not synchronized with Git.
+    NotSynchronized,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WikiActivityReport {
+    pub wiki_id: String,
+    pub outcome: WikiActivityOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<SupervisedSyncJob>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -429,6 +457,7 @@ impl<'a> CompanionService<'a> {
                     CompanionOperation::Capabilities,
                     CompanionOperation::WikiList,
                     CompanionOperation::SyncEnqueue,
+                    CompanionOperation::SyncActivity,
                     CompanionOperation::SyncSelectionEnqueue,
                     CompanionOperation::SyncStatus,
                     CompanionOperation::SyncPause,
@@ -502,6 +531,39 @@ impl<'a> CompanionService<'a> {
                 SyncJobTrigger::Manual,
             )
             .map_err(map_supervisor_error)
+    }
+
+    /// Records that someone is about to use the wiki: queues an automatic
+    /// sync unless one is queued, running, or started within
+    /// [`ACTIVITY_FRESHNESS`]. Either way the daemon's adaptive polling for
+    /// the wiki returns to its shortest interval once the job finishes.
+    pub fn report_activity(&self, wiki_id: &WikiId) -> Result<WikiActivityReport, CompanionError> {
+        let registration = self.registration(wiki_id)?;
+        let report = |outcome, job| WikiActivityReport {
+            wiki_id: wiki_id.as_str().to_string(),
+            outcome,
+            job,
+        };
+        if registration
+            .sync_backend
+            .as_deref()
+            .is_some_and(|backend| backend != "git")
+        {
+            return Ok(report(WikiActivityOutcome::NotSynchronized, None));
+        }
+        if registration.sync_paused {
+            return Ok(report(WikiActivityOutcome::Paused, None));
+        }
+        let enqueued = self
+            .supervisor
+            .enqueue_activity(wiki_id.as_str(), registration.path, ACTIVITY_FRESHNESS)
+            .map_err(map_supervisor_error)?;
+        let outcome = match enqueued.outcome {
+            ActivityOutcome::Queued => WikiActivityOutcome::Queued,
+            ActivityOutcome::Pending => WikiActivityOutcome::Pending,
+            ActivityOutcome::Fresh => WikiActivityOutcome::Fresh,
+        };
+        Ok(report(outcome, Some(enqueued.job)))
     }
 
     pub fn enqueue_sync_selection(

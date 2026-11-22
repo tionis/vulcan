@@ -9933,6 +9933,92 @@ fn queued_sync_run_asks_the_daemon_for_one_job_per_wiki() {
     successful_process_json(&daemon(&["stop"]));
 }
 
+/// `sync refresh` signals activity to the running daemon and reports each
+/// wiki; without a daemon it syncs directly. Wikis that are not synchronized
+/// are reported only when named.
+#[test]
+fn sync_refresh_signals_the_daemon_and_falls_back_to_a_direct_sync() {
+    let temporary = TempDir::new().expect("temp dir should be created");
+    let config_home = temporary.path().join("config");
+    let state_home = temporary.path().join("state");
+    let vulcan_config = config_home.join("vulcan");
+    fs::create_dir_all(&vulcan_config).expect("config directory");
+    fs::write(
+        vulcan_config.join("daemon.toml"),
+        format!(
+            "device_id = \"{}\"\nbind = \"127.0.0.1:0\"\n",
+            ulid::Ulid::new()
+        ),
+    )
+    .expect("daemon config");
+    let vulcan = |vault: &Path, arguments: &[&str]| {
+        ProcessCommand::new(assert_cmd::cargo::cargo_bin("vulcan"))
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", &state_home)
+            .env_remove("VULCAN_ROUTE")
+            .args([
+                "--output",
+                "json",
+                "--vault",
+                vault.to_str().expect("utf-8"),
+            ])
+            .args(arguments)
+            .output()
+            .expect("vulcan should run")
+    };
+    let root = temporary.path().join("alpha");
+    copy_fixture_vault("basic", &root);
+    let added = vulcan(
+        &root,
+        &[
+            "vault",
+            "add",
+            "--no-sync",
+            "alpha",
+            root.to_str().expect("utf-8"),
+        ],
+    );
+    assert!(added.status.success(), "{added:?}");
+
+    let direct = vulcan(&root, &["sync", "refresh"]);
+    assert!(direct.status.success(), "{direct:?}");
+    let direct: Value = serde_json::from_slice(&direct.stdout).expect("direct report");
+    assert!(
+        direct.get("daemon").is_none(),
+        "a direct sync reports itself: {direct}"
+    );
+
+    let daemon = |arguments: &[&str]| run_daemon_test_command(&config_home, &state_home, arguments);
+    let _daemon = DetachedDaemonGuard::new(&config_home, &state_home);
+    successful_process_json(&daemon(&["start", "--detach"]));
+
+    let named = successful_process_json(&vulcan(
+        &root,
+        &["sync", "refresh", "alpha", "--wait-seconds", "0"],
+    ));
+    assert_eq!(named["daemon"], true, "{named}");
+    assert_eq!(named["wikis"][0]["wiki_id"], "alpha", "{named}");
+    assert_eq!(named["wikis"][0]["outcome"], "not_synchronized", "{named}");
+
+    let all = successful_process_json(&vulcan(&root, &["sync", "refresh", "--all"]));
+    assert_eq!(
+        all["wikis"],
+        serde_json::json!([]),
+        "unsynchronized wikis stay quiet: {all}"
+    );
+
+    let unknown = vulcan(&root, &["sync", "refresh", "missing"]);
+    assert!(
+        unknown.status.success(),
+        "a refresh never fails a hook: {unknown:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&unknown.stderr).contains("could not refresh missing"),
+        "{unknown:?}"
+    );
+    successful_process_json(&daemon(&["stop"]));
+}
+
 /// `--route daemon` prints exactly what a direct `query` (DSL, JSON, or DQL),
 /// `search`, `ls`, `tasks query`, or a whole-graph report prints, sees changes made just before it, and fails as a direct read would; `auto`
 /// falls back once the daemon is gone, and `daemon` then reports

@@ -499,6 +499,11 @@ commits and is never written from live.
   notification relay, or advertisement ref to set up. After activity it checks again after
   `sync.poll_min_seconds` (default 15) and backs off to `sync.poll_max_seconds` (default 900),
   as described under the daemon watcher notes below.
+- Before working in a Git-synced wiki, run `vulcan sync refresh` (inside the vault, or name the
+  wiki; `--all` for every registered wiki). It asks the daemon for an immediate sync unless one
+  ran in the last 30 seconds, waits up to `--wait-seconds` (default 15), and prints each wiki's
+  state. A `sync paused` line with diverged local commits means: run `git pull --rebase && git push`
+  in the wiki. Without a daemon it syncs directly; it never exits non-zero for a sync outcome.
 - Repositories that still carry a `refs/vulcan/notifications` ref from the retired wake-up
   advertisement can drop it with ordinary Git (`git push origin :refs/vulcan/notifications`);
   Vulcan no longer reads it.

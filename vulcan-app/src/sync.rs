@@ -26,7 +26,7 @@ pub use vulcan_sync::{
     GitSyncAction, GitSyncConflict, GitSyncDeviceId, GitSyncObserver, GitSyncObserverError,
     GitSyncOptions, GitSyncOutcome, GitSyncPause, GitSyncPauseReason, GitSyncPhase,
     GitSyncPreviewFileState, GitSyncProgress, GitSyncRefs, GitSyncReport,
-    GitUnattendedRepositoryState, SyncCancellationToken, WorktreeSyncMode,
+    GitUnattendedRepositoryState, SyncCancellationToken, SyncJobState, WorktreeSyncMode,
 };
 
 /// Controls whether a finite file synchronization cycle composes Markdown

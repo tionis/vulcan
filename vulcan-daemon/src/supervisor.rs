@@ -166,6 +166,25 @@ pub struct EnqueueSyncReport {
     pub coalesced: bool,
 }
 
+/// What an activity signal did for one wiki.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityOutcome {
+    /// A new automatic sync was queued.
+    Queued,
+    /// A sync was already queued or running; the signal joined it.
+    Pending,
+    /// A sync started within the freshness window; nothing was queued.
+    Fresh,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ActivityEnqueueReport {
+    pub outcome: ActivityOutcome,
+    /// The queued, pending, or most recent job.
+    pub job: SupervisedSyncJob,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct IdempotentEnqueueSyncReport {
     #[serde(flatten)]
@@ -375,6 +394,78 @@ impl SyncSupervisor {
         trigger: SyncJobTrigger,
     ) -> Result<EnqueueSyncReport, SupervisorError> {
         self.enqueue_inner(wiki_id.into(), vault.into(), trigger, None)
+    }
+
+    /// Queues an activity sync unless one is queued or running, or one
+    /// started less than `freshness` ago. Ledger ids are ULIDs, so a job's
+    /// id carries when it was queued; a terminal job queued within the
+    /// window checked the remote more recently than that.
+    pub fn enqueue_activity(
+        &self,
+        wiki_id: impl Into<String>,
+        vault: impl Into<PathBuf>,
+        freshness: std::time::Duration,
+    ) -> Result<ActivityEnqueueReport, SupervisorError> {
+        let wiki_id = wiki_id.into();
+        let _writer = self.writer.lock().map_err(|_| SupervisorError::Poisoned)?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| SupervisorError::Poisoned)?
+            .clone();
+        let mut queued = false;
+        let mut running: Option<SupervisedSyncJob> = None;
+        let mut latest_terminal: Option<&SupervisedSyncJob> = None;
+        for job in inner
+            .state
+            .jobs
+            .iter()
+            .filter(|job| job.job.wiki_id.as_deref() == Some(wiki_id.as_str()))
+        {
+            match job.job.state {
+                SyncJobState::Queued => queued = true,
+                SyncJobState::Running => running = Some(job.clone()),
+                SyncJobState::Cancelled => {}
+                _ => {
+                    if latest_terminal.is_none_or(|latest| latest.job.id < job.job.id) {
+                        latest_terminal = Some(job);
+                    }
+                }
+            }
+        }
+        if !queued {
+            if let Some(job) = running {
+                return Ok(ActivityEnqueueReport {
+                    outcome: ActivityOutcome::Pending,
+                    job,
+                });
+            }
+            if let Some(latest) = latest_terminal {
+                if ledger_id_age(&latest.job.id).is_some_and(|age| age < freshness) {
+                    return Ok(ActivityEnqueueReport {
+                        outcome: ActivityOutcome::Fresh,
+                        job: latest.clone(),
+                    });
+                }
+            }
+        }
+        let report = enqueue_locked(
+            &mut inner,
+            wiki_id,
+            vault.into(),
+            SyncJobTrigger::Activity,
+            None,
+        );
+        trim_supervisor_state(&mut inner.state);
+        self.persist(&inner)?;
+        Ok(ActivityEnqueueReport {
+            outcome: if report.coalesced {
+                ActivityOutcome::Pending
+            } else {
+                ActivityOutcome::Queued
+            },
+            job: report.job,
+        })
     }
 
     pub fn enqueue_watch(
@@ -1197,6 +1288,14 @@ fn new_ledger_id() -> String {
         .to_ascii_lowercase()
 }
 
+/// How long ago a ledger id was generated, from its ULID timestamp.
+fn ledger_id_age(id: &str) -> Option<std::time::Duration> {
+    let ulid = Ulid::from_string(&id.to_ascii_uppercase()).ok()?;
+    std::time::SystemTime::now()
+        .duration_since(ulid.datetime())
+        .ok()
+}
+
 fn ledger_store_path(state_path: &Path) -> PathBuf {
     state_path.with_extension("sqlite")
 }
@@ -1450,6 +1549,59 @@ mod tests {
 
     fn supervisor(root: &Path) -> SyncSupervisor {
         SyncSupervisor::at(root.join("jobs.json")).expect("supervisor")
+    }
+
+    #[test]
+    fn activity_queues_joins_and_skips_a_fresh_sync() {
+        let temporary = tempdir().unwrap();
+        let supervisor = supervisor(temporary.path());
+        let minute = std::time::Duration::from_secs(60);
+
+        let queued = supervisor
+            .enqueue_activity("alpha", temporary.path(), minute)
+            .unwrap();
+        assert_eq!(queued.outcome, ActivityOutcome::Queued);
+        assert_eq!(queued.job.job.trigger, SyncJobTrigger::Activity);
+        let joined = supervisor
+            .enqueue_activity("alpha", temporary.path(), minute)
+            .unwrap();
+        assert_eq!(joined.outcome, ActivityOutcome::Pending);
+        assert_eq!(joined.job.job.id, queued.job.job.id);
+
+        let claimed = supervisor.claim_next().unwrap().unwrap();
+        let running = supervisor
+            .enqueue_activity("alpha", temporary.path(), minute)
+            .unwrap();
+        assert_eq!(running.outcome, ActivityOutcome::Pending);
+        assert_eq!(running.job.job.id, claimed.job.job.id);
+        assert_eq!(
+            supervisor.list().unwrap().len(),
+            1,
+            "a running sync is joined"
+        );
+
+        supervisor
+            .complete(&claimed.job.job.id, SyncJobState::Succeeded, None, None)
+            .unwrap();
+        let fresh = supervisor
+            .enqueue_activity("alpha", temporary.path(), minute)
+            .unwrap();
+        assert_eq!(fresh.outcome, ActivityOutcome::Fresh);
+        assert_eq!(fresh.job.job.id, claimed.job.job.id);
+
+        let stale = supervisor
+            .enqueue_activity("alpha", temporary.path(), std::time::Duration::ZERO)
+            .unwrap();
+        assert_eq!(stale.outcome, ActivityOutcome::Queued);
+        assert_ne!(stale.job.job.id, claimed.job.job.id);
+        let other = supervisor
+            .enqueue_activity("beta", temporary.path(), minute)
+            .unwrap();
+        assert_eq!(
+            other.outcome,
+            ActivityOutcome::Queued,
+            "wikis are independent"
+        );
     }
 
     #[test]

@@ -48,6 +48,14 @@ poll_min_seconds = 15   # never below 5
 poll_max_seconds = 3600 # an archive wiki rarely needs checking
 ```
 
+An idle wiki may be up to `poll_max_seconds` behind when someone starts working in it, so whatever
+starts work should say so first: `vulcan sync refresh` (in the vault, or with a wiki ID, `--group`,
+or `--all`) tells the daemon. The daemon syncs right away unless a sync is queued, running, or
+started in the last 30 seconds, polling returns to the shortest interval, and the command waits up
+to `--wait-seconds` (default 15) to report each wiki, including a paused branch and how to continue.
+Without a running daemon it syncs directly. It never fails because of a sync outcome, so agent
+session hooks can run it unconditionally.
+
 For installation, service management, and upgrade behavior on each supported platform, see [Installation](../installation.md). The daemon is optional: install its native per-user service with `vulcan daemon install --dry-run` followed by `vulcan daemon install` only when background synchronization is wanted.
 
 ## Ordinary Linux, macOS, and Windows setup

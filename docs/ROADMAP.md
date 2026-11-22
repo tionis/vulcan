@@ -6337,7 +6337,8 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 - [x] Remove the retired wake-up advertisement: the daemon listener, the `vulcan-sync`/`vulcan-app` advertisement modules, the `sync advertise`, `unadvertise`, and `notifications` commands, and the per-wiki `notification` field of `daemon status`.
 - [x] Replace the daemon's single five-minute remote poll with one adaptive schedule per active Git wiki: activity (a non-poll job such as a watched edit or commit, a manual, resume, or recovery sync, or a poll whose reported revisions changed) resets to `sync.poll_min_seconds` (default 15, floor 5), and each poll doubles the interval up to `sync.poll_max_seconds` (default 900). Both keys work in shared and device-local config. Unit tests cover backoff, both kinds of activity, unfinished jobs, removed wikis, and clamping.
-- [ ] Fetch when an agent session starts: a daemon-hosted MCP session for a Git wiki should enqueue a sync when the last remote check is older than about 30 seconds. Needs the MCP host to reach the sync supervisor.
+- [x] Activity signal: `POST /{id}/sync/activity` queues an automatic `Activity` sync unless one is queued, running, or started within 30 seconds, and `vulcan sync refresh [WIKI|--group|--all] [--wait-seconds N]` signals, waits, and reports each wiki (a paused branch with how to continue), syncing directly without a daemon and never failing on a sync outcome. Tests for the supervisor decisions, the route, token isolation, and the CLI with and without a daemon.
+- [ ] Send the activity signal when an agent or editor session starts: stdio and daemon-hosted MCP sessions, `vulcan lsp` on initialize, and agent harness session hooks (`agent print-config` snippets, AGENTS template guidance).
 
 ### 12.14 macOS daemon lifecycle and release packaging
 

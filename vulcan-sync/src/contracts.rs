@@ -160,6 +160,10 @@ pub enum SyncJobTrigger {
     Manual,
     Poll,
     Watch,
+    /// Someone is about to use the wiki: an agent session, an editor, or
+    /// `vulcan sync refresh`. Automatic, so pauses and background policy
+    /// still apply.
+    Activity,
     /// Retired with the HTTPS wake-up advertisement; nothing enqueues it.
     /// Kept so job ledgers retained by older daemons still deserialize.
     RemoteNotification,

@@ -70,7 +70,11 @@ use vulcan_core::{
     VaultPaths,
 };
 use vulcan_daemon::companion::SyncSelectionRequest;
-use vulcan_daemon::process::{request_queued_sync, DaemonProcessContext, QueuedSyncError};
+use vulcan_daemon::companion::WikiActivityOutcome;
+use vulcan_daemon::process::{
+    request_queued_sync, request_sync_job, request_wiki_activity, DaemonProcessContext,
+    QueuedSyncError,
+};
 use vulcan_daemon::registry::{
     ManagedDirectoryProfile, NetworkNotificationMode, UpdateWikiRequest, WikiId, WikiRegistration,
     WikiRegistry,
@@ -172,6 +176,177 @@ pub(crate) fn handle_sync_command(
     observer.finish();
     let report = result.map_err(CliError::operation)?;
     print_sync_report(cli.output, cli.verbosity(), &report)
+}
+
+/// One wiki's line in a `sync refresh` report.
+#[derive(Debug, Clone, serde::Serialize)]
+struct SyncRefreshEntry {
+    wiki_id: String,
+    outcome: WikiActivityOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    job_id: Option<String>,
+    /// The job's state when the wait ended; `queued` or `running` means it
+    /// was still going.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state: Option<vulcan_app::sync::SyncJobState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct SyncRefreshReport {
+    daemon: bool,
+    wikis: Vec<SyncRefreshEntry>,
+}
+
+/// `sync refresh`: signal activity for each selected wiki, wait briefly for
+/// the syncs it caused, and report. Never fails for sync outcomes, so agent
+/// hooks and editors can run it unconditionally.
+fn handle_sync_refresh(
+    cli: &Cli,
+    paths: &VaultPaths,
+    selection: &SyncSelectionArgs,
+    wait: Duration,
+) -> Result<(), CliError> {
+    let selected = registered_selection(selection)?;
+    let explicit = matches!(selected, Some(RegisteredSyncSelection::Wiki(_)) | None);
+    let registry = WikiRegistry::user_default().map_err(CliError::operation)?;
+    let ids: Vec<String> = match &selected {
+        Some(RegisteredSyncSelection::Wiki(id)) => vec![id.as_str().to_string()],
+        Some(RegisteredSyncSelection::Group(group)) => registry
+            .list(Some(group))
+            .map_err(CliError::operation)?
+            .into_iter()
+            .map(|status| status.registration.id.as_str().to_string())
+            .collect(),
+        Some(RegisteredSyncSelection::All) => registry
+            .list(None)
+            .map_err(CliError::operation)?
+            .into_iter()
+            .map(|status| status.registration.id.as_str().to_string())
+            .collect(),
+        None => {
+            let registration = crate::registered_directory_for_path(paths.vault_root())?
+                .ok_or_else(|| {
+                    CliError::operation(
+                        "`sync refresh` needs a registered wiki: name one, use `--group` or `--all`, or run it inside a registered vault",
+                    )
+                })?;
+            vec![registration.id.as_str().to_string()]
+        }
+    };
+    let context = DaemonProcessContext::user_default().map_err(CliError::operation)?;
+    let mut reports = Vec::new();
+    for id in &ids {
+        match request_wiki_activity(&context, id) {
+            Ok(report) => reports.push(report),
+            Err(QueuedSyncError::NotRunning) => {
+                return refresh_directly(cli, &registry, selected, paths);
+            }
+            // A refresh is advisory: report and carry on with the others.
+            Err(error) => eprintln!("warning: could not refresh {id}: {error}"),
+        }
+    }
+    let deadline = std::time::Instant::now() + wait;
+    let mut entries = Vec::new();
+    for report in reports {
+        let mut job = report.job.clone();
+        while let Some(current) = job.as_ref() {
+            if !matches!(
+                current.job.state,
+                vulcan_app::sync::SyncJobState::Queued | vulcan_app::sync::SyncJobState::Running
+            ) || std::time::Instant::now() >= deadline
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+            match request_sync_job(&context, &current.job.id) {
+                Ok(updated) => job = Some(updated),
+                Err(_) => break,
+            }
+        }
+        if report.outcome == WikiActivityOutcome::NotSynchronized && !explicit {
+            continue;
+        }
+        entries.push(SyncRefreshEntry {
+            wiki_id: report.wiki_id,
+            outcome: report.outcome,
+            job_id: job.as_ref().map(|job| job.job.id.clone()),
+            state: job.as_ref().map(|job| job.job.state),
+            detail: job.as_ref().and_then(|job| {
+                job.job
+                    .error
+                    .as_ref()
+                    .map(|error| error.message.clone())
+                    .or_else(|| {
+                        job.job
+                            .status
+                            .as_ref()
+                            .and_then(|status| status.detail.clone())
+                    })
+            }),
+        });
+    }
+    let report = SyncRefreshReport {
+        daemon: true,
+        wikis: entries,
+    };
+    if cli.output == OutputFormat::Json {
+        return print_json(&report);
+    }
+    for entry in &report.wikis {
+        println!("{}", sync_refresh_line(entry));
+    }
+    Ok(())
+}
+
+fn sync_refresh_line(entry: &SyncRefreshEntry) -> String {
+    use vulcan_app::sync::SyncJobState as State;
+    let wiki = &entry.wiki_id;
+    let detail = entry.detail.as_deref().unwrap_or("no detail");
+    match (entry.outcome, entry.state) {
+        (WikiActivityOutcome::NotSynchronized, _) => format!("{wiki}: not synchronized with Git"),
+        (WikiActivityOutcome::Paused, _) => format!(
+            "{wiki}: automatic sync is paused; resume it with `vulcan sync resume {wiki}`"
+        ),
+        (_, Some(State::Queued | State::Running)) => {
+            format!("{wiki}: sync still running in the daemon")
+        }
+        (_, Some(State::Succeeded) | None) => format!("{wiki}: up to date"),
+        (_, Some(State::Paused)) => format!(
+            "{wiki}: sync paused: {detail}. If local commits diverged from the upstream, run `git pull --rebase && git push` in the wiki, then `vulcan sync refresh {wiki}`"
+        ),
+        (_, Some(State::Conflicted)) => format!(
+            "{wiki}: sync has an unresolved conflict; see `vulcan sync status {wiki}`"
+        ),
+        (_, Some(State::Failed)) => format!("{wiki}: sync failed: {detail}"),
+        (_, Some(State::Cancelled)) => format!("{wiki}: sync was cancelled"),
+    }
+}
+
+/// Without a daemon, `sync refresh` is a direct registered sync.
+fn refresh_directly(
+    cli: &Cli,
+    registry: &WikiRegistry,
+    selected: Option<RegisteredSyncSelection>,
+    paths: &VaultPaths,
+) -> Result<(), CliError> {
+    let selection = match selected {
+        Some(selection) => selection,
+        None => RegisteredSyncSelection::Wiki(
+            crate::registered_directory_for_path(paths.vault_root())?
+                .ok_or_else(|| CliError::operation("`sync refresh` needs a registered wiki"))?
+                .id,
+        ),
+    };
+    let report = sync_registered_wikis(
+        registry,
+        &selection,
+        &GitSyncOptions::default(),
+        cli.permissions.as_deref(),
+    )
+    .map_err(CliError::operation)?;
+    print_registered_sync_report(cli.output, &report)
 }
 
 /// `sync run --queue`: the daemon queues one retained job per selected wiki
@@ -570,6 +745,10 @@ fn handle_non_cycle_sync_command(
         return Some(handle_sync_forge(cli, paths, command));
     }
     let result = match command {
+        SyncCommand::Refresh {
+            selection,
+            wait_seconds,
+        } => handle_sync_refresh(cli, paths, selection, Duration::from_secs(*wait_seconds)),
         SyncCommand::Pause { wiki, dry_run } => {
             set_automatic_sync(cli.output, paths, wiki.as_deref(), true, *dry_run)
         }
@@ -3678,6 +3857,43 @@ fn branch_push_message(branch: &GitBranchSync) -> Option<String> {
 #[cfg(test)]
 mod sync_report_tests {
     use super::*;
+
+    #[test]
+    fn refresh_lines_explain_pauses_and_running_syncs() {
+        use vulcan_app::sync::SyncJobState;
+        let entry = |outcome, state, detail: Option<&str>| SyncRefreshEntry {
+            wiki_id: "grimoire".to_string(),
+            outcome,
+            job_id: None,
+            state,
+            detail: detail.map(str::to_string),
+        };
+        let paused = sync_refresh_line(&entry(
+            WikiActivityOutcome::Fresh,
+            Some(SyncJobState::Paused),
+            Some("branch lane paused: branch diverged"),
+        ));
+        assert!(paused.contains("branch diverged"), "{paused}");
+        assert!(paused.contains("git pull --rebase && git push"), "{paused}");
+        assert_eq!(
+            sync_refresh_line(&entry(
+                WikiActivityOutcome::Queued,
+                Some(SyncJobState::Succeeded),
+                None
+            )),
+            "grimoire: up to date"
+        );
+        assert!(sync_refresh_line(&entry(
+            WikiActivityOutcome::Pending,
+            Some(SyncJobState::Running),
+            None
+        ))
+        .contains("still running"));
+        assert!(
+            sync_refresh_line(&entry(WikiActivityOutcome::Paused, None, None))
+                .contains("vulcan sync resume grimoire")
+        );
+    }
 
     #[test]
     fn missing_public_key_file_error_names_the_path_and_explains_the_argument() {

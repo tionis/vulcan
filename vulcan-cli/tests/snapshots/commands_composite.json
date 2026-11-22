@@ -11315,6 +11315,60 @@
             "subcommands": []
           },
           {
+            "about": "Bring registered wikis up to date before working in them",
+            "name": "refresh",
+            "options": [
+              {
+                "help": "Optional registered wiki ID; omit to use the selected vault path",
+                "id": "wiki",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "WIKI"
+                ]
+              },
+              {
+                "help": "Select every registered wiki",
+                "id": "all",
+                "long": "all",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "ALL"
+                ]
+              },
+              {
+                "help": "Select a registered wiki group",
+                "id": "group",
+                "long": "group",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "GROUP"
+                ]
+              },
+              {
+                "help": "Seconds to wait for queued syncs to finish; 0 returns at once",
+                "id": "wait_seconds",
+                "long": "wait-seconds",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "WAIT_SECONDS"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
             "about": "Inspect synchronization state without changing it",
             "name": "status",
             "options": [

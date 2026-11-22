@@ -5155,6 +5155,20 @@ pub enum SyncCommand {
         )]
         queue: bool,
     },
+    #[command(
+        about = "Bring registered wikis up to date before working in them",
+        long_about = "Tell the daemon that someone is about to work in the selected registered wikis (the named wiki, `--group`, `--all`, or the registered vault at the selected path). The daemon syncs each Git wiki unless a sync is already queued or running or started in the last 30 seconds, and its polling returns to the shortest interval. The command then waits up to `--wait-seconds` for those syncs and reports each wiki's state, including a paused branch and how to continue. Without a running daemon it runs the syncs directly. Agent session hooks and editor integrations call it; it always exits successfully unless the selection is invalid, so a hook never blocks a session."
+    )]
+    Refresh {
+        #[command(flatten)]
+        selection: SyncSelectionArgs,
+        #[arg(
+            long,
+            default_value_t = 15,
+            help = "Seconds to wait for queued syncs to finish; 0 returns at once"
+        )]
+        wait_seconds: u64,
+    },
     #[command(about = "Inspect synchronization state without changing it")]
     Status {
         #[command(flatten)]
