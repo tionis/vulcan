@@ -1211,6 +1211,7 @@ fn permission_profiles_limit_what_the_editor_can_change() {
         LspOptions {
             vault: None,
             permissions: Some("projects".to_string()),
+            on_vault_open: None,
         },
     );
     let toggle = |client: &mut Client, path: &str| {
@@ -1513,6 +1514,57 @@ fn extracts_a_section_through_a_code_action() {
         edits[0][0]["textDocument"]["uri"],
         json!(client.uri("Home.md"))
     );
+}
+
+static OPENED_VAULTS: std::sync::Mutex<Vec<std::path::PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+fn record_opened_vault(root: &Path) {
+    OPENED_VAULTS.lock().unwrap().push(root.to_path_buf());
+}
+
+#[test]
+fn every_opened_vault_is_reported_once_including_multiroot() {
+    let first = vault(&[("Home.md", "# Home\n")]);
+    let second = vault(&[("Note.md", "# Note\n")]);
+    let folder = |dir: &tempfile::TempDir| json!({ "uri": uri(dir.path()), "name": "v" });
+    let (mut client, _) = Client::start_initialize(
+        Path::new("/"),
+        json!({
+            "processId": null,
+            "rootUri": uri(first.path()),
+            "workspaceFolders": [folder(&first), folder(&second)],
+            "capabilities": editing_client(),
+        }),
+        LspOptions {
+            on_vault_open: Some(record_opened_vault),
+            ..LspOptions::default()
+        },
+    );
+    client.open(
+        &first.path().join("Home.md").display().to_string(),
+        "# Home\n",
+    );
+    client.open(
+        &second.path().join("Note.md").display().to_string(),
+        "# Note\n",
+    );
+    let canonical = |dir: &tempfile::TempDir| dir.path().canonicalize().unwrap();
+    let opened = OPENED_VAULTS
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|root| root.canonicalize().unwrap())
+        .collect::<Vec<_>>();
+    for dir in [&first, &second] {
+        assert_eq!(
+            opened
+                .iter()
+                .filter(|root| **root == canonical(dir))
+                .count(),
+            1,
+            "{opened:?}"
+        );
+    }
 }
 
 #[test]

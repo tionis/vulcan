@@ -109,6 +109,7 @@ pub(crate) fn serve(
         options: LspOptions {
             vault: None,
             permissions: options.permissions.clone(),
+            on_vault_open: options.on_vault_open,
         },
         params,
         vaults: Vec::new(),
@@ -209,6 +210,7 @@ impl Mux<'_> {
         let options = LspOptions {
             vault: Some(root.clone()),
             permissions: self.options.permissions.clone(),
+            on_vault_open: self.options.on_vault_open,
         };
         let thread = std::thread::Builder::new()
             .name(format!("vulcan-lsp-vault-{index}"))

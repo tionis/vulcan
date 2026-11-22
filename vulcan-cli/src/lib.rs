@@ -4972,6 +4972,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         return vulcan_lsp::run_stdio(&vulcan_lsp::LspOptions {
             vault,
             permissions: cli.permissions.clone(),
+            on_vault_open: Some(signal_session_activity),
         })
         .map_err(CliError::operation);
     }
@@ -7073,6 +7074,29 @@ fn require_registered_knowledge_profile(vault: &Path, command: &Command) -> Resu
         "registered directory `{}` uses the files-only profile; this command requires knowledge services. Change it with `vulcan vault set {} --profile knowledge` before running this command",
         registration.id, registration.id
     )))
+}
+
+/// Tell a running daemon, in the background, that a session is starting in
+/// `vault_root` so the wiki syncs before work begins. Best effort and silent:
+/// unregistered vaults, a stopped daemon, and failures are all ignored, and
+/// the caller never waits.
+pub(crate) fn signal_session_activity(vault_root: &Path) {
+    if cfg!(test) {
+        return;
+    }
+    let root = vault_root.to_path_buf();
+    let _ = std::thread::Builder::new()
+        .name("vulcan-activity".to_string())
+        .spawn(move || {
+            let Ok(Some(registration)) = registered_directory_for_path(&root) else {
+                return;
+            };
+            let Ok(context) = vulcan_daemon::process::DaemonProcessContext::user_default() else {
+                return;
+            };
+            let _ =
+                vulcan_daemon::process::request_wiki_activity(&context, registration.id.as_str());
+        });
 }
 
 pub(crate) fn registered_directory_for_path(

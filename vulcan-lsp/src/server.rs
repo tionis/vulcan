@@ -24,7 +24,7 @@ use lsp_types::{self as lsp, notification};
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -48,6 +48,10 @@ pub struct LspOptions {
     pub vault: Option<PathBuf>,
     /// The permission profile every read and write runs under.
     pub permissions: Option<String>,
+    /// Called once for each vault the server opens, before it answers
+    /// `initialize`. The CLI uses it to tell the daemon that someone is
+    /// about to work in the vault; it must return quickly.
+    pub on_vault_open: Option<fn(&Path)>,
 }
 
 /// A failure that ends the server.
@@ -143,6 +147,9 @@ pub fn run(connection: &Connection, options: &LspOptions) -> Result<(), LspError
     }
     let (encoding, encoding_kind) = convert::negotiate_encoding(&params.capabilities);
     let vault_root = vault_root(options, initialization.vault.clone(), &params)?;
+    if let Some(on_vault_open) = options.on_vault_open {
+        on_vault_open(&vault_root);
+    }
     let mut session = EditorSession::new(VaultPaths::new(&vault_root), encoding);
     if let Some(profile) = options.permissions.as_deref() {
         session

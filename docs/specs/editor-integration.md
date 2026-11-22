@@ -44,7 +44,9 @@ Phase 18. Editors open those views in the browser rather than emulating them.
 
 Dependency rules, enforced in `vulcan-cli/tests/boundary_guard.rs`:
 
-- `vulcan-lsp` depends on `vulcan-core` and `vulcan-app`, never on `vulcan-cli` or `vulcan-daemon`.
+- `vulcan-lsp` depends on `vulcan-core` and `vulcan-app`, never on `vulcan-cli` or `vulcan-daemon`. The CLI
+  passes daemon-facing behavior in through `LspOptions`, such as `on_vault_open`, which tells a running
+  daemon that someone is about to work in a registered Git wiki so it syncs first.
 - `vulcan-app` and `vulcan-core` must not depend on `lsp-types` or `lsp-server`.
 
 `vulcan-app::editor` is intended for reuse by the Phase 14.1 WebUI editor (wikilink and tag

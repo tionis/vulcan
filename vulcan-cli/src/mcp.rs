@@ -1284,6 +1284,8 @@ impl McpServerCore {
         selected_tool_packs: BTreeSet<McpToolPack>,
         tool_pack_mode: McpToolPackMode,
     ) -> Result<Self, CliError> {
+        // One core per session, stdio or HTTP: the session is starting.
+        crate::signal_session_activity(paths.vault_root());
         Ok(Self {
             inner: McpProtocolCore::new(
                 paths,
