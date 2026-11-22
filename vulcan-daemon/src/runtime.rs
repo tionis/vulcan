@@ -1,5 +1,6 @@
 //! Registry-driven lifecycle and periodic trigger coordination.
 
+use crate::adaptive_poll::{AdaptivePolling, PollBounds};
 use crate::auto_commit_worker::{
     consume_auto_commit_observations_with_stop, sync_owns_capture, AutoCommitContext,
 };
@@ -23,11 +24,12 @@ use crate::watcher_health::WatcherHealthRegistry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 use vulcan_app::sync_state::SyncStateStore;
-use vulcan_core::VaultPaths;
+use vulcan_core::{load_vault_config, VaultPaths};
 use vulcan_sync::{GitCliEngine, GitEngine, SyncJobTrigger};
 
 const RUNTIME_STOP_POLL: Duration = Duration::from_millis(50);
@@ -40,7 +42,10 @@ const CONSUMER_RESTART_MAX: Duration = Duration::from_secs(300);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SyncTriggerRuntimeOptions {
     pub registry_refresh_ms: u64,
-    pub remote_poll_ms: u64,
+    /// A fixed remote poll interval for every wiki. `None`, the default,
+    /// polls adaptively within each vault's `[sync] poll_min_seconds` and
+    /// `poll_max_seconds`.
+    pub remote_poll_ms: Option<u64>,
     pub resume_gap_ms: u64,
     pub watch: DaemonWatchOptions,
 }
@@ -49,7 +54,7 @@ impl Default for SyncTriggerRuntimeOptions {
     fn default() -> Self {
         Self {
             registry_refresh_ms: 1_000,
-            remote_poll_ms: 5 * 60 * 1_000,
+            remote_poll_ms: None,
             resume_gap_ms: 2_000,
             watch: DaemonWatchOptions::default(),
         }
@@ -261,11 +266,23 @@ where
         health: health.clone(),
     };
     let registry_refresh = Duration::from_millis(options.registry_refresh_ms);
-    let remote_poll = Duration::from_millis(options.remote_poll_ms);
+    let poll_bounds = |path: &PathBuf| match options.remote_poll_ms {
+        Some(fixed) => PollBounds {
+            min: Duration::from_millis(fixed),
+            max: Duration::from_millis(fixed),
+        },
+        None => PollBounds::from_seconds(
+            load_vault_config(&VaultPaths::new(path))
+                .config
+                .sync
+                .poll_bounds_seconds(),
+        ),
+    };
+    let mut polling = AdaptivePolling::default();
+    let mut job_changes = supervisor.subscribe_changes();
     let mut watchers = BTreeMap::<String, WatcherTask>::new();
     let mut vault_catalog = VaultRuntimeCatalog::default();
     let mut next_registry_refresh = Instant::now();
-    let mut next_remote_poll = Instant::now() + remote_poll;
     let mut last_wall = SystemTime::now();
     let mut last_monotonic = Instant::now();
 
@@ -297,17 +314,22 @@ where
             }
             next_registry_refresh = now + registry_refresh;
         }
-        if now >= next_remote_poll {
-            if let Err(error) = enqueue_periodic_reconciliation(registry, supervisor) {
-                stop_all_watchers(&mut watchers);
-                return Err(error);
-            }
-            next_remote_poll = now + remote_poll;
+        if let Err(error) = drive_adaptive_polling(
+            registry,
+            supervisor,
+            &mut polling,
+            &mut job_changes,
+            now,
+            &poll_bounds,
+        ) {
+            stop_all_watchers(&mut watchers);
+            return Err(error);
         }
 
-        let timeout = next_registry_refresh
-            .saturating_duration_since(Instant::now())
-            .min(next_remote_poll.saturating_duration_since(Instant::now()));
+        let mut timeout = next_registry_refresh.saturating_duration_since(Instant::now());
+        if let Some(next_poll) = polling.next_due() {
+            timeout = timeout.min(next_poll.saturating_duration_since(Instant::now()));
+        }
         if !timeout.is_zero() {
             if let Some(stop) = stop {
                 stop.wait_timeout(timeout);
@@ -324,7 +346,7 @@ fn validate_options(options: &SyncTriggerRuntimeOptions) -> Result<(), SyncTrigg
             "sync registry refresh interval must be greater than zero".to_string(),
         ));
     }
-    if options.remote_poll_ms == 0 {
+    if options.remote_poll_ms == Some(0) {
         return Err(SyncTriggerRuntimeError::InvalidOptions(
             "sync remote poll interval must be greater than zero".to_string(),
         ));
@@ -844,21 +866,35 @@ fn spawn_sync_consumer(
     })
 }
 
-fn enqueue_periodic_reconciliation(
+/// Keeps one adaptive poll schedule per active Git wiki, resets schedules
+/// on observed activity, and enqueues the polls that are due.
+fn drive_adaptive_polling<F>(
     registry: &WikiRegistry,
     supervisor: &SyncSupervisor,
-) -> Result<(), SyncTriggerRuntimeError> {
+    polling: &mut AdaptivePolling,
+    job_changes: &mut tokio::sync::watch::Receiver<u64>,
+    now: Instant,
+    poll_bounds: &F,
+) -> Result<(), SyncTriggerRuntimeError>
+where
+    F: Fn(&PathBuf) -> PollBounds,
+{
     let config = registry.poll()?;
     let mut catalog = VaultRuntimeCatalog::default();
-    for registration in desired_observers(&config.vaults, &mut catalog)?
-        .into_values()
-        .filter(sync_consumer_enabled)
-    {
-        supervisor.enqueue(
-            registration.id.as_str(),
-            &registration.path,
-            SyncJobTrigger::Poll,
-        )?;
+    polling.reconcile(
+        desired_observers(&config.vaults, &mut catalog)?
+            .into_values()
+            .filter(sync_consumer_enabled)
+            .map(|registration| (registration.id.as_str().to_string(), registration.path)),
+        now,
+        poll_bounds,
+    );
+    if job_changes.has_changed().unwrap_or(false) {
+        job_changes.borrow_and_update();
+        polling.observe_jobs(&supervisor.list()?, now);
+    }
+    for (wiki, path) in polling.take_due(now, poll_bounds) {
+        supervisor.enqueue(&wiki, &path, SyncJobTrigger::Poll)?;
     }
     Ok(())
 }
@@ -1439,7 +1475,7 @@ mod tests {
             &state_store,
             &SyncTriggerRuntimeOptions {
                 registry_refresh_ms: 10,
-                remote_poll_ms: 20,
+                remote_poll_ms: Some(20),
                 resume_gap_ms: 2_000,
                 watch: DaemonWatchOptions {
                     debounce_ms: 5,
@@ -1517,7 +1553,29 @@ mod tests {
         let supervisor =
             SyncSupervisor::at(temporary.path().join("jobs.json")).expect("supervisor");
 
-        enqueue_periodic_reconciliation(&registry, &supervisor).expect("periodic trigger");
+        let mut polling = AdaptivePolling::default();
+        let mut changes = supervisor.subscribe_changes();
+        let bounds = |_: &PathBuf| PollBounds {
+            min: Duration::from_millis(1),
+            max: Duration::from_millis(1),
+        };
+        let now = Instant::now();
+        for at in [now, now + Duration::from_secs(1)] {
+            drive_adaptive_polling(
+                &registry,
+                &supervisor,
+                &mut polling,
+                &mut changes,
+                at,
+                &bounds,
+            )
+            .expect("adaptive polling");
+        }
         assert!(supervisor.list().expect("jobs").is_empty());
+        assert_eq!(
+            polling.next_due(),
+            None,
+            "a paused wiki has no poll schedule"
+        );
     }
 }

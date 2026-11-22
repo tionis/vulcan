@@ -1584,6 +1584,12 @@ Shared deterministic merge and whole-tree validation policy, plus a device-local
 - `sync.paths` — type: `array`; target: `shared|local|device`; default: `[2 items]`
   Edit `sync.paths` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
   Example: `vulcan config set sync.paths <value>`
+- `sync.poll_max_seconds` — type: `integer`; target: `shared|local|device`; default: `900`
+  Longest interval, in seconds, between the daemon's remote checks of an idle wiki (default 900). Each quiet check doubles the interval up to this ceiling.
+  Example: `vulcan config set sync.poll_max_seconds <value>`
+- `sync.poll_min_seconds` — type: `integer`; target: `shared|local|device`; default: `15`
+  Shortest interval, in seconds, between the daemon's remote checks of an active wiki (default 15, never below 5). Activity resets polling to this interval.
+  Example: `vulcan config set sync.poll_min_seconds <value>`
 - `sync.tree_validation.max_deleted_paths` — type: `integer`; target: `shared`; default: `100`
   Define shared whole-tree safety ceilings checked before an automatically resolved Git merge is published.
   Example: `vulcan config set sync.tree_validation.max_deleted_paths <value>`

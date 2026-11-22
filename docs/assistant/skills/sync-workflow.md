@@ -556,8 +556,12 @@ commits and is never written from live.
   poll, and companion triggers coalesce through one per-wiki supervisor.
 - Daemon sync watchers use native filesystem notifications when available. Content-comparing
   polling runs only if native watcher setup fails, with a 30-second interval; it can be costly
-  on large worktrees. Periodic sync reconciliation (every five minutes by default) repairs
-  missed notifications. To request reconciliation immediately, use `vulcan sync run <wiki>`.
+  on large worktrees. Remote checks are adaptive per wiki: after activity (a local edit or
+  commit, a manual sync, or a check that found new remote revisions) the daemon checks again
+  after `sync.poll_min_seconds` (default 15), doubling the wait after each quiet check up to
+  `sync.poll_max_seconds` (default 900). Raise the maximum for rarely changing wikis rather than
+  disabling sync. To request reconciliation immediately, use `vulcan sync run <wiki>`, for
+  example before starting work that depends on another device's latest commits.
 - Companion connections share one status stream. Daemon jobs and successful companion mutations trigger updates; changes made by external processes are reconciled every 30 seconds while a companion is connected. Use `vulcan sync status <wiki>` for an immediate status read. With no companion connected, the stream performs no background snapshot work.
 - The daemon is quiet by default. Run `vulcan -v daemon start` (or with `--detach`,
   which carries the level and `--color` to the background child and its `daemon.log`; an

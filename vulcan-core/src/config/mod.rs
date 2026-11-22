@@ -339,6 +339,41 @@ pub struct SyncConfig {
         skip_serializing_if = "sync_branch_push_is_default"
     )]
     pub branch_push: bool,
+    /// Shortest daemon interval, in seconds, between remote checks while a
+    /// wiki is active. Polling backs off from here when nothing changes.
+    #[serde(
+        default = "default_sync_poll_min_seconds",
+        skip_serializing_if = "sync_poll_min_seconds_is_default"
+    )]
+    pub poll_min_seconds: u64,
+    /// Longest daemon interval, in seconds, between remote checks of an idle
+    /// wiki.
+    #[serde(
+        default = "default_sync_poll_max_seconds",
+        skip_serializing_if = "sync_poll_max_seconds_is_default"
+    )]
+    pub poll_max_seconds: u64,
+}
+
+pub const DEFAULT_SYNC_POLL_MIN_SECONDS: u64 = 15;
+pub const DEFAULT_SYNC_POLL_MAX_SECONDS: u64 = 15 * 60;
+
+const fn default_sync_poll_min_seconds() -> u64 {
+    DEFAULT_SYNC_POLL_MIN_SECONDS
+}
+
+const fn default_sync_poll_max_seconds() -> u64 {
+    DEFAULT_SYNC_POLL_MAX_SECONDS
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference.
+fn sync_poll_min_seconds_is_default(value: &u64) -> bool {
+    *value == DEFAULT_SYNC_POLL_MIN_SECONDS
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference.
+fn sync_poll_max_seconds_is_default(value: &u64) -> bool {
+    *value == DEFAULT_SYNC_POLL_MAX_SECONDS
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference.
@@ -356,13 +391,28 @@ impl Default for SyncConfig {
             worktree: WorktreeSyncMode::default(),
             paths: Vec::new(),
             branch_push: true,
+            poll_min_seconds: DEFAULT_SYNC_POLL_MIN_SECONDS,
+            poll_max_seconds: DEFAULT_SYNC_POLL_MAX_SECONDS,
         }
     }
 }
 
+/// The shortest remote poll interval the daemon accepts, whatever the
+/// configuration says, so a typo cannot turn polling into a busy loop.
+pub const SYNC_POLL_FLOOR_SECONDS: u64 = 5;
+
 impl SyncConfig {
     fn is_default(&self) -> bool {
         self == &Self::default()
+    }
+
+    /// The daemon's adaptive remote poll bounds in seconds, clamped so the
+    /// minimum is at least [`SYNC_POLL_FLOOR_SECONDS`] and the maximum is
+    /// never below the minimum.
+    #[must_use]
+    pub fn poll_bounds_seconds(&self) -> (u64, u64) {
+        let min = self.poll_min_seconds.max(SYNC_POLL_FLOOR_SECONDS);
+        (min, self.poll_max_seconds.max(min))
     }
 }
 
@@ -4939,6 +4989,12 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
         if let Some(branch_push) = sync.branch_push {
             config.sync.branch_push = branch_push;
+        }
+        if let Some(seconds) = sync.poll_min_seconds {
+            config.sync.poll_min_seconds = seconds;
+        }
+        if let Some(seconds) = sync.poll_max_seconds {
+            config.sync.poll_max_seconds = seconds;
         }
     }
     if let Some(editor) = overrides.editor {

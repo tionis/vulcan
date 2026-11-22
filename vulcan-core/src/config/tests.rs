@@ -5521,3 +5521,47 @@ fn mcp_remote_settings_travel_in_shared_config_and_merge_with_local() {
     );
     assert_eq!(remote.redirect_hosts, Some(vec!["claude.ai".to_string()]));
 }
+
+#[test]
+fn sync_poll_bounds_default_override_locally_and_clamp() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let paths = VaultPaths::new(temporary.path());
+    fs::create_dir(paths.vulcan_dir()).expect("Vulcan directory");
+    let defaults = load_vault_config(&paths).config.sync;
+    assert_eq!(
+        defaults.poll_bounds_seconds(),
+        (DEFAULT_SYNC_POLL_MIN_SECONDS, DEFAULT_SYNC_POLL_MAX_SECONDS)
+    );
+
+    fs::write(
+        paths.config_file(),
+        "[sync]\npoll_min_seconds = 30\npoll_max_seconds = 3600\n",
+    )
+    .expect("shared config");
+    assert_eq!(
+        load_vault_config(&paths).config.sync.poll_bounds_seconds(),
+        (30, 3600)
+    );
+
+    fs::write(
+        paths.local_config_file(),
+        "[sync]\npoll_max_seconds = 600\n",
+    )
+    .expect("local config");
+    assert_eq!(
+        load_vault_config(&paths).config.sync.poll_bounds_seconds(),
+        (30, 600),
+        "a device may change the interval for itself"
+    );
+
+    fs::write(
+        paths.local_config_file(),
+        "[sync]\npoll_min_seconds = 0\npoll_max_seconds = 1\n",
+    )
+    .expect("degenerate local config");
+    assert_eq!(
+        load_vault_config(&paths).config.sync.poll_bounds_seconds(),
+        (SYNC_POLL_FLOOR_SECONDS, SYNC_POLL_FLOOR_SECONDS),
+        "the floor stops a typo from turning polling into a busy loop"
+    );
+}

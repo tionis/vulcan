@@ -35,6 +35,19 @@ after wake. Abrupt power loss, hard process kills, and offline shutdown cannot g
 reach the remote, so the normal watcher remains the primary path and final sync is a last-chance
 safety net.
 
+The daemon checks each Git wiki's remote on its own adaptive schedule, one `ls-remote`-sized round
+trip when nothing changed. After any activity (a local edit or commit, a manual sync, or a check that
+found another device's commits) it checks again after `poll_min_seconds` (default 15), then doubles
+the wait after each quiet check up to `poll_max_seconds` (default 900). A busy wiki is therefore
+current within seconds, and an idle one costs a few checks an hour. Both settings may sit in the
+shared `.vulcan/config.toml` or a device's `.vulcan/config.local.toml`:
+
+```toml
+[sync]
+poll_min_seconds = 15   # never below 5
+poll_max_seconds = 3600 # an archive wiki rarely needs checking
+```
+
 For installation, service management, and upgrade behavior on each supported platform, see [Installation](../installation.md). The daemon is optional: install its native per-user service with `vulcan daemon install --dry-run` followed by `vulcan daemon install` only when background synchronization is wanted.
 
 ## Ordinary Linux, macOS, and Windows setup

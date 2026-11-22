@@ -6331,6 +6331,11 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 - [ ] Evaluate HTTP/3 (QUIC) for notification long-polls only after a measured HTTP/2 deployment: connection migration across network changes, 0-RTT reconnects, and relay support. Requires the reqwest `http3` feature plus the QUIC runtime; keep HTTP/2 multiplexing as the baseline until measurements justify the dependency cost.
 - [ ] Keep the wire contract unchanged through any transport work: content-free wake-ups, Git-authoritative state, no redirects, endpoint redaction, and polling fallback.
 
+#### 12.13.4 Adaptive remote polling
+
+- [x] Replace the daemon's single five-minute remote poll with one adaptive schedule per active Git wiki: activity (a non-poll job such as a watched edit or commit, a manual, resume, or recovery sync, or a poll whose reported revisions changed) resets to `sync.poll_min_seconds` (default 15, floor 5), and each poll doubles the interval up to `sync.poll_max_seconds` (default 900). Both keys work in shared and device-local config. Unit tests cover backoff, both kinds of activity, unfinished jobs, removed wikis, and clamping.
+- [ ] Fetch when an agent session starts: a daemon-hosted MCP session for a Git wiki should enqueue a sync when the last remote check is older than about 30 seconds. Needs the MCP host to reach the sync supervisor.
+
 ### 12.14 macOS daemon lifecycle and release packaging
 
 **Goal:** Make the existing same-binary daemon and CLI straightforward to install, upgrade, and run on Linux, Windows, and macOS without changing direct local-vault behavior. macOS gains native per-user service parity; release archives remain the canonical distribution input, and package-manager channels project those same artifacts rather than defining a second runtime or configuration model.
