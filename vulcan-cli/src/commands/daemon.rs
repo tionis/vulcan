@@ -29,7 +29,7 @@ use vulcan_daemon::mutation_scheduler::MutationScheduler;
 use vulcan_daemon::mutation_scheduler::MutationSchedulerConfig;
 use vulcan_daemon::process::{
     daemon_status, request_daemon_shutdown, run_daemon_foreground_with_services,
-    DaemonNotificationDiscoveryState, DaemonProcessContext, DaemonStatusReport,
+    DaemonProcessContext, DaemonStatusReport,
 };
 use vulcan_daemon::registry::{
     DaemonAgentConfig, DaemonAgentKind, DaemonAutoCommitAgentConfig, DaemonBotUser,
@@ -1338,20 +1338,6 @@ fn print_status(output: OutputFormat, status: &DaemonStatusReport) -> Result<(),
     }
     println!("Registered wikis:");
     for wiki in &status.wiki_statuses {
-        let notification = match wiki.notification.state {
-            DaemonNotificationDiscoveryState::Discovered => format!(
-                "server cached from {}",
-                wiki.notification
-                    .origin
-                    .as_deref()
-                    .unwrap_or("redacted origin")
-            ),
-            DaemonNotificationDiscoveryState::NotDiscovered => {
-                "no server discovered on this device".to_string()
-            }
-            DaemonNotificationDiscoveryState::Disabled => "listener disabled".to_string(),
-            DaemonNotificationDiscoveryState::Unavailable => "discovery unavailable".to_string(),
-        };
         println!("  {}", wiki.wiki_id);
         println!("    Path: {}", wiki.path.display());
         print_missing_vault(&wiki.path);
@@ -1395,7 +1381,6 @@ fn print_status(output: OutputFormat, status: &DaemonStatusReport) -> Result<(),
                 wiki.sync_error.as_deref().unwrap_or("unknown error")
             );
         }
-        println!("    Notifications: {notification}");
     }
     Ok(())
 }

@@ -14,7 +14,6 @@ mod contracts;
 mod git;
 mod lock;
 mod merge_policy;
-mod notifications;
 mod platform;
 pub mod process;
 mod racy_index;
@@ -51,14 +50,6 @@ pub use lock::{RepositoryLock, RepositoryLockError};
 pub use merge_policy::{
     MergeAutomation, MergeFileKind, MergePathSelector, MergePolicy, MergePolicyDecision,
     MergePolicyError, MergePolicyRule, MergeResolution, MERGE_POLICY_SCHEMA_VERSION,
-};
-pub use notifications::{
-    cached_notification_advertisement, preview_notification_advertisement,
-    publish_notification_advertisement, refresh_notification_advertisement,
-    remove_notification_advertisement, validate_notification_remote,
-    DiscoveredNotificationAdvertisement, NotificationAdvertisement, NotificationAdvertisementError,
-    NotificationEndpoint, NotificationTransport, NOTIFICATION_ADVERTISEMENT_FILE,
-    NOTIFICATION_ADVERTISEMENT_REF, NOTIFICATION_REMOTE,
 };
 pub use platform::{
     inspect_git_tree_platform, GitPlatformDiagnostic, GitPlatformDiagnosticSeverity,

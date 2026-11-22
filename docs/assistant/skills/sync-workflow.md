@@ -1,6 +1,6 @@
 ---
 name: sync-workflow
-description: Synchronize one or more Vulcan wikis safely, configure advertised realtime wake-up endpoints, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, realtime notifications, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
+description: Synchronize one or more Vulcan wikis safely, tune how often the daemon checks remotes, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, how quickly other devices' changes arrive, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
 version: 40
 metadata:
   vulcan:
@@ -193,12 +193,10 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
   state because Android shared storage does not support the required file locking and SQLite WAL
   behavior. The detached Git directory and sync journal must also remain in private storage.
 - Use `vulcan daemon status` before diagnosing automatic work. It reports each registered wiki's
-  reconstructed daemon state, latest daemon-supervised attempt, path, and locally cached
-  notification-advertisement discovery. It also lists hosted sync, trigger, notification, alert,
-  conflict, semantic, and companion-listener services with lifecycle state and restart counts; disabled services remain
-  visible, and a sanitized last failure explains degraded or exhausted workers. It is an offline inspection: it does not fetch merely to
-  refresh notification discovery, and `not_discovered` means no advertisement has been cached on
-  this device yet rather than proving none exists remotely. A stopped daemon does not prevent
+  reconstructed daemon state, latest daemon-supervised attempt, and path. It also lists hosted
+  sync, trigger, alert, conflict, semantic, and companion-listener services with
+  lifecycle state and restart counts; disabled services remain visible, and a sanitized last
+  failure explains degraded or exhausted workers. It is an offline inspection and does not fetch. A stopped daemon does not prevent
   direct `sync status`, `sync doctor`, or `sync run`; direct runs do not enter the daemon job
   ledger, so their time is not the daemon's `last_attempt_unix_ms`.
   If runtime metadata exists but the authenticated capability probe fails, treat the daemon as
@@ -491,48 +489,15 @@ commits and is never written from live.
 
 ## Daemon and Obsidian companion
 
-### Realtime ref-change notifications
+### How quickly other devices' changes arrive
 
-- Realtime configuration is discovered automatically from the exact Git ref
-  `refs/vulcan/notifications`; there is no subscription-bundle import or separate credential store.
-  The ref points to a commit containing `notification.json` with version `1`, transport
-  `http_long_poll`, and one HTTPS `subscribe_url`.
-- Treat the complete subscribe URL as confidential repository capability data. Never print it,
-  copy it into a note, or expose it in logs. Repository administrators configure the separate
-  publish-only URL or secret directly in the forge webhook; that value never belongs in the Git
-  advertisement. `sync advertise`/`unadvertise` reports carry only the endpoint origin and
-  fingerprint for this reason.
-- Publish or rotate the advertisement by piping the capability without exposing it in process
-  arguments or shell history:
-  `secret-manager read notification-subscribe-url | vulcan sync advertise --subscribe-url-file - [--remote origin] [--expected <rev>]`.
-  On Unix, a mode-`0600` regular file with no symlinked path component may be named instead of
-  `-` when piping is impractical. Other platforms must use piped stdin.
-  Notification advertisement publication and discovery currently require the `origin` remote;
-  alternate sync remotes are rejected so CLI status and the daemon cannot observe different refs.
-  Preview with `--dry-run` first. Without `--expected`, the current remote revision is leased
-  opportunistically; with it, a diverged ref fails instead of overwriting. Remove it with
-  `vulcan sync unadvertise [--expected <rev>]`. Publication builds a parentless commit with
-  object-store plumbing only, so the worktree and user index are never touched. The commit
-  attributes the publisher's Git identity (repository configuration over global), so rotation
-  history shows who advertised each endpoint. Add `--sign` (or `--signing-key <keyid>`) for a
-  GPG/SSH signature from the publisher's own configuration; this needs a working agent or
-  cached credentials and fails loudly otherwise. Signatures are not verified by discovery.
-- Check whether Vulcan would use a notification server with
-  `vulcan sync notifications [--wiki <id>]`: it fetches the advertisement through the
-  configured remote (the same device-local fetch the daemon performs, never a publish), but only
-  after the effective profile allows Git. It then validates the advertisement, applies the
-  endpoint network permission check, and reports stable
-  reason codes (`missing-advertisement`, `invalid-advertisement`, `git-denied`,
-  `network-denied`, `paused`, `non-git-backend`, `daemon-stopped`) plus the `would_listen`
-  verdict. Endpoint identity stays origin plus fingerprint.
-- The daemon starts one listener per active advertised Git wiki. A stopped daemon, missing ref,
-  malformed advertisement, or unavailable endpoint only increases latency; direct and periodic
-  synchronization continue normally.
-- The wiki's permission profile must allow Git plus network access to the endpoint origin. Do not
-  weaken a profile to hide a notification diagnostic; periodic polling is the safe fallback.
-- Notifications are untrusted hints. They may enqueue only the ordinary finite synchronization
-  transaction for the registered wiki; response bytes never select a ref, object, remote, or local
-  path. Git remains authoritative and periodic polling remains the repair path.
+- The daemon checks each Git wiki's remote on an adaptive schedule; there is no forge webhook,
+  notification relay, or advertisement ref to set up. After activity it checks again after
+  `sync.poll_min_seconds` (default 15) and backs off to `sync.poll_max_seconds` (default 900),
+  as described under the daemon watcher notes below.
+- Repositories that still carry a `refs/vulcan/notifications` ref from the retired wake-up
+  advertisement can drop it with ordinary Git (`git push origin :refs/vulcan/notifications`);
+  Vulcan no longer reads it.
 
 - Prefer `vulcan daemon install --dry-run` followed by `vulcan daemon install` for a persistent
   per-user service on Linux, macOS, or Windows. Linux installs a restartable `systemd --user` unit,
@@ -552,8 +517,8 @@ commits and is never written from live.
   `0600` on Unix, use literal `NAME=value` entries, and never place it in a vault. Existing process
   environment variables take precedence, and the file does not execute or expand shell syntax.
 - Start the daemon explicitly with `vulcan daemon start` or `--detach`. On Linux, macOS, and
-  Windows the running daemon owns advertised long-poll listeners; watcher, notification, startup,
-  poll, and companion triggers coalesce through one per-wiki supervisor.
+  Windows the running daemon owns watchers and adaptive remote polling; watcher, startup, poll,
+  and companion triggers coalesce through one per-wiki supervisor.
 - Daemon sync watchers use native filesystem notifications when available. Content-comparing
   polling runs only if native watcher setup fails, with a 30-second interval; it can be costly
   on large worktrees. Remote checks are adaptive per wiki: after activity (a local edit or
@@ -567,8 +532,7 @@ commits and is never written from live.
   which carries the level and `--color` to the background child and its `daemon.log`; an
   installed service reads `VULCAN_VERBOSITY=<level>` from `daemon.env` instead) for operational stderr
   lines: one per completed sync job with wiki, triggers, state/outcome, watch-trigger detail,
-  and branch-lane action, plus notification advertisement discovery and wake-up enqueueing
-  identified by endpoint origin and fingerprint only. At the default quiet level, failed jobs
+  and branch-lane action. At the default quiet level, failed jobs
   print one secret-minimal line per wiki/category state with retryability and a direction to inspect
   retained status; error text remains on the authenticated status surface. Conflicted and paused
   jobs emit warning records, failed jobs emit error records, and branch pull-strategy and push
@@ -660,7 +624,7 @@ commits and is never written from live.
   never automatically trusted by discovery, status, or sync.
 - One-shot `sync status`, `sync doctor`, and `sync run` are the supported baseline and require no
   daemon. Android shared storage cannot faithfully represent executable bits or symlinks.
-- The daemon's own sync cycles (poll, change, remote notification, resume) run unconditionally
+- The daemon's own sync cycles (poll, change, resume) run unconditionally
   by default; `vulcan daemon config set-automatic-sync --network unmetered --power battery-not-low
   --dry-run` previews holding them back on metered networks or low battery. A held-back cycle is
   reported as paused with "deferred by this device's background policy" and retried at the next
@@ -690,8 +654,8 @@ commits and is never written from live.
   the `termux-api` package. Notification failure does not change retained sync state.
 - Treat Android JobScheduler timing as approximate. Use the periodic job as an energy-efficient
   safety net; a shortcut or future save/resume bridge may invoke the same finite `sync run` for
-  lower latency. A foreground or persistently supervised Termux daemon may use the same advertised
-  listener as an optional latency optimization, but it never replaces JobScheduler reconciliation.
+  lower latency. A foreground or persistently supervised Termux daemon polls adaptively like any
+  other daemon, but it never replaces JobScheduler reconciliation.
   Verify unattended Git credentials manually and never embed secrets in the managed wrapper or
   vault.
 - If private Git data is lost, preview `vulcan vault recover-git <wiki> <remote> --dry-run`.

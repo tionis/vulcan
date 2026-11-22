@@ -7,7 +7,7 @@ use crate::{
     SyncScheduleCommand, SyncSelectionArgs, SyncTransportCommand, TermuxNetworkArg,
 };
 use serde::Serialize;
-use std::io::{self, IsTerminal, Read, Write};
+use std::io::{self, IsTerminal, Write};
 use std::time::Duration;
 use vulcan_app::sync::{
     doctor_git_vault_for_profile, sync_git_vault_with_profile_and_progress, GitBranchSync,
@@ -29,12 +29,6 @@ use vulcan_app::sync_devices::{
     set_sync_device_name, GitSyncDeviceIdKind, SyncDeviceFetchReport, SyncDeviceListReport,
     SyncDeviceOptions, SyncDeviceRecoveryStatus, SyncDeviceRelation,
     SyncDeviceRemoteObservationState, SyncDeviceRemoveReport,
-};
-use vulcan_app::sync_notifications::{
-    notification_status, publish_sync_notification_advertisement,
-    remove_sync_notification_advertisement, SyncNotificationPublishOptions,
-    SyncNotificationPublishReport, SyncNotificationRemoveOptions, SyncNotificationRemoveReport,
-    SyncNotificationStatusOptions, SyncNotificationStatusReport,
 };
 use vulcan_app::sync_proposals::{
     approve_resolution_proposal, create_formatter_resolution_proposal,
@@ -76,9 +70,7 @@ use vulcan_core::{
     VaultPaths,
 };
 use vulcan_daemon::companion::SyncSelectionRequest;
-use vulcan_daemon::process::{
-    daemon_status, request_queued_sync, DaemonProcessContext, QueuedSyncError,
-};
+use vulcan_daemon::process::{request_queued_sync, DaemonProcessContext, QueuedSyncError};
 use vulcan_daemon::registry::{
     ManagedDirectoryProfile, NetworkNotificationMode, UpdateWikiRequest, WikiId, WikiRegistration,
     WikiRegistry,
@@ -565,9 +557,6 @@ fn handle_non_cycle_sync_command(
     if let Some(result) = handle_semantic_sync_command(cli, paths, command) {
         return Some(result);
     }
-    if let Some(result) = handle_notification_sync_command(cli, paths, command) {
-        return Some(result);
-    }
     if let Some(result) = handle_termux_sync_command(cli, command) {
         return Some(result);
     }
@@ -586,11 +575,6 @@ fn handle_non_cycle_sync_command(
         }
         SyncCommand::Resume { wiki, dry_run } => {
             set_automatic_sync(cli.output, paths, wiki.as_deref(), false, *dry_run)
-        }
-        SyncCommand::Advertise { .. }
-        | SyncCommand::Unadvertise { .. }
-        | SyncCommand::Notifications { .. } => {
-            unreachable!("notification commands are dispatched before the general sync match")
         }
         SyncCommand::Doctor {
             wiki,
@@ -716,51 +700,6 @@ fn handle_non_cycle_sync_command(
         }
     };
     Some(result)
-}
-
-fn handle_notification_sync_command(
-    cli: &Cli,
-    paths: &VaultPaths,
-    command: &SyncCommand,
-) -> Option<Result<(), CliError>> {
-    match command {
-        SyncCommand::Advertise {
-            wiki,
-            subscribe_url_file,
-            remote,
-            expected,
-            sign,
-            signing_key,
-            dry_run,
-        } => Some(run_sync_advertise(
-            cli,
-            paths,
-            wiki.as_deref(),
-            subscribe_url_file,
-            remote,
-            expected.as_deref(),
-            *sign,
-            signing_key.as_deref(),
-            *dry_run,
-        )),
-        SyncCommand::Unadvertise {
-            wiki,
-            remote,
-            expected,
-            dry_run,
-        } => Some(run_sync_unadvertise(
-            cli,
-            paths,
-            wiki.as_deref(),
-            remote,
-            expected.as_deref(),
-            *dry_run,
-        )),
-        SyncCommand::Notifications { wiki, remote } => {
-            Some(run_sync_notifications(cli, paths, wiki.as_deref(), remote))
-        }
-        _ => None,
-    }
 }
 
 fn handle_termux_sync_command(cli: &Cli, command: &SyncCommand) -> Option<Result<(), CliError>> {
@@ -1851,324 +1790,6 @@ fn print_sync_checkpoint(
         "Sync checkpoint: {} -> {} ({:?})",
         report.checkpoint_ref, report.revision, report.kind
     );
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn run_sync_advertise(
-    cli: &Cli,
-    selected_paths: &VaultPaths,
-    wiki: Option<&str>,
-    subscribe_url_file: &std::path::Path,
-    remote: &str,
-    expected: Option<&str>,
-    sign: bool,
-    signing_key: Option<&str>,
-    dry_run: bool,
-) -> Result<(), CliError> {
-    let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
-    check_sync_permission(cli, &paths, registration_profile.as_deref())?;
-    let subscribe_url = read_subscribe_url(subscribe_url_file)?;
-    let report = publish_sync_notification_advertisement(
-        &paths,
-        &SyncNotificationPublishOptions {
-            subscribe_url,
-            remote: GitRemote::parse(remote).map_err(CliError::operation)?,
-            expected: expected.map(str::to_string),
-            sign,
-            signing_key: signing_key.map(str::to_string),
-            dry_run,
-        },
-    )
-    .map_err(CliError::operation)?;
-    print_sync_advertise(cli.output, &report)
-}
-
-const MAX_SUBSCRIBE_URL_INPUT_BYTES: usize = 4 * 1024;
-
-fn read_subscribe_url(source: &std::path::Path) -> Result<String, CliError> {
-    let mut bytes = Vec::new();
-    if source == std::path::Path::new("-") {
-        if io::stdin().is_terminal() {
-            return Err(CliError::operation(
-                "--subscribe-url-file - requires piped stdin; interactive secret entry is not supported",
-            ));
-        }
-        io::stdin()
-            .lock()
-            .take((MAX_SUBSCRIBE_URL_INPUT_BYTES + 3) as u64)
-            .read_to_end(&mut bytes)
-            .map_err(CliError::operation)?;
-    } else {
-        let file = open_subscribe_url_file(source)?;
-        let metadata = file.metadata().map_err(CliError::operation)?;
-        if !metadata.is_file() {
-            return Err(CliError::operation(
-                "the notification subscribe URL source must be a regular file",
-            ));
-        }
-        require_private_subscribe_url_file(&metadata)?;
-        file.take((MAX_SUBSCRIBE_URL_INPUT_BYTES + 3) as u64)
-            .read_to_end(&mut bytes)
-            .map_err(CliError::operation)?;
-    }
-    if bytes.ends_with(b"\r\n") {
-        bytes.truncate(bytes.len() - 2);
-    } else if bytes.ends_with(b"\n") {
-        bytes.pop();
-    }
-    if bytes.len() > MAX_SUBSCRIBE_URL_INPUT_BYTES {
-        return Err(CliError::operation(
-            "notification subscribe URL input exceeds the 4096-byte limit",
-        ));
-    }
-    let value = String::from_utf8(bytes)
-        .map_err(|_| CliError::operation("notification subscribe URL input is not valid UTF-8"))?;
-    if value.contains(['\r', '\n']) {
-        return Err(CliError::operation(
-            "notification subscribe URL input must contain exactly one line",
-        ));
-    }
-    Ok(value)
-}
-
-#[cfg(unix)]
-fn open_subscribe_url_file(source: &std::path::Path) -> Result<std::fs::File, CliError> {
-    let absolute = if source.is_absolute() {
-        source.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map_err(CliError::operation)?
-            .join(source)
-    };
-    let relative = absolute
-        .strip_prefix(std::path::Path::new("/"))
-        .map_err(|_| {
-            CliError::operation("notification subscribe URL path is not an absolute Unix path")
-        })?;
-    vulcan_core::paths::secure_open_read(std::path::Path::new("/"), relative)
-        .map_err(CliError::operation)
-}
-
-#[cfg(not(unix))]
-fn open_subscribe_url_file(_source: &std::path::Path) -> Result<std::fs::File, CliError> {
-    Err(CliError::operation(
-        "notification subscribe URL files require Unix privacy modes; use --subscribe-url-file - with piped stdin on this platform",
-    ))
-}
-
-#[cfg(unix)]
-fn require_private_subscribe_url_file(metadata: &std::fs::Metadata) -> Result<(), CliError> {
-    use std::os::unix::fs::PermissionsExt;
-
-    if metadata.permissions().mode() & 0o077 != 0 {
-        return Err(CliError::operation(
-            "notification subscribe URL files must not be accessible by group or other users",
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn require_private_subscribe_url_file(_metadata: &std::fs::Metadata) -> Result<(), CliError> {
-    unreachable!("non-Unix file inputs are rejected before metadata validation")
-}
-
-fn print_sync_advertise(
-    output: OutputFormat,
-    report: &SyncNotificationPublishReport,
-) -> Result<(), CliError> {
-    if output == OutputFormat::Json {
-        return print_json(report);
-    }
-    if report.dry_run {
-        println!(
-            "Would advertise {} ({}) on {} {}; currently {}.",
-            report.origin,
-            report.fingerprint,
-            report.remote.as_str(),
-            report.advertisement_ref,
-            report
-                .previous_revision
-                .as_deref()
-                .map_or("nothing is advertised".to_string(), |revision| format!(
-                    "revision {revision} is advertised"
-                )),
-        );
-        return Ok(());
-    }
-    println!(
-        "Advertised {} ({}) on {} {} at revision {}.",
-        report.origin,
-        report.fingerprint,
-        report.remote.as_str(),
-        report.advertisement_ref,
-        report.revision.as_deref().unwrap_or("unknown"),
-    );
-    if report.signed {
-        println!("The advertisement commit is signed.");
-    }
-    if let Some(previous) = &report.previous_revision {
-        println!("Replaced revision {previous}.");
-    }
-    Ok(())
-}
-
-fn run_sync_unadvertise(
-    cli: &Cli,
-    selected_paths: &VaultPaths,
-    wiki: Option<&str>,
-    remote: &str,
-    expected: Option<&str>,
-    dry_run: bool,
-) -> Result<(), CliError> {
-    let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
-    check_sync_permission(cli, &paths, registration_profile.as_deref())?;
-    let report = remove_sync_notification_advertisement(
-        &paths,
-        &SyncNotificationRemoveOptions {
-            remote: GitRemote::parse(remote).map_err(CliError::operation)?,
-            expected: expected.map(str::to_string),
-            dry_run,
-        },
-    )
-    .map_err(CliError::operation)?;
-    if !report.dry_run && !report.deleted && report.previous_revision.is_some() {
-        return Err(CliError::issues(format!(
-            "Notification advertisement {} on {} changed while it was being removed; retry with --expected {}",
-            report.advertisement_ref,
-            report.remote.as_str(),
-            report.previous_revision.as_deref().unwrap_or("unknown"),
-        )));
-    }
-    print_sync_unadvertise(cli.output, &report)
-}
-
-fn print_sync_unadvertise(
-    output: OutputFormat,
-    report: &SyncNotificationRemoveReport,
-) -> Result<(), CliError> {
-    if output == OutputFormat::Json {
-        return print_json(report);
-    }
-    if report.dry_run {
-        println!(
-            "Would remove {} on {}; currently {}.",
-            report.advertisement_ref,
-            report.remote.as_str(),
-            report
-                .previous_revision
-                .as_deref()
-                .map_or("nothing is advertised".to_string(), |revision| format!(
-                    "revision {revision} is advertised"
-                )),
-        );
-        return Ok(());
-    }
-    if report.deleted {
-        println!(
-            "Removed {} on {} (was revision {}).",
-            report.advertisement_ref,
-            report.remote.as_str(),
-            report.previous_revision.as_deref().unwrap_or("unknown"),
-        );
-    } else {
-        println!(
-            "No notification advertisement on {}; nothing removed.",
-            report.remote.as_str(),
-        );
-    }
-    Ok(())
-}
-
-fn run_sync_notifications(
-    cli: &Cli,
-    selected_paths: &VaultPaths,
-    wiki: Option<&str>,
-    remote: &str,
-) -> Result<(), CliError> {
-    let (paths, registration_profile, paused) = resolve_notification_paths(selected_paths, wiki)?;
-    let daemon_running = DaemonProcessContext::user_default()
-        .ok()
-        .and_then(|context| daemon_status(&context).ok())
-        .is_some_and(|status| status.running);
-    let report = notification_status(
-        &paths,
-        &SyncNotificationStatusOptions {
-            remote: GitRemote::parse(remote).map_err(CliError::operation)?,
-            permissions_profile: cli
-                .permissions
-                .as_deref()
-                .or(registration_profile.as_deref())
-                .map(str::to_string),
-            paused,
-            git_backend: wiki.map(|_| true),
-            daemon_running,
-        },
-    )
-    .map_err(CliError::operation)?;
-    print_sync_notifications(cli.output, &report)
-}
-
-/// Resolves the vault, effective permission profile, and pause state for a
-/// notification inspection. Unlike mutating commands, a denied Git capability
-/// is a report finding rather than an error, so no permission gate applies.
-fn resolve_notification_paths(
-    selected_paths: &VaultPaths,
-    wiki: Option<&str>,
-) -> Result<(VaultPaths, Option<String>, Option<bool>), CliError> {
-    let Some(wiki) = wiki else {
-        return Ok((selected_paths.clone(), None, None));
-    };
-    let id = WikiId::parse(wiki).map_err(CliError::operation)?;
-    let registration = WikiRegistry::user_default()
-        .map_err(CliError::operation)?
-        .show(&id)
-        .map_err(CliError::operation)?
-        .registration;
-    if registration
-        .sync_backend
-        .as_deref()
-        .is_some_and(|backend| backend != "git")
-    {
-        return Err(CliError::operation(format!(
-            "wiki `{id}` uses unsupported sync backend `{}`",
-            registration.sync_backend.as_deref().unwrap_or_default()
-        )));
-    }
-    Ok((
-        VaultPaths::new(registration.path),
-        registration.permissions_profile,
-        Some(registration.sync_paused),
-    ))
-}
-
-fn print_sync_notifications(
-    output: OutputFormat,
-    report: &SyncNotificationStatusReport,
-) -> Result<(), CliError> {
-    if output == OutputFormat::Json {
-        return print_json(report);
-    }
-    if report.would_listen {
-        println!(
-            "Would use notification server {} ({}) at revision {} via {}.",
-            report.origin.as_deref().unwrap_or("unknown"),
-            report.fingerprint.as_deref().unwrap_or("unknown"),
-            report.revision.as_deref().unwrap_or("unknown"),
-            report.remote.as_str(),
-        );
-        return Ok(());
-    }
-    println!(
-        "Would not use a notification server: {}.",
-        if report.reasons.is_empty() {
-            "unknown reason".to_string()
-        } else {
-            report.reasons.join(", ")
-        },
-    );
-    println!("Detail: {}", report.detail);
     Ok(())
 }
 
@@ -4155,78 +3776,6 @@ mod sync_report_tests {
             branch_preview_message(Some(&branch_lane(GitBranchSyncAction::UpToDate, None))),
             "branch main is up to date"
         );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn subscribe_url_file_must_be_private_bounded_and_single_line() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let temporary = tempfile::tempdir().expect("temporary directory");
-        let temporary_root = temporary
-            .path()
-            .canonicalize()
-            .expect("canonical temporary directory");
-        let source = temporary_root.join("subscribe-url");
-        std::fs::write(&source, "https://patch.example/h/private?pubsub=true\n")
-            .expect("secret file");
-        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o600))
-            .expect("private permissions");
-        assert_eq!(
-            read_subscribe_url(&source).expect("URL"),
-            "https://patch.example/h/private?pubsub=true"
-        );
-
-        std::fs::write(&source, "https://one.example\nhttps://two.example\n")
-            .expect("multiline secret");
-        assert!(read_subscribe_url(&source)
-            .expect_err("multiple lines must fail")
-            .to_string()
-            .contains("exactly one line"));
-
-        std::fs::write(&source, vec![b'x'; MAX_SUBSCRIBE_URL_INPUT_BYTES + 1])
-            .expect("oversized secret");
-        assert!(read_subscribe_url(&source)
-            .expect_err("oversized input must fail")
-            .to_string()
-            .contains("4096-byte limit"));
-
-        let target = temporary_root.join("target");
-        std::fs::write(&target, "https://patch.example/h/symlink?pubsub=true")
-            .expect("symlink target");
-        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600))
-            .expect("private target permissions");
-        let symlink = temporary_root.join("subscribe-url-symlink");
-        std::os::unix::fs::symlink(&target, &symlink).expect("secret symlink");
-        assert!(
-            read_subscribe_url(&symlink).is_err(),
-            "the checked path must not be followed after validation"
-        );
-        let real_directory = temporary_root.join("real-directory");
-        std::fs::create_dir(&real_directory).expect("real secret directory");
-        let nested_target = real_directory.join("subscribe-url");
-        std::fs::write(
-            &nested_target,
-            "https://patch.example/h/parent-symlink?pubsub=true",
-        )
-        .expect("nested secret");
-        std::fs::set_permissions(&nested_target, std::fs::Permissions::from_mode(0o600))
-            .expect("private nested permissions");
-        let linked_directory = temporary_root.join("linked-directory");
-        std::os::unix::fs::symlink(&real_directory, &linked_directory)
-            .expect("secret directory symlink");
-        assert!(
-            read_subscribe_url(&linked_directory.join("subscribe-url")).is_err(),
-            "intermediate path components must not redirect the secret read"
-        );
-
-        std::fs::write(&source, "https://patch.example/h/private").expect("valid secret again");
-        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o644))
-            .expect("public permissions");
-        assert!(read_subscribe_url(&source)
-            .expect_err("public secret file must fail")
-            .to_string()
-            .contains("group or other users"));
     }
 }
 

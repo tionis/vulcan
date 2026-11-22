@@ -39,10 +39,10 @@ permission profiles, or diagnoses permission and trust failures.
 13. Preview companion installation with `vulcan daemon companion install [<wiki>] --dry-run`, then apply after checking the registered vault and managed files. First install seeds only the non-secret endpoint/wiki preferences; upgrades preserve `data.json`, and pairing still requires the explicit token handoff into Obsidian `SecretStorage`.
 14. Scheduled jobs live in shared `.vulcan/config.toml` under `[[schedules.jobs]]` (`[schedules] version = 1`); a `[schedules]` table in `config.local.toml` is ignored. Each job names a built-in `target` (`scan` or `batch-commit`), the exact device IDs in `nodes` that run it (from `vulcan device show`), a `trigger` (`every = "15m"` or `cron = "..."` with a required IANA `timezone`), and an `authority` permission profile. Check with `vulcan schedule list` (where each job runs, whether it is authorized, next and last runs), preview a run with `vulcan schedule run <id> --dry-run`, and toggle with `vulcan schedule enable|disable <id> --dry-run` first. The daemon runs due jobs; `vulcan schedule run <id>` runs one now without it. A device can require signed job definitions (trusted-commit): check `vulcan schedule trust status` (policy, checkpoint, and each job's state such as `authorized` or `unsigned-change`). Under it, jobs come from the signed commit, so an edit to `[[schedules.jobs]]` or `[git]` only takes effect once the user commits and signs it.
 15. For interactive Templater creation-rule setup, use `vulcan config edit`: its structured folder and regex rule editors can add/remove rows, and folder fields suggest current vault directories without rejecting manually entered paths.
-16. Realtime sync notification setup has no device-local import command or daemon setting. The
-    daemon discovers `notification.json` from the repository's exact
-    `refs/vulcan/notifications` ref. The registration's effective profile must allow Git and
-    network access to the advertised endpoint origin before the daemon connects.
+16. How often the daemon checks a Git wiki's remote is vault configuration:
+    `sync.poll_min_seconds` (default 15, floor 5) after activity and `sync.poll_max_seconds`
+    (default 900) when idle, in shared `.vulcan/config.toml` or a device's
+    `.vulcan/config.local.toml`. There is no forge-side setup.
 17. Operational sync alerts are a separate daemon-owned concern. Warning/error logs are always on.
     Preview `vulcan daemon config set-notifications --desktop true --dry-run`, apply it, and restart
     the daemon to opt into native desktop delivery. This setting contains no credential and a
@@ -106,12 +106,6 @@ permission profiles, or diagnoses permission and trust failures.
   receive the bounded event on stdin, and never invoke a shell. Do not place credentials in adapter
   arguments.
 - Never copy a revealed companion token into vault content, `.obsidian/plugins/*/data.json`, logs, shell history, or source control.
-- Treat the complete advertised notification subscribe URL as a repository-scoped read capability.
-  It may exist only in the dedicated Git advertisement, not in ordinary vault content, CLI
-  arguments, logs, or device registration state. Pipe it to
-  `sync advertise --subscribe-url-file -`; on Unix, a protected regular file with no symlinked
-  path component is also accepted. Other platforms must use stdin. Configure the separate
-  publish-only webhook URL directly in the forge.
 - Keep assistant-facing profiles narrow. Add only the read/write/network/execute capabilities required by the workflow.
 - A skill command can narrow authority with `permission_profile`; it cannot widen the caller's profile.
 - Managed mdbase writes can require scope-complete read access for uniqueness and incoming link constraints declared by other types, even when editing an untyped note. `permission_denied` does not imply that a hidden conflicting record exists. Do not probe hidden paths, silently borrow an unrestricted grant, or bypass validation with a raw edit; request an explicit authorized grant change if needed.

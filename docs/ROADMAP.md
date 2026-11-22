@@ -6305,7 +6305,9 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 **Goal:** Reduce remote-update latency with one forge-neutral ephemeral HTTP wake-up endpoint per repository. Notifications are content-free, untrusted hints that enqueue the existing finite sync transaction; startup and periodic polling remain the correctness path.
 
-**Specification:** `docs/specs/realtime-sync-notifications.md`.
+**Specification:** `docs/specs/realtime-sync-notifications.md` (retired).
+
+**Status (2026-11-22):** The advertisement, listener, and `sync advertise`/`unadvertise`/`notifications` commands are removed. Per-repository forge webhooks, a relay, and a custom ref proved too much manual setup and fought forge permissions; adaptive polling (12.13.4) replaces them. 12.13.1–12.13.2 record what shipped and was retired; 12.13.3 is withdrawn.
 
 #### 12.13.1 Minimal advertisement contract
 
@@ -6328,11 +6330,12 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 #### 12.13.3 Realtime transport evolution (future evaluation)
 
-- [ ] Evaluate HTTP/3 (QUIC) for notification long-polls only after a measured HTTP/2 deployment: connection migration across network changes, 0-RTT reconnects, and relay support. Requires the reqwest `http3` feature plus the QUIC runtime; keep HTTP/2 multiplexing as the baseline until measurements justify the dependency cost.
-- [ ] Keep the wire contract unchanged through any transport work: content-free wake-ups, Git-authoritative state, no redirects, endpoint redaction, and polling fallback.
+- [-] Evaluate HTTP/3 (QUIC) for notification long-polls only after a measured HTTP/2 deployment: connection migration across network changes, 0-RTT reconnects, and relay support. Requires the reqwest `http3` feature plus the QUIC runtime; keep HTTP/2 multiplexing as the baseline until measurements justify the dependency cost.
+- [-] Keep the wire contract unchanged through any transport work: content-free wake-ups, Git-authoritative state, no redirects, endpoint redaction, and polling fallback.
 
 #### 12.13.4 Adaptive remote polling
 
+- [x] Remove the retired wake-up advertisement: the daemon listener, the `vulcan-sync`/`vulcan-app` advertisement modules, the `sync advertise`, `unadvertise`, and `notifications` commands, and the per-wiki `notification` field of `daemon status`.
 - [x] Replace the daemon's single five-minute remote poll with one adaptive schedule per active Git wiki: activity (a non-poll job such as a watched edit or commit, a manual, resume, or recovery sync, or a poll whose reported revisions changed) resets to `sync.poll_min_seconds` (default 15, floor 5), and each poll doubles the interval up to `sync.poll_max_seconds` (default 900). Both keys work in shared and device-local config. Unit tests cover backoff, both kinds of activity, unfinished jobs, removed wikis, and clamping.
 - [ ] Fetch when an agent session starts: a daemon-hosted MCP session for a Git wiki should enqueue a sync when the last remote check is older than about 30 seconds. Needs the MCP host to reach the sync supervisor.
 
@@ -6340,7 +6343,7 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 **Goal:** Make the existing same-binary daemon and CLI straightforward to install, upgrade, and run on Linux, Windows, and macOS without changing direct local-vault behavior. macOS gains native per-user service parity; release archives remain the canonical distribution input, and package-manager channels project those same artifacts rather than defining a second runtime or configuration model.
 
-**Depends on:** The completed daemon lifecycle and Linux/Windows service installer in 12.8. Realtime notification work in 12.13 is independent: a packaged daemon must remain useful with polling and local watching alone.
+**Depends on:** The completed daemon lifecycle and Linux/Windows service installer in 12.8. A packaged daemon relies on adaptive polling (12.13.4) and local watching alone.
 
 **Boundaries:** Installation is user-scoped by default and never starts or enables the daemon implicitly. Package removal and `daemon uninstall` remove only packaging/service projections, never registered wikis, vault files, credentials, conflict records, journals, or other durable state. Git remains an explicit runtime dependency for the initial sync backend; packaging Vulcan does not silently bundle or replace it.
 

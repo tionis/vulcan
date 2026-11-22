@@ -123,7 +123,6 @@ fn scan_failure(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::process::{DaemonNotificationDiscoveryState, DaemonNotificationDiscoveryStatus};
     use crate::registry::{
         ManagedDirectoryProfile, MaterializationProfile, WikiId, WikiRegistration,
     };
@@ -185,12 +184,6 @@ mod tests {
             }),
             sync_error: None,
             cache,
-            notification: DaemonNotificationDiscoveryStatus {
-                state: DaemonNotificationDiscoveryState::NotDiscovered,
-                origin: None,
-                fingerprint: None,
-                revision: None,
-            },
         }
     }
 

@@ -5299,7 +5299,6 @@ dependencies = [
  "tempfile",
  "ulid",
  "unicode-normalization",
- "url",
  "wait-timeout",
  "yaml_serde",
 ]

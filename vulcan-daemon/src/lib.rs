@@ -55,7 +55,6 @@ pub mod mcp_state;
 pub mod mcp_transport;
 pub mod mcp_worker;
 pub mod mutation_scheduler;
-pub mod notifications;
 pub mod observation;
 pub mod preview;
 pub mod process;

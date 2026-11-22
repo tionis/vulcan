@@ -19,9 +19,6 @@ use crate::host::{
 };
 use crate::http::CompanionHttpState;
 use crate::mutation_scheduler::{MutationScheduler, MutationSchedulerConfig};
-use crate::notifications::{
-    run_notification_runtime_until, NotificationRuntimeError, NotificationRuntimeOptions,
-};
 #[cfg(feature = "web")]
 use crate::registry::DaemonAgentConfig;
 use crate::registry::{RegistryError, WikiRegistrationStatus, WikiRegistry};
@@ -55,7 +52,6 @@ use vulcan_app::device_identity::DeviceIdentityStore;
 use vulcan_app::sync::GitSyncOptions;
 use vulcan_app::sync_state::SyncStateStore;
 use vulcan_core::Verbosity;
-use vulcan_sync::{cached_notification_advertisement, GitCliEngine, GitEngine};
 use vulcan_sync::{GitBranchSync, SyncErrorCategory, SyncJobState, SyncJobTrigger};
 
 pub const DAEMON_RUNTIME_VERSION: u32 = 1;
@@ -99,26 +95,6 @@ pub struct DaemonStatusReport {
     pub service: Option<DaemonServiceDiagnostic>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DaemonNotificationDiscoveryState {
-    Discovered,
-    NotDiscovered,
-    Disabled,
-    Unavailable,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct DaemonNotificationDiscoveryStatus {
-    pub state: DaemonNotificationDiscoveryState,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub origin: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fingerprint: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub revision: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DaemonWikiOperationalStatus {
     pub wiki_id: String,
@@ -128,7 +104,6 @@ pub struct DaemonWikiOperationalStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sync_error: Option<String>,
     pub cache: ScanCompletion,
-    pub notification: DaemonNotificationDiscoveryStatus,
 }
 
 #[derive(Debug, Clone)]
@@ -194,7 +169,6 @@ pub enum DaemonProcessError {
     Environment(DaemonEnvironmentError),
     Supervisor(SupervisorError),
     Runtime(SyncTriggerRuntimeError),
-    Notifications(NotificationRuntimeError),
     Io(std::io::Error),
     Json(serde_json::Error),
     Host(HostRuntimeError),
@@ -211,7 +185,6 @@ impl Display for DaemonProcessError {
             Self::Environment(error) => Display::fmt(error, formatter),
             Self::Supervisor(error) => Display::fmt(error, formatter),
             Self::Runtime(error) => Display::fmt(error, formatter),
-            Self::Notifications(error) => Display::fmt(error, formatter),
             Self::Io(error) => Display::fmt(error, formatter),
             Self::Json(error) => Display::fmt(error, formatter),
             Self::Host(error) => Display::fmt(error, formatter),
@@ -457,7 +430,7 @@ where
         state.clone(),
         runtime,
         Arc::clone(&ingress_stop),
-        vec![service_id("worker.remote-notifications")?],
+        vec![service_id("worker.sync-trigger")?],
     )?);
     ensure_daemon_service_budget(registrations.len())?;
     let mut host = start_daemon_host(
@@ -660,36 +633,6 @@ fn daemon_worker_registrations(
                 &trigger_health,
             )
             .map_err(|error| error.to_string())
-        },
-    ));
-
-    let notification_definition = worker_definition(
-        "worker.remote-notifications",
-        true,
-        true,
-        &[service_id("worker.sync-trigger")?],
-        RestartPolicy::Never,
-    )?;
-    let notification_registry = context.registry.clone();
-    let notification_supervisor = Arc::clone(supervisor);
-    let notification_state_store = Arc::clone(state_store);
-    let notification_runtime = runtime.clone();
-    registrations.push(ServiceRegistration::new(
-        notification_definition,
-        move |service| {
-            service.ready()?;
-            notification_runtime
-                .block_on(run_notification_runtime_until(
-                    notification_registry.clone(),
-                    Arc::clone(&notification_supervisor),
-                    Arc::clone(&notification_state_store),
-                    NotificationRuntimeOptions {
-                        verbosity,
-                        ..NotificationRuntimeOptions::default()
-                    },
-                    Arc::clone(service.stop()),
-                ))
-                .map_err(|error| error.to_string())
         },
     ));
 
@@ -1048,7 +991,6 @@ fn graceful_shutdown_services() -> Result<BTreeSet<ServiceId>, DaemonProcessErro
     [
         "listener.companion",
         "worker.sync-trigger",
-        "worker.remote-notifications",
         "worker.conflict",
         "worker.semantic",
         "worker.telegram-bot",
@@ -1277,7 +1219,6 @@ pub fn daemon_status(
                 sync,
                 sync_error,
                 cache,
-                notification: cached_notification_status(wiki),
             }
         })
         .collect();
@@ -1301,38 +1242,6 @@ pub fn daemon_status(
         services,
         service: None,
     })
-}
-
-fn cached_notification_status(wiki: &WikiRegistrationStatus) -> DaemonNotificationDiscoveryStatus {
-    let empty = |state| DaemonNotificationDiscoveryStatus {
-        state,
-        origin: None,
-        fingerprint: None,
-        revision: None,
-    };
-    if wiki.registration.sync_paused
-        || wiki
-            .registration
-            .sync_backend
-            .as_deref()
-            .is_some_and(|backend| backend != "git")
-    {
-        return empty(DaemonNotificationDiscoveryState::Disabled);
-    }
-    let engine = GitCliEngine::default();
-    let Ok(repository) = engine.discover_repository(&wiki.registration.path) else {
-        return empty(DaemonNotificationDiscoveryState::Unavailable);
-    };
-    match cached_notification_advertisement(&engine, &repository) {
-        Ok(Some(discovered)) => DaemonNotificationDiscoveryStatus {
-            state: DaemonNotificationDiscoveryState::Discovered,
-            origin: Some(discovered.advertisement.endpoint.origin().to_string()),
-            fingerprint: Some(discovered.advertisement.endpoint.fingerprint().to_string()),
-            revision: Some(discovered.revision.to_string()),
-        },
-        Ok(None) => empty(DaemonNotificationDiscoveryState::NotDiscovered),
-        Err(_) => empty(DaemonNotificationDiscoveryState::Unavailable),
-    }
 }
 
 pub fn request_daemon_shutdown(
@@ -2134,7 +2043,7 @@ mod tests {
         });
 
         let status = wait_until_running(&context, &result_receiver);
-        assert_eq!(status.services.len(), 10);
+        assert_eq!(status.services.len(), 9);
         assert!(status.services.iter().any(|service| {
             service.id.as_str() == "listener.test-ingress"
                 && service.state == crate::host::ServiceLifecycleState::Ready
@@ -2156,10 +2065,6 @@ mod tests {
             .expect("sync status")
             .last_attempt_unix_ms
             .is_some());
-        assert_eq!(
-            wiki_status.notification.state,
-            DaemonNotificationDiscoveryState::NotDiscovered
-        );
     }
 
     #[test]
@@ -2400,7 +2305,7 @@ mod tests {
         let status = wait_until_running(&context, &result_receiver);
         assert_eq!(status.registered_wikis.len(), 1);
         assert_eq!(status.wiki_statuses.len(), 1);
-        assert_eq!(status.services.len(), 9);
+        assert_eq!(status.services.len(), 8);
         assert!(status.services.iter().any(|service| {
             service.id.as_str() == "worker.telegram-bot"
                 && service.state == crate::host::ServiceLifecycleState::Disabled
