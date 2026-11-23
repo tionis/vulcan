@@ -1,7 +1,9 @@
-//! Permission-aware, read-only MCP sync reports shared across host transports.
+//! Permission-aware MCP sync reports and triggers shared across host transports.
 
 use serde::Serialize;
 use serde_json::Value;
+use std::path::Path;
+use std::sync::OnceLock;
 use vulcan_core::{PermissionGuard, ProfilePermissionGuard, VaultPaths};
 
 use crate::mcp_protocol::{
@@ -70,6 +72,57 @@ pub fn sync_conflicts(
     }
 }
 
+/// What starts or resumes a registered vault's synchronization for MCP
+/// tools. The daemon installs one that queues jobs on its own supervisor;
+/// `vulcan mcp` installs one that asks the running daemon, or syncs directly
+/// when none runs. Registration state lives outside this crate, hence the hook.
+pub trait McpSyncHost: Send + Sync {
+    /// Starts a synchronization of the registered vault at `vault_root` now.
+    fn sync_now(&self, vault_root: &Path) -> Result<Value, String>;
+    /// Clears the registration's pause and starts a synchronization.
+    fn resume(&self, vault_root: &Path) -> Result<Value, String>;
+}
+
+static SYNC_HOST: OnceLock<Box<dyn McpSyncHost>> = OnceLock::new();
+
+/// Installs this process's sync host; the first one wins. Returns whether
+/// `host` was installed.
+pub fn install_sync_host(host: Box<dyn McpSyncHost>) -> bool {
+    SYNC_HOST.set(host).is_ok()
+}
+
+fn sync_host() -> Result<&'static dyn McpSyncHost, McpMethodError> {
+    SYNC_HOST.get().map(AsRef::as_ref).ok_or_else(|| {
+        McpMethodError::tool(
+            "this MCP server cannot start synchronization; run `vulcan sync refresh` instead",
+        )
+    })
+}
+
+pub fn sync_refresh(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+) -> Result<Value, McpMethodError> {
+    guard
+        .check_git()
+        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    sync_host()?
+        .sync_now(paths.vault_root())
+        .map_err(McpMethodError::tool)
+}
+
+pub fn sync_resume(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+) -> Result<Value, McpMethodError> {
+    guard
+        .check_git()
+        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    sync_host()?
+        .resume(paths.vault_root())
+        .map_err(McpMethodError::tool)
+}
+
 fn git_sync_options(args: &McpSyncTargetArgs) -> Result<GitSyncOptions, McpMethodError> {
     let mut options = GitSyncOptions::default();
     if let Some(remote) = args.remote.as_deref() {
@@ -92,6 +145,21 @@ fn report_value(report: impl Serialize) -> Result<Value, McpMethodError> {
 mod tests {
     use super::*;
     use vulcan_core::resolve_permission_profile;
+
+    #[test]
+    fn without_a_host_sync_triggers_say_how_to_sync_instead() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        let guard = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("unrestricted")).unwrap(),
+        );
+        let error = sync_refresh(&paths, &guard).unwrap_err();
+        assert!(
+            format!("{error:?}").contains("vulcan sync refresh"),
+            "{error:?}"
+        );
+    }
 
     #[test]
     fn sync_options_are_dry_run_by_default_and_accept_valid_overrides() {

@@ -30567,7 +30567,7 @@ fn completions_command_emits_shell_script() {
 }
 
 #[test]
-fn describe_mcp_sync_pack_exposes_only_bounded_read_only_operations() {
+fn describe_mcp_sync_pack_exposes_bounded_reads_and_two_triggers() {
     let assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
         .args([
@@ -30588,11 +30588,20 @@ fn describe_mcp_sync_pack_exposes_only_bounded_read_only_operations() {
             .iter()
             .map(|tool| tool["name"].as_str().expect("tool name"))
             .collect::<Vec<_>>(),
-        vec!["sync_status", "sync_plan", "sync_doctor", "sync_conflicts"]
+        vec![
+            "sync_status",
+            "sync_plan",
+            "sync_doctor",
+            "sync_conflicts",
+            "sync_refresh",
+            "sync_resume"
+        ]
     );
-    assert!(tools
-        .iter()
-        .all(|tool| tool["annotations"]["readOnlyHint"] == true));
+    // Only the triggers start work; the reports stay read-only.
+    assert!(tools.iter().all(|tool| {
+        let trigger = matches!(tool["name"].as_str(), Some("sync_refresh" | "sync_resume"));
+        tool["annotations"]["readOnlyHint"] == !trigger
+    }));
     assert!(tools
         .iter()
         .all(|tool| tool["inputSchema"]["additionalProperties"] == false));

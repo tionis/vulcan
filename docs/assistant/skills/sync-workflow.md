@@ -514,6 +514,9 @@ commits and is never written from live.
   state. A `sync paused` line with diverged local commits means: run `git pull --rebase && git push`
   in the wiki. Without a daemon it syncs directly; it never exits non-zero for a sync outcome.
   `vulcan agent print-config --runtime <harness>` prints a session-start hook that runs it.
+- An agent working only through MCP uses the `sync` pack: `sync_refresh` starts a cycle now (to
+  publish just-committed work or pick up others' changes), and `sync_resume` clears a paused
+  registration. Check `sync_status` afterwards; a paused branch still needs the fix its alert names.
 - Repositories that still carry a `refs/vulcan/notifications` ref from the retired wake-up
   advertisement can drop it with ordinary Git (`git push origin :refs/vulcan/notifications`);
   Vulcan no longer reads it.

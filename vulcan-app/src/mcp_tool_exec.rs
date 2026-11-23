@@ -292,6 +292,12 @@ impl McpToolExecution<'_> {
                     &mcp_notes::note_delete(self.paths, self.guard, self.profile_name, args)?,
                 )
             }
+            McpToolId::SyncRefresh => {
+                self.value(tool.name, mcp_sync::sync_refresh(self.paths, self.guard)?)
+            }
+            McpToolId::SyncResume => {
+                self.value(tool.name, mcp_sync::sync_resume(self.paths, self.guard)?)
+            }
             McpToolId::NoteMove => {
                 let args: mcp_protocol::McpNoteMoveArgs = parse(arguments)?;
                 self.report(

@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 use vulcan_core::{ConfigPermissionMode, PermissionMode, PermissionProfile};
 
 use crate::mcp_protocol::{McpMethodError, McpToolPackMutationArgs};
+use crate::mcp_schemas::empty_input_schema;
 use crate::mcp_schemas::{
     config_set_input_schema, config_set_output_schema, config_show_input_schema,
     config_show_output_schema, daily_input_schema, daily_list_input_schema, daily_output_schema,
@@ -121,7 +122,7 @@ impl McpToolPack {
             Self::ToolPacks => {
                 "Inspect and mutate the MCP tool-pack selection for the current session."
             }
-            Self::Sync => "Inspect and plan Git-backed vault synchronization without mutation.",
+            Self::Sync => "Inspect Git-backed vault synchronization and start or resume it.",
             Self::Git => "Inspect vault history and changes and commit them.",
         }
     }
@@ -163,6 +164,8 @@ pub enum McpToolId {
     SyncPlan,
     SyncDoctor,
     SyncConflicts,
+    SyncRefresh,
+    SyncResume,
     NoteMove,
     GitStatus,
     GitDiff,
@@ -645,6 +648,30 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         input_schema: sync_conflicts_input_schema,
         output_schema: Some(generic_report_output_schema),
         examples: &["sync_conflicts {}", "sync_conflicts {\"conflict_id\":\"01...\"}"],
+    },
+    McpToolCatalogEntry {
+        id: McpToolId::SyncRefresh,
+        name: "sync_refresh",
+        title: "Synchronize Now",
+        description: "Start a synchronization of this registered vault now: through the daemon when it runs, otherwise directly. Returns the queued job or the cycle's report.",
+        packs: PACK_SYNC,
+        visibility: McpVisibilityRequirement::GitCommit,
+        annotations: mcp_annotations(false, false, false, true),
+        input_schema: empty_input_schema,
+        output_schema: Some(generic_report_output_schema),
+        examples: &["sync_refresh {}"],
+    },
+    McpToolCatalogEntry {
+        id: McpToolId::SyncResume,
+        name: "sync_resume",
+        title: "Resume Synchronization",
+        description: "Clear a paused registration so automatic synchronization runs again, and start a synchronization.",
+        packs: PACK_SYNC,
+        visibility: McpVisibilityRequirement::GitCommit,
+        annotations: mcp_annotations(false, false, true, true),
+        input_schema: empty_input_schema,
+        output_schema: Some(generic_report_output_schema),
+        examples: &["sync_resume {}"],
     },
     McpToolCatalogEntry {
         id: McpToolId::NoteMove,

@@ -5542,7 +5542,7 @@ fn catalog_pack_selection_and_permissions_filter_builtin_tools() {
 }
 
 #[test]
-fn sync_tools_require_full_read_and_git_and_remain_mutation_free() {
+fn sync_tools_require_full_read_and_git_and_only_triggers_mutate() {
     let selected = resolve_selected_tool_packs(&[McpToolPackArg::Sync], McpToolPackMode::Static);
     let visible = visible_tool_catalog(&selected, &PermissionProfile::unrestricted())
         .into_iter()
@@ -5550,7 +5550,14 @@ fn sync_tools_require_full_read_and_git_and_remain_mutation_free() {
         .collect::<Vec<_>>();
     assert_eq!(
         visible,
-        vec!["sync_status", "sync_plan", "sync_doctor", "sync_conflicts"]
+        vec![
+            "sync_status",
+            "sync_plan",
+            "sync_doctor",
+            "sync_conflicts",
+            "sync_refresh",
+            "sync_resume"
+        ]
     );
     assert!(visible_tool_catalog(&selected, &PermissionProfile::readonly()).is_empty());
 

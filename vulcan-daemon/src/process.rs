@@ -387,6 +387,12 @@ where
         MutationScheduler::new(MutationSchedulerConfig::default())
             .expect("default daemon scheduler limits are valid"),
     );
+    vulcan_app::mcp_sync::install_sync_host(Box::new(
+        crate::mcp_sync_host::RegistrySyncHost::in_daemon(
+            context.registry.clone(),
+            Arc::clone(&supervisor),
+        ),
+    ));
     let state = CompanionHttpState {
         registry: Arc::new(context.registry.clone()),
         supervisor: Arc::clone(&supervisor),

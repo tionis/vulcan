@@ -1097,6 +1097,10 @@ pub fn git_status_input_schema() -> Value {
     schema_object(Vec::new(), &[])
 }
 
+pub fn empty_input_schema() -> Value {
+    schema_object(Vec::new(), &[])
+}
+
 pub fn git_diff_input_schema() -> Value {
     schema_object(
         vec![(
