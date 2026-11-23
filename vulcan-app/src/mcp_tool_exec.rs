@@ -76,7 +76,14 @@ impl McpToolExecution<'_> {
         };
         let tool = authorized.tool;
         let arguments = authorized.arguments.as_ref();
-        match tool.id {
+        let flag = |name: &str| arguments.get(name).and_then(Value::as_bool) == Some(true);
+        let commit_probe = (reports_commit(tool.id) && !flag("dry_run")).then(|| {
+            (
+                crate::commit::head_revision(self.paths.vault_root()),
+                flag("no_commit"),
+            )
+        });
+        let structured = match tool.id {
             McpToolId::NoteGet => {
                 let args: McpNoteGetArgs = parse(arguments)?;
                 self.report(
@@ -329,7 +336,18 @@ impl McpToolExecution<'_> {
                 )?;
                 self.value(tool.name, state)
             }
+        }?;
+        let mut structured = wrap_structured(structured);
+        if let (Some((before, no_commit)), Some(object)) =
+            (commit_probe, structured.as_object_mut())
+        {
+            let outcome = crate::commit::commit_outcome(self.paths, before.as_deref(), no_commit);
+            object.insert(
+                "commit".to_string(),
+                serde_json::to_value(outcome).unwrap_or(Value::Null),
+            );
         }
+        Ok(self.resources.success_response(tool.name, structured))
     }
 
     fn report<T: Serialize>(
@@ -343,9 +361,36 @@ impl McpToolExecution<'_> {
         self.value(tool_name, value)
     }
 
-    #[allow(clippy::unnecessary_wraps)] // Keeps infallible response branches uniform with fallible workflow arms.
-    fn value(&mut self, tool_name: &str, value: Value) -> Result<Value, McpMethodError> {
-        Ok(self.resources.success_response(tool_name, value))
+    #[allow(clippy::unnecessary_wraps, clippy::unused_self)] // Keeps infallible response branches uniform with fallible workflow arms.
+    fn value(&mut self, _tool_name: &str, value: Value) -> Result<Value, McpMethodError> {
+        Ok(value)
+    }
+}
+
+/// Tools that change vault files, whose results say whether and how the
+/// change was committed.
+const fn reports_commit(tool: McpToolId) -> bool {
+    matches!(
+        tool,
+        McpToolId::NoteCreate
+            | McpToolId::NoteAppend
+            | McpToolId::NotePatch
+            | McpToolId::NoteSet
+            | McpToolId::NoteDelete
+            | McpToolId::TaskCreate
+            | McpToolId::TaskComplete
+            | McpToolId::TaskReschedule
+            | McpToolId::TaskReminderAdd
+            | McpToolId::TaskReminderRemove
+            | McpToolId::ConfigSet
+    )
+}
+
+fn wrap_structured(structured: Value) -> Value {
+    if structured.is_object() {
+        structured
+    } else {
+        json!({ "result": structured })
     }
 }
 
@@ -398,5 +443,78 @@ mod tests {
             executor.call_tool("note_create", &Map::new()),
             Err(McpMethodError::Tool { .. })
         ));
+    }
+
+    fn git(root: &std::path::Path, arguments: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+            .args(arguments)
+            .current_dir(root)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {arguments:?}");
+    }
+
+    fn append(root: &std::path::Path, text: &str) -> Value {
+        let paths = VaultPaths::new(root);
+        let selection = resolve_permission_profile(&paths, Some("unrestricted")).unwrap();
+        let guard = ProfilePermissionGuard::new(&paths, selection.clone());
+        let mut selected = BTreeSet::from([McpToolPack::NotesWrite]);
+        let pinned = BTreeSet::new();
+        let mut resources = McpToolResourceStore::default();
+        let registry = CustomToolRegistryOptions::default();
+        let mut executor = McpToolExecution {
+            paths: &paths,
+            guard: &guard,
+            profile_name: &selection.name,
+            profile: &selection.profile,
+            selected_packs: &mut selected,
+            pinned_packs: &pinned,
+            pack_mode: McpToolPackMode::Static,
+            resources: &mut resources,
+            custom_registry: &registry,
+        };
+        let arguments = Map::from_iter([
+            ("note".to_string(), json!("Home.md")),
+            ("text".to_string(), json!(text)),
+        ]);
+        executor.call_tool("note_append", &arguments).unwrap()["structuredContent"].clone()
+    }
+
+    #[test]
+    fn writes_say_whether_and_how_their_change_was_committed() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        git(root, &["init", "--quiet"]);
+        std::fs::write(root.join("Home.md"), "# Home\n").unwrap();
+        git(root, &["add", "Home.md"]);
+        git(root, &["commit", "--quiet", "-m", "home"]);
+
+        let uncommitted = append(root, "first");
+        assert_eq!(
+            uncommitted["commit"]["status"], "uncommitted",
+            "{uncommitted}"
+        );
+
+        std::fs::create_dir_all(root.join(".vulcan")).unwrap();
+        std::fs::write(
+            root.join(".vulcan/config.toml"),
+            "[git]\nauto_commit = true\nstrategy = \"batched\"\n",
+        )
+        .unwrap();
+        assert_eq!(append(root, "second")["commit"]["status"], "batched");
+
+        std::fs::write(
+            root.join(".vulcan/config.toml"),
+            "[git]\nauto_commit = true\n",
+        )
+        .unwrap();
+        std::fs::write(root.join(".gitignore"), ".vulcan/\n").unwrap();
+        let committed = append(root, "third");
+        assert_eq!(committed["commit"]["status"], "committed", "{committed}");
+        assert_eq!(
+            committed["commit"]["sha"].as_str(),
+            crate::commit::head_revision(root).as_deref()
+        );
     }
 }

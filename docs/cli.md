@@ -950,6 +950,8 @@ Behavior:
 - `trigger = "scan"` also allows `scan` and `watch` to auto-commit external changes after they are indexed.
 - `--no-commit` suppresses auto-commit for one invocation even when the vault config enables it.
 - A vault registered on this device with the Git sync backend (`vulcan vault add` without `--no-sync`) is captured by sync's hidden-ref snapshots instead. Its per-write commits stand down with a warning, so automatic capture never lands twice. Manual `vulcan git commit` still works.
+- Under `sync.worktree = "none"` sync moves only commits, so auto-commit owns capture again even for a Git sync registration: per-write commits run, and the daemon starts a batch consumer for `strategy = "batched"`. This is how edits made through MCP or the bot in a committed-history-only vault become commits that sync publishes.
+- MCP write tools report what became of their change in a `commit` object: `committed` (with `sha`), `batched`, `captured_by_sync`, or `uncommitted` with the reason.
 
 ### Batched auto-commits
 

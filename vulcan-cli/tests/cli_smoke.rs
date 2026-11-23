@@ -9311,11 +9311,15 @@ fn vault_list_and_show_report_each_registrations_health_without_a_daemon() {
         ("gone", &gone),
         ("paused", &paused),
     ] {
-        vulcan(&["vault", "add", id])
-            .arg(root)
-            .arg("--no-sync")
-            .assert()
-            .success();
+        let mut add = vulcan(&["vault", "add", id]);
+        add.arg(root);
+        // Only a vault that syncs can have its sync paused.
+        if id == "paused" {
+            add.args(["--sync-backend", "git", "--no-device-key"]);
+        } else {
+            add.arg("--no-sync");
+        }
+        add.assert().success();
     }
     for root in [&healthy, &paused] {
         vulcan(&["--vault"])
@@ -35811,7 +35815,7 @@ fn mcp_note_set_matches_cli_report_and_checks_replacement() {
         .write_stdin(replacement)
         .assert()
         .success();
-    assert_eq!(*mcp_report, parse_stdout_json(&cli_set));
+    assert_eq!(mcp_without_commit(mcp_report), parse_stdout_json(&cli_set));
     assert!(session.finish().is_empty());
 }
 
@@ -35863,7 +35867,7 @@ fn mcp_note_create_and_append_match_cli_reports() {
         .assert()
         .success();
     assert_eq!(
-        created["structuredContent"],
+        mcp_without_commit(&created["structuredContent"]),
         parse_stdout_json(&cli_created)
     );
 
@@ -35899,7 +35903,7 @@ fn mcp_note_create_and_append_match_cli_reports() {
         .assert()
         .success();
     assert_eq!(
-        appended["structuredContent"],
+        mcp_without_commit(&appended["structuredContent"]),
         parse_stdout_json(&cli_appended)
     );
 
@@ -36028,7 +36032,10 @@ fn mcp_note_patch_matches_cli_scoped_dry_run_and_apply_reports() {
             cli_args.push("--dry-run");
         }
         let cli_patch = cargo_vulcan_fixed_now().args(cli_args).assert().success();
-        assert_eq!(patched["structuredContent"], parse_stdout_json(&cli_patch));
+        assert_eq!(
+            mcp_without_commit(&patched["structuredContent"]),
+            parse_stdout_json(&cli_patch)
+        );
         assert!(patched["structuredContent"]["diagnostics"]
             .as_array()
             .is_some_and(|diagnostics| !diagnostics.is_empty()));
@@ -42099,4 +42106,19 @@ fn a_closed_stderr_does_not_abort_a_scan() {
     let status = child.wait().expect("vulcan should finish");
     assert!(status.success(), "{status}");
     assert!(vault.join(".vulcan/cache.db").is_file());
+}
+
+/// An MCP write report minus the `commit` outcome the CLI does not print.
+/// Applied writes must carry it; dry runs must not.
+fn mcp_without_commit(report: &Value) -> Value {
+    let mut report = report.clone();
+    let commit = report
+        .as_object_mut()
+        .and_then(|object| object.remove("commit"));
+    assert_eq!(
+        commit.is_some(),
+        report["dry_run"] != true,
+        "commit outcome on applied writes only: {report}"
+    );
+    report
 }

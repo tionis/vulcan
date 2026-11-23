@@ -164,6 +164,13 @@ terminal outcomes are retained for 30 days, unknown outcomes for 90 days. If the
 outcome is unknown or expired, inspect the vault before deciding whether to retry.
 An operation ledger is not an idempotency guarantee or a Git auto-commit feature.
 
+Every write result carries a `commit` object saying what became of the change: `committed` with
+its `sha`, `batched` (the daemon commits it once the vault is quiet), `captured_by_sync` (whole
+worktree Git sync carries uncommitted edits), or `uncommitted` with the reason. A vault that syncs
+only commits (`sync.worktree = "none"`) needs `[git] auto_commit = true` with
+`strategy = "batched"` for remote writes to reach other devices; see
+[Committed history only](git-sync.md#committed-history-only).
+
 See [configuration reference](../reference/config.md) for storage conventions and
 [implementation acceptance](../specs/named-mcp-acceptance.md) for tested boundaries.
 Real ChatGPT account/public-ingress acceptance is a separate deployment check.

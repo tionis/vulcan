@@ -27,7 +27,10 @@ pub enum AutoCommitPolicy {
 
 /// The component that owns automatic capture of a vault's changes on this
 /// device. Exactly one may: Git sync's hidden-ref snapshots when the vault is
-/// registered with the Git sync backend, otherwise Vulcan's own auto-commit.
+/// registered with the Git sync backend and syncs its worktree, otherwise
+/// Vulcan's own auto-commit. In committed-history-only mode
+/// (`sync.worktree = "none"`) sync moves only commits, so auto-commit is what
+/// turns edits into history that sync can publish.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CaptureOwner {
     AutoCommit,
@@ -81,9 +84,131 @@ pub fn capture_owner_in_registry(registry: &Path, vault_root: &Path) -> CaptureO
                 .is_none_or(|backend| backend == "git")
                 && std::fs::canonicalize(&vault.path).is_ok_and(|path| path == root)
         })
+        .filter(|_| sync_captures_worktree(vault_root))
         .map_or(CaptureOwner::AutoCommit, |vault| {
             CaptureOwner::HiddenRefSync { wiki_id: vault.id }
         })
+}
+
+/// Whether Git sync snapshots this vault's worktree (`sync.worktree` is
+/// `all` or `paths`), so that uncommitted edits reach other devices without
+/// commits. In `none` mode only commits sync.
+#[must_use]
+pub fn sync_captures_worktree(vault_root: &Path) -> bool {
+    load_vault_config(&VaultPaths::new(vault_root))
+        .config
+        .sync
+        .worktree
+        .syncs_live()
+}
+
+/// What became of a write's changes, for reports to agents that cannot run
+/// Git themselves.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct CommitOutcome {
+    pub status: CommitStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha: Option<String>,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitStatus {
+    /// The write was committed (`sha`).
+    Committed,
+    /// Batched auto-commit commits it after the vault has been quiet.
+    Batched,
+    /// Git sync snapshots uncommitted edits and carries them to other devices.
+    CapturedBySync,
+    /// The change stays uncommitted until someone commits it.
+    Uncommitted,
+}
+
+/// The checked-out commit, or `None` outside a repository or before the
+/// first commit.
+#[must_use]
+pub fn head_revision(vault_root: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", "HEAD"])
+        .current_dir(vault_root)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|head| !head.is_empty())
+}
+
+/// Explains what happened to a write made while `HEAD` was `before`.
+#[must_use]
+pub fn commit_outcome(paths: &VaultPaths, before: Option<&str>, no_commit: bool) -> CommitOutcome {
+    let after = head_revision(paths.vault_root());
+    if after.is_some() && after.as_deref() != before {
+        return CommitOutcome {
+            status: CommitStatus::Committed,
+            sha: after,
+            detail: "the change was committed".to_string(),
+        };
+    }
+    let uncommitted = |detail: String| CommitOutcome {
+        status: CommitStatus::Uncommitted,
+        sha: None,
+        detail,
+    };
+    if no_commit {
+        return uncommitted("`no_commit` was set; the change is not committed".to_string());
+    }
+    match AutoCommitPolicy::for_mutation(paths, false) {
+        AutoCommitPolicy::Batched => CommitOutcome {
+            status: CommitStatus::Batched,
+            sha: None,
+            detail: "batched auto-commit commits this once the vault has been quiet".to_string(),
+        },
+        AutoCommitPolicy::OwnedBySync { wiki_id } => CommitOutcome {
+            status: CommitStatus::CapturedBySync,
+            sha: None,
+            detail: format!("Git sync for `{wiki_id}` carries uncommitted edits to other devices"),
+        },
+        AutoCommitPolicy::NotGitRepo => {
+            uncommitted("the vault is not a Git repository, so nothing is committed".to_string())
+        }
+        AutoCommitPolicy::Enabled(_) => uncommitted("there was nothing to commit".to_string()),
+        AutoCommitPolicy::Disabled if is_git_repo(paths.vault_root()) => uncommitted(
+            if matches!(capture_owner(paths.vault_root()), CaptureOwner::AutoCommit)
+                && registered_git_sync(paths.vault_root())
+            {
+                "auto-commit is off and this vault syncs only commits, so the change stays on this device until it is committed; enable `[git] auto_commit` with `strategy = \"batched\"`".to_string()
+            } else {
+                "auto-commit is off, so the change is not committed".to_string()
+            },
+        ),
+        AutoCommitPolicy::Disabled => uncommitted("auto-commit is off".to_string()),
+    }
+}
+
+/// Whether this device registers the vault with the Git sync backend.
+fn registered_git_sync(vault_root: &Path) -> bool {
+    let Some(registry) = vulcan_user_config_dir().map(|dir| dir.join(DAEMON_REGISTRY_FILE)) else {
+        return false;
+    };
+    let Ok(source) = std::fs::read_to_string(registry) else {
+        return false;
+    };
+    let Ok(view) = toml::from_str::<RegistryView>(&source) else {
+        return false;
+    };
+    let Ok(root) = std::fs::canonicalize(vault_root) else {
+        return false;
+    };
+    view.vaults.iter().any(|vault| {
+        vault
+            .sync_backend
+            .as_deref()
+            .is_none_or(|backend| backend == "git")
+            && std::fs::canonicalize(&vault.path).is_ok_and(|path| path == root)
+    })
 }
 
 impl AutoCommitPolicy {
@@ -268,6 +393,18 @@ mod tests {
         );
         assert_eq!(
             capture_owner_in_registry(&registry, &unregistered),
+            CaptureOwner::AutoCommit
+        );
+        // In committed-history-only mode sync moves only commits, so
+        // auto-commit owns capture even for a Git registration.
+        fs::create_dir_all(synced.join(".vulcan")).expect("config directory");
+        fs::write(
+            synced.join(".vulcan/config.toml"),
+            "[sync]\nworktree = \"none\"\n",
+        )
+        .expect("committed-only config");
+        assert_eq!(
+            capture_owner_in_registry(&registry, &synced),
             CaptureOwner::AutoCommit
         );
         fs::write(&registry, "not = [valid").expect("broken registry");

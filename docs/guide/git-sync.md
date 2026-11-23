@@ -206,6 +206,17 @@ branch_pull = "ff-only" # optional: never merge or rebase for you; default "git"
 # branch_push = false # optional: fetch and fast-forward, but push yourself
 ```
 
+Because sync then moves only commits, Vulcan's own auto-commit owns capture for the vault even
+though it is registered for Git sync. Edits made through MCP, the bot, or other tools that cannot
+run Git become history only when something commits them, so enable batched auto-commit in the same
+file when such writers exist:
+
+```toml
+[git]
+auto_commit = true
+strategy = "batched"  # the daemon commits after the vault has been quiet
+```
+
 Each `vulcan sync run` then backs this device's worktree up to its private safety head (never
 applied anywhere), fetches the checked-out branch, fast-forwards it when the incoming commits do not
 touch files you are editing, falls back to your pull configuration when it diverged, and pushes your

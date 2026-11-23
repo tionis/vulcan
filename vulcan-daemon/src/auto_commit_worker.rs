@@ -32,14 +32,17 @@ pub const AUTO_COMMIT_STATUS_VERSION: u32 = 1;
 /// How often the consumer rereads `[git]` while it waits.
 const CONFIG_REFRESH: Duration = Duration::from_secs(5);
 
-/// Whether hidden-ref sync owns automatic capture for `registration`. A
-/// registration without a backend predates `--no-sync` and syncs with Git.
+/// Whether hidden-ref sync owns automatic capture for `registration`: it
+/// syncs with Git (a registration without a backend predates `--no-sync`)
+/// and snapshots the worktree. In committed-history-only mode auto-commit
+/// owns capture, because sync only moves commits.
 #[must_use]
 pub fn sync_owns_capture(registration: &WikiRegistration) -> bool {
     registration
         .sync_backend
         .as_deref()
         .is_none_or(|backend| backend == "git")
+        && vulcan_app::commit::sync_captures_worktree(&registration.path)
 }
 
 /// What the consumer of one vault needs beyond its registration.
@@ -628,13 +631,21 @@ mod tests {
     }
 
     #[test]
-    fn only_vaults_without_git_sync_get_batched_auto_commits() {
-        let path = Path::new("/notes");
+    fn only_vaults_whose_worktree_git_sync_snapshots_skip_batched_auto_commits() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path();
         assert!(sync_owns_capture(&registration(path, "git")));
         assert!(!sync_owns_capture(&registration(path, "none")));
         let mut legacy = registration(path, "git");
         legacy.sync_backend = None;
         assert!(sync_owns_capture(&legacy));
+        std::fs::create_dir_all(path.join(".vulcan")).unwrap();
+        std::fs::write(
+            path.join(".vulcan/config.toml"),
+            "[sync]\nworktree = \"none\"\n",
+        )
+        .unwrap();
+        assert!(!sync_owns_capture(&registration(path, "git")));
     }
 
     #[test]
