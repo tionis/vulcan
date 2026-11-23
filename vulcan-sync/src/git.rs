@@ -812,20 +812,46 @@ pub trait GitEngine: Send + Sync {
 
     /// Replays the checked-out branch's own commits onto `upstream` in a
     /// temporary detached worktree, asking `resolver` for the content of each
-    /// conflicted file, and only when every commit replays moves the branch
-    /// from its current tip to the result: a two-way checkout that refuses to
-    /// overwrite uncommitted work, then a compare-and-swap. The checkout is
-    /// never left mid-operation. Declines (changing nothing) when a rebase
-    /// hazard exists, a conflict involves a binary file, symlink, submodule,
-    /// or deletion, the resolver fails or leaves conflict markers, or the
-    /// branch or worktree changed meanwhile.
+    /// conflicted file. Neither the branch nor the checkout changes; apply
+    /// the result with [`GitEngine::apply_branch_replay`]. Commits that
+    /// become empty on the upstream are dropped, as `git rebase` does.
+    /// Hooks do not run and commits are not signed. Declines when a rebase
+    /// hazard exists, the commits touch a path with a Git `filter`
+    /// attribute, a conflict involves a binary file, symlink, submodule, or
+    /// deletion, or the resolver fails or leaves conflict markers.
+    fn prepare_branch_replay(
+        &self,
+        repository: &GitRepository,
+        branch: &GitRefName,
+        upstream: &GitOid,
+        resolver: &mut dyn BranchReplayResolver,
+    ) -> Result<Result<PreparedBranchReplay, String>, GitEngineError>;
+
+    /// Moves the checked-out branch from the prepared replay's `from` to its
+    /// `to`: a two-way checkout that refuses to overwrite uncommitted work,
+    /// then a compare-and-swap. Declines, changing nothing, when uncommitted
+    /// work is in the way or the branch moved since the replay was prepared.
+    fn apply_branch_replay(
+        &self,
+        repository: &GitRepository,
+        branch: &GitRefName,
+        prepared: PreparedBranchReplay,
+    ) -> Result<BranchReplayOutcome, GitEngineError>;
+
+    /// Prepares and applies a replay in one step, for callers that already
+    /// hold the repository lock and nothing slow runs in the resolver.
     fn replay_branch(
         &self,
         repository: &GitRepository,
         branch: &GitRefName,
         upstream: &GitOid,
         resolver: &mut dyn BranchReplayResolver,
-    ) -> Result<BranchReplayOutcome, GitEngineError>;
+    ) -> Result<BranchReplayOutcome, GitEngineError> {
+        match self.prepare_branch_replay(repository, branch, upstream, resolver)? {
+            Ok(prepared) => self.apply_branch_replay(repository, branch, prepared),
+            Err(reason) => Ok(BranchReplayOutcome::Declined { reason }),
+        }
+    }
 
     /// Rebases the checked-out branch onto a revision, leaving conflicts in
     /// place for the caller to detect. Requires a worktree.
@@ -1412,6 +1438,19 @@ pub trait BranchReplayResolver {
     ) -> Result<Vec<(String, String)>, String>;
 }
 
+/// Replayed commits ready to become the branch tip.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PreparedBranchReplay {
+    /// The branch tip the replay started from.
+    pub from: GitOid,
+    /// The replayed tip.
+    pub to: GitOid,
+    /// Files the resolver supplied.
+    pub resolved: Vec<String>,
+    /// `commit.gpgSign` is on, but the replayed commits are unsigned.
+    pub signatures_dropped: bool,
+}
+
 /// What a branch replay did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
@@ -1422,6 +1461,9 @@ pub enum BranchReplayOutcome {
         from: GitOid,
         to: GitOid,
         resolved: Vec<String>,
+        /// `commit.gpgSign` is on, but the replayed commits are unsigned.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        signatures_dropped: bool,
     },
     /// Nothing changed, for the stated reason.
     Declined { reason: String },
@@ -5619,27 +5661,26 @@ impl GitEngine for GitCliEngine {
         Ok(Some(RebaseHazard::SharedWith("another ref".to_string())))
     }
 
-    fn replay_branch(
+    fn prepare_branch_replay(
         &self,
         repository: &GitRepository,
         branch: &GitRefName,
         upstream: &GitOid,
         resolver: &mut dyn BranchReplayResolver,
-    ) -> Result<BranchReplayOutcome, GitEngineError> {
+    ) -> Result<Result<PreparedBranchReplay, String>, GitEngineError> {
         const OPERATION: &str = "replay the branch";
-        let decline = |reason: String| Ok(BranchReplayOutcome::Declined { reason });
         repository.require_work_tree()?;
         if self.head_reference(repository)?.as_ref() != Some(branch) {
-            return decline("the branch is no longer checked out".to_string());
+            return Ok(Err("the branch is no longer checked out".to_string()));
         }
         let Some(expected) = self.read_ref(repository, branch)? else {
-            return decline("the branch has no commits".to_string());
+            return Ok(Err("the branch has no commits".to_string()));
         };
         if let Some(hazard) = self.rebase_hazard(repository, branch, upstream)? {
-            return decline(match hazard {
+            return Ok(Err(match hazard {
                 RebaseHazard::SharedWith(name) => format!("local commits are also on {name}"),
                 RebaseHazard::MergeCommits => "local commits include merges".to_string(),
-            });
+            }));
         }
         let mut list = self.repository_command(repository);
         list.args(["rev-list", "--reverse"]).arg(format!(
@@ -5656,44 +5697,44 @@ impl GitEngine for GitCliEngine {
             .map(GitOid::parse)
             .collect::<Result<Vec<_>, _>>()?;
         if commits.is_empty() {
-            return decline("no local commits to replay".to_string());
+            return Ok(Err("no local commits to replay".to_string()));
         }
+        if let Some(filter) = self.replay_filtered_path(repository, &expected, upstream)? {
+            return Ok(Err(format!(
+                "the commits touch paths with the Git `{filter}` filter, which a replay does not run"
+            )));
+        }
+        let signatures_dropped = self.config_flag(repository, "commit.gpgSign")?;
 
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_nanos());
-        let directory = repository
-            .common_dir
-            .join("vulcan-sync")
-            .join(format!("replay-{}-{nanos}", std::process::id()));
-        if let Some(parent) = directory.parent() {
-            std::fs::create_dir_all(parent).map_err(GitEngineError::Io)?;
-        }
-        let mut add = self.repository_command(repository);
-        add.args(["worktree", "add", "--quiet", "--detach"])
-            .arg(git_cli_path(&directory))
-            .arg(upstream.as_str());
-        let output = self.execute(add)?;
-        if !output.status.success() {
-            return Err(command_failed(OPERATION, &output));
-        }
-        let result = self.replay_in_worktree(&directory, &commits, resolver);
-        let mut remove = self.repository_command(repository);
-        remove
-            .args(["worktree", "remove", "--force"])
-            .arg(git_cli_path(&directory));
-        let _ = self.execute(remove);
-        let _ = std::fs::remove_dir_all(&directory);
-        let (to, resolved_paths) = match result? {
-            Ok(replayed) => replayed,
-            Err(reason) => return decline(reason),
-        };
+        let scratch = ScratchWorktree::add(self, repository, upstream)?;
+        let (to, resolved_paths) =
+            match self.replay_in_worktree(&scratch.directory, &commits, resolver)? {
+                Ok(replayed) => replayed,
+                Err(reason) => return Ok(Err(reason)),
+            };
+        drop(scratch);
+        Ok(Ok(PreparedBranchReplay {
+            from: expected,
+            to,
+            resolved: resolved_paths,
+            signatures_dropped,
+        }))
+    }
+
+    fn apply_branch_replay(
+        &self,
+        repository: &GitRepository,
+        branch: &GitRefName,
+        prepared: PreparedBranchReplay,
+    ) -> Result<BranchReplayOutcome, GitEngineError> {
+        repository.require_work_tree()?;
         Ok(
-            match self.move_checked_out_branch(repository, branch, &expected, &to)? {
+            match self.move_checked_out_branch(repository, branch, &prepared.from, &prepared.to)? {
                 BranchAdvanceOutcome::Advanced => BranchReplayOutcome::Replayed {
-                    from: expected,
-                    to,
-                    resolved: resolved_paths,
+                    from: prepared.from,
+                    to: prepared.to,
+                    resolved: prepared.resolved,
+                    signatures_dropped: prepared.signatures_dropped,
                 },
                 BranchAdvanceOutcome::BlockedStaged => BranchReplayOutcome::Declined {
                     reason: "uncommitted or staged work would be overwritten".to_string(),
@@ -6251,6 +6292,22 @@ impl GitCliEngine {
         command
     }
 
+    /// A command in a replay worktree: no hooks, no signing, no LFS
+    /// downloads, and no editor.
+    fn replay_command(&self, directory: &Path) -> Command {
+        let mut command = self.worktree_command(directory);
+        command
+            .env("GIT_EDITOR", "true")
+            .env("GIT_LFS_SKIP_SMUDGE", "1")
+            .args([
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "commit.gpgSign=false",
+            ]);
+        command
+    }
+
     fn worktree_git(&self, directory: &Path, arguments: &[&str]) -> Result<Output, GitEngineError> {
         let mut command = self.worktree_command(directory);
         command.args(arguments);
@@ -6270,13 +6327,10 @@ impl GitCliEngine {
         let mut resolved_paths = BTreeSet::new();
         for commit in commits {
             let short = &commit.as_str()[..commit.as_str().len().min(12)];
-            let mut pick = self.worktree_command(directory);
-            pick.env("GIT_EDITOR", "true").args([
-                "cherry-pick",
-                "--allow-empty",
-                "--keep-redundant-commits",
-                commit.as_str(),
-            ]);
+            // `--allow-empty` keeps commits that were empty to begin with;
+            // one the upstream already contains stops and is skipped below.
+            let mut pick = self.replay_command(directory);
+            pick.args(["cherry-pick", "--allow-empty", commit.as_str()]);
             let picked = self.execute(pick)?;
             if picked.status.success() {
                 continue;
@@ -6284,6 +6338,20 @@ impl GitCliEngine {
             let unmerged = self.worktree_git(directory, &["ls-files", "-u", "-z"])?;
             if !unmerged.status.success() {
                 return Err(command_failed(OPERATION, &unmerged));
+            }
+            if unmerged.stdout.is_empty()
+                && self
+                    .worktree_git(directory, &["diff", "--cached", "--quiet", "HEAD"])?
+                    .status
+                    .success()
+            {
+                let mut skip = self.replay_command(directory);
+                skip.args(["cherry-pick", "--skip"]);
+                let skipped = self.execute(skip)?;
+                if !skipped.status.success() {
+                    return Err(command_failed(OPERATION, &skipped));
+                }
+                continue;
             }
             // `<mode> <oid> <stage>\t<path>` records, NUL-separated.
             let mut stages: BTreeMap<String, [Option<(String, String)>; 3]> = BTreeMap::new();
@@ -6384,8 +6452,8 @@ impl GitCliEngine {
                 .worktree_git(directory, &["diff", "--cached", "--quiet"])?
                 .status
                 .success();
-            let mut finish = self.worktree_command(directory);
-            finish.env("GIT_EDITOR", "true").arg("cherry-pick");
+            let mut finish = self.replay_command(directory);
+            finish.arg("cherry-pick");
             finish.arg(if unchanged { "--skip" } else { "--continue" });
             let finished = self.execute(finish)?;
             if !finished.status.success() {
@@ -6435,18 +6503,124 @@ impl GitCliEngine {
             }
             return Err(command_failed("update branch files", &output));
         }
-        let outcome = self.advance_checked_out_branch(repository, branch, expected, target)?;
-        if outcome != BranchAdvanceOutcome::Advanced {
-            // Put the files back so they match the branch that did not move.
-            let mut restore = self.repository_command(repository);
-            restore.args(["read-tree", "-m", "-u", target.as_str(), expected.as_str()]);
-            let _ = self.execute(restore)?;
+        // The index and files now hold `target`; only the branch is left.
+        if self.compare_and_swap_ref(repository, branch, target, Some(expected))?
+            == GitRefUpdateResult::Stale
+        {
+            // Put the files back only while HEAD still names `expected`;
+            // if something else moved it, its owner decides what the
+            // checkout should hold.
+            if self.head_commit(repository)?.as_ref() == Some(expected) {
+                let mut restore = self.repository_command(repository);
+                restore.args(["read-tree", "-m", "-u", target.as_str(), expected.as_str()]);
+                let _ = self.execute(restore)?;
+            }
+            return Ok(BranchAdvanceOutcome::Stale);
         }
-        Ok(outcome)
+        let mut refresh = self.repository_command(repository);
+        refresh.args(["update-index", "-q", "--refresh"]);
+        let _ = self.execute(refresh)?;
+        Ok(BranchAdvanceOutcome::Advanced)
+    }
+}
+
+/// A detached scratch worktree for a replay; removed and pruned on drop,
+/// including when the replay panics.
+struct ScratchWorktree<'a> {
+    engine: &'a GitCliEngine,
+    repository: &'a GitRepository,
+    directory: PathBuf,
+}
+
+impl<'a> ScratchWorktree<'a> {
+    fn add(
+        engine: &'a GitCliEngine,
+        repository: &'a GitRepository,
+        at: &GitOid,
+    ) -> Result<Self, GitEngineError> {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos());
+        let directory = repository
+            .common_dir
+            .join("vulcan-sync")
+            .join(format!("replay-{}-{nanos}", std::process::id()));
+        if let Some(parent) = directory.parent() {
+            std::fs::create_dir_all(parent).map_err(GitEngineError::Io)?;
+        }
+        let mut add = engine.repository_command(repository);
+        add.env("GIT_LFS_SKIP_SMUDGE", "1")
+            .args(["-c", "core.hooksPath=/dev/null"])
+            .args(["worktree", "add", "--quiet", "--detach"])
+            .arg(git_cli_path(&directory))
+            .arg(at.as_str());
+        let output = engine.execute(add)?;
+        let scratch = Self {
+            engine,
+            repository,
+            directory,
+        };
+        if !output.status.success() {
+            return Err(command_failed("replay the branch", &output));
+        }
+        Ok(scratch)
+    }
+}
+
+impl Drop for ScratchWorktree<'_> {
+    fn drop(&mut self) {
+        let mut remove = self.engine.repository_command(self.repository);
+        remove
+            .args(["worktree", "remove", "--force"])
+            .arg(git_cli_path(&self.directory));
+        let _ = self.engine.execute(remove);
+        let _ = std::fs::remove_dir_all(&self.directory);
+        let mut prune = self.engine.repository_command(self.repository);
+        prune.args(["worktree", "prune"]);
+        let _ = self.engine.execute(prune);
     }
 }
 
 impl GitCliEngine {
+    /// The first Git `filter` driver set on a path that the local commits
+    /// or the upstream changed since they parted.
+    fn replay_filtered_path(
+        &self,
+        repository: &GitRepository,
+        head: &GitOid,
+        upstream: &GitOid,
+    ) -> Result<Option<String>, GitEngineError> {
+        const OPERATION: &str = "inspect replayed paths";
+        let mut base = self.repository_command(repository);
+        base.args(["merge-base", head.as_str(), upstream.as_str()]);
+        let base = ensure_success(OPERATION, self.execute(base)?)?;
+        let base = decode_stdout(OPERATION, base.stdout)?.trim().to_string();
+        let mut paths = Vec::new();
+        for side in [head, upstream] {
+            let mut diff = self.repository_command(repository);
+            diff.args(["diff", "--name-only", "--no-renames", "-z"])
+                .arg(&base)
+                .arg(side.as_str());
+            let diff = ensure_success(OPERATION, self.execute(diff)?)?;
+            paths.extend_from_slice(&diff.stdout);
+        }
+        if paths.is_empty() {
+            return Ok(None);
+        }
+        Ok(self
+            .inspect_path_filters(repository, &paths)?
+            .into_keys()
+            .next())
+    }
+
+    /// Whether a boolean Git configuration value is true.
+    fn config_flag(&self, repository: &GitRepository, key: &str) -> Result<bool, GitEngineError> {
+        let mut command = self.repository_command(repository);
+        command.args(["config", "--type=bool", "--get", key]);
+        let output = self.execute(command)?;
+        Ok(output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true")
+    }
+
     /// Rejects tree applications that would silently overwrite ignored
     /// worktree files. After the fully staged verification inside
     /// `apply_tree`, every remaining `--others` entry is an ignored file;

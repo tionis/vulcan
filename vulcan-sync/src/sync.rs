@@ -9124,7 +9124,10 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
 
         let outcome = replay(&engine, &writer, &upstream, &mut resolver);
 
-        let crate::BranchReplayOutcome::Replayed { from, to, resolved } = outcome else {
+        let crate::BranchReplayOutcome::Replayed {
+            from, to, resolved, ..
+        } = outcome
+        else {
             panic!("declined: {outcome:?}");
         };
         assert_eq!(from.as_str(), local);
@@ -9151,6 +9154,138 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         assert_eq!(conflicts[0].base.as_deref(), Some("initial\n"));
         let worktrees = git_stdout(&writer, &["worktree", "list", "--porcelain"]);
         assert_eq!(worktrees.matches("worktree ").count(), 1, "{worktrees}");
+    }
+
+    #[test]
+    fn a_replay_drops_commits_the_upstream_already_contains() {
+        let (temporary, remote, writer) = setup_tracked_branch();
+        fs::write(writer.join("Home.md"), "same\n").expect("local note");
+        commit_all(&writer, "same change");
+        fs::write(writer.join("Other.md"), "other\n").expect("other note");
+        commit_all(&writer, "other note");
+        advance_remote_branch(&temporary, &remote, "same\n");
+        run_git(&writer, &["fetch", "--quiet", "origin"]);
+        let upstream =
+            GitOid::parse(git_stdout(&writer, &["rev-parse", "origin/main"])).expect("upstream");
+        let engine = GitCliEngine::default();
+        let mut resolver = FakeResolver {
+            answer: Err("no conflict expected".to_string()),
+            seen: Vec::new(),
+        };
+
+        let outcome = replay(&engine, &writer, &upstream, &mut resolver);
+
+        assert!(
+            matches!(outcome, crate::BranchReplayOutcome::Replayed { .. }),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            git_stdout(&writer, &["log", "--format=%s", "origin/main..HEAD"]),
+            "other note"
+        );
+        assert!(resolver.seen.is_empty());
+    }
+
+    #[test]
+    fn a_replay_runs_no_hooks_and_says_when_it_drops_signing() {
+        let (temporary, _remote, writer, _local, upstream) = conflicting_branch();
+        let marker = temporary.path().join("hook-ran");
+        let hooks = writer.join(".git/hooks");
+        fs::create_dir_all(&hooks).expect("hooks");
+        for hook in ["pre-commit", "commit-msg", "post-commit"] {
+            let path = hooks.join(hook);
+            fs::write(
+                &path,
+                format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+            )
+            .expect("hook");
+            let mut permissions = fs::metadata(&path).expect("hook").permissions();
+            std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+            fs::set_permissions(&path, permissions).expect("executable hook");
+        }
+        // No signing key exists, so signing would fail the replay.
+        run_git(&writer, &["config", "commit.gpgSign", "true"]);
+        run_git(&writer, &["config", "gpg.program", "false"]);
+        let engine = GitCliEngine::default();
+        let mut resolver = FakeResolver {
+            answer: Ok("both\n".to_string()),
+            seen: Vec::new(),
+        };
+
+        let outcome = replay(&engine, &writer, &upstream, &mut resolver);
+
+        let crate::BranchReplayOutcome::Replayed {
+            signatures_dropped, ..
+        } = outcome
+        else {
+            panic!("declined: {outcome:?}");
+        };
+        assert!(signatures_dropped);
+        assert!(!marker.exists(), "a hook ran during the replay");
+    }
+
+    #[test]
+    fn a_replay_declines_paths_with_a_git_filter() {
+        let (_temporary, _remote, writer, local, upstream) = conflicting_branch();
+        fs::write(
+            writer.join(".git/info/attributes"),
+            "Home.md filter=crypt\n",
+        )
+        .expect("attributes");
+        let engine = GitCliEngine::default();
+        let mut resolver = FakeResolver {
+            answer: Ok("both\n".to_string()),
+            seen: Vec::new(),
+        };
+
+        let outcome = replay(&engine, &writer, &upstream, &mut resolver);
+
+        let crate::BranchReplayOutcome::Declined { reason } = outcome else {
+            panic!("replayed: {outcome:?}");
+        };
+        assert!(reason.contains("crypt"), "{reason}");
+        assert!(resolver.seen.is_empty());
+        assert_eq!(git_stdout(&writer, &["rev-parse", "HEAD"]), local);
+    }
+
+    #[test]
+    fn a_prepared_replay_is_not_applied_once_the_branch_moved() {
+        let (_temporary, _remote, writer, _local, upstream) = conflicting_branch();
+        let engine = GitCliEngine::default();
+        let repository = engine.discover_repository(&writer).expect("repository");
+        let branch = GitRefName::parse("refs/heads/main").expect("branch");
+        let mut resolver = FakeResolver {
+            answer: Ok("both\n".to_string()),
+            seen: Vec::new(),
+        };
+        let prepared = engine
+            .prepare_branch_replay(&repository, &branch, &upstream, &mut resolver)
+            .expect("prepare")
+            .expect("prepared");
+        assert_eq!(
+            fs::read_to_string(writer.join("Home.md")).expect("note"),
+            "local\n",
+            "preparing must not touch the checkout"
+        );
+        // Someone commits while the agent was thinking.
+        fs::write(writer.join("Late.md"), "late\n").expect("late note");
+        commit_all(&writer, "late");
+        let late = git_stdout(&writer, &["rev-parse", "HEAD"]);
+
+        let outcome = engine
+            .apply_branch_replay(&repository, &branch, prepared)
+            .expect("apply");
+
+        assert!(
+            matches!(outcome, crate::BranchReplayOutcome::Declined { .. }),
+            "{outcome:?}"
+        );
+        assert_eq!(git_stdout(&writer, &["rev-parse", "HEAD"]), late);
+        assert_eq!(git_stdout(&writer, &["status", "--porcelain"]), "");
+        assert_eq!(
+            fs::read_to_string(writer.join("Home.md")).expect("note"),
+            "local\n"
+        );
     }
 
     #[test]

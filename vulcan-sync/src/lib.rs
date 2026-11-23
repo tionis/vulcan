@@ -44,8 +44,9 @@ pub use git::{
     GitRefUpdateResult, GitReference, GitRemote, GitRemoteRefs, GitRepository, GitRepositoryLayout,
     GitRepositoryRequirements, GitReservedNamesPolicy, GitResolvedPath, GitSafetyState,
     GitSymlinkPolicy, GitTimestampPolicy, GitTreeApplyAction, GitTreeApplyPath, GitTreeApplyPlan,
-    GitTreeEntry, GitUnattendedRepositoryState, GitVersion, MergeBranchOutcome, PullFastForward,
-    PullRebase, RebaseHazard, RebaseOutcome, ScopedBranchAdvance,
+    GitTreeEntry, GitUnattendedRepositoryState, GitVersion, MergeBranchOutcome,
+    PreparedBranchReplay, PullFastForward, PullRebase, RebaseHazard, RebaseOutcome,
+    ScopedBranchAdvance,
 };
 pub use lock::{RepositoryLock, RepositoryLockError};
 pub use merge_policy::{

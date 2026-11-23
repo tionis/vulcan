@@ -35,6 +35,9 @@ pub enum BranchReplayReport {
         to: GitOid,
         upstream: GitOid,
         resolved: Vec<String>,
+        /// `commit.gpgSign` is on, but the replayed commits are unsigned.
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        signatures_dropped: bool,
     },
     /// Nothing changed; `head..upstream` identifies the attempt.
     Declined {
@@ -72,7 +75,6 @@ pub fn replay_diverged_branch(
     let repository = engine
         .discover_repository(paths.vault_root())
         .map_err(AppError::operation)?;
-    let _permit = gate.enter()?;
     let Some(branch) = engine
         .head_reference(&repository)
         .map_err(AppError::operation)?
@@ -120,15 +122,58 @@ pub fn replay_diverged_branch(
         cancellation,
         conflict_id: format!("branch-replay:{head}..{upstream}"),
     };
+    // The replay and the agent's answers take as long as they take without
+    // blocking the vault's writers or its synchronization; only the branch
+    // move is serialized with them, and it rechecks that nothing moved.
+    let prepared = match engine
+        .prepare_branch_replay(&repository, &branch, &upstream, &mut resolver)
+        .map_err(AppError::operation)?
+    {
+        Ok(prepared) => prepared,
+        Err(reason) => {
+            return Ok(BranchReplayReport::Declined {
+                head,
+                upstream,
+                reason,
+            })
+        }
+    };
+    cancellation_check(cancellation)?;
+    apply_prepared(&engine, &repository, &branch, upstream, prepared, gate)
+}
+
+/// Moves the branch to a prepared replay under the vault's mutation gate and
+/// the repository lock, so it is serialized with writers and synchronization.
+fn apply_prepared(
+    engine: &vulcan_sync::GitCliEngine,
+    repository: &vulcan_sync::GitRepository,
+    branch: &vulcan_sync::GitRefName,
+    upstream: GitOid,
+    prepared: vulcan_sync::PreparedBranchReplay,
+    gate: &dyn MutationGate,
+) -> Result<BranchReplayReport, AppError> {
+    let head = prepared.from.clone();
+    let _permit = gate.enter()?;
+    let _lock = vulcan_sync::RepositoryLock::acquire(&repository.git_dir).map_err(|error| {
+        AppError::operation(format!(
+            "could not lock the repository for the replay: {error:?}"
+        ))
+    })?;
     let outcome = engine
-        .replay_branch(&repository, &branch, &upstream, &mut resolver)
+        .apply_branch_replay(repository, branch, prepared)
         .map_err(AppError::operation)?;
     Ok(match outcome {
-        BranchReplayOutcome::Replayed { from, to, resolved } => BranchReplayReport::Replayed {
+        BranchReplayOutcome::Replayed {
+            from,
+            to,
+            resolved,
+            signatures_dropped,
+        } => BranchReplayReport::Replayed {
             from,
             to,
             upstream,
             resolved,
+            signatures_dropped,
         },
         BranchReplayOutcome::Declined { reason } => BranchReplayReport::Declined {
             head,
