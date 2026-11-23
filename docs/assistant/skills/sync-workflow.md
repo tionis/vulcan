@@ -389,7 +389,10 @@ by `worktree: "none"` in the JSON report or the `Worktree: not synchronized` lin
   publishes the commits (unless `sync.branch_push = false`, in which case push deliberately).
 - A paused cycle with reason `branch_paused` means the branch diverged under fast-forward-only
   pulls (`sync.branch_pull = "ff-only"` or `pull.ff=only`), a conflicted pull was aborted, or an
-  interactive rebase was requested; run `git pull --rebase` and push. A cycle without a checked-out branch
+  interactive rebase was requested. The report's `branch.pause` (and an alert's `branch_pause`)
+  names which; `shared_commits` and `merge_commits` call for a merge (`git pull --no-rebase`), the
+  others for `git pull --rebase` with any conflict resolved, then push. If pushes or fetches fail
+  only for Vulcan or only for plain `git`, run `vulcan sync transport test`. A cycle without a checked-out branch
   or upstream fails as unsupported configuration; push the branch once with `git push -u`.
 - Conflict resolution, checkpoints, retention, and semantic history refuse in this mode, and
   `sync doctor` reports `sync.worktree` instead of live ref checks.

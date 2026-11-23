@@ -233,6 +233,10 @@ fn execute_next_sync_job_with_probe(
 /// is paused, or this device's background policy defers it. A held-back job
 /// completes as paused; the next poll or change tries again, and nothing is
 /// lost, since a later cycle captures the whole working tree.
+/// Starts the status detail of every job held back by a pause or the
+/// background policy; such a job needs nobody, so it raises no alert.
+pub(crate) const HELD_BACK_DETAIL: &str = "automatic sync";
+
 fn held_back(
     registry: &WikiRegistry,
     registration: &WikiRegistration,
@@ -240,7 +244,7 @@ fn held_back(
     probe: fn() -> BackgroundConditions,
 ) -> Option<String> {
     if registration.sync_paused && !triggers.contains(&vulcan_sync::SyncJobTrigger::Manual) {
-        return Some("automatic synchronization is paused".to_string());
+        return Some(format!("{HELD_BACK_DETAIL} is paused"));
     }
     let policy = registry
         .load()
@@ -248,7 +252,7 @@ fn held_back(
         .unwrap_or_default();
     automatic_sync_deferral(&policy, triggers, probe).map(|reason| {
         format!(
-            "automatic sync deferred by this device's background policy: {}",
+            "{HELD_BACK_DETAIL} deferred by this device's background policy: {}",
             reason.describe()
         )
     })
@@ -1024,6 +1028,7 @@ mod tests {
             before: None,
             after: None,
             action,
+            pause: None,
             detail: detail.map(str::to_string),
             pushed,
             push_detail: push_detail.map(str::to_string),

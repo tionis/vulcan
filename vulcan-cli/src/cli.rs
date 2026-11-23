@@ -4578,6 +4578,18 @@ pub enum SyncTransportCommand {
         #[arg(long, help = "Registered wiki ID; defaults to the current vault")]
         wiki: Option<String>,
     },
+    #[command(
+        about = "Reach the remote the way Vulcan does and the way plain git does, and compare",
+        long_about = "Run one bounded `git ls-remote` against the remote with Vulcan's own transport (the device key when bound) and one with plain git as a person or agent would run it in the repository (its core.sshCommand, or ambient ssh). Differences point at an orphaned or foreign core.sshCommand, a moved vulcan executable, or a key the remote does not accept. Key paths are redacted."
+    )]
+    Test {
+        #[arg(long, help = "Registered wiki ID; defaults to the current vault")]
+        wiki: Option<String>,
+        #[arg(long, default_value = "origin", help = "Git remote to reach")]
+        remote: String,
+        #[arg(short, long, help = "Also print the SSH command each path uses")]
+        verbose: bool,
+    },
     #[command(about = "Remove the binding and any Vulcan-owned core.sshCommand")]
     Unbind {
         #[arg(long, help = "Registered wiki ID; defaults to the current vault")]

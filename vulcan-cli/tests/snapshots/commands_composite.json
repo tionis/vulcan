@@ -10336,6 +10336,49 @@
                 "subcommands": []
               },
               {
+                "about": "Reach the remote the way Vulcan does and the way plain git does, and compare",
+                "name": "test",
+                "options": [
+                  {
+                    "help": "Registered wiki ID; defaults to the current vault",
+                    "id": "wiki",
+                    "long": "wiki",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "WIKI"
+                    ]
+                  },
+                  {
+                    "help": "Git remote to reach",
+                    "id": "remote",
+                    "long": "remote",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "REMOTE"
+                    ]
+                  },
+                  {
+                    "help": "Also print the SSH command each path uses",
+                    "id": "verbose",
+                    "long": "verbose",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": "v",
+                    "value_names": [
+                      "VERBOSE"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
                 "about": "Remove the binding and any Vulcan-owned core.sshCommand",
                 "name": "unbind",
                 "options": [

@@ -865,6 +865,7 @@ fn sync_alerts_reach_alert_users_of_the_wiki_only() {
         category: None,
         retryable: false,
         reason: None,
+        branch_pause: None,
     };
     let config = fixture.registry.load().unwrap();
     let telegram = config.bot.telegram.clone().unwrap();

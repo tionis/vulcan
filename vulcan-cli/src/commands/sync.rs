@@ -3943,6 +3943,7 @@ mod sync_report_tests {
             before: None,
             after: None,
             action,
+            pause: None,
             detail: detail.map(str::to_string),
             pushed: false,
             push_detail: None,
@@ -4109,6 +4110,52 @@ fn handle_bind_all(
     Ok(())
 }
 
+fn handle_sync_transport_test(
+    cli: &Cli,
+    paths: &VaultPaths,
+    wiki: Option<&str>,
+    remote: &str,
+    verbose: bool,
+) -> Result<(), CliError> {
+    let paths = transport_paths(paths, wiki)?;
+    let report =
+        vulcan_app::sync_transport::test_transport(&paths, remote).map_err(CliError::operation)?;
+    match cli.output {
+        OutputFormat::Json => print_json(&report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            println!(
+                "binding: {:?}; core.sshCommand: {:?}",
+                report.status.state, report.status.git_config
+            );
+            for (label, probe) in [("vulcan", &report.vulcan), ("plain git", &report.plain_git)] {
+                let outcome = match &probe.outcome {
+                    vulcan_app::sync_transport::ProbeOutcome::Accepted => "reached".to_string(),
+                    vulcan_app::sync_transport::ProbeOutcome::Denied(detail) => {
+                        format!("refused: {detail}")
+                    }
+                    vulcan_app::sync_transport::ProbeOutcome::Unreachable(detail) => {
+                        format!("unreachable: {detail}")
+                    }
+                };
+                println!("{label}: {outcome}");
+                if verbose {
+                    println!(
+                        "  ssh: {}",
+                        probe
+                            .ssh_command
+                            .as_deref()
+                            .unwrap_or("ssh as configured outside the repository")
+                    );
+                }
+            }
+            if let Some(diagnostic) = &report.status.diagnostic {
+                println!("note: {diagnostic}");
+            }
+            Ok(())
+        }
+    }
+}
+
 fn handle_sync_transport(
     cli: &Cli,
     paths: &VaultPaths,
@@ -4175,6 +4222,11 @@ fn handle_sync_transport(
                 }
             }
         }
+        SyncTransportCommand::Test {
+            wiki,
+            remote,
+            verbose,
+        } => handle_sync_transport_test(cli, paths, wiki.as_deref(), remote, *verbose),
         SyncTransportCommand::Unbind { wiki, dry_run } => {
             let paths = transport_paths(paths, wiki.as_deref())?;
             let report = unbind_transport(&paths, *dry_run).map_err(CliError::operation)?;

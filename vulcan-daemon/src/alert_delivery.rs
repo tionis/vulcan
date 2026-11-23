@@ -1086,6 +1086,7 @@ mod tests {
             category: Some(SyncErrorCategory::Network),
             retryable: true,
             reason: None,
+            branch_pause: None,
         }
     }
 

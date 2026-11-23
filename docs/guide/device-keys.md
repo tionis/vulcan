@@ -147,6 +147,7 @@ Unbinding removes only Vulcan's own `core.sshCommand`; another tool's setting is
 - `vulcan device key verify`: proves the provider really holds this device's key by signing a fresh random challenge and checking it against the public key. It writes nothing and contacts no vault or remote; it fails if the key file is missing, unreadable, or a different key.
 - `vulcan devices list`: per vault, whether it is bound, and whether this device is registered.
 - `vulcan sync transport status`: one vault's binding and whether plain `git` is configured.
+- `vulcan sync transport test [--remote origin] [-v]`: reaches the remote once the way Vulcan does and once the way plain `git` does, and reports each result (and with `-v` the SSH command each uses, key path redacted). A difference points at an orphaned or foreign `core.sshCommand`, a moved `vulcan` executable, or a key the remote does not accept.
 - `vulcan sync devices list`: every device registered in a vault's remote, and whether each record is signed by its device.
 - `vulcan sync doctor`: reports binding problems and suggests the fix.
 

@@ -669,6 +669,9 @@ pub struct GitBranchSync {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub after: Option<GitOid>,
     pub action: GitBranchSyncAction,
+    /// Why a `paused` lane stopped, so alerts can give the right fix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause: Option<GitBranchPause>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     /// Whether the branch tip was published to the upstream in this cycle.
@@ -676,6 +679,24 @@ pub struct GitBranchSync {
     /// Push detail: rejection or transport/policy failure summary.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub push_detail: Option<String>,
+}
+
+/// Why the branch lane paused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitBranchPause {
+    /// Diverged under `pull.ff=only` or `sync.branch_pull = "ff-only"`.
+    FastForwardOnly,
+    /// `pull.rebase=interactive` asks for a person.
+    InteractiveRebase,
+    /// A guarded rebase would strand another ref built on the commits.
+    SharedCommits,
+    /// A guarded rebase would flatten local merge commits.
+    MergeCommits,
+    /// The rebase conflicted and was aborted.
+    RebaseConflict,
+    /// The merge conflicted and was aborted.
+    MergeConflict,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1736,6 +1757,7 @@ fn inert_branch_lane(
         before,
         after: None,
         action,
+        pause: None,
         detail: Some(detail.to_string()),
         pushed: false,
         push_detail: None,
@@ -1869,6 +1891,7 @@ fn pull_branch_lane(
         before: engine.head_commit(repository)?,
         after: None,
         action: GitBranchSyncAction::UpToDate,
+        pause: None,
         detail: None,
         pushed: false,
         push_detail: None,
@@ -1922,6 +1945,7 @@ fn pull_branch_lane(
                 before: engine.head_commit(repository).ok().flatten(),
                 after: None,
                 action: GitBranchSyncAction::Failed,
+                pause: None,
                 detail: Some(error.to_string()),
                 pushed: false,
                 push_detail: None,
@@ -2166,6 +2190,7 @@ fn pull_branch_with_strategy(
     match config.rebase {
         PullRebase::Interactive => {
             lane.action = GitBranchSyncAction::Paused;
+            lane.pause = Some(GitBranchPause::InteractiveRebase);
             lane.detail = Some(
                 "pull.rebase=interactive requires a manual rebase; branch lane paused".to_string(),
             );
@@ -2176,6 +2201,10 @@ fn pull_branch_with_strategy(
                     engine.rebase_hazard(&report.repository, &lane.branch, fetched)?
                 {
                     lane.action = GitBranchSyncAction::Paused;
+                    lane.pause = Some(match hazard {
+                        crate::RebaseHazard::SharedWith(_) => GitBranchPause::SharedCommits,
+                        crate::RebaseHazard::MergeCommits => GitBranchPause::MergeCommits,
+                    });
                     lane.detail = Some(match hazard {
                         crate::RebaseHazard::SharedWith(name) => format!(
                             "branch diverged and the guarded rebase did not run: local commits are also on {name}, which a rebase would leave behind; rebase and push yourself"
@@ -2193,6 +2222,7 @@ fn pull_branch_with_strategy(
                 }
                 RebaseOutcome::Conflicted => {
                     lane.action = GitBranchSyncAction::Paused;
+                    lane.pause = Some(GitBranchPause::RebaseConflict);
                     lane.detail = Some(abort_conflicted_branch_operation(
                         engine,
                         &report.repository,
@@ -2213,6 +2243,7 @@ fn pull_branch_with_strategy(
         PullRebase::Never => {
             if config.fast_forward == PullFastForward::Only {
                 lane.action = GitBranchSyncAction::Paused;
+                lane.pause = Some(GitBranchPause::FastForwardOnly);
                 let setting = if policy == BranchPullPolicy::FfOnly {
                     "sync.branch_pull = \"ff-only\""
                 } else {
@@ -2231,6 +2262,7 @@ fn pull_branch_with_strategy(
                     }
                     MergeBranchOutcome::Conflicted => {
                         lane.action = GitBranchSyncAction::Paused;
+                        lane.pause = Some(GitBranchPause::MergeConflict);
                         lane.detail = Some(abort_conflicted_branch_operation(
                             engine,
                             &report.repository,
@@ -2270,6 +2302,7 @@ fn replay_around_dirty_files(
         }
         crate::BranchReplayOutcome::Declined { reason } if reason.contains(CONFLICT_DECLINE) => {
             lane.action = GitBranchSyncAction::Paused;
+            lane.pause = Some(GitBranchPause::RebaseConflict);
             lane.detail = Some(
                 "branch diverged and rebasing the local commits conflicted; nothing was changed"
                     .to_string(),
@@ -2372,6 +2405,7 @@ fn preview_branch_pull(
                         before: before.clone(),
                         after: None,
                         action: GitBranchSyncAction::Failed,
+                        pause: None,
                         detail: Some(error.to_string()),
                         pushed: false,
                         push_detail: None,
@@ -2408,6 +2442,7 @@ fn preview_branch_pull(
         before,
         after: None,
         action,
+        pause: None,
         detail,
         pushed: false,
         push_detail: None,

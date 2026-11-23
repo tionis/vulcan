@@ -318,11 +318,18 @@ not flood the service log; a successful cycle resets the notification. Full erro
 `vulcan sync status <wiki>` rather than logs or desktop messages.
 
 A paused branch is announced too, even when the files themselves synchronized: when local commits
-could not be combined with the upstream (a divergence under fast-forward-only pulls, or a merge or
-rebase that conflicted and was aborted), the alert carries `reason: "branch_paused"` (event
-`sync_branch_paused` when the rest of the cycle succeeded) and its message says what to do: run
-`git pull --rebase && git push` in the wiki, then `vulcan sync refresh <wiki>`. The next cycle after
-that push clears it.
+could not be combined with the upstream, the alert carries `reason: "branch_paused"` (event
+`sync_branch_paused` when the rest of the cycle succeeded) and `branch_pause`, which says why:
+`fast_forward_only` (diverged under fast-forward-only pulls), `interactive_rebase`
+(`pull.rebase=interactive`), `shared_commits` or `merge_commits` (a guarded rebase would strand
+another branch or flatten merges), or `rebase_conflict` / `merge_conflict` (the attempt conflicted
+and was undone). The message gives the matching fix (rebasing, merging instead, or resolving the
+conflict by hand), then `vulcan sync refresh <wiki>`. The next cycle after that push clears it.
+
+Jobs held back on purpose raise nothing: a paused registration (`vulcan sync pause`) or this device's
+background policy (battery, metered network) needs nobody. A device backup that keeps receiving
+history another checkout wrote raises `reason: "shared_device_identity"` once it has happened three
+times in a daemon run: an extra checkout or a copied device key syncs under this device's ID.
 
 Native desktop notifications are opt-in and require a daemon restart after configuration:
 

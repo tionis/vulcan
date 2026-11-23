@@ -2468,6 +2468,7 @@ mod tests {
                 before: None,
                 after: None,
                 action,
+                pause: None,
                 detail: Some("boom".to_string()),
                 pushed: false,
                 push_detail: None,

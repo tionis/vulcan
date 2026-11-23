@@ -43,6 +43,9 @@ pub struct SyncAlert {
     /// Why the wiki needs attention when the state alone does not say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<SyncAlertReason>,
+    /// For `branch_paused`: what stopped the branch, which decides the fix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_pause: Option<vulcan_sync::GitBranchPause>,
 }
 
 /// A secret-free reason code; delivery turns it into guidance.
@@ -56,7 +59,15 @@ pub enum SyncAlertReason {
     /// Upstream commits have waited longer than [`BRANCH_DEFERRAL_ALERT`]
     /// because uncommitted edits in the checkout overlap them.
     BranchDeferred,
+    /// This device's remote safety head kept receiving history another
+    /// checkout wrote: two checkouts or installations share its identity.
+    SharedDeviceIdentity,
 }
+
+/// How many foreign bridges of a wiki's device backup, within one daemon
+/// run, raise [`SyncAlertReason::SharedDeviceIdentity`]; a single one can be
+/// an old checkout's last cycle.
+pub const FOREIGN_BRIDGE_ALERT: u32 = 3;
 
 /// How long the branch lane may defer to uncommitted edits before the
 /// wiki needs someone.
@@ -65,12 +76,16 @@ pub const BRANCH_DEFERRAL_ALERT: std::time::Duration = std::time::Duration::from
 impl SyncAlert {
     #[must_use]
     pub fn from_execution(execution: &DaemonSyncExecution) -> Option<Self> {
-        let branch_paused = execution
+        let lane = execution
             .report
             .as_ref()
             .and_then(|report| report.sync.branch.as_ref())
-            .is_some_and(|branch| branch.action == vulcan_app::sync::GitBranchSyncAction::Paused);
-        Self::from_job_and_branch(&execution.job.job, branch_paused)
+            .filter(|branch| branch.action == vulcan_app::sync::GitBranchSyncAction::Paused);
+        let mut alert = Self::from_job_and_branch(&execution.job.job, lane.is_some())?;
+        if alert.reason == Some(SyncAlertReason::BranchPaused) {
+            alert.branch_pause = lane.and_then(|lane| lane.pause);
+        }
+        Some(alert)
     }
 
     fn from_job_and_branch(job: &vulcan_sync::SyncJob, branch_paused: bool) -> Option<Self> {
@@ -96,6 +111,7 @@ impl SyncAlert {
                 category: None,
                 retryable: false,
                 reason: Some(SyncAlertReason::BranchPaused),
+                branch_pause: None,
             }),
             None => None,
         }
@@ -106,6 +122,18 @@ impl SyncAlert {
         let (event, severity) = match job.state {
             SyncJobState::Failed => ("sync_failed", AlertSeverity::Error),
             SyncJobState::Conflicted => ("sync_conflicted", AlertSeverity::Warning),
+            // A pause someone asked for, or a background-policy hold
+            // (battery, metered network), needs nobody.
+            SyncJobState::Paused
+                if job.status.as_ref().is_some_and(|status| {
+                    status
+                        .detail
+                        .as_deref()
+                        .is_some_and(|detail| detail.starts_with(crate::sync::HELD_BACK_DETAIL))
+                }) =>
+            {
+                return None;
+            }
             SyncJobState::Paused => ("sync_paused", AlertSeverity::Warning),
             _ => return None,
         };
@@ -130,6 +158,7 @@ impl SyncAlert {
                         .is_some_and(|detail| detail.starts_with("branch lane paused"))
                 }))
             .then_some(SyncAlertReason::BranchPaused),
+            branch_pause: None,
         })
     }
 
@@ -163,6 +192,9 @@ impl SyncAlert {
         if self.reason == Some(SyncAlertReason::BranchDeferred) {
             return "Vulcan sync: uncommitted edits hold the branch back";
         }
+        if self.reason == Some(SyncAlertReason::SharedDeviceIdentity) {
+            return "Vulcan sync: two checkouts share a device identity";
+        }
         match self.state {
             SyncJobState::Failed => "Vulcan sync failed",
             SyncJobState::Conflicted => "Vulcan sync needs resolution",
@@ -173,8 +205,41 @@ impl SyncAlert {
 
     pub(crate) fn desktop_body(&self) -> String {
         if self.reason == Some(SyncAlertReason::BranchPaused) {
+            use vulcan_sync::GitBranchPause as Pause;
+            let (why, fix) = match self.branch_pause {
+                Some(Pause::SharedCommits) => (
+                    "its local commits are also on another branch or worktree, which a rebase would leave behind",
+                    "Merge instead (`git pull --no-rebase && git push`), or rebase that branch too",
+                ),
+                Some(Pause::MergeCommits) => (
+                    "its local commits include merges a rebase would flatten",
+                    "Merge (`git pull --no-rebase && git push`)",
+                ),
+                Some(Pause::InteractiveRebase) => (
+                    "pull.rebase=interactive asks for a person",
+                    "Run `git pull` in the wiki, finish the rebase, and `git push`",
+                ),
+                Some(Pause::FastForwardOnly) => (
+                    "it diverged and only fast-forwards are allowed",
+                    "Run `git pull --rebase && git push` in the wiki",
+                ),
+                Some(Pause::RebaseConflict | Pause::MergeConflict) => (
+                    "combining the local commits with the upstream conflicted, and the attempt was undone",
+                    "Run `git pull --rebase` in the wiki, resolve the conflicts, and `git push`",
+                ),
+                None => (
+                    "local commits could not be combined with the upstream automatically",
+                    "Run `git pull --rebase && git push` in the wiki (resolving any conflict)",
+                ),
+            };
             return format!(
-                "Wiki `{wiki}`: local commits could not be combined with the upstream automatically, so the branch was left as it was. Run `git pull --rebase && git push` in the wiki (resolving any conflict), then `vulcan sync refresh {wiki}`.",
+                "Wiki `{wiki}`: the branch was left as it was because {why}. {fix}, then `vulcan sync refresh {wiki}`.",
+                wiki = self.wiki_id
+            );
+        }
+        if self.reason == Some(SyncAlertReason::SharedDeviceIdentity) {
+            return format!(
+                "Wiki `{wiki}`: this device's remote backup received history another checkout wrote {FOREIGN_BRIDGE_ALERT} times; both are kept each time. Another checkout of this vault on this device, or another installation with a copy of this device key, syncs under the same ID: remove the extra checkout, or run `vulcan device replace` on the other installation.",
                 wiki = self.wiki_id
             );
         }
@@ -202,6 +267,8 @@ pub struct SyncAlertTracker {
     /// When each wiki's branch lane started deferring, and whether that
     /// streak has been reported.
     deferred_since: BTreeMap<String, (Instant, bool)>,
+    /// Foreign bridges of each wiki's device backup in this daemon run.
+    foreign_bridges: BTreeMap<String, u32>,
 }
 
 impl SyncAlertTracker {
@@ -234,7 +301,16 @@ impl SyncAlertTracker {
     }
 
     fn observe_at(&mut self, execution: &DaemonSyncExecution, now: Instant) -> Option<SyncAlert> {
-        let deferred = self.deferral_alert(execution, now);
+        let foreign = execution
+            .report
+            .as_ref()
+            .and_then(|report| report.sync.device_backup.as_ref())
+            .is_some_and(|backup| {
+                backup.outcome == vulcan_sync::GitDeviceBackupOutcome::Bridged
+                    && backup.foreign_history
+            });
+        let shared = self.foreign_bridge_alert(&execution.job.job, foreign);
+        let deferred = self.deferral_alert(execution, now).or(shared);
         let wiki = execution
             .job
             .job
@@ -272,6 +348,36 @@ impl SyncAlertTracker {
         self.deferral_alert_for(&execution.job.job, deferred, now)
     }
 
+    /// Counts foreign bridges per wiki and reports once when they reach
+    /// [`FOREIGN_BRIDGE_ALERT`].
+    fn foreign_bridge_alert(
+        &mut self,
+        job: &vulcan_sync::SyncJob,
+        foreign: bool,
+    ) -> Option<SyncAlert> {
+        if !foreign {
+            return None;
+        }
+        let wiki = job
+            .wiki_id
+            .clone()
+            .unwrap_or_else(|| "<unregistered>".to_string());
+        let count = self.foreign_bridges.entry(wiki.clone()).or_default();
+        *count += 1;
+        (*count == FOREIGN_BRIDGE_ALERT).then(|| SyncAlert {
+            version: 1,
+            event: "sync_device_identity_shared".to_string(),
+            severity: AlertSeverity::Warning,
+            job_id: job.id.clone(),
+            wiki_id: wiki,
+            state: job.state,
+            category: None,
+            retryable: false,
+            reason: Some(SyncAlertReason::SharedDeviceIdentity),
+            branch_pause: None,
+        })
+    }
+
     fn deferral_alert_for(
         &mut self,
         job: &vulcan_sync::SyncJob,
@@ -304,6 +410,7 @@ impl SyncAlertTracker {
             category: None,
             retryable: true,
             reason: Some(SyncAlertReason::BranchDeferred),
+            branch_pause: None,
         })
     }
 }
@@ -690,6 +797,59 @@ mod tests {
             serde_json::to_value(&alert).unwrap()["reason"],
             serde_json::json!("branch_paused")
         );
+    }
+
+    #[test]
+    fn branch_pause_guidance_follows_what_stopped_the_branch() {
+        let succeeded = execution(SyncJobState::Succeeded, None).job.job;
+        let mut alert = SyncAlert::from_job_and_branch(&succeeded, true).expect("branch alert");
+        alert.branch_pause = Some(vulcan_sync::GitBranchPause::SharedCommits);
+        let shared = alert.desktop_body();
+        assert!(shared.contains("git pull --no-rebase"), "{shared}");
+        assert!(!shared.contains("--rebase &&"), "{shared}");
+        alert.branch_pause = Some(vulcan_sync::GitBranchPause::RebaseConflict);
+        assert!(alert.desktop_body().contains("resolve the conflicts"));
+        assert_eq!(
+            serde_json::to_value(&alert).unwrap()["branch_pause"],
+            serde_json::json!("rebase_conflict")
+        );
+    }
+
+    #[test]
+    fn repeated_foreign_bridges_alert_once() {
+        let job = execution(SyncJobState::Succeeded, None).job.job;
+        let mut tracker = SyncAlertTracker::default();
+        assert!(tracker.foreign_bridge_alert(&job, false).is_none());
+        for _ in 1..FOREIGN_BRIDGE_ALERT {
+            assert!(tracker.foreign_bridge_alert(&job, true).is_none());
+        }
+        let alert = tracker
+            .foreign_bridge_alert(&job, true)
+            .expect("shared identity alert");
+        assert_eq!(alert.reason, Some(SyncAlertReason::SharedDeviceIdentity));
+        assert!(alert.desktop_body().contains("vulcan device replace"));
+        assert!(tracker.foreign_bridge_alert(&job, true).is_none());
+    }
+
+    #[test]
+    fn jobs_held_back_by_a_pause_or_the_background_policy_raise_no_alert() {
+        for detail in [
+            "automatic sync is paused",
+            "automatic sync deferred by this device's background policy: metered network",
+        ] {
+            let mut job = execution(SyncJobState::Paused, None).job.job;
+            job.status = Some(vulcan_sync::SyncStatus {
+                state: vulcan_sync::SyncState::Paused,
+                backend: "git".to_string(),
+                vault: PathBuf::from("/vault"),
+                local_revision: None,
+                remote_revision: None,
+                accepted_revision: None,
+                unresolved_conflicts: 0,
+                detail: Some(detail.to_string()),
+            });
+            assert!(SyncAlert::from_job(&job).is_none(), "{detail}");
+        }
     }
 
     #[test]

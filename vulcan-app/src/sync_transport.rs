@@ -521,6 +521,143 @@ pub(crate) fn probe_device_key_with(
     Ok(classify_probe_failure(&stderr, &key))
 }
 
+/// How each way of reaching a vault's remote fared, for
+/// `vulcan sync transport test`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitTransportTestReport {
+    pub remote: String,
+    pub status: GitTransportStatus,
+    /// Vulcan's own Git operations, the daemon's included.
+    pub vulcan: GitTransportProbe,
+    /// `git` run by a person or an agent in the repository.
+    pub plain_git: GitTransportProbe,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitTransportProbe {
+    /// The SSH command this path uses, with the key path redacted; absent
+    /// when it uses ssh as configured outside the repository.
+    pub ssh_command: Option<String>,
+    pub outcome: ProbeOutcome,
+}
+
+/// Reaches `remote` once the way Vulcan's engine does and once the way plain
+/// `git` does, so a difference between them (an orphaned or foreign
+/// `core.sshCommand`, a moved executable, an unauthorized key) shows up.
+pub fn test_transport(
+    paths: &VaultPaths,
+    remote: &str,
+) -> Result<GitTransportTestReport, AppError> {
+    let state = SyncStateStore::user_default()?;
+    test_transport_with_store(paths, &state, state.identity(), remote)
+}
+
+fn test_transport_with_store(
+    paths: &VaultPaths,
+    state: &SyncStateStore,
+    store: &DeviceIdentityStore,
+    remote: &str,
+) -> Result<GitTransportTestReport, AppError> {
+    if remote.is_empty() || remote.starts_with('-') || remote.contains(char::is_control) {
+        return Err(AppError::operation("invalid remote name"));
+    }
+    let status = transport_status_with_store(paths, state, store)?;
+    let key = eligible_key(store).ok().map(|(_, key)| key);
+    let root = paths.vault_root();
+    let redact = |command: String| match &key {
+        Some(key) => command.replace(&*key.to_string_lossy(), "<device key>"),
+        None => command,
+    };
+    let configured = read_core_ssh_command(root)?;
+    let vulcan = match (load_binding(paths, state)?, &key) {
+        (Some(_), Some(key)) if status.state == GitTransportState::Usable => {
+            let command = ssh_command_for(key);
+            GitTransportProbe {
+                outcome: ls_remote(root, remote, Some(&command), Some(key)),
+                ssh_command: Some(redact(command)),
+            }
+        }
+        // A bound vault whose key is unusable fails closed without trying.
+        (Some(_), _) => GitTransportProbe {
+            ssh_command: None,
+            outcome: ProbeOutcome::Denied(
+                status
+                    .diagnostic
+                    .clone()
+                    .unwrap_or_else(|| "the device key is unavailable".to_string()),
+            ),
+        },
+        // Unbound, Vulcan runs Git exactly as a person would.
+        (None, _) => GitTransportProbe {
+            ssh_command: configured.clone().map(redact),
+            outcome: ls_remote(root, remote, None, key.as_deref()),
+        },
+    };
+    let plain_git = GitTransportProbe {
+        ssh_command: configured.map(redact),
+        outcome: ls_remote(root, remote, None, key.as_deref()),
+    };
+    Ok(GitTransportTestReport {
+        remote: remote.to_string(),
+        status,
+        vulcan,
+        plain_git,
+    })
+}
+
+/// One bounded `git ls-remote` against `remote`, with `ssh_command`
+/// overriding every configured one when given.
+fn ls_remote(
+    root: &Path,
+    remote: &str,
+    ssh_command: Option<&str>,
+    key: Option<&Path>,
+) -> ProbeOutcome {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(root)
+        .args(["ls-remote", "--heads", "--", remote, "HEAD"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    if let Some(ssh_command) = ssh_command {
+        command
+            .env_remove("GIT_SSH")
+            .env("GIT_SSH_COMMAND", ssh_command);
+    }
+    let Ok(mut child) = command.spawn() else {
+        return ProbeOutcome::Unreachable("could not run git".to_string());
+    };
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < PROBE_TIMEOUT => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return ProbeOutcome::Unreachable("the probe timed out".to_owned());
+            }
+        }
+    };
+    if status.success() {
+        return ProbeOutcome::Accepted;
+    }
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = std::io::Read::take(&mut pipe, 8192).read_to_string(&mut stderr);
+    }
+    match key {
+        Some(key) => classify_probe_failure(&stderr, key),
+        None => classify_probe_failure(&stderr, Path::new("/nonexistent/vulcan-device-key")),
+    }
+}
+
 /// Keeps the device key's path, which ssh may name in an error, out of
 /// every Git error and report the engine produces.
 fn redact_key_path(engine: GitCliEngine, key: &Path) -> GitCliEngine {
@@ -1496,6 +1633,38 @@ mod tests {
             Some(&fx.store),
         );
         assert_ne!(engine, GitCliEngine::default());
+    }
+
+    #[test]
+    fn the_transport_test_compares_vulcan_with_plain_git() {
+        let fx = fixture("git@forge.example:o/r.git", true);
+        // Unbound, both reach a local remote the same way.
+        let bare = fx.paths.vault_root().join("../remote.git");
+        let init = Command::new("git")
+            .args(["init", "-q", "--bare"])
+            .arg(&bare)
+            .status()
+            .unwrap();
+        assert!(init.success());
+        let add = Command::new("git")
+            .arg("-C")
+            .arg(fx.paths.vault_root())
+            .args(["remote", "add", "local"])
+            .arg(&bare)
+            .status()
+            .unwrap();
+        assert!(add.success());
+        let report = test_transport_with_store(&fx.paths, &fx.state, &fx.store, "local").unwrap();
+        assert_eq!(report.vulcan.outcome, ProbeOutcome::Accepted);
+        assert_eq!(report.plain_git.outcome, ProbeOutcome::Accepted);
+        assert!(report.vulcan.ssh_command.is_none());
+
+        // Bound with the key gone, Vulcan fails closed without trying.
+        bind(&fx, GitConfigMode::Auto, false).unwrap();
+        fs::remove_file(fx.store.private_key_path().unwrap()).unwrap();
+        let report = test_transport_with_store(&fx.paths, &fx.state, &fx.store, "local").unwrap();
+        assert!(matches!(report.vulcan.outcome, ProbeOutcome::Denied(_)));
+        assert!(test_transport_with_store(&fx.paths, &fx.state, &fx.store, "-x").is_err());
     }
 
     #[test]
