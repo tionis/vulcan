@@ -32,6 +32,7 @@ struct ToolTestManifestMetadata {
     description: String,
     body: String,
     permission_profile: Option<String>,
+    sandbox: Option<String>,
     input_schema: Value,
     output_schema: Option<Value>,
 }
@@ -60,6 +61,9 @@ fn tool_test_manifest_metadata(manifest: &str) -> ToolTestManifestMetadata {
     let permission_profile = get("permission_profile")
         .and_then(yaml_serde::Value::as_str)
         .map(ToOwned::to_owned);
+    let sandbox = get("sandbox")
+        .and_then(yaml_serde::Value::as_str)
+        .map(ToOwned::to_owned);
     let input_schema = get("input_schema")
         .cloned()
         .map(serde_json::to_value)
@@ -76,6 +80,7 @@ fn tool_test_manifest_metadata(manifest: &str) -> ToolTestManifestMetadata {
         description,
         body: body.trim().to_string(),
         permission_profile,
+        sandbox,
         input_schema,
         output_schema,
     }
@@ -97,6 +102,9 @@ fn render_tool_test_skill_manifest(name: &str, metadata: &ToolTestManifestMetada
     }
     if let Some(permission_profile) = &metadata.permission_profile {
         command.insert("permission_profile".to_string(), json!(permission_profile));
+    }
+    if let Some(sandbox) = &metadata.sandbox {
+        command.insert("sandbox".to_string(), json!(sandbox));
     }
     let manifest = json!({
         "name": name,
@@ -325,6 +333,7 @@ input_schema:
         "function main() { return null; }\n",
     );
 
+    // A sandboxed tool needs no `execute`; it runs under the profile.
     let tools = list_custom_tools(
         &paths,
         Some("blocked"),
@@ -332,6 +341,28 @@ input_schema:
     )
     .expect("tools should load");
     assert_eq!(tools.len(), 1);
+    assert!(tools[0].callable);
+
+    // A `none` sandbox tool can start host processes, so it does.
+    write_tool(
+        &paths,
+        "summary",
+        r"---
+name: summary_tool
+description: Summarize one note.
+sandbox: none
+input_schema:
+  type: object
+---
+",
+        "function main() { return null; }\n",
+    );
+    let tools = list_custom_tools(
+        &paths,
+        Some("blocked"),
+        &CustomToolRegistryOptions::default(),
+    )
+    .expect("tools should load");
     assert!(!tools[0].callable);
 
     trust::revoke_trust(paths.vault_root()).expect("trust should be removed");

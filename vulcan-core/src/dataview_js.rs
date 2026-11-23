@@ -3781,15 +3781,22 @@ globalThis.this = dv.current();
                     ProfilePermissionGuard::new(paths, selection)
                 }
             });
-            if let Some(permissions) = permissions.as_ref() {
-                permissions
-                    .check_execute()
-                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-            }
             let note_index = load_scoped_note_index(paths, permissions.as_ref())?;
             let sandbox = options
                 .sandbox
                 .unwrap_or(loaded_config.js_runtime.default_sandbox);
+            // `execute` governs host processes (design document, "Host
+            // process execution"). The sandboxed tiers reach the vault only
+            // through profile-checked APIs and run under the profile's
+            // JavaScript limits; only `none`, which lifts those limits and
+            // can start processes, needs it up front.
+            if sandbox == JsRuntimeSandbox::None {
+                if let Some(permissions) = permissions.as_ref() {
+                    permissions
+                        .check_execute()
+                        .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+                }
+            }
             let timeout = effective_timeout(
                 &loaded_config,
                 sandbox,
@@ -8958,6 +8965,40 @@ cpu_limit_ms = 25
             assert!(missing_profile_error
                 .to_string()
                 .contains("requires an explicit profile with execute access"));
+        }
+
+        #[test]
+        fn sandboxed_javascript_runs_under_a_profile_without_execute() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+            let run = |sandbox| {
+                evaluate_dataview_js_with_options(
+                    &paths,
+                    "1 + 1",
+                    Some("Dashboard.md"),
+                    DataviewJsEvalOptions {
+                        sandbox: Some(sandbox),
+                        permission_profile: Some("writer".to_string()),
+                        ..DataviewJsEvalOptions::default()
+                    },
+                )
+            };
+
+            for sandbox in [
+                JsRuntimeSandbox::Strict,
+                JsRuntimeSandbox::Fs,
+                JsRuntimeSandbox::Net,
+            ] {
+                let result = run(sandbox).expect("sandboxed code needs no execute grant");
+                assert_eq!(result.value, Some(serde_json::json!(2)));
+            }
+            let error = run(JsRuntimeSandbox::None).expect_err("none needs execute");
+            assert!(error.to_string().contains("execute"), "{error}");
         }
 
         #[test]

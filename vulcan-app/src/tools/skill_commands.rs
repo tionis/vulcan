@@ -139,6 +139,7 @@ pub fn show_custom_tool(
             active_permission_profile,
             &tool.summary.name,
             tool.summary.permission_profile.as_deref(),
+            tool.summary.sandbox,
         ),
         tool,
     })
@@ -230,6 +231,7 @@ fn skill_command_tool_descriptors(
                         active_permission_profile,
                         &skill_command_tool_name(&skill.name, &command.id),
                         command.permission_profile.as_deref(),
+                        command.sandbox.unwrap_or(JsRuntimeSandbox::Strict),
                     ),
                     summary: skill_command_tool_summary(paths, &skill, &command),
                 })
@@ -621,11 +623,17 @@ fn effective_tool_permission_profile(
     }
 }
 
+/// A trusted vault's tool is callable when its permission profile fits the
+/// caller's. Sandboxed tools (`strict`, `fs`, `net`) run under that profile
+/// and its JavaScript limits like any other vault access; only a `none`
+/// sandbox tool, which can start host processes and has no runtime limits,
+/// also needs the profile's `execute` grant.
 fn custom_tool_is_callable(
     paths: &VaultPaths,
     active_permission_profile: Option<&str>,
     tool_name: &str,
     requested_permission_profile: Option<&str>,
+    sandbox: JsRuntimeSandbox,
 ) -> bool {
     if !trust::is_trusted(paths.vault_root()) {
         return false;
@@ -640,7 +648,7 @@ fn custom_tool_is_callable(
     };
     match effective_permission_profile.as_deref() {
         Some(profile) => resolve_permission_profile(paths, Some(profile))
-            .is_ok_and(|selection| selection.grant.execute),
+            .is_ok_and(|selection| sandbox != JsRuntimeSandbox::None || selection.grant.execute),
         None => true,
     }
 }

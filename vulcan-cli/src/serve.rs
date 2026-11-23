@@ -762,7 +762,7 @@ mod tests {
     }
 
     #[test]
-    fn serve_applies_permission_filters_and_denies_js_execution() {
+    fn serve_applies_permission_filters_to_queries_and_javascript() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
         copy_fixture_vault("dataview", &vault_root);
@@ -838,20 +838,23 @@ shell = "deny"
             .is_some_and(|error| !error.contains("does not allow read")));
         assert!(!inline.to_string().contains("status"), "{inline}");
 
+        // Sandboxed DataviewJS needs no `execute`, but sees only what the
+        // profile may read.
         let query_js = get_json(
             handle.addr(),
-            "/dataview/query-js?js=dv.current%28%29.status&file=Projects/Alpha",
+            "/dataview/query-js?js=dv.pages%28%29.file.path.array%28%29&file=Projects/Alpha",
             None,
         );
-        assert_eq!(query_js["ok"], false);
-        let expected_error = if cfg!(feature = "js_runtime") {
-            "does not allow execute access"
+        if cfg!(feature = "js_runtime") {
+            assert_eq!(query_js["ok"], true, "{query_js}");
+            let seen = query_js["result"].to_string();
+            assert!(seen.contains("Projects/Alpha.md"), "{query_js}");
+            assert!(!seen.contains("Dashboard"), "{query_js}");
         } else {
-            "js_runtime"
-        };
-        assert!(query_js["error"]
-            .as_str()
-            .is_some_and(|error| error.contains(expected_error)));
+            assert!(query_js["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("js_runtime")));
+        }
 
         handle.shutdown().expect("server should shut down");
     }

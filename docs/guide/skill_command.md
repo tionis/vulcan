@@ -34,7 +34,7 @@ Projected skill commands may also appear as normal tools in `vulcan describe --f
 
 Projected tool names are normalized as `skill_<skill_name>_<command_id>`, for example `skill_daily_review_prepare_day`.
 
-Skill commands contain executable vault-owned code. Running one requires a trusted vault (`vulcan trust add`). The caller's active permission profile and the command's declared profile are intersected, so a command cannot widen its caller's authority. Projected commands may use `strict`, `fs`, or `net`; `sandbox = none` is rejected. Use a trusted local `vulcan run --sandbox none` script instead when host execution is truly required and explicitly permitted.
+Skill commands contain executable vault-owned code. Running one requires a trusted vault (`vulcan trust add`). The caller's active permission profile and the command's declared profile are intersected, so a command cannot widen its caller's authority. The caller needs no `execute` grant, since the sandbox keeps the command away from host processes. Projected commands may use `strict`, `fs`, or `net`; `sandbox = none` is rejected. Use a trusted local `vulcan run --sandbox none` script instead when host execution is truly required and explicitly permitted.
 
 Skill commands may declare `metadata.vulcan.commands[].cli` aliases and flags for a
 more natural shell interface:

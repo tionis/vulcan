@@ -199,9 +199,13 @@ pub(crate) fn handle_run_command(
 ) -> Result<(), CliError> {
     let timeout = parse_run_timeout(args.timeout)?;
     let sandbox = parse_run_sandbox(args.sandbox)?;
-    selected_permission_guard(cli, paths)?
-        .check_execute()
-        .map_err(CliError::operation)?;
+    // Only the unsandboxed tier needs `execute` up front; the runtime
+    // enforces the same rule for the configured default sandbox.
+    if sandbox == Some(vulcan_core::JsRuntimeSandbox::None) {
+        selected_permission_guard(cli, paths)?
+            .check_execute()
+            .map_err(CliError::operation)?;
+    }
 
     // --eval/-e: evaluate one or more code snippets sequentially and print each result.
     if !args.eval.is_empty() {
