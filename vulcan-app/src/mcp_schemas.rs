@@ -632,6 +632,14 @@ pub fn note_append_input_schema() -> Value {
                 ),
             ),
             (
+                "expected_hash",
+                schema_string("`content_hash` from an earlier `note_get`; the write is refused with `stale_content` if the note changed since."),
+            ),
+            (
+                "idempotency_key",
+                schema_string("Caller-chosen key for this append; repeating a call with the same key and arguments returns the first result without appending again."),
+            ),
+            (
                 "no_commit",
                 schema_boolean("Suppress auto-commit for this mutation."),
             ),
@@ -675,6 +683,10 @@ pub fn note_patch_input_schema() -> Value {
                 schema_boolean("Preview the patch without writing the file."),
             ),
             (
+                "expected_hash",
+                schema_string("`content_hash` from an earlier `note_get`; the write is refused with `stale_content` if the note changed since."),
+            ),
+            (
                 "no_commit",
                 schema_boolean("Suppress auto-commit for this mutation."),
             ),
@@ -708,6 +720,10 @@ pub fn note_set_input_schema() -> Value {
                 schema_boolean("Run non-blocking diagnostics on the resulting note."),
             ),
             (
+                "expected_hash",
+                schema_string("`content_hash` from an earlier `note_get`; the write is refused with `stale_content` if the note changed since."),
+            ),
+            (
                 "no_commit",
                 schema_boolean("Suppress auto-commit for this mutation."),
             ),
@@ -727,6 +743,10 @@ pub fn note_delete_input_schema() -> Value {
             (
                 "confirm",
                 schema_boolean("Must be true unless dry_run is true."),
+            ),
+            (
+                "expected_hash",
+                schema_string("`content_hash` from an earlier `note_get`; the write is refused with `stale_content` if the note changed since."),
             ),
             (
                 "no_commit",
@@ -950,12 +970,16 @@ pub fn note_get_output_schema() -> Value {
             ("path", schema_string("Resolved path that was read.")),
             ("content", schema_string("Rendered selected content.")),
             (
+                "content_hash",
+                schema_string("Hash of the whole note as read; pass it as `expected_hash` to guard a later write."),
+            ),
+            (
                 "frontmatter",
                 serde_json::json!({ "description": "Parsed frontmatter object when present." }),
             ),
             ("metadata", generic_report_output_schema()),
         ],
-        &["path", "content", "metadata"],
+        &["path", "content", "content_hash", "metadata"],
     )
 }
 

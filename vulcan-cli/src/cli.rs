@@ -8208,6 +8208,12 @@ pub enum NoteCommand {
             help = "Run non-blocking doctor-like diagnostics after the write"
         )]
         check: bool,
+        #[arg(
+            long,
+            value_name = "HASH",
+            help = "Refuse with stale_content unless the note still has this content_hash (from `note get --output json`)"
+        )]
+        expected_hash: Option<String>,
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
@@ -8284,6 +8290,12 @@ pub enum NoteCommand {
             help = "Report the resulting note without writing it or creating a missing periodic note"
         )]
         dry_run: bool,
+        #[arg(
+            long,
+            value_name = "HASH",
+            help = "Refuse with stale_content unless the note still has this content_hash (from `note get --output json`)"
+        )]
+        expected_hash: Option<String>,
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
@@ -8371,6 +8383,12 @@ pub enum NoteCommand {
         check: bool,
         #[arg(long, help = "Report the planned patch without writing the file")]
         dry_run: bool,
+        #[arg(
+            long,
+            value_name = "HASH",
+            help = "Refuse with stale_content unless the note still has this content_hash (from `note get --output json`)"
+        )]
+        expected_hash: Option<String>,
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
@@ -8380,6 +8398,12 @@ pub enum NoteCommand {
         note: String,
         #[arg(long, help = "Report dangling inbound links without deleting the file")]
         dry_run: bool,
+        #[arg(
+            long,
+            value_name = "HASH",
+            help = "Refuse with stale_content unless the note still has this content_hash (from `note get --output json`)"
+        )]
+        expected_hash: Option<String>,
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },

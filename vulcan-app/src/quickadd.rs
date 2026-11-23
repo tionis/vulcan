@@ -222,6 +222,8 @@ fn run_capture(
             check: false,
             dry_run: false,
             no_commit: false,
+            expected_hash: None,
+            idempotency_key: None,
         },
     )
     .map_err(method_error)?;

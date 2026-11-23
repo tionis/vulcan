@@ -18666,6 +18666,17 @@
                 ]
               },
               {
+                "help": "Refuse with stale_content unless the note still has this content_hash (from `note get --output json`)",
+                "id": "expected_hash",
+                "long": "expected-hash",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "HASH"
+                ]
+              },
+              {
                 "help": "Suppress auto-commit for this invocation",
                 "id": "no_commit",
                 "long": "no-commit",
@@ -18878,6 +18889,17 @@
                 "short": null,
                 "value_names": [
                   "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Refuse with stale_content unless the note still has this content_hash (from `note get --output json`)",
+                "id": "expected_hash",
+                "long": "expected-hash",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "HASH"
                 ]
               },
               {
@@ -19174,6 +19196,17 @@
                 ]
               },
               {
+                "help": "Refuse with stale_content unless the note still has this content_hash (from `note get --output json`)",
+                "id": "expected_hash",
+                "long": "expected-hash",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "HASH"
+                ]
+              },
+              {
                 "help": "Suppress auto-commit for this invocation",
                 "id": "no_commit",
                 "long": "no-commit",
@@ -19217,6 +19250,17 @@
                 "short": null,
                 "value_names": [
                   "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Refuse with stale_content unless the note still has this content_hash (from `note get --output json`)",
+                "id": "expected_hash",
+                "long": "expected-hash",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "HASH"
                 ]
               },
               {

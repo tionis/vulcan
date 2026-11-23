@@ -169,6 +169,10 @@ pub struct NoteAppendCommandReport {
     pub reference_date: Option<String>,
     pub warnings: Vec<String>,
     pub diagnostics: Vec<DoctorDiagnosticIssue>,
+    /// The append had already been made under the same idempotency key;
+    /// this is its original report and nothing was appended again.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub replayed: bool,
 }
 
 pub fn finish_note_append_report(
@@ -194,6 +198,7 @@ pub fn finish_note_append_report(
         reference_date: report.reference_date,
         warnings: report.warnings,
         diagnostics,
+        replayed: false,
     })
 }
 
@@ -301,6 +306,9 @@ pub struct NoteGetReport {
     pub path: String,
     pub content: String,
     pub frontmatter: Option<JsonValue>,
+    /// Hash of the whole note as read; pass it as `expected_hash` to a write
+    /// so it refuses if the note changed in between.
+    pub content_hash: String,
     pub metadata: NoteGetMetadata,
     /// Diagnostics from evaluating dynamic content.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -483,6 +491,31 @@ pub struct NoteGetMetadata {
     pub line_spans: Vec<vulcan_core::NoteLineSpan>,
 }
 
+/// The hash `note_get` reports and the write guards compare: BLAKE3 of the
+/// note's whole current text, as lowercase hex.
+#[must_use]
+pub fn content_hash(source: &str) -> String {
+    blake3::hash(source.as_bytes()).to_hex().to_string()
+}
+
+/// Refuses with `stale_content` when `expected` is given and the note's
+/// current text no longer hashes to it.
+fn check_expected_hash(expected: Option<&str>, path: &str, source: &str) -> Result<(), AppError> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let current = content_hash(source);
+    if current.eq_ignore_ascii_case(expected.trim()) {
+        return Ok(());
+    }
+    Err(AppError::operation_with_code(
+        "stale_content",
+        format!(
+            "`{path}` changed since it was read (expected content hash {expected}, now {current}); read it again and reapply the change"
+        ),
+    ))
+}
+
 pub fn read_note(
     paths: &VaultPaths,
     options: NoteGetOptions<'_>,
@@ -550,6 +583,7 @@ pub fn read_note(
         path: target.display_path,
         content,
         frontmatter,
+        content_hash: content_hash(&source),
         metadata: NoteGetMetadata {
             mode: mode.as_str().to_string(),
             section_id: selection.section_id.clone(),
@@ -1255,6 +1289,19 @@ pub fn apply_note_append(
     permission_profile: Option<&str>,
     verbosity: Verbosity,
 ) -> Result<NoteAppendReport, AppError> {
+    apply_note_append_expecting(paths, request, None, permission_profile, verbosity)
+}
+
+/// [`apply_note_append`] that first requires the note's current bytes to hash to
+/// `expected_hash` (see [`content_hash`]), refusing with `stale_content`
+/// otherwise. The write itself still compares against the bytes it read.
+pub fn apply_note_append_expecting(
+    paths: &VaultPaths,
+    request: &NoteAppendRequest,
+    expected_hash: Option<&str>,
+    permission_profile: Option<&str>,
+    verbosity: Verbosity,
+) -> Result<NoteAppendReport, AppError> {
     if request.periodic.is_some() && request.note.is_some() {
         return Err(AppError::operation(
             "`note append` accepts either a note or a periodic target, not both",
@@ -1263,6 +1310,7 @@ pub fn apply_note_append(
 
     let config = load_vault_config(paths).config;
     let target = load_note_append_target(paths, &config, request, permission_profile)?;
+    check_expected_hash(expected_hash, &target.path, &target.existing)?;
     let rendered =
         crate::templates::render_template_request(crate::templates::TemplateRenderRequest {
             paths,
@@ -1367,11 +1415,25 @@ pub fn apply_note_set(
     permission_profile: Option<&str>,
     verbosity: Verbosity,
 ) -> Result<NoteSetReport, AppError> {
+    apply_note_set_expecting(paths, request, None, permission_profile, verbosity)
+}
+
+/// [`apply_note_set`] that first requires the note's current bytes to hash to
+/// `expected_hash` (see [`content_hash`]), refusing with `stale_content`
+/// otherwise. The write itself still compares against the bytes it read.
+pub fn apply_note_set_expecting(
+    paths: &VaultPaths,
+    request: &NoteSetRequest,
+    expected_hash: Option<&str>,
+    permission_profile: Option<&str>,
+    verbosity: Verbosity,
+) -> Result<NoteSetReport, AppError> {
     let path = resolve_existing_note_path(paths, &request.note)?;
     // Managed records take the vault lock inside their journaled transaction.
     let managed = note_path_is_mdbase_managed(paths, &path, permission_profile)?;
     let existing =
         secure_read_to_string(paths.vault_root(), Path::new(&path)).map_err(AppError::operation)?;
+    check_expected_hash(expected_hash, &path, &existing)?;
     let mut content = if request.preserve_frontmatter {
         preserve_existing_frontmatter(&existing, &request.replacement)
     } else {
@@ -1597,12 +1659,26 @@ pub fn apply_note_patch(
     permission_profile: Option<&str>,
     verbosity: Verbosity,
 ) -> Result<NotePatchReport, AppError> {
+    apply_note_patch_expecting(paths, request, None, permission_profile, verbosity)
+}
+
+/// [`apply_note_patch`] that first requires the note's current bytes to hash to
+/// `expected_hash` (see [`content_hash`]), refusing with `stale_content`
+/// otherwise. The write itself still compares against the bytes it read.
+pub fn apply_note_patch_expecting(
+    paths: &VaultPaths,
+    request: &NotePatchRequest,
+    expected_hash: Option<&str>,
+    permission_profile: Option<&str>,
+    verbosity: Verbosity,
+) -> Result<NotePatchReport, AppError> {
     let source = if let Some(relative_path) = request.target.vault_relative_path.as_deref() {
         secure_read_to_string(paths.vault_root(), Path::new(relative_path))
             .map_err(AppError::operation)?
     } else {
         request.target.read_source()?
     };
+    check_expected_hash(expected_hash, &request.target.display_path, &source)?;
     let matcher = parse_note_patch_matcher(&request.find)?;
     let scope = resolve_note_patch_scope_selection(
         &source,
@@ -1729,6 +1805,19 @@ pub fn apply_note_delete(
     permission_profile: Option<&str>,
     verbosity: Verbosity,
 ) -> Result<NoteDeleteReport, AppError> {
+    apply_note_delete_expecting(paths, request, None, permission_profile, verbosity)
+}
+
+/// [`apply_note_delete`] that first requires the note's current bytes to hash to
+/// `expected_hash` (see [`content_hash`]), refusing with `stale_content`
+/// otherwise. The write itself still compares against the bytes it read.
+pub fn apply_note_delete_expecting(
+    paths: &VaultPaths,
+    request: &NoteDeleteRequest,
+    expected_hash: Option<&str>,
+    permission_profile: Option<&str>,
+    verbosity: Verbosity,
+) -> Result<NoteDeleteReport, AppError> {
     let path = resolve_existing_note_path(paths, &request.note)?;
     let backlinks = match query_backlinks(paths, &path) {
         Ok(report) => report.backlinks,
@@ -1737,6 +1826,7 @@ pub fn apply_note_delete(
     };
     let source =
         secure_read_to_string(paths.vault_root(), Path::new(&path)).map_err(AppError::operation)?;
+    check_expected_hash(expected_hash, &path, &source)?;
 
     if note_path_is_mdbase_managed(paths, &path, permission_profile)? {
         if !apply_mdbase_note_change(
@@ -2886,14 +2976,15 @@ mod tests {
     }
 
     use super::{
-        apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
+        apply_note_append, apply_note_append_expecting, apply_note_create, apply_note_delete,
+        apply_note_delete_expecting, apply_note_patch, apply_note_set, apply_note_set_expecting,
         build_note_info_report, check_read_markdown_source_access,
-        check_write_markdown_source_access, diagnose_note_contents, finish_note_append_report,
-        finish_note_create_report, finish_note_patch_report, finish_note_set_report,
-        json_properties_to_frontmatter, parse_note_frontmatter_bindings, read_note,
-        read_note_outline, resolve_existing_markdown_target, MarkdownTarget, NoteAppendMode,
-        NoteAppendRequest, NoteCreateRequest, NoteDeleteRequest, NoteGetOptions, NotePatchRequest,
-        NoteReadMode, NoteSetRequest,
+        check_write_markdown_source_access, content_hash, diagnose_note_contents,
+        finish_note_append_report, finish_note_create_report, finish_note_patch_report,
+        finish_note_set_report, json_properties_to_frontmatter, parse_note_frontmatter_bindings,
+        read_note, read_note_outline, resolve_existing_markdown_target, MarkdownTarget,
+        NoteAppendMode, NoteAppendRequest, NoteCreateRequest, NoteDeleteRequest, NoteGetOptions,
+        NotePatchRequest, NoteReadMode, NoteSetRequest,
     };
     use crate::templates::{YamlMapping, YamlValue};
     use serde::Serialize;
@@ -3824,6 +3915,59 @@ folder_templates = [{ folder = "Projects", template = "project" }]
         );
         assert!(!root.join("Journal/Daily/2026-04-03.md").exists());
         assert!(!root.join("Journal").exists());
+    }
+
+    #[test]
+    fn writes_refuse_when_the_note_changed_since_it_was_read() {
+        let temp_dir = tempdir().expect("temp dir");
+        let root = temp_dir.path();
+        let paths = VaultPaths::new(root);
+        initialize_vulcan_dir(&paths).expect("init should succeed");
+        fs::write(root.join("Idea.md"), "first\n").expect("seed note");
+        let read = content_hash("first\n");
+        // Someone else edits the note after it was read.
+        fs::write(root.join("Idea.md"), "second\n").expect("concurrent edit");
+
+        let set = NoteSetRequest {
+            note: "Idea".to_string(),
+            replacement: "mine\n".to_string(),
+            preserve_frontmatter: false,
+        };
+        let error = apply_note_set_expecting(&paths, &set, Some(&read), None, Verbosity::Quiet)
+            .expect_err("stale set");
+        assert_eq!(error.code(), Some("stale_content"));
+        let delete = NoteDeleteRequest {
+            note: "Idea".to_string(),
+            dry_run: false,
+        };
+        assert!(
+            apply_note_delete_expecting(&paths, &delete, Some(&read), None, Verbosity::Quiet)
+                .is_err()
+        );
+        let append = NoteAppendRequest {
+            note: Some("Idea".to_string()),
+            text: "more".to_string(),
+            mode: NoteAppendMode::Append,
+            heading: None,
+            periodic: None,
+            date: None,
+            vars: HashMap::new(),
+            dry_run: false,
+        };
+        assert!(
+            apply_note_append_expecting(&paths, &append, Some(&read), None, Verbosity::Quiet)
+                .is_err()
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("Idea.md")).unwrap(),
+            "second\n"
+        );
+
+        // With the current hash the write goes through.
+        let current = content_hash("second\n");
+        apply_note_set_expecting(&paths, &set, Some(&current), None, Verbosity::Quiet)
+            .expect("fresh set");
+        assert_eq!(fs::read_to_string(root.join("Idea.md")).unwrap(), "mine\n");
     }
 
     #[test]

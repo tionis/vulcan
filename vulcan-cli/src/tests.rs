@@ -2247,6 +2247,7 @@ fn parses_note_append_periodic_command() {
                 vars: vec!["title=Release Planning".to_string()],
                 check: false,
                 dry_run: true,
+                expected_hash: None,
                 no_commit: false,
             },
         }
@@ -2289,6 +2290,7 @@ fn parses_note_patch_command() {
                 all: true,
                 check: true,
                 dry_run: true,
+                expected_hash: None,
                 no_commit: true,
             },
         }
@@ -2313,6 +2315,7 @@ fn parses_note_delete_command() {
             command: NoteCommand::Delete {
                 note: "Dashboard".to_string(),
                 dry_run: true,
+                expected_hash: None,
                 no_commit: true,
             },
         }

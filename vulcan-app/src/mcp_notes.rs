@@ -16,12 +16,13 @@ use crate::mcp_protocol::{
     McpNoteSetArgs,
 };
 use crate::notes::{
-    apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
-    finish_note_append_report, finish_note_create_report, finish_note_patch_report,
-    finish_note_set_report, parse_note_frontmatter_bindings, resolve_existing_markdown_target,
-    NoteAppendCommandReport, NoteAppendMode, NoteAppendRequest, NoteCreateCommandReport,
-    NoteCreateRequest, NoteDeleteReport, NoteDeleteRequest, NotePatchCommandReport,
-    NotePatchRequest, NoteSetCommandReport, NoteSetRequest,
+    apply_note_append_expecting, apply_note_create, apply_note_delete_expecting,
+    apply_note_patch_expecting, apply_note_set_expecting, finish_note_append_report,
+    finish_note_create_report, finish_note_patch_report, finish_note_set_report,
+    parse_note_frontmatter_bindings, resolve_existing_markdown_target, NoteAppendCommandReport,
+    NoteAppendMode, NoteAppendRequest, NoteCreateCommandReport, NoteCreateRequest,
+    NoteDeleteReport, NoteDeleteRequest, NotePatchCommandReport, NotePatchRequest,
+    NoteSetCommandReport, NoteSetRequest,
 };
 use crate::periodic::resolve_periodic_target;
 use crate::scan::refresh_cache_for_paths;
@@ -102,7 +103,17 @@ pub fn note_append(
     }
     let vars = parse_template_var_bindings(&template_var_bindings(&args.vars))
         .map_err(|error| McpMethodError::tool(error.to_string()))?;
-    let applied = apply_note_append(
+    let idempotency = match args.idempotency_key.as_deref() {
+        Some(key) if !args.dry_run => {
+            let fingerprint = append_fingerprint(&args, periodic.as_deref());
+            if let Some(report) = append_ledger::replay(paths, key, &fingerprint)? {
+                return Ok(report);
+            }
+            Some((key.to_string(), fingerprint))
+        }
+        _ => None,
+    };
+    let applied = apply_note_append_expecting(
         paths,
         &NoteAppendRequest {
             note: args.note,
@@ -114,6 +125,7 @@ pub fn note_append(
             vars,
             dry_run: args.dry_run,
         },
+        args.expected_hash.as_deref(),
         Some(profile_name),
         Verbosity::Quiet,
     )
@@ -123,6 +135,9 @@ pub fn note_append(
         .map_err(|error| McpMethodError::tool(error.to_string()))?;
     if report.dry_run {
         return Ok(report);
+    }
+    if let Some((key, fingerprint)) = idempotency {
+        append_ledger::record(paths, key, fingerprint, &report);
     }
     refresh_cache_for_paths(paths, &changed)
         .map_err(|error| McpMethodError::tool(error.to_string()))?;
@@ -136,6 +151,97 @@ pub fn note_append(
         )
         .map_err(|error| McpMethodError::tool(error.clone()))?;
     Ok(report)
+}
+
+/// What a repeated idempotency key must match: the append's target and text.
+fn append_fingerprint(args: &McpNoteAppendArgs, periodic: Option<&str>) -> String {
+    let value = serde_json::json!([
+        args.note,
+        args.text,
+        args.mode,
+        args.heading,
+        periodic,
+        args.date,
+        args.vars,
+    ]);
+    blake3::hash(value.to_string().as_bytes())
+        .to_hex()
+        .to_string()
+}
+
+/// Appends made under an idempotency key in this process, so a client that
+/// retries after a lost response does not append twice. Bounded in size
+/// and age; a retry after a restart or a day appends again.
+mod append_ledger {
+    use super::{McpMethodError, NoteAppendCommandReport, VaultPaths};
+    use std::collections::VecDeque;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    const CAPACITY: usize = 1024;
+    const MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+
+    struct Entry {
+        vault: PathBuf,
+        key: String,
+        fingerprint: String,
+        recorded: Instant,
+        report: NoteAppendCommandReport,
+    }
+
+    static LEDGER: Mutex<VecDeque<Entry>> = Mutex::new(VecDeque::new());
+
+    pub(super) fn replay(
+        paths: &VaultPaths,
+        key: &str,
+        fingerprint: &str,
+    ) -> Result<Option<NoteAppendCommandReport>, McpMethodError> {
+        if key.is_empty() || key.len() > 256 {
+            return Err(McpMethodError::invalid_params(
+                "`note_append.idempotency_key` must be 1 to 256 bytes",
+            ));
+        }
+        let mut ledger = LEDGER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ledger.retain(|entry| entry.recorded.elapsed() < MAX_AGE);
+        let Some(entry) = ledger
+            .iter()
+            .find(|entry| entry.vault == paths.vault_root() && entry.key == key)
+        else {
+            return Ok(None);
+        };
+        if entry.fingerprint != fingerprint {
+            return Err(McpMethodError::invalid_params(
+                "`note_append.idempotency_key` was already used for a different append",
+            ));
+        }
+        let mut report = entry.report.clone();
+        report.replayed = true;
+        Ok(Some(report))
+    }
+
+    pub(super) fn record(
+        paths: &VaultPaths,
+        key: String,
+        fingerprint: String,
+        report: &NoteAppendCommandReport,
+    ) {
+        let mut ledger = LEDGER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if ledger.len() >= CAPACITY {
+            ledger.pop_front();
+        }
+        ledger.push_back(Entry {
+            vault: paths.vault_root().to_path_buf(),
+            key,
+            fingerprint,
+            recorded: Instant::now(),
+            report: report.clone(),
+        });
+    }
 }
 
 fn parse_note_append_mode(
@@ -192,8 +298,14 @@ pub fn note_patch(
         replace_all: args.all,
         dry_run: args.dry_run,
     };
-    let applied = apply_note_patch(paths, &request, Some(profile_name), Verbosity::Quiet)
-        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    let applied = apply_note_patch_expecting(
+        paths,
+        &request,
+        args.expected_hash.as_deref(),
+        Some(profile_name),
+        Verbosity::Quiet,
+    )
+    .map_err(|error| McpMethodError::tool(error.to_string()))?;
     if !applied.dry_run && !applied.changed_paths.is_empty() {
         refresh_cache_for_paths(paths, &applied.changed_paths)
             .map_err(|error| McpMethodError::tool(error.to_string()))?;
@@ -226,13 +338,14 @@ pub fn note_set(
         ));
     }
     check_write_note_access(paths, guard, &args.note)?;
-    let applied = apply_note_set(
+    let applied = apply_note_set_expecting(
         paths,
         &NoteSetRequest {
             note: args.note,
             replacement: args.content,
             preserve_frontmatter: args.preserve_frontmatter,
         },
+        args.expected_hash.as_deref(),
         Some(profile_name),
         Verbosity::Quiet,
     )
@@ -266,12 +379,13 @@ pub fn note_delete(
         ));
     }
     check_write_note_access(paths, guard, &args.note)?;
-    let mut report = apply_note_delete(
+    let mut report = apply_note_delete_expecting(
         paths,
         &NoteDeleteRequest {
             note: args.note,
             dry_run: args.dry_run,
         },
+        args.expected_hash.as_deref(),
         Some(profile_name),
         Verbosity::Quiet,
     )
@@ -331,6 +445,34 @@ mod tests {
         let content = fs::read_to_string(temporary.path().join("New.md")).unwrap();
         assert!(content.contains("status: draft"));
         assert!(content.contains("# New"));
+    }
+
+    #[test]
+    fn a_retried_append_with_the_same_key_appends_once() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).unwrap();
+        fs::write(temporary.path().join("Log.md"), "# Log\n").unwrap();
+        scan_vault(&paths, ScanMode::Full).unwrap();
+        let writable = ProfilePermissionGuard::new(
+            &paths,
+            resolve_permission_profile(&paths, Some("unrestricted")).unwrap(),
+        );
+        let args = |text: &str| {
+            serde_json::from_value::<McpNoteAppendArgs>(json!({
+                "note": "Log.md", "text": text, "no_commit": true,
+                "idempotency_key": "retry-test-1",
+            }))
+            .unwrap()
+        };
+        let first = note_append(&paths, &writable, "unrestricted", args("- once")).unwrap();
+        assert!(!first.replayed);
+        let again = note_append(&paths, &writable, "unrestricted", args("- once")).unwrap();
+        assert!(again.replayed);
+        let content = fs::read_to_string(temporary.path().join("Log.md")).unwrap();
+        assert_eq!(content.matches("- once").count(), 1, "{content}");
+        // The same key for a different append is a caller error.
+        assert!(note_append(&paths, &writable, "unrestricted", args("- other")).is_err());
     }
 
     #[test]

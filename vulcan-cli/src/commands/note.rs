@@ -19,8 +19,8 @@ use std::io::{self, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use vulcan_app::browse::move_note_with_profile;
 use vulcan_app::notes::{
-    apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
-    build_note_info_report,
+    apply_note_append_expecting, apply_note_create, apply_note_delete_expecting,
+    apply_note_patch_expecting, apply_note_set_expecting, build_note_info_report,
     check_read_markdown_source_access as app_check_read_markdown_source_access,
     check_write_markdown_source_access as app_check_write_markdown_source_access,
     diagnose_external_markdown_contents, diagnose_note_contents, finish_note_append_report,
@@ -219,6 +219,7 @@ pub(crate) fn handle_note_command(
             file,
             no_frontmatter,
             check,
+            expected_hash,
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
@@ -230,6 +231,7 @@ pub(crate) fn handle_note_command(
                 file.as_ref(),
                 *no_frontmatter,
                 *check,
+                expected_hash.as_deref(),
                 cli.permissions.as_deref(),
                 cli.verbosity(),
             )?;
@@ -285,6 +287,7 @@ pub(crate) fn handle_note_command(
             vars,
             check,
             dry_run,
+            expected_hash,
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
@@ -326,6 +329,7 @@ pub(crate) fn handle_note_command(
                     vars,
                     check: *check,
                     dry_run: *dry_run,
+                    expected_hash: expected_hash.as_deref(),
                 },
                 cli.permissions.as_deref(),
                 cli.verbosity(),
@@ -355,6 +359,7 @@ pub(crate) fn handle_note_command(
             all,
             check,
             dry_run,
+            expected_hash,
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
@@ -373,6 +378,7 @@ pub(crate) fn handle_note_command(
                     replace_all: *all,
                     check: *check,
                     dry_run: *dry_run,
+                    expected_hash: expected_hash.as_deref(),
                 },
                 cli.permissions.as_deref(),
                 cli.verbosity(),
@@ -412,6 +418,7 @@ pub(crate) fn handle_note_command(
         NoteCommand::Delete {
             note,
             dry_run,
+            expected_hash,
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
@@ -421,6 +428,7 @@ pub(crate) fn handle_note_command(
                 paths,
                 note,
                 *dry_run,
+                expected_hash.as_deref(),
                 cli.permissions.as_deref(),
                 cli.verbosity(),
             )?;
@@ -679,6 +687,7 @@ pub(crate) struct NotePatchOptions<'a> {
     pub(crate) replace_all: bool,
     pub(crate) check: bool,
     pub(crate) dry_run: bool,
+    pub(crate) expected_hash: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -841,6 +850,7 @@ pub(crate) fn run_note_set_command(
     file: Option<&PathBuf>,
     no_frontmatter: bool,
     check: bool,
+    expected_hash: Option<&str>,
     permission_profile: Option<&str>,
     verbosity: Verbosity,
 ) -> Result<NoteSetReport, CliError> {
@@ -851,6 +861,7 @@ pub(crate) fn run_note_set_command(
         &replacement,
         no_frontmatter,
         check,
+        expected_hash,
         permission_profile,
         verbosity,
     )
@@ -863,16 +874,18 @@ pub(crate) fn run_note_set_with_content(
     replacement: &str,
     preserve_frontmatter: bool,
     check: bool,
+    expected_hash: Option<&str>,
     permission_profile: Option<&str>,
     verbosity: Verbosity,
 ) -> Result<NoteSetReport, CliError> {
-    let report = apply_note_set(
+    let report = apply_note_set_expecting(
         paths,
         &AppNoteSetRequest {
             note: note.to_string(),
             replacement: replacement.to_string(),
             preserve_frontmatter,
         },
+        expected_hash,
         permission_profile,
         verbosity,
     )?;
@@ -952,6 +965,7 @@ pub(crate) struct NoteAppendOptions<'a> {
     pub(crate) vars: &'a [String],
     pub(crate) check: bool,
     pub(crate) dry_run: bool,
+    pub(crate) expected_hash: Option<&'a str>,
 }
 
 pub(crate) fn run_note_append_command(
@@ -970,8 +984,9 @@ pub(crate) fn run_note_append_command(
         vars,
         check,
         dry_run,
+        expected_hash,
     } = options;
-    let report = apply_note_append(
+    let report = apply_note_append_expecting(
         paths,
         &AppNoteAppendRequest {
             note: note.map(ToOwned::to_owned),
@@ -983,6 +998,7 @@ pub(crate) fn run_note_append_command(
             vars: parse_template_var_bindings(vars)?,
             dry_run,
         },
+        expected_hash,
         permission_profile,
         verbosity,
     )?;
@@ -1011,6 +1027,7 @@ pub(crate) fn run_note_patch_command(
         replace_all,
         check,
         dry_run,
+        expected_hash,
     } = options;
     let target = resolve_existing_markdown_target(paths, note)?;
     let request = AppNotePatchRequest {
@@ -1024,7 +1041,13 @@ pub(crate) fn run_note_patch_command(
         replace_all,
         dry_run,
     };
-    let report = apply_note_patch(paths, &request, permission_profile, verbosity)?;
+    let report = apply_note_patch_expecting(
+        paths,
+        &request,
+        expected_hash,
+        permission_profile,
+        verbosity,
+    )?;
     if !report.dry_run && !report.changed_paths.is_empty() {
         refresh_after_write(paths, &report.changed_paths)?;
     }
@@ -1035,15 +1058,17 @@ pub(crate) fn run_note_delete_command(
     paths: &VaultPaths,
     note: &str,
     dry_run: bool,
+    expected_hash: Option<&str>,
     permission_profile: Option<&str>,
     verbosity: Verbosity,
 ) -> Result<NoteDeleteReport, CliError> {
-    let report = apply_note_delete(
+    let report = apply_note_delete_expecting(
         paths,
         &AppNoteDeleteRequest {
             note: note.to_string(),
             dry_run,
         },
+        expected_hash,
         permission_profile,
         verbosity,
     )?;

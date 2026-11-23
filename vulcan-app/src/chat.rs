@@ -850,6 +850,8 @@ fn append_daily(vault: &ChatVault<'_>, text: &str) -> Result<ChatReply, AppError
                 check: false,
                 dry_run: false,
                 no_commit: false,
+                expected_hash: None,
+                idempotency_key: None,
             },
         )
         .map_err(mcp_error)

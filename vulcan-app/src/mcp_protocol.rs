@@ -725,6 +725,10 @@ pub struct McpNoteAppendArgs {
     #[serde(default)]
     pub dry_run: bool,
     #[serde(default)]
+    pub expected_hash: Option<String>,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+    #[serde(default)]
     pub no_commit: bool,
 }
 
@@ -749,6 +753,8 @@ pub struct McpNotePatchArgs {
     #[serde(default)]
     pub dry_run: bool,
     #[serde(default)]
+    pub expected_hash: Option<String>,
+    #[serde(default)]
     pub no_commit: bool,
 }
 
@@ -770,6 +776,8 @@ pub struct McpNoteSetArgs {
     #[serde(default)]
     pub check: bool,
     #[serde(default)]
+    pub expected_hash: Option<String>,
+    #[serde(default)]
     pub no_commit: bool,
 }
 
@@ -781,6 +789,8 @@ pub struct McpNoteDeleteArgs {
     pub dry_run: bool,
     #[serde(default)]
     pub confirm: bool,
+    #[serde(default)]
+    pub expected_hash: Option<String>,
     #[serde(default)]
     pub no_commit: bool,
 }
