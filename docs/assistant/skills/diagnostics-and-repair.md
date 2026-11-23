@@ -24,7 +24,7 @@ diagnostics, orphaned assets, search mismatches, and unexpected graph/query resu
 
 ## Recommended Flow
 
-1. Run a read-only diagnostic command first: `doctor`, `cache verify`, `search --explain`, or graph diagnostics.
+1. Run a read-only diagnostic command first: `doctor`, `cache verify`, `search --explain`, or graph diagnostics. `doctor`'s `sync_conflict_copies` lists conflict copies a file synchronizer such as Syncthing left (`Note.sync-conflict-<date>-<time>-<device>.md`); merge each into its original and delete it rather than editing the copy.
 2. Classify the problem as source-note content, derived cache/index state, config/permission state, or unsupported syntax.
 3. Use dry-run repair/fix modes when available.
 4. Only patch source notes after identifying the smallest concrete fix.

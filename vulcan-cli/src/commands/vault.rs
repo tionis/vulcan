@@ -688,6 +688,14 @@ fn handle_add(cli: &Cli, registry: &WikiRegistry, command: &VaultCommand) -> Res
         .add(&request, *dry_run)
         .map_err(CliError::operation)?;
     let git_sync = wiki.sync_backend.as_deref() == Some("git");
+    if git_sync {
+        if let Some(folder) = vulcan_app::sync::syncthing_folder_root(path) {
+            eprintln!(
+                "warning: {}",
+                vulcan_app::sync::syncthing_overlap_warning(&folder)
+            );
+        }
+    }
     setup.not_a_git_repository = git_sync
         && !setup
             .git_init

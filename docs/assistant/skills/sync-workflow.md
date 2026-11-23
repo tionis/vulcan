@@ -158,6 +158,11 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
   a file-tree sync backend, which is also the default for a directory that is not a Git
   repository (for example a Syncthing folder). `vault set <id> --sync-backend git` or
   `--no-sync` changes it later without re-registering, so tokens and remotes are kept.
+  Never run Git sync and Syncthing on the same tree: `vault add` warns and `sync doctor` reports
+  `sync.file-synchronizer` when a `.stfolder` sits at or above the vault, since the two race
+  and Syncthing copies `.git`. `vulcan doctor` lists Syncthing's leftover
+  `*.sync-conflict-*` copies under `sync_conflict_copies`: merge each into its original, then
+  delete the copy; until then it is indexed and searched like any note.
 - Use `vulcan vault show <id>` or `vulcan vault list` to inspect registration. Human output calls
   out a nondefault files-only profile. Each entry's `health.state` names what most needs attention
   (`missing`, `unindexed`, `conflicted`, `recovery_required`, `paused`, `failing`, `offline`,

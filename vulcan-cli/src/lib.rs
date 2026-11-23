@@ -4421,6 +4421,7 @@ fn doctor_summary_has_issues(summary: &vulcan_core::DoctorSummary) -> bool {
         || summary.orphan_notes > 0
         || summary.orphan_assets > 0
         || summary.html_links > 0
+        || summary.sync_conflict_copies > 0
 }
 
 fn cli_search_mode(mode: SearchMode) -> vulcan_core::search::SearchMode {
@@ -8809,6 +8810,10 @@ fn print_doctor_report(
             println!("- orphan notes: {}", report.summary.orphan_notes);
             println!("- orphan assets: {}", report.summary.orphan_assets);
             println!("- HTML links: {}", report.summary.html_links);
+            println!(
+                "- sync conflict copies: {}",
+                report.summary.sync_conflict_copies
+            );
 
             if report.summary == zero_summary() {
                 println!("No issues found.");
@@ -8826,6 +8831,10 @@ fn print_doctor_report(
             print_path_section("Orphan notes", &report.orphan_notes);
             print_path_section("Orphan assets", &report.orphan_assets);
             print_diagnostic_section("HTML links", &report.html_links);
+            print_path_section(
+                "Sync conflict copies (merge into the original, then delete)",
+                &report.sync_conflict_copies,
+            );
             Ok(())
         }
         OutputFormat::Json => print_json(report),
@@ -10804,6 +10813,7 @@ fn zero_summary() -> vulcan_core::DoctorSummary {
         orphan_notes: 0,
         orphan_assets: 0,
         html_links: 0,
+        sync_conflict_copies: 0,
     }
 }
 

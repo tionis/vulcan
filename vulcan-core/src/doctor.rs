@@ -77,6 +77,10 @@ pub struct DoctorReport {
     pub orphan_notes: Vec<String>,
     pub orphan_assets: Vec<String>,
     pub html_links: Vec<DoctorDiagnosticIssue>,
+    /// Conflict copies a file synchronizer such as Syncthing left beside
+    /// the original (`Note.sync-conflict-20261123-101500-ABCDEFG.md`). They
+    /// are indexed like any file until someone merges and deletes them.
+    pub sync_conflict_copies: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -92,6 +96,7 @@ pub struct DoctorSummary {
     pub orphan_notes: usize,
     pub orphan_assets: usize,
     pub html_links: usize,
+    pub sync_conflict_copies: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -160,7 +165,8 @@ pub fn doctor_vault(paths: &VaultPaths) -> Result<DoctorReport, DoctorError> {
         .collect::<BTreeSet<_>>();
 
     let Some(connection) = open_existing_cache(paths)? else {
-        return Ok(empty_report(on_disk_paths));
+        let copies = on_disk_paths.clone();
+        return Ok(empty_report(on_disk_paths).with_sync_conflict_copies(&copies));
     };
 
     let indexed_documents = load_indexed_documents(&connection)?;
@@ -195,7 +201,8 @@ pub fn doctor_vault(paths: &VaultPaths) -> Result<DoctorReport, DoctorError> {
         orphan_notes,
         orphan_assets,
         sections.html_links,
-    );
+    )
+    .with_sync_conflict_copies(&on_disk_paths);
     fill_issue_lines(paths, &mut report);
     Ok(report)
 }
@@ -370,7 +377,39 @@ fn fts_repair_needed(paths: &VaultPaths) -> Result<bool, DoctorError> {
     Ok(chunk_rows != search_rows)
 }
 
+/// Whether `path` names a Syncthing conflict copy:
+/// `<stem>.sync-conflict-<YYYYMMDD>-<HHMMSS>-<device>[.<ext>]`.
+#[must_use]
+pub fn is_sync_conflict_copy(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let Some((_, rest)) = name.split_once(".sync-conflict-") else {
+        return false;
+    };
+    let mut parts = rest.splitn(3, '-');
+    let date = parts.next().unwrap_or_default();
+    let time = parts.next().unwrap_or_default();
+    let device = parts.next().unwrap_or_default();
+    date.len() == 8
+        && date.bytes().all(|byte| byte.is_ascii_digit())
+        && time.len() == 6
+        && time.bytes().all(|byte| byte.is_ascii_digit())
+        && !device.is_empty()
+}
+
 impl DoctorReport {
+    fn with_sync_conflict_copies<'a>(
+        mut self,
+        on_disk: impl IntoIterator<Item = &'a String>,
+    ) -> Self {
+        self.sync_conflict_copies = on_disk
+            .into_iter()
+            .filter(|path| is_sync_conflict_copy(path))
+            .cloned()
+            .collect();
+        self.summary.sync_conflict_copies = self.sync_conflict_copies.len();
+        self
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn new(
         unresolved_links: Vec<DoctorLinkIssue>,
@@ -398,6 +437,7 @@ impl DoctorReport {
                 orphan_notes: orphan_notes.len(),
                 orphan_assets: orphan_assets.len(),
                 html_links: html_links.len(),
+                sync_conflict_copies: 0,
             },
             unresolved_links,
             ambiguous_links,
@@ -410,6 +450,7 @@ impl DoctorReport {
             orphan_notes,
             orphan_assets,
             html_links,
+            sync_conflict_copies: Vec::new(),
         }
     }
 }
@@ -902,6 +943,38 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn syncthing_conflict_copies_are_recognized_by_name() {
+        assert!(is_sync_conflict_copy(
+            "Notes/Plan.sync-conflict-20261123-101500-ABCDEFG.md"
+        ));
+        assert!(is_sync_conflict_copy(
+            "data.sync-conflict-20261123-101500-X"
+        ));
+        assert!(!is_sync_conflict_copy("Notes/Plan.md"));
+        assert!(!is_sync_conflict_copy("Notes/Plan.sync-conflict-later.md"));
+        assert!(!is_sync_conflict_copy(
+            "Notes/Plan.sync-conflict-2026-101500-A.md"
+        ));
+    }
+
+    #[test]
+    fn doctor_lists_sync_conflict_copies_with_and_without_a_cache() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        let copy = "Home.sync-conflict-20261123-101500-ABCDEFG.md";
+        fs::write(vault_root.join(copy), "# Home\n").expect("conflict copy");
+        let paths = VaultPaths::new(&vault_root);
+
+        let before_scan = doctor_vault(&paths).expect("doctor should succeed");
+        assert_eq!(before_scan.sync_conflict_copies, vec![copy.to_string()]);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let report = doctor_vault(&paths).expect("doctor should succeed");
+        assert_eq!(report.sync_conflict_copies, vec![copy.to_string()]);
+        assert_eq!(report.summary.sync_conflict_copies, 1);
+    }
+
+    #[test]
     fn doctor_reports_clean_basic_vault() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
@@ -925,6 +998,7 @@ mod tests {
                 orphan_notes: 0,
                 orphan_assets: 0,
                 html_links: 0,
+                sync_conflict_copies: 0,
             }
         );
     }
@@ -954,6 +1028,7 @@ mod tests {
                     orphan_notes: 0,
                     orphan_assets: 0,
                     html_links: 0,
+                    sync_conflict_copies: 0,
                 },
                 "fixture {fixture} should be doctor-clean"
             );

@@ -415,6 +415,7 @@ fn doctor_git_vault_with_optional_state(
     );
     doctor_device_identity(state_store, &mut report);
     doctor_transport(paths, &options.remote, &mut report);
+    doctor_file_synchronizer(paths, &mut report);
     doctor_ref_sweep(paths, state_store, &mut report);
 
     match engine.installation() {
@@ -1330,6 +1331,37 @@ fn doctor_cache(paths: &VaultPaths, report: &mut SyncDoctorReport) {
             SyncDoctorSeverity::Error,
             error.to_string(),
         ),
+    }
+}
+
+/// The nearest directory at or above `path` that Syncthing replicates,
+/// recognized by the `.stfolder` marker at its root.
+#[must_use]
+pub fn syncthing_folder_root(path: &Path) -> Option<PathBuf> {
+    let start = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    start
+        .ancestors()
+        .find(|directory| directory.join(".stfolder").exists())
+        .map(Path::to_path_buf)
+}
+
+/// Explains why Git sync and Syncthing on the same tree conflict.
+#[must_use]
+pub fn syncthing_overlap_warning(folder: &Path) -> String {
+    format!(
+        "`{}` is a Syncthing folder (.stfolder): Syncthing replicates this vault's files and its .git directory while Git sync also moves them, so the two race and Syncthing leaves *.sync-conflict-* copies. Use one: exclude the vault from Syncthing (or ignore .git there and stop Git sync on the other devices), or register the vault with --no-sync",
+        folder.display()
+    )
+}
+
+fn doctor_file_synchronizer(paths: &VaultPaths, report: &mut SyncDoctorReport) {
+    if let Some(folder) = syncthing_folder_root(paths.vault_root()) {
+        doctor_check(
+            report,
+            "sync.file-synchronizer",
+            SyncDoctorSeverity::Warning,
+            syncthing_overlap_warning(&folder),
+        );
     }
 }
 
@@ -3197,6 +3229,40 @@ fn parse_canvas_file_references(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn doctor_warns_when_syncthing_also_replicates_the_vault() {
+        let temporary = tempfile::tempdir().unwrap();
+        let vault = temporary.path().join("Sync/notes");
+        std::fs::create_dir_all(&vault).unwrap();
+        let paths = VaultPaths::new(&vault);
+        let store = SyncStateStore::at(temporary.path().join("state"));
+        let doctor = || {
+            doctor_git_vault_with_optional_state(
+                &paths,
+                &GitSyncOptions::default(),
+                GitPlatformProfile::native(),
+                Some(&store),
+                SyncContentProfile::Knowledge,
+                false,
+            )
+        };
+        assert!(!doctor()
+            .checks
+            .iter()
+            .any(|check| check.code == "sync.file-synchronizer"));
+
+        std::fs::create_dir(temporary.path().join("Sync/.stfolder")).unwrap();
+        assert_eq!(
+            syncthing_folder_root(&vault),
+            Some(temporary.path().join("Sync").canonicalize().unwrap())
+        );
+        assert!(doctor().checks.iter().any(|check| {
+            check.code == "sync.file-synchronizer"
+                && check.severity == SyncDoctorSeverity::Warning
+                && check.message.contains(".stfolder")
+        }));
+    }
     use std::fs;
     use std::io::Write;
     use std::path::{Path, PathBuf};

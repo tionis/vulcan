@@ -165,6 +165,17 @@ The `android-shared` profile records the filesystem limitations instead of prete
 
 Do not place the detached Git directory in shared storage. Uninstalling Termux can remove its private objects and refs while leaving the visible vault behind. If that happens, preserve the vault and use `vulcan vault recover-git personal <remote> --dry-run` before applying recovery. Vulcan captures the surviving worktree first, but unpushed objects that existed only in the lost private directory cannot be reconstructed.
 
+## Syncthing and other file synchronizers
+
+Use one synchronizer per tree. Git sync and Syncthing on the same directory race each other, and
+Syncthing also copies the `.git` directory, which corrupts repositories that change on two
+devices at once. `vulcan vault add` warns, and `vulcan sync doctor` reports
+`sync.file-synchronizer`, when a `.stfolder` marker sits at or above the vault. A folder that
+only Syncthing replicates can still be a Vulcan vault: register it with `--no-sync` (the default
+for a directory that is not a Git repository). `vulcan doctor` lists Syncthing's
+`*.sync-conflict-*` copies under `sync_conflict_copies`; merge each into its original and delete
+it.
+
 ## Per-device files
 
 Obsidian stores each device's open panes in `.obsidian/workspace.json` and
