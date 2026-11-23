@@ -2194,6 +2194,9 @@ fn pull_branch_with_strategy(
                         "rebase",
                     ));
                 }
+                RebaseOutcome::BlockedDirty if policy == BranchPullPolicy::GuardedRebase => {
+                    replay_around_dirty_files(engine, report, fetched, lane)?;
+                }
                 RebaseOutcome::BlockedDirty => {
                     lane.action = GitBranchSyncAction::Deferred;
                     lane.detail = Some(
@@ -2240,6 +2243,57 @@ fn pull_branch_with_strategy(
         }
     }
     Ok(())
+}
+
+/// `git rebase` refuses any uncommitted change. Replaying in a scratch
+/// worktree only refuses changes the rebase would actually overwrite, so an
+/// agent's unrelated edits no longer hold a guarded rebase back.
+fn replay_around_dirty_files(
+    engine: &dyn GitEngine,
+    report: &mut GitSyncReport,
+    fetched: &GitOid,
+    lane: &mut GitBranchSync,
+) -> Result<(), GitSyncError> {
+    match engine.replay_branch(
+        &report.repository,
+        &lane.branch,
+        fetched,
+        &mut ConflictsDecline,
+    )? {
+        crate::BranchReplayOutcome::Replayed { .. } => {
+            record_branch_move(engine, report, lane, GitBranchSyncAction::Rebased)?;
+        }
+        crate::BranchReplayOutcome::Declined { reason } if reason.contains(CONFLICT_DECLINE) => {
+            lane.action = GitBranchSyncAction::Paused;
+            lane.detail = Some(
+                "branch diverged and rebasing the local commits conflicted; nothing was changed"
+                    .to_string(),
+            );
+        }
+        crate::BranchReplayOutcome::Declined { reason } => {
+            lane.action = GitBranchSyncAction::Deferred;
+            lane.detail = Some(format!(
+                "uncommitted edits would be overwritten by the rebase ({reason}); retrying next cycle"
+            ));
+        }
+    }
+    Ok(())
+}
+
+const CONFLICT_DECLINE: &str = "conflicts need a person";
+
+/// A replay resolver for unattended sync: any conflict declines, leaving the
+/// branch as it was.
+struct ConflictsDecline;
+
+impl crate::BranchReplayResolver for ConflictsDecline {
+    fn resolve(
+        &mut self,
+        _subject: &str,
+        _conflicts: &[crate::BranchReplayConflict],
+    ) -> Result<Vec<(String, String)>, String> {
+        Err(CONFLICT_DECLINE.to_string())
+    }
 }
 
 /// Previews the branch lane without mutation for dry runs: resolves the
@@ -8937,6 +8991,50 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         let detail = report.pause.and_then(|pause| pause.detail).expect("detail");
         assert!(detail.contains("aborted"), "{detail}");
         assert_eq!(git_stdout(&writer, &["rev-parse", "HEAD"]), local);
+    }
+
+    #[test]
+    fn guarded_rebase_replays_past_uncommitted_edits_it_does_not_touch() {
+        let (_temporary, remote, writer, local) = diverged_branch();
+        let engine = GitCliEngine::default();
+        fs::write(writer.join("Local.md"), "local, still being edited\n").expect("dirty edit");
+        fs::write(writer.join("Scratch.md"), "untracked\n").expect("untracked note");
+
+        let report = sync_git_once(&engine, &writer, &guarded()).expect("guarded sync");
+
+        let (action, _) = branch_action(&report);
+        assert_eq!(action, GitBranchSyncAction::Rebased, "{:?}", report.branch);
+        assert_ne!(git_stdout(&writer, &["rev-parse", "HEAD"]), local);
+        assert_eq!(
+            fs::read_to_string(writer.join("Home.md")).expect("upstream note"),
+            "advanced\n"
+        );
+        assert_eq!(
+            fs::read_to_string(writer.join("Local.md")).expect("dirty note"),
+            "local, still being edited\n"
+        );
+        assert!(writer.join("Scratch.md").exists());
+        assert_eq!(
+            remote_ref_tip(&remote, "refs/heads/main"),
+            git_stdout(&writer, &["rev-parse", "HEAD"])
+        );
+    }
+
+    #[test]
+    fn guarded_rebase_defers_when_uncommitted_edits_overlap_the_upstream() {
+        let (_temporary, _remote, writer, local) = diverged_branch();
+        let engine = GitCliEngine::default();
+        fs::write(writer.join("Home.md"), "edited here\n").expect("overlapping edit");
+
+        let report = sync_git_once(&engine, &writer, &guarded()).expect("guarded sync");
+
+        let (action, detail) = branch_action(&report);
+        assert_eq!(action, GitBranchSyncAction::Deferred, "{detail:?}");
+        assert_eq!(git_stdout(&writer, &["rev-parse", "HEAD"]), local);
+        assert_eq!(
+            fs::read_to_string(writer.join("Home.md")).expect("kept edit"),
+            "edited here\n"
+        );
     }
 
     #[test]

@@ -235,8 +235,11 @@ makes the daemon rebase your commits in the background. `ff-only`, `merge`, `reb
 For repositories where agents commit, `guarded-rebase` resolves most divergences without anyone:
 sync replays the local commits onto the upstream and publishes them, but only when no other branch,
 tag, remote-tracking ref, or worktree contains them (so an agent's worktree never loses its base),
-none is a merge, and the replay applies cleanly. Anything else pauses the branch, with an alert that
-says to run `git pull --rebase` and push. `ff-only` is the strictest choice: sync never rewrites or
+none is a merge, and the replay applies cleanly. Uncommitted edits hold it back only when the
+upstream changes the same files: the commits are then replayed in a scratch worktree, so unrelated
+edits stay as they are. While overlapping edits block it, the branch waits; after 30 minutes the
+daemon alerts (`sync_branch_deferred`) so someone commits or discards them. Anything else pauses
+the branch, with an alert that says to run `git pull --rebase` and push. `ff-only` is the strictest choice: sync never rewrites or
 creates a commit and every divergence pauses. A merge or rebase that sync starts and that conflicts
 is always aborted, leaving the branch as it was.
 

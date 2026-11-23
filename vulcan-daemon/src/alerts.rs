@@ -53,7 +53,14 @@ pub enum SyncAlertReason {
     /// diverged under fast-forward-only pulls, or a merge or rebase
     /// conflicted and was aborted. The branch was left as it was.
     BranchPaused,
+    /// Upstream commits have waited longer than [`BRANCH_DEFERRAL_ALERT`]
+    /// because uncommitted edits in the checkout overlap them.
+    BranchDeferred,
 }
+
+/// How long the branch lane may defer to uncommitted edits before the
+/// wiki needs someone.
+pub const BRANCH_DEFERRAL_ALERT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
 impl SyncAlert {
     #[must_use]
@@ -153,6 +160,9 @@ impl SyncAlert {
         if self.reason == Some(SyncAlertReason::BranchPaused) {
             return "Vulcan sync: branch needs you";
         }
+        if self.reason == Some(SyncAlertReason::BranchDeferred) {
+            return "Vulcan sync: uncommitted edits hold the branch back";
+        }
         match self.state {
             SyncJobState::Failed => "Vulcan sync failed",
             SyncJobState::Conflicted => "Vulcan sync needs resolution",
@@ -166,6 +176,13 @@ impl SyncAlert {
             return format!(
                 "Wiki `{wiki}`: local commits could not be combined with the upstream automatically, so the branch was left as it was. Run `git pull --rebase && git push` in the wiki (resolving any conflict), then `vulcan sync refresh {wiki}`.",
                 wiki = self.wiki_id
+            );
+        }
+        if self.reason == Some(SyncAlertReason::BranchDeferred) {
+            return format!(
+                "Wiki `{wiki}`: upstream commits have waited over {minutes} minutes because uncommitted edits in the checkout overlap them. Commit or discard those edits (`git status` in the wiki); sync then continues by itself.",
+                wiki = self.wiki_id,
+                minutes = BRANCH_DEFERRAL_ALERT.as_secs() / 60
             );
         }
         let reason = self.category.map_or(String::new(), |category| {
@@ -182,6 +199,9 @@ impl SyncAlert {
 #[derive(Debug, Default)]
 pub struct SyncAlertTracker {
     last_by_wiki: BTreeMap<String, String>,
+    /// When each wiki's branch lane started deferring, and whether that
+    /// streak has been reported.
+    deferred_since: BTreeMap<String, (Instant, bool)>,
 }
 
 impl SyncAlertTracker {
@@ -210,6 +230,11 @@ impl SyncAlertTracker {
     /// Returns a new or changed attention event. A healthy execution clears
     /// the per-wiki fingerprint so a later recurrence is delivered again.
     pub fn observe(&mut self, execution: &DaemonSyncExecution) -> Option<SyncAlert> {
+        self.observe_at(execution, Instant::now())
+    }
+
+    fn observe_at(&mut self, execution: &DaemonSyncExecution, now: Instant) -> Option<SyncAlert> {
+        let deferred = self.deferral_alert(execution, now);
         let wiki = execution
             .job
             .job
@@ -219,7 +244,7 @@ impl SyncAlertTracker {
             .to_string();
         let Some(alert) = SyncAlert::from_execution(execution) else {
             self.last_by_wiki.remove(&wiki);
-            return None;
+            return deferred;
         };
         let fingerprint = alert.fingerprint();
         if self.last_by_wiki.get(&wiki) == Some(&fingerprint) {
@@ -227,6 +252,59 @@ impl SyncAlertTracker {
         }
         self.last_by_wiki.insert(wiki, fingerprint);
         Some(alert)
+    }
+}
+
+impl SyncAlertTracker {
+    /// Reports once when a wiki's branch lane has deferred to uncommitted
+    /// edits for longer than [`BRANCH_DEFERRAL_ALERT`]; any other lane
+    /// outcome ends the streak.
+    fn deferral_alert(
+        &mut self,
+        execution: &DaemonSyncExecution,
+        now: Instant,
+    ) -> Option<SyncAlert> {
+        let deferred = execution
+            .report
+            .as_ref()
+            .and_then(|report| report.sync.branch.as_ref())
+            .is_some_and(|branch| branch.action == vulcan_app::sync::GitBranchSyncAction::Deferred);
+        self.deferral_alert_for(&execution.job.job, deferred, now)
+    }
+
+    fn deferral_alert_for(
+        &mut self,
+        job: &vulcan_sync::SyncJob,
+        deferred: bool,
+        now: Instant,
+    ) -> Option<SyncAlert> {
+        let wiki = job
+            .wiki_id
+            .clone()
+            .unwrap_or_else(|| "<unregistered>".to_string());
+        if !deferred {
+            self.deferred_since.remove(&wiki);
+            return None;
+        }
+        let (since, reported) = self
+            .deferred_since
+            .entry(wiki.clone())
+            .or_insert((now, false));
+        if *reported || now.duration_since(*since) < BRANCH_DEFERRAL_ALERT {
+            return None;
+        }
+        *reported = true;
+        Some(SyncAlert {
+            version: 1,
+            event: "sync_branch_deferred".to_string(),
+            severity: AlertSeverity::Warning,
+            job_id: job.id.clone(),
+            wiki_id: wiki,
+            state: job.state,
+            category: None,
+            retryable: true,
+            reason: Some(SyncAlertReason::BranchDeferred),
+        })
     }
 }
 
@@ -612,6 +690,30 @@ mod tests {
             serde_json::to_value(&alert).unwrap()["reason"],
             serde_json::json!("branch_paused")
         );
+    }
+
+    #[test]
+    fn a_branch_deferred_for_half_an_hour_alerts_once_per_streak() {
+        let job = execution(SyncJobState::Succeeded, None).job.job;
+        let mut tracker = SyncAlertTracker::default();
+        let start = Instant::now();
+        assert!(tracker.deferral_alert_for(&job, true, start).is_none());
+        let late = start + BRANCH_DEFERRAL_ALERT;
+        let alert = tracker
+            .deferral_alert_for(&job, true, late)
+            .expect("deferral alert");
+        assert_eq!(alert.event, "sync_branch_deferred");
+        assert_eq!(alert.reason, Some(SyncAlertReason::BranchDeferred));
+        assert!(alert.desktop_body().contains("uncommitted edits"));
+        assert!(tracker
+            .deferral_alert_for(&job, true, late + BRANCH_DEFERRAL_ALERT)
+            .is_none());
+        // Any other outcome ends the streak; a new one waits again.
+        assert!(tracker.deferral_alert_for(&job, false, late).is_none());
+        assert!(tracker.deferral_alert_for(&job, true, late).is_none());
+        assert!(tracker
+            .deferral_alert_for(&job, true, late + BRANCH_DEFERRAL_ALERT)
+            .is_some());
     }
 
     #[test]
