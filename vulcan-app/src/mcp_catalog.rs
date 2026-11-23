@@ -13,10 +13,12 @@ use crate::mcp_schemas::{
     config_set_input_schema, config_set_output_schema, config_show_input_schema,
     config_show_output_schema, daily_input_schema, daily_list_input_schema, daily_output_schema,
     daily_show_input_schema, empty_object_schema, generic_report_output_schema,
-    graph_communities_input_schema, index_scan_input_schema, index_scan_output_schema,
-    note_append_input_schema, note_append_output_schema, note_create_input_schema,
-    note_create_output_schema, note_delete_input_schema, note_delete_output_schema,
-    note_get_input_schema, note_get_output_schema, note_info_input_schema, note_info_output_schema,
+    git_blame_input_schema, git_commit_input_schema, git_diff_input_schema, git_log_input_schema,
+    git_status_input_schema, graph_communities_input_schema, index_scan_input_schema,
+    index_scan_output_schema, note_append_input_schema, note_append_output_schema,
+    note_create_input_schema, note_create_output_schema, note_delete_input_schema,
+    note_delete_output_schema, note_get_input_schema, note_get_output_schema,
+    note_info_input_schema, note_info_output_schema, note_move_input_schema,
     note_outline_input_schema, note_outline_output_schema, note_patch_input_schema,
     note_patch_output_schema, note_set_input_schema, note_set_output_schema, query_input_schema,
     search_input_schema, search_output_schema, status_output_schema, suggest_links_input_schema,
@@ -72,6 +74,7 @@ pub enum McpToolPack {
     Index,
     ToolPacks,
     Sync,
+    Git,
 }
 
 impl McpToolPack {
@@ -91,6 +94,7 @@ impl McpToolPack {
             Self::Index => "index",
             Self::ToolPacks => "tool-packs",
             Self::Sync => "sync",
+            Self::Git => "git",
         }
     }
 
@@ -118,6 +122,7 @@ impl McpToolPack {
                 "Inspect and mutate the MCP tool-pack selection for the current session."
             }
             Self::Sync => "Inspect and plan Git-backed vault synchronization without mutation.",
+            Self::Git => "Inspect vault history and changes and commit them.",
         }
     }
 }
@@ -158,6 +163,12 @@ pub enum McpToolId {
     SyncPlan,
     SyncDoctor,
     SyncConflicts,
+    NoteMove,
+    GitStatus,
+    GitDiff,
+    GitLog,
+    GitBlame,
+    GitCommit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,6 +181,9 @@ pub enum McpVisibilityRequirement {
     ConfigRead,
     ConfigWrite,
     GitReadAll,
+    /// Git access with full-vault read and write: a commit takes every change.
+    GitCommit,
+    Refactor,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -216,6 +230,7 @@ pub const PACK_CONFIG: &[McpToolPack] = &[McpToolPack::Config];
 pub const PACK_INDEX: &[McpToolPack] = &[McpToolPack::Index];
 const PACK_TOOL_PACKS: &[McpToolPack] = &[McpToolPack::ToolPacks];
 pub const PACK_SYNC: &[McpToolPack] = &[McpToolPack::Sync];
+pub const PACK_GIT: &[McpToolPack] = &[McpToolPack::Git];
 
 pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
     McpToolCatalogEntry {
@@ -632,6 +647,78 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         examples: &["sync_conflicts {}", "sync_conflicts {\"conflict_id\":\"01...\"}"],
     },
     McpToolCatalogEntry {
+        id: McpToolId::NoteMove,
+        name: "note_move",
+        title: "Move Or Rename Note",
+        description: "Move or rename one note and rewrite every link and embed that points at it.",
+        packs: PACK_NOTES_MANAGE,
+        visibility: McpVisibilityRequirement::Refactor,
+        annotations: mcp_annotations(false, true, false, false),
+        input_schema: note_move_input_schema,
+        output_schema: Some(generic_report_output_schema),
+        examples: &["note_move {\"note\":\"Inbox/Idea\",\"destination\":\"Projects/Idea\",\"dry_run\":true}"],
+    },
+    McpToolCatalogEntry {
+        id: McpToolId::GitStatus,
+        name: "git_status",
+        title: "Show Uncommitted Changes",
+        description: "List staged, unstaged, and untracked vault paths.",
+        packs: PACK_GIT,
+        visibility: McpVisibilityRequirement::GitReadAll,
+        annotations: mcp_annotations(true, false, true, false),
+        input_schema: git_status_input_schema,
+        output_schema: Some(generic_report_output_schema),
+        examples: &["git_status {}"],
+    },
+    McpToolCatalogEntry {
+        id: McpToolId::GitDiff,
+        name: "git_diff",
+        title: "Show Uncommitted Diff",
+        description: "Return the unified diff of uncommitted vault changes, optionally for one path.",
+        packs: PACK_GIT,
+        visibility: McpVisibilityRequirement::GitReadAll,
+        annotations: mcp_annotations(true, false, true, false),
+        input_schema: git_diff_input_schema,
+        output_schema: Some(generic_report_output_schema),
+        examples: &["git_diff {\"path\":\"Projects/Alpha.md\"}"],
+    },
+    McpToolCatalogEntry {
+        id: McpToolId::GitLog,
+        name: "git_log",
+        title: "List Recent Commits",
+        description: "List the most recent commits that touched the vault.",
+        packs: PACK_GIT,
+        visibility: McpVisibilityRequirement::GitReadAll,
+        annotations: mcp_annotations(true, false, true, false),
+        input_schema: git_log_input_schema,
+        output_schema: Some(generic_report_output_schema),
+        examples: &["git_log {\"limit\":10}"],
+    },
+    McpToolCatalogEntry {
+        id: McpToolId::GitBlame,
+        name: "git_blame",
+        title: "Blame File Lines",
+        description: "Show which commit last changed each line of one vault file.",
+        packs: PACK_GIT,
+        visibility: McpVisibilityRequirement::GitReadAll,
+        annotations: mcp_annotations(true, false, true, false),
+        input_schema: git_blame_input_schema,
+        output_schema: Some(generic_report_output_schema),
+        examples: &["git_blame {\"path\":\"Home.md\"}"],
+    },
+    McpToolCatalogEntry {
+        id: McpToolId::GitCommit,
+        name: "git_commit",
+        title: "Commit Vault Changes",
+        description: "Commit every uncommitted vault change with a message, running pre-commit hooks.",
+        packs: PACK_GIT,
+        visibility: McpVisibilityRequirement::GitCommit,
+        annotations: mcp_annotations(false, false, false, false),
+        input_schema: git_commit_input_schema,
+        output_schema: Some(generic_report_output_schema),
+        examples: &["git_commit {\"message\":\"Plan the release\"}"],
+    },
+    McpToolCatalogEntry {
         id: McpToolId::ToolPacks,
         name: "tool_packs",
         title: "Manage MCP Tool Packs",
@@ -660,6 +747,7 @@ pub const ALL_MCP_TOOL_PACKS: &[McpToolPack] = &[
     McpToolPack::Index,
     McpToolPack::ToolPacks,
     McpToolPack::Sync,
+    McpToolPack::Git,
 ];
 
 pub fn tool_by_name(name: &str) -> Option<&'static McpToolCatalogEntry> {
@@ -730,6 +818,8 @@ fn visibility_requirement_name(requirement: McpVisibilityRequirement) -> &'stati
         McpVisibilityRequirement::ConfigRead => "config read access",
         McpVisibilityRequirement::ConfigWrite => "config write access",
         McpVisibilityRequirement::GitReadAll => "Git access and full-vault read access",
+        McpVisibilityRequirement::GitCommit => "Git access and full-vault read and write access",
+        McpVisibilityRequirement::Refactor => "refactor access",
     }
 }
 
@@ -922,6 +1012,12 @@ pub fn tool_allowed_by_profile(tool: &McpToolCatalogEntry, profile: &PermissionP
         McpVisibilityRequirement::GitReadAll => {
             matches!(profile.git, PermissionMode::Allow) && profile.read.is_all()
         }
+        McpVisibilityRequirement::GitCommit => {
+            matches!(profile.git, PermissionMode::Allow)
+                && profile.read.is_all()
+                && profile.write.is_all()
+        }
+        McpVisibilityRequirement::Refactor => !profile.refactor.is_none(),
     }
 }
 

@@ -31,6 +31,7 @@ fn pack_from_arg(value: McpToolPackArg) -> McpToolPack {
         McpToolPackArg::Config => McpToolPack::Config,
         McpToolPackArg::Index => McpToolPack::Index,
         McpToolPackArg::Sync => McpToolPack::Sync,
+        McpToolPackArg::Git => McpToolPack::Git,
     }
 }
 

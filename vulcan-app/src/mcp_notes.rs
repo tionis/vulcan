@@ -12,8 +12,8 @@ use crate::mcp_access::{
 };
 use crate::mcp_assistant::json_value_to_string;
 use crate::mcp_protocol::{
-    McpMethodError, McpNoteAppendArgs, McpNoteCreateArgs, McpNoteDeleteArgs, McpNotePatchArgs,
-    McpNoteSetArgs,
+    McpMethodError, McpNoteAppendArgs, McpNoteCreateArgs, McpNoteDeleteArgs, McpNoteMoveArgs,
+    McpNotePatchArgs, McpNoteSetArgs,
 };
 use crate::notes::{
     apply_note_append_expecting, apply_note_create, apply_note_delete_expecting,
@@ -408,6 +408,56 @@ pub fn note_delete(
         .retain(|backlink| guard.check_read_path(&backlink.source_path).is_ok());
     report.backlink_count = report.backlinks.len();
     Ok(report)
+}
+
+/// Moves or renames a note and rewrites references to it, as `note rename`
+/// and `refactor move` do, under the connection's refactor and write grants.
+pub fn note_move(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    profile_name: &str,
+    args: &McpNoteMoveArgs,
+) -> Result<vulcan_core::MoveSummary, McpMethodError> {
+    let resolved = vulcan_core::resolve_note_reference(paths, &args.note)
+        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    guard
+        .check_refactor_path(&resolved.path)
+        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    let destination = normalize_relative_input_path(
+        &args.destination,
+        RelativePathOptions {
+            expected_extension: Some("md"),
+            append_extension_if_missing: true,
+        },
+    )
+    .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    check_write_path_access(guard, &destination)?;
+    let summary = crate::browse::move_note_with_profile(
+        paths,
+        &resolved.path,
+        &destination,
+        args.dry_run,
+        Some(profile_name),
+    )
+    .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    if !args.dry_run {
+        let changed: Vec<String> = std::iter::once(summary.source_path.clone())
+            .chain(std::iter::once(summary.destination_path.clone()))
+            .chain(summary.rewritten_files.iter().map(|file| file.path.clone()))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        AutoCommitPolicy::for_mutation(paths, args.no_commit)
+            .commit(
+                paths,
+                "note-move",
+                &changed,
+                Some(profile_name),
+                Verbosity::Quiet,
+            )
+            .map_err(|error| McpMethodError::tool(error.clone()))?;
+    }
+    Ok(summary)
 }
 
 #[cfg(test)]

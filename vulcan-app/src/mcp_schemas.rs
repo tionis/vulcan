@@ -923,6 +923,8 @@ pub fn tool_pack_mutation_input_schema() -> Value {
                             "web",
                             "config",
                             "index",
+                            "sync",
+                            "git",
                         ],
                     },
                 }),
@@ -1068,6 +1070,68 @@ pub fn config_set_output_schema() -> Value {
 
 pub fn index_scan_output_schema() -> Value {
     generic_report_output_schema()
+}
+
+pub fn note_move_input_schema() -> Value {
+    schema_object(
+        vec![
+            ("note", schema_string("Note to move or rename.")),
+            (
+                "destination",
+                schema_string("New vault-relative path (`.md` added when missing)."),
+            ),
+            (
+                "dry_run",
+                schema_boolean("Report the move and the link rewrites without changing files."),
+            ),
+            (
+                "no_commit",
+                schema_boolean("Suppress auto-commit for this mutation."),
+            ),
+        ],
+        &["note", "destination"],
+    )
+}
+
+pub fn git_status_input_schema() -> Value {
+    schema_object(Vec::new(), &[])
+}
+
+pub fn git_diff_input_schema() -> Value {
+    schema_object(
+        vec![(
+            "path",
+            schema_string("Vault-relative path to limit the diff to; omit for every change."),
+        )],
+        &[],
+    )
+}
+
+pub fn git_log_input_schema() -> Value {
+    schema_object(
+        vec![(
+            "limit",
+            schema_integer("Most recent commits to list (default 20, at most 200)."),
+        )],
+        &[],
+    )
+}
+
+pub fn git_blame_input_schema() -> Value {
+    schema_object(
+        vec![("path", schema_string("Vault-relative file to blame."))],
+        &["path"],
+    )
+}
+
+pub fn git_commit_input_schema() -> Value {
+    schema_object(
+        vec![(
+            "message",
+            schema_string("Commit message for every uncommitted vault change."),
+        )],
+        &["message"],
+    )
 }
 
 #[cfg(test)]

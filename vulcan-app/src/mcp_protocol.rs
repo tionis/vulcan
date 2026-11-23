@@ -783,6 +783,43 @@ pub struct McpNoteSetArgs {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct McpNoteMoveArgs {
+    pub note: String,
+    pub destination: String,
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub no_commit: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpGitDiffArgs {
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpGitLogArgs {
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpGitBlameArgs {
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpGitCommitArgs {
+    pub message: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpNoteDeleteArgs {
     pub note: String,
     #[serde(default)]

@@ -31,6 +31,7 @@ const KNOWN_TOOL_PACKS: &[&str] = &[
     "config",
     "index",
     "sync",
+    "git",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

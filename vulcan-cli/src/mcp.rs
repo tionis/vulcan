@@ -752,6 +752,7 @@ fn mcp_tool_pack_args_from_names(names: &[String]) -> Result<Vec<McpToolPackArg>
             "config" => Ok(McpToolPackArg::Config),
             "index" => Ok(McpToolPackArg::Index),
             "sync" => Ok(McpToolPackArg::Sync),
+            "git" => Ok(McpToolPackArg::Git),
             _ => Err(CliError::operation(format!(
                 "named MCP remote contains unknown tool pack `{name}`"
             ))),

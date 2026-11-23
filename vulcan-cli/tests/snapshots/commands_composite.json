@@ -22471,7 +22471,8 @@
               "web",
               "config",
               "index",
-              "sync"
+              "sync",
+              "git"
             ],
             "required": false,
             "short": null,
@@ -22879,7 +22880,8 @@
                       "web",
                       "config",
                       "index",
-                      "sync"
+                      "sync",
+                      "git"
                     ],
                     "required": false,
                     "short": null,
@@ -23059,7 +23061,8 @@
                       "web",
                       "config",
                       "index",
-                      "sync"
+                      "sync",
+                      "git"
                     ],
                     "required": false,
                     "short": null,

@@ -529,6 +529,7 @@ fn tool_pack_names(packs: &[McpToolPackArg]) -> Vec<String> {
             McpToolPackArg::Config => "config",
             McpToolPackArg::Index => "index",
             McpToolPackArg::Sync => "sync",
+            McpToolPackArg::Git => "git",
         })
         .map(ToOwned::to_owned)
         .collect()

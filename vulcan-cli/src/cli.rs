@@ -6754,6 +6754,7 @@ pub enum McpToolPackArg {
     Config,
     Index,
     Sync,
+    Git,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]

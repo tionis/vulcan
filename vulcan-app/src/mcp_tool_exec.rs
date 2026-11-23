@@ -24,8 +24,8 @@ use crate::mcp_protocol::{
 use crate::mcp_read_tools::MCP_QUERY_HARD_MAX;
 use crate::tools::CustomToolRegistryOptions;
 use crate::{
-    browse, mcp_config, mcp_custom, mcp_graph, mcp_notes, mcp_read_tools, mcp_scan, mcp_sync,
-    mcp_tasks, mcp_web,
+    browse, mcp_config, mcp_custom, mcp_git, mcp_graph, mcp_notes, mcp_read_tools, mcp_scan,
+    mcp_sync, mcp_tasks, mcp_web,
 };
 
 /// Session-local state and host-supplied registry policy needed by one tool call.
@@ -292,6 +292,38 @@ impl McpToolExecution<'_> {
                     &mcp_notes::note_delete(self.paths, self.guard, self.profile_name, args)?,
                 )
             }
+            McpToolId::NoteMove => {
+                let args: mcp_protocol::McpNoteMoveArgs = parse(arguments)?;
+                self.report(
+                    tool.name,
+                    &mcp_notes::note_move(self.paths, self.guard, self.profile_name, &args)?,
+                )
+            }
+            McpToolId::GitStatus => {
+                self.value(tool.name, mcp_git::git_status(self.paths, self.guard)?)
+            }
+            McpToolId::GitDiff => {
+                let args: mcp_protocol::McpGitDiffArgs = parse(arguments)?;
+                self.value(tool.name, mcp_git::git_diff(self.paths, self.guard, &args)?)
+            }
+            McpToolId::GitLog => {
+                let args: mcp_protocol::McpGitLogArgs = parse(arguments)?;
+                self.value(tool.name, mcp_git::git_log(self.paths, self.guard, &args)?)
+            }
+            McpToolId::GitBlame => {
+                let args: mcp_protocol::McpGitBlameArgs = parse(arguments)?;
+                self.value(
+                    tool.name,
+                    mcp_git::git_blame(self.paths, self.guard, &args)?,
+                )
+            }
+            McpToolId::GitCommit => {
+                let args: mcp_protocol::McpGitCommitArgs = parse(arguments)?;
+                self.value(
+                    tool.name,
+                    mcp_git::git_commit(self.paths, self.guard, self.profile_name, &args)?,
+                )
+            }
             McpToolId::WebSearch => {
                 let args: McpWebSearchArgs = parse(arguments)?;
                 self.value(
@@ -377,6 +409,7 @@ const fn reports_commit(tool: McpToolId) -> bool {
             | McpToolId::NotePatch
             | McpToolId::NoteSet
             | McpToolId::NoteDelete
+            | McpToolId::NoteMove
             | McpToolId::TaskCreate
             | McpToolId::TaskComplete
             | McpToolId::TaskReschedule
@@ -479,6 +512,131 @@ mod tests {
             ("text".to_string(), json!(text)),
         ]);
         executor.call_tool("note_append", &arguments).unwrap()["structuredContent"].clone()
+    }
+
+    fn call(
+        root: &std::path::Path,
+        profile: &str,
+        packs: &[McpToolPack],
+        name: &str,
+        arguments: &Value,
+    ) -> Result<Value, McpMethodError> {
+        let paths = VaultPaths::new(root);
+        let selection = resolve_permission_profile(&paths, Some(profile)).unwrap();
+        let guard = ProfilePermissionGuard::new(&paths, selection.clone());
+        let mut selected = packs.iter().copied().collect::<BTreeSet<_>>();
+        let pinned = BTreeSet::new();
+        let mut resources = McpToolResourceStore::default();
+        let registry = CustomToolRegistryOptions::default();
+        let mut executor = McpToolExecution {
+            paths: &paths,
+            guard: &guard,
+            profile_name: &selection.name,
+            profile: &selection.profile,
+            selected_packs: &mut selected,
+            pinned_packs: &pinned,
+            pack_mode: McpToolPackMode::Static,
+            resources: &mut resources,
+            custom_registry: &registry,
+        };
+        let arguments = arguments.as_object().cloned().unwrap_or_default();
+        executor
+            .call_tool(name, &arguments)
+            .map(|result| result["structuredContent"].clone())
+    }
+
+    #[test]
+    fn the_git_pack_inspects_and_commits_and_note_move_rewrites_links() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        git(root, &["init", "--quiet"]);
+        vulcan_core::paths::initialize_vulcan_dir(&VaultPaths::new(root)).unwrap();
+        std::fs::write(root.join(".gitignore"), ".vulcan/\n").unwrap();
+        std::fs::write(root.join("Home.md"), "See [[Inbox/Idea]].\n").unwrap();
+        std::fs::create_dir_all(root.join("Inbox")).unwrap();
+        std::fs::write(root.join("Inbox/Idea.md"), "# Idea\n").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "--quiet", "-m", "seed"]);
+        vulcan_core::scan_vault(&VaultPaths::new(root), vulcan_core::ScanMode::Full).unwrap();
+
+        // A read-only connection sees no commit tool.
+        let denied = call(
+            root,
+            "readonly",
+            &[McpToolPack::Git],
+            "git_commit",
+            &json!({"message": "x"}),
+        );
+        assert!(
+            matches!(denied, Err(McpMethodError::Tool { .. })),
+            "{denied:?}"
+        );
+
+        let moved = call(
+            root,
+            "unrestricted",
+            &[McpToolPack::NotesManage],
+            "note_move",
+            &json!({"note": "Inbox/Idea", "destination": "Projects/Idea", "no_commit": true}),
+        )
+        .unwrap();
+        assert_eq!(moved["destination_path"], "Projects/Idea.md", "{moved}");
+        assert!(root.join("Projects/Idea.md").exists());
+        let home = std::fs::read_to_string(root.join("Home.md")).unwrap();
+        assert!(!home.contains("Inbox/Idea"), "{home}");
+        assert_eq!(
+            moved["rewritten_files"].as_array().unwrap().len(),
+            1,
+            "{moved}"
+        );
+
+        let git_pack = [McpToolPack::Git];
+        let status = call(root, "unrestricted", &git_pack, "git_status", &json!({})).unwrap();
+        assert_eq!(status["clean"], false, "{status}");
+        let diff = call(
+            root,
+            "unrestricted",
+            &git_pack,
+            "git_diff",
+            &json!({"path": "Home.md"}),
+        )
+        .unwrap();
+        assert!(
+            diff["diff"]
+                .as_str()
+                .unwrap()
+                .contains("-See [[Inbox/Idea]]"),
+            "{diff}"
+        );
+        let committed = call(
+            root,
+            "unrestricted",
+            &git_pack,
+            "git_commit",
+            &json!({"message": "Move the idea"}),
+        )
+        .unwrap();
+        assert_eq!(committed["committed"], true, "{committed}");
+        let log = call(
+            root,
+            "unrestricted",
+            &git_pack,
+            "git_log",
+            &json!({"limit": 1}),
+        )
+        .unwrap();
+        assert_eq!(log["entries"].as_array().unwrap().len(), 1, "{log}");
+        let status = call(root, "unrestricted", &git_pack, "git_status", &json!({})).unwrap();
+        assert_eq!(status["clean"], true, "{status}");
+        let blame = call(
+            root,
+            "unrestricted",
+            &git_pack,
+            "git_blame",
+            &json!({"path": "Home.md"}),
+        )
+        .unwrap();
+        assert_eq!(blame["lines"].as_array().unwrap().len(), 1, "{blame}");
     }
 
     #[test]

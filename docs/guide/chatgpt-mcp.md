@@ -20,7 +20,7 @@ Recommended setup:
      --identity https://example.com/ \
      --ceiling-profile daily-wiki-agent \
      --default-profile daily-wiki-agent \
-     --tool-pack notes-read,notes-write,notes-manage,search,status,daily,tasks,custom,index \
+     --tool-pack notes-read,notes-write,notes-manage,search,status,daily,tasks,custom,index,git \
      --dry-run
    vulcan --vault /path/to/vault mcp remote init personal-chatgpt \
      --public-url https://wiki.example.com/mcp \

@@ -5,11 +5,11 @@ use crate::{
 };
 #[cfg(feature = "web")]
 use crate::{SearchBackendArg, WebFetchMode};
-use serde::Serialize;
 use std::fs;
 use std::io::{self, IsTerminal, Read};
 use std::path::PathBuf;
 use std::time::Duration;
+use vulcan_app::git_ops::{self, GitBlameReport, GitDiffReport, GitLogReport};
 use vulcan_app::mdbase::mdbase_js_mutation_committer;
 #[cfg(feature = "web")]
 use vulcan_app::web::{
@@ -23,29 +23,9 @@ use vulcan_core::ProfilePermissionGuard;
 use vulcan_core::SearchBackendKind;
 use vulcan_core::Verbosity;
 use vulcan_core::{
-    evaluate_dataview_js_with_options, git_blame, git_commit, git_diff, git_recent_log, git_status,
-    load_vault_config, DataviewJsEvalOptions, DataviewJsResult, GitBlameLine, GitCommitReport,
-    GitLogEntry, GitStatusReport, JsRuntimeSandbox, PluginEvent, VaultPaths,
+    evaluate_dataview_js_with_options, load_vault_config, DataviewJsEvalOptions, DataviewJsResult,
+    GitCommitReport, GitStatusReport, JsRuntimeSandbox, VaultPaths,
 };
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct GitLogReport {
-    limit: usize,
-    entries: Vec<GitLogEntry>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct GitDiffReport {
-    path: Option<String>,
-    changed_paths: Vec<String>,
-    diff: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct GitBlameReport {
-    path: String,
-    lines: Vec<GitBlameLine>,
-}
 
 pub(crate) fn handle_trust_command(
     cli: &Cli,
@@ -115,55 +95,30 @@ pub(crate) fn handle_git_command(
         .map_err(CliError::operation)?;
     match command {
         GitCommand::Status => {
-            let mut report = git_status(paths.vault_root()).map_err(CliError::operation)?;
-            report.staged = filter_vault_git_paths(report.staged);
-            report.unstaged = filter_vault_git_paths(report.unstaged);
-            report.untracked = filter_vault_git_paths(report.untracked);
-            report.clean = report.staged.is_empty()
-                && report.unstaged.is_empty()
-                && report.untracked.is_empty();
+            let report = git_ops::status_report(paths).map_err(CliError::operation)?;
             print_git_status_report(cli.output, &report)
         }
         GitCommand::Log { limit } => {
-            let report = run_git_log_command(paths, *limit)?;
+            let report = git_ops::log_report(paths, *limit).map_err(CliError::operation)?;
             print_git_log_report(cli.output, &report)
         }
         GitCommand::Diff { path } => {
-            let report = run_git_diff_group_command(paths, path.as_deref())?;
+            let report =
+                git_ops::diff_report(paths, path.as_deref()).map_err(CliError::operation)?;
             print_git_diff_group_report(cli.output, &report)
         }
         GitCommand::Commit { message } => {
-            crate::plugins::dispatch_plugin_event(
+            let report = git_ops::commit_with_hooks(
                 paths,
                 cli.permissions.as_deref(),
-                PluginEvent::OnPreCommit,
-                &serde_json::json!({
-                    "kind": PluginEvent::OnPreCommit,
-                    "action": "git-commit",
-                    "message": message,
-                }),
+                message,
                 cli.verbosity(),
-            )?;
-            let report = git_commit(paths.vault_root(), message).map_err(CliError::operation)?;
-            if report.committed {
-                let _ = crate::plugins::dispatch_plugin_event(
-                    paths,
-                    cli.permissions.as_deref(),
-                    PluginEvent::OnPostCommit,
-                    &serde_json::json!({
-                        "kind": PluginEvent::OnPostCommit,
-                        "action": "git-commit",
-                        "message": report.message,
-                        "files": report.files,
-                        "sha": report.sha,
-                    }),
-                    cli.verbosity(),
-                );
-            }
+            )
+            .map_err(CliError::operation)?;
             print_git_commit_report(cli.output, &report)
         }
         GitCommand::Blame { path } => {
-            let report = run_git_blame_command(paths, path)?;
+            let report = git_ops::blame_report(paths, path).map_err(CliError::operation)?;
             print_git_blame_report(cli.output, &report)
         }
         GitCommand::BatchCommit { dry_run } => {
@@ -223,63 +178,6 @@ fn print_batched_commit_report(
         println!("Left staged by hand: {}", report.left_staged.join(", "));
     }
     Ok(())
-}
-
-fn normalize_git_scope_path(path: &str) -> String {
-    path.replace('\\', "/").trim_start_matches("./").to_string()
-}
-
-fn filter_vault_git_paths(paths: Vec<String>) -> Vec<String> {
-    paths
-        .into_iter()
-        .filter(|path| path != ".vulcan" && !path.starts_with(".vulcan/"))
-        .collect()
-}
-
-fn run_git_log_command(paths: &VaultPaths, limit: usize) -> Result<GitLogReport, CliError> {
-    let entries = git_recent_log(paths.vault_root(), limit).map_err(CliError::operation)?;
-    Ok(GitLogReport { limit, entries })
-}
-
-fn run_git_diff_group_command(
-    paths: &VaultPaths,
-    path: Option<&str>,
-) -> Result<GitDiffReport, CliError> {
-    let normalized_path = path.map(normalize_git_scope_path);
-    let changed_paths = if let Some(path) = normalized_path.as_deref() {
-        let changed = filter_vault_git_paths(
-            git_status(paths.vault_root())
-                .map_err(CliError::operation)?
-                .changed_paths(),
-        );
-        changed
-            .into_iter()
-            .filter(|candidate| candidate == path)
-            .collect()
-    } else {
-        filter_vault_git_paths(
-            git_status(paths.vault_root())
-                .map_err(CliError::operation)?
-                .changed_paths(),
-        )
-    };
-    let diff =
-        git_diff(paths.vault_root(), normalized_path.as_deref()).map_err(CliError::operation)?;
-
-    Ok(GitDiffReport {
-        path: normalized_path,
-        changed_paths,
-        diff,
-    })
-}
-
-fn run_git_blame_command(paths: &VaultPaths, path: &str) -> Result<GitBlameReport, CliError> {
-    let normalized = normalize_git_scope_path(path);
-    let lines = git_blame(paths.vault_root(), &normalized).map_err(CliError::operation)?;
-    Ok(GitBlameReport {
-        path: normalized,
-        lines,
-    })
 }
 
 pub(crate) struct RunArgs<'a> {
