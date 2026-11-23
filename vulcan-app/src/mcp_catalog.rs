@@ -9,7 +9,6 @@ use std::collections::BTreeSet;
 use vulcan_core::{ConfigPermissionMode, PermissionMode, PermissionProfile};
 
 use crate::mcp_protocol::{McpMethodError, McpToolPackMutationArgs};
-use crate::mcp_schemas::empty_input_schema;
 use crate::mcp_schemas::{
     config_set_input_schema, config_set_output_schema, config_show_input_schema,
     config_show_output_schema, daily_input_schema, daily_list_input_schema, daily_output_schema,
@@ -30,6 +29,7 @@ use crate::mcp_schemas::{
     tool_pack_mutation_input_schema, tool_pack_state_output_schema, web_fetch_input_schema,
     web_fetch_output_schema, web_search_input_schema, web_search_output_schema,
 };
+use crate::mcp_schemas::{empty_input_schema, file_get_input_schema, file_put_input_schema};
 
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -166,6 +166,8 @@ pub enum McpToolId {
     SyncConflicts,
     SyncRefresh,
     SyncResume,
+    FileGet,
+    FilePut,
     NoteMove,
     GitStatus,
     GitDiff,
@@ -648,6 +650,30 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         input_schema: sync_conflicts_input_schema,
         output_schema: Some(generic_report_output_schema),
         examples: &["sync_conflicts {}", "sync_conflicts {\"conflict_id\":\"01...\"}"],
+    },
+    McpToolCatalogEntry {
+        id: McpToolId::FileGet,
+        name: "file_get",
+        title: "Read Vault File",
+        description: "Read a bounded slice of any vault file, such as an attachment, as UTF-8 text or base64, with the whole file's content hash.",
+        packs: PACK_NOTES_READ,
+        visibility: McpVisibilityRequirement::Read,
+        annotations: mcp_annotations(true, false, true, false),
+        input_schema: file_get_input_schema,
+        output_schema: Some(generic_report_output_schema),
+        examples: &["file_get {\"path\":\"Attachments/diagram.svg\"}"],
+    },
+    McpToolCatalogEntry {
+        id: McpToolId::FilePut,
+        name: "file_put",
+        title: "Write Vault File",
+        description: "Create or replace a non-Markdown vault file, such as an attachment, from text or base64 (at most 10 MiB).",
+        packs: PACK_NOTES_WRITE,
+        visibility: McpVisibilityRequirement::Write,
+        annotations: mcp_annotations(false, true, false, false),
+        input_schema: file_put_input_schema,
+        output_schema: Some(generic_report_output_schema),
+        examples: &["file_put {\"path\":\"Attachments/plan.txt\",\"content\":\"draft\"}"],
     },
     McpToolCatalogEntry {
         id: McpToolId::SyncRefresh,

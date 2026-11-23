@@ -24,8 +24,8 @@ use crate::mcp_protocol::{
 use crate::mcp_read_tools::MCP_QUERY_HARD_MAX;
 use crate::tools::CustomToolRegistryOptions;
 use crate::{
-    browse, mcp_config, mcp_custom, mcp_git, mcp_graph, mcp_notes, mcp_read_tools, mcp_scan,
-    mcp_sync, mcp_tasks, mcp_web,
+    browse, mcp_config, mcp_custom, mcp_files, mcp_git, mcp_graph, mcp_notes, mcp_read_tools,
+    mcp_scan, mcp_sync, mcp_tasks, mcp_web,
 };
 
 /// Session-local state and host-supplied registry policy needed by one tool call.
@@ -292,6 +292,20 @@ impl McpToolExecution<'_> {
                     &mcp_notes::note_delete(self.paths, self.guard, self.profile_name, args)?,
                 )
             }
+            McpToolId::FileGet => {
+                let args: mcp_protocol::McpFileGetArgs = parse(arguments)?;
+                self.report(
+                    tool.name,
+                    &mcp_files::file_get(self.paths, self.guard, &args)?,
+                )
+            }
+            McpToolId::FilePut => {
+                let args: mcp_protocol::McpFilePutArgs = parse(arguments)?;
+                self.report(
+                    tool.name,
+                    &mcp_files::file_put(self.paths, self.guard, self.profile_name, &args)?,
+                )
+            }
             McpToolId::SyncRefresh => {
                 self.value(tool.name, mcp_sync::sync_refresh(self.paths, self.guard)?)
             }
@@ -416,6 +430,7 @@ const fn reports_commit(tool: McpToolId) -> bool {
             | McpToolId::NoteSet
             | McpToolId::NoteDelete
             | McpToolId::NoteMove
+            | McpToolId::FilePut
             | McpToolId::TaskCreate
             | McpToolId::TaskComplete
             | McpToolId::TaskReschedule

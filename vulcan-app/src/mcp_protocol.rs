@@ -792,6 +792,33 @@ pub struct McpNoteMoveArgs {
     pub no_commit: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpFileGetArgs {
+    pub path: String,
+    #[serde(default)]
+    pub offset: Option<u64>,
+    #[serde(default)]
+    pub limit_bytes: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpFilePutArgs {
+    pub path: String,
+    pub content: String,
+    #[serde(default)]
+    pub encoding: Option<String>,
+    #[serde(default)]
+    pub overwrite: bool,
+    #[serde(default)]
+    pub expected_hash: Option<String>,
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub no_commit: bool,
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpGitDiffArgs {

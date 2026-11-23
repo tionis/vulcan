@@ -1097,6 +1097,61 @@ pub fn git_status_input_schema() -> Value {
     schema_object(Vec::new(), &[])
 }
 
+pub fn file_get_input_schema() -> Value {
+    schema_object(
+        vec![
+            (
+                "path",
+                schema_string("Vault-relative path of any file, such as an attachment."),
+            ),
+            (
+                "offset",
+                schema_integer(
+                    "Byte offset to start at (default 0); follow `next_offset` for the rest.",
+                ),
+            ),
+            (
+                "limit_bytes",
+                schema_integer("Bytes to return (default 262144, at most 1048576)."),
+            ),
+        ],
+        &["path"],
+    )
+}
+
+pub fn file_put_input_schema() -> Value {
+    schema_object(
+        vec![
+            (
+                "path",
+                schema_string("Vault-relative path of a non-Markdown file, such as an image or PDF."),
+            ),
+            ("content", schema_string("File content, as text or base64.")),
+            (
+                "encoding",
+                schema_string_enum("How `content` is encoded (default utf8).", &["utf8", "base64"]),
+            ),
+            (
+                "overwrite",
+                schema_boolean("Replace an existing file instead of refusing."),
+            ),
+            (
+                "expected_hash",
+                schema_string("`content_hash` from `file_get`; refuse with stale_content if the file changed."),
+            ),
+            (
+                "dry_run",
+                schema_boolean("Validate without writing."),
+            ),
+            (
+                "no_commit",
+                schema_boolean("Suppress auto-commit for this mutation."),
+            ),
+        ],
+        &["path", "content"],
+    )
+}
+
 pub fn empty_input_schema() -> Value {
     schema_object(Vec::new(), &[])
 }

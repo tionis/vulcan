@@ -71,6 +71,7 @@ pub mod mcp_config;
 pub mod mcp_custom;
 pub mod mcp_discovery;
 pub mod mcp_dispatch;
+pub mod mcp_files;
 pub mod mcp_git;
 pub mod mcp_graph;
 pub mod mcp_help;

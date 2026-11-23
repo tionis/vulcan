@@ -33,6 +33,7 @@ Use this skill when the task is centered on one note or a small set of notes and
    - Guard it with the `content_hash` that `note get` returned: MCP `expected_hash` (CLI `--expected-hash`) on `note_set`, `note_patch`, `note_append`, or `note_delete` refuses with `stale_content` if anyone changed the note since your read, instead of overwriting their edit. On `stale_content`, reread and rebuild the edit.
    - A hosted client that may retry a lost response should give `note_append` an `idempotency_key`; repeating the same append with the same key returns the first result (`replayed: true`) without appending twice. Reusing a key for a different append is an error.
 5. Switch to a vault-relative path when note names or aliases are ambiguous.
+6. For attachments and other non-Markdown files over MCP, use `file_get` (bounded slices as UTF-8 or base64, with the whole file's `content_hash`; follow `next_offset`) and `file_put` (text or base64, at most 10 MiB; refuses Markdown, which belongs to the note tools, and refuses to replace an existing file unless `overwrite` is set, ideally with `expected_hash`). Embed a stored attachment in a note with `![[path]]`.
 
 ## Guardrails
 
