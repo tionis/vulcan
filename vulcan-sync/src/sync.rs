@@ -451,6 +451,13 @@ pub struct GitDeviceBackup {
     pub snapshot_revision: GitOid,
     pub published_revision: GitOid,
     pub outcome: GitDeviceBackupOutcome,
+    /// The remote backup had moved past what this checkout last published,
+    /// so the bridged history came from elsewhere: another checkout or
+    /// installation under the same device ID, or this one re-cloned. A
+    /// bridge without it only joins history this checkout rewrote itself,
+    /// such as commits replaced by a rebase.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub foreign_history: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -3032,7 +3039,15 @@ fn publish_device_backup_after_remote_moved(
             Some(current.clone())
         );
     }
-    publish_device_backup_against(engine, options, report, capture, current)
+    let published = publish_device_backup_against(engine, options, report, capture, current)?;
+    if let Some(backup) = report
+        .device_backup
+        .as_mut()
+        .filter(|backup| backup.outcome == GitDeviceBackupOutcome::Bridged)
+    {
+        backup.foreign_history = true;
+    }
+    Ok(published)
 }
 
 /// Publishes against a remote head that was just observed, skipping the push
@@ -3099,6 +3114,7 @@ fn record_device_backup(
         snapshot_revision: capture.commit.clone(),
         published_revision: target,
         outcome,
+        foreign_history: false,
     });
 }
 
@@ -6515,6 +6531,24 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
     }
 
     #[test]
+    fn rewriting_local_commits_bridges_the_device_backup_without_foreign_history() {
+        let (temporary, remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        fs::write(writer.join("Local.md"), "local\n").expect("local note");
+        commit_all(&writer, "local");
+        let first = sync_git_once(&engine, &writer, &commits_only()).expect("first sync");
+        assert!(first.pause.is_none(), "{:?}", first.pause);
+        // An agent replaces its pushed-or-not local commit, as a rebase does.
+        advance_remote_branch(&temporary, &remote, "advanced\n");
+        run_git(&writer, &["pull", "--rebase", "--quiet", "origin", "main"]);
+
+        let second = sync_git_once(&engine, &writer, &commits_only()).expect("second sync");
+
+        let backup = second.device_backup.expect("device backup");
+        assert!(!backup.foreign_history, "{backup:?}");
+    }
+
+    #[test]
     fn steady_sync_bridges_a_device_backup_moved_elsewhere() {
         let (_temporary, _remote, writer) = setup_remote_and_writer();
         let engine = GitCliEngine::default();
@@ -6545,6 +6579,10 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         assert_eq!(report.device_id, options.device_id);
         let backup = report.device_backup.expect("device backup");
         assert_eq!(backup.outcome, GitDeviceBackupOutcome::Bridged);
+        assert!(
+            backup.foreign_history,
+            "the remote head was written elsewhere"
+        );
         let repository = engine.discover_repository(&writer).expect("repository");
         let remote = engine
             .remote_ref(&repository, &options.remote, &report.refs.device)
