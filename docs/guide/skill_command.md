@@ -82,3 +82,37 @@ Mutation-capable commands should accept a boolean `dry_run` or `dryRun`, include
 JavaScript can call skill commands through either `tools.call("skill_daily_review_prepare_day", input)` or `skills.run("daily-review", "prepare-day", input)`.
 
 Nested calls preserve the current effective permission ceiling. A script cannot use `skills.run()` to escape its own sandbox or permission profile.
+
+## Host commands
+
+A projected skill command never runs in the `none` sandbox, but it may run a few exact host
+programs that a device grants it. Declare them on the command:
+
+```yaml
+metadata:
+  vulcan:
+    commands:
+      - id: check
+        script: scripts/check.js
+        sandbox: strict
+        host_commands:
+          - ["mise", "run", "check"]
+```
+
+The declaration grants nothing. On each device that should run them, someone reviews the skill
+and runs:
+
+```bash
+vulcan tool grant skill_example_check   # records the argv lists and a digest of the skill
+vulcan tool grants                      # this vault's grants: active, stale, or missing
+vulcan tool revoke skill_example_check
+```
+
+The grant lives in Vulcan's user config, outside the vault, so neither sync nor an agent writing
+vault files can create or widen it. While it is active, the script's `host.exec(argv)` runs an
+argument vector that exactly matches a granted one, from its sandbox and for callers without the
+`execute` permission, such as a `writer` agent over MCP. Any other argv still needs `execute` and
+the `none` sandbox, environment overrides are refused, and read-only renders cannot run it. Any
+change to a file in the skill directory, including one a synced commit brings, makes the grant
+stale until it is granted again.
+

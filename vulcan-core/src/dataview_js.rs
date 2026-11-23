@@ -97,6 +97,10 @@ pub struct DataviewJsEvalOptions {
     pub disable_policy_hooks: bool,
     pub tool_registry: Option<Arc<dyn DataviewJsToolRegistry>>,
     pub mutation_committer: Option<Arc<dyn DataviewJsMutationCommitter>>,
+    /// Exact argument vectors `host.exec()` may run from any sandbox tier
+    /// without the `execute` permission: the host commands a device granted
+    /// to the skill command being run (`vulcan tool grant`).
+    pub granted_host_commands: Vec<Vec<String>>,
 }
 
 impl std::fmt::Debug for DataviewJsEvalOptions {
@@ -110,6 +114,7 @@ impl std::fmt::Debug for DataviewJsEvalOptions {
             .field("deterministic_static", &self.deterministic_static)
             .field("read_only", &self.read_only)
             .field("disable_policy_hooks", &self.disable_policy_hooks)
+            .field("granted_host_commands", &self.granted_host_commands)
             .field(
                 "tool_registry",
                 &self.tool_registry.as_ref().map(|_| "<registered>"),
@@ -354,6 +359,7 @@ mod runtime {
         transaction: Mutex<Option<JsTransactionState>>,
         tool_registry: Option<Arc<dyn DataviewJsToolRegistry>>,
         mutation_committer: Option<Arc<dyn DataviewJsMutationCommitter>>,
+        granted_host_commands: Vec<Vec<String>>,
     }
 
     /// The runtime's page universe (QRY.3): every readable note with stored
@@ -3825,6 +3831,7 @@ globalThis.this = dv.current();
                 transaction: Mutex::new(None),
                 tool_registry: options.tool_registry,
                 mutation_committer: options.mutation_committer,
+                granted_host_commands: options.granted_host_commands,
             });
             let outputs = Arc::new(Mutex::new(Vec::new()));
             let runtime =
@@ -5793,8 +5800,30 @@ globalThis.this = dv.current();
         argv: &Value,
         options: &HostCommandOptions,
     ) -> Result<HostProcessReport, DataviewJsError> {
-        ensure_execute_access(state, "host.exec()")?;
         let argv = parse_host_argv(argv)?;
+        if state.granted_host_commands.contains(&argv) {
+            // A device-granted command runs from any sandbox tier, exactly
+            // as granted: no environment overrides that could change what
+            // the program does.
+            ensure_static_mode_allows(state, "host.exec()", "host execution")?;
+            if options.env.as_ref().is_some_and(|env| !env.is_empty()) {
+                return Err(DataviewJsError::Message(
+                    "host.exec() cannot override the environment of a granted host command"
+                        .to_string(),
+                ));
+            }
+        } else {
+            ensure_execute_access(state, "host.exec()").map_err(|error| {
+                if state.granted_host_commands.is_empty() {
+                    error
+                } else {
+                    DataviewJsError::Message(format!(
+                        "{error}; this tool's granted host commands are {:?}",
+                        state.granted_host_commands
+                    ))
+                }
+            })?;
+        }
         let cwd = resolve_host_cwd(state, options.cwd.as_deref())?;
         let timeout = effective_host_timeout(options.timeout_ms, state.runtime_timeout)?;
         let max_output_bytes = effective_host_max_output_bytes(options.max_output_bytes)?;
@@ -8965,6 +8994,46 @@ cpu_limit_ms = 25
             assert!(missing_profile_error
                 .to_string()
                 .contains("requires an explicit profile with execute access"));
+        }
+
+        #[test]
+        fn granted_host_commands_run_exactly_from_a_sandboxed_tier() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+            let granted = test_host_exec_argv(&test_host_output_command("alpha"));
+            let other = test_host_exec_argv(&test_host_output_command("beta"));
+            let run = |argv: &[String], opts: &str| {
+                evaluate_dataview_js_with_options(
+                    &paths,
+                    &format!(
+                        "host.exec({}, {opts}).stdout",
+                        serde_json::to_string(argv).expect("argv")
+                    ),
+                    Some("Dashboard.md"),
+                    DataviewJsEvalOptions {
+                        sandbox: Some(JsRuntimeSandbox::Strict),
+                        permission_profile: Some("writer".to_string()),
+                        granted_host_commands: vec![granted.clone()],
+                        ..DataviewJsEvalOptions::default()
+                    },
+                )
+            };
+
+            let result = run(&granted, "{}").expect("the granted command runs");
+            assert_eq!(result.value, Some(serde_json::json!("alpha")));
+            let refused = run(&other, "{}").expect_err("other commands stay refused");
+            assert!(
+                refused.to_string().contains("granted host commands"),
+                "{refused}"
+            );
+            let env = run(&granted, r#"{ env: { PATH: "" } }"#)
+                .expect_err("a granted command keeps its environment");
+            assert!(env.to_string().contains("environment"), "{env}");
         }
 
         #[test]

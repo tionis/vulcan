@@ -31,7 +31,8 @@ tier: code can execute local programs and is no longer protected by the normal r
 The `execute` permission covers host processes, so only `none` needs it to start. JavaScript in
 `strict`, `fs`, or `net` runs under any profile, which bounds what it reads, writes, and fetches
 and caps it with the profile's JavaScript limits; this is how a `writer` agent over MCP can call a
-vault's sandboxed skill commands.
+vault's sandboxed skill commands. A skill command may also run exact host commands that the
+device granted it with `vulcan tool grant` (see "Host commands" in the skill command guide).
 
 ## Permissions still apply
 

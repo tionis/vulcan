@@ -123,6 +123,7 @@ pub mod sync_transport_all;
 pub mod tasks;
 pub mod templates;
 pub mod textbundle;
+pub mod tool_grants;
 pub mod tools;
 pub mod trust;
 pub mod update;

@@ -42208,3 +42208,78 @@ fn mcp_without_commit(report: &Value) -> Value {
     );
     report
 }
+
+#[cfg(not(target_os = "windows"))]
+#[test]
+fn tool_grant_lets_a_writer_run_the_declared_host_command() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    let skill = vault_root.join(".agents/skills/checker");
+    fs::create_dir_all(skill.join("scripts")).expect("skill dir");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir");
+    fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: checker\ndescription: Run the checker.\nmetadata:\n  vulcan:\n    commands:\n      - id: run\n        script: scripts/run.js\n        sandbox: strict\n        expose: true\n        input_schema:\n          type: object\n        host_commands:\n          - [\"printf\", \"%s\", \"checked\"]\n---\n\n# checker\n",
+    )
+    .expect("manifest");
+    fs::write(
+        skill.join("scripts/run.js"),
+        "function main() { return host.exec([\"printf\", \"%s\", \"checked\"]).stdout; }\n",
+    )
+    .expect("script");
+    let config_home = temp_dir.path().join("config");
+    let config_home = config_home.to_str().expect("utf-8 path");
+    let vault = vault_root.to_str().expect("utf-8 path");
+    trust_and_scan_vault(config_home, vault);
+    let run = || {
+        cargo_vulcan_with_xdg_config(config_home)
+            .args([
+                "--vault",
+                vault,
+                "--permissions",
+                "writer",
+                "--output",
+                "json",
+                "tool",
+                "run",
+                "skill_checker_run",
+            ])
+            .assert()
+    };
+
+    run().failure();
+    let dry = cargo_vulcan_with_xdg_config(config_home)
+        .args([
+            "--vault",
+            vault,
+            "--output",
+            "json",
+            "tool",
+            "grant",
+            "skill_checker_run",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    assert_eq!(parse_stdout_json(&dry)["dry_run"], true);
+    run().failure();
+
+    cargo_vulcan_with_xdg_config(config_home)
+        .args(["--vault", vault, "tool", "grant", "skill_checker_run"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("printf %s checked"));
+    let granted = run().success();
+    assert_eq!(parse_stdout_json(&granted)["result"], "checked");
+    let listed = cargo_vulcan_with_xdg_config(config_home)
+        .args(["--vault", vault, "--output", "json", "tool", "grants"])
+        .assert()
+        .success();
+    assert_eq!(parse_stdout_json(&listed)["grants"][0]["state"], "active");
+
+    cargo_vulcan_with_xdg_config(config_home)
+        .args(["--vault", vault, "tool", "revoke", "skill_checker_run"])
+        .assert()
+        .success();
+    run().failure();
+}

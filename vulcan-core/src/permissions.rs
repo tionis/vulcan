@@ -543,6 +543,7 @@ __vulcanPolicyHandler(__vulcanPolicyInput);\n",
                 disable_policy_hooks: true,
                 tool_registry: None,
                 mutation_committer: None,
+                granted_host_commands: Vec::new(),
             },
         )
         .map_err(|error| PermissionError::PolicyHookFailed {

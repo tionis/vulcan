@@ -297,7 +297,7 @@ metadata:
 }
 
 #[test]
-fn list_custom_tools_marks_execute_denied_profiles_as_not_callable() {
+fn list_custom_tools_require_execute_only_for_unsandboxed_tools() {
     let _lock = test_env_lock_guard();
     let (_dir, paths) = test_paths();
     let config_home = TempDir::new().expect("config home should be created");
@@ -1022,4 +1022,96 @@ fn json_schema_typescript_supports_composed_tool_schemas() {
     assert!(typescript.contains("labels?: Record<string, number>;"));
     assert!(typescript.contains("status?: \"open\" | \"done\" | null;"));
     assert!(!typescript.contains("[key: string]"));
+}
+
+#[cfg(not(target_os = "windows"))]
+#[test]
+fn granted_host_commands_run_only_while_the_skill_is_unchanged() {
+    let _lock = test_env_lock_guard();
+    let (_dir, paths) = test_paths();
+    let config_home = TempDir::new().expect("config home should be created");
+    let previous_xdg = env::var_os("XDG_CONFIG_HOME");
+    env::set_var("XDG_CONFIG_HOME", config_home.path());
+    with_trusted_vault(&paths);
+    let skill = paths.vault_root().join(".agents/skills/checker");
+    fs::create_dir_all(skill.join("scripts")).expect("skill dir");
+    fs::write(
+        skill.join("SKILL.md"),
+        r#"---
+name: checker
+description: Run the checker.
+metadata:
+  vulcan:
+    commands:
+      - id: run
+        script: scripts/run.js
+        sandbox: strict
+        expose: true
+        input_schema:
+          type: object
+        host_commands:
+          - ["printf", "%s", "checked"]
+---
+
+# checker
+"#,
+    )
+    .expect("manifest");
+    fs::write(
+        skill.join("scripts/run.js"),
+        "function main() { return host.exec([\"printf\", \"%s\", \"checked\"]).stdout; }\n",
+    )
+    .expect("script");
+    scan_vault(&paths, ScanMode::Full).expect("scan");
+    let options = CustomToolRegistryOptions::default();
+    let denied = |result: Result<CustomToolRunReport, crate::AppError>| {
+        let error = result
+            .expect_err("host command must be refused")
+            .to_string();
+        assert!(error.contains("host.exec()"), "{error}");
+    };
+    let run = || {
+        run_custom_tool(
+            &paths,
+            Some("writer"),
+            "skill_checker_run",
+            &json!({}),
+            &options,
+            &CustomToolRunOptions::default(),
+        )
+    };
+
+    // Declared but not granted: a writer caller cannot start processes.
+    denied(run());
+
+    let granted = crate::tool_grants::grant_tool(&paths, "skill_checker_run", &options, false)
+        .expect("grant");
+    assert_eq!(
+        granted.grant.host_commands,
+        vec![vec![
+            "printf".to_string(),
+            "%s".to_string(),
+            "checked".to_string()
+        ]]
+    );
+    assert_eq!(run().expect("granted run").result, json!("checked"));
+
+    // A changed skill, as a synced commit would bring, voids the grant.
+    fs::write(skill.join("scripts/helper.js"), "// new file\n").expect("change");
+    denied(run());
+    let listed = crate::tool_grants::list_tool_grants(&paths, &options).expect("grants");
+    assert_eq!(listed[0].state, crate::tool_grants::ToolGrantState::Stale);
+
+    crate::tool_grants::grant_tool(&paths, "skill_checker_run", &options, false).expect("regrant");
+    assert!(run().is_ok());
+    assert!(
+        crate::tool_grants::revoke_tool_grant(&paths, "skill_checker_run", false).expect("revoke")
+    );
+    denied(run());
+
+    trust::revoke_trust(paths.vault_root()).expect("trust should be removed");
+    match previous_xdg {
+        Some(value) => env::set_var("XDG_CONFIG_HOME", value),
+        None => env::remove_var("XDG_CONFIG_HOME"),
+    }
 }

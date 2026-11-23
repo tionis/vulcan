@@ -26,6 +26,10 @@ Use this skill when the workflow genuinely needs scripting or multi-step logic r
 - Use `--sandbox none` only for a trusted local script that genuinely needs `host.exec()` or
   `host.shell()`; it removes runtime resource limits and still requires explicit execute or
   execute-plus-shell permission.
+- For a skill command that needs one or two fixed host programs (a project check, a script),
+  declare them in `host_commands` and keep the sandbox; a device owner grants them with
+  `vulcan tool grant <tool>`, after which `host.exec()` runs exactly those argument vectors without
+  `execute`. Do not grant tools yourself unless the user asked; a grant is the user's review.
 - Use `vault.transaction()` when several note mutations must succeed or roll back together.
 - Use `vault.plan({ dry_run })` for custom tools that need reviewable changed paths, diffs, and dry-run/apply behavior.
 - Use `vulcan.permissions()` before optional writes, `tool.result()` for structured returns, and `tools.callChecked()` when composing other tools.

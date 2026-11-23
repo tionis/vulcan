@@ -20,7 +20,8 @@ pub use skill_commands::{
     CustomToolRunOptions, CustomToolRunReport, CustomToolShowReport,
 };
 pub(crate) use skill_commands::{
-    command_matches_allowed_packs, resolve_skill_command_tool_identifier, skill_command_tool_name,
+    command_matches_allowed_packs, resolve_skill_command_tool_identifier,
+    skill_command_host_commands, skill_command_tool_name,
 };
 pub use typescript::{
     build_all_tool_types_report, build_tool_types_report, json_schema_to_typescript,

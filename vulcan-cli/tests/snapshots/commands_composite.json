@@ -22357,6 +22357,76 @@
             "subcommands": []
           },
           {
+            "about": "Grant one tool, on this device, the exact host commands it declares",
+            "name": "grant",
+            "options": [
+              {
+                "help": "Tool name or CLI alias",
+                "id": "name",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NAME"
+                ]
+              },
+              {
+                "help": "Show the grant without saving it",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Remove one tool's host-command grant on this device",
+            "name": "revoke",
+            "options": [
+              {
+                "help": "Tool name, typically skill_<skill>_<command>",
+                "id": "name",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NAME"
+                ]
+              },
+              {
+                "help": "Report without removing the grant",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "List this vault's host-command grants on this device and whether each applies",
+            "name": "grants",
+            "options": [],
+            "subcommands": []
+          },
+          {
             "about": "Run one exposed skill command tool with validated JSON input",
             "name": "run",
             "options": [

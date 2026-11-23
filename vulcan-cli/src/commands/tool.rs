@@ -224,6 +224,66 @@ pub(crate) fn handle_tool_command(
                 Err(CliError::operation("custom tool CI checks failed"))
             }
         }
+        ToolCommand::Grant { name, dry_run } => {
+            let name = tools::resolve_custom_tool_cli_name(paths, name, &registry_options)?;
+            let report =
+                vulcan_app::tool_grants::grant_tool(paths, &name, &registry_options, *dry_run)?;
+            match cli.output {
+                OutputFormat::Json => print_json(&report),
+                OutputFormat::Human | OutputFormat::Markdown => {
+                    let verb = if report.dry_run {
+                        "Would grant"
+                    } else {
+                        "Granted"
+                    };
+                    println!("{verb} `{}` these host commands:", report.grant.tool);
+                    for argv in &report.grant.host_commands {
+                        println!("  {}", argv.join(" "));
+                    }
+                    println!("Pinned to skill digest {}", report.grant.digest);
+                    Ok(())
+                }
+            }
+        }
+        ToolCommand::Revoke { name, dry_run } => {
+            let removed = vulcan_app::tool_grants::revoke_tool_grant(paths, name, *dry_run)?;
+            match cli.output {
+                OutputFormat::Json => print_json(&json!({
+                    "tool": name,
+                    "removed": removed,
+                    "dry_run": dry_run,
+                })),
+                OutputFormat::Human | OutputFormat::Markdown => {
+                    println!(
+                        "{}",
+                        match (removed, *dry_run) {
+                            (true, false) => format!("Revoked the grant of `{name}`"),
+                            (true, true) => format!("Would revoke the grant of `{name}`"),
+                            (false, _) => format!("`{name}` has no grant in this vault"),
+                        }
+                    );
+                    Ok(())
+                }
+            }
+        }
+        ToolCommand::Grants => {
+            let grants = vulcan_app::tool_grants::list_tool_grants(paths, &registry_options)?;
+            match cli.output {
+                OutputFormat::Json => print_json(&json!({ "grants": grants })),
+                OutputFormat::Human | OutputFormat::Markdown => {
+                    if grants.is_empty() {
+                        println!("No host-command grants for this vault on this device.");
+                    }
+                    for status in &grants {
+                        println!("{} ({:?})", status.grant.tool, status.state);
+                        for argv in &status.grant.host_commands {
+                            println!("  {}", argv.join(" "));
+                        }
+                    }
+                    Ok(())
+                }
+            }
+        }
         ToolCommand::Run {
             name,
             input_json,

@@ -315,6 +315,12 @@ fn run_skill_command_tool_with_context(
     )?;
     let runtime_context = context.runtime_scope(name, effective_permission_profile.clone());
     let script_path = skill_command_script_path(paths, &skill.summary, &command)?;
+    let granted_host_commands = crate::tool_grants::active_host_commands(
+        paths,
+        &skill_command_tool_name(&skill.summary.name, &command.id),
+        &skill_directory(paths, &skill.summary)?,
+        &command.host_commands,
+    );
     let source = fs::read_to_string(&script_path).map_err(AppError::operation)?;
     let source = build_skill_command_invocation_source(
         &skill,
@@ -343,6 +349,7 @@ fn run_skill_command_tool_with_context(
                 registry_options,
                 runtime_context,
             )),
+            granted_host_commands,
             ..DataviewJsEvalOptions::default()
         },
     )
@@ -449,6 +456,33 @@ if (typeof main !== 'function') {{\n\
   throw new Error('skill command script must export `main(input, ctx)`');\n\
 }}\n\
 main(__vulcanSkillInput, __vulcanSkillContext);\n"
+    ))
+}
+
+/// The directory holding `skill`'s `SKILL.md` and scripts.
+fn skill_directory(paths: &VaultPaths, skill: &AssistantSkillSummary) -> Result<PathBuf, AppError> {
+    let config = load_vault_config(paths).config;
+    paths
+        .vault_root()
+        .join(config.assistant.skills_folder)
+        .join(&skill.path)
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .ok_or_else(|| AppError::operation("invalid skill path"))
+}
+
+/// A skill command tool's resolved name, skill directory, and declared host
+/// commands, for granting them on this device.
+pub(crate) fn skill_command_host_commands(
+    paths: &VaultPaths,
+    name: &str,
+    options: &CustomToolRegistryOptions,
+) -> Result<(String, PathBuf, Vec<Vec<String>>), AppError> {
+    let (tool_name, skill, command) = resolve_skill_command_tool_identifier(paths, name, options)?;
+    Ok((
+        tool_name,
+        skill_directory(paths, &skill.summary)?,
+        command.host_commands,
     ))
 }
 

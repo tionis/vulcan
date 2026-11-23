@@ -110,6 +110,11 @@ pub struct AssistantSkillCommandSummary {
     pub cli: Option<AssistantSkillCommandCli>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub examples: Vec<AssistantSkillCommandExample>,
+    /// Exact argument vectors the command may pass to `host.exec()` once a
+    /// device grants them (`vulcan tool grant`); nothing runs on the
+    /// declaration alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub host_commands: Vec<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

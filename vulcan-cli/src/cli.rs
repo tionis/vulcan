@@ -3873,6 +3873,27 @@ pub enum ToolCommand {
         )]
         surface: Vec<String>,
     },
+    #[command(
+        about = "Grant one tool, on this device, the exact host commands it declares",
+        long_about = "Grant one tool, on this device, the exact host commands its `host_commands` metadata declares.\n\nThe grant records the vault, the tool, those argument vectors, and a digest of the tool's whole skill directory in Vulcan's user config, outside the vault. The tool may then pass exactly those argument vectors to host.exec() from its sandbox, even for callers without the execute permission, such as an MCP agent. Any change to the skill's files leaves the grant stale until it is granted again."
+    )]
+    Grant {
+        #[arg(help = "Tool name or CLI alias")]
+        name: String,
+        #[arg(long, help = "Show the grant without saving it")]
+        dry_run: bool,
+    },
+    #[command(about = "Remove one tool's host-command grant on this device")]
+    Revoke {
+        #[arg(help = "Tool name, typically skill_<skill>_<command>")]
+        name: String,
+        #[arg(long, help = "Report without removing the grant")]
+        dry_run: bool,
+    },
+    #[command(
+        about = "List this vault's host-command grants on this device and whether each applies"
+    )]
+    Grants,
     #[command(about = "Run one exposed skill command tool with validated JSON input")]
     Run {
         #[arg(help = "Tool name to execute")]
