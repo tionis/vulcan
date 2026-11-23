@@ -1810,6 +1810,7 @@ mod tests {
             .update(
                 &WikiId::parse("notes").unwrap(),
                 &crate::registry::UpdateWikiRequest {
+                    sync_backend: None,
                     profile: None,
                     groups_to_add: vec![],
                     groups_to_remove: vec![],

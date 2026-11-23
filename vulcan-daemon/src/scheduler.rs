@@ -1217,6 +1217,7 @@ mod tests {
             .update(
                 &registration.id,
                 &crate::registry::UpdateWikiRequest {
+                    sync_backend: None,
                     groups_to_add: vec![],
                     groups_to_remove: vec![],
                     permissions_profile: None,
@@ -1496,6 +1497,7 @@ mod tests {
 
         let registration = fixture.registry.load().unwrap().vaults.remove(0);
         let ceiling = |profile: Option<&str>| crate::registry::UpdateWikiRequest {
+            sync_backend: None,
             groups_to_add: vec![],
             groups_to_remove: vec![],
             permissions_profile: Some(profile.map(str::to_string)),

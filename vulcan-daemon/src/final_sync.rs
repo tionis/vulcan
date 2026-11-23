@@ -127,6 +127,7 @@ mod tests {
                     .update(
                         &wiki,
                         &UpdateWikiRequest {
+                            sync_backend: None,
                             profile: None,
                             groups_to_add: Vec::new(),
                             groups_to_remove: Vec::new(),

@@ -9680,6 +9680,8 @@ fn files_only_registration_json_reports_capabilities_without_initializing_index(
             directory_path,
             "--profile",
             "files-only",
+            "--sync-backend",
+            "git",
         ])
         .assert()
         .success();
@@ -41629,12 +41631,35 @@ fn vault_add_git_init_creates_a_repository_only_for_a_valid_new_registration() {
         command.assert()
     };
 
-    // Without --git-init a Git-sync registration of a plain folder says
-    // that it is not a repository yet.
+    // A plain folder is registered without sync unless Git is asked for:
+    // another tool such as Syncthing may replicate it.
     let report = parse_stdout_json(&add("plain", &plain, &[]).success());
-    assert_eq!(report["not_a_git_repository"], true);
+    assert_eq!(report["registered_without_sync"], true);
+    assert_eq!(report["wiki"]["sync_backend"], "none");
+    assert!(report.get("not_a_git_repository").is_none());
     assert!(report.get("git_init").is_none());
     assert!(!plain.join(".git").exists());
+    let set = |extra: &[&str]| {
+        let mut command = cargo_vulcan_with_xdg_config(&config_home);
+        command
+            .args(["--output", "json", "vault", "set", "plain"])
+            .args(extra);
+        parse_stdout_json(&command.assert().success())
+    };
+    assert_eq!(
+        set(&["--sync-backend", "git"])["wiki"]["sync_backend"],
+        "git"
+    );
+    assert_eq!(set(&["--no-sync"])["wiki"]["sync_backend"], "none");
+    cargo_vulcan_with_xdg_config(&config_home)
+        .args(["vault", "remove", "plain"])
+        .assert()
+        .success();
+
+    // An explicit Git backend on a plain folder says it is not a repository yet.
+    let report = parse_stdout_json(&add("plain", &plain, &["--sync-backend", "git"]).success());
+    assert_eq!(report["not_a_git_repository"], true);
+    assert_eq!(report["wiki"]["sync_backend"], "git");
 
     let preview = parse_stdout_json(&add("fresh", &fresh, &["--git-init", "--dry-run"]).success());
     assert_eq!(preview["git_init"]["initialized"], true);

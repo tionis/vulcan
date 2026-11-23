@@ -1135,6 +1135,7 @@ mod tests {
             .update(
                 &WikiId::parse("notes").unwrap(),
                 &UpdateWikiRequest {
+                    sync_backend: None,
                     profile: Some(ManagedDirectoryProfile::FilesOnly),
                     groups_to_add: Vec::new(),
                     groups_to_remove: Vec::new(),

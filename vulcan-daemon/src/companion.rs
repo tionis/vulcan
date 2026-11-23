@@ -873,6 +873,7 @@ impl<'a> CompanionService<'a> {
             .update(
                 wiki_id,
                 &UpdateWikiRequest {
+                    sync_backend: None,
                     profile: None,
                     groups_to_add: Vec::new(),
                     groups_to_remove: Vec::new(),
@@ -1508,6 +1509,7 @@ mod tests {
             .update(
                 &wiki_id,
                 &UpdateWikiRequest {
+                    sync_backend: None,
                     groups_to_add: Vec::new(),
                     groups_to_remove: Vec::new(),
                     permissions_profile: None,

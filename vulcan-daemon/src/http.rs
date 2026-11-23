@@ -1429,6 +1429,7 @@ mod tests {
             .update(
                 &registration.id,
                 &crate::registry::UpdateWikiRequest {
+                    sync_backend: None,
                     profile: None,
                     sync_paused: Some(true),
                     groups_to_add: vec![],

@@ -155,7 +155,9 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
   materialization; selective materialization remains Roadmap 12.20 work. Profile state is local
   registration metadata, not synchronized vault config. Existing registrations keep the knowledge
   default and their prior JSON representation. `vault add --no-sync` registers a directory without
-  a file-tree sync backend.
+  a file-tree sync backend, which is also the default for a directory that is not a Git
+  repository (for example a Syncthing folder). `vault set <id> --sync-backend git` or
+  `--no-sync` changes it later without re-registering, so tokens and remotes are kept.
 - Use `vulcan vault show <id>` or `vulcan vault list` to inspect registration. Human output calls
   out a nondefault files-only profile. Each entry's `health.state` names what most needs attention
   (`missing`, `unindexed`, `conflicted`, `recovery_required`, `paused`, `failing`, `offline`,

@@ -6267,7 +6267,7 @@ pub enum VaultCommand {
         #[arg(
             long,
             conflicts_with = "no_sync",
-            help = "Configured file-tree sync backend (defaults to git)"
+            help = "Configured file-tree sync backend (defaults to git for a Git repository, otherwise none)"
         )]
         sync_backend: Option<String>,
         #[arg(
@@ -6394,6 +6394,19 @@ pub enum VaultCommand {
             help = "Stop serving the vault's own MCP remote on this device"
         )]
         no_serve_remote: bool,
+        #[arg(
+            long,
+            value_name = "BACKEND",
+            conflicts_with = "no_sync",
+            help = "Sync the wiki with this file-tree backend (git)"
+        )]
+        sync_backend: Option<String>,
+        #[arg(
+            long,
+            conflicts_with = "sync_backend",
+            help = "Stop syncing the wiki with Vulcan, for a directory another tool such as Syncthing replicates"
+        )]
+        no_sync: bool,
         #[arg(long, help = "Validate and report without writing registry state")]
         dry_run: bool,
     },

@@ -15487,7 +15487,7 @@
                 ]
               },
               {
-                "help": "Configured file-tree sync backend (defaults to git)",
+                "help": "Configured file-tree sync backend (defaults to git for a Git repository, otherwise none)",
                 "id": "sync_backend",
                 "long": "sync-backend",
                 "possible_values": [],
@@ -15888,6 +15888,31 @@
                 "short": null,
                 "value_names": [
                   "NO_SERVE_REMOTE"
+                ]
+              },
+              {
+                "help": "Sync the wiki with this file-tree backend (git)",
+                "id": "sync_backend",
+                "long": "sync-backend",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "BACKEND"
+                ]
+              },
+              {
+                "help": "Stop syncing the wiki with Vulcan, for a directory another tool such as Syncthing replicates",
+                "id": "no_sync",
+                "long": "no-sync",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_SYNC"
                 ]
               },
               {

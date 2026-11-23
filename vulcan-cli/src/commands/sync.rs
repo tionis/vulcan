@@ -3391,6 +3391,7 @@ fn set_automatic_sync(
         .update(
             &id,
             &UpdateWikiRequest {
+                sync_backend: None,
                 groups_to_add: Vec::new(),
                 groups_to_remove: Vec::new(),
                 permissions_profile: None,

@@ -608,6 +608,9 @@ pub struct UpdateWikiRequest {
     pub execution_trust: Option<Option<vulcan_app::schedule_trust::ExecutionTrustConfig>>,
     /// `Some(None)` stops serving the vault's own remote on this device.
     pub mcp_remote: Option<Option<crate::vault_remotes::VaultRemoteOptIn>>,
+    /// The file-tree sync backend: `git`, or `none` when another tool (or
+    /// nothing) replicates the directory.
+    pub sync_backend: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1216,6 +1219,17 @@ impl WikiRegistry {
             }
             if let Some(opt_in) = &request.mcp_remote {
                 wiki.mcp_remote.clone_from(opt_in);
+            }
+            if let Some(backend) = &request.sync_backend {
+                if backend == "none"
+                    && (wiki.git_dir.is_some() || wiki.platform_profile.is_some())
+                {
+                    return Err(RegistryError::InvalidDaemonSetting(
+                        "a detached Git directory or platform policy requires an enabled Git sync backend"
+                            .to_string(),
+                    ));
+                }
+                wiki.sync_backend = Some(backend.clone());
             }
             if let Some(profile) = request.profile {
                 wiki.profile = profile;
@@ -2759,6 +2773,7 @@ mod tests {
             .update(
                 &personal.id,
                 &UpdateWikiRequest {
+                    sync_backend: None,
                     groups_to_add: vec!["mobile".to_string()],
                     groups_to_remove: vec!["zeta".to_string()],
                     permissions_profile: Some(Some("readonly".to_string())),
@@ -2872,6 +2887,7 @@ mod tests {
             .update(
                 &added.id,
                 &UpdateWikiRequest {
+                    sync_backend: None,
                     groups_to_add: Vec::new(),
                     groups_to_remove: Vec::new(),
                     permissions_profile: None,
@@ -2933,6 +2949,7 @@ mod tests {
             .update(
                 &registration.id,
                 &UpdateWikiRequest {
+                    sync_backend: None,
                     groups_to_add: Vec::new(),
                     groups_to_remove: Vec::new(),
                     permissions_profile: None,

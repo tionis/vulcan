@@ -1310,6 +1310,7 @@ mod tests {
             .update(
                 &git_id,
                 &UpdateWikiRequest {
+                    sync_backend: None,
                     profile: None,
                     groups_to_add: vec![],
                     groups_to_remove: vec![],
@@ -1408,6 +1409,7 @@ mod tests {
             .update(
                 &git_id,
                 &UpdateWikiRequest {
+                    sync_backend: None,
                     profile: None,
                     groups_to_add: vec![],
                     groups_to_remove: vec![],
@@ -1539,6 +1541,7 @@ mod tests {
             .update(
                 &id,
                 &UpdateWikiRequest {
+                    sync_backend: None,
                     profile: None,
                     groups_to_add: Vec::new(),
                     groups_to_remove: Vec::new(),

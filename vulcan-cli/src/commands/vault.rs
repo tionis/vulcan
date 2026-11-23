@@ -48,6 +48,10 @@ struct SetupSteps {
     /// enrollment is skipped until it is one.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     not_a_git_repository: bool,
+    /// No backend was asked for and the directory is not a Git repository,
+    /// so it was registered without Vulcan sync.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    registered_without_sync: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     enroll: Option<vulcan_app::vault_enroll::EnrollReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -83,6 +87,10 @@ impl SetupSteps {
                 ),
                 (false, _) => println!("{} is already in a Git repository.", report.path.display()),
             }
+        }
+        if self.registered_without_sync {
+            println!("Not a Git repository, so Vulcan does not sync it; another tool such as Syncthing may replicate it.");
+            println!("To sync it with Git, create a repository with an `origin` remote, then run `vulcan vault set {wiki} --sync-backend git` and `vulcan vault enroll {wiki}`.");
         }
         if self.not_a_git_repository {
             println!("Not a Git repository yet, so Git sync cannot run and the device key was not enrolled.");
@@ -198,51 +206,7 @@ pub(crate) fn handle_vault_command(cli: &Cli, command: &VaultCommand) -> Result<
             let wiki = registry.show(&parse_id(id)?).map_err(CliError::operation)?;
             print_show(cli.output, &wiki)
         }
-        VaultCommand::Set {
-            id,
-            profile,
-            group,
-            remove_group,
-            permissions_profile,
-            clear_permissions_profile,
-            serve_remote,
-            no_serve_remote,
-            dry_run,
-        } => {
-            let mcp_remote = remote_opt_in(serve_remote.as_deref(), *no_serve_remote)?;
-            let permissions = if *clear_permissions_profile {
-                Some(None)
-            } else {
-                permissions_profile.clone().map(Some)
-            };
-            if let Some(name) = permissions_profile.as_deref() {
-                let wiki = registry.show(&parse_id(id)?).map_err(CliError::operation)?;
-                check_device_profile(&wiki.registration.path, name)?;
-            }
-            let wiki = registry
-                .update(
-                    &parse_id(id)?,
-                    &UpdateWikiRequest {
-                        groups_to_add: group.clone(),
-                        groups_to_remove: remove_group.clone(),
-                        permissions_profile: permissions,
-                        sync_paused: None,
-                        profile: profile.map(managed_profile),
-                        execution_trust: None,
-                        mcp_remote,
-                    },
-                    *dry_run,
-                )
-                .map_err(CliError::operation)?;
-            print_mutation(
-                cli.output,
-                "set",
-                *dry_run,
-                &registry,
-                &wiki,
-                &SetupSteps::default(),
-            )
-        }
+        VaultCommand::Set { .. } => handle_set(cli, &registry, command),
         VaultCommand::Token(command) => handle_token_command(cli, &registry, command),
         VaultCommand::Remove { id, dry_run } => {
             let wiki = registry
@@ -463,6 +427,63 @@ fn check_device_profile(vault: &std::path::Path, name: &str) -> Result<(), CliEr
         .map_err(CliError::operation)
 }
 
+fn handle_set(cli: &Cli, registry: &WikiRegistry, command: &VaultCommand) -> Result<(), CliError> {
+    let VaultCommand::Set {
+        id,
+        profile,
+        group,
+        remove_group,
+        permissions_profile,
+        clear_permissions_profile,
+        serve_remote,
+        no_serve_remote,
+        sync_backend,
+        no_sync,
+        dry_run,
+    } = command
+    else {
+        unreachable!("set handler requires a set command")
+    };
+    let mcp_remote = remote_opt_in(serve_remote.as_deref(), *no_serve_remote)?;
+    let permissions = if *clear_permissions_profile {
+        Some(None)
+    } else {
+        permissions_profile.clone().map(Some)
+    };
+    if let Some(name) = permissions_profile.as_deref() {
+        let wiki = registry.show(&parse_id(id)?).map_err(CliError::operation)?;
+        check_device_profile(&wiki.registration.path, name)?;
+    }
+    let wiki = registry
+        .update(
+            &parse_id(id)?,
+            &UpdateWikiRequest {
+                sync_backend: if *no_sync {
+                    Some("none".to_string())
+                } else {
+                    sync_backend.clone()
+                },
+                groups_to_add: group.clone(),
+                groups_to_remove: remove_group.clone(),
+                permissions_profile: permissions,
+                sync_paused: None,
+                profile: profile.map(managed_profile),
+                execution_trust: None,
+                mcp_remote,
+            },
+            *dry_run,
+        )
+        .map_err(CliError::operation)?;
+    print_mutation(
+        cli.output,
+        "set",
+        *dry_run,
+        registry,
+        &wiki,
+        &SetupSteps::default(),
+    )
+}
+
 fn handle_add(cli: &Cli, registry: &WikiRegistry, command: &VaultCommand) -> Result<(), CliError> {
     let VaultCommand::Add {
         id,
@@ -485,6 +506,7 @@ fn handle_add(cli: &Cli, registry: &WikiRegistry, command: &VaultCommand) -> Res
     if let Some(name) = permissions_profile.as_deref() {
         check_device_profile(path, name)?;
     }
+    let mut registered_without_sync = false;
     let request = AddWikiRequest {
         // Recorded so the daemon.toml entry can clone the vault elsewhere.
         source: vulcan_core::git::git_remote_url(path, git_dir.as_deref(), "origin"),
@@ -494,14 +516,24 @@ fn handle_add(cli: &Cli, registry: &WikiRegistry, command: &VaultCommand) -> Res
         groups: group.clone(),
         git_dir: git_dir.clone(),
         permissions_profile: permissions_profile.clone(),
-        sync_backend: if *no_sync {
-            Some("none".to_string())
+        sync_backend: Some(if *no_sync {
+            "none".to_string()
+        } else if let Some(backend) = sync_backend {
+            backend.clone()
+        } else if *git_init || git_dir.is_some() || vulcan_core::is_git_repo(path) {
+            "git".to_string()
         } else {
-            Some(sync_backend.clone().unwrap_or_else(|| "git".to_string()))
-        },
+            // A plain folder is often replicated by another tool (Syncthing,
+            // a cloud drive); registering it for Git sync would only fail.
+            registered_without_sync = true;
+            "none".to_string()
+        }),
         platform_profile: None,
     };
-    let mut setup = SetupSteps::default();
+    let mut setup = SetupSteps {
+        registered_without_sync,
+        ..SetupSteps::default()
+    };
     // The repository is created only once the registration is known to be
     // valid, and before it is written, so a failed init registers nothing.
     if *git_init {
