@@ -343,6 +343,12 @@ pub struct SyncConfig {
     /// follows each device's Git configuration.
     #[serde(default, skip_serializing_if = "BranchPullPolicy::is_git")]
     pub branch_pull: BranchPullPolicy,
+    /// Whether committed-history-only sync (`worktree = "none"`) pushes
+    /// this device's safety snapshot of uncommitted edits to the remote.
+    /// Off by default, so uncommitted text never leaves the device; the
+    /// worktree modes always publish it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub publish_device_backup: bool,
     /// Shortest daemon interval, in seconds, between remote checks while a
     /// wiki is active. Polling backs off from here when nothing changes.
     #[serde(
@@ -396,6 +402,7 @@ impl Default for SyncConfig {
             paths: Vec::new(),
             branch_push: true,
             branch_pull: BranchPullPolicy::Git,
+            publish_device_backup: false,
             poll_min_seconds: DEFAULT_SYNC_POLL_MIN_SECONDS,
             poll_max_seconds: DEFAULT_SYNC_POLL_MAX_SECONDS,
         }
@@ -4997,6 +5004,9 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
         if let Some(branch_pull) = sync.branch_pull {
             config.sync.branch_pull = branch_pull;
+        }
+        if let Some(publish) = sync.publish_device_backup {
+            config.sync.publish_device_backup = publish;
         }
         if let Some(seconds) = sync.poll_min_seconds {
             config.sync.poll_min_seconds = seconds;

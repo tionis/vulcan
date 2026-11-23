@@ -378,9 +378,11 @@ they commit.
 ## Committed-history-only repositories
 
 A shared `sync.worktree = "none"` in `.vulcan/config.toml` makes sync move only committed history:
-each cycle backs this device's whole worktree up to its private safety head, then fetches,
-fast-forwards (dirty files the incoming commits do not touch are fine), and pushes the checked-out
-branch. Live is never read or written, so uncommitted edits stay on this device. Recognize the mode
+each cycle snapshots this device's whole worktree into a local safety ref (pushed to its private
+safety head only with `sync.publish_device_backup = true`), then fetches, fast-forwards (dirty files
+the incoming commits do not touch are fine), and pushes the checked-out branch. Live is never read
+or written, so uncommitted edits stay on this device. The daemon syncs such a vault when a commit
+moves a branch, not when a file is saved. Recognize the mode
 by `worktree: "none"` in the JSON report or the `Worktree: not synchronized` line.
 
 - Commit your own work in such a repository; nothing else carries it to other devices. Sync then

@@ -292,6 +292,83 @@ pub(crate) fn consume_sync_observations_with_stop(
     let repository = GitCliEngine::default().discover_repository(&registration.path)?;
     enqueue_sync_startup(registration, supervisor, state_store, &repository.git_dir)?;
     let _ = subscription.take_reconciliation_required();
+    std::thread::scope(|scope| {
+        scope.spawn(|| watch_branch_refs(registration, supervisor, &repository, stop));
+        let result = consume_hints(registration, supervisor, subscription, stop);
+        // The signal belongs to this consumer; stop the ref watcher with it.
+        stop.cancel();
+        result
+    })
+}
+
+/// How long branch refs must stay still before their change enqueues a
+/// sync, so one commit (several ref writes) is one cycle.
+const BRANCH_REF_QUIET: Duration = Duration::from_secs(2);
+
+/// Enqueues a sync when the checked-out branch or `HEAD` moves, so a commit
+/// (by auto-commit, an agent, or a person) publishes without waiting for a
+/// worktree event or the next poll. Vulcan's own refs live under
+/// `refs/vulcan`, so its captures never retrigger it.
+fn watch_branch_refs(
+    registration: &WikiRegistration,
+    supervisor: &SyncSupervisor,
+    repository: &GitRepository,
+    stop: &ShutdownSignal,
+) {
+    stop.register_current_thread();
+    let repository = GitRepository {
+        git_dir: canonical_or_original(&repository.git_dir),
+        common_dir: canonical_or_original(&repository.common_dir),
+        ..repository.clone()
+    };
+    let (sender, receiver) = mpsc::channel();
+    // Best effort: without it, commits still sync on the next poll.
+    let Some(_watcher) = register_ref_watcher(&repository, &sender) else {
+        return;
+    };
+    drop(sender);
+    let mut pending: Option<Instant> = None;
+    while !stop.is_cancelled() {
+        loop {
+            match receiver.try_recv() {
+                Ok((_, Ok(event))) if touches_branch_refs(&repository, &event) => {
+                    pending = Some(Instant::now());
+                }
+                Ok(_) => {}
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => return,
+            }
+        }
+        match pending {
+            None => std::thread::park(),
+            Some(changed) if changed.elapsed() >= BRANCH_REF_QUIET => {
+                pending = None;
+                let _ = supervisor.enqueue_watch(
+                    registration.id.as_str(),
+                    &registration.path,
+                    SyncWatchMetadata {
+                        event_count: 1,
+                        ..SyncWatchMetadata::default()
+                    },
+                );
+            }
+            Some(changed) => {
+                std::thread::park_timeout(BRANCH_REF_QUIET.saturating_sub(changed.elapsed()));
+            }
+        }
+    }
+}
+
+/// Turns worktree hints into sync jobs, except for a vault that syncs only
+/// commits: its uncommitted edits are not synchronized, so a cycle for each
+/// edit only snapshotted them; the branch-ref watcher covers its commits.
+fn consume_hints(
+    registration: &WikiRegistration,
+    supervisor: &SyncSupervisor,
+    subscription: &ObservationSubscription,
+    stop: &ShutdownSignal,
+) -> Result<(), DaemonWatchError> {
+    stop.register_current_thread();
     while !stop.is_cancelled() {
         if subscription.take_reconciliation_required() {
             supervisor.enqueue_watch(
@@ -308,6 +385,8 @@ pub(crate) fn consume_sync_observations_with_stop(
         }
         match subscription.recv_until(None, || stop.is_cancelled()) {
             Ok(ObservationEvent::FilesystemHint(event)) if event.barrier_only() => {}
+            Ok(ObservationEvent::FilesystemHint(_))
+                if !vulcan_app::commit::sync_captures_worktree(&registration.path) => {}
             Ok(ObservationEvent::FilesystemHint(event)) => {
                 supervisor.enqueue_watch(
                     registration.id.as_str(),
@@ -1222,6 +1301,147 @@ mod tests {
             max_dirty_ms: 499,
         })
         .is_err());
+    }
+
+    fn git_vault(root: &Path) -> (PathBuf, WikiRegistration) {
+        let vault = root.join("vault");
+        std::fs::create_dir(&vault).expect("vault directory");
+        for arguments in [
+            &["init", "--quiet", "-b", "main"][..],
+            &["config", "user.name", "Vulcan Test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["commit", "--quiet", "--allow-empty", "-m", "initial"],
+        ] {
+            let output = Command::new("git")
+                .args(arguments)
+                .current_dir(&vault)
+                .output()
+                .expect("run git");
+            assert!(output.status.success(), "{arguments:?}");
+        }
+        let vault = vault.canonicalize().expect("canonical vault");
+        let registration = WikiRegistration {
+            source: None,
+            config: None,
+            profile: crate::registry::ManagedDirectoryProfile::Knowledge,
+            profile_version: None,
+            materialization: crate::registry::MaterializationProfile::Full,
+            id: WikiId::parse("alpha").expect("wiki id"),
+            registration_id: Ulid::new(),
+            path: vault.clone(),
+            work_tree: None,
+            groups: Vec::new(),
+            git_dir: None,
+            permissions_profile: None,
+            sync_backend: Some("git".to_string()),
+            platform_profile: None,
+            sync_paused: false,
+            execution_trust: None,
+            mcp_remote: None,
+        };
+        (vault, registration)
+    }
+
+    fn wait_for_jobs(supervisor: &SyncSupervisor, within: Duration) -> usize {
+        let deadline = Instant::now() + within;
+        loop {
+            let jobs = supervisor.list().expect("jobs").len();
+            if jobs > 0 || Instant::now() >= deadline {
+                return jobs;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    fn a_commit_enqueues_a_sync_without_a_worktree_event() {
+        let temporary = tempdir().expect("temporary directory");
+        let (vault, registration) = git_vault(temporary.path());
+        let supervisor =
+            SyncSupervisor::at(temporary.path().join("jobs.json")).expect("supervisor");
+        let repository = GitCliEngine::default()
+            .discover_repository(&vault)
+            .expect("repository");
+        let stop = ShutdownSignal::default();
+
+        std::thread::scope(|scope| {
+            let watcher =
+                scope.spawn(|| watch_branch_refs(&registration, &supervisor, &repository, &stop));
+            std::thread::sleep(Duration::from_millis(200));
+            let output = Command::new("git")
+                .args(["commit", "--quiet", "--allow-empty", "-m", "agent"])
+                .current_dir(&vault)
+                .output()
+                .expect("commit");
+            assert!(output.status.success());
+            let jobs = wait_for_jobs(&supervisor, BRANCH_REF_QUIET * 4);
+            stop.cancel();
+            watcher.join().expect("watcher");
+            assert_eq!(jobs, 1, "the commit enqueues one sync");
+        });
+        assert_eq!(
+            supervisor.list().expect("jobs")[0].triggers,
+            vec![SyncJobTrigger::Watch]
+        );
+    }
+
+    #[test]
+    fn worktree_hints_do_not_enqueue_syncs_for_a_vault_that_syncs_only_commits() {
+        use crate::observation::{
+            ObservationConsumerId, ObservationConsumerKind, ObservationConsumerPolicy,
+            ObservationFilter,
+        };
+        for (worktree, expected) in [("all", 1), ("none", 0)] {
+            let temporary = tempdir().expect("temporary directory");
+            let (vault, registration) = git_vault(temporary.path());
+            std::fs::create_dir_all(vault.join(".vulcan")).expect("config dir");
+            std::fs::write(
+                vault.join(".vulcan/config.toml"),
+                format!("[sync]\nworktree = \"{worktree}\"\n"),
+            )
+            .expect("config");
+            let supervisor =
+                SyncSupervisor::at(temporary.path().join("jobs.json")).expect("supervisor");
+            let hub = VaultObservationHub::default();
+            let subscription = hub
+                .subscribe(
+                    ObservationConsumerId::parse("sync-alpha").expect("id"),
+                    ObservationConsumerPolicy {
+                        kind: ObservationConsumerKind::Sync,
+                        queue_capacity: 8,
+                        quiet_period_ms: 10,
+                        maximum_dirty_ms: 100,
+                        filter: ObservationFilter::default(),
+                    },
+                )
+                .expect("subscribe");
+            // As the consumer's startup does: a new subscription asks for one
+            // reconciliation, which startup already enqueued.
+            let _ = subscription.take_reconciliation_required();
+            let stop = ShutdownSignal::default();
+
+            std::thread::scope(|scope| {
+                let (registration, supervisor, stop) = (&registration, &supervisor, &stop);
+                let consumer = scope
+                    .spawn(move || consume_hints(registration, supervisor, &subscription, stop));
+                hub.publish(&ObservationEvent::FilesystemHint(FilesystemHint {
+                    sequence: 1,
+                    event_count: 1,
+                    untagged_events: 1,
+                    paths: BTreeSet::from(["Home.md".to_string()]),
+                    self_generated_transactions: BTreeSet::new(),
+                    safety_rescan: false,
+                    watcher_errors: Vec::new(),
+                    barriers: BTreeSet::new(),
+                }))
+                .expect("publish");
+                let jobs = wait_for_jobs(supervisor, Duration::from_secs(1));
+                stop.cancel();
+                consumer.join().expect("consumer").expect("consume");
+                assert_eq!(jobs, expected, "worktree = {worktree}");
+            });
+        }
     }
 
     #[test]

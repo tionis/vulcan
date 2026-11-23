@@ -2247,6 +2247,8 @@ pub fn configured_git_sync_options_for_profile(
         effective.scope = worktree_scope_from_config(&config)?;
     }
     effective.branch_push = options.branch_push && config.sync.branch_push;
+    effective.publish_device_backup =
+        options.publish_device_backup && config.sync.publish_device_backup;
     if !config.sync.branch_pull.is_git() {
         effective.branch_pull = config.sync.branch_pull;
     }

@@ -2030,7 +2030,22 @@ fn integration_routes_category_descriptor() -> CategoryDescriptor {
     }
 }
 
+fn sync_path_description(path: &str) -> Option<&'static str> {
+    Some(match path {
+        "sync.merge_automation" => "Set the device-local ceiling to allow shared policy automation or require review for every Git conflict.",
+        "sync.agent_auto_accept" => "Allow an explicitly requested agent proposal to enter the normal approval transaction automatically on this device. The default is false.",
+        "sync.branch_pull" => "How sync reconciles the checked-out branch with its upstream: `git` (default) follows each device's `pull.rebase`/`pull.ff` settings; `ff-only`, `merge`, or `rebase` fixes the strategy for every device, and `guarded-rebase` rebases only when the replayed commits are on no other branch, tag, remote-tracking ref, or worktree and include no merges, pausing otherwise. Set it in the shared config so it travels with the repository.",
+        "sync.publish_device_backup" => "With `worktree = \"none\"`, also push this device's safety snapshot of uncommitted edits to its private remote branch. Off by default, so uncommitted text never leaves the device; the worktree modes always publish it.",
+        "sync.poll_min_seconds" => "Shortest interval, in seconds, between the daemon's remote checks of an active wiki (default 15, never below 5). Activity resets polling to this interval.",
+        "sync.poll_max_seconds" => "Longest interval, in seconds, between the daemon's remote checks of an idle wiki (default 900). Each quiet check doubles the interval up to this ceiling.",
+        _ => return None,
+    })
+}
+
 fn config_path_description(path: &str) -> String {
+    if let Some(description) = sync_path_description(path) {
+        return description.to_string();
+    }
     match path {
         "link_resolution" => "Choose whether path-qualified links are interpreted relative to the current file or the vault root; unmatched links still resolve by note name and alias.".to_string(),
         "link_style" => "Select wikilink or Markdown link formatting for generated links.".to_string(),
@@ -2046,11 +2061,6 @@ fn config_path_description(path: &str) -> String {
         "dataview.render_dataview_js" => "DataviewJS policy for `render`, `note get`, `daily show`, browse previews, editors, MCP `note_get`, and evaluated exports when no explicit `--dataviewjs` is given: `off` leaves a notice, `static` runs blocks in the strict sandbox (deterministic, without wall-clock time, only for static sites and evaluated exports), `on` uses the configured sandbox tier but only in a vault trusted with `vulcan trust` (else `static`). Unset: `on` in trusted vaults, `static` elsewhere. Rendering never writes.".to_string(),
         "folder_notes.placement" => "Choose whether a folder note lives inside its folder or beside it in the parent folder.".to_string(),
         "folder_notes.name" => "Set the exact folder-note stem/template; `{{folder_name}}` expands to the folder's basename.".to_string(),
-        "sync.merge_automation" => "Set the device-local ceiling to allow shared policy automation or require review for every Git conflict.".to_string(),
-        "sync.agent_auto_accept" => "Allow an explicitly requested agent proposal to enter the normal approval transaction automatically on this device. The default is false.".to_string(),
-        "sync.branch_pull" => "How sync reconciles the checked-out branch with its upstream: `git` (default) follows each device's `pull.rebase`/`pull.ff` settings; `ff-only`, `merge`, or `rebase` fixes the strategy for every device, and `guarded-rebase` rebases only when the replayed commits are on no other branch, tag, remote-tracking ref, or worktree and include no merges, pausing otherwise. Set it in the shared config so it travels with the repository.".to_string(),
-        "sync.poll_min_seconds" => "Shortest interval, in seconds, between the daemon's remote checks of an active wiki (default 15, never below 5). Activity resets polling to this interval.".to_string(),
-        "sync.poll_max_seconds" => "Longest interval, in seconds, between the daemon's remote checks of an idle wiki (default 900). Each quiet check doubles the interval up to this ceiling.".to_string(),
         _ if path.starts_with("sync.merge_policy") => {
             "Define the versioned shared ordered path/type rules used for deterministic Git conflict handling.".to_string()
         }

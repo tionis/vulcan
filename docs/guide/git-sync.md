@@ -217,11 +217,14 @@ auto_commit = true
 strategy = "batched"  # the daemon commits after the vault has been quiet
 ```
 
-Each `vulcan sync run` then backs this device's worktree up to its private safety head (never
+Each `vulcan sync run` then snapshots this device's worktree into a local safety ref (never
 applied anywhere), fetches the checked-out branch, fast-forwards it when the incoming commits do not
 touch files you are editing, falls back to your pull configuration when it diverged, and pushes your
-commits. The hidden live branch is never created or read, so half-finished edits stay where they
-are. The daemon also notices new commits, since it watches the Git directory's `HEAD` and branch refs.
+commits. The hidden live branch is never created or read, and the snapshot stays in this
+repository, so half-finished edits never leave the device. Set `publish_device_backup = true` in
+`[sync]` to also push the snapshot to this device's private remote branch as an off-device backup.
+The daemon starts a cycle when a commit moves `HEAD` or a branch, not for every saved file, and
+polls the remote as usual.
 
 A device can opt out of worktree synchronization alone with `worktree = "none"` in
 `.vulcan/config.local.toml`; it cannot turn a shared `"none"` back into `"all"`. `branch_push` may be

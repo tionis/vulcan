@@ -145,6 +145,10 @@ pub struct GitSyncOptions {
     pub branch_push: bool,
     /// How cycles reconcile the checked-out branch with its upstream.
     pub branch_pull: BranchPullPolicy,
+    /// Whether committed-history-only cycles push the device safety head.
+    /// Worktree modes always publish it; without it the snapshot of
+    /// uncommitted edits stays in this repository.
+    pub publish_device_backup: bool,
 }
 
 /// How the branch lane reconciles the checked-out branch with its upstream.
@@ -259,6 +263,7 @@ impl Default for GitSyncOptions {
             scope: None,
             branch_push: true,
             branch_pull: BranchPullPolicy::Git,
+            publish_device_backup: true,
         }
     }
 }
@@ -2760,6 +2765,11 @@ fn capture_and_publish_device_backup(
     }
     control.emit(GitSyncPhase::Captured, report, Some(capture.tree.clone()))?;
     control.check()?;
+    if !options.worktree.syncs_live() && !options.publish_device_backup {
+        // Uncommitted edits stay on this device; the local snapshot still
+        // keeps them recoverable while the branch lane moves the checkout.
+        return Ok(Some(capture));
+    }
     control.emit(GitSyncPhase::BackingUp, report, Some(capture.tree.clone()))?;
     remote.ensure_observed(engine, options, report)?;
     if publish_backup_and_live_together(engine, options, report, control, &capture, remote)?
@@ -8786,6 +8796,44 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
             remote,
             &["for-each-ref", "--format=%(objectname)", reference],
         )
+    }
+
+    #[test]
+    fn committed_history_only_keeps_the_safety_snapshot_local_unless_asked() {
+        let (_temporary, remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        fs::write(writer.join("Local.md"), "local\n").expect("note");
+        commit_all(&writer, "local");
+        fs::write(writer.join("Home.md"), "half-finished edit\n").expect("uncommitted edit");
+        let options = GitSyncOptions {
+            publish_device_backup: false,
+            ..commits_only()
+        };
+
+        let report = sync_git_once(&engine, &writer, &options).expect("sync");
+
+        assert_eq!(report.outcome, GitSyncOutcome::Pushed);
+        assert!(
+            report.local_snapshot.is_some(),
+            "the snapshot still exists locally"
+        );
+        assert!(report.device_backup.is_none());
+        assert_eq!(
+            git_stdout(
+                &remote,
+                &[
+                    "for-each-ref",
+                    "--format=%(refname)",
+                    "refs/heads/__vulcan-sync"
+                ]
+            ),
+            "",
+            "no Vulcan ref reaches the remote"
+        );
+        assert_eq!(
+            remote_ref_tip(&remote, "refs/heads/main"),
+            git_stdout(&writer, &["rev-parse", "HEAD"])
+        );
     }
 
     #[test]

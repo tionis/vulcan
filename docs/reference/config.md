@@ -1593,6 +1593,9 @@ Shared deterministic merge and whole-tree validation policy, plus a device-local
 - `sync.poll_min_seconds` — type: `integer`; target: `shared|local|device`; default: `15`
   Shortest interval, in seconds, between the daemon's remote checks of an active wiki (default 15, never below 5). Activity resets polling to this interval.
   Example: `vulcan config set sync.poll_min_seconds <value>`
+- `sync.publish_device_backup` — type: `boolean`; target: `shared|local|device`; default: `false`
+  With `worktree = "none"`, also push this device's safety snapshot of uncommitted edits to its private remote branch. Off by default, so uncommitted text never leaves the device; the worktree modes always publish it.
+  Example: `vulcan config set sync.publish_device_backup <value>`
 - `sync.tree_validation.max_deleted_paths` — type: `integer`; target: `shared`; default: `100`
   Define shared whole-tree safety ceilings checked before an automatically resolved Git merge is published.
   Example: `vulcan config set sync.tree_validation.max_deleted_paths <value>`
