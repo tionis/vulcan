@@ -56,7 +56,12 @@ pub fn vault_health(
     wiki: &WikiRegistrationStatus,
     status: Option<&DaemonWikiOperationalStatus>,
 ) -> VaultHealth {
-    let sync = status.and_then(|status| status.sync.as_ref());
+    // Sync history left from before a registration stopped syncing (`vault
+    // set --no-sync`) no longer describes the vault.
+    let syncs = wiki.registration.sync_backend.as_deref() != Some("none");
+    let sync = status
+        .and_then(|status| status.sync.as_ref())
+        .filter(|_| syncs);
     let cache = status.map(|status| status.cache.state).filter(|state| {
         !matches!(
             state,
@@ -98,7 +103,10 @@ pub fn vault_health(
             | SyncState::CapturedUnpushed
             | SyncState::Fetched => scan_failure(status),
         }
-    } else if let Some(error) = status.and_then(|status| status.sync_error.clone()) {
+    } else if let Some(error) = status
+        .and_then(|status| status.sync_error.clone())
+        .filter(|_| syncs)
+    {
         (VaultHealthState::Failing, Some(error))
     } else {
         scan_failure(status)
@@ -258,6 +266,19 @@ mod tests {
                 VaultHealthState::Failing,
             ),
         ] {
+            let mut unsynced = indexed.clone();
+            unsynced.registration.sync_backend = Some("none".to_string());
+            assert_eq!(
+                vault_health(&unsynced, Some(&status)).state,
+                if expected == VaultHealthState::Failing
+                    && status.cache.state == CacheFreshnessState::Error
+                {
+                    VaultHealthState::Failing
+                } else {
+                    VaultHealthState::Healthy
+                },
+                "a registration without sync ignores retained sync state"
+            );
             let health = vault_health(&indexed, Some(&status));
             assert_eq!(health.state, expected, "{status:?}");
             assert_eq!(health.last_sync_attempt_unix_ms, Some(42));
