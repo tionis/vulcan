@@ -3,7 +3,7 @@
 use serde::Serialize;
 use serde_json::Value;
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, RwLock};
 use vulcan_core::{PermissionGuard, ProfilePermissionGuard, VaultPaths};
 
 use crate::mcp_protocol::{
@@ -83,20 +83,52 @@ pub trait McpSyncHost: Send + Sync {
     fn resume(&self, vault_root: &Path) -> Result<Value, String>;
 }
 
-static SYNC_HOST: OnceLock<Box<dyn McpSyncHost>> = OnceLock::new();
+static SYNC_HOST: RwLock<Option<Arc<dyn McpSyncHost>>> = RwLock::new(None);
 
-/// Installs this process's sync host; the first one wins. Returns whether
-/// `host` was installed.
-pub fn install_sync_host(host: Box<dyn McpSyncHost>) -> bool {
-    SYNC_HOST.set(host).is_ok()
+/// Keeps a sync host installed; dropping it uninstalls the host, so a
+/// stopped daemon releases its supervisor and a later one can install its own.
+#[must_use = "the host is uninstalled when the registration is dropped"]
+pub struct SyncHostRegistration(Arc<dyn McpSyncHost>);
+
+impl Drop for SyncHostRegistration {
+    fn drop(&mut self) {
+        let mut slot = SYNC_HOST
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot
+            .as_ref()
+            .is_some_and(|installed| Arc::ptr_eq(installed, &self.0))
+        {
+            *slot = None;
+        }
+    }
 }
 
-fn sync_host() -> Result<&'static dyn McpSyncHost, McpMethodError> {
-    SYNC_HOST.get().map(AsRef::as_ref).ok_or_else(|| {
-        McpMethodError::tool(
-            "this MCP server cannot start synchronization; run `vulcan sync refresh` instead",
-        )
-    })
+/// Installs this process's sync host unless one is already installed (the
+/// daemon's own host wins over a `vulcan mcp` server it runs). The host stays
+/// installed while the returned registration lives.
+pub fn install_sync_host(host: Box<dyn McpSyncHost>) -> Option<SyncHostRegistration> {
+    let mut slot = SYNC_HOST
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if slot.is_some() {
+        return None;
+    }
+    let host: Arc<dyn McpSyncHost> = Arc::from(host);
+    *slot = Some(Arc::clone(&host));
+    Some(SyncHostRegistration(host))
+}
+
+fn sync_host() -> Result<Arc<dyn McpSyncHost>, McpMethodError> {
+    SYNC_HOST
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+        .ok_or_else(|| {
+            McpMethodError::tool(
+                "this MCP server cannot start synchronization; run `vulcan sync refresh` instead",
+            )
+        })
 }
 
 pub fn sync_refresh(
@@ -146,8 +178,20 @@ mod tests {
     use super::*;
     use vulcan_core::resolve_permission_profile;
 
+    struct FixedHost(&'static str);
+
+    impl McpSyncHost for FixedHost {
+        fn sync_now(&self, _vault_root: &Path) -> Result<Value, String> {
+            Ok(Value::from(self.0))
+        }
+        fn resume(&self, _vault_root: &Path) -> Result<Value, String> {
+            Ok(Value::from(self.0))
+        }
+    }
+
+    // One test owns the process-wide slot, so nothing races it.
     #[test]
-    fn without_a_host_sync_triggers_say_how_to_sync_instead() {
+    fn a_sync_host_serves_while_registered_and_the_first_one_wins() {
         let temporary = tempfile::tempdir().unwrap();
         let paths = VaultPaths::new(temporary.path());
         let guard = ProfilePermissionGuard::new(
@@ -159,6 +203,23 @@ mod tests {
             format!("{error:?}").contains("vulcan sync refresh"),
             "{error:?}"
         );
+
+        let first = install_sync_host(Box::new(FixedHost("first"))).expect("installed");
+        assert!(install_sync_host(Box::new(FixedHost("second"))).is_none());
+        assert_eq!(
+            sync_host().unwrap().sync_now(temporary.path()),
+            Ok(Value::from("first"))
+        );
+
+        // Dropping the registration releases the host and frees the slot.
+        drop(first);
+        assert!(sync_host().is_err());
+        let next = install_sync_host(Box::new(FixedHost("next"))).expect("installed again");
+        assert_eq!(
+            sync_host().unwrap().sync_now(temporary.path()),
+            Ok(Value::from("next"))
+        );
+        drop(next);
     }
 
     #[test]

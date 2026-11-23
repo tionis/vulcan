@@ -786,12 +786,11 @@ fn public_url_path(public_url: &str) -> Result<String, CliError> {
 
 /// Lets `sync_refresh` and `sync_resume` reach the daemon from this
 /// process; inside the daemon its own host is already installed.
-fn install_mcp_sync_host() {
-    if let Ok(context) = DaemonProcessContext::user_default() {
-        vulcan_app::mcp_sync::install_sync_host(Box::new(
-            vulcan_daemon::mcp_sync_host::RegistrySyncHost::in_process(context),
-        ));
-    }
+fn install_mcp_sync_host() -> Option<vulcan_app::mcp_sync::SyncHostRegistration> {
+    let context = DaemonProcessContext::user_default().ok()?;
+    vulcan_app::mcp_sync::install_sync_host(Box::new(
+        vulcan_daemon::mcp_sync_host::RegistrySyncHost::in_process(context),
+    ))
 }
 
 fn run_mcp_stdio_server(
@@ -801,7 +800,7 @@ fn run_mcp_stdio_server(
     tool_pack_mode_arg: McpToolPackModeArg,
     request_timeout: Duration,
 ) -> Result<(), CliError> {
-    install_mcp_sync_host();
+    let _sync_host = install_mcp_sync_host();
     let mut server =
         McpServerCore::new(paths, requested_profile, tool_pack_args, tool_pack_mode_arg)?;
     let stdin = io::stdin();
@@ -881,7 +880,7 @@ fn run_mcp_http_server_inner(
     #[cfg(feature = "oauth")] named_runtime: Option<NamedMcpRuntime>,
     lifecycle: McpHttpLifecycle<'_>,
 ) -> Result<(), CliError> {
-    install_mcp_sync_host();
+    let _sync_host = install_mcp_sync_host();
     #[cfg(feature = "oauth")]
     let oauth = build_mcp_oauth_validator(paths, requested_profile, options)?;
     #[cfg(not(feature = "oauth"))]

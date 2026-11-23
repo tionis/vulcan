@@ -387,7 +387,9 @@ where
         MutationScheduler::new(MutationSchedulerConfig::default())
             .expect("default daemon scheduler limits are valid"),
     );
-    vulcan_app::mcp_sync::install_sync_host(Box::new(
+    // Held until the daemon returns, so the supervisor and its ledger are
+    // released with it.
+    let _mcp_sync_host = vulcan_app::mcp_sync::install_sync_host(Box::new(
         crate::mcp_sync_host::RegistrySyncHost::in_daemon(
             context.registry.clone(),
             Arc::clone(&supervisor),
