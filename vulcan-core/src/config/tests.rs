@@ -5547,6 +5547,16 @@ fn sync_branch_pull_defaults_to_git_and_reads_shared_and_local_values() {
         load_vault_config(&paths).config.sync.branch_pull,
         BranchPullPolicy::Merge
     );
+
+    fs::write(
+        paths.local_config_file(),
+        "[sync]\nbranch_pull = \"guarded-rebase\"\n",
+    )
+    .expect("local config");
+    assert_eq!(
+        load_vault_config(&paths).config.sync.branch_pull,
+        BranchPullPolicy::GuardedRebase
+    );
 }
 
 #[test]

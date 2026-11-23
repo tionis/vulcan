@@ -795,6 +795,21 @@ pub trait GitEngine: Send + Sync {
         no_ff: bool,
     ) -> Result<MergeBranchOutcome, GitEngineError>;
 
+    /// Reports why rebasing the checked-out branch onto `upstream` could
+    /// rewrite commits something else builds on: a replayed commit is also
+    /// reachable from another branch, tag, remote-tracking ref, or another
+    /// worktree's HEAD, or the range holds merge commits a rebase would
+    /// flatten. Vulcan's own refs (`refs/vulcan/*` and the `__vulcan-sync`
+    /// branch namespace, local or remote-tracking) are not consulted; they
+    /// always contain HEAD. `None` means the rebase rewrites only commits
+    /// that exist on this branch alone.
+    fn rebase_hazard(
+        &self,
+        repository: &GitRepository,
+        branch: &GitRefName,
+        upstream: &GitOid,
+    ) -> Result<Option<RebaseHazard>, GitEngineError>;
+
     /// Rebases the checked-out branch onto a revision, leaving conflicts in
     /// place for the caller to detect. Requires a worktree.
     fn rebase_branch(
@@ -1356,6 +1371,17 @@ pub struct GitBranchUpstream {
     pub merge_ref: GitRefName,
     /// The local remote-tracking ref (e.g. `refs/remotes/origin/main`).
     pub tracking_ref: GitRefName,
+}
+
+/// Why a guarded rebase declined to run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RebaseHazard {
+    /// A commit the rebase would replay is also reachable from this ref
+    /// (a branch, tag, remote-tracking ref, or `worktree:<path>`).
+    SharedWith(String),
+    /// The commits to replay include merge commits.
+    MergeCommits,
 }
 
 /// How `pull.ff` resolves for a branch pull.
@@ -5429,6 +5455,114 @@ impl GitEngine for GitCliEngine {
             return Ok(MergeBranchOutcome::BlockedDirty);
         }
         Err(command_failed("merge the branch", &output))
+    }
+
+    fn rebase_hazard(
+        &self,
+        repository: &GitRepository,
+        branch: &GitRefName,
+        upstream: &GitOid,
+    ) -> Result<Option<RebaseHazard>, GitEngineError> {
+        const OPERATION: &str = "check the commits a rebase would rewrite";
+        let count = |revisions: &str| -> Result<usize, GitEngineError> {
+            let mut command = self.repository_command(repository);
+            command.args(["rev-list", "--count", "--stdin"]);
+            let output = self.execute_with_input(command, OPERATION, revisions.as_bytes())?;
+            if !output.status.success() {
+                return Err(command_failed(OPERATION, &output));
+            }
+            decode_stdout(OPERATION, output.stdout)?
+                .trim()
+                .parse()
+                .map_err(|_| GitEngineError::InvalidOutput {
+                    operation: OPERATION,
+                    detail: "rev-list did not print a count".to_string(),
+                })
+        };
+        let range = format!("HEAD\n^{}\n", upstream.as_str());
+        let total = count(&range)?;
+        if total == 0 {
+            return Ok(None);
+        }
+        let mut merges = self.repository_command(repository);
+        merges.args(["rev-list", "--merges", "--count"]);
+        merges.arg(format!("{}..HEAD", upstream.as_str()));
+        let output = self.execute(merges)?;
+        if !output.status.success() {
+            return Err(command_failed(OPERATION, &output));
+        }
+        if decode_stdout(OPERATION, output.stdout)?.trim() != "0" {
+            return Ok(Some(RebaseHazard::MergeCommits));
+        }
+
+        let mut tips: Vec<(String, String)> = Vec::new();
+        let mut refs = self.repository_command(repository);
+        refs.args([
+            "for-each-ref",
+            "--format=%(objectname) %(refname)",
+            "refs/heads",
+            "refs/remotes",
+            "refs/tags",
+        ]);
+        let output = self.execute(refs)?;
+        if !output.status.success() {
+            return Err(command_failed(OPERATION, &output));
+        }
+        for line in decode_stdout(OPERATION, output.stdout)?.lines() {
+            if let Some((oid, name)) = line.split_once(' ') {
+                // Vulcan's own remote namespace (live, device safety heads,
+                // registrations) always contains HEAD; it is not a consumer.
+                if name != branch.as_str()
+                    && !name.ends_with("/HEAD")
+                    && !name
+                        .split('/')
+                        .any(|part| part.starts_with("__vulcan-sync"))
+                {
+                    tips.push((oid.to_string(), name.to_string()));
+                }
+            }
+        }
+        let mut worktrees = self.repository_command(repository);
+        worktrees.args(["worktree", "list", "--porcelain"]);
+        let output = self.execute(worktrees)?;
+        if output.status.success() {
+            let own = repository
+                .work_tree
+                .as_ref()
+                .and_then(|path| path.canonicalize().ok());
+            let mut path: Option<std::path::PathBuf> = None;
+            for line in decode_stdout(OPERATION, output.stdout)?.lines() {
+                if let Some(value) = line.strip_prefix("worktree ") {
+                    path = Some(std::path::PathBuf::from(value));
+                } else if let Some(oid) = line.strip_prefix("HEAD ") {
+                    let current = path.as_ref().and_then(|path| path.canonicalize().ok());
+                    if current.is_some() && current != own {
+                        let label = path
+                            .as_ref()
+                            .map_or_else(String::new, |path| path.display().to_string());
+                        tips.push((oid.to_string(), format!("worktree:{label}")));
+                    }
+                }
+            }
+        }
+        if tips.is_empty() {
+            return Ok(None);
+        }
+        let excluded = tips.iter().fold(range.clone(), |mut revisions, (oid, _)| {
+            revisions.push('^');
+            revisions.push_str(oid);
+            revisions.push('\n');
+            revisions
+        });
+        if count(&excluded)? == total {
+            return Ok(None);
+        }
+        for (oid, name) in &tips {
+            if count(&format!("{range}^{oid}\n"))? < total {
+                return Ok(Some(RebaseHazard::SharedWith(name.clone())));
+            }
+        }
+        Ok(Some(RebaseHazard::SharedWith("another ref".to_string())))
     }
 
     fn rebase_branch(

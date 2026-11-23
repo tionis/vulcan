@@ -1568,8 +1568,8 @@ Shared deterministic merge and whole-tree validation policy, plus a device-local
 - `sync.agent_auto_accept` — type: `boolean`; target: `local|device`; default: `false`
   Allow an explicitly requested agent proposal to enter the normal approval transaction automatically on this device. The default is false.
   Example: `vulcan config set sync.agent_auto_accept <value>`
-- `sync.branch_pull` — type: `enum`; target: `shared|local|device`; default: `git`; values: `git: follow each device's pull.rebase/pull.ff`, `ff-only`, `merge`, `rebase`
-  How sync reconciles the checked-out branch with its upstream: `git` (default) follows each device's `pull.rebase`/`pull.ff` settings; `ff-only`, `merge`, or `rebase` fixes the strategy for every device. Set it in the shared config so it travels with the repository.
+- `sync.branch_pull` — type: `enum`; target: `shared|local|device`; default: `git`; values: `git: follow each device's pull.rebase/pull.ff`, `ff-only`, `merge`, `rebase`, `guarded-rebase: rebase only commits nothing else builds on`
+  How sync reconciles the checked-out branch with its upstream: `git` (default) follows each device's `pull.rebase`/`pull.ff` settings; `ff-only`, `merge`, or `rebase` fixes the strategy for every device, and `guarded-rebase` rebases only when the replayed commits are on no other branch, tag, remote-tracking ref, or worktree and include no merges, pausing otherwise. Set it in the shared config so it travels with the repository.
   Example: `vulcan config set sync.branch_pull <value>`
 - `sync.branch_push` — type: `boolean`; target: `shared|local|device`; default: `true`
   Edit `sync.branch_push` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.

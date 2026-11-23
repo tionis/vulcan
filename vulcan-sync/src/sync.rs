@@ -165,6 +165,11 @@ pub enum BranchPullPolicy {
     Merge,
     /// Rebase local commits onto the upstream.
     Rebase,
+    /// Rebase local commits onto the upstream only when that rewrites
+    /// commits nothing else builds on: none is reachable from another
+    /// branch, tag, remote-tracking ref, or worktree, and none is a merge.
+    /// Otherwise, and on a conflict (which is aborted), the lane pauses.
+    GuardedRebase,
 }
 
 impl BranchPullPolicy {
@@ -187,7 +192,7 @@ impl BranchPullPolicy {
                 fast_forward: PullFastForward::Always,
                 rebase: PullRebase::Never,
             }),
-            Self::Rebase => Some(BranchPullConfig {
+            Self::Rebase | Self::GuardedRebase => Some(BranchPullConfig {
                 fast_forward: PullFastForward::Always,
                 rebase: PullRebase::Yes,
             }),
@@ -2154,6 +2159,20 @@ fn pull_branch_with_strategy(
             );
         }
         PullRebase::Yes | PullRebase::Merges => {
+            if policy == BranchPullPolicy::GuardedRebase {
+                if let Some(hazard) =
+                    engine.rebase_hazard(&report.repository, &lane.branch, fetched)?
+                {
+                    lane.action = GitBranchSyncAction::Paused;
+                    lane.detail = Some(match hazard {
+                        crate::RebaseHazard::SharedWith(name) => format!(
+                            "branch diverged and the guarded rebase did not run: local commits are also on {name}, which a rebase would leave behind; rebase and push yourself"
+                        ),
+                        crate::RebaseHazard::MergeCommits => "branch diverged and the guarded rebase did not run: the local commits include merges a rebase would flatten; merge or rebase and push yourself".to_string(),
+                    });
+                    return Ok(());
+                }
+            }
             let merges = config.rebase == PullRebase::Merges;
             match engine.rebase_branch(&report.repository, fetched, merges)? {
                 RebaseOutcome::UpToDate => {}
@@ -2296,6 +2315,9 @@ fn preview_branch_pull(
             };
             let strategy = match (config.fast_forward, config.rebase) {
                 (_, PullRebase::Interactive) => "manual rebase (pull.rebase=interactive)",
+                (_, PullRebase::Yes) if policy == BranchPullPolicy::GuardedRebase => {
+                    "guarded rebase"
+                }
                 (_, PullRebase::Yes) => "rebase",
                 (_, PullRebase::Merges) => "rebase with merges",
                 (PullFastForward::Only, PullRebase::Never) => "fast-forward only",
@@ -8766,6 +8788,117 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         assert!(pause
             .detail
             .is_some_and(|detail| detail.contains("pull.ff=only")));
+    }
+
+    fn guarded() -> GitSyncOptions {
+        GitSyncOptions {
+            branch_pull: BranchPullPolicy::GuardedRebase,
+            ..commits_only()
+        }
+    }
+
+    /// A local commit and a newer upstream commit touching different files.
+    fn diverged_branch() -> (TempDir, PathBuf, PathBuf, String) {
+        let (temporary, remote, writer) = setup_tracked_branch();
+        fs::write(writer.join("Local.md"), "local\n").expect("local note");
+        commit_all(&writer, "local");
+        let local = git_stdout(&writer, &["rev-parse", "HEAD"]);
+        advance_remote_branch(&temporary, &remote, "advanced\n");
+        (temporary, remote, writer, local)
+    }
+
+    #[test]
+    fn guarded_rebase_replays_commits_only_this_branch_has_and_publishes_them() {
+        let (_temporary, remote, writer, local) = diverged_branch();
+        let engine = GitCliEngine::default();
+
+        let report = sync_git_once(&engine, &writer, &guarded()).expect("guarded sync");
+
+        assert!(report.pause.is_none(), "{:?}", report.pause);
+        let (action, _) = branch_action(&report);
+        assert_eq!(action, GitBranchSyncAction::Rebased);
+        assert_ne!(git_stdout(&writer, &["rev-parse", "HEAD"]), local);
+        assert_eq!(
+            fs::read_to_string(writer.join("Home.md")).expect("upstream note"),
+            "advanced\n"
+        );
+        assert!(writer.join("Local.md").exists());
+        assert_eq!(
+            remote_ref_tip(&remote, "refs/heads/main"),
+            git_stdout(&writer, &["rev-parse", "HEAD"]),
+            "the rebased commit is published"
+        );
+    }
+
+    #[test]
+    fn guarded_rebase_leaves_commits_another_branch_or_worktree_builds_on() {
+        let engine = GitCliEngine::default();
+        for shared in ["branch", "worktree"] {
+            let (temporary, _remote, writer, local) = diverged_branch();
+            if shared == "branch" {
+                run_git(&writer, &["branch", "feature"]);
+            } else {
+                let worktree = temporary.path().join("agent-worktree");
+                run_git(
+                    &writer,
+                    &[
+                        "worktree",
+                        "add",
+                        "--quiet",
+                        "--detach",
+                        worktree.to_str().expect("worktree path"),
+                    ],
+                );
+            }
+
+            let report = sync_git_once(&engine, &writer, &guarded()).expect("guarded sync");
+
+            let pause = report.pause.expect("paused");
+            assert_eq!(pause.reason, GitSyncPauseReason::BranchPaused);
+            let detail = pause.detail.expect("detail");
+            let expected = if shared == "branch" {
+                "refs/heads/feature"
+            } else {
+                "worktree:"
+            };
+            assert!(detail.contains(expected), "{shared}: {detail}");
+            assert_eq!(
+                git_stdout(&writer, &["rev-parse", "HEAD"]),
+                local,
+                "{shared}"
+            );
+        }
+    }
+
+    #[test]
+    fn guarded_rebase_leaves_merges_and_aborts_conflicts() {
+        let engine = GitCliEngine::default();
+        let (temporary, _remote, writer, _) = diverged_branch();
+        run_git(&writer, &["checkout", "--quiet", "-b", "topic", "HEAD~1"]);
+        fs::write(writer.join("Topic.md"), "topic\n").expect("topic note");
+        commit_all(&writer, "topic");
+        run_git(&writer, &["checkout", "--quiet", "main"]);
+        run_git(
+            &writer,
+            &["merge", "--quiet", "--no-ff", "--no-edit", "topic"],
+        );
+        run_git(&writer, &["branch", "--quiet", "-D", "topic"]);
+        let merged = git_stdout(&writer, &["rev-parse", "HEAD"]);
+        let report = sync_git_once(&engine, &writer, &guarded()).expect("merge sync");
+        let detail = report.pause.and_then(|pause| pause.detail).expect("detail");
+        assert!(detail.contains("merges"), "{detail}");
+        assert_eq!(git_stdout(&writer, &["rev-parse", "HEAD"]), merged);
+        drop(temporary);
+
+        let (temporary, remote, writer) = setup_tracked_branch();
+        fs::write(writer.join("Home.md"), "local conflict\n").expect("conflict note");
+        commit_all(&writer, "local conflict");
+        let local = git_stdout(&writer, &["rev-parse", "HEAD"]);
+        advance_remote_branch(&temporary, &remote, "remote conflict\n");
+        let report = sync_git_once(&engine, &writer, &guarded()).expect("conflict sync");
+        let detail = report.pause.and_then(|pause| pause.detail).expect("detail");
+        assert!(detail.contains("aborted"), "{detail}");
+        assert_eq!(git_stdout(&writer, &["rev-parse", "HEAD"]), local);
     }
 
     #[test]

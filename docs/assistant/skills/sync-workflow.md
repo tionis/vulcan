@@ -344,11 +344,12 @@ it with the repository. Never hand-edit a pointer to name a directory outside th
 ## Branch lane
 
 After publishing the pre-operation device safety head, every finite cycle also pulls the checked-out
-branch from its upstream before the canonical hidden live ref moves, following the vault's `sync.branch_pull` (`ff-only`, `merge`, or `rebase`) or, when that is
+branch from its upstream before the canonical hidden live ref moves, following the vault's `sync.branch_pull` (`ff-only`, `merge`, `rebase`, or `guarded-rebase`) or, when that is
 `git` (the default), the repository's own pull configuration (`pull.ff`, `pull.rebase`,
 `branch.<name>.rebase`) with `--no-edit` and no implicit autostash. In a repository where agents
-commit, prefer `sync.branch_pull = "ff-only"` in the shared config so sync never rewrites your
-commits; after a divergence pause, run `git pull --rebase` and push yourself. Watch the human output or
+commit, prefer `sync.branch_pull = "guarded-rebase"` (or the stricter `"ff-only"`) in the shared
+config: sync replays only commits that no other branch or worktree builds on and never leaves a
+conflict behind; after a pause, run `git pull --rebase` and push yourself. Watch the human output or
 the JSON `branch` report for `fast-forwarded`, `merged`, `rebased`, `paused` (diverged past
 fast-forward only, interactive rebase, or a merge/rebase conflict, which sync aborts so the checkout is left as it was; integrate the upstream yourself with ordinary Git),
 `adopted` (the upstream tip had already reached this worktree through live, so only the branch and

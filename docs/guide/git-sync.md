@@ -218,11 +218,16 @@ set in either file.
 
 When sync cannot fast-forward because the branch diverged, it follows `sync.branch_pull`. The
 default, `git`, uses each device's own `pull.rebase` and `pull.ff`, so a global `pull.rebase = true`
-makes the daemon rebase your commits in the background. `ff-only`, `merge`, or `rebase` fixes the
-strategy for every device, whatever their Git configuration says. `ff-only` suits repositories where
-agents commit: sync never rewrites or creates a commit, and a divergence pauses the branch until
-whoever made the local commits runs `git pull --rebase` and pushes. A merge or rebase that sync
-starts and that conflicts is always aborted, leaving the branch as it was.
+makes the daemon rebase your commits in the background. `ff-only`, `merge`, `rebase`, or
+`guarded-rebase` fixes the strategy for every device, whatever their Git configuration says.
+
+For repositories where agents commit, `guarded-rebase` resolves most divergences without anyone:
+sync replays the local commits onto the upstream and publishes them, but only when no other branch,
+tag, remote-tracking ref, or worktree contains them (so an agent's worktree never loses its base),
+none is a merge, and the replay applies cleanly. Anything else pauses the branch, with an alert that
+says to run `git pull --rebase` and push. `ff-only` is the strictest choice: sync never rewrites or
+creates a commit and every divergence pauses. A merge or rebase that sync starts and that conflicts
+is always aborted, leaving the branch as it was.
 
 Conflict resolution, checkpoints, retention, and semantic history apply only to
 the default mode and refuse here; earlier live state is left untouched for when the mode switches
