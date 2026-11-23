@@ -843,6 +843,12 @@ pub struct McpGitBlameArgs {
 #[serde(deny_unknown_fields)]
 pub struct McpGitCommitArgs {
     pub message: String,
+    /// `session` (default): this session's uncommitted writes; `all`: every
+    /// vault change; `paths`: the listed `paths`.
+    #[serde(default)]
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub paths: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -28,7 +28,7 @@ A vault can be one directory of a larger Git repository, such as the `docs/` dir
 
 ## Recommended Flow
 
-- Over MCP, enable the `git` tool pack: `git_status`, `git_diff`, `git_log`, `git_blame`, and `git_commit` mirror the CLI commands below. Commit your own work in a vault whose sync does not capture the worktree (`sync.worktree = "none"`), since nothing else will. `git_commit` takes every uncommitted vault change, so check `git_status` first for edits that are not yours.
+- Over MCP, enable the `git` tool pack: `git_status`, `git_diff`, `git_log`, `git_blame`, and `git_commit` mirror the CLI commands below. Commit your own work in a vault whose sync does not capture the worktree (`sync.worktree = "none"`), since nothing else will. `git_commit` commits only the files your session's writes changed (including every file a `note_move` rewrote), so other writers' edits stay out of your commit; its result lists anything of yours still uncommitted as `session_uncommitted`. Use `scope: "all"` only after `git_status` shows every change is meant to go in, or `paths` to name files changed outside MCP writes. The commit records your client in `Vulcan-MCP-*` trailers.
 
 - Start with `git status` to see whether the change is isolated or mixed with unrelated edits.
 - Review `git diff` or `changes` before writing a commit message.

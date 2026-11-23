@@ -5,8 +5,8 @@
 
 use serde::Serialize;
 use vulcan_core::{
-    git_blame, git_commit, git_diff, git_recent_log, git_status, GitBlameLine, GitCommitReport,
-    GitLogEntry, GitStatusReport, PluginEvent, VaultPaths, Verbosity,
+    git_blame, git_diff, git_recent_log, git_status, GitBlameLine, GitCommitReport, GitLogEntry,
+    GitStatusReport, PluginEvent, VaultPaths, Verbosity,
 };
 
 use crate::AppError;
@@ -96,6 +96,27 @@ pub fn commit_with_hooks(
     message: &str,
     verbosity: Verbosity,
 ) -> Result<GitCommitReport, AppError> {
+    commit_request_with_hooks(
+        paths,
+        permission_profile,
+        &vulcan_core::GitCommitRequest {
+            message,
+            only_paths: None,
+            trailers: &[],
+        },
+        verbosity,
+    )
+}
+
+/// Commit as [`commit_with_hooks`] does, limited to `request.only_paths`
+/// and with `request.trailers` appended to the message.
+pub fn commit_request_with_hooks(
+    paths: &VaultPaths,
+    permission_profile: Option<&str>,
+    request: &vulcan_core::GitCommitRequest<'_>,
+    verbosity: Verbosity,
+) -> Result<GitCommitReport, AppError> {
+    let message = request.message;
     if message.trim().is_empty() {
         return Err(AppError::operation("a commit needs a message"));
     }
@@ -110,7 +131,8 @@ pub fn commit_with_hooks(
         }),
         verbosity,
     )?;
-    let report = git_commit(paths.vault_root(), message).map_err(AppError::operation)?;
+    let report =
+        vulcan_core::git_commit_with(paths.vault_root(), request).map_err(AppError::operation)?;
     if report.committed {
         let _ = crate::plugins::dispatch_plugin_event(
             paths,

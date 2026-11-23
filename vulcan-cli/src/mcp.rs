@@ -1178,13 +1178,17 @@ fn mcp_http_driver(
         inner: &context.inner,
         hosted,
         core_factory: |config| {
-            McpServerCore::new_resolved(
+            let mut core = McpServerCore::new_resolved(
                 &config.paths,
                 config.permission_profile.as_deref(),
                 config.selected_tool_packs,
                 config.tool_pack_mode,
             )
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+            core.inner
+                .session
+                .set_authenticated_client(config.client_id, config.subject);
+            Ok(core)
         },
         #[cfg(feature = "oauth")]
         indieauth_exchange: exchange,

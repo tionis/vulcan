@@ -16,6 +16,58 @@ use crate::mcp_protocol::{McpListSnapshot, McpMethodError, McpToolResourceStore}
 use crate::mcp_tool_exec::McpToolExecution;
 use crate::tools::CustomToolRegistryOptions;
 
+/// Who is on the other end of a session, as far as Vulcan can tell. The
+/// client name and version are self-reported in `initialize`; the OAuth
+/// client and subject come from an authenticated remote grant.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct McpClientAttribution {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth_client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+}
+
+impl McpClientAttribution {
+    /// Record `clientInfo` from an `initialize` request.
+    pub fn record_client_info(&mut self, params: Option<&Value>) {
+        let info = params.and_then(|params| params.get("clientInfo"));
+        let field = |name: &str| {
+            info.and_then(|info| info.get(name))
+                .and_then(Value::as_str)
+                .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
+                .map(|text| text.chars().take(120).collect::<String>())
+                .filter(|text| !text.is_empty())
+        };
+        self.name = field("name");
+        self.version = field("version");
+    }
+
+    /// Commit trailers naming the client and the profile it acted under.
+    #[must_use]
+    pub fn trailers(&self, profile: &str) -> Vec<(String, String)> {
+        let mut trailers = Vec::new();
+        if let Some(name) = &self.name {
+            let client = match &self.version {
+                Some(version) => format!("{name} {version}"),
+                None => name.clone(),
+            };
+            trailers.push(("Vulcan-MCP-Client".to_string(), client));
+        }
+        if let Some(id) = &self.oauth_client_id {
+            trailers.push(("Vulcan-MCP-Client-Id".to_string(), id.clone()));
+        }
+        if let Some(subject) = &self.subject {
+            trailers.push(("Vulcan-MCP-Subject".to_string(), subject.clone()));
+        }
+        trailers.push(("Vulcan-MCP-Profile".to_string(), profile.to_string()));
+        trailers
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct McpSessionState {
     paths: VaultPaths,
@@ -26,6 +78,10 @@ pub struct McpSessionState {
     selected_packs: BTreeSet<McpToolPack>,
     resources: McpToolResourceStore,
     snapshot: McpListSnapshot,
+    client: McpClientAttribution,
+    /// Vault-relative paths this session's writes changed and that no
+    /// session-scoped commit has taken yet.
+    written_paths: BTreeSet<String>,
 }
 
 impl McpSessionState {
@@ -63,12 +119,35 @@ impl McpSessionState {
             selected_packs,
             resources: McpToolResourceStore::default(),
             snapshot,
+            client: McpClientAttribution::default(),
+            written_paths: BTreeSet::new(),
         })
     }
 
     #[must_use]
     pub fn paths(&self) -> &VaultPaths {
         &self.paths
+    }
+
+    #[must_use]
+    pub fn client(&self) -> &McpClientAttribution {
+        &self.client
+    }
+
+    /// Record `clientInfo` from the session's `initialize` request.
+    pub fn record_client_info(&mut self, params: Option<&Value>) {
+        self.client.record_client_info(params);
+    }
+
+    /// Attribute the session to an authenticated remote client.
+    pub fn set_authenticated_client(&mut self, client_id: Option<String>, subject: Option<String>) {
+        self.client.oauth_client_id = client_id;
+        self.client.subject = subject;
+    }
+
+    #[must_use]
+    pub fn written_paths(&self) -> &BTreeSet<String> {
+        &self.written_paths
     }
 
     #[must_use]
@@ -127,6 +206,8 @@ impl McpSessionState {
             pack_mode: self.pack_mode,
             resources: &mut self.resources,
             custom_registry: registry,
+            client: &self.client,
+            written_paths: &mut self.written_paths,
         }
         .call_tool(name, arguments)
     }

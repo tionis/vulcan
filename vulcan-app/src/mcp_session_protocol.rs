@@ -140,6 +140,10 @@ impl<'a> McpSessionProtocol<'a> {
 }
 
 impl McpProtocolMethods for McpSessionProtocol<'_> {
+    fn record_initialize(&mut self, params: Option<&Value>) {
+        self.session.record_client_info(params);
+    }
+
     fn initialize_result(&self) -> Value {
         mcp_protocol::initialization_result(&self.session.active_tool_names(), self.server_version)
     }

@@ -39,6 +39,10 @@ pub struct McpToolExecution<'a> {
     pub pack_mode: McpToolPackMode,
     pub resources: &'a mut McpToolResourceStore,
     pub custom_registry: &'a CustomToolRegistryOptions,
+    pub client: &'a crate::mcp_session::McpClientAttribution,
+    /// Paths this session wrote and has not committed; `git_commit` takes
+    /// these by default.
+    pub written_paths: &'a mut BTreeSet<String>,
 }
 
 impl McpToolExecution<'_> {
@@ -83,7 +87,7 @@ impl McpToolExecution<'_> {
                 flag("no_commit"),
             )
         });
-        let structured = match tool.id {
+        let (structured, written) = crate::commit::record_written_paths(|| match tool.id {
             McpToolId::NoteGet => {
                 let args: McpNoteGetArgs = parse(arguments)?;
                 self.report(
@@ -339,10 +343,15 @@ impl McpToolExecution<'_> {
             }
             McpToolId::GitCommit => {
                 let args: mcp_protocol::McpGitCommitArgs = parse(arguments)?;
-                self.value(
-                    tool.name,
-                    mcp_git::git_commit(self.paths, self.guard, self.profile_name, &args)?,
-                )
+                let report = mcp_git::git_commit(
+                    self.paths,
+                    self.guard,
+                    self.profile_name,
+                    self.client,
+                    self.written_paths,
+                    &args,
+                )?;
+                self.value(tool.name, report)
             }
             McpToolId::WebSearch => {
                 let args: McpWebSearchArgs = parse(arguments)?;
@@ -388,7 +397,9 @@ impl McpToolExecution<'_> {
                 )?;
                 self.value(tool.name, state)
             }
-        }?;
+        });
+        let structured = structured?;
+        self.written_paths.extend(written);
         let mut structured = wrap_structured(structured);
         if let (Some((before, no_commit)), Some(object)) =
             (commit_probe, structured.as_object_mut())
@@ -483,6 +494,8 @@ mod tests {
             pack_mode: McpToolPackMode::Adaptive,
             resources: &mut resources,
             custom_registry: &registry,
+            client: &crate::mcp_session::McpClientAttribution::default(),
+            written_paths: &mut BTreeSet::new(),
         };
         let capabilities = executor.call_tool("capabilities", &Map::new()).unwrap();
         assert!(capabilities["structuredContent"]["activeTools"]
@@ -509,6 +522,16 @@ mod tests {
         assert!(status.success(), "git {arguments:?}");
     }
 
+    fn git_stdout(root: &std::path::Path, arguments: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .args(arguments)
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {arguments:?}");
+        String::from_utf8(output.stdout).unwrap()
+    }
+
     fn append(root: &std::path::Path, text: &str) -> Value {
         let paths = VaultPaths::new(root);
         let selection = resolve_permission_profile(&paths, Some("unrestricted")).unwrap();
@@ -527,6 +550,8 @@ mod tests {
             pack_mode: McpToolPackMode::Static,
             resources: &mut resources,
             custom_registry: &registry,
+            client: &crate::mcp_session::McpClientAttribution::default(),
+            written_paths: &mut BTreeSet::new(),
         };
         let arguments = Map::from_iter([
             ("note".to_string(), json!("Home.md")),
@@ -559,6 +584,8 @@ mod tests {
             pack_mode: McpToolPackMode::Static,
             resources: &mut resources,
             custom_registry: &registry,
+            client: &crate::mcp_session::McpClientAttribution::default(),
+            written_paths: &mut BTreeSet::new(),
         };
         let arguments = arguments.as_object().cloned().unwrap_or_default();
         executor
@@ -634,7 +661,7 @@ mod tests {
             "unrestricted",
             &git_pack,
             "git_commit",
-            &json!({"message": "Move the idea"}),
+            &json!({"message": "Move the idea", "scope": "all"}),
         )
         .unwrap();
         assert_eq!(committed["committed"], true, "{committed}");
@@ -658,6 +685,91 @@ mod tests {
         )
         .unwrap();
         assert_eq!(blame["lines"].as_array().unwrap().len(), 1, "{blame}");
+    }
+
+    #[test]
+    fn git_commit_takes_only_this_sessions_writes_and_names_the_client() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        git(root, &["init", "--quiet"]);
+        let paths = VaultPaths::new(root);
+        vulcan_core::paths::initialize_vulcan_dir(&paths).unwrap();
+        std::fs::write(root.join(".gitignore"), ".vulcan/\n").unwrap();
+        std::fs::write(root.join("Home.md"), "See [[Inbox/Idea]].\n").unwrap();
+        std::fs::create_dir_all(root.join("Inbox")).unwrap();
+        std::fs::write(root.join("Inbox/Idea.md"), "# Idea\n").unwrap();
+        std::fs::write(root.join("Other.md"), "# Other\n").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "--quiet", "-m", "seed"]);
+        vulcan_core::scan_vault(&paths, vulcan_core::ScanMode::Full).unwrap();
+
+        let mut session = crate::mcp_session::McpSessionState::new(
+            &paths,
+            Some("unrestricted"),
+            BTreeSet::from([McpToolPack::NotesManage, McpToolPack::Git]),
+            McpToolPackMode::Static,
+            CustomToolRegistryOptions::default,
+        )
+        .unwrap();
+        session.record_client_info(Some(
+            &json!({"clientInfo": {"name": "Agent\nX", "version": "2"}}),
+        ));
+        session.set_authenticated_client(Some("https://client.example/".into()), None);
+        let registry = CustomToolRegistryOptions::default();
+        let mut call = |name: &str, arguments: Value| {
+            session
+                .call_tool(&registry, name, arguments.as_object().unwrap())
+                .map(|result| result["structuredContent"].clone())
+        };
+
+        let nothing = call("git_commit", json!({"message": "Nothing yet"})).unwrap();
+        assert_eq!(nothing["committed"], false, "{nothing}");
+
+        // The move changes three files; another writer changes a fourth.
+        call(
+            "note_move",
+            json!({"note": "Inbox/Idea", "destination": "Projects/Idea", "no_commit": true}),
+        )
+        .unwrap();
+        std::fs::write(root.join("Other.md"), "# Other, edited elsewhere\n").unwrap();
+
+        let committed = call("git_commit", json!({"message": "Move the idea"})).unwrap();
+        assert_eq!(committed["committed"], true, "{committed}");
+        assert_eq!(committed["scope"], "session");
+        assert_eq!(
+            committed["files"],
+            json!(["Home.md", "Inbox/Idea.md", "Projects/Idea.md"]),
+            "{committed}"
+        );
+        let body = git_stdout(root, &["log", "-1", "--format=%B"]);
+        assert!(body.starts_with("Move the idea\n\n"), "{body}");
+        for trailer in [
+            "Vulcan-MCP-Client: Agent X 2",
+            "Vulcan-MCP-Client-Id: https://client.example/",
+            "Vulcan-MCP-Profile: unrestricted",
+        ] {
+            assert!(body.contains(trailer), "{body}");
+        }
+        assert_eq!(
+            git_stdout(root, &["status", "--porcelain"]).trim(),
+            "M Other.md"
+        );
+        assert!(session.written_paths().is_empty());
+
+        let mut call = |name: &str, arguments: Value| {
+            session
+                .call_tool(&registry, name, arguments.as_object().unwrap())
+                .map(|result| result["structuredContent"].clone())
+        };
+        let again = call("git_commit", json!({"message": "Again"})).unwrap();
+        assert_eq!(again["committed"], false, "{again}");
+        let rest = call("git_commit", json!({"message": "The rest", "scope": "all"})).unwrap();
+        assert_eq!(rest["files"], json!(["Other.md"]), "{rest}");
+        assert!(call(
+            "git_commit",
+            json!({"message": "x", "scope": "all", "paths": ["a.md"]})
+        )
+        .is_err());
     }
 
     #[test]

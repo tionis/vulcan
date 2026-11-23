@@ -763,7 +763,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         id: McpToolId::GitCommit,
         name: "git_commit",
         title: "Commit Vault Changes",
-        description: "Commit every uncommitted vault change with a message, running pre-commit hooks.",
+        description: "Commit the files this session changed (or every change with scope `all`), running pre-commit hooks; the commit names the client in Vulcan-MCP-* trailers.",
         packs: PACK_GIT,
         visibility: McpVisibilityRequirement::GitCommit,
         annotations: mcp_annotations(false, false, false, false),

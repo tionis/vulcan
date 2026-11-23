@@ -58,7 +58,10 @@ Because sync moves only commits, capture belongs to whoever commits:
   With `[git] auto_commit = true` and `strategy = "batched"`, the daemon commits once the vault has
   been quiet, and the ref watch below then syncs the commit. Every MCP write reports a `commit`
   object; `uncommitted` means the change stays on this device until something commits it.
-- The MCP `git` pack offers `git_commit` to clients that may commit directly.
+- The MCP `git` pack offers `git_commit` to clients that may commit directly. It commits only the
+  files that session's writes changed, so one agent never commits another's half-finished edits,
+  and names the client in `Vulcan-MCP-*` trailers. Auto-commit picks up whatever no agent
+  committed.
 
 ## Triggers
 

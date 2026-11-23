@@ -278,6 +278,7 @@ impl AutoCommitPolicy {
         permission_profile: Option<&str>,
         verbosity: Verbosity,
     ) -> Result<Option<AutoCommitReport>, String> {
+        note_written_paths(changed_files);
         let Self::Enabled(config) = self else {
             return Ok(None);
         };
@@ -327,6 +328,37 @@ impl AutoCommitPolicy {
             Ok(None)
         }
     }
+}
+
+thread_local! {
+    static WRITTEN_PATHS: std::cell::RefCell<Option<std::collections::BTreeSet<String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Every mutation hands its changed files to [`AutoCommitPolicy::commit`],
+/// whatever the policy, so that is where a caller learns what it wrote.
+fn note_written_paths(changed_files: &[String]) {
+    WRITTEN_PATHS.with(|recorder| {
+        if let Some(paths) = recorder.borrow_mut().as_mut() {
+            paths.extend(changed_files.iter().cloned());
+        }
+    });
+}
+
+/// Run `operation` and return the vault-relative paths its mutations wrote,
+/// as they reported them for committing. Nested calls each see their own
+/// writes and pass them on to the enclosing recorder.
+pub fn record_written_paths<T>(
+    operation: impl FnOnce() -> T,
+) -> (T, std::collections::BTreeSet<String>) {
+    let outer =
+        WRITTEN_PATHS.with(|recorder| recorder.replace(Some(std::collections::BTreeSet::new())));
+    let result = operation();
+    let written = WRITTEN_PATHS
+        .with(|recorder| recorder.replace(outer))
+        .unwrap_or_default();
+    note_written_paths(&written.iter().cloned().collect::<Vec<_>>());
+    (result, written)
 }
 
 #[cfg(test)]

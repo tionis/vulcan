@@ -73,6 +73,9 @@ pub struct McpHttpProtocolConfig {
     pub permission_profile: Option<String>,
     pub selected_tool_packs: BTreeSet<McpToolPack>,
     pub tool_pack_mode: McpToolPackMode,
+    /// The authenticated OAuth client and subject, for commit attribution.
+    pub client_id: Option<String>,
+    pub subject: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,6 +149,8 @@ impl<C> McpHttpHost<C> {
             permission_profile: profile.map(str::to_string),
             selected_tool_packs: packs,
             tool_pack_mode: self.tool_pack_mode,
+            client_id: authority.client_id.clone(),
+            subject: authority.subject.clone(),
         })
     }
 
@@ -290,6 +295,19 @@ mod tests {
         assert_eq!(selected.permission_profile.as_deref(), Some("readonly"));
         assert_eq!(selected.selected_tool_packs, listener.selected_tool_packs);
         assert_eq!(selected.tool_pack_mode, McpToolPackMode::Static);
+        assert_eq!(selected.client_id, None);
+        // The authenticated client travels with the session for attribution.
+        authority.client_id = Some("https://client.example.test/".into());
+        authority.subject = Some("https://owner.example.test/".into());
+        let attributed = listener.protocol_config(&authority).unwrap();
+        assert_eq!(
+            attributed.client_id.as_deref(),
+            Some("https://client.example.test/")
+        );
+        assert_eq!(
+            attributed.subject.as_deref(),
+            Some("https://owner.example.test/")
+        );
         authority.permission_profile = Some("prompt-reader".into());
         assert_eq!(
             listener

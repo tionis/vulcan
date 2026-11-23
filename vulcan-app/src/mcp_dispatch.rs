@@ -66,6 +66,8 @@ pub fn acquire_request_ordinary_write_gate(
 /// Vault-specific operations needed by the shared MCP method router.
 pub trait McpProtocolMethods {
     fn initialize_result(&self) -> Value;
+    /// Note what the client said about itself in `initialize`.
+    fn record_initialize(&mut self, _params: Option<&Value>) {}
     fn visible_tool_items(&self) -> Result<Vec<Value>, McpMethodError>;
     fn call_tool(
         &mut self,
@@ -91,7 +93,10 @@ pub fn dispatch_protocol_method<H: McpProtocolMethods>(
     params: Option<&Value>,
 ) -> Result<McpMethodOutcome, McpMethodError> {
     let response = match method {
-        "initialize" => Some(handler.initialize_result()),
+        "initialize" => {
+            handler.record_initialize(params);
+            Some(handler.initialize_result())
+        }
         "ping" => Some(Value::Object(Map::new())),
         "notifications/initialized" | "notifications/cancelled" => None,
         "tools/list" => {

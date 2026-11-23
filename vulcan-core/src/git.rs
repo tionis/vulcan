@@ -1,6 +1,6 @@
 use crate::config::{GitConfig, GitScope};
 use serde::Serialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs::{self, OpenOptions};
@@ -704,12 +704,63 @@ pub fn git_diff(vault_root: &Path, path: Option<&str>) -> Result<String, GitErro
 }
 
 pub fn git_commit(vault_root: &Path, message: &str) -> Result<GitCommitReport, GitError> {
+    git_commit_with(
+        vault_root,
+        &GitCommitRequest {
+            message,
+            only_paths: None,
+            trailers: &[],
+        },
+    )
+}
+
+/// What [`git_commit_with`] commits.
+#[derive(Debug, Clone, Copy)]
+pub struct GitCommitRequest<'a> {
+    pub message: &'a str,
+    /// Commit only these vault-relative paths (those with changes), leaving
+    /// everything else, staged or not, as it was. `None` commits every change.
+    pub only_paths: Option<&'a [String]>,
+    /// `Key: value` trailers appended to the message.
+    pub trailers: &'a [(String, String)],
+}
+
+/// The message with `trailers` appended as a final trailer paragraph.
+#[must_use]
+pub fn message_with_trailers(message: &str, trailers: &[(String, String)]) -> String {
+    let clean = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let lines = trailers
+        .iter()
+        .map(|(key, value)| (clean(key).replace([' ', ':'], "-"), clean(value)))
+        .filter(|(key, value)| !key.is_empty() && !value.is_empty())
+        .map(|(key, value)| format!("{key}: {value}"))
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        return message.to_string();
+    }
+    format!("{}\n\n{}", message.trim_end(), lines.join("\n"))
+}
+
+pub fn git_commit_with(
+    vault_root: &Path,
+    request: &GitCommitRequest<'_>,
+) -> Result<GitCommitReport, GitError> {
+    let message = message_with_trailers(request.message, request.trailers);
+    let message = message.as_str();
     ensure_git_repo(vault_root)?;
     let _repository_lock = acquire_repository_mutation_lock(vault_root)?;
+    let wanted = request
+        .only_paths
+        .map(|paths| paths.iter().map(String::as_str).collect::<HashSet<_>>());
     let commit_paths = git_status(vault_root)?
         .changed_paths()
         .into_iter()
         .filter(|path| !path_is_excluded(path, &[]))
+        .filter(|path| {
+            wanted
+                .as_ref()
+                .is_none_or(|wanted| wanted.contains(path.as_str()))
+        })
         .collect::<Vec<_>>();
     if commit_paths.is_empty() {
         return Ok(GitCommitReport {
@@ -730,6 +781,7 @@ pub fn git_commit(vault_root: &Path, message: &str) -> Result<GitCommitReport, G
     let staged = staged_paths(vault_root)?
         .into_iter()
         .filter(|path| !path_is_excluded(path, &[]))
+        .filter(|path| wanted.is_none() || commit_paths.contains(path))
         .collect::<Vec<_>>();
     if staged.is_empty() {
         return Ok(GitCommitReport {
@@ -1909,6 +1961,57 @@ mod tests {
             .expect("status should succeed")
             .changed_paths()
             .is_empty());
+    }
+
+    #[test]
+    fn git_commit_with_commits_only_the_named_paths_and_adds_trailers() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let root = temp_dir.path();
+        init_git_repo(root);
+        fs::write(root.join("Mine.md"), "a\n").expect("note");
+        fs::write(root.join("Theirs.md"), "a\n").expect("note");
+        commit_all(root, "Initial");
+        fs::write(root.join("Mine.md"), "b\n").expect("note");
+        fs::write(root.join("Theirs.md"), "b\n").expect("note");
+        fs::write(root.join("Staged.md"), "staged\n").expect("note");
+        run_git_ok(root, &["add", "Staged.md"]);
+
+        let only = vec!["Mine.md".to_string(), "Gone.md".to_string()];
+        let trailers = vec![
+            (
+                "Vulcan-MCP-Client".to_string(),
+                "test\nclient 1".to_string(),
+            ),
+            ("Empty".to_string(), "  ".to_string()),
+        ];
+        let report = git_commit_with(
+            root,
+            &GitCommitRequest {
+                message: "Edit mine",
+                only_paths: Some(&only),
+                trailers: &trailers,
+            },
+        )
+        .expect("commit");
+
+        assert_eq!(report.files, vec!["Mine.md".to_string()]);
+        let body = run_git_capture(root, |command| {
+            command.args(["log", "-1", "--format=%B"]);
+        })
+        .expect("log");
+        assert_eq!(
+            body.trim_end(),
+            "Edit mine\n\nVulcan-MCP-Client: test client 1"
+        );
+        let mut left = git_status(root).expect("status").changed_paths();
+        left.sort();
+        assert_eq!(left, vec!["Staged.md".to_string(), "Theirs.md".to_string()]);
+        // Another writer's staged file stays staged.
+        let staged = run_git_capture(root, |command| {
+            command.args(["diff", "--cached", "--name-only"]);
+        })
+        .expect("staged");
+        assert_eq!(staged.trim(), "Staged.md");
     }
 
     #[test]

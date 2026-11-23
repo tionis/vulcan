@@ -1185,10 +1185,23 @@ pub fn git_blame_input_schema() -> Value {
 
 pub fn git_commit_input_schema() -> Value {
     schema_object(
-        vec![(
-            "message",
-            schema_string("Commit message for every uncommitted vault change."),
-        )],
+        vec![
+            ("message", schema_string("Commit message.")),
+            (
+                "scope",
+                schema_string_enum(
+                    "What to commit: `session` (default) commits only the files this session's writes changed, `all` every uncommitted vault change, `paths` the listed `paths`.",
+                    &["session", "all", "paths"],
+                ),
+            ),
+            (
+                "paths",
+                schema_array(
+                    schema_string("Vault-relative file path."),
+                    "Vault-relative files to commit (implies scope `paths`).",
+                ),
+            ),
+        ],
         &["message"],
     )
 }
