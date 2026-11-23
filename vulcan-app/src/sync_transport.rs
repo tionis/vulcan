@@ -90,6 +90,10 @@ pub enum GitConfigMode {
 pub enum GitConfigState {
     /// The binding does not manage `core.sshCommand`.
     NotManaged,
+    /// No binding exists, yet the repository holds a Vulcan-owned value,
+    /// left by a vault that moved or a binding removed by hand. Plain `git`
+    /// still uses it. `sync transport bind` adopts it, `unbind` removes it.
+    Orphaned,
     /// Managed and present with a working Vulcan-owned value.
     Managed,
     /// Managed but the value is absent.
@@ -588,7 +592,17 @@ pub(crate) fn transport_status_with_store(
     store: &DeviceIdentityStore,
 ) -> Result<GitTransportStatus, AppError> {
     let Some(record) = load_binding(paths, state)? else {
-        return Ok(not_bound());
+        let mut status = not_bound();
+        if read_core_ssh_command(paths.vault_root())?
+            .as_deref()
+            .is_some_and(is_owned)
+        {
+            status.git_config = GitConfigState::Orphaned;
+            status.diagnostic = Some(
+                "the repository's core.sshCommand is Vulcan's, but this device has no binding for the vault (it moved, or the binding was removed); run `vulcan sync transport bind` to adopt it or `vulcan sync transport unbind` to remove it".to_string(),
+            );
+        }
+        return Ok(status);
     };
     let (transport, diagnostic) = match eligible_key(store) {
         Ok((device_id, _)) if device_id == record.device_id => (GitTransportState::Usable, None),
@@ -760,10 +774,20 @@ fn unbind_transport_with_store(
     dry_run: bool,
 ) -> Result<GitTransportUnbindReport, AppError> {
     let Some(record) = load_binding(paths, state)? else {
+        // A Vulcan-owned value without a binding is an orphan; remove it.
+        let orphaned = read_core_ssh_command(paths.vault_root())?
+            .as_deref()
+            .is_some_and(is_owned);
+        if orphaned && !dry_run {
+            run_git_config(
+                paths.vault_root(),
+                &["config", "--local", "--unset", "core.sshCommand"],
+            )?;
+        }
         return Ok(GitTransportUnbindReport {
             dry_run,
             was_bound: false,
-            git_config_removed: false,
+            git_config_removed: orphaned,
         });
     };
     let owned_value = record.git_config
@@ -1280,6 +1304,29 @@ mod tests {
         assert!(report.git_config_written);
         assert_eq!(owned_executable(&config_value(&fx).unwrap()), Some(moved));
         assert_eq!(status(&fx).git_config, GitConfigState::Managed);
+    }
+
+    #[test]
+    fn a_vulcan_value_without_a_binding_is_orphaned_and_unbind_removes_it() {
+        let fx = fixture("git@forge.example:o/r.git", true);
+        bind(&fx, GitConfigMode::Auto, false).unwrap();
+        // The binding is gone (the vault moved), the repository value stays.
+        fx.state
+            .remove_vault_local(&fx.paths, BINDING_FILE)
+            .unwrap();
+        let orphaned = status(&fx);
+        assert_eq!(orphaned.state, GitTransportState::NotBound);
+        assert_eq!(orphaned.git_config, GitConfigState::Orphaned);
+        assert!(orphaned.diagnostic.unwrap().contains("unbind"));
+
+        let preview = unbind_transport_with_store(&fx.paths, &fx.state, true).unwrap();
+        assert!(preview.git_config_removed);
+        assert!(config_value(&fx).is_some());
+        let report = unbind_transport_with_store(&fx.paths, &fx.state, false).unwrap();
+        assert!(!report.was_bound);
+        assert!(report.git_config_removed);
+        assert!(config_value(&fx).is_none());
+        assert_eq!(status(&fx).git_config, GitConfigState::NotManaged);
     }
 
     /// Runs the stored value the way Git does: through `sh` with the SSH

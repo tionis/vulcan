@@ -15916,6 +15916,28 @@
                 ]
               },
               {
+                "help": "The directory the vault moved to; its ID, identities, and transport binding move with it",
+                "id": "path",
+                "long": "path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PATH"
+                ]
+              },
+              {
+                "help": "Rename the wiki, keeping its tokens, remote keys, and grants",
+                "id": "new_id",
+                "long": "id",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NEW_ID"
+                ]
+              },
+              {
                 "help": "Validate and report without writing registry state",
                 "id": "dry_run",
                 "long": "dry-run",
@@ -15945,6 +15967,20 @@
                 "short": null,
                 "value_names": [
                   "ID"
+                ]
+              },
+              {
+                "help": "Also discard the wiki's generated identities, which orphans its API tokens and its MCP remote's keys and grants",
+                "id": "forget",
+                "long": "forget",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FORGET"
                 ]
               },
               {

@@ -730,6 +730,14 @@ fn doctor_transport(paths: &VaultPaths, remote: &GitRemote, report: &mut SyncDoc
         }
     };
     match status.state {
+        GitTransportState::NotBound if status.git_config == GitConfigState::Orphaned => {
+            doctor_check(
+                report,
+                "sync.transport",
+                SyncDoctorSeverity::Warning,
+                status.diagnostic.unwrap_or_default(),
+            );
+        }
         GitTransportState::NotBound => {
             // Not an error: the user may deliberately use ambient SSH. A hint is
             // given only where the device-key policy applies to this remote.

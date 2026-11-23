@@ -141,9 +141,11 @@ so declaring an entry again restores it with its tokens and grants. `vulcan daem
 removes it. Working trees and Git directories are never deleted. The remote of a vault that opts
 in to serve it (see below) is not drift while the opt-in stays, even when the vault is missing or
 its settings are broken, so pruning never makes the device forget the identity it accepted.
-`vault remove` and
-`mcp remote remove` remove the identity right away, so a later registration with the same id never
-revives old tokens or grants.
+`vault remove` and `mcp remote remove` keep the identity the same way, so removing and adding a
+vault again keeps its tokens and its remote's keys and grants. `vulcan vault remove <id> --forget`
+discards it at once, so a later registration with the same id starts afresh. A vault that moved
+keeps everything with `vulcan vault set <id> --path <new-dir>`, and `vulcan vault set <id> --id
+<new-id>` renames it.
 
 ## Files rendered by configuration management
 

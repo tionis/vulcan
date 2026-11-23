@@ -30,6 +30,72 @@ struct VaultMutationReport<'a> {
 }
 
 #[derive(Debug, Serialize)]
+struct RemovalReport<'a> {
+    action: &'static str,
+    dry_run: bool,
+    registry_path: &'a Path,
+    wiki: &'a WikiRegistration,
+    removal: &'a RemovalImpact,
+}
+
+/// What a removed registration carried on this device.
+#[derive(Debug, Serialize)]
+struct RemovalImpact {
+    /// Whether the generated identities were discarded (`--forget`).
+    identities_forgotten: bool,
+    /// API tokens issued for the registration.
+    api_tokens: usize,
+    /// The address the vault's own MCP remote listened on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    served_remote: Option<String>,
+}
+
+impl RemovalImpact {
+    fn of(wiki: &WikiRegistration, forget: bool) -> Self {
+        let api_tokens = vulcan_daemon::process::DaemonProcessContext::user_default()
+            .ok()
+            .and_then(|context| {
+                vulcan_daemon::api_tokens::ApiTokenStore::at(&context.state_root)
+                    .list()
+                    .ok()
+            })
+            .map_or(0, |tokens| {
+                tokens
+                    .iter()
+                    .filter(|token| token.registration_id == wiki.registration_id)
+                    .count()
+            });
+        Self {
+            identities_forgotten: forget,
+            api_tokens,
+            served_remote: wiki.mcp_remote.as_ref().map(|remote| remote.bind.clone()),
+        }
+    }
+
+    fn print(&self, id: &str) {
+        if let Some(bind) = &self.served_remote {
+            println!("It served its MCP remote on {bind}; that listener stops.");
+        }
+        if self.identities_forgotten {
+            if self.api_tokens > 0 {
+                println!(
+                    "Its identity is forgotten: {} API token(s) and its remote's keys and grants no longer work.",
+                    self.api_tokens
+                );
+            }
+            return;
+        }
+        println!(
+            "Its identity stays on this device: `vulcan vault add {id}` restores {} API token(s) and its remote's keys and grants. `vulcan vault remove {id} --forget` or `vulcan daemon apply --prune` discards it.",
+            self.api_tokens
+        );
+        if let Some(bind) = &self.served_remote {
+            println!("Re-adding does not serve the remote again; also run `vulcan vault set {id} --serve-remote {bind}`.");
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
 struct GitInitReport {
     path: std::path::PathBuf,
     initialized: bool,
@@ -208,10 +274,24 @@ pub(crate) fn handle_vault_command(cli: &Cli, command: &VaultCommand) -> Result<
         }
         VaultCommand::Set { .. } => handle_set(cli, &registry, command),
         VaultCommand::Token(command) => handle_token_command(cli, &registry, command),
-        VaultCommand::Remove { id, dry_run } => {
+        VaultCommand::Remove {
+            id,
+            forget,
+            dry_run,
+        } => {
             let wiki = registry
-                .remove(&parse_id(id)?, *dry_run)
+                .remove(&parse_id(id)?, *dry_run, *forget)
                 .map_err(CliError::operation)?;
+            let impact = RemovalImpact::of(&wiki, *forget);
+            if cli.output == OutputFormat::Json {
+                return print_json(&RemovalReport {
+                    action: "remove",
+                    dry_run: *dry_run,
+                    registry_path: registry.path(),
+                    wiki: &wiki,
+                    removal: &impact,
+                });
+            }
             print_mutation(
                 cli.output,
                 "remove",
@@ -219,7 +299,9 @@ pub(crate) fn handle_vault_command(cli: &Cli, command: &VaultCommand) -> Result<
                 &registry,
                 &wiki,
                 &SetupSteps::default(),
-            )
+            )?;
+            impact.print(&wiki.id.to_string());
+            Ok(())
         }
     }
 }
@@ -439,11 +521,16 @@ fn handle_set(cli: &Cli, registry: &WikiRegistry, command: &VaultCommand) -> Res
         no_serve_remote,
         sync_backend,
         no_sync,
+        path,
+        new_id,
         dry_run,
     } = command
     else {
         unreachable!("set handler requires a set command")
     };
+    if let Some(path) = path {
+        relocate(cli, registry, &parse_id(id)?, path, *dry_run)?;
+    }
     let mcp_remote = remote_opt_in(serve_remote.as_deref(), *no_serve_remote)?;
     let permissions = if *clear_permissions_profile {
         Some(None)
@@ -474,6 +561,12 @@ fn handle_set(cli: &Cli, registry: &WikiRegistry, command: &VaultCommand) -> Res
             *dry_run,
         )
         .map_err(CliError::operation)?;
+    let wiki = match new_id {
+        Some(new_id) => registry
+            .rename(&wiki.id, &parse_id(new_id)?, *dry_run)
+            .map_err(CliError::operation)?,
+        None => wiki,
+    };
     print_mutation(
         cli.output,
         "set",
@@ -482,6 +575,48 @@ fn handle_set(cli: &Cli, registry: &WikiRegistry, command: &VaultCommand) -> Res
         &wiki,
         &SetupSteps::default(),
     )
+}
+
+/// Points a registration at the directory its vault moved to and carries
+/// this device's state for it along, checking both before changing either.
+fn relocate(
+    cli: &Cli,
+    registry: &WikiRegistry,
+    id: &vulcan_daemon::registry::WikiId,
+    path: &Path,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    let state =
+        vulcan_app::sync_state::SyncStateStore::user_default().map_err(CliError::operation)?;
+    let (before, after) = registry
+        .relocate(id, path, true)
+        .map_err(CliError::operation)?;
+    let relocation = |dry_run| {
+        state
+            .relocate_vault(&before.path, before.work_tree(), &after.path, dry_run)
+            .map_err(CliError::operation)
+    };
+    relocation(true)?;
+    if dry_run {
+        return Ok(());
+    }
+    registry
+        .relocate(id, path, false)
+        .map_err(CliError::operation)?;
+    let moved = relocation(false)?;
+    if cli.output != OutputFormat::Json {
+        println!(
+            "Moved wiki `{id}` from {} to {}{}.",
+            before.path.display(),
+            after.path.display(),
+            if moved.moved_vault_local {
+                ", with its transport binding"
+            } else {
+                ""
+            }
+        );
+    }
+    Ok(())
 }
 
 fn handle_add(cli: &Cli, registry: &WikiRegistry, command: &VaultCommand) -> Result<(), CliError> {

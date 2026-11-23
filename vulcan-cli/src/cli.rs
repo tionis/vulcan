@@ -6407,13 +6407,33 @@ pub enum VaultCommand {
             help = "Stop syncing the wiki with Vulcan, for a directory another tool such as Syncthing replicates"
         )]
         no_sync: bool,
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "The directory the vault moved to; its ID, identities, and transport binding move with it"
+        )]
+        path: Option<PathBuf>,
+        #[arg(
+            long = "id",
+            value_name = "NEW_ID",
+            help = "Rename the wiki, keeping its tokens, remote keys, and grants"
+        )]
+        new_id: Option<String>,
         #[arg(long, help = "Validate and report without writing registry state")]
         dry_run: bool,
     },
-    #[command(about = "Unregister a wiki without deleting any files")]
+    #[command(
+        about = "Unregister a wiki without deleting any files",
+        long_about = "Unregister a wiki without deleting any files. Its generated identities stay on this device, so `vulcan vault add` with the same ID restores its API tokens and its MCP remote's signing keys and grants; `vulcan daemon plan` lists them as drift until `vulcan daemon apply --prune` or `--forget` discards them."
+    )]
     Remove {
         #[arg(help = "Registered wiki ID")]
         id: String,
+        #[arg(
+            long,
+            help = "Also discard the wiki's generated identities, which orphans its API tokens and its MCP remote's keys and grants"
+        )]
+        forget: bool,
         #[arg(long, help = "Validate and report without writing registry state")]
         dry_run: bool,
     },

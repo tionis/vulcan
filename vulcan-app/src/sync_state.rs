@@ -182,6 +182,50 @@ impl SyncStateStore {
             .join(&key.as_str()[..32])
     }
 
+    /// Carries this device's state for a vault that moved from `old_root`
+    /// (work tree `old_work_tree`) to `new_root`, which must already exist.
+    /// The vault-local directory (transport binding) moves with it. State
+    /// keyed by the repository records its absolute work tree, so a move is
+    /// refused while an interrupted sync transaction or an open conflict
+    /// waits there; resolved conflict history stays at the old key.
+    pub fn relocate_vault(
+        &self,
+        old_root: &Path,
+        old_work_tree: &Path,
+        new_root: &Path,
+        dry_run: bool,
+    ) -> Result<VaultStateRelocation, AppError> {
+        let repository = self.root.join(repository_state_key(old_work_tree));
+        if repository.join("transaction.json").exists() {
+            return Err(AppError::operation(format!(
+                "an interrupted sync transaction is recorded for {}; move the vault back and run `vulcan sync` before moving it",
+                old_work_tree.display()
+            )));
+        }
+        let open = repository.join("open-conflicts");
+        if fs::read_dir(&open).is_ok_and(|mut entries| entries.next().is_some()) {
+            return Err(AppError::operation(format!(
+                "open sync conflicts are recorded for {}; resolve them before moving the vault",
+                old_work_tree.display()
+            )));
+        }
+        let old = self.vault_local_dir(&VaultPaths::new(old_root));
+        let new = self.vault_local_dir(&VaultPaths::new(new_root));
+        let moved = old != new && old.is_dir();
+        if moved && new.exists() {
+            return Err(AppError::operation(format!(
+                "device state already exists for {}; remove it with `vulcan sync transport unbind` there first",
+                new_root.display()
+            )));
+        }
+        if moved && !dry_run {
+            fs::rename(&old, &new).map_err(AppError::operation)?;
+        }
+        Ok(VaultStateRelocation {
+            moved_vault_local: moved,
+        })
+    }
+
     /// Reads one bounded regular file from the vault-local directory.
     pub(crate) fn read_vault_local(
         &self,
@@ -424,6 +468,13 @@ pub fn sync_work_tree(vault_root: &Path) -> Result<PathBuf, AppError> {
     Ok(vulcan_core::vault_discovery::enclosing_git_work_tree(&vault).unwrap_or(vault))
 }
 
+/// What [`SyncStateStore::relocate_vault`] carried over.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct VaultStateRelocation {
+    /// The transport binding and other vault-local state moved.
+    pub moved_vault_local: bool,
+}
+
 #[must_use]
 pub fn repository_state_key(work_tree: &Path) -> String {
     let normalized = work_tree.to_string_lossy();
@@ -456,6 +507,48 @@ fn validate_repository_key(repository_key: &str) -> Result<(), AppError> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn relocation_carries_vault_local_state_and_refuses_pending_work() {
+        let temporary = tempdir().expect("temporary directory");
+        let old = temporary.path().join("old");
+        let new = temporary.path().join("new");
+        fs::create_dir(&old).expect("old vault");
+        let old = fs::canonicalize(&old).expect("canonical old");
+        let store = SyncStateStore::at(temporary.path().join("state/repositories"));
+        store
+            .write_vault_local(&VaultPaths::new(&old), "binding.json", b"{}")
+            .expect("binding");
+        fs::rename(&old, &new).expect("move vault");
+
+        let repository = store.root().join(repository_state_key(&old));
+        fs::create_dir_all(repository.join("open-conflicts")).expect("conflicts");
+        fs::write(repository.join("open-conflicts/one.json"), "{}").expect("conflict");
+        assert!(store.relocate_vault(&old, &old, &new, true).is_err());
+        fs::remove_file(repository.join("open-conflicts/one.json")).expect("resolve");
+        fs::write(repository.join("transaction.json"), "{}").expect("journal");
+        assert!(store.relocate_vault(&old, &old, &new, true).is_err());
+        fs::remove_file(repository.join("transaction.json")).expect("finish");
+
+        let preview = store
+            .relocate_vault(&old, &old, &new, true)
+            .expect("preview");
+        assert!(preview.moved_vault_local);
+        assert!(store
+            .read_vault_local(&VaultPaths::new(&new), "binding.json", 16)
+            .expect("read")
+            .is_none());
+        store
+            .relocate_vault(&old, &old, &new, false)
+            .expect("relocate");
+        assert_eq!(
+            store
+                .read_vault_local(&VaultPaths::new(&new), "binding.json", 16)
+                .expect("read")
+                .as_deref(),
+            Some(&b"{}"[..])
+        );
+    }
 
     #[test]
     fn journal_round_trips_atomically_outside_the_vault() {

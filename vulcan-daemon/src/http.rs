@@ -1280,7 +1280,7 @@ mod tests {
             .unwrap()
             .token
             .unwrap();
-        state.registry.remove(&notes_id, false).unwrap();
+        state.registry.remove(&notes_id, false, false).unwrap();
         let response = companion_router(state)
             .oneshot(token_request(&token, Method::GET, "/vaults"))
             .await

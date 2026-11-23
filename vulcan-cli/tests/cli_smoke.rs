@@ -9283,6 +9283,83 @@ fn vector_commands_need_network_for_the_provider_and_index_for_writes() {
 }
 
 #[test]
+fn a_vault_moves_renames_and_comes_back_with_its_identity() {
+    let temporary = TempDir::new().expect("temp dir");
+    let config_home = temporary.path().join("config");
+    fs::create_dir_all(&config_home).expect("config home");
+    let config_home = config_home.to_str().expect("utf-8").to_string();
+    let vulcan = |arguments: &[&str]| {
+        let mut command = cargo_vulcan_with_xdg_config(&config_home);
+        command
+            .env("XDG_DATA_HOME", temporary.path().join("data"))
+            .env("XDG_STATE_HOME", temporary.path().join("state"))
+            .args(arguments);
+        command
+    };
+    let show = |id: &str| {
+        parse_stdout_json(
+            &vulcan(&["--output", "json", "vault", "show", id])
+                .assert()
+                .success(),
+        )
+    };
+    let old = temporary.path().join("notes");
+    let new = temporary.path().join("moved");
+    fs::create_dir_all(&old).expect("vault");
+    vulcan(&["vault", "add", "notes"])
+        .arg(&old)
+        .arg("--no-sync")
+        .assert()
+        .success();
+    let registration = show("notes")["registration_id"].clone();
+    fs::rename(&old, &new).expect("move vault");
+
+    vulcan(&["vault", "set", "notes", "--path"])
+        .arg(&new)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Moved wiki `notes`"));
+    let moved = show("notes");
+    assert_eq!(
+        moved["path"],
+        fs::canonicalize(&new)
+            .expect("canonical")
+            .to_str()
+            .expect("utf-8")
+    );
+    assert_eq!(moved["registration_id"], registration);
+
+    vulcan(&["vault", "set", "notes", "--id", "journal"])
+        .assert()
+        .success();
+    assert_eq!(show("journal")["registration_id"], registration);
+    vulcan(&["vault", "show", "notes"]).assert().failure();
+
+    let removed = parse_stdout_json(
+        &vulcan(&["--output", "json", "vault", "remove", "journal"])
+            .assert()
+            .success(),
+    );
+    assert_eq!(removed["removal"]["identities_forgotten"], false);
+    vulcan(&["vault", "add", "journal"])
+        .arg(&new)
+        .arg("--no-sync")
+        .assert()
+        .success();
+    assert_eq!(show("journal")["registration_id"], registration);
+
+    vulcan(&["vault", "remove", "journal", "--forget"])
+        .assert()
+        .success();
+    vulcan(&["vault", "add", "journal"])
+        .arg(&new)
+        .arg("--no-sync")
+        .assert()
+        .success();
+    assert_ne!(show("journal")["registration_id"], registration);
+}
+
+#[test]
 fn vault_list_and_show_report_each_registrations_health_without_a_daemon() {
     let temporary = TempDir::new().expect("temp dir");
     let config_home = temporary.path().join("config");

@@ -121,12 +121,20 @@ instance_id = "01M6..."
 
 - Identity is keyed by the declared id. A declared vault or remote without an entry gets a fresh
   ULID on first reconcile.
-- Removing an entry with `vulcan vault remove` or `vulcan mcp remote remove` deletes its identity, so
-  registering the same id again never revives old API tokens or grants. Removing it from the file
-  by hand keeps the identity as drift, so declaring it again restores it until `--prune`.
+- Removing an entry, by hand or with `vulcan vault remove` or `vulcan mcp remote remove`, keeps its
+  identity as drift, so registering or declaring the same id again restores its API tokens, OAuth
+  keys, and grants until `vulcan daemon apply --prune` or `vulcan vault remove --forget` discards
+  it (2026-11-23; removal used to delete the identity, which turned a routine remove and re-add
+  into an outage of the vault's MCP remote).
 - Renaming an id in the file is a new identity (old one becomes drift). `vulcan vault set --id`
-  and `vulcan mcp remote set --id` rename both the declaration and the identity entry, which keeps
-  API tokens and grants.
+  renames the registration, every reference to it in `daemon.toml`, and its identity entries (its
+  own remote's included) in one locked write, which keeps API tokens, keys, and grants. Renaming
+  a named remote by command is not implemented; edit the file and re-approve its clients.
+- `vulcan vault set --path` points a registration at the directory its vault moved to. Device
+  state keyed by the path moves with it (the transport binding); the move is refused while an
+  interrupted sync transaction or an open conflict waits at the old path. A Vulcan-owned
+  `core.sshCommand` left without a binding reports as `orphaned` in `sync transport status` and
+  `sync doctor`; `sync transport bind` adopts it and `unbind` removes it.
 - The file is written atomically under the existing `daemon.toml.lock`.
 
 ### Device-local permission profiles
@@ -175,8 +183,8 @@ settings:
 - `vault set --serve-remote` writes the opt-in inline, and a subtable form is rewritten inline on
   the next CLI edit.
 
-A `[[mcp_remote]]` with the same ID in `daemon.toml` wins. `vault remove` drops the vault's own
-remote with the entry, and `mcp remote update|remove` refuse to edit it.
+A `[[mcp_remote]]` with the same ID in `daemon.toml` wins. `vault remove` stops serving the vault's own
+remote with the entry (its identity stays as drift), and `mcp remote update|remove` refuse to edit it.
 
 ### Per-vault device-local settings
 

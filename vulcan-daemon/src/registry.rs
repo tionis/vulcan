@@ -1121,8 +1121,15 @@ impl WikiRegistry {
         request: &AddWikiRequest,
         dry_run: bool,
     ) -> Result<WikiRegistration, RegistryError> {
-        self.mutate(dry_run, |config| {
+        self.mutate_with_identities(dry_run, |config, stored| {
             validate_groups(&request.groups)?;
+            // A removed vault's identity stays on this device until it is
+            // forgotten, so registering the same ID again restores its
+            // remote keys, grants, and tokens.
+            let registration_id = stored
+                .vaults
+                .get(request.id.as_str())
+                .map_or_else(Ulid::new, |identity| identity.registration_id);
             if request.sync_backend.as_deref() == Some("none")
                 && (request.git_dir.is_some() || request.platform_profile.is_some())
             {
@@ -1165,7 +1172,7 @@ impl WikiRegistry {
                 config: None,
                 source: request.source.clone(),
                 id: request.id.clone(),
-                registration_id: Ulid::new(),
+                registration_id,
                 path,
                 work_tree,
                 profile: request.profile.unwrap_or_default(),
@@ -1240,7 +1247,137 @@ impl WikiRegistry {
         })
     }
 
-    pub fn remove(&self, id: &WikiId, dry_run: bool) -> Result<WikiRegistration, RegistryError> {
+    /// Points a registration at the directory its vault moved to, keeping
+    /// its ID and identities. Returns the registration before and after.
+    pub fn relocate(
+        &self,
+        id: &WikiId,
+        path: &Path,
+        dry_run: bool,
+    ) -> Result<(WikiRegistration, WikiRegistration), RegistryError> {
+        self.mutate(dry_run, |config| {
+            let (path, work_tree) = resolve_registered_vault(path)?;
+            if let Some(existing) = config
+                .vaults
+                .iter()
+                .find(|wiki| wiki.path == path && &wiki.id != id)
+            {
+                return Err(RegistryError::DuplicatePath {
+                    id: existing.id.clone(),
+                    path,
+                });
+            }
+            let wiki = config
+                .vaults
+                .iter_mut()
+                .find(|wiki| &wiki.id == id)
+                .ok_or_else(|| RegistryError::UnknownWiki(id.clone()))?;
+            let before = wiki.clone();
+            wiki.path = path;
+            wiki.work_tree = work_tree;
+            Ok((before, wiki.clone()))
+        })
+    }
+
+    /// Renames a registration and every reference to it in this file (named
+    /// remotes, workers, bot users). Its identities move with it, so tokens,
+    /// remote keys, and grants keep working; a remote the vault describes
+    /// is then served under the new ID.
+    pub fn rename(
+        &self,
+        id: &WikiId,
+        new_id: &WikiId,
+        dry_run: bool,
+    ) -> Result<WikiRegistration, RegistryError> {
+        self.mutate_with_identities(dry_run, |config, identities| {
+            if let Some(vault) = identities.vaults.remove(id.as_str()) {
+                identities.vaults.insert(new_id.to_string(), vault);
+            }
+            if let Some(remote) = identities.mcp_remotes.remove(id.as_str()) {
+                identities.mcp_remotes.insert(new_id.to_string(), remote);
+            }
+            if config.vaults.iter().any(|wiki| &wiki.id == new_id) {
+                return Err(RegistryError::DuplicateId(new_id.clone()));
+            }
+            // The vault's own remote is derived from it on every load.
+            if crate::vault_remotes::is_vault_remote(config, id.as_str()) {
+                config
+                    .mcp_remotes
+                    .retain(|remote| remote.id.as_str() != id.as_str());
+            }
+            config
+                .vault_remotes
+                .retain(|status| status.id != id.as_str());
+            let rename = |wiki: &mut WikiId| {
+                if wiki == id {
+                    *wiki = new_id.clone();
+                }
+            };
+            let wiki = config
+                .vaults
+                .iter_mut()
+                .find(|wiki| &wiki.id == id)
+                .ok_or_else(|| RegistryError::UnknownWiki(id.clone()))?;
+            wiki.id = new_id.clone();
+            let renamed = wiki.clone();
+            for remote in &mut config.mcp_remotes {
+                for vault in &mut remote.vaults {
+                    rename(&mut vault.wiki_id);
+                }
+            }
+            for wikis in [
+                config
+                    .semantic_worker
+                    .as_mut()
+                    .map(|worker| &mut worker.wikis),
+                config
+                    .auto_commit_agent
+                    .as_mut()
+                    .map(|agent| &mut agent.wikis),
+                config
+                    .conflict_worker
+                    .as_mut()
+                    .map(|worker| &mut worker.wikis),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                wikis.iter_mut().for_each(rename);
+            }
+            if let Some(telegram) = config.bot.telegram.as_mut() {
+                for user in &mut telegram.users {
+                    user.vaults.iter_mut().for_each(rename);
+                    if let Some(default) = user.default_vault.as_mut() {
+                        rename(default);
+                    }
+                }
+            }
+            Ok(renamed)
+        })
+    }
+
+    /// Unregisters a vault. Its generated identities (registration and own
+    /// remote) stay on this device as drift, so adding the same ID again
+    /// restores its API tokens, remote keys, and grants; `forget` discards
+    /// them as `daemon apply --prune` would.
+    pub fn remove(
+        &self,
+        id: &WikiId,
+        dry_run: bool,
+        forget: bool,
+    ) -> Result<WikiRegistration, RegistryError> {
+        let removed = self.remove_registration(id, dry_run)?;
+        if forget && !dry_run {
+            self.forget_undeclared_identities(&[id.to_string()], &[id.to_string()])?;
+        }
+        Ok(removed)
+    }
+
+    fn remove_registration(
+        &self,
+        id: &WikiId,
+        dry_run: bool,
+    ) -> Result<WikiRegistration, RegistryError> {
         self.mutate(dry_run, |config| {
             // A vault's own remote goes with its [[vault]] entry.
             if let Some(remote) = config.mcp_remotes.iter().find(|remote| {
@@ -1728,18 +1865,29 @@ impl WikiRegistry {
         dry_run: bool,
         operation: impl FnOnce(&mut DaemonConfig) -> Result<T, RegistryError>,
     ) -> Result<T, RegistryError> {
+        self.mutate_with_identities(dry_run, |config, _| operation(config))
+    }
+
+    /// [`Self::mutate`] for operations that also change stored identities,
+    /// written under the same lock as the configuration.
+    fn mutate_with_identities<T>(
+        &self,
+        dry_run: bool,
+        operation: impl FnOnce(&mut DaemonConfig, &mut Identities) -> Result<T, RegistryError>,
+    ) -> Result<T, RegistryError> {
         let _lock = RegistryLock::acquire(&self.path)?;
         let before = self.load_snapshot_with(false, true)?;
         let mut config = before.clone();
-        let result = operation(&mut config)?;
+        let identities_path = config_file::identities_path(&self.path);
+        let (_, mut identities) = parse_both(
+            &self.path,
+            None,
+            read_optional(&identities_path)?.as_deref(),
+        )?;
+        let stored = identities.clone();
+        let result = operation(&mut config, &mut identities)?;
         validate_daemon_config(&config)?;
         if !dry_run {
-            let identities_path = config_file::identities_path(&self.path);
-            let (_, mut identities) = parse_both(
-                &self.path,
-                None,
-                read_optional(&identities_path)?.as_deref(),
-            )?;
             let existing = read_optional(&self.path)?;
             check_managed(
                 &self.path,
@@ -1747,7 +1895,7 @@ impl WikiRegistry {
                 &crate::vault_remotes::declared_only(&before),
                 &crate::vault_remotes::declared_only(&config),
             )?;
-            if record_identities(&mut identities, &before, &config) {
+            if record_identities(&mut identities, &config) || identities != stored {
                 write_identities(&identities_path, &identities)?;
             }
             save_config(
@@ -2566,26 +2714,11 @@ fn apply_identities(
 /// removed loses its identity, so registering the same ID again never
 /// revives old API tokens or grants; identities of entries removed from the
 /// file by hand stay until `vulcan daemon apply --prune`.
-fn record_identities(
-    identities: &mut Identities,
-    before: &DaemonConfig,
-    after: &DaemonConfig,
-) -> bool {
+/// Records the identities of every entry in `after`. Removed entries keep
+/// theirs as drift until `daemon apply --prune` or `vault remove --forget`
+/// discards them.
+fn record_identities(identities: &mut Identities, after: &DaemonConfig) -> bool {
     let original = identities.clone();
-    for wiki in &before.vaults {
-        if !after.vaults.iter().any(|candidate| candidate.id == wiki.id) {
-            identities.vaults.remove(wiki.id.as_str());
-        }
-    }
-    for remote in &before.mcp_remotes {
-        if !after
-            .mcp_remotes
-            .iter()
-            .any(|candidate| candidate.id == remote.id)
-        {
-            identities.mcp_remotes.remove(remote.id.as_str());
-        }
-    }
     for wiki in &after.vaults {
         identities.vaults.insert(
             wiki.id.to_string(),
@@ -2790,11 +2923,29 @@ mod tests {
         assert!(updated.sync_paused);
 
         let removed = registry
-            .remove(&personal.id, false)
+            .remove(&personal.id, false, false)
             .expect("remove personal");
         assert_eq!(removed.registration_id, personal.registration_id);
         assert_eq!(registry.load().expect("reload").vaults.len(), 1);
         assert!(first.is_dir(), "unregistering must preserve the worktree");
+
+        // The identity outlives the registration: adding the same ID again
+        // restores it, so its tokens and remote keys keep working.
+        let readded = registry
+            .add(&request("personal", &first), false)
+            .expect("add personal again");
+        assert_eq!(readded.registration_id, personal.registration_id);
+        assert_eq!(
+            registry.load().expect("reload").vaults[0].registration_id,
+            personal.registration_id
+        );
+        registry
+            .remove(&personal.id, false, true)
+            .expect("remove and forget personal");
+        let fresh = registry
+            .add(&request("personal", &first), false)
+            .expect("add personal after forgetting");
+        assert_ne!(fresh.registration_id, personal.registration_id);
     }
 
     #[test]
@@ -3226,7 +3377,7 @@ profile = "files_only"
             .is_empty());
         let added = registry.add_mcp_remote(remote, false).expect("add remote");
         assert!(matches!(
-            registry.remove(&registration.id, false),
+            registry.remove(&registration.id, false, false),
             Err(RegistryError::McpRemoteInUse { .. })
         ));
         let removal = registry
@@ -3243,7 +3394,7 @@ profile = "files_only"
             .remove_mcp_remote(&added.id, false)
             .expect("remove remote");
         registry
-            .remove(&registration.id, false)
+            .remove(&registration.id, false, false)
             .expect("remove wiki after remote");
         assert!(wiki.is_dir());
     }
@@ -3928,7 +4079,7 @@ profile = "files_only"
 
         // Unregistering a vault is never blocked by the bot.
         registry
-            .remove(&WikiId::parse("notes").unwrap(), false)
+            .remove(&WikiId::parse("notes").unwrap(), false, false)
             .unwrap();
         assert!(invalid(registry.remove_bot_user(8, false)));
         let config = registry.remove_bot_user(7, false).unwrap();
@@ -4031,7 +4182,7 @@ profile = "files_only"
     }
 
     #[test]
-    fn removal_by_command_drops_the_identity_but_a_hand_removal_keeps_it() {
+    fn removal_keeps_the_identity_until_it_is_forgotten() {
         let temporary = tempdir().unwrap();
         let wiki = temporary.path().join("personal");
         fs::create_dir(&wiki).unwrap();
@@ -4056,14 +4207,99 @@ profile = "files_only"
             first.registration_id
         );
 
-        // `vault remove` drops it, so registering again never revives old
-        // tokens or grants.
+        // `vault remove` keeps it the same way; only `--forget` drops it,
+        // so registering again never revives old tokens or grants.
         registry
-            .remove(&WikiId::parse("personal").unwrap(), false)
+            .remove(&WikiId::parse("personal").unwrap(), false, false)
+            .unwrap();
+        assert!(identities_text(&registry).contains(&first.registration_id.to_string()));
+        let again = registry.add(&request("personal", &wiki), false).unwrap();
+        assert_eq!(again.registration_id, first.registration_id);
+        registry
+            .remove(&WikiId::parse("personal").unwrap(), false, true)
             .unwrap();
         assert!(!identities_text(&registry).contains(&first.registration_id.to_string()));
         let second = registry.add(&request("personal", &wiki), false).unwrap();
         assert_ne!(second.registration_id, first.registration_id);
+    }
+
+    #[test]
+    fn a_moved_vault_keeps_its_id_and_identity() {
+        let temporary = tempdir().unwrap();
+        let old = temporary.path().join("personal");
+        let new = temporary.path().join("moved");
+        let other = temporary.path().join("other");
+        fs::create_dir(&old).unwrap();
+        fs::create_dir(&other).unwrap();
+        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+        let first = registry.add(&request("personal", &old), false).unwrap();
+        registry.add(&request("other", &other), false).unwrap();
+        fs::rename(&old, &new).unwrap();
+        let id = WikiId::parse("personal").unwrap();
+
+        assert!(matches!(
+            registry.relocate(&id, &other, false),
+            Err(RegistryError::DuplicatePath { .. })
+        ));
+        let (before, after) = registry.relocate(&id, &new, false).unwrap();
+
+        assert_eq!(
+            before.path,
+            fs::canonicalize(temporary.path()).unwrap().join("personal")
+        );
+        assert_eq!(after.path, fs::canonicalize(&new).unwrap());
+        let loaded = registry.show(&id).unwrap();
+        assert_eq!(loaded.registration.path, after.path);
+        assert_eq!(loaded.registration.registration_id, first.registration_id);
+    }
+
+    #[test]
+    fn a_renamed_vault_keeps_its_identities_and_references() {
+        let temporary = tempdir().unwrap();
+        let wiki = temporary.path().join("personal");
+        fs::create_dir(&wiki).unwrap();
+        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+        let first = registry.add(&request("personal", &wiki), false).unwrap();
+        registry
+            .add_mcp_remote(
+                remote_request(
+                    "personal-chatgpt",
+                    "personal",
+                    "0.0.0.0:8765",
+                    "https://mcp.example.test/personal",
+                ),
+                false,
+            )
+            .unwrap();
+        let old = WikiId::parse("personal").unwrap();
+        let new = WikiId::parse("journal").unwrap();
+
+        let dry = registry.rename(&old, &new, true).unwrap();
+        assert_eq!(dry.id, new);
+        assert!(registry.show(&old).is_ok(), "a dry run changes nothing");
+
+        let renamed = registry.rename(&old, &new, false).unwrap();
+
+        assert_eq!(renamed.registration_id, first.registration_id);
+        assert!(registry.show(&old).is_err());
+        assert_eq!(
+            registry.show(&new).unwrap().registration.registration_id,
+            first.registration_id
+        );
+        assert_eq!(
+            registry.list_mcp_remotes().unwrap()[0].vaults[0].wiki_id,
+            new
+        );
+        let identities = config_file::parse_identities(Some(&identities_text(&registry))).unwrap();
+        assert!(!identities.vaults.contains_key("personal"));
+        assert_eq!(
+            identities.vaults["journal"].registration_id,
+            first.registration_id
+        );
+        assert!(matches!(
+            registry.rename(&new, &new, false),
+            Err(RegistryError::DuplicateId(_))
+        ));
     }
 
     #[test]
@@ -4091,8 +4327,14 @@ profile = "files_only"
             registry.list_mcp_remotes().unwrap()[0].instance_id,
             remote.instance_id
         );
+        // Removing the remote keeps its identity (and so its keys and
+        // grants) as drift for `daemon apply --prune`.
         registry
             .remove_mcp_remote(&McpRemoteId::parse("personal-chatgpt").unwrap(), false)
+            .unwrap();
+        assert!(identities_text(&registry).contains(&remote.instance_id.to_string()));
+        registry
+            .forget_undeclared_identities(&[], &["personal-chatgpt".to_string()])
             .unwrap();
         assert!(!identities_text(&registry).contains(&remote.instance_id.to_string()));
     }
