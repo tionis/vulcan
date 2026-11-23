@@ -1206,6 +1206,58 @@ pub fn git_commit_input_schema() -> Value {
     )
 }
 
+pub fn changeset_begin_input_schema() -> Value {
+    schema_object(
+        vec![(
+            "title",
+            schema_string("Short description of the change, shown in `changeset_list`."),
+        )],
+        &[],
+    )
+}
+
+pub fn changeset_id_input_schema() -> Value {
+    schema_object(
+        vec![(
+            "id",
+            schema_string("Changeset id; defaults to the changeset attached to this session."),
+        )],
+        &[],
+    )
+}
+
+pub fn changeset_switch_input_schema() -> Value {
+    schema_object(
+        vec![(
+            "id",
+            schema_string("Changeset to work in; omit to return to the vault itself."),
+        )],
+        &[],
+    )
+}
+
+pub fn changeset_list_input_schema() -> Value {
+    schema_object(Vec::new(), &[])
+}
+
+pub fn changeset_land_input_schema() -> Value {
+    schema_object(
+        vec![
+            (
+                "id",
+                schema_string("Changeset id; defaults to the changeset attached to this session."),
+            ),
+            (
+                "message",
+                schema_string(
+                    "Commit message for changes still uncommitted in the changeset; without one, uncommitted changes refuse the landing.",
+                ),
+            ),
+        ],
+        &[],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

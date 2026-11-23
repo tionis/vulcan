@@ -8,6 +8,11 @@ tools:
   - git_log
   - git_blame
   - git_commit
+  - changeset_begin
+  - changeset_switch
+  - changeset_list
+  - changeset_land
+  - changeset_abandon
 metadata:
   vulcan:
     managed: true
@@ -29,6 +34,17 @@ A vault can be one directory of a larger Git repository, such as the `docs/` dir
 ## Recommended Flow
 
 - Over MCP, enable the `git` tool pack: `git_status`, `git_diff`, `git_log`, `git_blame`, and `git_commit` mirror the CLI commands below. Commit your own work in a vault whose sync does not capture the worktree (`sync.worktree = "none"`), since nothing else will. `git_commit` commits only the files your session's writes changed (including every file a `note_move` rewrote), so other writers' edits stay out of your commit; its result lists anything of yours still uncommitted as `session_uncommitted`. Use `scope: "all"` only after `git_status` shows every change is meant to go in, or `paths` to name files changed outside MCP writes. The commit records your client in `Vulcan-MCP-*` trailers.
+
+- For a larger or multi-step change that should not be half-visible (a restructure, many linked
+  edits), start a changeset with `changeset_begin`. Your session's tools then work in a separate
+  worktree outside the vault, on branch `vulcan/changeset/<id>`, which other writers, sync, and
+  auto-commit do not see; write results report `uncommitted` there. Commit steps with
+  `git_commit` as usual, then `changeset_land` (with `message` to commit leftovers) fast-forwards
+  the vault's branch, rebasing first if it moved. A rebase conflict keeps the changeset unchanged
+  and names the paths: `changeset_switch {}` back to the vault, look, and either fix the vault
+  side or `changeset_abandon` and redo the change. `changeset_list` shows open changesets;
+  `changeset_switch {"id": …}` resumes one. Changesets are not trusted vaults, so custom skill
+  tools are not callable inside one.
 
 - Start with `git status` to see whether the change is isolated or mixed with unrelated edits.
 - Review `git diff` or `changes` before writing a commit message.

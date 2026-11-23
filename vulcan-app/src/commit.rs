@@ -160,7 +160,18 @@ pub fn commit_outcome(paths: &VaultPaths, before: Option<&str>, no_commit: bool)
     if no_commit {
         return uncommitted("`no_commit` was set; the change is not committed".to_string());
     }
-    match AutoCommitPolicy::for_mutation(paths, false) {
+    let policy = AutoCommitPolicy::for_mutation(paths, false);
+    if !matches!(policy, AutoCommitPolicy::Enabled(_))
+        && crate::changesets::is_changeset_worktree(paths.vault_root())
+    {
+        // Nothing watches a changeset worktree, so batched auto-commit and
+        // sync never take its edits; landing does.
+        return uncommitted(
+            "this is a changeset; `git_commit` or `changeset_land` with a message commits it"
+                .to_string(),
+        );
+    }
+    match policy {
         AutoCommitPolicy::Batched => CommitOutcome {
             status: CommitStatus::Batched,
             sha: None,

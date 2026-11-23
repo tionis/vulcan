@@ -62,6 +62,10 @@ Because sync moves only commits, capture belongs to whoever commits:
   files that session's writes changed, so one agent never commits another's half-finished edits,
   and names the client in `Vulcan-MCP-*` trailers. Auto-commit picks up whatever no agent
   committed.
+- An MCP session may stage work in a changeset: a `vulcan/changeset/<id>` branch checked out in a
+  worktree under the user state directory. Sync never sees the branch or the worktree; landing
+  fast-forwards the vault's branch under the vault write lock (rebasing first if it moved), and
+  sync then publishes the result like any other commit.
 
 ## Triggers
 

@@ -24,8 +24,8 @@ use crate::mcp_protocol::{
 use crate::mcp_read_tools::MCP_QUERY_HARD_MAX;
 use crate::tools::CustomToolRegistryOptions;
 use crate::{
-    browse, mcp_config, mcp_custom, mcp_files, mcp_git, mcp_graph, mcp_notes, mcp_read_tools,
-    mcp_scan, mcp_sync, mcp_tasks, mcp_web,
+    browse, mcp_changesets, mcp_config, mcp_custom, mcp_files, mcp_git, mcp_graph, mcp_notes,
+    mcp_read_tools, mcp_scan, mcp_sync, mcp_tasks, mcp_web,
 };
 
 /// Session-local state and host-supplied registry policy needed by one tool call.
@@ -43,6 +43,8 @@ pub struct McpToolExecution<'a> {
     /// Paths this session wrote and has not committed; `git_commit` takes
     /// these by default.
     pub written_paths: &'a mut BTreeSet<String>,
+    /// The vault and the changeset this session works in.
+    pub changeset: &'a mut crate::mcp_changesets::McpChangesetBinding,
 }
 
 impl McpToolExecution<'_> {
@@ -353,6 +355,36 @@ impl McpToolExecution<'_> {
                 )?;
                 self.value(tool.name, report)
             }
+            McpToolId::ChangesetBegin => {
+                let args: mcp_protocol::McpChangesetBeginArgs = parse(arguments)?;
+                let report = mcp_changesets::changeset_begin(self.changeset, self.guard, &args)?;
+                self.value(tool.name, report)
+            }
+            McpToolId::ChangesetSwitch => {
+                let args: mcp_protocol::McpChangesetIdArgs = parse(arguments)?;
+                let report = mcp_changesets::changeset_switch(self.changeset, self.guard, &args)?;
+                self.value(tool.name, report)
+            }
+            McpToolId::ChangesetList => {
+                let report = mcp_changesets::changeset_list(self.changeset, self.guard)?;
+                self.value(tool.name, report)
+            }
+            McpToolId::ChangesetLand => {
+                let args: mcp_protocol::McpChangesetLandArgs = parse(arguments)?;
+                let report = mcp_changesets::changeset_land(
+                    self.changeset,
+                    self.guard,
+                    self.profile_name,
+                    self.client,
+                    &args,
+                )?;
+                self.value(tool.name, report)
+            }
+            McpToolId::ChangesetAbandon => {
+                let args: mcp_protocol::McpChangesetIdArgs = parse(arguments)?;
+                let report = mcp_changesets::changeset_abandon(self.changeset, self.guard, &args)?;
+                self.value(tool.name, report)
+            }
             McpToolId::WebSearch => {
                 let args: McpWebSearchArgs = parse(arguments)?;
                 self.value(
@@ -496,6 +528,7 @@ mod tests {
             custom_registry: &registry,
             client: &crate::mcp_session::McpClientAttribution::default(),
             written_paths: &mut BTreeSet::new(),
+            changeset: &mut crate::mcp_changesets::McpChangesetBinding::new(&paths),
         };
         let capabilities = executor.call_tool("capabilities", &Map::new()).unwrap();
         assert!(capabilities["structuredContent"]["activeTools"]
@@ -552,6 +585,7 @@ mod tests {
             custom_registry: &registry,
             client: &crate::mcp_session::McpClientAttribution::default(),
             written_paths: &mut BTreeSet::new(),
+            changeset: &mut crate::mcp_changesets::McpChangesetBinding::new(&paths),
         };
         let arguments = Map::from_iter([
             ("note".to_string(), json!("Home.md")),
@@ -586,6 +620,7 @@ mod tests {
             custom_registry: &registry,
             client: &crate::mcp_session::McpClientAttribution::default(),
             written_paths: &mut BTreeSet::new(),
+            changeset: &mut crate::mcp_changesets::McpChangesetBinding::new(&paths),
         };
         let arguments = arguments.as_object().cloned().unwrap_or_default();
         executor

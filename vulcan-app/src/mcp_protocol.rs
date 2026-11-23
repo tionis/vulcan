@@ -839,6 +839,32 @@ pub struct McpGitBlameArgs {
     pub path: String,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpChangesetBeginArgs {
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+/// A changeset id; omitted, the attached changeset (or, for
+/// `changeset_switch`, the vault itself).
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpChangesetIdArgs {
+    #[serde(default)]
+    pub id: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpChangesetLandArgs {
+    #[serde(default)]
+    pub id: Option<String>,
+    /// Commit message for uncommitted changeset changes before landing.
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpGitCommitArgs {
