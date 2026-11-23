@@ -865,7 +865,15 @@ fn stageable_path(vault_root: &Path, path: &str) -> Result<bool, GitError> {
 
 fn staged_paths(vault_root: &Path) -> Result<Vec<String>, GitError> {
     let stdout = run_git_capture(vault_root, |command| {
-        command.args(["diff", "--cached", "--name-only", "--relative", "--", "."]);
+        command.args([
+            "diff",
+            "--cached",
+            "--name-only",
+            "--no-renames",
+            "--relative",
+            "--",
+            ".",
+        ]);
     })?;
 
     Ok(stdout
@@ -1875,6 +1883,32 @@ mod tests {
                 .changed_paths(),
             vec![".vulcan/cache.db".to_string()]
         );
+    }
+
+    #[test]
+    fn git_commit_includes_both_sides_of_a_moved_file() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        init_git_repo(temp_dir.path());
+        fs::create_dir_all(temp_dir.path().join("Inbox")).expect("inbox");
+        fs::write(temp_dir.path().join("Inbox/Idea.md"), "idea\n").expect("note");
+        commit_all(temp_dir.path(), "Initial");
+        fs::create_dir_all(temp_dir.path().join("Projects")).expect("projects");
+        fs::rename(
+            temp_dir.path().join("Inbox/Idea.md"),
+            temp_dir.path().join("Projects/Idea.md"),
+        )
+        .expect("move");
+
+        let report = git_commit(temp_dir.path(), "Move idea").expect("git commit should work");
+
+        assert_eq!(
+            report.files,
+            vec!["Inbox/Idea.md".to_string(), "Projects/Idea.md".to_string()]
+        );
+        assert!(git_status(temp_dir.path())
+            .expect("status should succeed")
+            .changed_paths()
+            .is_empty());
     }
 
     #[test]
