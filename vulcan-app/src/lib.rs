@@ -41,6 +41,7 @@ pub mod artifact;
 pub mod background_policy;
 pub mod bases;
 pub mod batch_commit;
+pub mod branch_replay;
 pub mod browse;
 pub mod chat;
 pub mod checkbox;

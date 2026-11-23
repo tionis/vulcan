@@ -8928,6 +8928,139 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         );
     }
 
+    struct FakeResolver {
+        answer: Result<String, String>,
+        seen: Vec<(String, Vec<crate::BranchReplayConflict>)>,
+    }
+
+    impl crate::BranchReplayResolver for FakeResolver {
+        fn resolve(
+            &mut self,
+            subject: &str,
+            conflicts: &[crate::BranchReplayConflict],
+        ) -> Result<Vec<(String, String)>, String> {
+            self.seen.push((subject.to_string(), conflicts.to_vec()));
+            let answer = self.answer.clone()?;
+            Ok(conflicts
+                .iter()
+                .map(|conflict| (conflict.path.clone(), answer.clone()))
+                .collect())
+        }
+    }
+
+    /// A local commit and an upstream commit that both rewrite `Home.md`,
+    /// plus a non-conflicting local commit on top.
+    fn conflicting_branch() -> (TempDir, PathBuf, PathBuf, String, GitOid) {
+        let (temporary, remote, writer) = setup_tracked_branch();
+        fs::write(writer.join("Home.md"), "local\n").expect("local note");
+        commit_all(&writer, "local edit");
+        fs::write(writer.join("Other.md"), "other\n").expect("other note");
+        commit_all(&writer, "other note");
+        let local = git_stdout(&writer, &["rev-parse", "HEAD"]);
+        advance_remote_branch(&temporary, &remote, "remote\n");
+        run_git(&writer, &["fetch", "--quiet", "origin"]);
+        let upstream =
+            GitOid::parse(git_stdout(&writer, &["rev-parse", "origin/main"])).expect("upstream");
+        (temporary, remote, writer, local, upstream)
+    }
+
+    fn replay(
+        engine: &GitCliEngine,
+        writer: &Path,
+        upstream: &GitOid,
+        resolver: &mut FakeResolver,
+    ) -> crate::BranchReplayOutcome {
+        let repository = engine.discover_repository(writer).expect("repository");
+        let branch = GitRefName::parse("refs/heads/main").expect("branch");
+        engine
+            .replay_branch(&repository, &branch, upstream, resolver)
+            .expect("replay")
+    }
+
+    #[test]
+    fn a_resolver_settles_a_conflicted_replay_and_the_branch_moves_cleanly() {
+        let (_temporary, _remote, writer, local, upstream) = conflicting_branch();
+        let engine = GitCliEngine::default();
+        let mut resolver = FakeResolver {
+            answer: Ok("local and remote\n".to_string()),
+            seen: Vec::new(),
+        };
+
+        let outcome = replay(&engine, &writer, &upstream, &mut resolver);
+
+        let crate::BranchReplayOutcome::Replayed { from, to, resolved } = outcome else {
+            panic!("declined: {outcome:?}");
+        };
+        assert_eq!(from.as_str(), local);
+        assert_eq!(resolved, vec!["Home.md".to_string()]);
+        assert_eq!(git_stdout(&writer, &["rev-parse", "HEAD"]), to.as_str());
+        assert_eq!(
+            git_stdout(&writer, &["rev-list", "--count", "origin/main..HEAD"]),
+            "2"
+        );
+        assert_eq!(
+            git_stdout(&writer, &["merge-base", "HEAD", "origin/main"]),
+            upstream.as_str()
+        );
+        assert_eq!(
+            fs::read_to_string(writer.join("Home.md")).expect("resolved"),
+            "local and remote\n"
+        );
+        assert!(writer.join("Other.md").exists());
+        assert_eq!(git_stdout(&writer, &["status", "--porcelain"]), "");
+        let (subject, conflicts) = &resolver.seen[0];
+        assert_eq!(subject, "local edit");
+        assert_eq!(conflicts[0].local.as_deref(), Some("local\n"));
+        assert_eq!(conflicts[0].upstream.as_deref(), Some("remote\n"));
+        assert_eq!(conflicts[0].base.as_deref(), Some("initial\n"));
+        let worktrees = git_stdout(&writer, &["worktree", "list", "--porcelain"]);
+        assert_eq!(worktrees.matches("worktree ").count(), 1, "{worktrees}");
+    }
+
+    #[test]
+    fn a_failed_or_unsafe_resolution_leaves_the_branch_alone() {
+        let engine = GitCliEngine::default();
+        for case in ["error", "markers", "dirty", "shared"] {
+            let (_temporary, _remote, writer, local, upstream) = conflicting_branch();
+            let answer = match case {
+                "error" => Err("model unavailable".to_string()),
+                "markers" => Ok("<<<<<<< ours\nlocal\n=======\nremote\n>>>>>>> theirs\n".into()),
+                _ => Ok("merged\n".to_string()),
+            };
+            if case == "dirty" {
+                fs::write(writer.join("Home.md"), "uncommitted\n").expect("dirty edit");
+            }
+            if case == "shared" {
+                run_git(&writer, &["branch", "feature"]);
+            }
+            let mut resolver = FakeResolver {
+                answer,
+                seen: Vec::new(),
+            };
+
+            let outcome = replay(&engine, &writer, &upstream, &mut resolver);
+
+            assert!(
+                matches!(outcome, crate::BranchReplayOutcome::Declined { .. }),
+                "{case}: {outcome:?}"
+            );
+            assert_eq!(git_stdout(&writer, &["rev-parse", "HEAD"]), local, "{case}");
+            let expected = if case == "dirty" {
+                "uncommitted\n"
+            } else {
+                "local\n"
+            };
+            assert_eq!(
+                fs::read_to_string(writer.join("Home.md")).expect("note"),
+                expected,
+                "{case}"
+            );
+            assert_eq!(resolver.seen.is_empty(), case == "shared", "{case}");
+            let worktrees = git_stdout(&writer, &["worktree", "list", "--porcelain"]);
+            assert_eq!(worktrees.matches("worktree ").count(), 1, "{case}");
+        }
+    }
+
     #[test]
     fn committed_history_only_aborts_a_conflicted_rebase_and_pauses() {
         let (temporary, remote, writer) = setup_tracked_branch();

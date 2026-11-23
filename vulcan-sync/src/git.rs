@@ -810,6 +810,23 @@ pub trait GitEngine: Send + Sync {
         upstream: &GitOid,
     ) -> Result<Option<RebaseHazard>, GitEngineError>;
 
+    /// Replays the checked-out branch's own commits onto `upstream` in a
+    /// temporary detached worktree, asking `resolver` for the content of each
+    /// conflicted file, and only when every commit replays moves the branch
+    /// from its current tip to the result: a two-way checkout that refuses to
+    /// overwrite uncommitted work, then a compare-and-swap. The checkout is
+    /// never left mid-operation. Declines (changing nothing) when a rebase
+    /// hazard exists, a conflict involves a binary file, symlink, submodule,
+    /// or deletion, the resolver fails or leaves conflict markers, or the
+    /// branch or worktree changed meanwhile.
+    fn replay_branch(
+        &self,
+        repository: &GitRepository,
+        branch: &GitRefName,
+        upstream: &GitOid,
+        resolver: &mut dyn BranchReplayResolver,
+    ) -> Result<BranchReplayOutcome, GitEngineError>;
+
     /// Rebases the checked-out branch onto a revision, leaving conflicts in
     /// place for the caller to detect. Requires a worktree.
     fn rebase_branch(
@@ -1371,6 +1388,43 @@ pub struct GitBranchUpstream {
     pub merge_ref: GitRefName,
     /// The local remote-tracking ref (e.g. `refs/remotes/origin/main`).
     pub tracking_ref: GitRefName,
+}
+
+/// One conflicted text file met while replaying a local commit: its
+/// content in the commit's parent (`base`), on the branch being replayed
+/// onto (`upstream`), and in the local commit (`local`). `None` is absent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchReplayConflict {
+    pub path: String,
+    pub base: Option<String>,
+    pub upstream: Option<String>,
+    pub local: Option<String>,
+}
+
+/// Supplies the resolved content of conflicted files during a replay.
+pub trait BranchReplayResolver {
+    /// Returns the full resolved content of every path in `conflicts`.
+    /// `subject` is the local commit's message subject.
+    fn resolve(
+        &mut self,
+        subject: &str,
+        conflicts: &[BranchReplayConflict],
+    ) -> Result<Vec<(String, String)>, String>;
+}
+
+/// What a branch replay did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum BranchReplayOutcome {
+    /// The branch moved from `from` to `to`; `resolved` lists the files the
+    /// resolver supplied.
+    Replayed {
+        from: GitOid,
+        to: GitOid,
+        resolved: Vec<String>,
+    },
+    /// Nothing changed, for the stated reason.
+    Declined { reason: String },
 }
 
 /// Why a guarded rebase declined to run.
@@ -5565,6 +5619,92 @@ impl GitEngine for GitCliEngine {
         Ok(Some(RebaseHazard::SharedWith("another ref".to_string())))
     }
 
+    fn replay_branch(
+        &self,
+        repository: &GitRepository,
+        branch: &GitRefName,
+        upstream: &GitOid,
+        resolver: &mut dyn BranchReplayResolver,
+    ) -> Result<BranchReplayOutcome, GitEngineError> {
+        const OPERATION: &str = "replay the branch";
+        let decline = |reason: String| Ok(BranchReplayOutcome::Declined { reason });
+        repository.require_work_tree()?;
+        if self.head_reference(repository)?.as_ref() != Some(branch) {
+            return decline("the branch is no longer checked out".to_string());
+        }
+        let Some(expected) = self.read_ref(repository, branch)? else {
+            return decline("the branch has no commits".to_string());
+        };
+        if let Some(hazard) = self.rebase_hazard(repository, branch, upstream)? {
+            return decline(match hazard {
+                RebaseHazard::SharedWith(name) => format!("local commits are also on {name}"),
+                RebaseHazard::MergeCommits => "local commits include merges".to_string(),
+            });
+        }
+        let mut list = self.repository_command(repository);
+        list.args(["rev-list", "--reverse"]).arg(format!(
+            "{}..{}",
+            upstream.as_str(),
+            expected.as_str()
+        ));
+        let output = self.execute(list)?;
+        if !output.status.success() {
+            return Err(command_failed(OPERATION, &output));
+        }
+        let commits = decode_stdout(OPERATION, output.stdout)?
+            .lines()
+            .map(GitOid::parse)
+            .collect::<Result<Vec<_>, _>>()?;
+        if commits.is_empty() {
+            return decline("no local commits to replay".to_string());
+        }
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos());
+        let directory = repository
+            .common_dir
+            .join("vulcan-sync")
+            .join(format!("replay-{}-{nanos}", std::process::id()));
+        if let Some(parent) = directory.parent() {
+            std::fs::create_dir_all(parent).map_err(GitEngineError::Io)?;
+        }
+        let mut add = self.repository_command(repository);
+        add.args(["worktree", "add", "--quiet", "--detach"])
+            .arg(git_cli_path(&directory))
+            .arg(upstream.as_str());
+        let output = self.execute(add)?;
+        if !output.status.success() {
+            return Err(command_failed(OPERATION, &output));
+        }
+        let result = self.replay_in_worktree(&directory, &commits, resolver);
+        let mut remove = self.repository_command(repository);
+        remove
+            .args(["worktree", "remove", "--force"])
+            .arg(git_cli_path(&directory));
+        let _ = self.execute(remove);
+        let _ = std::fs::remove_dir_all(&directory);
+        let (to, resolved_paths) = match result? {
+            Ok(replayed) => replayed,
+            Err(reason) => return decline(reason),
+        };
+        Ok(
+            match self.move_checked_out_branch(repository, branch, &expected, &to)? {
+                BranchAdvanceOutcome::Advanced => BranchReplayOutcome::Replayed {
+                    from: expected,
+                    to,
+                    resolved: resolved_paths,
+                },
+                BranchAdvanceOutcome::BlockedStaged => BranchReplayOutcome::Declined {
+                    reason: "uncommitted or staged work would be overwritten".to_string(),
+                },
+                BranchAdvanceOutcome::Stale => BranchReplayOutcome::Declined {
+                    reason: "the branch moved during the replay".to_string(),
+                },
+            },
+        )
+    }
+
     fn rebase_branch(
         &self,
         repository: &GitRepository,
@@ -6102,6 +6242,208 @@ fn verify_materialized_tree(expected: &GitOid, actual: &GitOid) -> Result<(), Gi
     // same retryable condition as pre-apply drift instead of misclassifying
     // ordinary editor activity as invalid Git output.
     Err(GitEngineError::WorktreeChanged)
+}
+
+impl GitCliEngine {
+    fn worktree_command(&self, directory: &Path) -> Command {
+        let mut command = self.command();
+        command.current_dir(directory);
+        command
+    }
+
+    fn worktree_git(&self, directory: &Path, arguments: &[&str]) -> Result<Output, GitEngineError> {
+        let mut command = self.worktree_command(directory);
+        command.args(arguments);
+        self.execute(command)
+    }
+
+    /// Cherry-picks `commits` in order inside the replay worktree. The outer
+    /// `Err` is an engine failure; the inner one is a reason to decline.
+    #[allow(clippy::too_many_lines)]
+    fn replay_in_worktree(
+        &self,
+        directory: &Path,
+        commits: &[GitOid],
+        resolver: &mut dyn BranchReplayResolver,
+    ) -> Result<Result<(GitOid, Vec<String>), String>, GitEngineError> {
+        const OPERATION: &str = "replay a commit";
+        let mut resolved_paths = BTreeSet::new();
+        for commit in commits {
+            let short = &commit.as_str()[..commit.as_str().len().min(12)];
+            let mut pick = self.worktree_command(directory);
+            pick.env("GIT_EDITOR", "true").args([
+                "cherry-pick",
+                "--allow-empty",
+                "--keep-redundant-commits",
+                commit.as_str(),
+            ]);
+            let picked = self.execute(pick)?;
+            if picked.status.success() {
+                continue;
+            }
+            let unmerged = self.worktree_git(directory, &["ls-files", "-u", "-z"])?;
+            if !unmerged.status.success() {
+                return Err(command_failed(OPERATION, &unmerged));
+            }
+            // `<mode> <oid> <stage>\t<path>` records, NUL-separated.
+            let mut stages: BTreeMap<String, [Option<(String, String)>; 3]> = BTreeMap::new();
+            for record in unmerged.stdout.split(|byte| *byte == 0) {
+                let record = String::from_utf8_lossy(record);
+                let Some((meta, path)) = record.split_once('\t') else {
+                    continue;
+                };
+                let fields = meta.split(' ').collect::<Vec<_>>();
+                let [mode, oid, stage] = fields.as_slice() else {
+                    continue;
+                };
+                let Some(index) = stage
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|stage| stage.checked_sub(1))
+                else {
+                    continue;
+                };
+                if let Some(slot) = stages.entry(path.to_string()).or_default().get_mut(index) {
+                    *slot = Some(((*mode).to_string(), (*oid).to_string()));
+                }
+            }
+            if stages.is_empty() {
+                return Ok(Err(format!(
+                    "replaying {short} failed without a file conflict: {}",
+                    bounded_lossy(&picked.stderr).trim()
+                )));
+            }
+            let mut conflicts = Vec::new();
+            for (path, [base, ours, theirs]) in &stages {
+                let (Some(ours), Some(theirs)) = (ours, theirs) else {
+                    return Ok(Err(format!(
+                        "replaying {short} deletes `{path}` on one side"
+                    )));
+                };
+                let mut sides = Vec::new();
+                for side in [base.as_ref(), Some(ours), Some(theirs)] {
+                    let Some((mode, oid)) = side else {
+                        sides.push(None);
+                        continue;
+                    };
+                    if mode != "100644" && mode != "100755" {
+                        return Ok(Err(format!("`{path}` is not a regular file")));
+                    }
+                    let blob = self.worktree_git(directory, &["cat-file", "blob", oid])?;
+                    if !blob.status.success() {
+                        return Err(command_failed(OPERATION, &blob));
+                    }
+                    let Ok(text) = String::from_utf8(blob.stdout) else {
+                        return Ok(Err(format!("`{path}` is not a text file")));
+                    };
+                    sides.push(Some(text));
+                }
+                let mut sides = sides.into_iter();
+                conflicts.push(BranchReplayConflict {
+                    path: path.clone(),
+                    base: sides.next().flatten(),
+                    upstream: sides.next().flatten(),
+                    local: sides.next().flatten(),
+                });
+            }
+            let subject =
+                self.worktree_git(directory, &["log", "-1", "--format=%s", commit.as_str()])?;
+            let subject = bounded_lossy(&subject.stdout).trim().to_string();
+            let resolutions = match resolver.resolve(&subject, &conflicts) {
+                Ok(resolutions) => resolutions,
+                Err(error) => return Ok(Err(format!("the resolver failed: {error}"))),
+            };
+            let expected = stages.keys().cloned().collect::<BTreeSet<_>>();
+            let supplied = resolutions
+                .iter()
+                .map(|(path, _)| path.clone())
+                .collect::<BTreeSet<_>>();
+            if supplied != expected || supplied.len() != resolutions.len() {
+                return Ok(Err(
+                    "the resolver did not return exactly the conflicted files".to_string(),
+                ));
+            }
+            for (path, content) in &resolutions {
+                if content
+                    .lines()
+                    .any(|line| line.starts_with("<<<<<<<") || line.starts_with(">>>>>>>"))
+                {
+                    return Ok(Err(format!(
+                        "the resolution of `{path}` still has conflict markers"
+                    )));
+                }
+                std::fs::write(directory.join(path), content).map_err(GitEngineError::Io)?;
+            }
+            let mut add = self.worktree_command(directory);
+            add.args(["add", "--"]).args(supplied.iter());
+            let added = self.execute(add)?;
+            if !added.status.success() {
+                return Err(command_failed(OPERATION, &added));
+            }
+            let unchanged = self
+                .worktree_git(directory, &["diff", "--cached", "--quiet"])?
+                .status
+                .success();
+            let mut finish = self.worktree_command(directory);
+            finish.env("GIT_EDITOR", "true").arg("cherry-pick");
+            finish.arg(if unchanged { "--skip" } else { "--continue" });
+            let finished = self.execute(finish)?;
+            if !finished.status.success() {
+                return Ok(Err(format!(
+                    "replaying {short} could not be completed: {}",
+                    bounded_lossy(&finished.stderr).trim()
+                )));
+            }
+            resolved_paths.extend(supplied);
+        }
+        let head = self.worktree_git(directory, &["rev-parse", "HEAD"])?;
+        if !head.status.success() {
+            return Err(command_failed(OPERATION, &head));
+        }
+        let head = GitOid::parse(decode_stdout(OPERATION, head.stdout)?.trim())?;
+        Ok(Ok((head, resolved_paths.into_iter().collect())))
+    }
+
+    /// Moves the checked-out branch from `expected` to an unrelated `target`
+    /// with Git writing the worktree: a two-way checkout that refuses to
+    /// overwrite uncommitted bytes, then a compare-and-swap of the branch.
+    fn move_checked_out_branch(
+        &self,
+        repository: &GitRepository,
+        branch: &GitRefName,
+        expected: &GitOid,
+        target: &GitOid,
+    ) -> Result<BranchAdvanceOutcome, GitEngineError> {
+        if self.head_reference(repository)?.as_ref() != Some(branch)
+            || self.read_ref(repository, branch)?.as_ref() != Some(expected)
+        {
+            return Ok(BranchAdvanceOutcome::Stale);
+        }
+        let mut refresh = self.repository_command(repository);
+        refresh.args(["update-index", "-q", "--refresh"]);
+        let _ = self.execute(refresh)?;
+        let mut checkout = self.repository_command(repository);
+        checkout.args(["read-tree", "-m", "-u", expected.as_str(), target.as_str()]);
+        let output = self.execute(checkout)?;
+        if !output.status.success() {
+            let stderr = bounded_lossy(&output.stderr);
+            if stderr.contains("not uptodate")
+                || stderr.contains("would be overwritten")
+                || stderr.contains("would be removed")
+            {
+                return Ok(BranchAdvanceOutcome::BlockedStaged);
+            }
+            return Err(command_failed("update branch files", &output));
+        }
+        let outcome = self.advance_checked_out_branch(repository, branch, expected, target)?;
+        if outcome != BranchAdvanceOutcome::Advanced {
+            // Put the files back so they match the branch that did not move.
+            let mut restore = self.repository_command(repository);
+            restore.args(["read-tree", "-m", "-u", target.as_str(), expected.as_str()]);
+            let _ = self.execute(restore)?;
+        }
+        Ok(outcome)
+    }
 }
 
 impl GitCliEngine {

@@ -32,7 +32,8 @@ pub use contracts::{
 };
 
 pub use git::{
-    vault_path_prefix, BranchAdvanceOutcome, BranchPullConfig, CommitSigning, FastForwardOutcome,
+    vault_path_prefix, BranchAdvanceOutcome, BranchPullConfig, BranchReplayConflict,
+    BranchReplayOutcome, BranchReplayResolver, CommitSigning, FastForwardOutcome,
     GitBranchUpstream, GitCapture, GitCaptureRequest, GitCaseRenamePolicy, GitChange,
     GitChangeKind, GitCliEngine, GitCloneRequest, GitCommitMetadata, GitConflictSide,
     GitContentMergeResolutionRequest, GitDetachedRecoveryReport, GitDetachedRecoveryRequest,

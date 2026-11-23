@@ -615,6 +615,11 @@ commits and is never written from live.
   Restart the daemon and inspect `vulcan daemon conflict-status`. The worker only auto-submits
   bounded singleton Markdown/text overlaps with complete regular-file evidence and no broad
   context; everything else remains reviewable. Disable it with `daemon config clear-conflict-worker`.
+  When the vault's `sync.branch_pull` is `guarded-rebase` or `rebase`, the same worker also
+  replays a branch whose rebase stopped on a conflict, asking the agent per conflicted commit in a
+  scratch worktree, and queues a sync to publish it; `conflict-status` shows `replayed_branch` or
+  `declined_replay` with the reason. It never touches shared commits, merges, deletions, non-text
+  files, or uncommitted edits, so a declined replay still needs `git pull --rebase` by a person.
   Do not configure a second resolver daemon for the same vault merely for availability: process
   claims prevent duplicate calls locally, while remote leases prevent unsafe publication but not
   duplicate provider spending across devices.

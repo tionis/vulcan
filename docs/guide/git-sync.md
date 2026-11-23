@@ -229,6 +229,17 @@ says to run `git pull --rebase` and push. `ff-only` is the strictest choice: syn
 creates a commit and every divergence pauses. A merge or rebase that sync starts and that conflicts
 is always aborted, leaving the branch as it was.
 
+A conflicted rebase can also be settled by the resolution agent, on a device you choose: list the
+wiki in the daemon's conflict worker (see [Unattended conflict resolution](#unattended-conflict-resolution))
+and set `branch_pull` to `guarded-rebase` or `rebase`. When the branch is still diverged after a
+sync, the worker replays the local commits onto the upstream in a scratch worktree and asks the
+agent to resolve each conflicted commit. The branch moves only if every commit replayed, and a
+sync then publishes it at once. The worker declines without changing anything when another ref or
+worktree builds on the commits, the range has a merge, a side deletes a file or holds a non-text
+file, the agent's answer still has conflict markers, or uncommitted edits would be overwritten. A
+declined replay is not sent to the agent again until either side moves, and the branch stays
+paused with its alert.
+
 Conflict resolution, checkpoints, retention, and semantic history apply only to
 the default mode and refuse here; earlier live state is left untouched for when the mode switches
 back.
@@ -406,7 +417,8 @@ and installed Linux/macOS services can read them from `$XDG_CONFIG_HOME/vulcan/d
 ## Unattended conflict resolution
 
 A designated daemon can resolve conservative high-confidence conflicts and publish the accepted
-tree for other devices without an operator in the loop. Pairing it with the semantic worker keeps
+tree for other devices without an operator in the loop. The same worker also settles a branch
+whose `guarded-rebase` stopped on a conflict (see above). Pairing it with the semantic worker keeps
 the byte-exact sync history separate from a readable commit history on `main`. The following is a
 complete setup for an already registered `personal` wiki; replace the paths, provider details, and
 environment-variable names, and make both named secrets available to the daemon process:

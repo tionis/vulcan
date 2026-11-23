@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use vulcan_app::branch_replay::{replay_attempt, replay_diverged_branch, BranchReplayReport};
 use vulcan_app::execution::{MutationGate, Ungated};
 use vulcan_app::sync::{GitRefName, GitRemote, SyncCancellationToken};
 use vulcan_app::sync_conflicts::{
@@ -26,7 +27,7 @@ use vulcan_app::sync_state::SyncStateStore;
 use vulcan_core::{
     resolve_device_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
-use vulcan_sync::{GitConflictClass, MergeFileKind, SyncJobState};
+use vulcan_sync::{GitConflictClass, MergeFileKind, SyncJobState, SyncJobTrigger};
 
 pub const CONFLICT_WORKER_STATUS_VERSION: u32 = 1;
 const CONFLICT_PAGE_LIMIT: usize = 256;
@@ -58,6 +59,13 @@ pub struct ConflictWorkerStatusEntry {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_after_unix_ms: Option<u64>,
+    /// The commit a paused branch was replayed to with the agent's help.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replayed_branch: Option<String>,
+    /// The `head..upstream` replay that was declined, so it is not retried
+    /// until either side moves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declined_replay: Option<String>,
 }
 
 #[must_use]
@@ -231,7 +239,19 @@ pub fn execute_conflict_worker_pass(
             }) {
                 return status_backoff(entry);
             }
-            run_for_registration(config, registration, state_store, agent, gate, now_unix_ms)
+            let declined = previous
+                .get(wiki_id.as_str())
+                .and_then(|entry| entry.declined_replay.as_deref());
+            replay_then_resolve(
+                config,
+                registration,
+                supervisor,
+                state_store,
+                agent,
+                gate,
+                declined,
+                now_unix_ms,
+            )
         })
         .collect();
     ConflictWorkerStatus {
@@ -239,6 +259,103 @@ pub fn execute_conflict_worker_pass(
         checked_unix_ms: now_unix_ms,
         entries,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn replay_then_resolve(
+    config: &DaemonConflictWorkerConfig,
+    registration: &crate::registry::WikiRegistration,
+    supervisor: &SyncSupervisor,
+    state_store: &SyncStateStore,
+    agent: &CompanionResolutionAgent,
+    gate: Option<&HostedWorkerGate>,
+    declined: Option<&str>,
+    now_unix_ms: u64,
+) -> ConflictWorkerStatusEntry {
+    let replay = replay_paused_branch(registration, supervisor, agent, gate, declined);
+    let mut entry = match &replay {
+        Ok(BranchReplayReport::Replayed { to, .. }) => {
+            let mut entry = status_skipped(
+                &registration.id,
+                0,
+                "replayed the paused branch; a sync publishes it",
+            );
+            entry.replayed_branch = Some(to.to_string());
+            return entry;
+        }
+        Err(error) => return status_error(&registration.id, 0, 0, error.clone(), now_unix_ms),
+        Ok(_) => run_for_registration(config, registration, state_store, agent, gate, now_unix_ms),
+    };
+    if let Ok(BranchReplayReport::Declined {
+        head,
+        upstream,
+        reason,
+    }) = replay
+    {
+        entry.declined_replay = Some(replay_attempt(&head, &upstream));
+        if entry.unresolved_conflicts == 0 && entry.error.is_none() {
+            entry.skipped = Some(format!("paused branch not replayed: {reason}"));
+        }
+    }
+    entry
+}
+
+/// A branch whose rebase stopped on a conflict is paused until someone
+/// rebases it. With the wiki's consent here, the resolution agent replays it
+/// instead, and a sync publishes the result at once.
+fn replay_paused_branch(
+    registration: &crate::registry::WikiRegistration,
+    supervisor: &SyncSupervisor,
+    agent: &CompanionResolutionAgent,
+    gate: Option<&HostedWorkerGate>,
+    declined: Option<&str>,
+) -> Result<BranchReplayReport, String> {
+    let paths = VaultPaths::new(&registration.path);
+    let profile = registration
+        .permissions_profile
+        .as_deref()
+        .unwrap_or("unrestricted");
+    let guard = resolve_device_permission_profile(&paths, Some(profile))
+        .map(|selection| ProfilePermissionGuard::new(&paths, selection))
+        .map_err(|error| error.to_string())?;
+    guard.check_git().map_err(|error| error.to_string())?;
+    if let Some(endpoint) = agent.provider().network_endpoint() {
+        guard
+            .check_network(endpoint)
+            .map_err(|error| error.to_string())?;
+    }
+    let vault_gate = gate.map(|gate| gate.for_registration(registration));
+    let gate: &dyn MutationGate = match vault_gate.as_ref() {
+        Some(gate) => gate,
+        None => &Ungated,
+    };
+    let report = replay_diverged_branch(
+        &paths,
+        agent.provider(),
+        guard,
+        declined,
+        &SyncCancellationToken::default(),
+        gate,
+    )
+    .map_err(|error| error.to_string())?;
+    if let BranchReplayReport::Replayed {
+        from, to, resolved, ..
+    } = &report
+    {
+        eprintln!(
+            "wiki `{}`: the resolution agent replayed the paused branch {from} -> {to} (resolved: {})",
+            registration.id,
+            resolved.join(", ")
+        );
+        supervisor
+            .enqueue(
+                registration.id.to_string(),
+                registration.path.clone(),
+                SyncJobTrigger::Activity,
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(report)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -330,6 +447,8 @@ fn run_for_registration(
                 skipped: None,
                 error: None,
                 retry_after_unix_ms: None,
+                replayed_branch: None,
+                declined_replay: None,
             },
             Err(error) => status_error(
                 &registration.id,
@@ -435,6 +554,8 @@ fn status_skipped(
         skipped: Some(detail.into()),
         error: None,
         retry_after_unix_ms: None,
+        replayed_branch: None,
+        declined_replay: None,
     }
 }
 
@@ -461,6 +582,8 @@ fn status_error(
         skipped: None,
         error: Some(detail.into()),
         retry_after_unix_ms: Some(now_unix_ms.saturating_add(ERROR_RETRY_DELAY_MS)),
+        replayed_branch: None,
+        declined_replay: None,
     }
 }
 
@@ -714,6 +837,216 @@ mod tests {
         );
     }
 
+    struct CountingProvider {
+        content: &'static str,
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl ResolutionAgentProvider for CountingProvider {
+        fn identity(&self) -> ResolutionAgentIdentity {
+            ResolutionAgentIdentity {
+                provider: "test".to_string(),
+                model: "counting".to_string(),
+                prompt_contract_version: 1,
+            }
+        }
+
+        fn propose(
+            &self,
+            request: &ResolutionAgentRequest,
+            _tools: &mut dyn ResolutionAgentTools,
+            _cancellation: &SyncCancellationToken,
+        ) -> Result<ResolutionAgentOutput, vulcan_app::AppError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(ResolutionAgentOutput {
+                explanation: "merged".to_string(),
+                referenced_context: Vec::new(),
+                paths: request
+                    .files
+                    .iter()
+                    .map(|file| ResolutionAgentPathOutput {
+                        path: file.path.clone(),
+                        content: self.content.as_bytes().to_vec(),
+                    })
+                    .collect(),
+            })
+        }
+    }
+
+    fn git_stdout(directory: &Path, arguments: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(arguments)
+            .current_dir(directory)
+            .output()
+            .expect("run git");
+        assert!(output.status.success(), "git {arguments:?}");
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    /// A registered clone under guarded rebase whose local commit conflicts
+    /// with a newer upstream commit.
+    fn paused_branch_fixture(
+        temporary: &Path,
+    ) -> (std::path::PathBuf, WikiRegistry, DaemonConflictWorkerConfig) {
+        let remote = temporary.join("remote.git");
+        let writer = temporary.join("writer");
+        let reader = temporary.join("reader");
+        fs::create_dir(&remote).expect("remote directory");
+        git(&remote, &["init", "--bare", "--quiet"]);
+        fs::create_dir(&writer).expect("writer directory");
+        git(&writer, &["init", "--quiet", "--initial-branch", "main"]);
+        configure_repository(&writer);
+        fs::write(writer.join("Home.md"), "base\n").expect("base note");
+        git(&writer, &["add", "Home.md"]);
+        git(&writer, &["commit", "--quiet", "-m", "base"]);
+        git(
+            &writer,
+            &["remote", "add", "origin", remote.to_str().expect("remote")],
+        );
+        git(&writer, &["push", "--quiet", "-u", "origin", "main"]);
+        git(&remote, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        git(
+            temporary,
+            &[
+                "clone",
+                "--quiet",
+                remote.to_str().expect("remote"),
+                reader.to_str().expect("reader"),
+            ],
+        );
+        configure_repository(&reader);
+        fs::write(writer.join("Home.md"), "writer\n").expect("writer edit");
+        git(&writer, &["commit", "--quiet", "-am", "writer edit"]);
+        git(&writer, &["push", "--quiet"]);
+        fs::write(reader.join("Home.md"), "reader\n").expect("reader edit");
+        git(&reader, &["commit", "--quiet", "-am", "reader edit"]);
+        git(&reader, &["fetch", "--quiet"]);
+        fs::create_dir_all(reader.join(".vulcan")).expect("config directory");
+        fs::write(
+            reader.join(".vulcan/config.toml"),
+            "[sync]\nbranch_pull = \"guarded-rebase\"\n",
+        )
+        .expect("vault config");
+        fs::write(reader.join(".git/info/exclude"), ".vulcan/\n").expect("exclude");
+
+        let registry = WikiRegistry::at(temporary.join("config/daemon.toml"));
+        let wiki = WikiId::parse("notes").expect("wiki ID");
+        registry
+            .add(
+                &AddWikiRequest {
+                    source: None,
+                    profile: None,
+                    id: wiki.clone(),
+                    path: reader.clone(),
+                    groups: Vec::new(),
+                    git_dir: None,
+                    permissions_profile: None,
+                    sync_backend: Some("git".to_string()),
+                    platform_profile: None,
+                },
+                false,
+            )
+            .expect("register reader");
+        let config = DaemonConflictWorkerConfig {
+            wikis: vec![wiki],
+            remote: "origin".to_string(),
+            live_ref: "refs/heads/__vulcan-sync/live".to_string(),
+            max_groups_per_run: 128,
+            poll_seconds: 30,
+        };
+        (reader, registry, config)
+    }
+
+    #[test]
+    fn the_worker_replays_a_paused_branch_and_queues_its_publication() {
+        let temporary = tempdir().expect("temporary directory");
+        let (reader, registry, config) = paused_branch_fixture(temporary.path());
+        let supervisor =
+            SyncSupervisor::at(temporary.path().join("state/jobs.json")).expect("supervisor");
+        let store = SyncStateStore::at(temporary.path().join("state/sync"));
+        let agent = CompanionResolutionAgent::new(CountingProvider {
+            content: "writer\nreader\n",
+            calls: std::sync::Arc::default(),
+        });
+
+        let status = execute_conflict_worker_pass(
+            &config,
+            &registry,
+            &supervisor,
+            &store,
+            &agent,
+            None,
+            None,
+            1_000,
+        );
+
+        let entry = status.entries.first().expect("status entry");
+        assert!(entry.error.is_none(), "{entry:?}");
+        assert_eq!(
+            entry.replayed_branch.as_deref(),
+            Some(git_stdout(&reader, &["rev-parse", "HEAD"]).as_str())
+        );
+        assert_eq!(
+            git_stdout(&reader, &["rev-parse", "HEAD~1"]),
+            git_stdout(&reader, &["rev-parse", "origin/main"])
+        );
+        assert_eq!(
+            fs::read_to_string(reader.join("Home.md")).expect("note"),
+            "writer\nreader\n"
+        );
+        let jobs = supervisor.list().expect("jobs");
+        assert_eq!(jobs.len(), 1, "a sync publishes the replayed branch");
+        assert_eq!(jobs[0].job.wiki_id.as_deref(), Some("notes"));
+    }
+
+    #[test]
+    fn a_declined_replay_is_not_sent_to_the_agent_again_until_a_side_moves() {
+        let temporary = tempdir().expect("temporary directory");
+        let (reader, registry, config) = paused_branch_fixture(temporary.path());
+        let supervisor =
+            SyncSupervisor::at(temporary.path().join("state/jobs.json")).expect("supervisor");
+        let store = SyncStateStore::at(temporary.path().join("state/sync"));
+        let calls = std::sync::Arc::<std::sync::atomic::AtomicUsize>::default();
+        let provider = CountingProvider {
+            content: "<<<<<<< ours\nreader\n=======\nwriter\n>>>>>>> theirs\n",
+            calls: calls.clone(),
+        };
+        let agent = CompanionResolutionAgent::new(provider);
+        let head = git_stdout(&reader, &["rev-parse", "HEAD"]);
+
+        let first = execute_conflict_worker_pass(
+            &config,
+            &registry,
+            &supervisor,
+            &store,
+            &agent,
+            None,
+            None,
+            1_000,
+        );
+        let second = execute_conflict_worker_pass(
+            &config,
+            &registry,
+            &supervisor,
+            &store,
+            &agent,
+            None,
+            Some(&first),
+            2_000,
+        );
+
+        let entry = first.entries.first().expect("status entry");
+        assert!(entry.declined_replay.is_some(), "{entry:?}");
+        assert!(entry
+            .skipped
+            .as_deref()
+            .is_some_and(|reason| reason.contains("conflict markers")));
+        assert_eq!(second.entries[0].declined_replay, entry.declined_replay);
+        assert_eq!(git_stdout(&reader, &["rev-parse", "HEAD"]), head);
+        assert!(supervisor.list().expect("jobs").is_empty());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
     #[test]
     #[allow(clippy::too_many_lines)] // Backoff and profile gating share the same persisted-worker fixture.
     fn provider_failures_observe_persisted_backoff() {
@@ -758,6 +1091,8 @@ mod tests {
                 skipped: None,
                 error: Some("provider failed".to_string()),
                 retry_after_unix_ms: Some(10_000),
+                replayed_branch: None,
+                declined_replay: None,
             }],
         };
         let store = SyncStateStore::at(temporary.path().join("state/sync"));

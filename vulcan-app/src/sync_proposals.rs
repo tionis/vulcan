@@ -129,7 +129,7 @@ pub trait ResolutionAgentTools {
     fn call(&mut self, name: &str, arguments: &str) -> Result<String, AppError>;
 }
 
-struct VaultResolutionAgentTools {
+pub(crate) struct VaultResolutionAgentTools {
     paths: VaultPaths,
     guard: ProfilePermissionGuard,
     broad_context_allowed: bool,
@@ -139,7 +139,7 @@ struct VaultResolutionAgentTools {
 }
 
 impl VaultResolutionAgentTools {
-    fn new(
+    pub(crate) fn new(
         paths: &VaultPaths,
         guard: ProfilePermissionGuard,
         broad_context_allowed: bool,
@@ -4892,7 +4892,7 @@ fn validate_text(label: &str, value: &str) -> Result<(), AppError> {
     }
 }
 
-fn cancellation_check(cancellation: &SyncCancellationToken) -> Result<(), AppError> {
+pub(crate) fn cancellation_check(cancellation: &SyncCancellationToken) -> Result<(), AppError> {
     if cancellation.is_cancelled() {
         Err(AppError::operation(
             "resolution proposal generation was cancelled",
