@@ -40,12 +40,58 @@ pub struct SyncAlert {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<SyncErrorCategory>,
     pub retryable: bool,
+    /// Why the wiki needs attention when the state alone does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<SyncAlertReason>,
+}
+
+/// A secret-free reason code; delivery turns it into guidance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncAlertReason {
+    /// The checked-out branch could not take the upstream's commits: it
+    /// diverged under fast-forward-only pulls, or a merge or rebase
+    /// conflicted and was aborted. The branch was left as it was.
+    BranchPaused,
 }
 
 impl SyncAlert {
     #[must_use]
     pub fn from_execution(execution: &DaemonSyncExecution) -> Option<Self> {
-        Self::from_job(&execution.job.job)
+        let branch_paused = execution
+            .report
+            .as_ref()
+            .and_then(|report| report.sync.branch.as_ref())
+            .is_some_and(|branch| branch.action == vulcan_app::sync::GitBranchSyncAction::Paused);
+        Self::from_job_and_branch(&execution.job.job, branch_paused)
+    }
+
+    fn from_job_and_branch(job: &vulcan_sync::SyncJob, branch_paused: bool) -> Option<Self> {
+        match Self::from_job(job) {
+            Some(mut alert) => {
+                if branch_paused {
+                    alert.reason = Some(SyncAlertReason::BranchPaused);
+                }
+                Some(alert)
+            }
+            // With the worktree synchronized, the file lane can succeed
+            // while the branch lane pauses; the branch still needs someone.
+            None if branch_paused && job.state == SyncJobState::Succeeded => Some(Self {
+                version: 1,
+                event: "sync_branch_paused".to_string(),
+                severity: AlertSeverity::Warning,
+                job_id: job.id.clone(),
+                wiki_id: job
+                    .wiki_id
+                    .clone()
+                    .unwrap_or_else(|| "<unregistered>".to_string()),
+                state: job.state,
+                category: None,
+                retryable: false,
+                reason: Some(SyncAlertReason::BranchPaused),
+            }),
+            None => None,
+        }
     }
 
     #[must_use]
@@ -69,6 +115,14 @@ impl SyncAlert {
             state: job.state,
             category: error.map(|error| error.category),
             retryable: error.is_some_and(|error| error.retryable),
+            reason: (job.state == SyncJobState::Paused
+                && job.status.as_ref().is_some_and(|status| {
+                    status
+                        .detail
+                        .as_deref()
+                        .is_some_and(|detail| detail.starts_with("branch lane paused"))
+                }))
+            .then_some(SyncAlertReason::BranchPaused),
         })
     }
 
@@ -90,12 +144,15 @@ impl SyncAlert {
 
     fn fingerprint(&self) -> String {
         format!(
-            "{}:{:?}:{:?}:{}",
-            self.event, self.state, self.category, self.retryable
+            "{}:{:?}:{:?}:{}:{:?}",
+            self.event, self.state, self.category, self.retryable, self.reason
         )
     }
 
     pub(crate) fn desktop_title(&self) -> &'static str {
+        if self.reason == Some(SyncAlertReason::BranchPaused) {
+            return "Vulcan sync: branch needs you";
+        }
         match self.state {
             SyncJobState::Failed => "Vulcan sync failed",
             SyncJobState::Conflicted => "Vulcan sync needs resolution",
@@ -105,6 +162,12 @@ impl SyncAlert {
     }
 
     pub(crate) fn desktop_body(&self) -> String {
+        if self.reason == Some(SyncAlertReason::BranchPaused) {
+            return format!(
+                "Wiki `{wiki}`: local commits could not be combined with the upstream automatically, so the branch was left as it was. Run `git pull --rebase && git push` in the wiki (resolving any conflict), then `vulcan sync refresh {wiki}`.",
+                wiki = self.wiki_id
+            );
+        }
         let reason = self.category.map_or(String::new(), |category| {
             format!(" ({})", format!("{category:?}").to_ascii_lowercase())
         });
@@ -515,6 +578,40 @@ mod tests {
             );
         }
         assert!(SyncAlert::from_execution(&execution(SyncJobState::Succeeded, None)).is_none());
+    }
+
+    #[test]
+    fn a_paused_branch_alerts_with_guidance_even_when_the_files_synced() {
+        let succeeded = execution(SyncJobState::Succeeded, None).job.job;
+        assert!(SyncAlert::from_job_and_branch(&succeeded, false).is_none());
+        let alert = SyncAlert::from_job_and_branch(&succeeded, true).expect("branch alert");
+        assert_eq!(alert.event, "sync_branch_paused");
+        assert_eq!(alert.severity, AlertSeverity::Warning);
+        assert_eq!(alert.reason, Some(SyncAlertReason::BranchPaused));
+        assert!(alert
+            .desktop_body()
+            .contains("git pull --rebase && git push"));
+        assert!(alert.desktop_body().contains("vulcan sync refresh alpha"));
+
+        // Committed-history-only cycles pause the job; the status says why.
+        let mut paused = execution(SyncJobState::Paused, None).job.job;
+        paused.status = Some(vulcan_sync::SyncStatus {
+            state: vulcan_sync::SyncState::Paused,
+            backend: "git".to_string(),
+            vault: PathBuf::from("/vault"),
+            local_revision: None,
+            remote_revision: None,
+            accepted_revision: None,
+            unresolved_conflicts: 0,
+            detail: Some("branch lane paused: branch diverged".to_string()),
+        });
+        let alert = SyncAlert::from_job(&paused).expect("paused alert");
+        assert_eq!(alert.event, "sync_paused");
+        assert_eq!(alert.reason, Some(SyncAlertReason::BranchPaused));
+        assert_eq!(
+            serde_json::to_value(&alert).unwrap()["reason"],
+            serde_json::json!("branch_paused")
+        );
     }
 
     #[test]

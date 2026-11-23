@@ -864,6 +864,7 @@ fn sync_alerts_reach_alert_users_of_the_wiki_only() {
         state: vulcan_sync::SyncJobState::Conflicted,
         category: None,
         retryable: false,
+        reason: None,
     };
     let config = fixture.registry.load().unwrap();
     let telegram = config.bot.telegram.clone().unwrap();

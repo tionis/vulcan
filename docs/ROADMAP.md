@@ -6784,6 +6784,7 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 - [x] The daemon treats branch-ref changes in the Git directory as sync triggers for Git-synced wikis (both modes).
 - [x] Update the `sync-workflow` skill and the sync guide.
 - [x] `sync.branch_pull = "git" | "ff-only" | "merge" | "rebase"` (default `git`, shared or local) fixes the branch lane's strategy for every device instead of each device's `pull.rebase`/`pull.ff`, so a repository where agents commit can require fast-forward-only pulls without per-clone Git configuration. A fixed policy skips reading the Git pull settings; the preview and pause detail name the setting. Tests for the engine override (including a malformed device `pull.ff`), config loading, and effective options.
+- [x] A paused branch lane alerts in every mode: `reason: "branch_paused"` on the attention alert, a `sync_branch_paused` event when the file lane succeeded, and desktop/Telegram/webhook text with the fix (`git pull --rebase && git push`, then `vulcan sync refresh`). Tests for both alert paths and for the lane resuming by itself once the author rebases and pushes.
 
 #### 12.23.2 Path-scoped worktree sync
 

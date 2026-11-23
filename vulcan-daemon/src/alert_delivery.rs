@@ -1085,6 +1085,7 @@ mod tests {
             state: SyncJobState::Failed,
             category: Some(SyncErrorCategory::Network),
             retryable: true,
+            reason: None,
         }
     }
 

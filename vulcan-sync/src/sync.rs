@@ -8769,6 +8769,33 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
     }
 
     #[test]
+    fn a_paused_branch_resumes_by_itself_once_the_author_rebases_and_pushes() {
+        let (temporary, remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        let ff_only = GitSyncOptions {
+            branch_pull: BranchPullPolicy::FfOnly,
+            ..commits_only()
+        };
+        fs::write(writer.join("Local.md"), "local\n").expect("local note");
+        commit_all(&writer, "local");
+        advance_remote_branch(&temporary, &remote, "advanced\n");
+        let paused = sync_git_once(&engine, &writer, &ff_only).expect("paused sync");
+        assert_eq!(paused.outcome, GitSyncOutcome::Paused);
+
+        // What the pause tells the author to do, and nothing else.
+        run_git(&writer, &["pull", "--rebase", "--quiet", "origin", "main"]);
+        run_git(&writer, &["push", "--quiet", "origin", "main"]);
+
+        let resumed = sync_git_once(&engine, &writer, &ff_only).expect("resumed sync");
+        assert_ne!(resumed.outcome, GitSyncOutcome::Paused);
+        assert!(resumed.pause.is_none(), "{:?}", resumed.pause);
+        assert_eq!(
+            fs::read_to_string(writer.join("Home.md")).expect("upstream note"),
+            "advanced\n"
+        );
+    }
+
+    #[test]
     fn committed_history_only_aborts_a_conflicted_rebase_and_pauses() {
         let (temporary, remote, writer) = setup_tracked_branch();
         let engine = GitCliEngine::default();

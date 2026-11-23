@@ -284,6 +284,13 @@ enters a conflicted, paused, or failed sync state. Repeated automatic attempts i
 not flood the service log; a successful cycle resets the notification. Full error detail remains in
 `vulcan sync status <wiki>` rather than logs or desktop messages.
 
+A paused branch is announced too, even when the files themselves synchronized: when local commits
+could not be combined with the upstream (a divergence under fast-forward-only pulls, or a merge or
+rebase that conflicted and was aborted), the alert carries `reason: "branch_paused"` (event
+`sync_branch_paused` when the rest of the cycle succeeded) and its message says what to do: run
+`git pull --rebase && git push` in the wiki, then `vulcan sync refresh <wiki>`. The next cycle after
+that push clears it.
+
 Native desktop notifications are opt-in and require a daemon restart after configuration:
 
 ```sh
