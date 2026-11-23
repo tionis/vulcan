@@ -1069,6 +1069,10 @@ metadata:
             .expect_err("host command must be refused")
             .to_string();
         assert!(error.contains("host.exec()"), "{error}");
+        assert!(
+            error.contains("vulcan tool grant skill_checker_run"),
+            "{error}"
+        );
     };
     let run = || {
         run_custom_tool(

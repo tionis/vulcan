@@ -315,12 +315,15 @@ fn run_skill_command_tool_with_context(
     )?;
     let runtime_context = context.runtime_scope(name, effective_permission_profile.clone());
     let script_path = skill_command_script_path(paths, &skill.summary, &command)?;
+    let tool_name = skill_command_tool_name(&skill.summary.name, &command.id);
+    let ungranted = !command.host_commands.is_empty();
     let granted_host_commands = crate::tool_grants::active_host_commands(
         paths,
-        &skill_command_tool_name(&skill.summary.name, &command.id),
+        &tool_name,
         &skill_directory(paths, &skill.summary)?,
         &command.host_commands,
     );
+    let ungranted_now = ungranted && granted_host_commands.is_empty();
     let source = fs::read_to_string(&script_path).map_err(AppError::operation)?;
     let source = build_skill_command_invocation_source(
         &skill,
@@ -349,11 +352,22 @@ fn run_skill_command_tool_with_context(
                 registry_options,
                 runtime_context,
             )),
-            granted_host_commands,
+            granted_host_commands: granted_host_commands.clone(),
             ..DataviewJsEvalOptions::default()
         },
     )
-    .map_err(AppError::operation)?;
+    .map_err(|error| {
+        let message = error.to_string();
+        // Say how to grant declared host commands rather than leave the
+        // caller with the sandbox rule they cannot change.
+        if ungranted_now && message.contains("host.exec()") {
+            AppError::operation(format!(
+                "{message}\n`{tool_name}` declares host commands that are not granted on this device (or its skill changed since); review the skill and run `vulcan tool grant {tool_name}`"
+            ))
+        } else {
+            AppError::operation(message)
+        }
+    })?;
     let result = evaluation.value.ok_or_else(|| {
         AppError::operation(format!(
             "skill command tool `{name}` did not return a JSON-serializable value"
