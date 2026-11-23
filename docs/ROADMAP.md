@@ -6775,7 +6775,7 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 **Goal:** Let a repository that holds code, or whose authors commit their own work, synchronize without snapshotting uncommitted edits to every device. Motivated by Grimoire, an agent-first dev wiki with scripts and config, which syncs committed history only.
 
-**Design contract:** `docs/specs/git-sync-architecture.md` ("Worktree sync modes").
+**Design contract:** `docs/specs/git-sync/none-mode.md` (the committed-history-only contract) and `docs/specs/git-sync/worktree-modes.md`.
 
 #### 12.23.1 Committed-history-only mode
 
@@ -6798,6 +6798,7 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 - [x] MCP sync triggers (2026-11-23 audit, MCP gaps). The `sync` pack gains `sync_refresh` and `sync_resume` through a `vulcan-app::mcp_sync::McpSyncHost` hook: the daemon installs one that queues manual jobs on its supervisor, and `vulcan mcp` one that asks the running daemon or synchronizes directly when none runs.
 - [x] MCP file access (2026-11-23 audit, MCP gaps). `notes-read` gains `file_get`, bounded slices of any vault file (UTF-8 or base64, `next_offset`, whole-file `content_hash`); `notes-write` gains `file_put` for non-Markdown files up to 10 MiB, under the vault write lock with `overwrite` and `expected_hash` guards. Both refuse `.vulcan/` and `.git/`.
 - [x] Syncthing overlap (2026-11-23 audit). `vulcan doctor` reports Syncthing conflict copies (`*.sync-conflict-<date>-<time>-<device>*`) as `sync_conflict_copies`, and `vault add` and `sync doctor` (`sync.file-synchronizer`) warn when Git sync covers a directory under a `.stfolder`.
+- [x] Live-mode freeze and spec split (2026-11-23 audit). `docs/specs/git-sync-architecture.md` is now an index over `docs/specs/git-sync/`, one short file per section, plus `none-mode.md`, the committed-history-only contract. The whole-worktree live mode (`"all"`) and `"paths"` are frozen: merge policy, structured resolution, conflict records, checkpoints, retention, epochs, and semantic history stay maintained, are not extended, and are to be removed once no wiki uses them (`"paths"` first). The 12.16–12.18 designs are marked superseded by geth.
 
 #### 12.23.2 Path-scoped worktree sync
 

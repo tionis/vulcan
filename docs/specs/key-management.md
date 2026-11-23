@@ -1,5 +1,10 @@
 # Cryptographic Key Management and Registries
 
+> **Superseded by geth (2026-11-23).** Device identity, key custody and management, and synced
+> secrets move to geth, the Data Platform designed in Grimoire. The parts already implemented stay
+> maintained as shipped; the unbuilt remainder of this design will not be built in Vulcan. See the
+> Phase 12 hold in `docs/ROADMAP.md`.
+
 Status: accepted design for Roadmap 12.17 and the optional 12.18 synced-secrets extension; not yet
 implemented. This design round is complete. Exact storage schemas, command details, and conformance
 fixtures remain implementation tasks within these boundaries.

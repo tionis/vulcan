@@ -1,5 +1,10 @@
 # Device Key Custody and Secret Stores
 
+> **Superseded by geth (2026-11-23).** Device identity, key custody and management, and synced
+> secrets move to geth, the Data Platform designed in Grimoire. The parts already implemented stay
+> maintained as shipped; the unbuilt remainder of this design will not be built in Vulcan. See the
+> Phase 12 hold in `docs/ROADMAP.md`.
+
 Status: accepted design for Roadmap 12.16. The opaque `SecretStore` boundary and portable
 `file_v1` secret provider are implemented in `vulcan-secrets`. The device-key boundary is
 implemented in `vulcan_app::device_key`: `KeyProvider`, the `file_v1` adapter over the identity
