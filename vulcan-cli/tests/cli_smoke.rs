@@ -40019,3 +40019,35 @@ fn sync_conflicts_archive_include_open_clears_legacy_records() {
         .success();
     assert_eq!(parse_stdout_json(&detail)["record"]["id"], id);
 }
+
+#[test]
+fn sync_transport_test_runs_with_and_without_show_commands() {
+    // `-v` is the global verbosity counter; the subcommand once declared its
+    // own boolean `verbose`, and clap panicked reading either one.
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault = temp_dir.path().join("vault");
+    let remote = temp_dir.path().join("remote.git");
+    fs::create_dir_all(vault.join(".vulcan")).expect("vault dir");
+    run_git_ok(
+        temp_dir.path(),
+        &["init", "--quiet", "--bare", "remote.git"],
+    );
+    run_git_ok(&vault, &["init", "--quiet"]);
+    run_git_ok(
+        &vault,
+        &["remote", "add", "origin", remote.to_str().expect("utf-8")],
+    );
+    for extra in [&[][..], &["--show-commands"][..], &["-v"][..]] {
+        let output = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .arg("--vault")
+            .arg(&vault)
+            .args(["sync", "transport", "test"])
+            .args(extra)
+            .output()
+            .expect("vulcan runs");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!stderr.contains("panicked"), "{extra:?}: {stderr}");
+        assert_ne!(output.status.code(), Some(101), "{extra:?}: {stderr}");
+    }
+}

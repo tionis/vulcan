@@ -10493,16 +10493,16 @@
                   },
                   {
                     "help": "Also print the SSH command each path uses",
-                    "id": "verbose",
-                    "long": "verbose",
+                    "id": "show_commands",
+                    "long": "show-commands",
                     "possible_values": [
                       "true",
                       "false"
                     ],
                     "required": false,
-                    "short": "v",
+                    "short": null,
                     "value_names": [
-                      "VERBOSE"
+                      "SHOW_COMMANDS"
                     ]
                   }
                 ],

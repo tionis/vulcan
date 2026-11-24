@@ -4620,8 +4620,8 @@ pub enum SyncTransportCommand {
         wiki: Option<String>,
         #[arg(long, default_value = "origin", help = "Git remote to reach")]
         remote: String,
-        #[arg(short, long, help = "Also print the SSH command each path uses")]
-        verbose: bool,
+        #[arg(long, help = "Also print the SSH command each path uses")]
+        show_commands: bool,
     },
     #[command(about = "Remove the binding and any Vulcan-owned core.sshCommand")]
     Unbind {

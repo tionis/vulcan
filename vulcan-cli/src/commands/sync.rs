@@ -2499,8 +2499,8 @@ fn handle_sync_transport(
         SyncTransportCommand::Test {
             wiki,
             remote,
-            verbose,
-        } => handle_sync_transport_test(cli, paths, wiki.as_deref(), remote, *verbose),
+            show_commands,
+        } => handle_sync_transport_test(cli, paths, wiki.as_deref(), remote, *show_commands),
         SyncTransportCommand::Unbind { wiki, dry_run } => {
             let paths = transport_paths(paths, wiki.as_deref())?;
             let report = unbind_transport(&paths, *dry_run).map_err(CliError::operation)?;
