@@ -76,7 +76,7 @@ vulcan sync run personal
 
 For an SSH remote, the clone also enrolls this device's key (authorize, bind, register) and prints what it did or exactly what is still `pending`; see [Device keys](device-keys.md). Use `--no-device-key` to keep your own SSH setup.
 
-The default colocated layout keeps `.git/` beside the vault. `sync run` does not start the daemon. It also works against an unregistered repository selected with `--vault <path>`.
+The default colocated layout keeps `.git/` beside the vault. `sync run` does not start the daemon. `--all` and `--group` leave out wikis registered with `--no-sync`. It also works against an unregistered repository selected with `--vault <path>`.
 
 To have a running daemon do the work instead, add `--queue`: `vulcan sync run --group work --queue` queues one retained sync job per wiki in the group (also for one wiki ID, `--all`, or the registered vault at the selected path) and returns immediately with the jobs' IDs. `vulcan daemon status` shows their progress. Queued jobs run with each registration's stored permission profile and sync settings, so `--queue` refuses `--permissions` and the run-tuning flags, and it fails rather than syncing directly when no daemon is running.
 

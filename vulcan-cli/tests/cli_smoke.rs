@@ -7725,12 +7725,13 @@ fn queued_sync_run_asks_the_daemon_for_one_job_per_wiki() {
     for id in ["alpha", "beta"] {
         let root = temporary.path().join(id);
         copy_fixture_vault("basic", &root);
+        run_git_ok(&root, &["init", "--quiet"]);
         let added = vulcan(
             &root,
             &[
                 "vault",
                 "add",
-                "--no-sync",
+                "--no-device-key",
                 "--group",
                 "work",
                 id,

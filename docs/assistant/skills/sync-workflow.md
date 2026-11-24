@@ -179,7 +179,8 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
   a daemon job is active. Active development checkouts need a separate contract and are not an
   unattended sync target. Sync does not provide a complete refs/history/LFS backup.
 - For registered wikis, select one ID, `--group <name>`, or `--all`. Aggregate results are independent
-  per-wiki transactions, not a cross-repository atomic commit.
+  per-wiki transactions, not a cross-repository atomic commit. `--all` and `--group` leave out
+  wikis registered with `--no-sync`.
 - When the daemon runs, `vulcan sync run --group <name> --queue` (or one ID, `--all`, or the
   selected registered vault) asks it to queue one retained job per wiki and returns at once with
   the aggregate and child job IDs; follow them with `vulcan daemon status`. Queued jobs use each

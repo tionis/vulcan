@@ -709,6 +709,10 @@ pub fn sync_registered_wikis(
     })
 }
 
+fn opted_into_sync(wiki: &WikiRegistration) -> bool {
+    wiki.sync_backend.as_deref() != Some("none")
+}
+
 fn select_wikis(
     registry: &WikiRegistry,
     selection: &RegisteredSyncSelection,
@@ -722,17 +726,21 @@ fn select_wikis(
             .map(|wiki| vec![wiki])
             .ok_or_else(|| RegistryError::UnknownWiki(id.clone()).into()),
         RegisteredSyncSelection::Group(group) => {
-            let selected = config
+            let members = config
                 .vaults
                 .into_iter()
                 .filter(|wiki| wiki.groups.iter().any(|item| item == group))
                 .collect::<Vec<_>>();
-            if selected.is_empty() {
+            if members.is_empty() {
                 return Err(RegisteredSyncError::EmptyGroup(group.clone()));
             }
-            Ok(selected)
+            Ok(members.into_iter().filter(opted_into_sync).collect())
         }
-        RegisteredSyncSelection::All => Ok(config.vaults),
+        // Wikis registered with `--no-sync` are left out of `--all` and
+        // `--group`; naming one directly still reports why it cannot sync.
+        RegisteredSyncSelection::All => {
+            Ok(config.vaults.into_iter().filter(opted_into_sync).collect())
+        }
     }
 }
 
@@ -1200,9 +1208,12 @@ mod tests {
         fs::create_dir(&first).expect("first wiki");
         fs::create_dir(&second).expect("second wiki");
         let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
-        for (id, path, groups) in [
-            ("work", second, vec!["team".to_string()]),
-            ("personal", first, vec!["daily".to_string()]),
+        let unsynced = temporary.path().join("unsynced");
+        fs::create_dir(&unsynced).expect("unsynced wiki");
+        for (id, path, groups, backend) in [
+            ("work", second, vec!["team".to_string()], "git"),
+            ("personal", first, vec!["daily".to_string()], "git"),
+            ("local", unsynced, vec!["daily".to_string()], "none"),
         ] {
             registry
                 .add(
@@ -1213,7 +1224,7 @@ mod tests {
                         groups,
                         git_dir: None,
                         permissions_profile: None,
-                        sync_backend: Some("git".to_string()),
+                        sync_backend: Some(backend.to_string()),
                         platform_profile: None,
                         profile: None,
                     },
@@ -1223,6 +1234,7 @@ mod tests {
         }
 
         let all = select_wikis(&registry, &RegisteredSyncSelection::All).expect("select all");
+        assert_eq!(all.len(), 2, "a --no-sync wiki is left out");
         assert_eq!(all[0].id.as_str(), "personal");
         assert_eq!(all[1].id.as_str(), "work");
         let daily = select_wikis(
