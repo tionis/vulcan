@@ -4910,7 +4910,26 @@ impl GitCliEngine {
                     .to_string(),
             });
         }
-        let fields = nul_fields("inspect configured Git filters", &attributes.stdout)?;
+        // Triples may hold an empty value (`filter=` in a .gitattributes), so
+        // empty fields are kept here; only the final delimiter is dropped.
+        let stdout = attributes.stdout.as_slice();
+        if stdout.last().is_some_and(|byte| *byte != 0) {
+            return Err(GitEngineError::InvalidOutput {
+                operation: "inspect configured Git filters",
+                detail: "expected a trailing NUL delimiter".to_string(),
+            });
+        }
+        let fields = stdout
+            .strip_suffix(&[0])
+            .map_or_else(Vec::new, |body| body.split(|byte| *byte == 0).collect())
+            .into_iter()
+            .map(|field| {
+                std::str::from_utf8(field).map_err(|error| GitEngineError::InvalidOutput {
+                    operation: "inspect configured Git filters",
+                    detail: error.to_string(),
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         if fields.len() % 3 != 0 {
             return Err(GitEngineError::InvalidOutput {
                 operation: "inspect configured Git filters",
@@ -8529,6 +8548,10 @@ mod tests {
         )
         .expect("attributes");
         fs::write(temporary.path().join("asset.bin"), "pointer\n").expect("asset");
+        // An empty filter value is reported as an empty field.
+        fs::create_dir_all(temporary.path().join("chat")).expect("directory");
+        fs::write(temporary.path().join("chat/.gitattributes"), "* filter=\n")
+            .expect("empty filter attributes");
         commit_all(temporary.path(), "requirements");
         let engine = GitCliEngine::default();
         let repository = engine
@@ -8539,7 +8562,7 @@ mod tests {
             .repository_requirements(&repository, temporary.path())
             .expect("requirements");
 
-        assert_eq!(requirements.tracked_paths, 3);
+        assert_eq!(requirements.tracked_paths, 4);
         assert_eq!(
             requirements.ignored_internal_paths,
             [
