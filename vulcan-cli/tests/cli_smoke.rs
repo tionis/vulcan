@@ -39977,3 +39977,44 @@ fn git_changeset_commands_inspect_and_land_staged_work() {
     let pruned = parse_stdout_json(&run(&["prune", "--older-than", "0", "--dry-run"]).success());
     assert_eq!(pruned["pruned"], serde_json::json!([]));
 }
+
+#[test]
+fn sync_conflicts_archive_include_open_clears_legacy_records() {
+    let (_temporary, state_home, reader, id) = setup_cli_sync_conflict();
+    let archive = |arguments: &[&str]| {
+        Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .env("XDG_STATE_HOME", &state_home)
+            .arg("--vault")
+            .arg(&reader)
+            .args(["--output", "json", "sync", "conflicts-archive"])
+            .args(arguments)
+            .assert()
+            .success()
+    };
+    let closed_only = parse_stdout_json(&archive(&["--older-than-days", "0"]));
+    assert_eq!(closed_only["archived"], serde_json::json!([]));
+    let preview = parse_stdout_json(&archive(&["--include-open", "--dry-run"]));
+    assert_eq!(preview["archived"][0], id);
+
+    let archived = parse_stdout_json(&archive(&["--include-open"]));
+    assert_eq!(archived["archived"][0], id);
+    let list = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("XDG_STATE_HOME", &state_home)
+        .arg("--vault")
+        .arg(&reader)
+        .args(["--output", "json", "sync", "conflicts"])
+        .assert()
+        .success();
+    assert_eq!(parse_stdout_json(&list)["count"], 0);
+    let detail = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("XDG_STATE_HOME", &state_home)
+        .arg("--vault")
+        .arg(&reader)
+        .args(["--output", "json", "sync", "conflicts", &id])
+        .assert()
+        .success();
+    assert_eq!(parse_stdout_json(&detail)["record"]["id"], id);
+}

@@ -5300,7 +5300,7 @@ pub enum SyncCommand {
     },
     #[command(
         about = "Move long-closed conflicts into the compact conflict archive",
-        long_about = "Move conflicts that were resolved or superseded at least --older-than-days ago into the per-repository conflict archive (refs/vulcan/conflict-archive). Sync does this automatically after 30 days. Archived conflicts stay readable with `vulcan sync conflicts <id>` but can no longer be resolved."
+        long_about = "Move conflicts that were resolved or superseded at least --older-than-days ago into the per-repository conflict archive (refs/vulcan/conflict-archive). Archived conflicts stay readable with `vulcan sync conflicts <id>`. `--include-open` also archives conflicts still open: records left by the removed whole-worktree sync, which nothing can resolve any more. Read them first (`vulcan sync conflicts <id>` shows the preserved sides) and restore anything you need by hand."
     )]
     ConflictsArchive {
         #[arg(long, help = "Optional registered wiki ID")]
@@ -5312,6 +5312,11 @@ pub enum SyncCommand {
             help = "Archive conflicts closed at least this many days ago"
         )]
         older_than_days: u64,
+        #[arg(
+            long,
+            help = "Also archive open conflicts left by the removed whole-worktree sync"
+        )]
+        include_open: bool,
         #[arg(
             long,
             help = "List the conflicts that would move without changing anything"

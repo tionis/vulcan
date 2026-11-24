@@ -364,6 +364,9 @@ it with the repository. Never hand-edit a pointer to name a directory outside th
   `refs/vulcan/conflict-archive` by hand. Archived conflicts stay readable with
   `vulcan sync conflicts <id>` (listings show `archived_count`). To archive sooner, preview
   `vulcan sync conflicts-archive --older-than-days <n> --dry-run`, then rerun without `--dry-run`.
+  Unresolved records keep `sync status` reporting the vault as conflicted; once their bytes are
+  recovered or not needed, `vulcan sync conflicts-archive --include-open` archives them too. Ask
+  the user before archiving open records.
 - Use JSON `operational_stats` (`git_subprocesses`, `elapsed_ms`, `backend_cycle_ms`,
   `cache_refresh_ms`), or the concise `--verbose` human line, to assess one cycle's cost. These are
   content-free observations for that cycle.

@@ -516,20 +516,24 @@ pub fn list_sync_conflicts_with_state_store(
 }
 
 /// Moves conflicts closed for at least `older_than` into the conflict archive
-/// now, as sync maintenance does after 30 days. A dry run reports what would
-/// move without taking locks or changing anything.
+/// now. With `include_open`, also archives conflicts still open: records left
+/// by the removed whole-worktree sync, which nothing can resolve any more and
+/// which would otherwise report the vault as conflicted indefinitely. A dry
+/// run reports what would move without taking locks or changing anything.
 pub fn archive_sync_conflicts(
     paths: &vulcan_core::VaultPaths,
     older_than: std::time::Duration,
+    include_open: bool,
     dry_run: bool,
 ) -> Result<ConflictArchiveReport, AppError> {
     let state_store = SyncStateStore::user_default()?;
-    archive_sync_conflicts_with_state_store(paths, older_than, dry_run, &state_store)
+    archive_sync_conflicts_with_state_store(paths, older_than, include_open, dry_run, &state_store)
 }
 
 pub fn archive_sync_conflicts_with_state_store(
     paths: &vulcan_core::VaultPaths,
     older_than: std::time::Duration,
+    include_open: bool,
     dry_run: bool,
     state_store: &SyncStateStore,
 ) -> Result<ConflictArchiveReport, AppError> {
@@ -553,6 +557,7 @@ pub fn archive_sync_conflicts_with_state_store(
         &repository,
         &repository_key,
         older_than,
+        include_open,
         Some(&remote),
         dry_run,
     )
@@ -1349,17 +1354,26 @@ impl SyncConflictStore {
     /// ref moves, the conflict's directory, markers, and local refs go away;
     /// readers then serve it from the archive. At most a bounded batch moves
     /// per run. The caller holds the vault and repository locks.
+    #[allow(clippy::too_many_arguments)]
     pub fn archive_closed(
         &self,
         engine: &dyn GitEngine,
         repository: &GitRepository,
         repository_key: &str,
         older_than: std::time::Duration,
+        include_open: bool,
         remote: Option<&GitRemote>,
         dry_run: bool,
     ) -> Result<ConflictArchiveReport, AppError> {
         validate_hex_id("repository key", repository_key)?;
-        let candidates = self.archive_candidates(repository_key, older_than)?;
+        let mut candidates = self.archive_candidates(repository_key, older_than)?;
+        if include_open {
+            for record in self.open_records(repository_key)? {
+                if !candidates.contains(&record.id) {
+                    candidates.push(record.id);
+                }
+            }
+        }
         if candidates.is_empty() && !dry_run {
             // Nothing to move: answer without reading Git.
             return Ok(ConflictArchiveReport {

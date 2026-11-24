@@ -278,7 +278,10 @@ vulcan sync conflicts-archive --dry-run
 ```
 
 `sync conflicts-archive` moves records closed at least `--older-than-days` (default 30) ago into a
-Git-reachable archive.
+Git-reachable archive. Unresolved records keep `vulcan sync status` reporting the vault as
+conflicted; read them, restore anything you still need from their preserved sides with ordinary
+Git, and then archive them with `vulcan sync conflicts-archive --include-open`. Archived records
+stay readable with `vulcan sync conflicts <id>`.
 
 If a finite cycle is interrupted or the network is unavailable, rerun `vulcan sync run`. Device-local journals and Git refs retain the captured state; do not delete them or replace the vault with a fresh clone as a recovery shortcut.
 

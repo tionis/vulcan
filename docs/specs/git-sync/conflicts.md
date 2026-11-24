@@ -23,8 +23,10 @@ Part of the [Git synchronization and daemon architecture](../git-sync-architectu
   contract advertises the same 256-path page ceiling, and the MCP `sync` pack exposes the same
   immutable list and detail. Registered `sync status` and the daemon's reconstructed status count
   unresolved records.
-- `vulcan sync conflicts-archive [--older-than-days <n>] [--dry-run]` moves records closed (resolved
-  or superseded) at least that long ago, 30 days by default, into a per-repository archive under the
+- `vulcan sync conflicts-archive [--older-than-days <n>] [--include-open] [--dry-run]` moves records
+  closed (resolved or superseded) at least that long ago, 30 days by default, and with
+  `--include-open` also every record still unresolved (nothing can resolve one any more, and each
+  keeps the vault's status conflicted), into a per-repository archive under the
   vault and repository locks; a dry run takes no locks and changes nothing. Sync no longer archives
   automatically. The local ref `refs/vulcan/conflict-archive` names a parentless commit whose root
   lists immutable segments `sNNNNNN` plus a `count` blob; each run writes its batch as one new

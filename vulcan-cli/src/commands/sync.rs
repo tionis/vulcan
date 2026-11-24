@@ -692,8 +692,16 @@ fn handle_non_cycle_sync_command(
         SyncCommand::ConflictsArchive {
             wiki,
             older_than_days,
+            include_open,
             dry_run,
-        } => run_sync_conflicts_archive(cli, paths, wiki.as_deref(), *older_than_days, *dry_run),
+        } => run_sync_conflicts_archive(
+            cli,
+            paths,
+            wiki.as_deref(),
+            *older_than_days,
+            *include_open,
+            *dry_run,
+        ),
         SyncCommand::IgnoreDeviceFiles { wiki, dry_run } => {
             run_sync_ignore_device_files(cli, paths, wiki.as_deref(), *dry_run)
         }
@@ -1456,19 +1464,25 @@ fn run_sync_conflicts_archive(
     selected_paths: &VaultPaths,
     wiki: Option<&str>,
     older_than_days: u64,
+    include_open: bool,
     dry_run: bool,
 ) -> Result<(), CliError> {
     let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
     check_sync_permission(cli, &paths, registration_profile.as_deref())?;
     let older_than = std::time::Duration::from_secs(older_than_days.saturating_mul(24 * 60 * 60));
-    let report = vulcan_app::sync_conflicts::archive_sync_conflicts(&paths, older_than, dry_run)
-        .map_err(CliError::operation)?;
+    let report = vulcan_app::sync_conflicts::archive_sync_conflicts(
+        &paths,
+        older_than,
+        include_open,
+        dry_run,
+    )
+    .map_err(CliError::operation)?;
     if cli.output == OutputFormat::Json {
         return print_json(&report);
     }
     let verb = if dry_run { "Would archive" } else { "Archived" };
     println!(
-        "{verb} {} closed conflict(s); the archive holds {}.",
+        "{verb} {} conflict(s); the archive holds {}.",
         report.archived.len(),
         report.archived_total
     );
@@ -1595,7 +1609,7 @@ fn print_sync_conflict_list(
         );
     }
     if report.count > 0 {
-        println!("Conflict records are retained from the removed whole-worktree sync mode and can no longer be resolved; the preserved sides stay readable here and under refs/vulcan/conflicts.");
+        println!("Conflict records are retained from the removed whole-worktree sync mode and can no longer be resolved; the preserved sides stay readable here and under refs/vulcan/conflicts. Once you have kept what you need, `vulcan sync conflicts-archive --include-open` archives them.");
     } else {
         println!("No conflict records are retained.");
     }
@@ -1667,7 +1681,7 @@ fn print_sync_conflict_detail(
         }
         return Ok(());
     }
-    println!("Conflict records are retained from the removed whole-worktree sync mode and can no longer be resolved; the preserved sides stay readable here and under refs/vulcan/conflicts.");
+    println!("Conflict records are retained from the removed whole-worktree sync mode and can no longer be resolved; the preserved sides stay readable here and under refs/vulcan/conflicts. Once you have kept what you need, `vulcan sync conflicts-archive --include-open` archives them.");
     Ok(())
 }
 

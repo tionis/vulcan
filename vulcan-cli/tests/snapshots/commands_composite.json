@@ -11792,6 +11792,20 @@
                 ]
               },
               {
+                "help": "Also archive open conflicts left by the removed whole-worktree sync",
+                "id": "include_open",
+                "long": "include-open",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "INCLUDE_OPEN"
+                ]
+              },
+              {
                 "help": "List the conflicts that would move without changing anything",
                 "id": "dry_run",
                 "long": "dry-run",

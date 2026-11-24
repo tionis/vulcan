@@ -175,7 +175,7 @@ fn reconstruct_sync_status(
             DaemonSyncStatusSource::Conflict,
             SyncState::Conflicted,
             open_conflicts,
-            Some("unresolved preserved synchronization conflicts".to_string()),
+            Some("conflict records left by the removed whole-worktree sync; read them with `vulcan sync conflicts`, then archive them with `vulcan sync conflicts-archive --include-open`".to_string()),
         ));
     }
     if registration.sync_paused {

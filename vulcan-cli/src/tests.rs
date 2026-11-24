@@ -3318,6 +3318,7 @@ fn parses_sync_conflicts_archive() {
             command: SyncCommand::ConflictsArchive {
                 wiki: Some(ref wiki),
                 older_than_days: 7,
+                include_open: false,
                 dry_run: true,
             }
         } if wiki == "personal"
@@ -3330,6 +3331,7 @@ fn parses_sync_conflicts_archive() {
             command: SyncCommand::ConflictsArchive {
                 wiki: None,
                 older_than_days: 30,
+                include_open: false,
                 dry_run: false,
             }
         }
