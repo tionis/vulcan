@@ -74,7 +74,9 @@ Because sync moves only commits, capture belongs to whoever commits:
 - An MCP session may stage work in a changeset: a `vulcan/changeset/<id>` branch checked out in a
   worktree under the user state directory. Sync never sees the branch or the worktree; landing
   fast-forwards the vault's branch under the vault write lock (rebasing first if it moved), and
-  sync then publishes the result like any other commit.
+  sync then publishes the result like any other commit. A changeset is not itself trusted; a skill
+  command runs there under its vault's trust and grants only while its skill directory is
+  byte-identical to the vault's and its effective permission profile grants no more there.
 
 ## Triggers
 

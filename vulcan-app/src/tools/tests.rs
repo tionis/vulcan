@@ -1119,3 +1119,99 @@ metadata:
         None => env::remove_var("XDG_CONFIG_HOME"),
     }
 }
+
+#[cfg(not(target_os = "windows"))]
+#[test]
+fn a_changeset_runs_its_vaults_granted_tools_only_while_they_are_unchanged() {
+    let _lock = test_env_lock_guard();
+    let (_dir, paths) = test_paths();
+    let config_home = TempDir::new().expect("config home should be created");
+    let state_home = TempDir::new().expect("state home should be created");
+    let previous_xdg = env::var_os("XDG_CONFIG_HOME");
+    let previous_state = env::var_os("XDG_STATE_HOME");
+    env::set_var("XDG_CONFIG_HOME", config_home.path());
+    env::set_var("XDG_STATE_HOME", state_home.path());
+    with_trusted_vault(&paths);
+    let skill = paths.vault_root().join(".agents/skills/checker");
+    fs::create_dir_all(skill.join("scripts")).expect("skill dir");
+    fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: checker\ndescription: Run the checker.\nmetadata:\n  vulcan:\n    commands:\n      - id: run\n        script: scripts/run.js\n        sandbox: strict\n        expose: true\n        input_schema:\n          type: object\n        host_commands:\n          - [\"pwd\"]\n---\n\n# checker\n",
+    )
+    .expect("manifest");
+    fs::write(
+        skill.join("scripts/run.js"),
+        "function main() { return host.exec([\"pwd\"]).stdout.trim(); }\n",
+    )
+    .expect("script");
+    fs::write(paths.vault_root().join(".gitignore"), ".vulcan/\n").expect("gitignore");
+    let git = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+            .args(args)
+            .current_dir(paths.vault_root())
+            .status()
+            .expect("git runs");
+        assert!(status.success(), "git {args:?}");
+    };
+    git(&["init", "--quiet", "-b", "main"]);
+    git(&["add", "-A"]);
+    git(&["commit", "--quiet", "-m", "seed"]);
+    scan_vault(&paths, ScanMode::Full).expect("scan");
+    let options = CustomToolRegistryOptions::default();
+    crate::tool_grants::grant_tool(&paths, "skill_checker_run", &options, false).expect("grant");
+
+    let changeset = crate::changesets::begin_changeset(&paths, None).expect("changeset");
+    let staged = crate::changesets::changeset_paths(&changeset);
+    assert!(!trust::is_trusted(staged.vault_root()));
+    let run = || {
+        run_custom_tool(
+            &staged,
+            Some("writer"),
+            "skill_checker_run",
+            &json!({}),
+            &options,
+            &CustomToolRunOptions::default(),
+        )
+    };
+    // The vault's own tool, with the vault's grant, running in the changeset.
+    let report = run().expect("the vault's granted tool runs in its changeset");
+    let ran_in = std::path::PathBuf::from(report.result.as_str().expect("pwd"));
+    assert_eq!(
+        ran_in.canonicalize().expect("pwd path"),
+        staged.vault_root().canonicalize().expect("worktree")
+    );
+
+    // Editing the tool in the changeset forfeits the vault's trust there.
+    fs::write(
+        staged
+            .vault_root()
+            .join(".agents/skills/checker/scripts/run.js"),
+        "function main() { return host.exec([\"pwd\"]).stdout; }\n",
+    )
+    .expect("edit");
+    let error = run().expect_err("an edited tool must not run").to_string();
+    assert!(error.contains("differs from its vault's copy"), "{error}");
+    // The vault itself is unaffected.
+    run_custom_tool(
+        &paths,
+        Some("writer"),
+        "skill_checker_run",
+        &json!({}),
+        &options,
+        &CustomToolRunOptions::default(),
+    )
+    .expect("the vault's tool still runs");
+
+    crate::changesets::abandon_changeset(&paths, &changeset.id).expect("abandon");
+    trust::revoke_trust(paths.vault_root()).expect("trust should be removed");
+    for (key, value) in [
+        ("XDG_CONFIG_HOME", previous_xdg),
+        ("XDG_STATE_HOME", previous_state),
+    ] {
+        match value {
+            Some(value) => env::set_var(key, value),
+            None => env::remove_var(key),
+        }
+    }
+}

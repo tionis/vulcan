@@ -140,6 +140,7 @@ pub fn show_custom_tool(
             &tool.summary.name,
             tool.summary.permission_profile.as_deref(),
             tool.summary.sandbox,
+            options,
         ),
         tool,
     })
@@ -206,8 +207,89 @@ fn run_custom_tool_with_context(
     registry_options: &CustomToolRegistryOptions,
     run_options: &CustomToolRunOptions,
 ) -> Result<CustomToolRunReport, AppError> {
-    require_trusted_tool_execution(paths, Some(name))?;
-    run_skill_command_tool_with_context(paths, context, name, input, registry_options, run_options)
+    let Some(trust_root) = tool_trust_root(
+        paths,
+        context.active_permission_profile.as_deref(),
+        name,
+        registry_options,
+    ) else {
+        let in_trusted_changeset = crate::changesets::changeset_vault(paths.vault_root())
+            .is_some_and(|vault| trust::is_trusted(&vault));
+        if in_trusted_changeset {
+            return Err(AppError::operation(format!(
+                "tool `{name}` differs from its vault's copy in this changeset (its skill or permission profile changed), so it does not run with the vault's trust here; land or abandon the change first"
+            )));
+        }
+        // Not trusted at all (a trusted vault is its own trust root).
+        require_trusted_tool_execution(paths, Some(name))?;
+        return Err(AppError::operation(format!(
+            "tool `{name}` cannot run with trust here"
+        )));
+    };
+    run_skill_command_tool_with_context(
+        paths,
+        &trust_root,
+        context,
+        name,
+        input,
+        registry_options,
+        run_options,
+    )
+}
+
+/// The vault whose trust and device grants a skill command runs under: the
+/// vault itself when it is trusted, or, inside a changeset worktree, the
+/// changeset's trusted vault when the command is the vault's own. That is,
+/// the skill directory is byte-identical and the command's effective
+/// permission profile grants no more here than in the vault, so a session
+/// cannot edit a tool or its profile in its changeset and run it with the
+/// vault's trust.
+fn tool_trust_root(
+    paths: &VaultPaths,
+    active_permission_profile: Option<&str>,
+    name: &str,
+    options: &CustomToolRegistryOptions,
+) -> Option<VaultPaths> {
+    if trust::is_trusted(paths.vault_root()) {
+        return Some(paths.clone());
+    }
+    let vault = VaultPaths::new(crate::changesets::changeset_vault(paths.vault_root())?);
+    if !trust::is_trusted(vault.vault_root()) {
+        return None;
+    }
+    let (skill, command) = resolve_skill_command_tool(paths, name, options).ok()?;
+    let (vault_skill, vault_command) = resolve_skill_command_tool(&vault, name, options).ok()?;
+    let here = crate::tool_grants::skill_digest(&skill_directory(paths, &skill.summary).ok()?);
+    let there =
+        crate::tool_grants::skill_digest(&skill_directory(&vault, &vault_skill.summary).ok()?);
+    if here.ok()? != there.ok()? {
+        return None;
+    }
+    let profile = effective_tool_permission_profile(
+        paths,
+        active_permission_profile,
+        name,
+        command.permission_profile.as_deref(),
+    )
+    .ok()?;
+    let vault_profile = effective_tool_permission_profile(
+        &vault,
+        active_permission_profile,
+        name,
+        vault_command.permission_profile.as_deref(),
+    )
+    .ok()?;
+    if profile != vault_profile {
+        return None;
+    }
+    if let Some(profile) = profile.as_deref() {
+        let here = resolve_permission_profile(paths, Some(profile)).ok()?;
+        let there = resolve_permission_profile(&vault, Some(profile)).ok()?;
+        if !here.grant.is_subset_of(&there.grant) {
+            return None;
+        }
+    }
+    Some(vault)
 }
 
 fn skill_command_tool_descriptors(
@@ -232,6 +314,7 @@ fn skill_command_tool_descriptors(
                         &skill_command_tool_name(&skill.name, &command.id),
                         command.permission_profile.as_deref(),
                         command.sandbox.unwrap_or(JsRuntimeSandbox::Strict),
+                        options,
                     ),
                     summary: skill_command_tool_summary(paths, &skill, &command),
                 })
@@ -294,6 +377,7 @@ fn skill_command_tool_summary(
 
 fn run_skill_command_tool_with_context(
     paths: &VaultPaths,
+    trust_root: &VaultPaths,
     context: &CustomToolJsRegistryContext,
     name: &str,
     input: &Value,
@@ -317,8 +401,10 @@ fn run_skill_command_tool_with_context(
     let script_path = skill_command_script_path(paths, &skill.summary, &command)?;
     let tool_name = skill_command_tool_name(&skill.summary.name, &command.id);
     let ungranted = !command.host_commands.is_empty();
+    // Grants belong to the trusted vault; the digest is of the skill as it
+    // runs here, which `tool_trust_root` found identical to the vault's.
     let granted_host_commands = crate::tool_grants::active_host_commands(
-        paths,
+        trust_root,
         &tool_name,
         &skill_directory(paths, &skill.summary)?,
         &command.host_commands,
@@ -682,8 +768,9 @@ fn custom_tool_is_callable(
     tool_name: &str,
     requested_permission_profile: Option<&str>,
     sandbox: JsRuntimeSandbox,
+    options: &CustomToolRegistryOptions,
 ) -> bool {
-    if !trust::is_trusted(paths.vault_root()) {
+    if tool_trust_root(paths, active_permission_profile, tool_name, options).is_none() {
         return false;
     }
     let Ok(effective_permission_profile) = effective_tool_permission_profile(

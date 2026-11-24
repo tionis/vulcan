@@ -121,6 +121,20 @@ pub fn is_changeset_worktree(root: &Path) -> bool {
     root.starts_with(base)
 }
 
+/// The vault a changeset worktree belongs to: its repository's main
+/// worktree (a changeset's vault is always the root of its repository).
+/// `None` when `root` is not a changeset worktree.
+#[must_use]
+pub fn changeset_vault(root: &Path) -> Option<PathBuf> {
+    if !is_changeset_worktree(root) {
+        return None;
+    }
+    let list = git_text(root, &["worktree", "list", "--porcelain"]).ok()?;
+    let main = list.lines().next()?.strip_prefix("worktree ")?;
+    let main = canonical(Path::new(main)).ok()?;
+    (main != canonical(root).ok()?).then_some(main)
+}
+
 fn validate_id(id: &str) -> Result<(), AppError> {
     if id.is_empty()
         || id.len() > 64

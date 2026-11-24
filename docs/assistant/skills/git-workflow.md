@@ -43,8 +43,10 @@ A vault can be one directory of a larger Git repository, such as the `docs/` dir
   the vault's branch, rebasing first if it moved. A rebase conflict keeps the changeset unchanged
   and names the paths: `changeset_switch {}` back to the vault, look, and either fix the vault
   side or `changeset_abandon` and redo the change. `changeset_list` shows open changesets;
-  `changeset_switch {"id": …}` resumes one. Changesets are not trusted vaults, so custom skill
-  tools are not callable inside one. If someone lands or abandons your changeset meanwhile, your
+  `changeset_switch {"id": …}` resumes one. Inside a changeset the vault's skill tools (and
+  their device grants) work as long as you have not edited the skill or its permission profile
+  there; they run in the changeset's worktree, so a check tool checks your staged work. Edited
+  tools are refused until landed. If someone lands or abandons your changeset meanwhile, your
   next call fails once with "no longer exists" and the session is back on the vault: check
   `git_log` before repeating the call. Empty changesets idle for a day are removed
   automatically; land or abandon yours rather than leaving them.
