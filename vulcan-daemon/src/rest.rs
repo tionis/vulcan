@@ -1443,8 +1443,6 @@ mod tests {
             credential: Arc::new(
                 crate::credentials::CompanionCredential::generate(vec![]).unwrap(),
             ),
-            resolution_agent: None,
-            semantic_agent: None,
             shutdown: None,
             ingress_shutdown: None,
             routed_reads: Some(routed),

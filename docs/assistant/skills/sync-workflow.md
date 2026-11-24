@@ -448,43 +448,6 @@ commits and is never written from live.
   or page the conflict before selecting groups when the preview is incomplete.
 - Treat `classification.formatting_candidate` only as a review-order hint. It never authorizes a
   side or automatic merge, and sensitive Markdown shapes deliberately remain unclassified.
-- When the user explicitly selects a formatter for candidate groups, use
-  `vulcan sync format-propose <id> --group <group-id> --formatter <absolute-path> --formatter-version '<exact --version output>' --dry-run`.
-  Add repeatable `--formatter-arg` values, using `{file}` and `{config}` placeholders when needed,
-  and `--formatter-config <file>` only for an explicit config. Vulcan formats private copies of all
-  three preserved sides, requires their normalized merge to be clean, and creates a pinned proposal
-  only after `--dry-run` is removed. Review and approve that proposal separately; never infer
-  formatter choice, discover ambient config, or auto-accept formatter output.
-- Never choose a winner implicitly. Preview one explicit side with
-  `vulcan sync resolve <id> --side base|local|remote --dry-run`.
-  For a large path conflict, inspect each path's `group_id`, then repeat
-  `--group <group-id>` to preview and apply one bounded batch of complete groups. A successful
-  batch is overlaid on the current accepted tree, so earlier batches and unrelated later edits are
-  retained; unselected groups remain actionable. Interrupted unpublished batches become
-  `needs_rebase` and replan when selected inputs are unchanged; published batches can apply a later
-  accepted descendant. If a selected group's provisional object changed, stop for fresh
-  reconciliation rather than replaying the original divergence.
-  For a `tree_validation` conflict with no individual conflict paths, the selected side replaces
-  the complete candidate tree; this is the explicit escape hatch when Git merged cleanly but
-  Vulcan's whole-tree link or deletion policy rejected the result.
-- For reviewed content, use complete `--file '<conflict-path>=<source>'` inputs, a reviewed
-  `--patch <file>`, or `--editor`; preview every mode first. The editor writes markers only in a
-  private temporary directory. `--editor --dry-run` only validates preconditions; omit
-  `--dry-run` to launch the editor and apply the reviewed files. When an actively edited vault
-  repeatedly changes during review, pause automatic sync first and close the editor that is
-  rewriting those files; manual `sync resolve` remains available while paused.
-- Large reviewed resolutions may repeat `--group <group-id>` with `--file`, `--patch`, or
-  `--editor`. Files and patches must cover exactly every path in those complete groups; the editor
-  materializes only those paths. The retained proposal is pinned to the accepted revision captured
-  before reading the patch or launching the editor. If that revision moves during review, prepare
-  and review a fresh result rather than expecting reviewed bytes to rebase automatically.
-  Unselected groups remain pending.
-- Generate model help only when requested with `vulcan sync propose <id> --model <model> ...`.
-  For a large conflict, repeat `--group <group-id>` to disclose and propose only complete selected
-  groups; unselected internal, binary, or otherwise ineligible paths are not sent to the provider.
-  Provider output is an untrusted retained proposal, not an accepted merge. Review it, then preview
-  exact approval with `sync resolve --approve-proposal <proposal-id> --dry-run`, or reject it with
-  `sync reject <conflict-id> <proposal-id> --dry-run`.
 - A published conflict projection keeps accepted remote bytes provisionally at the original path
   so clean merged paths can continue synchronizing, but it does not place conflict artifacts in the
   vault. Inspect the preserved base/local/remote inputs with `sync conflicts`, reviewed resolution
@@ -614,30 +577,7 @@ commits and is never written from live.
 - Provider endpoints/models are daemon configuration, not companion request fields. Use
   `vulcan daemon config set-agent resolution|semantic ... --dry-run`, keep key values in the named
   environment variable, apply deliberately, and restart the daemon.
-- For daemon-owned LLM semantic commits, configure the semantic agent first, then preview and apply
-  `vulcan daemon config set-semantic-worker --wiki <id> --quiet-seconds <n> --maximum-wait-seconds <n> --poll-seconds <n>`.
-  The allowlist is explicit; paused/busy wikis are skipped. Restart after changing configuration,
-  inspect `vulcan daemon semantic-status`, and disable with `daemon config clear-semantic-worker`.
-  Local Git/config hints and sync-job changes wake evaluation; quiet/max-wait deadlines run when
-  due. `--poll-seconds` controls error retry, while remote-only changes and missed hints are
-  reconciled every `max(300, poll_seconds)` seconds, plus any in-flight work. Status
-  `checked_unix_ms` is the last persisted evaluation, not a per-poll liveness timestamp:
-  unchanged reports are retained until the reconciliation heartbeat. Do not interpret an
-  unchanged timestamp between heartbeats as a stalled worker.
-- For a designated unattended resolver, configure the daemon resolution agent, enable
-  `sync.agent_auto_accept` only in each selected vault's local config, then preview and apply
-  `vulcan daemon config set-conflict-worker --wiki <id> --max-groups-per-run <1..128> --poll-seconds <n>`.
-  Restart the daemon and inspect `vulcan daemon conflict-status`. The worker only auto-submits
-  bounded singleton Markdown/text overlaps with complete regular-file evidence and no broad
-  context; everything else remains reviewable. Disable it with `daemon config clear-conflict-worker`.
-  When the vault's `sync.branch_pull` is `guarded-rebase` or `rebase`, the same worker also
-  replays a branch whose rebase stopped on a conflict, asking the agent per conflicted commit in a
-  scratch worktree, and queues a sync to publish it; `conflict-status` shows `replayed_branch` or
-  `declined_replay` with the reason. It never touches shared commits, merges, deletions, non-text
-  files, or uncommitted edits, so a declined replay still needs `git pull --rebase` by a person.
-  Do not configure a second resolver daemon for the same vault merely for availability: process
-  claims prevent duplicate calls locally, while remote leases prevent unsafe publication but not
-  duplicate provider spending across devices.
+- For a designated unattended resolver, configure `vulcan daemon config set-agent resolution`, then preview and apply `vulcan daemon config set-conflict-worker --wiki <id> --poll-seconds <n> --dry-run`. Restart and inspect `vulcan daemon conflict-status`. When the vault's `sync.branch_pull` is `guarded-rebase` or `rebase`, the worker replays a branch whose rebase stopped on a conflict, asking the agent per conflicted commit in a scratch worktree, and leaves publication to the next sync; `conflict-status` shows `replayed_branch` or `declined_replay` with the reason. It never touches shared commits, merges, deletions, non-text files, or uncommitted edits, so a declined replay still needs `git pull --rebase` by a person. Configure only one resolver node per vault.
 
 ## Android and detached Git data
 
@@ -693,30 +633,6 @@ commits and is never written from live.
 - If private Git data is lost, preview `vulcan vault recover-git <wiki> <remote> --dry-run`.
   Recovery captures the untouched materialized vault before fetching, but cannot reconstruct
   unpushed objects that existed only in the deleted Git directory.
-
-## Retention and semantic history
-
-- Use `sync retention-plan` before any retention action. Preview `sync retention-apply --dry-run`;
-  add `--rollover` or epoch-archive expiry only after the user accepts the offline-recovery impact.
-- Use `sync semantic-plan --from <rev> --to <accepted-live-rev> --dry-run` to propose human-facing
-  history without rewriting live snapshots. `top-level` is default; `file`, `change`, `hunk`, and
-  `all` are deterministic alternatives. Hunk grouping splits only safe separated text changes.
-- Materialize the plan only after review, preview `sync semantic-apply <plan-id> --dry-run`, and then
-  apply explicitly. Preview `sync semantic-publish <plan-id> --dry-run` before publication; the
-  real command uses the recorded source as an exact remote lease and refuses divergence instead
-  of force-pushing. Reject declined plans with `sync semantic-reject <plan-id> --dry-run` followed
-  by the reviewed mutation. Never edit proposal refs or retained plan JSON manually.
-- For cron, timers, or Forgejo CI, use `sync semantic-auto [<wiki>]`. It runs one bounded cycle and
-  exits: `deferred` means the accepted live revision has not passed `--quiet-seconds`, `up_to_date`
-  means no semantic tree change exists, and `completed` includes application plus leased
-  publication. Use `--maximum-wait-seconds` to cap batching and `--dry-run` for a state-free preview.
-  The default semantic branch is the checked-out `refs/heads/main`; applying moves its index with it,
-  and the next sync links the published semantic tip into live so later cycles keep working. A
-  separate `--semantic-ref` branch continues from its applied tip's recorded live target.
-  `deferred` and `up_to_date` describe locally accepted refs; idle calls do not query the remote.
-  Due work validates remote agreement before planning, applying, or publishing through the
-  existing guarded workflows. Continuing target changes reset quiet time but retain the first
-  observation for the maximum batching delay across restarts.
 
 ## Non-negotiable safety properties
 

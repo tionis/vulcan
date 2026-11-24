@@ -33,11 +33,9 @@ use vulcan_daemon::process::{
 };
 use vulcan_daemon::registry::{
     DaemonAgentConfig, DaemonAgentKind, DaemonAutoCommitAgentConfig, DaemonBotUser,
-    DaemonCommandNotificationConfig, DaemonConfig, DaemonConflictWorkerConfig,
-    DaemonSemanticWorkerConfig, DaemonWebhookFormat, DaemonWebhookNotificationConfig,
-    NetworkNotificationMode, WikiId,
+    DaemonCommandNotificationConfig, DaemonConfig, DaemonConflictWorkerConfig, DaemonWebhookFormat,
+    DaemonWebhookNotificationConfig, NetworkNotificationMode, WikiId,
 };
-use vulcan_daemon::semantic_worker::{load_semantic_worker_status, SemanticWorkerStatus};
 use vulcan_daemon::service::{
     apply_daemon_service, inspect_daemon_service, plan_daemon_service, DaemonServiceAction,
     DaemonServicePlan, DaemonServicePlatform, DaemonServiceReport, DaemonServiceUser,
@@ -100,14 +98,6 @@ pub(crate) fn handle_daemon_command(cli: &Cli, command: &DaemonCommand) -> Resul
                 status.service = inspect_daemon_service(&plan).map_err(CliError::operation)?;
             }
             print_status(cli.output, &status)
-        }
-        DaemonCommand::SemanticStatus => {
-            let status = load_semantic_worker_status(&context.state_root)
-                .map_err(CliError::operation)?
-                .ok_or_else(|| {
-                    CliError::operation("the semantic worker has not completed a pass")
-                })?;
-            print_semantic_worker_status(cli.output, &status)
         }
         DaemonCommand::ConflictStatus => {
             let status = load_conflict_worker_status(&context.state_root)
@@ -391,26 +381,6 @@ fn print_alert_delivery_status(
     Ok(())
 }
 
-fn print_semantic_worker_status(
-    output: OutputFormat,
-    status: &SemanticWorkerStatus,
-) -> Result<(), CliError> {
-    if output == OutputFormat::Json {
-        return print_json(status);
-    }
-    println!("Semantic worker checked at {} ms", status.checked_unix_ms);
-    for entry in &status.entries {
-        if let Some(report) = &entry.report {
-            println!("{}: {:?}", entry.wiki_id, report.outcome);
-        } else if let Some(detail) = &entry.skipped {
-            println!("{}: skipped ({detail})", entry.wiki_id);
-        } else if let Some(error) = &entry.error {
-            println!("{}: error ({error})", entry.wiki_id);
-        }
-    }
-    Ok(())
-}
-
 fn print_auto_commit_status(
     output: OutputFormat,
     status: &AutoCommitStatusReport,
@@ -467,15 +437,10 @@ fn print_conflict_worker_status(
     }
     println!("Conflict worker checked at {} ms", status.checked_unix_ms);
     for entry in &status.entries {
-        if let Some(proposal) = &entry.proposal_id {
-            println!(
-                "{}: auto-accepted {} group(s) with proposal {}",
-                entry.wiki_id, entry.eligible_groups, proposal
-            );
-        } else if let Some(detail) = &entry.skipped {
-            println!("{}: skipped ({detail})", entry.wiki_id);
-        } else if let Some(error) = &entry.error {
+        if let Some(error) = &entry.error {
             println!("{}: error ({error})", entry.wiki_id);
+        } else if let Some(detail) = &entry.skipped {
+            println!("{}: {detail}", entry.wiki_id);
         }
     }
     Ok(())
@@ -776,9 +741,7 @@ fn mutate_config(
             .registry
             .clear_agent(daemon_agent_kind(*kind), *dry_run)
             .map_err(CliError::operation)?,
-        DaemonConfigCommand::SetSemanticWorker { .. }
-        | DaemonConfigCommand::ClearSemanticWorker { .. }
-        | DaemonConfigCommand::SetConflictWorker { .. }
+        DaemonConfigCommand::SetConflictWorker { .. }
         | DaemonConfigCommand::ClearConflictWorker { .. }
         | DaemonConfigCommand::SetAutoCommitAgent { .. }
         | DaemonConfigCommand::ClearAutoCommitAgent { .. } => {
@@ -814,40 +777,8 @@ fn handle_worker_config(
     command: &DaemonConfigCommand,
 ) -> Option<Result<DaemonConfig, CliError>> {
     let result = match command {
-        DaemonConfigCommand::SetSemanticWorker {
-            wiki,
-            semantic_ref,
-            remote,
-            live_ref,
-            quiet_seconds,
-            maximum_wait_seconds,
-            poll_seconds,
-            no_publish,
-            dry_run,
-        } => context.registry.set_semantic_worker(
-            DaemonSemanticWorkerConfig {
-                wikis: match parse_worker_wikis(wiki) {
-                    Ok(wikis) => wikis,
-                    Err(error) => return Some(Err(error)),
-                },
-                semantic_ref: semantic_ref.clone(),
-                remote: remote.clone(),
-                live_ref: live_ref.clone(),
-                publish: !*no_publish,
-                quiet_seconds: *quiet_seconds,
-                maximum_wait_seconds: *maximum_wait_seconds,
-                poll_seconds: *poll_seconds,
-            },
-            *dry_run,
-        ),
-        DaemonConfigCommand::ClearSemanticWorker { dry_run } => {
-            context.registry.clear_semantic_worker(*dry_run)
-        }
         DaemonConfigCommand::SetConflictWorker {
             wiki,
-            remote,
-            live_ref,
-            max_groups_per_run,
             poll_seconds,
             dry_run,
         } => context.registry.set_conflict_worker(
@@ -856,9 +787,6 @@ fn handle_worker_config(
                     Ok(wikis) => wikis,
                     Err(error) => return Some(Err(error)),
                 },
-                remote: remote.clone(),
-                live_ref: live_ref.clone(),
-                max_groups_per_run: *max_groups_per_run,
                 poll_seconds: *poll_seconds,
             },
             *dry_run,

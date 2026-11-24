@@ -14,36 +14,21 @@ use crate::supervisor::{
 };
 use crate::sync::{enqueue_registered_wikis, RegisteredSyncError, RegisteredSyncSelection};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-use std::sync::Mutex;
 use vulcan_app::sync_conflicts::{
     get_sync_conflict_page_with_state_store, get_sync_conflict_with_state_store,
-    list_sync_conflicts_with_state_store, resolve_sync_conflict_with_state_store,
-    ResolveSyncConflictOptions, ResolveSyncConflictReport, SyncConflictDetailReport,
-    SyncConflictListReport, SyncConflictResolutionSide,
+    list_sync_conflicts_with_state_store, SyncConflictDetailReport, SyncConflictListReport,
 };
-use vulcan_app::sync_proposals::{
-    approve_resolution_proposal_with_state_store,
-    create_resolution_proposal_with_provider_for_target,
-    reject_resolution_proposal_with_state_store, ApproveResolutionProposalOptions,
-    ApproveResolutionProposalReport, RejectResolutionProposalReport, ResolutionAgentProvider,
-    ResolutionProposal, ResolutionProposalOptions,
-};
-use vulcan_app::sync_semantic::{
-    create_semantic_plan_with_provider_and_state_store, create_semantic_plan_with_state_store,
-    SemanticAgentProvider, SemanticGrouping, SemanticPlanOptions, SemanticPlanReport,
-};
+use vulcan_app::sync_proposals::ResolutionAgentProvider;
+use vulcan_app::sync_semantic::SemanticAgentProvider;
 use vulcan_app::sync_state::SyncStateStore;
 use vulcan_core::{
     resolve_device_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
-use vulcan_sync::DEFAULT_REMOTE_LIVE_REF;
-use vulcan_sync::{GitRefName, GitRemote, SyncJobTrigger, SYNC_CONTRACT_VERSION};
+use vulcan_sync::{SyncJobTrigger, SYNC_CONTRACT_VERSION};
 
 pub const COMPANION_PROTOCOL_VERSION: u32 = 1;
-pub const CONFLICT_PROPOSAL_REQUEST_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -59,11 +44,6 @@ pub enum CompanionOperation {
     SyncActivity,
     ConflictList,
     ConflictDetail,
-    ConflictProposalCreate,
-    ConflictProposalApprove,
-    ConflictProposalReject,
-    ConflictResolve,
-    SemanticPlanCreate,
     JobStatus,
     JobCancel,
     AggregateJobStatus,
@@ -94,13 +74,7 @@ pub struct CompanionCapabilities {
     pub operations: Vec<CompanionOperation>,
     pub transports: Vec<String>,
     pub sync_backends: Vec<String>,
-    pub conflict_resolution_sides: Vec<SyncConflictResolutionSide>,
     pub conflict_contract: CompanionConflictCapabilities,
-    pub agent_conflict_proposals: bool,
-    pub agent_conflict_proposal_limit_per_conflict: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent_conflict_proposal_claim_scope: Option<CompanionProposalClaimScope>,
-    pub agent_semantic_plans: bool,
     /// The REST routes this listener serves, when it serves them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rest: Option<RestCapabilities>,
@@ -117,35 +91,10 @@ pub struct RestCapabilities {
     pub openapi: String,
 }
 
-impl CompanionCapabilities {
-    #[must_use]
-    pub fn supports_scoped_agent_proposals(&self) -> bool {
-        self.agent_conflict_proposals
-            && self
-                .operations
-                .contains(&CompanionOperation::ConflictProposalCreate)
-            && self.conflict_contract.scoped_agent_proposals
-            && self.conflict_contract.agent_proposal_request_version
-                == CONFLICT_PROPOSAL_REQUEST_VERSION
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompanionConflictCapabilities {
     pub path_pagination: bool,
     pub maximum_path_page_size: usize,
-    pub group_batches: bool,
-    pub maximum_groups_per_batch: usize,
-    #[serde(default)]
-    pub scoped_agent_proposals: bool,
-    #[serde(default)]
-    pub agent_proposal_request_version: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CompanionProposalClaimScope {
-    DaemonProcess,
 }
 
 /// How recently a sync must have started for an activity signal to skip a
@@ -207,56 +156,8 @@ impl SyncSelectionRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct ConflictResolveRequest {
-    pub side: SyncConflictResolutionSide,
-    #[serde(default)]
-    pub group_ids: Vec<String>,
-    #[serde(default = "default_remote")]
-    pub remote: String,
-    #[serde(default = "default_live_ref")]
-    pub live_ref: String,
-    #[serde(default)]
-    pub dry_run: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConflictProposalRequest {
-    pub proposal_contract_version: u32,
-    #[serde(default)]
-    pub group_ids: Vec<String>,
-    #[serde(default)]
-    pub context: Vec<String>,
-    #[serde(default)]
-    pub allow_broad_context: bool,
-    #[serde(default = "default_remote")]
-    pub remote: String,
-    #[serde(default = "default_live_ref")]
-    pub live_ref: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct ConflictProposalApprovalRequest {
-    pub proposal_id: String,
-    #[serde(default = "default_remote")]
-    pub remote: String,
-    #[serde(default = "default_live_ref")]
-    pub live_ref: String,
-    #[serde(default)]
-    pub dry_run: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct ConflictProposalRejectionRequest {
-    pub proposal_id: String,
-    #[serde(default)]
-    pub dry_run: bool,
-}
-
 pub struct CompanionResolutionAgent {
     provider: Box<dyn ResolutionAgentProvider>,
-    active_conflicts: Mutex<BTreeSet<String>>,
 }
 
 pub struct CompanionSemanticAgent {
@@ -299,7 +200,6 @@ impl CompanionResolutionAgent {
     pub fn new(provider: impl ResolutionAgentProvider + 'static) -> Self {
         Self {
             provider: Box::new(provider),
-            active_conflicts: Mutex::new(BTreeSet::new()),
         }
     }
 
@@ -316,63 +216,6 @@ impl CompanionResolutionAgent {
         .map_err(|error| invalid_request(error.to_string()))?;
         Ok(Self::new(provider))
     }
-
-    pub(crate) fn claim_conflict(
-        &self,
-        key: String,
-    ) -> Result<CompanionConflictClaim<'_>, CompanionError> {
-        let mut active = self.active_conflicts.lock().map_err(|_| {
-            CompanionError::new(
-                CompanionErrorKind::Internal,
-                "resolution-agent conflict claims are unavailable",
-            )
-        })?;
-        if !active.insert(key.clone()) {
-            return Err(CompanionError::new(
-                CompanionErrorKind::Conflict,
-                "a resolution-agent proposal is already running for this conflict",
-            ));
-        }
-        Ok(CompanionConflictClaim { agent: self, key })
-    }
-}
-
-pub(crate) struct CompanionConflictClaim<'a> {
-    agent: &'a CompanionResolutionAgent,
-    key: String,
-}
-
-impl Drop for CompanionConflictClaim<'_> {
-    fn drop(&mut self) {
-        if let Ok(mut active) = self.agent.active_conflicts.lock() {
-            active.remove(&self.key);
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct SemanticPlanRequest {
-    pub from: String,
-    pub to: String,
-    pub semantic_ref: String,
-    #[serde(default = "default_remote")]
-    pub remote: String,
-    #[serde(default = "default_live_ref")]
-    pub live_ref: String,
-    #[serde(default)]
-    pub grouping: SemanticGrouping,
-    #[serde(default)]
-    pub agent: bool,
-    #[serde(default)]
-    pub dry_run: bool,
-}
-
-fn default_remote() -> String {
-    "origin".to_string()
-}
-
-fn default_live_ref() -> String {
-    DEFAULT_REMOTE_LIVE_REF.to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -415,8 +258,6 @@ pub struct CompanionService<'a> {
     registry: &'a WikiRegistry,
     supervisor: &'a SyncSupervisor,
     state_store: &'a SyncStateStore,
-    resolution_agent: Option<&'a CompanionResolutionAgent>,
-    semantic_agent: Option<&'a CompanionSemanticAgent>,
 }
 
 impl<'a> CompanionService<'a> {
@@ -430,21 +271,7 @@ impl<'a> CompanionService<'a> {
             registry,
             supervisor,
             state_store,
-            resolution_agent: None,
-            semantic_agent: None,
         }
-    }
-
-    #[must_use]
-    pub const fn with_resolution_agent(mut self, agent: &'a CompanionResolutionAgent) -> Self {
-        self.resolution_agent = Some(agent);
-        self
-    }
-
-    #[must_use]
-    pub const fn with_semantic_agent(mut self, agent: &'a CompanionSemanticAgent) -> Self {
-        self.semantic_agent = Some(agent);
-        self
     }
 
     #[must_use]
@@ -452,53 +279,28 @@ impl<'a> CompanionService<'a> {
         CompanionCapabilities {
             protocol_version: COMPANION_PROTOCOL_VERSION,
             sync_contract_version: SYNC_CONTRACT_VERSION,
-            operations: {
-                let mut operations = vec![
-                    CompanionOperation::Capabilities,
-                    CompanionOperation::WikiList,
-                    CompanionOperation::SyncEnqueue,
-                    CompanionOperation::SyncActivity,
-                    CompanionOperation::SyncSelectionEnqueue,
-                    CompanionOperation::SyncStatus,
-                    CompanionOperation::SyncPause,
-                    CompanionOperation::SyncResume,
-                    CompanionOperation::ConflictList,
-                    CompanionOperation::ConflictDetail,
-                    CompanionOperation::ConflictResolve,
-                    CompanionOperation::ConflictProposalApprove,
-                    CompanionOperation::ConflictProposalReject,
-                    CompanionOperation::SemanticPlanCreate,
-                    CompanionOperation::JobStatus,
-                    CompanionOperation::JobCancel,
-                    CompanionOperation::AggregateJobStatus,
-                    CompanionOperation::AggregateJobCancel,
-                ];
-                if self.resolution_agent.is_some() {
-                    operations.extend([CompanionOperation::ConflictProposalCreate]);
-                }
-                operations
-            },
+            operations: vec![
+                CompanionOperation::Capabilities,
+                CompanionOperation::WikiList,
+                CompanionOperation::SyncEnqueue,
+                CompanionOperation::SyncActivity,
+                CompanionOperation::SyncSelectionEnqueue,
+                CompanionOperation::SyncStatus,
+                CompanionOperation::SyncPause,
+                CompanionOperation::SyncResume,
+                CompanionOperation::ConflictList,
+                CompanionOperation::ConflictDetail,
+                CompanionOperation::JobStatus,
+                CompanionOperation::JobCancel,
+                CompanionOperation::AggregateJobStatus,
+                CompanionOperation::AggregateJobCancel,
+            ],
             transports: Vec::new(),
             sync_backends: vec!["git".to_string()],
-            conflict_resolution_sides: vec![
-                SyncConflictResolutionSide::Base,
-                SyncConflictResolutionSide::Local,
-                SyncConflictResolutionSide::Remote,
-            ],
             conflict_contract: CompanionConflictCapabilities {
                 path_pagination: true,
                 maximum_path_page_size: 256,
-                group_batches: true,
-                maximum_groups_per_batch: 128,
-                scoped_agent_proposals: self.resolution_agent.is_some(),
-                agent_proposal_request_version: CONFLICT_PROPOSAL_REQUEST_VERSION,
             },
-            agent_conflict_proposals: self.resolution_agent.is_some(),
-            agent_conflict_proposal_limit_per_conflict: u32::from(self.resolution_agent.is_some()),
-            agent_conflict_proposal_claim_scope: self
-                .resolution_agent
-                .map(|_| CompanionProposalClaimScope::DaemonProcess),
-            agent_semantic_plans: self.semantic_agent.is_some(),
             rest: None,
         }
     }
@@ -645,190 +447,6 @@ impl<'a> CompanionService<'a> {
         .map_err(map_app_error)
     }
 
-    pub fn resolve_conflict(
-        &self,
-        wiki_id: &WikiId,
-        conflict_id: &str,
-        request: &ConflictResolveRequest,
-    ) -> Result<ResolveSyncConflictReport, CompanionError> {
-        let registration = self.checked_git_registration(wiki_id)?;
-        resolve_sync_conflict_with_state_store(
-            &VaultPaths::new(registration.path),
-            conflict_id,
-            &ResolveSyncConflictOptions {
-                side: request.side,
-                group_ids: request.group_ids.clone(),
-                remote: GitRemote::parse(&request.remote)
-                    .map_err(|error| invalid_request(error.to_string()))?,
-                live_ref: GitRefName::parse(&request.live_ref)
-                    .map_err(|error| invalid_request(error.to_string()))?,
-                dry_run: request.dry_run,
-            },
-            self.state_store,
-        )
-        .map_err(map_app_error)
-    }
-
-    pub fn create_conflict_proposal(
-        &self,
-        wiki_id: &WikiId,
-        conflict_id: &str,
-        request: &ConflictProposalRequest,
-    ) -> Result<ResolutionProposal, CompanionError> {
-        self.ensure_knowledge_profile(wiki_id)?;
-        if request.proposal_contract_version != CONFLICT_PROPOSAL_REQUEST_VERSION {
-            return Err(invalid_request(format!(
-                "conflict proposal request version {} is unsupported; expected {}",
-                request.proposal_contract_version, CONFLICT_PROPOSAL_REQUEST_VERSION
-            )));
-        }
-        let agent = self.resolution_agent.ok_or_else(|| {
-            CompanionError::new(
-                CompanionErrorKind::NotFound,
-                "no resolution agent is configured for this companion service",
-            )
-        })?;
-        let registration = self.checked_git_registration(wiki_id)?;
-        let _claim =
-            agent.claim_conflict(format!("{}:{conflict_id}", registration.path.display()))?;
-        let paths = VaultPaths::new(registration.path);
-        let profile = registration
-            .permissions_profile
-            .as_deref()
-            .unwrap_or("unrestricted");
-        let selection =
-            resolve_device_permission_profile(&paths, Some(profile)).map_err(|error| {
-                CompanionError::new(CompanionErrorKind::PermissionDenied, error.to_string())
-            })?;
-        if let Some(endpoint) = agent.provider.network_endpoint() {
-            ProfilePermissionGuard::new(&paths, selection)
-                .check_network(endpoint)
-                .map_err(|error| {
-                    CompanionError::new(CompanionErrorKind::PermissionDenied, error.to_string())
-                })?;
-        }
-        let remote = GitRemote::parse(&request.remote)
-            .map_err(|error| invalid_request(error.to_string()))?;
-        let live_ref = GitRefName::parse(&request.live_ref)
-            .map_err(|error| invalid_request(error.to_string()))?;
-        create_resolution_proposal_with_provider_for_target(
-            &paths,
-            conflict_id,
-            &ResolutionProposalOptions {
-                permission_profile: profile.to_string(),
-                focused_context: request.context.clone(),
-                allow_broad_context: request.allow_broad_context,
-                group_ids: request.group_ids.clone(),
-            },
-            Some((&remote, &live_ref)),
-            agent.provider.as_ref(),
-            &vulcan_app::sync::SyncCancellationToken::default(),
-            self.state_store,
-        )
-        .map_err(map_app_error)
-    }
-
-    pub fn approve_conflict_proposal(
-        &self,
-        wiki_id: &WikiId,
-        conflict_id: &str,
-        request: &ConflictProposalApprovalRequest,
-    ) -> Result<ApproveResolutionProposalReport, CompanionError> {
-        self.ensure_knowledge_profile(wiki_id)?;
-        let registration = self.checked_git_registration(wiki_id)?;
-        approve_resolution_proposal_with_state_store(
-            &VaultPaths::new(registration.path),
-            conflict_id,
-            &request.proposal_id,
-            &ApproveResolutionProposalOptions {
-                remote: GitRemote::parse(&request.remote)
-                    .map_err(|error| invalid_request(error.to_string()))?,
-                live_ref: GitRefName::parse(&request.live_ref)
-                    .map_err(|error| invalid_request(error.to_string()))?,
-                dry_run: request.dry_run,
-                automatic: false,
-            },
-            &vulcan_app::sync::SyncCancellationToken::default(),
-            self.state_store,
-        )
-        .map_err(map_app_error)
-    }
-
-    pub fn reject_conflict_proposal(
-        &self,
-        wiki_id: &WikiId,
-        conflict_id: &str,
-        request: &ConflictProposalRejectionRequest,
-    ) -> Result<RejectResolutionProposalReport, CompanionError> {
-        self.ensure_knowledge_profile(wiki_id)?;
-        let registration = self.checked_git_registration(wiki_id)?;
-        reject_resolution_proposal_with_state_store(
-            &VaultPaths::new(registration.path),
-            conflict_id,
-            &request.proposal_id,
-            request.dry_run,
-            self.state_store,
-        )
-        .map_err(map_app_error)
-    }
-
-    pub fn create_semantic_plan(
-        &self,
-        wiki_id: &WikiId,
-        request: &SemanticPlanRequest,
-    ) -> Result<SemanticPlanReport, CompanionError> {
-        self.ensure_knowledge_profile(wiki_id)?;
-        let registration = self.checked_git_registration(wiki_id)?;
-        let paths = VaultPaths::new(registration.path);
-        let options = SemanticPlanOptions {
-            from: request.from.clone(),
-            to: request.to.clone(),
-            semantic_ref: GitRefName::parse(&request.semantic_ref)
-                .map_err(|error| invalid_request(error.to_string()))?,
-            remote: GitRemote::parse(&request.remote)
-                .map_err(|error| invalid_request(error.to_string()))?,
-            live_ref: GitRefName::parse(&request.live_ref)
-                .map_err(|error| invalid_request(error.to_string()))?,
-            grouping: request.grouping,
-            agent: request.agent,
-            dry_run: request.dry_run,
-        };
-        if !request.agent {
-            return create_semantic_plan_with_state_store(&paths, &options, self.state_store)
-                .map_err(map_app_error);
-        }
-
-        let agent = self.semantic_agent.ok_or_else(|| {
-            CompanionError::new(
-                CompanionErrorKind::NotFound,
-                "no semantic planning agent is configured for this companion service",
-            )
-        })?;
-        let profile = registration
-            .permissions_profile
-            .as_deref()
-            .unwrap_or("unrestricted");
-        let selection =
-            resolve_device_permission_profile(&paths, Some(profile)).map_err(|error| {
-                CompanionError::new(CompanionErrorKind::PermissionDenied, error.to_string())
-            })?;
-        if let Some(endpoint) = agent.provider.network_endpoint() {
-            ProfilePermissionGuard::new(&paths, selection)
-                .check_network(endpoint)
-                .map_err(|error| {
-                    CompanionError::new(CompanionErrorKind::PermissionDenied, error.to_string())
-                })?;
-        }
-        create_semantic_plan_with_provider_and_state_store(
-            &paths,
-            &options,
-            agent.provider.as_ref(),
-            &vulcan_app::sync::SyncCancellationToken::default(),
-            self.state_store,
-        )
-        .map_err(map_app_error)
-    }
-
     pub fn job(&self, job_id: &str) -> Result<SupervisedSyncJob, CompanionError> {
         self.supervisor
             .get(job_id)
@@ -922,18 +540,6 @@ impl<'a> CompanionService<'a> {
             })?;
         Ok(registration)
     }
-
-    fn ensure_knowledge_profile(&self, wiki_id: &WikiId) -> Result<(), CompanionError> {
-        let registration = self.registration(wiki_id)?;
-        if registration.capabilities().knowledge_services {
-            Ok(())
-        } else {
-            Err(CompanionError::new(
-                CompanionErrorKind::PermissionDenied,
-                "this operation requires a knowledge profile; set the directory profile to knowledge",
-            ))
-        }
-    }
 }
 
 fn invalid_request(detail: impl Into<String>) -> CompanionError {
@@ -996,252 +602,7 @@ mod tests {
     use super::*;
     use crate::registry::AddWikiRequest;
     use serde_json::json;
-    use std::fs;
-    use std::path::Path;
-    use std::process::Command;
     use tempfile::tempdir;
-    use vulcan_app::sync::{sync_git_vault_with_state_store, SyncCancellationToken};
-    use vulcan_app::sync_proposals::{
-        ApproveResolutionProposalOutcome, RejectResolutionProposalOutcome, ResolutionAgentIdentity,
-        ResolutionAgentOutput, ResolutionAgentPathOutput, ResolutionAgentRequest,
-        ResolutionAgentTools,
-    };
-    use vulcan_app::sync_semantic::{
-        SemanticAgentCommit, SemanticAgentIdentity, SemanticAgentOutput, SemanticAgentRequest,
-    };
-    use vulcan_sync::GitSyncOptions;
-
-    struct ConfiguredTestProvider;
-
-    struct ResolvingTestProvider;
-
-    struct ConfiguredSemanticTestProvider;
-
-    impl ResolutionAgentProvider for ConfiguredTestProvider {
-        fn identity(&self) -> ResolutionAgentIdentity {
-            ResolutionAgentIdentity {
-                provider: "companion-test".to_string(),
-                model: "fixture-v1".to_string(),
-                prompt_contract_version: 3,
-            }
-        }
-
-        fn network_endpoint(&self) -> Option<&str> {
-            Some("https://agent.example.test/v1/chat/completions")
-        }
-
-        fn propose(
-            &self,
-            _request: &ResolutionAgentRequest,
-            _tools: &mut dyn ResolutionAgentTools,
-            _cancellation: &SyncCancellationToken,
-        ) -> Result<ResolutionAgentOutput, vulcan_app::AppError> {
-            Err(vulcan_app::AppError::operation(
-                "the capability test must not invoke the provider",
-            ))
-        }
-    }
-
-    impl ResolutionAgentProvider for ResolvingTestProvider {
-        fn identity(&self) -> ResolutionAgentIdentity {
-            ResolutionAgentIdentity {
-                provider: "companion-test".to_string(),
-                model: "resolver-v1".to_string(),
-                prompt_contract_version: 3,
-            }
-        }
-
-        fn propose(
-            &self,
-            request: &ResolutionAgentRequest,
-            _tools: &mut dyn ResolutionAgentTools,
-            _cancellation: &SyncCancellationToken,
-        ) -> Result<ResolutionAgentOutput, vulcan_app::AppError> {
-            Ok(ResolutionAgentOutput {
-                explanation: "Resolve the test conflict.".to_string(),
-                referenced_context: Vec::new(),
-                paths: request
-                    .files
-                    .iter()
-                    .map(|file| ResolutionAgentPathOutput {
-                        path: file.path.clone(),
-                        content: b"companion resolution\n".to_vec(),
-                    })
-                    .collect(),
-            })
-        }
-    }
-
-    impl SemanticAgentProvider for ConfiguredSemanticTestProvider {
-        fn identity(&self) -> SemanticAgentIdentity {
-            SemanticAgentIdentity {
-                provider: "companion-test".to_string(),
-                model: "semantic-v1".to_string(),
-                prompt_contract_version: 1,
-            }
-        }
-
-        fn network_endpoint(&self) -> Option<&str> {
-            Some("https://semantic.example.test/v1/chat/completions")
-        }
-
-        fn propose(
-            &self,
-            request: &SemanticAgentRequest,
-            _cancellation: &SyncCancellationToken,
-        ) -> Result<SemanticAgentOutput, vulcan_app::AppError> {
-            Ok(SemanticAgentOutput {
-                commits: vec![SemanticAgentCommit {
-                    group: "notes".to_string(),
-                    message: "Organize accepted notes".to_string(),
-                    paths: request
-                        .changes
-                        .iter()
-                        .map(|change| change.path.clone())
-                        .collect(),
-                }],
-            })
-        }
-    }
-
-    fn git(directory: &Path, arguments: &[&str]) {
-        let output = Command::new("git")
-            .current_dir(directory)
-            .args(arguments)
-            .output()
-            .expect("run git");
-        assert!(
-            output.status.success(),
-            "git {arguments:?} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    fn commit_all(directory: &Path, message: &str) {
-        git(directory, &["add", "--all"]);
-        git(
-            directory,
-            &[
-                "-c",
-                "user.name=Vulcan Test",
-                "-c",
-                "user.email=vulcan@example.invalid",
-                "commit",
-                "--quiet",
-                "-m",
-                message,
-            ],
-        );
-    }
-
-    fn conflict_service_fixture() -> (
-        tempfile::TempDir,
-        WikiRegistry,
-        SyncSupervisor,
-        SyncStateStore,
-        WikiId,
-        String,
-    ) {
-        let temporary = tempdir().expect("temporary directory");
-        let remote = temporary.path().join("remote.git");
-        git(
-            temporary.path(),
-            &[
-                "init",
-                "--quiet",
-                "--bare",
-                remote.to_str().expect("remote"),
-            ],
-        );
-        let writer = temporary.path().join("writer");
-        fs::create_dir(&writer).expect("writer directory");
-        git(
-            &writer,
-            &["-c", "init.defaultBranch=main", "init", "--quiet"],
-        );
-        git(
-            &writer,
-            &["remote", "add", "origin", remote.to_str().expect("remote")],
-        );
-        fs::write(writer.join("Home.md"), "base\n").expect("base note");
-        commit_all(&writer, "base");
-        let state_store = SyncStateStore::at(temporary.path().join("sync-state"));
-        sync_git_vault_with_state_store(
-            &VaultPaths::new(&writer),
-            &GitSyncOptions::default(),
-            &state_store,
-        )
-        .expect("bootstrap writer");
-        let reader = temporary.path().join("reader");
-        git(
-            temporary.path(),
-            &[
-                "clone",
-                "--quiet",
-                writer.to_str().expect("writer"),
-                reader.to_str().expect("reader"),
-            ],
-        );
-        git(
-            &reader,
-            &[
-                "remote",
-                "set-url",
-                "origin",
-                remote.to_str().expect("remote"),
-            ],
-        );
-        sync_git_vault_with_state_store(
-            &VaultPaths::new(&reader),
-            &GitSyncOptions::default(),
-            &state_store,
-        )
-        .expect("bootstrap reader");
-        fs::write(writer.join("Home.md"), "writer\n").expect("writer edit");
-        fs::write(reader.join("Home.md"), "reader\n").expect("reader edit");
-        sync_git_vault_with_state_store(
-            &VaultPaths::new(&writer),
-            &GitSyncOptions::default(),
-            &state_store,
-        )
-        .expect("publish writer");
-        let conflict = sync_git_vault_with_state_store(
-            &VaultPaths::new(&reader),
-            &GitSyncOptions::default(),
-            &state_store,
-        )
-        .expect("reader conflict")
-        .conflict_record
-        .expect("conflict record");
-        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
-        let wiki_id = WikiId::parse("notes").expect("wiki id");
-        registry
-            .add(
-                &AddWikiRequest {
-                    source: None,
-                    profile: None,
-                    id: wiki_id.clone(),
-                    path: reader,
-                    groups: Vec::new(),
-                    git_dir: None,
-                    permissions_profile: None,
-                    sync_backend: Some("git".to_string()),
-                    platform_profile: None,
-                },
-                false,
-            )
-            .expect("register reader");
-        let supervisor =
-            SyncSupervisor::at(temporary.path().join("jobs.json")).expect("supervisor");
-        (
-            temporary,
-            registry,
-            supervisor,
-            state_store,
-            wiki_id,
-            conflict.id,
-        )
-    }
 
     fn fixture(
         temporary: &tempfile::TempDir,
@@ -1273,7 +634,7 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_are_versioned_and_do_not_overpromise_agent_workflows() {
+    fn capabilities_are_versioned_and_list_only_served_operations() {
         let temporary = tempdir().expect("temporary directory");
         let (registry, supervisor, state_store, _) = fixture(&temporary);
         let service = CompanionService::new(&registry, &supervisor, &state_store);
@@ -1281,31 +642,11 @@ mod tests {
 
         assert_eq!(value["protocol_version"], json!(1));
         assert_eq!(value["sync_contract_version"], json!(1));
-        assert_eq!(value["agent_conflict_proposals"], json!(false));
         assert_eq!(value["conflict_contract"]["path_pagination"], json!(true));
         assert_eq!(
             value["conflict_contract"]["maximum_path_page_size"],
             json!(256)
         );
-        assert_eq!(value["conflict_contract"]["group_batches"], json!(true));
-        assert_eq!(
-            value["conflict_contract"]["maximum_groups_per_batch"],
-            json!(128)
-        );
-        assert_eq!(
-            value["conflict_contract"]["scoped_agent_proposals"],
-            json!(false)
-        );
-        assert_eq!(
-            value["conflict_contract"]["agent_proposal_request_version"],
-            json!(CONFLICT_PROPOSAL_REQUEST_VERSION)
-        );
-        assert_eq!(
-            value["agent_conflict_proposal_limit_per_conflict"],
-            json!(0)
-        );
-        assert!(value.get("agent_conflict_proposal_claim_scope").is_none());
-        assert_eq!(value["agent_semantic_plans"], json!(false));
         assert_eq!(value["transports"], json!([]));
         assert!(value["operations"]
             .as_array()
@@ -1315,10 +656,17 @@ mod tests {
             .as_array()
             .expect("operations")
             .contains(&json!("sync_selection_enqueue")));
-        assert!(!value["operations"]
-            .as_array()
-            .expect("operations")
-            .contains(&json!("event_subscribe")));
+        for retired in [
+            "event_subscribe",
+            "conflict_resolve",
+            "conflict_proposal_create",
+            "semantic_plan_create",
+        ] {
+            assert!(!value["operations"]
+                .as_array()
+                .expect("operations")
+                .contains(&json!(retired)));
+        }
     }
 
     #[test]
@@ -1358,411 +706,6 @@ mod tests {
         assert!(service
             .enqueue_sync_selection(&invalid, "credential-a", "selection-2")
             .is_err());
-    }
-
-    #[test]
-    fn semantic_plan_requests_default_and_parse_deterministic_grouping() {
-        let default: SemanticPlanRequest = serde_json::from_value(json!({
-            "from": "main",
-            "to": "refs/vulcan/sync/local/live",
-            "semantic_ref": "refs/heads/main"
-        }))
-        .expect("default semantic plan request");
-        assert_eq!(default.grouping, SemanticGrouping::TopLevel);
-
-        let by_file: SemanticPlanRequest = serde_json::from_value(json!({
-            "from": "main",
-            "to": "refs/vulcan/sync/local/live",
-            "semantic_ref": "refs/heads/main",
-            "grouping": "file"
-        }))
-        .expect("file-grouped semantic plan request");
-        assert_eq!(by_file.grouping, SemanticGrouping::File);
-
-        let by_change: SemanticPlanRequest = serde_json::from_value(json!({
-            "from": "main",
-            "to": "refs/vulcan/sync/local/live",
-            "semantic_ref": "refs/heads/main",
-            "grouping": "change"
-        }))
-        .expect("change-grouped semantic plan request");
-        assert_eq!(by_change.grouping, SemanticGrouping::Change);
-
-        let by_hunk: SemanticPlanRequest = serde_json::from_value(json!({
-            "from": "main",
-            "to": "refs/vulcan/sync/local/live",
-            "semantic_ref": "refs/heads/main",
-            "grouping": "hunk"
-        }))
-        .expect("hunk-grouped semantic plan request");
-        assert_eq!(by_hunk.grouping, SemanticGrouping::Hunk);
-    }
-
-    #[test]
-    fn configured_resolution_agent_is_advertised_without_exposing_its_endpoint() {
-        let temporary = tempdir().expect("temporary directory");
-        let (registry, supervisor, state_store, _) = fixture(&temporary);
-        let agent = CompanionResolutionAgent::new(ConfiguredTestProvider);
-        let service = CompanionService::new(&registry, &supervisor, &state_store)
-            .with_resolution_agent(&agent);
-        let value = serde_json::to_value(service.capabilities()).expect("serialize capabilities");
-
-        assert_eq!(value["agent_conflict_proposals"], json!(true));
-        assert_eq!(
-            value["conflict_contract"]["scoped_agent_proposals"],
-            json!(true)
-        );
-        assert_eq!(
-            value["agent_conflict_proposal_limit_per_conflict"],
-            json!(1)
-        );
-        assert_eq!(
-            value["agent_conflict_proposal_claim_scope"],
-            json!("daemon_process")
-        );
-        assert!(value["operations"]
-            .as_array()
-            .expect("operations")
-            .contains(&json!("conflict_proposal_create")));
-        assert!(service.capabilities().supports_scoped_agent_proposals());
-        assert!(!value.to_string().contains("agent.example.test"));
-    }
-
-    #[test]
-    fn legacy_agent_capabilities_never_authorize_scoped_requests() {
-        let temporary = tempdir().expect("temporary directory");
-        let (registry, supervisor, state_store, _) = fixture(&temporary);
-        let agent = CompanionResolutionAgent::new(ConfiguredTestProvider);
-        let service = CompanionService::new(&registry, &supervisor, &state_store)
-            .with_resolution_agent(&agent);
-        let mut value = serde_json::to_value(service.capabilities()).expect("capabilities");
-        let conflict = value["conflict_contract"]
-            .as_object_mut()
-            .expect("conflict capability object");
-        conflict.remove("scoped_agent_proposals");
-        conflict.remove("agent_proposal_request_version");
-        let legacy: CompanionCapabilities =
-            serde_json::from_value(value).expect("legacy capability fixture");
-
-        assert!(!legacy.supports_scoped_agent_proposals());
-    }
-
-    #[test]
-    fn conflict_proposal_requests_require_exact_selection_contract_fields() {
-        assert!(serde_json::from_value::<ConflictProposalRequest>(json!({
-            "group_ids": ["0123456789abcdef0123456789abcdef"]
-        }))
-        .is_err());
-        assert!(serde_json::from_value::<ConflictProposalRequest>(json!({
-            "proposal_contract_version": CONFLICT_PROPOSAL_REQUEST_VERSION,
-            "group_ids": ["0123456789abcdef0123456789abcdef"],
-            "future_selection": "all"
-        }))
-        .is_err());
-    }
-
-    #[test]
-    fn configured_semantic_agent_is_advertised_without_exposing_its_endpoint() {
-        let temporary = tempdir().expect("temporary directory");
-        let (registry, supervisor, state_store, _) = fixture(&temporary);
-        let agent = CompanionSemanticAgent::new(ConfiguredSemanticTestProvider);
-        let service =
-            CompanionService::new(&registry, &supervisor, &state_store).with_semantic_agent(&agent);
-        let value = serde_json::to_value(service.capabilities()).expect("serialize capabilities");
-
-        assert_eq!(value["agent_semantic_plans"], json!(true));
-        assert!(!value.to_string().contains("semantic.example.test"));
-    }
-
-    #[test]
-    fn semantic_agent_requests_fail_closed_without_a_configured_provider() {
-        let temporary = tempdir().expect("temporary directory");
-        let (registry, supervisor, state_store, wiki_id) = fixture(&temporary);
-        let service = CompanionService::new(&registry, &supervisor, &state_store);
-        let error = service
-            .create_semantic_plan(
-                &wiki_id,
-                &SemanticPlanRequest {
-                    from: "main".to_string(),
-                    to: "refs/vulcan/sync/local/live".to_string(),
-                    semantic_ref: "refs/heads/main".to_string(),
-                    remote: "origin".to_string(),
-                    live_ref: DEFAULT_REMOTE_LIVE_REF.to_string(),
-                    grouping: SemanticGrouping::Agent,
-                    agent: true,
-                    dry_run: true,
-                },
-            )
-            .expect_err("missing semantic provider must fail closed");
-
-        assert_eq!(error.kind, CompanionErrorKind::NotFound);
-        assert!(error
-            .detail
-            .contains("no semantic planning agent is configured"));
-    }
-
-    #[test]
-    fn files_only_registration_rejects_knowledge_companion_operations() {
-        let temporary = tempdir().expect("temporary directory");
-        let (registry, supervisor, state_store, wiki_id) = fixture(&temporary);
-        registry
-            .update(
-                &wiki_id,
-                &UpdateWikiRequest {
-                    sync_backend: None,
-                    groups_to_add: Vec::new(),
-                    groups_to_remove: Vec::new(),
-                    permissions_profile: None,
-                    sync_paused: None,
-                    profile: Some(crate::registry::ManagedDirectoryProfile::FilesOnly),
-                    execution_trust: None,
-                    mcp_remote: None,
-                },
-                false,
-            )
-            .expect("select files-only profile");
-        let resolution_agent = CompanionResolutionAgent::new(ConfiguredTestProvider);
-        let semantic_agent = CompanionSemanticAgent::new(ConfiguredSemanticTestProvider);
-        let service = CompanionService::new(&registry, &supervisor, &state_store)
-            .with_resolution_agent(&resolution_agent)
-            .with_semantic_agent(&semantic_agent);
-
-        let semantic = service
-            .create_semantic_plan(
-                &wiki_id,
-                &SemanticPlanRequest {
-                    from: "main".to_string(),
-                    to: "refs/vulcan/sync/local/live".to_string(),
-                    semantic_ref: "refs/heads/main".to_string(),
-                    remote: "origin".to_string(),
-                    live_ref: DEFAULT_REMOTE_LIVE_REF.to_string(),
-                    grouping: SemanticGrouping::Agent,
-                    agent: false,
-                    dry_run: true,
-                },
-            )
-            .expect_err("semantic plan must require knowledge profile");
-        assert_eq!(semantic.kind, CompanionErrorKind::PermissionDenied);
-        assert!(semantic.detail.contains("requires a knowledge profile"));
-        assert!(semantic
-            .detail
-            .contains("set the directory profile to knowledge"));
-
-        let proposal = service
-            .create_conflict_proposal(
-                &wiki_id,
-                "conflict",
-                &ConflictProposalRequest {
-                    proposal_contract_version: CONFLICT_PROPOSAL_REQUEST_VERSION,
-                    remote: "origin".to_string(),
-                    live_ref: DEFAULT_REMOTE_LIVE_REF.to_string(),
-                    context: Vec::new(),
-                    allow_broad_context: false,
-                    group_ids: Vec::new(),
-                },
-            )
-            .expect_err("agent proposal must require knowledge profile");
-        assert_eq!(proposal.kind, CompanionErrorKind::PermissionDenied);
-        assert!(proposal.detail.contains("requires a knowledge profile"));
-
-        let approval = service
-            .approve_conflict_proposal(
-                &wiki_id,
-                "conflict",
-                &ConflictProposalApprovalRequest {
-                    proposal_id: "proposal".to_string(),
-                    remote: "origin".to_string(),
-                    live_ref: DEFAULT_REMOTE_LIVE_REF.to_string(),
-                    dry_run: true,
-                },
-            )
-            .expect_err("proposal approval must require knowledge profile");
-        assert_eq!(approval.kind, CompanionErrorKind::PermissionDenied);
-
-        let rejection = service
-            .reject_conflict_proposal(
-                &wiki_id,
-                "conflict",
-                &ConflictProposalRejectionRequest {
-                    proposal_id: "proposal".to_string(),
-                    dry_run: true,
-                },
-            )
-            .expect_err("proposal rejection must require knowledge profile");
-        assert_eq!(rejection.kind, CompanionErrorKind::PermissionDenied);
-    }
-
-    #[test]
-    fn configured_semantic_agent_builds_a_reviewable_plan() {
-        let temporary = tempdir().expect("temporary directory");
-        let remote = temporary.path().join("remote.git");
-        git(
-            temporary.path(),
-            &[
-                "init",
-                "--quiet",
-                "--bare",
-                remote.to_str().expect("remote"),
-            ],
-        );
-        let vault = temporary.path().join("vault");
-        fs::create_dir(&vault).expect("vault directory");
-        git(
-            &vault,
-            &["-c", "init.defaultBranch=main", "init", "--quiet"],
-        );
-        git(
-            &vault,
-            &["remote", "add", "origin", remote.to_str().expect("remote")],
-        );
-        fs::write(vault.join("Home.md"), "base\n").expect("base note");
-        commit_all(&vault, "base");
-        let state_store = SyncStateStore::at(temporary.path().join("sync-state"));
-        sync_git_vault_with_state_store(
-            &VaultPaths::new(&vault),
-            &GitSyncOptions::default(),
-            &state_store,
-        )
-        .expect("bootstrap sync");
-        fs::write(vault.join("Home.md"), "accepted update\n").expect("update note");
-        let accepted = sync_git_vault_with_state_store(
-            &VaultPaths::new(&vault),
-            &GitSyncOptions::default(),
-            &state_store,
-        )
-        .expect("publish accepted update")
-        .sync
-        .accepted
-        .expect("accepted update")
-        .to_string();
-
-        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
-        let wiki_id = WikiId::parse("notes").expect("wiki id");
-        registry
-            .add(
-                &AddWikiRequest {
-                    source: None,
-                    profile: None,
-                    id: wiki_id.clone(),
-                    path: vault,
-                    groups: Vec::new(),
-                    git_dir: None,
-                    permissions_profile: None,
-                    sync_backend: Some("git".to_string()),
-                    platform_profile: None,
-                },
-                false,
-            )
-            .expect("register vault");
-        let supervisor =
-            SyncSupervisor::at(temporary.path().join("jobs.json")).expect("supervisor");
-        let agent = CompanionSemanticAgent::new(ConfiguredSemanticTestProvider);
-        let service =
-            CompanionService::new(&registry, &supervisor, &state_store).with_semantic_agent(&agent);
-        let report = service
-            .create_semantic_plan(
-                &wiki_id,
-                &SemanticPlanRequest {
-                    from: "main".to_string(),
-                    to: accepted,
-                    semantic_ref: "refs/heads/main".to_string(),
-                    remote: "origin".to_string(),
-                    live_ref: DEFAULT_REMOTE_LIVE_REF.to_string(),
-                    grouping: SemanticGrouping::Agent,
-                    agent: true,
-                    dry_run: true,
-                },
-            )
-            .expect("semantic plan");
-
-        assert_eq!(report.grouping, SemanticGrouping::Agent);
-        assert!(report.agent);
-        assert_eq!(
-            report.agent_identity.expect("agent identity").model,
-            "semantic-v1"
-        );
-        assert_eq!(report.commits.len(), 1);
-        assert_eq!(report.commits[0].paths, vec!["Home.md"]);
-    }
-
-    #[test]
-    fn resolution_agent_claims_one_daemon_request_per_conflict() {
-        let agent = CompanionResolutionAgent::new(ConfiguredTestProvider);
-        let first = agent
-            .claim_conflict("repository:conflict-a".to_string())
-            .expect("first claim");
-        let duplicate = agent
-            .claim_conflict("repository:conflict-a".to_string())
-            .err()
-            .expect("duplicate claim must fail immediately");
-        assert_eq!(duplicate.kind, CompanionErrorKind::Conflict);
-        assert!(duplicate.detail.contains("already running"));
-
-        let independent = agent
-            .claim_conflict("repository:conflict-b".to_string())
-            .expect("independent conflict claim");
-        drop(independent);
-        drop(first);
-        agent
-            .claim_conflict("repository:conflict-a".to_string())
-            .expect("released claim can be acquired again");
-    }
-
-    #[test]
-    fn companion_proposal_creation_preview_and_rejection_reuse_app_transactions() {
-        let (_temporary, registry, supervisor, state_store, wiki_id, conflict_id) =
-            conflict_service_fixture();
-        let agent = CompanionResolutionAgent::new(ResolvingTestProvider);
-        let service = CompanionService::new(&registry, &supervisor, &state_store)
-            .with_resolution_agent(&agent);
-
-        let proposal = service
-            .create_conflict_proposal(
-                &wiki_id,
-                &conflict_id,
-                &ConflictProposalRequest {
-                    proposal_contract_version: CONFLICT_PROPOSAL_REQUEST_VERSION,
-                    group_ids: Vec::new(),
-                    context: Vec::new(),
-                    allow_broad_context: false,
-                    remote: default_remote(),
-                    live_ref: default_live_ref(),
-                },
-            )
-            .expect("create proposal");
-        assert_eq!(proposal.provider, "companion-test");
-        let request = ConflictProposalApprovalRequest {
-            proposal_id: proposal.proposal_id.clone(),
-            remote: default_remote(),
-            live_ref: default_live_ref(),
-            dry_run: true,
-        };
-        assert_eq!(
-            service
-                .approve_conflict_proposal(&wiki_id, &conflict_id, &request)
-                .expect("preview approval")
-                .outcome,
-            ApproveResolutionProposalOutcome::Planned
-        );
-        assert_eq!(
-            service
-                .reject_conflict_proposal(
-                    &wiki_id,
-                    &conflict_id,
-                    &ConflictProposalRejectionRequest {
-                        proposal_id: request.proposal_id.clone(),
-                        dry_run: false,
-                    },
-                )
-                .expect("reject proposal")
-                .outcome,
-            RejectResolutionProposalOutcome::Rejected
-        );
-        assert!(service
-            .approve_conflict_proposal(&wiki_id, &conflict_id, &request)
-            .expect_err("rejected proposal cannot be approved")
-            .detail
-            .contains("rejected"));
     }
 
     #[test]

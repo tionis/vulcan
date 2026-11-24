@@ -26,7 +26,6 @@ use crate::runtime::{
     run_sync_trigger_runtime_with_stop, SyncTriggerRuntimeError, SyncTriggerRuntimeOptions,
 };
 use crate::scan_runtime::{load_scan_completion, scan_status_path, ScanCompletion};
-use crate::semantic_worker::run_semantic_worker;
 use crate::service::DaemonServiceDiagnostic;
 use crate::shutdown::ShutdownSignal;
 use crate::status::{wiki_sync_status, DaemonWikiSyncStatus};
@@ -400,8 +399,6 @@ where
         supervisor: Arc::clone(&supervisor),
         state_store: Arc::clone(&state_store),
         credential: Arc::new(credential),
-        resolution_agent: agents.resolution.clone(),
-        semantic_agent: agents.semantic.clone(),
         shutdown: Some(Arc::clone(&stop)),
         ingress_shutdown: Some(Arc::clone(&ingress_stop)),
         routed_reads: Some(routed_reads.clone()),
@@ -689,7 +686,6 @@ fn daemon_worker_registrations(
     let conflict_config = config.conflict_worker.clone();
     let conflict_registry = context.registry.clone();
     let conflict_supervisor = Arc::clone(supervisor);
-    let conflict_state_store = Arc::clone(state_store);
     let conflict_state_root = context.state_root.clone();
     let conflict_gate =
         HostedWorkerGate::new(Arc::clone(scheduler), runtime.clone(), "worker.conflict");
@@ -708,54 +704,9 @@ fn daemon_worker_registrations(
                 config,
                 &conflict_registry,
                 &conflict_supervisor,
-                &conflict_state_store,
                 &conflict_state_root,
                 agent,
                 &conflict_gate,
-                service.stop(),
-            )
-        },
-    ));
-
-    let mut semantic_definition = worker_definition(
-        "worker.semantic",
-        config.semantic_worker.is_some() && agents.semantic.is_some(),
-        false,
-        &[service_id("worker.sync-executor")?],
-        optional_worker_restart(),
-    )?;
-    if config.semantic_worker.is_some() {
-        semantic_definition.disabled_reason = agents
-            .semantic_unavailable
-            .as_ref()
-            .map(|reason| format!("semantic agent disabled: {reason}"));
-    }
-    let semantic_config = config.semantic_worker.clone();
-    let semantic_registry = context.registry.clone();
-    let semantic_supervisor = Arc::clone(supervisor);
-    let semantic_state_store = Arc::clone(state_store);
-    let semantic_state_root = context.state_root.clone();
-    let semantic_gate =
-        HostedWorkerGate::new(Arc::clone(scheduler), runtime.clone(), "worker.semantic");
-    let semantic_agent = agents.semantic.clone();
-    registrations.push(ServiceRegistration::new(
-        semantic_definition,
-        move |service| {
-            let config = semantic_config
-                .as_ref()
-                .ok_or_else(|| "semantic worker is not configured".to_string())?;
-            let agent = semantic_agent
-                .as_deref()
-                .ok_or_else(|| "semantic worker agent is unavailable".to_string())?;
-            service.ready()?;
-            run_semantic_worker(
-                config,
-                &semantic_registry,
-                &semantic_supervisor,
-                &semantic_state_store,
-                &semantic_state_root,
-                agent,
-                &semantic_gate,
                 service.stop(),
             )
         },
@@ -856,14 +807,6 @@ fn validate_worker_agents(
     config: &crate::registry::DaemonConfig,
     agents: &DaemonAgents,
 ) -> Result<(), DaemonProcessError> {
-    if config.semantic_worker.is_some()
-        && agents.semantic.is_none()
-        && agents.semantic_unavailable.is_none()
-    {
-        return Err(DaemonProcessError::Configuration(
-            "the semantic worker requires a configured semantic agent".to_string(),
-        ));
-    }
     if config.conflict_worker.is_some()
         && agents.resolution.is_none()
         && agents.resolution_unavailable.is_none()
@@ -1000,7 +943,6 @@ fn graceful_shutdown_services() -> Result<BTreeSet<ServiceId>, DaemonProcessErro
         "listener.companion",
         "worker.sync-trigger",
         "worker.conflict",
-        "worker.semantic",
         "worker.telegram-bot",
     ]
     .into_iter()
@@ -1882,9 +1824,6 @@ mod tests {
         let config = DaemonConfig {
             conflict_worker: Some(DaemonConflictWorkerConfig {
                 wikis: vec![WikiId::parse("notes").expect("wiki ID")],
-                remote: "origin".to_string(),
-                live_ref: "refs/heads/__vulcan-sync/live".to_string(),
-                max_groups_per_run: 1,
                 poll_seconds: 30,
             }),
             ..DaemonConfig::default()
@@ -1921,14 +1860,8 @@ mod tests {
             semantic_agent: Some(agent),
             conflict_worker: Some(DaemonConflictWorkerConfig {
                 wikis: vec![wiki.clone()],
-                remote: "origin".to_string(),
-                live_ref: "refs/heads/__vulcan-sync/live".to_string(),
-                max_groups_per_run: 1,
                 poll_seconds: 30,
             }),
-            semantic_worker: Some(
-                toml::from_str(&format!("wikis = [\"{wiki}\"]")).expect("semantic worker"),
-            ),
             ..DaemonConfig::default()
         };
         fs::write(
@@ -1952,24 +1885,14 @@ mod tests {
         });
 
         let status = wait_until_running(&context, &result_receiver);
-        for (id, reason) in [
-            (
-                "worker.conflict",
-                format!("resolution agent disabled: {missing_name} is not set"),
-            ),
-            (
-                "worker.semantic",
-                format!("semantic agent disabled: {missing_name} is not set"),
-            ),
-        ] {
-            let service = status
-                .services
-                .iter()
-                .find(|service| service.id.as_str() == id)
-                .expect("AI worker is listed");
-            assert_eq!(service.state, crate::host::ServiceLifecycleState::Disabled);
-            assert_eq!(service.disabled_reason.as_deref(), Some(reason.as_str()));
-        }
+        let reason = format!("resolution agent disabled: {missing_name} is not set");
+        let service = status
+            .services
+            .iter()
+            .find(|service| service.id.as_str() == "worker.conflict")
+            .expect("AI worker is listed");
+        assert_eq!(service.state, crate::host::ServiceLifecycleState::Disabled);
+        assert_eq!(service.disabled_reason.as_deref(), Some(reason.as_str()));
         let record = read_runtime_record(&context.runtime_path())
             .expect("runtime record")
             .expect("running daemon");
@@ -1978,8 +1901,7 @@ mod tests {
                 .expect("capabilities"),
         )
         .expect("capabilities JSON");
-        assert_eq!(capabilities["agent_conflict_proposals"], false);
-        assert_eq!(capabilities["agent_semantic_plans"], false);
+        assert!(capabilities.get("agent_conflict_proposals").is_none());
         request_daemon_shutdown(&context).expect("request shutdown");
         daemon.join().expect("daemon thread");
         result_receiver
@@ -2082,7 +2004,7 @@ mod tests {
         });
 
         let status = wait_until_running(&context, &result_receiver);
-        assert_eq!(status.services.len(), 9);
+        assert_eq!(status.services.len(), 8);
         assert!(status.services.iter().any(|service| {
             service.id.as_str() == "listener.test-ingress"
                 && service.state == crate::host::ServiceLifecycleState::Ready
@@ -2344,7 +2266,7 @@ mod tests {
         let status = wait_until_running(&context, &result_receiver);
         assert_eq!(status.registered_wikis.len(), 1);
         assert_eq!(status.wiki_statuses.len(), 1);
-        assert_eq!(status.services.len(), 8);
+        assert_eq!(status.services.len(), 7);
         assert!(status.services.iter().any(|service| {
             service.id.as_str() == "worker.telegram-bot"
                 && service.state == crate::host::ServiceLifecycleState::Disabled
@@ -2363,7 +2285,7 @@ mod tests {
                 && service.state == crate::host::ServiceLifecycleState::Ready
         }));
         assert!(status.services.iter().any(|service| {
-            service.id.as_str() == "worker.semantic"
+            service.id.as_str() == "worker.conflict"
                 && service.state == crate::host::ServiceLifecycleState::Disabled
         }));
         assert!(status.uptime_ms.is_some());

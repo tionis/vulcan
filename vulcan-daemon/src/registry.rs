@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use ulid::Ulid;
-use vulcan_app::sync::{GitRefName, GitRemote};
 
 use crate::mcp_remote::{
     validate_definition as validate_mcp_remote_definition, AddMcpRemoteRequest,
@@ -159,7 +158,6 @@ pub struct ManagedDirectoryCapabilities {
     pub markdown_index: bool,
     pub knowledge_services: bool,
     pub scripts: bool,
-    pub semantic_history: bool,
     pub agent_resolution: bool,
     pub materialization: MaterializationProfile,
 }
@@ -178,7 +176,6 @@ impl ManagedDirectoryCapabilities {
             markdown_index: knowledge,
             knowledge_services: knowledge,
             scripts: knowledge,
-            semantic_history: knowledge,
             agent_resolution: knowledge,
             materialization,
         }
@@ -219,8 +216,6 @@ pub struct DaemonConfig {
     pub resolution_agent: Option<DaemonAgentConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_agent: Option<DaemonAgentConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub semantic_worker: Option<DaemonSemanticWorkerConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conflict_worker: Option<DaemonConflictWorkerConfig>,
     /// Wikis whose batched auto-commits may send their changes to the
@@ -365,7 +360,6 @@ impl Default for DaemonConfig {
             bind: default_bind(),
             resolution_agent: None,
             semantic_agent: None,
-            semantic_worker: None,
             conflict_worker: None,
             auto_commit_agent: None,
             notifications: DaemonNotificationConfig::default(),
@@ -499,25 +493,6 @@ pub struct DaemonAgentConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DaemonSemanticWorkerConfig {
-    pub wikis: Vec<WikiId>,
-    #[serde(default = "default_semantic_ref")]
-    pub semantic_ref: String,
-    #[serde(default = "default_sync_remote")]
-    pub remote: String,
-    #[serde(default = "default_sync_live_ref")]
-    pub live_ref: String,
-    #[serde(default = "default_true")]
-    pub publish: bool,
-    #[serde(default = "default_semantic_quiet_seconds")]
-    pub quiet_seconds: u64,
-    #[serde(default = "default_semantic_maximum_wait_seconds")]
-    pub maximum_wait_seconds: u64,
-    #[serde(default = "default_semantic_poll_seconds")]
-    pub poll_seconds: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonAutoCommitAgentConfig {
     pub wikis: Vec<WikiId>,
 }
@@ -532,46 +507,8 @@ impl DaemonAutoCommitAgentConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonConflictWorkerConfig {
     pub wikis: Vec<WikiId>,
-    #[serde(default = "default_sync_remote")]
-    pub remote: String,
-    #[serde(default = "default_sync_live_ref")]
-    pub live_ref: String,
-    #[serde(default = "default_conflict_worker_max_groups")]
-    pub max_groups_per_run: usize,
     #[serde(default = "default_conflict_worker_poll_seconds")]
     pub poll_seconds: u64,
-}
-
-fn default_semantic_ref() -> String {
-    "refs/heads/main".to_string()
-}
-
-fn default_sync_remote() -> String {
-    "origin".to_string()
-}
-
-fn default_sync_live_ref() -> String {
-    "refs/heads/__vulcan-sync/live".to_string()
-}
-
-const fn default_true() -> bool {
-    true
-}
-
-const fn default_semantic_quiet_seconds() -> u64 {
-    900
-}
-
-const fn default_semantic_maximum_wait_seconds() -> u64 {
-    21_600
-}
-
-const fn default_semantic_poll_seconds() -> u64 {
-    30
-}
-
-const fn default_conflict_worker_max_groups() -> usize {
-    128
 }
 
 const fn default_conflict_worker_poll_seconds() -> u64 {
@@ -1327,10 +1264,6 @@ impl WikiRegistry {
             }
             for wikis in [
                 config
-                    .semantic_worker
-                    .as_mut()
-                    .map(|worker| &mut worker.wikis),
-                config
                     .auto_commit_agent
                     .as_mut()
                     .map(|agent| &mut agent.wikis),
@@ -1568,25 +1501,6 @@ impl WikiRegistry {
                 DaemonAgentKind::Resolution => config.resolution_agent = None,
                 DaemonAgentKind::Semantic => config.semantic_agent = None,
             }
-            Ok(config.clone())
-        })
-    }
-
-    pub fn set_semantic_worker(
-        &self,
-        worker: DaemonSemanticWorkerConfig,
-        dry_run: bool,
-    ) -> Result<DaemonConfig, RegistryError> {
-        self.mutate(dry_run, |config| {
-            validate_semantic_worker_config(&worker)?;
-            config.semantic_worker = Some(worker);
-            Ok(config.clone())
-        })
-    }
-
-    pub fn clear_semantic_worker(&self, dry_run: bool) -> Result<DaemonConfig, RegistryError> {
-        self.mutate(dry_run, |config| {
-            config.semantic_worker = None;
             Ok(config.clone())
         })
     }
@@ -1944,9 +1858,6 @@ fn validate_daemon_config(config: &DaemonConfig) -> Result<(), RegistryError> {
     if let Some(agent) = &config.semantic_agent {
         validate_agent_config(agent)?;
     }
-    if let Some(worker) = &config.semantic_worker {
-        validate_semantic_worker_config(worker)?;
-    }
     if let Some(worker) = &config.conflict_worker {
         validate_conflict_worker_config(worker)?;
     }
@@ -2087,15 +1998,9 @@ fn validate_service_base_url(value: &str, label: &str) -> Result<(), RegistryErr
 
 fn validate_worker_profiles(config: &DaemonConfig) -> Result<(), RegistryError> {
     for (worker, wikis) in config
-        .semantic_worker
+        .conflict_worker
         .iter()
-        .map(|worker| ("semantic", worker.wikis.as_slice()))
-        .chain(
-            config
-                .conflict_worker
-                .iter()
-                .map(|worker| ("conflict", worker.wikis.as_slice())),
-        )
+        .map(|worker| ("conflict", worker.wikis.as_slice()))
     {
         for id in wikis {
             if config
@@ -2297,42 +2202,6 @@ fn validate_auto_commit_agent_config(
     Ok(())
 }
 
-fn validate_semantic_worker_config(
-    worker: &DaemonSemanticWorkerConfig,
-) -> Result<(), RegistryError> {
-    if worker.wikis.is_empty() {
-        return Err(RegistryError::InvalidDaemonSetting(
-            "semantic worker requires at least one explicit wiki".to_string(),
-        ));
-    }
-    let unique = worker.wikis.iter().collect::<BTreeSet<_>>();
-    if unique.len() != worker.wikis.len() {
-        return Err(RegistryError::InvalidDaemonSetting(
-            "semantic worker wiki IDs must be unique".to_string(),
-        ));
-    }
-    GitRefName::parse(worker.semantic_ref.clone()).map_err(|error| {
-        RegistryError::InvalidDaemonSetting(format!("invalid semantic ref: {error}"))
-    })?;
-    GitRemote::parse(worker.remote.clone()).map_err(|error| {
-        RegistryError::InvalidDaemonSetting(format!("invalid semantic worker remote: {error}"))
-    })?;
-    GitRefName::parse(worker.live_ref.clone()).map_err(|error| {
-        RegistryError::InvalidDaemonSetting(format!("invalid semantic worker live ref: {error}"))
-    })?;
-    if worker.maximum_wait_seconds == 0 {
-        return Err(RegistryError::InvalidDaemonSetting(
-            "semantic worker maximum wait must be at least one second".to_string(),
-        ));
-    }
-    if !(1..=3_600).contains(&worker.poll_seconds) {
-        return Err(RegistryError::InvalidDaemonSetting(
-            "semantic worker poll interval must be between 1 and 3600 seconds".to_string(),
-        ));
-    }
-    Ok(())
-}
-
 fn validate_conflict_worker_config(
     worker: &DaemonConflictWorkerConfig,
 ) -> Result<(), RegistryError> {
@@ -2345,17 +2214,6 @@ fn validate_conflict_worker_config(
     if unique.len() != worker.wikis.len() {
         return Err(RegistryError::InvalidDaemonSetting(
             "conflict worker wiki IDs must be unique".to_string(),
-        ));
-    }
-    GitRemote::parse(worker.remote.clone()).map_err(|error| {
-        RegistryError::InvalidDaemonSetting(format!("invalid conflict worker remote: {error}"))
-    })?;
-    GitRefName::parse(worker.live_ref.clone()).map_err(|error| {
-        RegistryError::InvalidDaemonSetting(format!("invalid conflict worker live ref: {error}"))
-    })?;
-    if !(1..=128).contains(&worker.max_groups_per_run) {
-        return Err(RegistryError::InvalidDaemonSetting(
-            "conflict worker group limit must be between 1 and 128".to_string(),
         ));
     }
     if !(1..=3_600).contains(&worker.poll_seconds) {
@@ -3058,7 +2916,6 @@ mod tests {
         assert!(!capabilities.markdown_index);
         assert!(!capabilities.knowledge_services);
         assert!(!capabilities.scripts);
-        assert!(!capabilities.semantic_history);
         assert!(!capabilities.agent_resolution);
         assert_eq!(
             serde_json::to_value(&updated).expect("files-only registration JSON")["profile"],
@@ -3080,20 +2937,14 @@ mod tests {
             .add(&request("vault", &vault), false)
             .expect("add knowledge registration");
         registry
-            .set_semantic_worker(
-                DaemonSemanticWorkerConfig {
+            .set_conflict_worker(
+                DaemonConflictWorkerConfig {
                     wikis: vec![registration.id.clone()],
-                    semantic_ref: "refs/heads/semantic".to_string(),
-                    remote: "origin".to_string(),
-                    live_ref: "refs/heads/__vulcan-sync/live".to_string(),
-                    publish: true,
-                    quiet_seconds: 120,
-                    maximum_wait_seconds: 3_600,
                     poll_seconds: 30,
                 },
                 false,
             )
-            .expect("configure semantic worker");
+            .expect("configure conflict worker");
         let before = fs::read(registry.path()).expect("capture registry before rejected update");
 
         let error = registry
@@ -3112,7 +2963,7 @@ mod tests {
                 false,
             )
             .expect_err("worker incompatibility must be rejected");
-        assert!(error.to_string().contains("semantic worker"));
+        assert!(error.to_string().contains("conflict worker"));
         assert_eq!(
             fs::read(registry.path()).expect("re-read registry after rejected update"),
             before,
@@ -3633,31 +3484,8 @@ profile = "files_only"
             .semantic_agent
             .is_none());
 
-        let worker = DaemonSemanticWorkerConfig {
-            wikis: vec![WikiId::parse("personal").expect("wiki ID")],
-            semantic_ref: "refs/heads/semantic".to_string(),
-            remote: "origin".to_string(),
-            live_ref: "refs/heads/__vulcan-sync/live".to_string(),
-            publish: true,
-            quiet_seconds: 120,
-            maximum_wait_seconds: 3_600,
-            poll_seconds: 30,
-        };
-        let configured = registry
-            .set_semantic_worker(worker.clone(), false)
-            .expect("set semantic worker");
-        assert_eq!(configured.semantic_worker.as_ref(), Some(&worker));
-        assert!(registry
-            .clear_semantic_worker(false)
-            .expect("clear semantic worker")
-            .semantic_worker
-            .is_none());
-
         let conflict_worker = DaemonConflictWorkerConfig {
             wikis: vec![WikiId::parse("personal").expect("wiki ID")],
-            remote: "origin".to_string(),
-            live_ref: "refs/heads/__vulcan-sync/live".to_string(),
-            max_groups_per_run: 64,
             poll_seconds: 15,
         };
         let configured = registry
@@ -3906,18 +3734,12 @@ profile = "files_only"
                 Err(RegistryError::InvalidDaemonSetting(_))
             ));
         }
-        let invalid_worker = DaemonSemanticWorkerConfig {
+        let invalid_worker = DaemonConflictWorkerConfig {
             wikis: Vec::new(),
-            semantic_ref: "refs/heads/main".to_string(),
-            remote: "origin".to_string(),
-            live_ref: "refs/heads/__vulcan-sync/live".to_string(),
-            publish: true,
-            quiet_seconds: 900,
-            maximum_wait_seconds: 21_600,
             poll_seconds: 30,
         };
         assert!(matches!(
-            registry.set_semantic_worker(invalid_worker, true),
+            registry.set_conflict_worker(invalid_worker, true),
             Err(RegistryError::InvalidDaemonSetting(_))
         ));
     }

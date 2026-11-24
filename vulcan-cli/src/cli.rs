@@ -560,20 +560,6 @@ Examples:
   vulcan sync devices list --wiki personal
   vulcan sync devices fetch <device-id> --wiki personal --dry-run
   vulcan sync devices prune-backup <device-id> --wiki personal --dry-run
-  vulcan sync propose <conflict-id> --model <model> --base-url <url>
-  vulcan sync reject <conflict-id> <proposal-id> --dry-run
-  vulcan sync resolve <conflict-id> --side local --dry-run
-  vulcan sync resolve <conflict-id> --approve-proposal <proposal-id> --dry-run
-  vulcan sync checkpoint personal --kind recovery
-  vulcan sync retention-plan personal
-  vulcan sync retention-apply personal --dry-run
-  vulcan sync retention-apply personal --rollover
-  vulcan sync retention-apply personal --epoch-archives-keep 8 --expire-epoch-archives
-  vulcan sync semantic-plan --from main --to <accepted-live-rev> --dry-run
-  vulcan sync semantic-plan --from main --to <accepted-live-rev> --agent --model <model> --dry-run
-  vulcan sync semantic-apply <plan-id> --dry-run
-  vulcan sync semantic-publish <plan-id> --dry-run
-  vulcan sync semantic-auto personal --quiet-seconds 900 --maximum-wait-seconds 21600
   vulcan sync pause personal
   vulcan sync resume personal
   vulcan --vault ./wiki sync run --remote origin";
@@ -680,8 +666,6 @@ Examples:
   vulcan daemon start
   vulcan daemon start --detach
   vulcan daemon status --output json
-  vulcan daemon semantic-status --output json
-  vulcan daemon config set-semantic-worker --wiki personal --dry-run
   vulcan daemon companion install personal --dry-run
   vulcan daemon companion install personal
   vulcan daemon companion --reveal-token --output json
@@ -4428,19 +4412,6 @@ pub struct SyncSelectionArgs {
     pub(crate) group: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum SyncConflictSideArg {
-    Base,
-    Local,
-    Remote,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum SyncCheckpointKindArg {
-    Recovery,
-    Semantic,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
 pub enum TermuxNetworkArg {
     #[default]
@@ -4456,16 +4427,6 @@ pub enum NetworkNotificationModeArg {
     Ignore,
     Count,
     Duration,
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum SemanticGroupingArg {
-    #[default]
-    TopLevel,
-    File,
-    Change,
-    Hunk,
-    All,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -5373,363 +5334,6 @@ pub enum SyncCommand {
         dry_run: bool,
     },
     #[command(about = "Create a review-only conflict proposal with an LLM provider")]
-    Propose {
-        #[arg(help = "Immutable conflict ID to propose a resolution for")]
-        conflict_id: String,
-        #[arg(long, help = "Optional registered wiki ID")]
-        wiki: Option<String>,
-        #[arg(
-            long = "group",
-            action = ArgAction::Append,
-            help = "Limit the proposal to one complete conflict group; repeat for more groups"
-        )]
-        groups: Vec<String>,
-        #[command(flatten)]
-        target: SyncTargetArgs,
-        #[arg(
-            long,
-            default_value = "http://localhost:11434/v1",
-            help = "OpenAI-compatible API base URL"
-        )]
-        base_url: String,
-        #[arg(long, help = "Provider model identifier")]
-        model: String,
-        #[arg(long, help = "Environment variable containing the provider API key")]
-        api_key_env: Option<String>,
-        #[arg(
-            long,
-            action = ArgAction::Append,
-            help = "Permit and identify one focused vault-relative context path"
-        )]
-        context: Vec<String>,
-        #[arg(
-            long,
-            help = "Permit the resolver's bounded read tool beyond explicit context paths"
-        )]
-        allow_broad_context: bool,
-        #[arg(
-            long,
-            help = "Immediately enter the normal approval transaction when device-local policy permits"
-        )]
-        auto_accept: bool,
-    },
-    #[command(about = "Create a review-only proposal by normalizing preserved conflict sides")]
-    FormatPropose {
-        #[arg(help = "Immutable conflict ID to normalize")]
-        conflict_id: String,
-        #[arg(long, help = "Optional registered wiki ID")]
-        wiki: Option<String>,
-        #[arg(
-            long = "group",
-            action = ArgAction::Append,
-            required = true,
-            help = "Complete formatting-candidate group to normalize; repeat for a bounded batch"
-        )]
-        groups: Vec<String>,
-        #[command(flatten)]
-        target: SyncTargetArgs,
-        #[arg(
-            long,
-            value_name = "ABSOLUTE_PATH",
-            help = "Absolute formatter executable path"
-        )]
-        formatter: PathBuf,
-        #[arg(
-            long = "formatter-arg",
-            action = ArgAction::Append,
-            allow_hyphen_values = true,
-            help = "Formatter argument; {file} and {config} placeholders are supported"
-        )]
-        formatter_args: Vec<String>,
-        #[arg(long, help = "Exact trimmed output expected from formatter --version")]
-        formatter_version: String,
-        #[arg(
-            long,
-            help = "Explicit formatter configuration file copied into isolation"
-        )]
-        formatter_config: Option<PathBuf>,
-        #[arg(
-            long,
-            default_value_t = 30,
-            value_parser = clap::value_parser!(u64).range(1..=300),
-            help = "Per-process formatter timeout in seconds"
-        )]
-        timeout_seconds: u64,
-        #[arg(
-            long,
-            help = "Run normalization and validation without retaining a proposal"
-        )]
-        dry_run: bool,
-    },
-    #[command(about = "Explicitly reject a retained conflict proposal")]
-    Reject {
-        #[arg(help = "Immutable conflict ID containing the proposal")]
-        conflict_id: String,
-        #[arg(help = "Immutable proposal ID to reject")]
-        proposal_id: String,
-        #[arg(long, help = "Optional registered wiki ID")]
-        wiki: Option<String>,
-        #[arg(long, help = "Validate and report without recording the rejection")]
-        dry_run: bool,
-    },
-    #[command(about = "Resolve a conflict with a side, supplied files, or approved proposal")]
-    Resolve {
-        #[arg(help = "Immutable conflict ID to resolve")]
-        conflict_id: String,
-        #[arg(
-            long,
-            value_enum,
-            required_unless_present_any = ["approve_proposal", "files", "patch", "editor"],
-            conflicts_with_all = ["approve_proposal", "files", "patch", "editor"],
-            help = "Preserved side to use for conflicted paths"
-        )]
-        side: Option<SyncConflictSideArg>,
-        #[arg(
-            long,
-            required_unless_present_any = ["side", "files", "patch", "editor"],
-            conflicts_with_all = ["side", "files", "patch", "editor"],
-            help = "Explicitly approve and apply this retained proposal ID"
-        )]
-        approve_proposal: Option<String>,
-        #[arg(
-            long = "file",
-            value_name = "CONFLICT_PATH=SOURCE",
-            action = ArgAction::Append,
-            required_unless_present_any = ["side", "approve_proposal", "patch", "editor"],
-            conflicts_with_all = ["side", "approve_proposal", "patch", "editor"],
-            help = "Resolve one conflicted path from a reviewed file; repeat for every path"
-        )]
-        files: Vec<String>,
-        #[arg(
-            long,
-            value_name = "PATCH_FILE",
-            required_unless_present_any = ["side", "approve_proposal", "files", "editor"],
-            conflicts_with_all = ["side", "approve_proposal", "files", "editor"],
-            help = "Apply a reviewed unified patch against the preserved local candidate"
-        )]
-        patch: Option<String>,
-        #[arg(
-            long,
-            required_unless_present_any = ["side", "approve_proposal", "files", "patch"],
-            conflicts_with_all = ["side", "approve_proposal", "files", "patch"],
-            help = "Open temporary conflict-marker files in $VISUAL/$EDITOR"
-        )]
-        editor: bool,
-        #[arg(
-            long = "group",
-            value_name = "GROUP_ID",
-            action = ArgAction::Append,
-            help = "Resolve only these complete conflict groups; repeat for a bounded batch"
-        )]
-        groups: Vec<String>,
-        #[arg(long, help = "Optional registered wiki ID")]
-        wiki: Option<String>,
-        #[command(flatten)]
-        target: SyncTargetArgs,
-        #[arg(
-            long,
-            help = "Validate and report without creating objects, refs, or files"
-        )]
-        dry_run: bool,
-    },
-    #[command(about = "Retain the accepted live commit under a durable local ref")]
-    Checkpoint {
-        #[arg(help = "Optional registered wiki ID; omit to use the selected vault path")]
-        wiki: Option<String>,
-        #[arg(
-            long,
-            value_enum,
-            default_value = "recovery",
-            help = "Checkpoint retention class"
-        )]
-        kind: SyncCheckpointKindArg,
-        #[command(flatten)]
-        target: SyncTargetArgs,
-        #[arg(long, help = "Validate and report without creating a ref")]
-        dry_run: bool,
-    },
-    #[command(about = "Plan live-epoch and checkpoint retention without mutation")]
-    RetentionPlan {
-        #[arg(help = "Optional registered wiki ID; omit to use the selected vault path")]
-        wiki: Option<String>,
-        #[command(flatten)]
-        target: SyncTargetArgs,
-        #[arg(
-            long,
-            default_value_t = 256,
-            help = "Recommend epoch rollover after this many first-parent commits"
-        )]
-        live_epoch_max_commits: usize,
-        #[arg(
-            long,
-            default_value_t = 16,
-            help = "Number of newest recovery checkpoint refs to retain"
-        )]
-        recovery_checkpoints_keep: usize,
-        #[arg(
-            long,
-            default_value_t = 8,
-            help = "Number of newest retired epoch archives to retain"
-        )]
-        epoch_archives_keep: usize,
-    },
-    #[command(about = "Release expirable recovery checkpoint refs with exact leases")]
-    RetentionApply {
-        #[arg(help = "Optional registered wiki ID; omit to use the selected vault path")]
-        wiki: Option<String>,
-        #[command(flatten)]
-        target: SyncTargetArgs,
-        #[arg(
-            long,
-            default_value_t = 256,
-            help = "Live epoch threshold to bind into the recomputed plan"
-        )]
-        live_epoch_max_commits: usize,
-        #[arg(
-            long,
-            default_value_t = 16,
-            help = "Number of newest recovery checkpoint refs to retain"
-        )]
-        recovery_checkpoints_keep: usize,
-        #[arg(
-            long,
-            default_value_t = 8,
-            help = "Number of newest retired epoch archives to retain"
-        )]
-        epoch_archives_keep: usize,
-        #[arg(long, help = "Recompute and preview without deleting any refs")]
-        dry_run: bool,
-        #[arg(
-            long,
-            help = "When required, archive the old remote tip and roll live to a same-tree epoch root"
-        )]
-        rollover: bool,
-        #[arg(
-            long,
-            help = "Delete planned old local and remote epoch archives with exact leases"
-        )]
-        expire_epoch_archives: bool,
-    },
-    #[command(about = "Build a reviewable semantic history proposal")]
-    SemanticPlan {
-        #[arg(help = "Optional registered wiki ID; omit to use the selected vault path")]
-        wiki: Option<String>,
-        #[arg(long, help = "Semantic branch source revision")]
-        from: String,
-        #[arg(long, help = "Accepted live target revision")]
-        to: String,
-        #[arg(
-            long,
-            default_value = "refs/heads/main",
-            help = "Semantic branch ref that must identify --from"
-        )]
-        semantic_ref: String,
-        #[command(flatten)]
-        target: SyncTargetArgs,
-        #[arg(
-            long,
-            value_enum,
-            default_value_t,
-            help = "Deterministic commit grouping strategy"
-        )]
-        group_by: SemanticGroupingArg,
-        #[arg(long, help = "Request optional agent-assisted grouping")]
-        agent: bool,
-        #[arg(
-            long,
-            requires = "agent",
-            help = "OpenAI-compatible API base URL; defaults to the daemon's semantic agent, else http://localhost:11434/v1"
-        )]
-        base_url: Option<String>,
-        #[arg(
-            long,
-            requires = "agent",
-            help = "Provider model identifier; defaults to the daemon's semantic agent"
-        )]
-        model: Option<String>,
-        #[arg(
-            long,
-            requires = "agent",
-            help = "Environment variable containing the semantic provider API key"
-        )]
-        api_key_env: Option<String>,
-        #[arg(
-            long,
-            help = "Report deterministic grouping without creating objects or state"
-        )]
-        dry_run: bool,
-    },
-    #[command(about = "Validate and fast-forward a semantic branch to an accepted proposal")]
-    SemanticApply {
-        #[arg(help = "Semantic plan ULID")]
-        plan_id: String,
-        #[arg(long, help = "Validate without advancing the semantic branch")]
-        dry_run: bool,
-    },
-    #[command(about = "Publish an applied semantic history with an exact remote lease")]
-    SemanticPublish {
-        #[arg(help = "Applied semantic plan ULID")]
-        plan_id: String,
-        #[arg(long, help = "Validate the remote lease without pushing")]
-        dry_run: bool,
-    },
-    #[command(about = "Debounce and run one finite semantic commit-and-publish cycle")]
-    SemanticAuto {
-        #[arg(help = "Optional registered wiki ID; omit to use the selected vault path")]
-        wiki: Option<String>,
-        #[arg(
-            long,
-            default_value = "refs/heads/main",
-            help = "Human-facing semantic branch"
-        )]
-        semantic_ref: String,
-        #[command(flatten)]
-        target: SyncTargetArgs,
-        #[arg(long, value_enum, default_value_t, help = "Commit grouping strategy")]
-        group_by: SemanticGroupingArg,
-        #[arg(long, help = "Use a model for grouping")]
-        agent: bool,
-        #[arg(
-            long,
-            requires = "agent",
-            help = "OpenAI-compatible API base URL; defaults to the daemon's semantic agent, else http://localhost:11434/v1"
-        )]
-        base_url: Option<String>,
-        #[arg(
-            long,
-            requires = "agent",
-            help = "Provider model identifier; defaults to the daemon's semantic agent"
-        )]
-        model: Option<String>,
-        #[arg(
-            long,
-            requires = "agent",
-            help = "Environment variable containing the API key"
-        )]
-        api_key_env: Option<String>,
-        #[arg(
-            long,
-            default_value_t = 900,
-            help = "Required stable-live-ref interval"
-        )]
-        quiet_seconds: u64,
-        #[arg(long, default_value_t = 21_600, help = "Maximum batching interval")]
-        maximum_wait_seconds: u64,
-        #[arg(long, help = "Apply locally but do not publish the semantic branch")]
-        no_publish: bool,
-        #[arg(
-            long,
-            help = "Preview due work without writing state, objects, or refs"
-        )]
-        dry_run: bool,
-    },
-    #[command(about = "Reject a semantic history proposal and release its Git ref")]
-    SemanticReject {
-        #[arg(help = "Semantic plan ULID")]
-        plan_id: String,
-        #[arg(long, help = "Validate without deleting the proposal ref")]
-        dry_run: bool,
-    },
     #[command(about = "Diagnose Git synchronization without changing it")]
     Doctor {
         #[arg(help = "Optional registered wiki ID; omit to use the selected vault path")]
@@ -5852,8 +5456,6 @@ pub enum DaemonCommand {
     },
     #[command(about = "Probe the running daemon and report its state")]
     Status,
-    #[command(about = "Show the latest daemon semantic-worker pass")]
-    SemanticStatus,
     #[command(about = "Show the latest daemon conflict-worker pass")]
     ConflictStatus,
     #[command(about = "Show each registered vault's batched auto-commit state")]
@@ -5962,52 +5564,10 @@ pub enum DaemonConfigCommand {
         )]
         dry_run: bool,
     },
-    #[command(about = "Configure the debounced LLM semantic-commit worker")]
-    SetSemanticWorker {
-        #[arg(
-            long,
-            required = true,
-            help = "Registered wiki ID; repeat for each wiki"
-        )]
-        wiki: Vec<String>,
-        #[arg(long, default_value = "refs/heads/main", help = "Semantic branch")]
-        semantic_ref: String,
-        #[arg(long, default_value = "origin", help = "Git remote")]
-        remote: String,
-        #[arg(
-            long,
-            default_value = "refs/heads/__vulcan-sync/live",
-            help = "Accepted live branch"
-        )]
-        live_ref: String,
-        #[arg(
-            long,
-            default_value_t = 900,
-            help = "Required stable-live-ref interval"
-        )]
-        quiet_seconds: u64,
-        #[arg(long, default_value_t = 21_600, help = "Maximum batching interval")]
-        maximum_wait_seconds: u64,
-        #[arg(
-            long,
-            default_value_t = 30,
-            help = "Low-frequency daemon poll interval"
-        )]
-        poll_seconds: u64,
-        #[arg(long, help = "Apply locally but do not publish semantic branches")]
-        no_publish: bool,
-        #[arg(
-            long,
-            help = "Validate and report without writing daemon configuration"
-        )]
-        dry_run: bool,
-    },
-    #[command(about = "Disable the daemon semantic-commit worker")]
-    ClearSemanticWorker {
-        #[arg(long, help = "Report without writing daemon configuration")]
-        dry_run: bool,
-    },
-    #[command(about = "Configure automatic high-confidence conflict resolution")]
+    #[command(
+        about = "Let the resolution agent replay paused branches of these wikis",
+        long_about = "Let the daemon conflict worker replay a branch whose guarded rebase stopped on a conflict: it rebases the local commits onto the upstream in a scratch worktree, asks the resolution agent for each conflicted commit, and moves the branch only if every commit replays cleanly. Requires a configured resolution agent and `sync.branch_pull = \"guarded-rebase\"` (or `rebase`) in the vault."
+    )]
     SetConflictWorker {
         #[arg(
             long,
@@ -6015,20 +5575,6 @@ pub enum DaemonConfigCommand {
             help = "Registered wiki ID; repeat for each wiki"
         )]
         wiki: Vec<String>,
-        #[arg(long, default_value = "origin", help = "Git remote")]
-        remote: String,
-        #[arg(
-            long,
-            default_value = "refs/heads/__vulcan-sync/live",
-            help = "Accepted live branch"
-        )]
-        live_ref: String,
-        #[arg(
-            long,
-            default_value_t = 128,
-            help = "Maximum conflict groups proposed in one worker run"
-        )]
-        max_groups_per_run: usize,
         #[arg(
             long,
             default_value_t = 30,

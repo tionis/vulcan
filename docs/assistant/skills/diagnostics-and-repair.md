@@ -36,13 +36,10 @@ diagnostics, orphaned assets, search mismatches, and unexpected graph/query resu
    check at once, or lower the maximum for that wiki.
 7. For unattended-resolution problems, run `vulcan --output json daemon conflict-status`. A missing
    first pass requires checking daemon status, non-secret daemon config, the provider-key
-   environment, and whether configuration was reloaded. `waiting for provider error backoff` is a
+   environment, and whether configuration was reloaded. `waiting for error backoff` is a
    durable five-minute delay; use `error` and `retry_after_unix_ms` to repair the cause and determine
-   when to retry rather than restarting repeatedly. `no pending conflict groups met the
-   high-confidence policy` means the unresolved groups require normal review, not that state is
-   lost. If the error says a proposal was retained, preserve its ID and preview explicit
-   `sync resolve --approve-proposal <proposal-id> --dry-run` or
-   `sync reject <conflict-id> <proposal-id> --dry-run`.
+   when to retry rather than restarting repeatedly. `declined_replay` means the paused branch needs
+   a person's `git pull --rebase`, not that state is lost.
 8. Inspect `state.recovered_from` and `state.retained` in JSON sync output. The retained phase and captured object IDs distinguish an offline/cancelled cycle from an uncaptured failure. Recovery journals are authoritative device-local operational state outside `.vulcan/cache.db`; do not remove them as a cache repair.
 9. `vulcan sync doctor` reports whether a stable device identity already exists but never creates one. Missing identity before the first mutating sync is informational; malformed or unsupported identity state is an error requiring preservation and review.
 10. Treat `state.apply-marker` as an interrupted worktree application, not cache damage. Preserve the private-Git-directory marker and device-local journal, avoid manual ref cleanup, and rerun sync so current bytes are recaptured and the accepted revision is verified before the marker is cleared.
@@ -77,11 +74,6 @@ diagnostics, orphaned assets, search mismatches, and unexpected graph/query resu
 - A `formatting_candidate` classification can help prioritize a formatter storm, but it is not proof of semantic equivalence and never changes the required review action.
 - When the record is large, add `--path-offset <n> --path-limit <1-256>` and follow the explicit `next_offset`; use global progress totals to distinguish pending, in-flight, applied, and rebase-required groups. When `groups_complete` is false, group detail is scoped to the returned page. Do not diagnose absent paths from a single page.
 - Path pages are bounded by both record count and serialized bytes. A path-count, page-size, or diagnostics-limit error means immutable evidence could not be safely represented; preserve the Git refs and address the pathological metadata instead of enlarging state files manually.
-- If the user explicitly selects `base`, `local`, or `remote`, run `vulcan sync resolve <id> --side <side> --dry-run` first. Large conflicts can be narrowed to complete `group_id` values with repeatable `--group`; never split a structural group or exceed 128 groups in one batch. A stale worktree, changed preserved ref, active Git operation, or changed selected-group input is a safety stop—not a reason to reset files or refs. The mutating form is appropriate only after reviewing the lossy path-level choice.
-- `needs_rebase` is recoverable batch state, not a reason to edit state files. Rerun the same reviewed group selection: Vulcan replans unpublished work only when selected inputs are unchanged, or applies a published batch through a verified accepted descendant.
-- If the user instead supplies reviewed replacement files, require one `--file '<conflict-path>=<source-file>'` for every conflicted path and run with `--dry-run` first. Missing, duplicate, unrelated, oversized, malformed, or ineligible files must remain unresolved; do not work around those diagnostics by choosing an arbitrary preserved side.
-- For a reviewed unified patch, run `vulcan sync resolve <id> --patch <patch-file> --dry-run` first. Patch diagnostics are safety stops when it does not apply to the preserved local candidate, covers only part of the conflict, touches unrelated paths, deletes a conflict file, or uses unsupported rename/copy records.
-- For interactive resolution, run `vulcan sync resolve <id> --editor --dry-run` before launching the mutating form. The editor works on private temporary marker files, not vault files; an unchanged file or remaining `VULCAN-CONFLICT-<id>` token is an incomplete resolution and must fail without publishing.
 
 ## Example Moves
 

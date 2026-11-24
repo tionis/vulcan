@@ -64,15 +64,6 @@ pub fn refresh_cache_for_paths(
     vulcan_core::scan::scan_vault_paths_unlocked(paths, &changed).map_err(AppError::operation)
 }
 
-/// Refreshes while the caller retains the vault write lock across a larger
-/// mutation transaction.
-pub(crate) fn refresh_cache_incrementally_unlocked(
-    paths: &VaultPaths,
-) -> Result<ScanSummary, AppError> {
-    vulcan_core::scan::scan_vault_unlocked(paths, ScanMode::Incremental)
-        .map_err(AppError::operation)
-}
-
 pub fn refresh_cache_incrementally_with_progress<F>(
     paths: &VaultPaths,
     on_progress: F,
