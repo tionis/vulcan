@@ -423,7 +423,7 @@ fn unauthorized_next_steps(request: &EnrollRequest) -> Vec<String> {
     vec![
         "vulcan device public-key".to_owned(),
         "on a machine that can administer the repository: vulcan sync devices register --public-key <that key file> && vulcan sync forge sync (or add the key as a deploy key in the forge's settings)".to_owned(),
-        format!("then, here: vulcan vault enroll {}", request.wiki),
+        format!("then, here: {}", rerun_command(request)),
     ]
 }
 
