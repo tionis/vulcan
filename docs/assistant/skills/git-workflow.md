@@ -44,7 +44,13 @@ A vault can be one directory of a larger Git repository, such as the `docs/` dir
   and names the paths: `changeset_switch {}` back to the vault, look, and either fix the vault
   side or `changeset_abandon` and redo the change. `changeset_list` shows open changesets;
   `changeset_switch {"id": …}` resumes one. Changesets are not trusted vaults, so custom skill
-  tools are not callable inside one.
+  tools are not callable inside one. If someone lands or abandons your changeset meanwhile, your
+  next call fails once with "no longer exists" and the session is back on the vault: check
+  `git_log` before repeating the call. Empty changesets idle for a day are removed
+  automatically; land or abandon yours rather than leaving them.
+- In a shell, `vulcan git changeset list|show|land|abandon|prune` does the same for people:
+  review an agent's changeset with `show` (and `git -C <worktree> log -p`), then `land` or
+  `abandon` it. `prune --include-work` deletes idle changesets that still hold work.
 
 - Start with `git status` to see whether the change is isolated or mixed with unrelated edits.
 - Review `git diff` or `changes` before writing a commit message.

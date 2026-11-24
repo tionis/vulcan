@@ -1,7 +1,7 @@
 use crate::output::print_json;
 use crate::{
-    js_repl, selected_permission_guard, tools, trust, Cli, CliError, GitCommand, OutputFormat,
-    PermissionGuard, TrustCommand, WebCommand,
+    js_repl, selected_permission_guard, tools, trust, Cli, CliError, GitChangesetCommand,
+    GitCommand, OutputFormat, PermissionGuard, TrustCommand, WebCommand,
 };
 #[cfg(feature = "web")]
 use crate::{SearchBackendArg, WebFetchMode};
@@ -133,6 +133,173 @@ pub(crate) fn handle_git_command(
             )
             .map_err(CliError::operation)?;
             print_batched_commit_report(cli.output, &report)
+        }
+        GitCommand::Changeset { command } => handle_changeset_command(cli, paths, command),
+    }
+}
+
+fn print_changeset_line(changeset: &vulcan_app::changesets::ChangesetInfo) {
+    let idle_hours = changeset.idle_seconds / 3600;
+    println!(
+        "{}  {} commit(s), {} uncommitted, idle {}h{}",
+        changeset.id,
+        changeset.ahead,
+        changeset.uncommitted.len(),
+        idle_hours,
+        changeset
+            .title
+            .as_deref()
+            .map(|title| format!("  {title}"))
+            .unwrap_or_default()
+    );
+}
+
+#[allow(clippy::too_many_lines)]
+fn handle_changeset_command(
+    cli: &Cli,
+    paths: &VaultPaths,
+    command: &GitChangesetCommand,
+) -> Result<(), CliError> {
+    use vulcan_app::changesets;
+    let json = cli.output == OutputFormat::Json;
+    match command {
+        GitChangesetCommand::List => {
+            let pruned = changesets::prune_empty_changesets(paths);
+            let list = changesets::list_changesets(paths).map_err(CliError::operation)?;
+            if json {
+                return crate::output::print_json(&serde_json::json!({
+                    "changesets": list,
+                    "pruned": pruned.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+                }));
+            }
+            if list.is_empty() {
+                println!("No changesets.");
+            }
+            for changeset in &list {
+                print_changeset_line(changeset);
+            }
+            Ok(())
+        }
+        GitChangesetCommand::Show { id } => {
+            let preview = changesets::preview_land(paths, id).map_err(CliError::operation)?;
+            if json {
+                return crate::output::print_json(&preview);
+            }
+            print_changeset_line(&preview.changeset);
+            println!("worktree: {}", preview.changeset.worktree.display());
+            for path in &preview.changeset.uncommitted {
+                println!("  uncommitted: {path}");
+            }
+            println!(
+                "landing on {}: {}{}",
+                preview.branch,
+                if preview.needs_rebase {
+                    "rebase, then fast-forward"
+                } else {
+                    "fast-forward"
+                },
+                if preview.needs_message {
+                    "; uncommitted changes need --message"
+                } else {
+                    ""
+                }
+            );
+            Ok(())
+        }
+        GitChangesetCommand::Land {
+            id,
+            message,
+            dry_run,
+        } => {
+            if *dry_run {
+                let preview = changesets::preview_land(paths, id).map_err(CliError::operation)?;
+                if json {
+                    return crate::output::print_json(&preview);
+                }
+                println!(
+                    "Would land {} commit(s) of `{id}` on {}{}",
+                    preview.changeset.ahead,
+                    preview.branch,
+                    if preview.needs_rebase {
+                        " after rebasing"
+                    } else {
+                        ""
+                    }
+                );
+                return Ok(());
+            }
+            let commit = message
+                .as_deref()
+                .map(|message| changesets::ChangesetLandCommit {
+                    message,
+                    trailers: &[],
+                    permission_profile: cli.permissions.as_deref(),
+                });
+            let report = changesets::land_changeset(paths, id, commit.as_ref())
+                .map_err(CliError::operation)?;
+            if json {
+                return crate::output::print_json(&report);
+            }
+            if report.landed {
+                println!(
+                    "Landed {} commit(s) of `{id}` on {}{}",
+                    report.commits,
+                    report.branch,
+                    if report.rebased { " (rebased)" } else { "" }
+                );
+            } else {
+                println!("`{id}` had nothing to land; removed it");
+            }
+            Ok(())
+        }
+        GitChangesetCommand::Abandon { id, dry_run } => {
+            let changeset = if *dry_run {
+                changesets::find_changeset(paths, id)
+            } else {
+                changesets::abandon_changeset(paths, id)
+            }
+            .map_err(CliError::operation)?;
+            if json {
+                return crate::output::print_json(&serde_json::json!({
+                    "abandoned": changeset,
+                    "dry_run": dry_run,
+                }));
+            }
+            let verb = if *dry_run {
+                "Would abandon"
+            } else {
+                "Abandoned"
+            };
+            println!(
+                "{verb} `{id}` ({} commit(s), {} uncommitted)",
+                changeset.ahead,
+                changeset.uncommitted.len()
+            );
+            Ok(())
+        }
+        GitChangesetCommand::Prune {
+            older_than,
+            include_work,
+            dry_run,
+        } => {
+            let seconds = older_than.saturating_mul(86_400);
+            let pruned = changesets::prune_changesets(paths, seconds, *include_work, *dry_run)
+                .map_err(CliError::operation)?;
+            if json {
+                return crate::output::print_json(&serde_json::json!({
+                    "pruned": pruned,
+                    "dry_run": dry_run,
+                }));
+            }
+            let verb = if *dry_run { "Would remove" } else { "Removed" };
+            if pruned.is_empty() {
+                println!("No idle changesets to remove.");
+            }
+            for changeset in &pruned {
+                print!("{verb} ");
+                print_changeset_line(changeset);
+            }
+            Ok(())
         }
     }
 }

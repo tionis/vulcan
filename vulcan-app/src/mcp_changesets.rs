@@ -109,11 +109,19 @@ pub fn changeset_list(
     guard: &ProfilePermissionGuard,
 ) -> Result<Value, McpMethodError> {
     guard.check_git().map_err(tool_error)?;
+    let pruned = changesets::prune_empty_changesets(&binding.vault);
     let changesets = changesets::list_changesets(&binding.vault).map_err(tool_error)?;
-    Ok(json!({
+    let mut value = json!({
         "changesets": changesets,
         "attached": binding.active,
-    }))
+    });
+    if !pruned.is_empty() {
+        value["pruned"] = json!(pruned
+            .iter()
+            .map(|changeset| changeset.id.as_str())
+            .collect::<Vec<_>>());
+    }
+    Ok(value)
 }
 
 pub fn changeset_land(

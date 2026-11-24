@@ -42283,3 +42283,77 @@ fn tool_grant_lets_a_writer_run_the_declared_host_command() {
         .success();
     run().failure();
 }
+
+#[test]
+fn git_changeset_commands_inspect_and_land_staged_work() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault = temp_dir.path().join("vault");
+    let staged = temp_dir.path().join("staged");
+    fs::create_dir_all(vault.join(".vulcan")).expect("vault dir");
+    let git = |dir: &Path, args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .expect("git runs");
+        assert!(status.success(), "git {args:?}");
+    };
+    git(&vault, &["init", "--quiet", "-b", "main"]);
+    fs::write(vault.join("Home.md"), "# Home\n").expect("note");
+    git(&vault, &["add", "Home.md"]);
+    git(&vault, &["commit", "--quiet", "-m", "seed"]);
+    let staged_text = staged.to_str().expect("utf-8 path");
+    git(
+        &vault,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "vulcan/changeset/abc",
+            staged_text,
+            "HEAD",
+        ],
+    );
+    fs::write(staged.join("Home.md"), "# Home\n\nStaged.\n").expect("edit");
+    let vault_text = vault.to_str().expect("utf-8 path");
+    let run = |args: &[&str]| {
+        let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+        command
+            .args([
+                "--vault",
+                vault_text,
+                "--output",
+                "json",
+                "git",
+                "changeset",
+            ])
+            .args(args);
+        command.assert()
+    };
+
+    let listed = parse_stdout_json(&run(&["list"]).success());
+    assert_eq!(listed["changesets"][0]["id"], "abc");
+    assert_eq!(listed["changesets"][0]["uncommitted"][0], "Home.md");
+    let shown = parse_stdout_json(&run(&["show", "abc"]).success());
+    assert_eq!(shown["needs_message"], true);
+    assert_eq!(shown["needs_rebase"], false);
+
+    run(&["land", "abc"]).failure();
+    let dry = parse_stdout_json(&run(&["land", "abc", "--dry-run", "-m", "x"]).success());
+    assert_eq!(dry["branch"], "main");
+    assert!(staged.exists());
+
+    let landed = parse_stdout_json(&run(&["land", "abc", "-m", "Stage home"]).success());
+    assert_eq!(landed["landed"], true);
+    assert_eq!(landed["commits"], 1);
+    assert!(fs::read_to_string(vault.join("Home.md"))
+        .expect("landed note")
+        .contains("Staged."));
+    assert!(!staged.exists());
+    let listed = parse_stdout_json(&run(&["list"]).success());
+    assert_eq!(listed["changesets"], serde_json::json!([]));
+    let pruned = parse_stdout_json(&run(&["prune", "--older-than", "0", "--dry-run"]).success());
+    assert_eq!(pruned["pruned"], serde_json::json!([]));
+}

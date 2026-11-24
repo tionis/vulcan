@@ -4341,6 +4341,62 @@ pub enum GitCommand {
         )]
         dry_run: bool,
     },
+    #[command(
+        about = "Inspect, land, or abandon changesets (agents' staged work in separate worktrees)",
+        long_about = "Inspect, land, or abandon changesets. An MCP agent's `changeset_begin` stages work on a `vulcan/changeset/<id>` branch checked out in a worktree under Vulcan's user state directory, outside the vault. Landing rebases the changeset onto the vault's branch if that moved, fast-forwards the branch under the vault write lock, re-indexes, and removes the changeset; a rebase conflict keeps it unchanged."
+    )]
+    Changeset {
+        #[command(subcommand)]
+        command: GitChangesetCommand,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum GitChangesetCommand {
+    #[command(about = "List changesets with their commits, uncommitted paths, and idle time")]
+    List,
+    #[command(about = "Show one changeset and what landing it would do")]
+    Show {
+        #[arg(help = "Changeset id")]
+        id: String,
+    },
+    #[command(about = "Land a changeset on the vault's branch and remove it")]
+    Land {
+        #[arg(help = "Changeset id")]
+        id: String,
+        #[arg(
+            long,
+            short = 'm',
+            help = "Commit uncommitted changeset changes with this message first"
+        )]
+        message: Option<String>,
+        #[arg(long, help = "Report what landing would do without changing anything")]
+        dry_run: bool,
+    },
+    #[command(about = "Delete a changeset, its branch, and its worktree without landing it")]
+    Abandon {
+        #[arg(help = "Changeset id")]
+        id: String,
+        #[arg(long, help = "Report the changeset without deleting it")]
+        dry_run: bool,
+    },
+    #[command(
+        about = "Remove idle changesets (by default empty ones idle for a day)",
+        long_about = "Remove idle changesets. By default only empty changesets (nothing committed or changed) idle for at least a day go, as `changeset_begin` and `changeset_list` also do. `--include-work` also deletes changesets holding commits or uncommitted changes, which loses that work."
+    )]
+    Prune {
+        #[arg(
+            long,
+            value_name = "DAYS",
+            default_value_t = 1,
+            help = "Minimum idle time in whole days (0 for any)"
+        )]
+        older_than: u64,
+        #[arg(long, help = "Also remove changesets holding commits or changes")]
+        include_work: bool,
+        #[arg(long, help = "List what would be removed without removing it")]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Args)]

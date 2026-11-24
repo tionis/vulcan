@@ -9747,6 +9747,158 @@
               }
             ],
             "subcommands": []
+          },
+          {
+            "about": "Inspect, land, or abandon changesets (agents' staged work in separate worktrees)",
+            "name": "changeset",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "List changesets with their commits, uncommitted paths, and idle time",
+                "name": "list",
+                "options": [],
+                "subcommands": []
+              },
+              {
+                "about": "Show one changeset and what landing it would do",
+                "name": "show",
+                "options": [
+                  {
+                    "help": "Changeset id",
+                    "id": "id",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "ID"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Land a changeset on the vault's branch and remove it",
+                "name": "land",
+                "options": [
+                  {
+                    "help": "Changeset id",
+                    "id": "id",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "ID"
+                    ]
+                  },
+                  {
+                    "help": "Commit uncommitted changeset changes with this message first",
+                    "id": "message",
+                    "long": "message",
+                    "possible_values": [],
+                    "required": false,
+                    "short": "m",
+                    "value_names": [
+                      "MESSAGE"
+                    ]
+                  },
+                  {
+                    "help": "Report what landing would do without changing anything",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Delete a changeset, its branch, and its worktree without landing it",
+                "name": "abandon",
+                "options": [
+                  {
+                    "help": "Changeset id",
+                    "id": "id",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "ID"
+                    ]
+                  },
+                  {
+                    "help": "Report the changeset without deleting it",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Remove idle changesets (by default empty ones idle for a day)",
+                "name": "prune",
+                "options": [
+                  {
+                    "help": "Minimum idle time in whole days (0 for any)",
+                    "id": "older_than",
+                    "long": "older-than",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DAYS"
+                    ]
+                  },
+                  {
+                    "help": "Also remove changesets holding commits or changes",
+                    "id": "include_work",
+                    "long": "include-work",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "INCLUDE_WORK"
+                    ]
+                  },
+                  {
+                    "help": "List what would be removed without removing it",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              }
+            ]
           }
         ]
       },

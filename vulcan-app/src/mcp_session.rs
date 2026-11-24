@@ -205,6 +205,17 @@ impl McpSessionState {
         name: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Value, McpMethodError> {
+        // Someone else landed or abandoned the attached changeset: return to
+        // the vault rather than run the tool against a missing worktree.
+        if let Some(id) = self.changeset.active.clone() {
+            if !self.paths.vault_root().is_dir() {
+                self.apply_changeset_switch(McpChangesetSwitch::Detach);
+                self.parked_written_paths.remove(&Some(id.clone()));
+                return Err(McpMethodError::tool(format!(
+                    "changeset `{id}` no longer exists (it was landed or abandoned elsewhere); this session works on the vault again, so check `git_log` and repeat the call if it still applies"
+                )));
+            }
+        }
         let result = McpToolExecution {
             paths: &self.paths,
             guard: &self.guard,
@@ -339,6 +350,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn a_session_stages_work_in_a_changeset_and_lands_it() {
         let _lock = crate::trust::test_env_lock()
             .lock()
@@ -435,6 +447,27 @@ mod tests {
         assert!(
             git(root, &["log", "-1", "--format=%B"]).contains("Vulcan-MCP-Profile: unrestricted")
         );
+
+        // A changeset landed or abandoned elsewhere returns the session to
+        // the vault with an explanation.
+        let begun = call(&mut session, "changeset_begin", serde_json::json!({}));
+        let id = begun["id"].as_str().unwrap().to_string();
+        crate::changesets::abandon_changeset(&paths, &id).unwrap();
+        let error = session
+            .call_tool(
+                &registry,
+                "changeset_list",
+                serde_json::json!({}).as_object().unwrap(),
+            )
+            .unwrap_err();
+        assert!(
+            format!("{error:?}").contains("no longer exists"),
+            "{error:?}"
+        );
+        assert_eq!(session.active_changeset(), None);
+        assert_eq!(session.paths().vault_root(), root);
+        let listed = call(&mut session, "changeset_list", serde_json::json!({}));
+        assert_eq!(listed["attached"], Value::Null);
 
         match previous {
             Some(value) => std::env::set_var("XDG_STATE_HOME", value),

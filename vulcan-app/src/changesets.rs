@@ -37,6 +37,9 @@ pub struct ChangesetInfo {
     pub ahead: usize,
     /// Uncommitted paths in the worktree (Vulcan's own `.vulcan/` excluded).
     pub uncommitted: Vec<String>,
+    /// Seconds since the changeset was last touched: created, committed to,
+    /// or a changed file modified.
+    pub idle_seconds: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -160,6 +163,7 @@ fn info(root: &Path, base: &str, id: String, worktree: PathBuf) -> Result<Change
     } else {
         Vec::new()
     };
+    let idle_seconds = idle_seconds(root, &branch, &worktree, &uncommitted);
     Ok(ChangesetInfo {
         id,
         title,
@@ -167,7 +171,81 @@ fn info(root: &Path, base: &str, id: String, worktree: PathBuf) -> Result<Change
         worktree,
         ahead,
         uncommitted,
+        idle_seconds,
     })
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
+        })
+}
+
+fn modified_unix(path: &Path) -> Option<i64> {
+    let modified = std::fs::symlink_metadata(path).ok()?.modified().ok()?;
+    let seconds = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    i64::try_from(seconds).ok()
+}
+
+/// Time since the latest of: the worktree's creation (its `.git` file), the
+/// branch tip's commit, and any changed file's modification.
+fn idle_seconds(root: &Path, branch: &str, worktree: &Path, uncommitted: &[String]) -> u64 {
+    let tip = git_text(root, &["log", "-1", "--format=%ct", branch])
+        .ok()
+        .and_then(|time| time.parse::<i64>().ok());
+    let last = std::iter::once(modified_unix(&worktree.join(".git")))
+        .chain(std::iter::once(tip))
+        .chain(
+            uncommitted
+                .iter()
+                .map(|path| modified_unix(&worktree.join(path))),
+        )
+        .flatten()
+        .max()
+        .unwrap_or(0);
+    u64::try_from(unix_now().saturating_sub(last)).unwrap_or(0)
+}
+
+/// Empty changesets (nothing committed or changed) idle this long are
+/// removed whenever changesets are begun or listed.
+pub const EMPTY_CHANGESET_IDLE_SECONDS: u64 = 24 * 60 * 60;
+
+/// Remove changesets idle for at least `idle_seconds`: only empty ones unless
+/// `include_work`, which also deletes their commits and uncommitted changes.
+/// A worktree directory that disappeared is pruned from Git's records too.
+pub fn prune_changesets(
+    vault: &VaultPaths,
+    idle_seconds: u64,
+    include_work: bool,
+    dry_run: bool,
+) -> Result<Vec<ChangesetInfo>, AppError> {
+    let root = ensure_repository_root(vault)?;
+    if !dry_run {
+        git_text(&root, &["worktree", "prune"])?;
+    }
+    let mut pruned = Vec::new();
+    for changeset in list_changesets(vault)? {
+        let empty = changeset.ahead == 0 && changeset.uncommitted.is_empty();
+        if changeset.idle_seconds < idle_seconds || !(empty || include_work) {
+            continue;
+        }
+        if !dry_run {
+            remove(&root, &changeset.branch, &changeset.worktree)?;
+        }
+        pruned.push(changeset);
+    }
+    Ok(pruned)
+}
+
+/// Remove abandoned empty changesets; best effort, never fails the caller.
+#[must_use = "the pruned changesets, for reporting"]
+pub fn prune_empty_changesets(vault: &VaultPaths) -> Vec<ChangesetInfo> {
+    prune_changesets(vault, EMPTY_CHANGESET_IDLE_SECONDS, false, false).unwrap_or_default()
 }
 
 /// Every changeset of the vault: worktrees on `vulcan/changeset/*` branches.
@@ -210,6 +288,7 @@ pub fn changeset_paths(changeset: &ChangesetInfo) -> VaultPaths {
 /// Start a changeset at the vault's current commit and index its worktree.
 pub fn begin_changeset(vault: &VaultPaths, title: Option<&str>) -> Result<ChangesetInfo, AppError> {
     let root = ensure_repository_root(vault)?;
+    let _ = prune_empty_changesets(vault);
     let base = current_branch(&root)?;
     let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
     let branch = format!("{CHANGESET_BRANCH_PREFIX}{id}");
@@ -274,6 +353,37 @@ pub fn abandon_changeset(vault: &VaultPaths, id: &str) -> Result<ChangesetInfo, 
     let changeset = find_changeset(vault, id)?;
     remove(&root, &changeset.branch, &changeset.worktree)?;
     Ok(changeset)
+}
+
+/// What landing a changeset would do, without changing anything.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ChangesetLandPreview {
+    pub changeset: ChangesetInfo,
+    /// The vault branch it would land on.
+    pub branch: String,
+    /// Whether that branch moved, so landing would rebase first.
+    pub needs_rebase: bool,
+    /// Uncommitted changes refuse the landing unless a message commits them.
+    pub needs_message: bool,
+}
+
+pub fn preview_land(vault: &VaultPaths, id: &str) -> Result<ChangesetLandPreview, AppError> {
+    let root = ensure_repository_root(vault)?;
+    let changeset = find_changeset(vault, id)?;
+    let branch = current_branch(&root)?;
+    let needs_rebase = !git(
+        &root,
+        &["merge-base", "--is-ancestor", &branch, &changeset.branch],
+    )?
+    .status
+    .success();
+    let needs_message = !changeset.uncommitted.is_empty();
+    Ok(ChangesetLandPreview {
+        changeset,
+        branch,
+        needs_rebase,
+        needs_message,
+    })
 }
 
 /// What `land` commits first, when the worktree has uncommitted changes.
@@ -500,6 +610,26 @@ mod tests {
         assert!(root.join("New.md").exists());
         assert!(find_changeset(&vault, &third.id).is_err());
         assert!(find_changeset(&vault, "../escape").is_err());
+
+        // Pruning: idle empty changesets go; work stays unless included.
+        let empty = begin_changeset(&vault, None).unwrap();
+        let busy = begin_changeset(&vault, None).unwrap();
+        commit_in(&busy.worktree, "Busy.md", "# Busy\n");
+        assert!(prune_changesets(&vault, u64::MAX, true, false)
+            .unwrap()
+            .is_empty());
+        let dry = prune_changesets(&vault, 0, false, true).unwrap();
+        assert_eq!(dry.len(), 1);
+        assert!(empty.worktree.exists());
+        let pruned = prune_changesets(&vault, 0, false, false).unwrap();
+        assert_eq!(
+            pruned.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            [empty.id.as_str()]
+        );
+        assert!(!empty.worktree.exists());
+        assert!(busy.worktree.exists());
+        assert_eq!(prune_changesets(&vault, 0, true, false).unwrap().len(), 1);
+        assert!(list_changesets(&vault).unwrap().is_empty());
 
         match previous {
             Some(value) => std::env::set_var("XDG_STATE_HOME", value),
