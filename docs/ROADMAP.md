@@ -5598,7 +5598,7 @@ Implemented over the shared CLI/MCP workflows behind the host's mutation gate, e
 
 ### 10.9 Managed-directory capabilities and knowledge profiles
 
-> **On hold (2026-11-17).** Eric decided that geth (the Data Platform) owns vaults, replication, device and person identity, access control (Keyline) and large-collection storage, and that Vulcan becomes the knowledge layer over a directory of files (Grimoire `wiki/Architecture/Content Store Research/Sync Study 2026-11-17.md` and Data Platform Decisions of 2026-11-17, decisions 7 and 8). Vulcan's sync is frozen, not extended: shipped behaviour stays maintained, but do not start new work here until the boundary is confirmed. The shipped `knowledge` and `files-only` profiles stay; large document and media collections move to geth.
+> **On hold (2026-11-17).** Eric decided that geth (the Data Platform) owns vaults, replication, device and person identity, access control (Keyline) and large-collection storage, and that Vulcan becomes the knowledge layer over a directory of files (Grimoire `wiki/Architecture/Content Store Research/Sync Study 2026-11-17.md` and Data Platform Decisions of 2026-11-17, decisions 7 and 8). Git sync itself is no longer frozen (2026-11-24, see the note under Phase 12), but this item stays on hold until it is reviewed against geth's scope. The shipped `knowledge` and `files-only` profiles stay; large document and media collections move to geth.
 
 **Goal:** Reuse Vulcan's daemon for local directories and Git repositories supporting knowledge workflows, including large document/media collections. Keep knowledge bases central and Markdown services optional; ship within the existing binary and workspace before considering a separate product.
 
@@ -5982,6 +5982,8 @@ semantic checkpoints continue to use the normal branch.
 **Depends on:** Phase 10 (daemon), Phase 11 (git versioning for conflict-aware sync).
 
 > **Removed (2026-11-24).** The whole-worktree live mode and path-scoped sync were removed (see 12.23). Completed items below that describe hidden live snapshots, the live ref, merge policy and structured resolution, whole-tree validation, conflict resolution and proposals (12.4–12.7), checkpoints, retention, epochs, and semantic history are history, not current behavior. Sync is committed-history-only: `docs/specs/git-sync/none-mode.md`.
+
+> **Unfrozen (2026-11-24).** Eric decided that Git sync is not frozen: it serves Git-native repositories (code, agent-written wikis such as Grimoire and gandalf, and vaults kept with Git history), a different use case from Syncthing (working copies on the phone) and geth (vaults, identity, large collections). New Git sync work is welcome. Items marked on hold below stay on hold until reviewed one by one, since they overlap geth (key custody, synced secrets, partial replicas).
 
 **Design references:** `references/Near-Realtime Git Working-Tree Synchronization with Forgejo.md`, especially its alternate-index capture, hidden-ref, capture-before-apply, compare-and-swap, semantic-history, retention, and failure-recovery requirements; and `docs/specs/realtime-sync-notifications.md`. Realtime notification is not a prerequisite for finite synchronization: manual triggers and polling use the same engine.
 
@@ -6453,7 +6455,7 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 ### 12.16 Device key custody and secret-store foundation
 
-> **On hold (2026-11-17).** Eric decided that geth (the Data Platform) owns vaults, replication, device and person identity, access control (Keyline) and large-collection storage, and that Vulcan becomes the knowledge layer over a directory of files (Grimoire `wiki/Architecture/Content Store Research/Sync Study 2026-11-17.md` and Data Platform Decisions of 2026-11-17, decisions 7 and 8). Vulcan's sync is frozen, not extended: shipped behaviour stays maintained, but do not start new work here until the boundary is confirmed. Device identities are to be anchored in geth; reusing Vulcan's device key there is optional.
+> **On hold (2026-11-17).** Eric decided that geth (the Data Platform) owns vaults, replication, device and person identity, access control (Keyline) and large-collection storage, and that Vulcan becomes the knowledge layer over a directory of files (Grimoire `wiki/Architecture/Content Store Research/Sync Study 2026-11-17.md` and Data Platform Decisions of 2026-11-17, decisions 7 and 8). Git sync itself is no longer frozen (2026-11-24, see the note under Phase 12), but this item stays on hold until it is reviewed against geth's scope. Device identities are to be anchored in geth; reusing Vulcan's device key there is optional.
 
 **Goal:** Keep protected-file custody as the unattended baseline, add native stores independently, and support exact-key generic agents only for explicitly interactive signing. Same-key migration checks dependent usages and retains its source; no provider fallback or implicit deletion.
 
@@ -6511,7 +6513,7 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 ### 12.17 Cryptographic key management and accepted registries
 
-> **On hold (2026-11-17).** Eric decided that geth (the Data Platform) owns vaults, replication, device and person identity, access control (Keyline) and large-collection storage, and that Vulcan becomes the knowledge layer over a directory of files (Grimoire `wiki/Architecture/Content Store Research/Sync Study 2026-11-17.md` and Data Platform Decisions of 2026-11-17, decisions 7 and 8). Vulcan's sync is frozen, not extended: shipped behaviour stays maintained, but do not start new work here until the boundary is confirmed. Superseded in direction by geth's Keyline authority graph.
+> **On hold (2026-11-17).** Eric decided that geth (the Data Platform) owns vaults, replication, device and person identity, access control (Keyline) and large-collection storage, and that Vulcan becomes the knowledge layer over a directory of files (Grimoire `wiki/Architecture/Content Store Research/Sync Study 2026-11-17.md` and Data Platform Decisions of 2026-11-17, decisions 7 and 8). Git sync itself is no longer frozen (2026-11-24, see the note under Phase 12), but this item stays on hold until it is reviewed against geth's scope. Superseded in direction by geth's Keyline authority graph.
 
 **Goal:** Ship a small typed key manager and administrator-signed public registry for single users and small teams. Any enrolled administrator may sign a change; devices retain last accepted permissions while offline, and revocations propagate as updates arrive.
 
@@ -6569,7 +6571,7 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 ### 12.18 Optional synced secrets with age
 
-> **On hold (2026-11-17).** Eric decided that geth (the Data Platform) owns vaults, replication, device and person identity, access control (Keyline) and large-collection storage, and that Vulcan becomes the knowledge layer over a directory of files (Grimoire `wiki/Architecture/Content Store Research/Sync Study 2026-11-17.md` and Data Platform Decisions of 2026-11-17, decisions 7 and 8). Vulcan's sync is frozen, not extended: shipped behaviour stays maintained, but do not start new work here until the boundary is confirmed. Synced secrets belong with geth's identity anchor (including for the dotfiles).
+> **On hold (2026-11-17).** Eric decided that geth (the Data Platform) owns vaults, replication, device and person identity, access control (Keyline) and large-collection storage, and that Vulcan becomes the knowledge layer over a directory of files (Grimoire `wiki/Architecture/Content Store Research/Sync Study 2026-11-17.md` and Data Platform Decisions of 2026-11-17, decisions 7 and 8). Git sync itself is no longer frozen (2026-11-24, see the note under Phase 12), but this item stays on hold until it is reviewed against geth's scope. Synced secrets belong with geth's identity anchor (including for the dotfiles).
 
 **Goal:** If synced secrets are needed, encrypt each secret for one dedicated native age X25519 recipient and distribute its private identity out of band. Several secrets may share the same key. Keep this extension optional and usable offline.
 
@@ -6586,7 +6588,7 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 ### 12.19 Deterministic artifact mergers and Git integration
 
-> **On hold (2026-11-17).** Eric decided that geth (the Data Platform) owns vaults, replication, device and person identity, access control (Keyline) and large-collection storage, and that Vulcan becomes the knowledge layer over a directory of files (Grimoire `wiki/Architecture/Content Store Research/Sync Study 2026-11-17.md` and Data Platform Decisions of 2026-11-17, decisions 7 and 8). Vulcan's sync is frozen, not extended: shipped behaviour stays maintained, but do not start new work here until the boundary is confirmed. Redirect: Vulcan's Markdown-aware mergers are to move into a crate with no Git dependency, so geth can adopt them later as a deterministic `files/2` merger registry; until then geth writes conflict copies that Vulcan resolves.
+> **On hold (2026-11-17).** Eric decided that geth (the Data Platform) owns vaults, replication, device and person identity, access control (Keyline) and large-collection storage, and that Vulcan becomes the knowledge layer over a directory of files (Grimoire `wiki/Architecture/Content Store Research/Sync Study 2026-11-17.md` and Data Platform Decisions of 2026-11-17, decisions 7 and 8). Git sync itself is no longer frozen (2026-11-24, see the note under Phase 12), but this item stays on hold until it is reviewed against geth's scope. Redirect: Vulcan's Markdown-aware mergers are to move into a crate with no Git dependency, so geth can adopt them later as a deterministic `files/2` merger registry; until then geth writes conflict copies that Vulcan resolves.
 
 **Goal:** Reuse one validated deterministic artifact-merger registry for Vulcan's internal file-tree synchronization and for ordinary Git repositories. Automatically merge only formats whose semantics make the exact conflict convergent; keep malformed, incompatible, structural, or identity-ambiguous inputs recoverable and reviewable.
 
@@ -6605,7 +6607,7 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 ### 12.20 Selective materialization and large-repository synchronization
 
-> **On hold (2026-11-17).** Eric decided that geth (the Data Platform) owns vaults, replication, device and person identity, access control (Keyline) and large-collection storage, and that Vulcan becomes the knowledge layer over a directory of files (Grimoire `wiki/Architecture/Content Store Research/Sync Study 2026-11-17.md` and Data Platform Decisions of 2026-11-17, decisions 7 and 8). Vulcan's sync is frozen, not extended: shipped behaviour stays maintained, but do not start new work here until the boundary is confirmed. Partial replicas and on-demand files are geth's job.
+> **On hold (2026-11-17).** Eric decided that geth (the Data Platform) owns vaults, replication, device and person identity, access control (Keyline) and large-collection storage, and that Vulcan becomes the knowledge layer over a directory of files (Grimoire `wiki/Architecture/Content Store Research/Sync Study 2026-11-17.md` and Data Platform Decisions of 2026-11-17, decisions 7 and 8). Git sync itself is no longer frozen (2026-11-24, see the note under Phase 12), but this item stays on hold until it is reviewed against geth's scope. Partial replicas and on-demand files are geth's job.
 
 **Goal:** Synchronize large knowledge/document/media repositories while each device stores an explicit subset. Preserve one complete logical file tree, local edit authority, lossless reconciliation, direct CLI operation, and bounded offline behavior. This is planned work; installed Git support alone does not establish Vulcan compatibility.
 
@@ -6823,6 +6825,22 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 - [x] Let Git perform the fast-forward's worktree write (two-way `read-tree -m -u` to a tree keeping local scoped entries), so a file edited after classification makes the advance defer instead of being overwritten.
 - [x] Record scope provenance on resolution, conflict-record, and epoch commits as well, so a tip written by those workflows is also checked; align local candidates before epoch reconciliation too.
 ---
+
+### 12.24 End-to-end encrypted near-realtime peer-to-peer Git (candidate, low priority)
+
+**Goal:** Git-native repositories sync directly between a person's devices (and chosen collaborators) within seconds, encrypted end to end, without a forge in the path; a forge may stay as a backup remote. Eric wants this eventually for use cases that benefit from it; it is not scheduled.
+
+**Findings:** Grimoire `wiki/Architecture/Content Store Research/Evaluation Git P2P 2026-11-24.md`. Git's smart protocol over iroh did everything Vulcan's sync needs in a spike (clone, fetch into hidden refs, `ls-remote --exit-code`, leased and atomic pushes, one winner of concurrent pushes, per-node grants and revocation). The existing helpers are not deployable: iroh-git reports failure for pushes that landed (the daemon drops the connection before the client reads the result) and git-remote-iroh lets any node clone. Radicle 1.x sends traffic in cleartext and allows peer impersonation; 2.0 on iroh is unreleased.
+
+**Depends on:** 12.21 (device key transport), 12.23 (committed-history-only sync).
+
+- [ ] Decide what end-to-end covers: in transit only (iroh connections are encrypted between node keys and relays cannot read them), or also at rest on a hub or backup remote, which would need encrypted objects and refs (as git-remote-gcrypt does) since the forge backup holds plaintext today.
+- [ ] Serve Git from `vulcan-daemon` over one iroh endpoint: `upload-pack`/`receive-pack` for registered repositories, per-device grants for reads as well as writes, ref restrictions, and waiting for the connection to close after `receive-pack`; a Vulcan-specific `git-remote-*` helper and URL scheme (`iroh://` is claimed by two projects).
+- [ ] Use the device key's ed25519 seed as the iroh secret key (Data Platform decision 7). One node ID cannot run two endpoints, so the helper relays through the daemon instead of dialing itself.
+- [ ] Choose ordering: a designated always-on hub that serializes pushes (simplest) or peer-to-peer with per-peer merge using the existing branch-pull policies; keep the forge as a second, backup remote (Vulcan pushes to one remote today).
+- [ ] Near realtime: announce new commits over open iroh connections so online peers fetch at once; keep adaptive polling as the fallback; check reachability before dialing (an offline peer costs a 31 s timeout today).
+- [ ] Self-hosted iroh relay, shared with geth; n0's public relays are for development only.
+- [ ] Revisit Radicle once 2.0 on iroh ships and private repositories are declared safe, as an alternative or interoperation target.
 
 ## Phase 13: WebUI — Admin and Browse
 
@@ -7121,7 +7139,7 @@ Automerge compiles to `wasm32`, enabling browser-side editing without a live ser
 
 ## Phase 17: Identity & Delegable Capability Authorization
 
-> **On hold (2026-11-17).** Eric decided that geth (the Data Platform) owns vaults, replication, device and person identity, access control (Keyline) and large-collection storage, and that Vulcan becomes the knowledge layer over a directory of files (Grimoire `wiki/Architecture/Content Store Research/Sync Study 2026-11-17.md` and Data Platform Decisions of 2026-11-17, decisions 7 and 8). Vulcan's sync is frozen, not extended: shipped behaviour stays maintained, but do not start new work here until the boundary is confirmed. Phase 17 also covers authorization for Vulcan's own web and API surfaces, which stays Vulcan's; before building 17.1 and 17.2, reconcile its identities, grants and delegation with geth's Keyline so there is one identity system.
+> **On hold (2026-11-17).** Eric decided that geth (the Data Platform) owns vaults, replication, device and person identity, access control (Keyline) and large-collection storage, and that Vulcan becomes the knowledge layer over a directory of files (Grimoire `wiki/Architecture/Content Store Research/Sync Study 2026-11-17.md` and Data Platform Decisions of 2026-11-17, decisions 7 and 8). Git sync itself is no longer frozen (2026-11-24, see the note under Phase 12), but this item stays on hold until it is reviewed against geth's scope. Phase 17 also covers authorization for Vulcan's own web and API surfaces, which stays Vulcan's; before building 17.1 and 17.2, reconcile its identities, grants and delegation with geth's Keyline so there is one identity system.
 
 **Goal:** Add multi-user identity and a capability-first authorization system for humans, groups, agents, automation, services, and external shares. A trusted local bootstrap creates the first canonical root grant; holders may then delegate strict subsets of delegable authority through typed wiki objects. Document-level secrets and limited bearer credentials build on the same model so every web-facing and automated workflow shares one authorization boundary.
 
