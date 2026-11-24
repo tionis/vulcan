@@ -165,11 +165,10 @@ outcome is unknown or expired, inspect the vault before deciding whether to retr
 An operation ledger is not an idempotency guarantee or a Git auto-commit feature.
 
 Every write result carries a `commit` object saying what became of the change: `committed` with
-its `sha`, `batched` (the daemon commits it once the vault is quiet), `captured_by_sync` (whole
-worktree Git sync carries uncommitted edits), or `uncommitted` with the reason. A vault that syncs
-only commits (`sync.worktree = "none"`) needs `[git] auto_commit = true` with
+its `sha`, `batched` (the daemon commits it once the vault is quiet), or `uncommitted` with the reason. Git
+sync moves only commits, so a synced vault needs `[git] auto_commit = true` with
 `strategy = "batched"` for remote writes to reach other devices; see
-[Committed history only](git-sync.md#committed-history-only).
+[How a cycle works](git-sync.md#how-a-cycle-works).
 
 See [configuration reference](../reference/config.md) for storage conventions and
 [implementation acceptance](../specs/named-mcp-acceptance.md) for tested boundaries.

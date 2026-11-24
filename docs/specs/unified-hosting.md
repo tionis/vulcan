@@ -37,8 +37,7 @@ the first 10.7 slice that changes ownership; it does not claim that slice is imp
 | Sync trigger coordinator | `runtime.rs`, `watch.rs` | One coordinator thread; registry reconciliation; one watcher thread per active Git-capable registration; stop signal joins all watchers | Registered wiki and permission-profile reference from device config; apply markers and journals under user state | Supervised global worker plus shared per-vault observation consumers | 10.7.2, 10.7.3 |
 | Sync executor | `process.rs`, `supervisor.rs`, `sync.rs` | One worker thread claims durable jobs and cooperatively cancels finite app transactions | Durable bounded job ledger and sync repository state under user state; registration profile revalidated before execution | Required supervised global worker using per-vault mutation coordination | 10.7.2, 10.7.4 |
 | Alert delivery | `alert_delivery.rs` via `process.rs` | Bounded worker; drains or cancels during daemon shutdown | Device notification config; durable delivery ledger and named environment credentials under user state/environment | Optional supervised global worker | 10.7.2 |
-| Conflict proposal worker | `conflict_worker.rs` via `process.rs` | Optional supervised thread; runs a pass on each sync-job change and at least every `poll_seconds`; applies accepted proposals inside the host's per-vault/repository mutation permit; joins on stop | Device agent endpoint/model and named environment credential; proposal/claim state under user sync state; vault permission profile | Optional supervised global worker; explicit service authority | 10.7.2, 10.7.4, 10.7.6 |
-| Semantic-plan worker | `semantic_worker.rs` via `process.rs` | Optional supervised thread; woken by sync-job changes and its own Git-ref/config watch (shared observation covers vault files, not Git metadata); applies and publishes plans inside the host's per-vault/repository mutation permit; joins on stop | Device agent endpoint/model and named environment credential; durable plans under user sync state; vault permission profile | Optional supervised global worker; explicit service authority | 10.7.2, 10.7.4, 10.7.6 |
+| Conflict (branch replay) worker | `conflict_worker.rs` via `process.rs` | Optional supervised thread; runs a pass on each sync-job change and at least every `poll_seconds`; applies a replayed branch inside the host's per-vault/repository mutation permit; joins on stop | Device agent endpoint/model and named environment credential; content-free outcome status under user state; vault permission profile | Optional supervised global worker; explicit service authority | 10.7.2, 10.7.4, 10.7.6 |
 | Single-vault HTTP API | `vulcan serve`; `vulcan-daemon/src/vault_http.rs` with the CLI lifecycle shim in `vulcan-cli/src/serve.rs` | Reusable axum router on an invocation-owned Tokio listener, optional index-watch thread, graceful foreground shutdown | Invocation-local bind/vault/profile; vault cache and config; no device service registration | Reusable daemon router mounted by a temporary or resident host | 10.7.4, 10.7.5 |
 | MCP stdio | `vulcan mcp`; `vulcan-cli/src/mcp.rs` | Client-owned stdin/stdout loop; ends on EOF/process exit | Invocation-local permission profile and packs; session state in memory; vault config/cache | Permanent transport-specific exception in CLI using the shared dispatcher; never resident-owned | 10.7.6 |
 | Language server | `vulcan lsp`; `vulcan-lsp` crate (Roadmap 9.40, [editor integration contract](./editor-integration.md)) | Client-owned stdin/stdout loop; ends on `exit`/EOF; watcher thread that indexes while holding the per-vault `.vulcan/index-owner.lock` and otherwise follows the owner's scan journal | Invocation-local permission profile and `initializationOptions`; unsaved-buffer overlay in memory only; vault config/cache | Client-owned stdio transport outside the host, like MCP stdio; never resident-owned; may later read through 10.5 client routing | Not migrated |
@@ -63,7 +62,7 @@ A service definition has these transport-neutral fields:
 - `id`: a stable, lower-case identifier with a kind prefix. Built-ins use
   `endpoint.companion`, `worker.sync-trigger`, `worker.sync-executor`,
   `worker.alert-delivery`, `worker.conflict`,
-  `worker.semantic`, `observation.vault/<registration-id>`, `endpoint.mcp/<instance-id>`,
+  `observation.vault/<registration-id>`, `endpoint.mcp/<instance-id>`,
   `endpoint.rest/<listener-id>`, `preview.site/<session-id>`, or
   `preview.bundle/<session-id>`.
 - `scope`: `global`, `vault`, or `instance`, with the stable registration/instance identity stored
@@ -201,9 +200,8 @@ The concrete lock inventory, known migration gaps, canonical identities, orderin
 semantics are maintained in [mutation coordination and lock audit](mutation-coordination.md).
 
 Background workers use the same scheduler as hosted requests. `vulcan-app::execution::MutationGate`
-marks the point where a workflow starts to write: conflict auto-acceptance enters it after the
-agent has produced the proposal and holds it through approval, and semantic automation enters it
-after planning and holds it through application and publication. The daemon's gate
+marks the point where a workflow starts to write: branch replay enters it after the
+agent has resolved every conflicted commit and holds it through the checkout and ref update. The daemon's gate
 (`vulcan-daemon::worker_gate`) builds a background-service execution context whose ceiling is the
 registration's permission profile, waits up to five minutes for the vault's mutation permit (and
 the repository's, keyed by Git's common directory), and re-checks Git authority after the wait.
@@ -499,7 +497,7 @@ Migration extends these existing suites instead of replacing them with host-only
 | Named MCP remotes | registry/state tests and `named_mcp_remote_cli_lifecycle_is_device_global_and_dry_run_safe` | Same instance definition and consent behavior in foreground/resident modes; multiple instances; ownership conflict; revocation without unrelated restart |
 | Site preview | `vulcan-cli/src/site_server.rs` serve/watch/live-reload/prefix tests and `site_serve_json_reports_a_ready_bound_url` | Foreground/resident route and rebuild parity, irrelevant-event filtering, cleanup, and last-good-output behavior |
 | Bundle preview | `vulcan-cli/src/bundle_server.rs` contract and watch/rebuild tests | Foreground/resident route and live-reload parity, cleanup, and independent concurrent previews |
-| Sync/conflict/semantic workers | daemon runtime, supervisor, sync, conflict-worker, semantic-worker, and CLI smoke tests | Same durable jobs/results under the reusable supervisor, visible degradation, cancellation races, and no duplicate automatic owner |
+| Sync and conflict workers | daemon runtime, supervisor, sync, conflict-worker, and CLI smoke tests | Same durable jobs/results under the reusable supervisor, visible degradation, cancellation races, and no duplicate automatic owner |
 
 Every migration slice also retains the workspace boundary guard, full CLI snapshots where output
 changes, and feature-disabled checks for affected adapters.

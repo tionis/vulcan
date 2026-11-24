@@ -29,32 +29,20 @@ the local companion API.
 The response header `Vulcan-Protocol-Version: 1` is present on transport-generated responses.
 Clients should call `GET /capabilities` before relying on optional operations.
 
-Resolution and semantic provider capabilities are enabled only when the daemon was started with the
-corresponding device-local provider configuration. Operators manage it with
-`vulcan daemon config set-agent resolution|semantic --base-url <url> --model <model>
-[--api-key-env <name>]`; `show`, `clear-agent`, and every setter's `--dry-run` support inspection
-and review. The configuration stores the environment-variable name, never its value, and a missing
-named variable makes daemon startup fail before it advertises readiness. Companion requests cannot
-override any provider setting.
-
 ## HTTP endpoints
 
 | Method | Path | Result |
 |---|---|---|
-| `GET` | `/capabilities` | Protocol, sync-contract, operation, backend, transport, and agent-mode capabilities |
+| `GET` | `/capabilities` | Protocol, sync-contract, operation, backend, transport, conflict-page, and REST capabilities |
 | `GET` | `/vaults?group=<group>` | Registered wiki reports, optionally filtered by group |
 | `GET` | `/{id}/sync/status` | Reconstructed per-wiki sync status |
 | `POST` | `/{id}/sync` | HTTP 202 with an idempotent retained manual-sync job |
 | `POST` | `/sync` | HTTP 202 with an idempotent aggregate job for exactly one `wiki`, `group`, or `all` selection |
 | `POST` | `/{id}/sync/pause` | Updated paused registration |
 | `POST` | `/{id}/sync/resume` | HTTP 202 with an idempotent retained resume job |
-| `GET` | `/{id}/sync/conflicts` | Unresolved preserved conflicts |
-| `GET` | `/{id}/sync/conflicts/{conflict}` | Preserved conflict record and resolution state |
-| `POST` | `/{id}/sync/conflicts/{conflict}/resolve` | Deterministic reviewed resolution report |
-| `POST` | `/{id}/sync/conflicts/{conflict}/proposals` | Provider-backed resolution proposal when advertised |
-| `POST` | `/{id}/sync/conflicts/{conflict}/proposals/approve` | Explicit stale-checked proposal approval |
-| `POST` | `/{id}/sync/conflicts/{conflict}/proposals/reject` | Explicit proposal rejection |
-| `POST` | `/{id}/sync/semantic-plans` | Deterministic or advertised provider-backed semantic-history plan report |
+| `POST` | `/{id}/sync/activity` | Activity signal: queue a sync unless one is pending or fresh |
+| `GET` | `/{id}/sync/conflicts` | Unresolved legacy conflict records (read-only) |
+| `GET` | `/{id}/sync/conflicts/{conflict}` | Legacy conflict record detail (read-only) |
 | `GET` | `/jobs/{job}` | Retained job status |
 | `DELETE` | `/jobs/{job}` | Queued cancellation or cooperative running cancellation report |
 | `GET` | `/aggregate-jobs/{job}` | Aggregate selection status, independent child reports, and outcome counts |
@@ -62,38 +50,14 @@ override any provider setting.
 | `GET` | `/events` | WebSocket upgrade |
 | `POST` | `/shutdown` | Gracefully stop a process-owned daemon when advertised |
 
-Conflict proposal creation and explicit approval/rejection are advertised only when the daemon has
-a server-configured resolution provider. Provider endpoints or credentials never come from a
-companion request. When proposal creation is available, capabilities report
-`agent_conflict_proposal_limit_per_conflict: 1` and
-`agent_conflict_proposal_claim_scope: daemon_process`. Scoped creation additionally requires
-`conflict_contract.scoped_agent_proposals: true` and
-`conflict_contract.agent_proposal_request_version: 2`; clients must send that value as
-`proposal_contract_version` and must not fall back to an unscoped request when either capability
-is absent. Proposal request JSON rejects unknown fields so future selection-affecting fields cannot
-be silently ignored. The daemon claims the repository/conflict
-pair before invoking the provider and returns `conflict` immediately for a concurrent request.
-The scoped claim is released after success or failure. It prevents duplicate token spend inside
-one daemon, but it is not a cross-device coordination protocol.
-
-Semantic agent planning is likewise available only when `agent_semantic_plans` is true. The
-daemon owns that provider's endpoint, model, and credential; companion JSON only opts into the
-configured provider with `agent: true`. The registered wiki permission profile gates the reported
-network endpoint before any patches are sent. Deterministic planning remains available when no
-semantic provider is configured, while an explicit agent request then returns `not_found`.
+Conflict records were written only by the removed whole-worktree sync mode. They stay readable but
+cannot be resolved; the former `resolve`, `proposals`, and `semantic-plans` endpoints and their
+agent capabilities were removed.
 
 Aggregate selection JSON contains exactly one of `wiki` (a registered wiki ID), `group` (a
 registered group name), or `all: true`. The retained parent identifies every normalized child job;
 its counts and state are derived from those children. A failed or conflicted child does not roll
 back a successful child.
-
-Conflict resolution JSON contains `side` (`base`, `local`, or `remote`) and may contain `remote`,
-`live_ref`, and `dry_run`. Semantic-plan JSON contains `from`, `to`, and `semantic_ref`, and may
-contain `remote`, `live_ref`, `grouping`, `agent`, and `dry_run`. The defaults are remote `origin`,
-live ref `refs/heads/__vulcan-sync/live`, and deterministic `top_level` grouping. Deterministic
-grouping accepts `top_level`, `file`, `change`, `hunk`, or `all`; `hunk` splits only safe separated
-text modifications and leaves other change kinds atomic. Capability
-negotiation is authoritative for both optional agent modes.
 
 ## WebSocket events
 
@@ -131,7 +95,5 @@ record. Embedded routers may omit the operation entirely.
 1.11.4 so bearer authority can live in native `SecretStorage`; ordinary plugin `data.json` retains
 only allowlisted non-secret connection and trigger preferences. The release bundle contains no Git
 implementation. It requests the editor save command before manual sync, debounces completed vault
-writes, displays authenticated status/event snapshots, and provides conflict detail plus an
-explicit dry-run-then-apply side-selection flow. Its mock-daemon suite verifies authorization,
-protocol versioning, idempotency, path encoding, typed errors, status, sync, conflict preview, and
-application.
+writes, and displays authenticated status/event snapshots. Its mock-daemon suite verifies
+authorization, protocol versioning, idempotency, path encoding, typed errors, status, and sync.

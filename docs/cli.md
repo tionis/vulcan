@@ -25,7 +25,7 @@ Typical first run against a vault:
 ./target/release/vulcan --vault ~/wikis/mimir browse
 ```
 
-For whole-vault device synchronization, including a detached Git directory for Android shared storage, see [Git-backed device synchronization](guide/git-sync.md). Git-over-SSH authentication (the device key, enrollment on `vault clone`/`add`, `device replace`, `devices revoke`) is covered in [Device keys](guide/device-keys.md) and `vulcan help device-keys`. `vulcan sync run` is a finite direct workflow and does not require the daemon. `vulcan sync refresh` asks the daemon to bring a wiki up to date before work starts and reports a paused branch; agent session hooks run it (see `vulcan agent print-config`).
+For committed-history device synchronization, including a detached Git directory for Android shared storage, see [Git-backed device synchronization](guide/git-sync.md). Git-over-SSH authentication (the device key, enrollment on `vault clone`/`add`, `device replace`, `devices revoke`) is covered in [Device keys](guide/device-keys.md) and `vulcan help device-keys`. `vulcan sync run` is a finite direct workflow and does not require the daemon. `vulcan sync refresh` asks the daemon to bring a wiki up to date before work starts and reports a paused branch; agent session hooks run it (see `vulcan agent print-config`).
 
 ### Declarative device setup
 
@@ -38,15 +38,15 @@ permission profiles and per-vault settings, named remotes, workers, agents, noti
 
 See [Declarative device configuration](guide/device-config.md) or `vulcan help device-config`.
 
-### Daemon conflict automation
+### Daemon branch replay
 
-A designated daemon can automatically accept only high-confidence singleton Markdown or text
-conflict groups. This is opt-in at both levels: the daemon has an explicit wiki allowlist and each
-vault must enable `sync.agent_auto_accept` in device-local config. The principal commands are:
+A designated daemon can replay a branch whose `guarded-rebase` (or `rebase`) pull stopped on a
+conflict: the resolution agent resolves each conflicted commit in a scratch worktree, and the
+branch moves only if every commit replays cleanly. The daemon has an explicit wiki allowlist. The
+principal commands are:
 
 ```sh
 vulcan daemon config set-agent resolution --base-url <url> --model <model> --api-key-env <name>
-vulcan --vault <path> config set sync.agent_auto_accept true --target local
 vulcan daemon config set-conflict-worker --wiki <id> --dry-run
 vulcan daemon config set-conflict-worker --wiki <id>
 vulcan daemon conflict-status
@@ -56,17 +56,15 @@ vulcan daemon config clear-conflict-worker
 
 The configuration is loaded at daemon startup, so restart the daemon after changing the worker.
 Provider secrets are read from the named environment variable, never stored in daemon config. The
-worker skips paused or actively syncing wikis, applies at most one conflict per wiki per pass, and
-retains binary, structural, incomplete, oversized, or otherwise uncertain conflicts for manual
-review. Pair it with `set-semantic-worker` when the accepted sync history should also become a
-human-readable semantic history on `main`. See the
-[complete setup, status schema, and troubleshooting guide](guide/git-sync.md#unattended-conflict-resolution).
+worker skips paused or actively syncing wikis, and status reports `replayed_branch` or
+`declined_replay` per wiki. See the
+[complete setup and status schema](guide/git-sync.md#unattended-branch-replay).
 
 `vulcan daemon stop` is a syncing shutdown, not an immediate kill. It queues a final retained sync
 for each active Git-backed registration, waits up to 30 seconds, and then cooperatively cancels
 unfinished final jobs before completing shutdown. Ctrl-C and supported service-manager termination
 use the same path. After suspend, a detected clock gap queues an immediate resume sync. These paths
-retain normal pause, permission, conflict, lease, and recovery behavior and cannot promise remote
+retain normal pause, permission, lease, and recovery behavior and cannot promise remote
 publication after abrupt power loss, a forced kill, or unavailable networking.
 
 For a manually installed portable binary, `vulcan self-update check` inspects the binary's update
@@ -949,9 +947,8 @@ Behavior:
 - `trigger = "mutation"` commits successful mutating commands.
 - `trigger = "scan"` also allows `scan` and `watch` to auto-commit external changes after they are indexed.
 - `--no-commit` suppresses auto-commit for one invocation even when the vault config enables it.
-- A vault registered on this device with the Git sync backend (`vulcan vault add` without `--no-sync`) is captured by sync's hidden-ref snapshots instead. Its per-write commits stand down with a warning, so automatic capture never lands twice. Manual `vulcan git commit` still works.
-- Under `sync.worktree = "none"` sync moves only commits, so auto-commit owns capture again even for a Git sync registration: per-write commits run, and the daemon starts a batch consumer for `strategy = "batched"`. This is how edits made through MCP or the bot in a committed-history-only vault become commits that sync publishes.
-- MCP write tools report what became of their change in a `commit` object: `committed` (with `sha`), `batched`, `captured_by_sync`, or `uncommitted` with the reason.
+- Sync moves only commits, so auto-commit also runs for a vault registered with the Git sync backend: per-write commits run, and the daemon starts a batch consumer for `strategy = "batched"`. This is how edits made through MCP or the bot become commits that sync publishes.
+- MCP write tools report what became of their change in a `commit` object: `committed` (with `sha`), `batched`, or `uncommitted` with the reason.
 
 ### Batched auto-commits
 
@@ -966,7 +963,7 @@ batch_messages = "template"   # "template", "deterministic", or "agent"
 ```
 
 - A batch opens with the first change after the previous batch and is committed one interval later, once edits have paused. A vault that never pauses is committed one interval later regardless. Changes left from before the daemon started are committed one interval after it starts.
-- The daemon runs batches only for vaults registered with `--no-sync`; a vault that syncs with Git has no batch consumer, because sync owns its capture. Without a daemon, `vulcan git batch-commit` runs one batch with the same settings, ownership, and consent, for cron or a timer; `--dry-run` shows the planned commits (including any agent call) without committing.
+- The daemon runs batches for every registered vault with `strategy = "batched"`, whether or not it syncs with Git. Without a daemon, `vulcan git batch-commit` runs one batch with the same settings and consent, for cron or a timer; `--dry-run` shows the planned commits (including any agent call) without committing.
 - Daemon shutdown cancels a batch that is waiting on the agent; a commit already under way finishes first.
 - Writes an MCP client leaves uncommitted carry its `Vulcan-MCP-*` trailers into the batched commit that takes them.
 
@@ -975,7 +972,7 @@ batch_messages = "template"   # "template", "deterministic", or "agent"
 - The agent only groups and describes the changes; it never changes their bytes. Every changed path must appear exactly once in its plan. If the agent is unavailable, refuses, returns an invalid plan, or the batch is larger than 200 paths or 1 MiB of patches, the batch is committed with `deterministic` groups and the status records why.
 - Agent messages need both the vault's `batch_messages = "agent"` and this device's consent: `vulcan daemon config set-auto-commit-agent --wiki <id>` (`clear-auto-commit-agent` revokes it). The agent is the one configured with `vulcan daemon config set-agent semantic`, and the vault's permission profile must allow its endpoint. Without consent, batches fall back to `deterministic`.
 - Batches leave alone any path you staged yourself, and they wait while a merge, rebase, cherry-pick, revert, or bisect is in progress, while paths are unmerged, or while `HEAD` is detached. `exclude` applies, and `.vulcan/` is never committed.
-- `vulcan daemon auto-commit-status` shows each registered vault's capture owner, its `[git]` batch settings, whether agent messages are allowed, and the latest batch outcome.
+- `vulcan daemon auto-commit-status` shows each registered vault's `[git]` batch settings, whether agent messages are allowed, and the latest batch outcome.
 
 ### `note`
 

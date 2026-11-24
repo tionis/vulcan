@@ -7,11 +7,13 @@ key custody and management, synced secrets (12.16–12.18), Git-level artifact m
 selective materialization (12.20) are superseded or on hold; check the roadmap before relying on
 them.
 
-**Freeze (2026-11-23).** Committed-history-only sync (`sync.worktree = "none"`) is the current
-mode. The whole-worktree live mode (`"all"`) and path-scoped mode (`"paths"`) are frozen: their
-merge policy, structured resolution, conflict records, checkpoints, retention, epochs, and semantic
-history stay maintained as shipped, are not extended, and are to be deprecated and removed once no
-wiki uses them (`"paths"`, which has no user, first). Frozen parts are marked.
+**Committed-history-only (2026-11-24).** Sync moves only commits: it fetches, reconciles, and pushes
+the checked-out branch, and keeps a device safety snapshot of uncommitted work. The whole-worktree
+live mode (`sync.worktree = "all"`) and path-scoped mode (`"paths"`) were removed, together with
+the hidden live ref, merge policy, structured resolution, whole-tree validation, conflict
+resolution and proposals, checkpoints, retention, epochs, and semantic history. `sync.worktree =
+"none"` is accepted as a no-op; the other values and the removed keys are ignored with a config
+diagnostic. Conflict records retained from the live mode stay readable and archivable.
 
 This document holds the detailed synchronization, daemon, and packaging contracts that were previously
 inlined in the crate-boundary section of `docs/design_document.md`. The design document keeps the
@@ -24,13 +26,9 @@ Related specifications: [unified hosting](unified-hosting.md), [device identity]
 
 ## Sections
 
-- [Committed-history-only sync](git-sync/none-mode.md): the short contract for the current mode
+- [Committed-history-only sync](git-sync/none-mode.md): the short contract for sync
 - [Daemon runtime, services, packaging, and companion transports](git-sync/daemon-runtime.md)
 - [Git engine, ref namespace, and device safety state](git-sync/engine-and-refs.md)
-- [Merge policy, structured resolution, and whole-tree validation](git-sync/merge-policy.md) (frozen)
-- [Conflict preservation and resolution](git-sync/conflicts.md) (frozen)
-- [Checkpoints, retention, epochs, and publication retries](git-sync/checkpoints-retention.md) (frozen)
-- [Branch lane, safety gates, status, identity, and worktree application](git-sync/branch-lane.md)
-- [Worktree sync modes](git-sync/worktree-modes.md)
-- [Semantic history](git-sync/semantic-history.md) (frozen)
+- [Branch lane, safety gates, status, identity, and repository checks](git-sync/branch-lane.md)
+- [Legacy conflict records](git-sync/conflicts.md) (read and archive only)
 - [Optional daemon workers](git-sync/daemon-workers.md)

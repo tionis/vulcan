@@ -141,15 +141,15 @@ Part of the [Git synchronization and daemon architecture](../git-sync-architectu
   classifications such as network, busy, repository, configuration, and invariant cross the
   application boundary as structured data; the daemon must not flatten them into retryable `unknown`
   errors, because offline projection and repair guidance depend on category and retryability. A
-  checked-out branch pull or publication failure does not reverse an already converged hidden file
-  lane, but the encompassing daemon job is still retained as failed with `error` status and detail
-  naming that partial-success boundary; aggregate and companion surfaces must not report the
-  operation as wholly successful.
+  failed fetch or pull retains the daemon job as failed with `error` status; a deferred pull or a
+  rejected push stays a detail of an otherwise successful job, and a paused branch lane retains the
+  job as paused.
 - Daemon status is reconstructed rather than maintained as a second authority. The shared state
   contract distinguishes clean, dirty, capture-pending, capturing, captured-unpushed, fetching,
   fetched, merging, pushing, applying, conflicted, paused, offline, and error. Reconstruction
-  prioritizes an active retained job, then an application marker and durable transaction journal,
-  unresolved conflict records, registration pause state, and finally the latest terminal job.
+  prioritizes an active retained job, then a retained application marker (written only by the
+  removed live mode) and the durable transaction journal, unresolved legacy conflict records,
+  registration pause state, and finally the latest terminal job.
   Retryable network/authentication failures project as offline, watcher work waiting in the queue
   projects as dirty, and journal phases retain transaction identity plus whether recovery is
   required. A retained journal error overrides its last active phase in the projected state, so a
@@ -159,16 +159,16 @@ Part of the [Git synchronization and daemon architecture](../git-sync-architectu
   answers, reports the latest daemon-supervised attempt time from the retained job identity, It does
   not fetch a remote merely to produce status. Direct one-shot `sync run` invocations are outside
   the daemon job ledger. None of this state is inferred from `cache.db`.
-- Each registered Git worktree has a daemon-owned recursive watcher that schedules the same finite
-  transaction rather than scanning the cache directly. It coalesces editor save sequences after a
-  short quiet period but caps continuous activity with a maximum dirty age. Access events and
+- Each registered Git worktree has a daemon-owned recursive watcher feeding the observation hub.
+  Because sync moves only commits, the sync consumer drains worktree hints without starting a
+  cycle; lost events still queue a reconciling cycle, and a native watch on the Git directory's
+  `HEAD`, `packed-refs`, and `refs/heads/` turns commits into debounced sync triggers. The watcher
+  coalesces editor save sequences after a short quiet period but caps continuous activity with a
+  maximum dirty age. Access events and
   `.git`/`.vulcan` paths are ignored; transient notify errors confined to ignored device-local state
   are discarded. Failed setup or a runtime native-watcher failure falls back to content-comparing
   polling, while a bounded incremental safety rescan detects a native watcher that remains connected
-  but silently misses an edit. Watcher rescan notices, callback errors, and unreadable apply markers
-  force a recovery trigger. Events observed while `vulcan-sync/apply.json` is present retain that
-  transaction ID in bounded job metadata instead of being blindly discarded, because a simultaneous
-  user edit must still produce a follow-up reconciliation. Startup schedules an idempotent resume or
+  but silently misses an edit. Watcher rescan notices and callback errors force a recovery trigger. Startup schedules an idempotent resume or
   recovery job before consuming events; periodic remote polling remains a separate trigger producer
   over the same supervisor.
 - A synchronous trigger-runtime coordinator projects the current registry into watcher ownership. An
@@ -202,21 +202,10 @@ Part of the [Git synchronization and daemon architecture](../git-sync-architectu
   only so retained job ledgers still deserialize.
 - Companion transports project a versioned synchronous service rather than calling Git directly. The
   service owns capability negotiation, wiki lookup, reconstructed status, credential-scoped
-  idempotent single-wiki and aggregate selection enqueueing, pause/resume, conflict inspection and
-  deterministic resolution, optional agent proposal creation plus explicit proposal
-  approval/rejection, deterministic or agent-backed semantic-plan creation, and child/aggregate job
-  status and cancellation. Repository-reading and mutating calls reapply the registration's named
-  permission profile. Resolution and semantic providers, endpoints, models, and credentials are
-  configured server-side rather than accepted from a companion request; each provider reports its
-  actual network endpoint for permission checks, and each agent capability is advertised only while
-  the corresponding provider is configured. A configured daemon claims each repository/conflict pair
-  before calling the resolution provider, permits one active proposal request for that pair, fails
-  concurrent requests immediately, and releases the claim through scoped cleanup; capability
-  negotiation reports both the limit and its `daemon_process` scope so clients do not mistake this
-  device-local guard for cross-device coordination. Semantic planning continues to accept
-  deterministic requests without a provider, fails an explicit agent request closed when none
-  exists, and reuses the same bounded-patch, exact accepted-tree, review, and application contract
-  as direct mode. HTTP and WebSocket adapters add their transport capabilities without duplicating
+  idempotent single-wiki and aggregate selection enqueueing, pause/resume, read-only inspection of legacy
+  conflict records, activity signals, and child/aggregate job status and cancellation. Conflict
+  resolution, agent proposals, and semantic-plan creation were removed with the live mode.
+  Repository-reading and mutating calls reapply the registration's named permission profile. HTTP and WebSocket adapters add their transport capabilities without duplicating
   these workflows.
 - Companion authentication uses a device-local credential outside every vault and rebuildable cache.
   The initial credential contains a 256-bit OS-random URL-safe bearer secret, a stable non-secret
@@ -241,9 +230,7 @@ Part of the [Git synchronization and daemon architecture](../git-sync-architectu
   snapshots expose the daemon's state; by default the authenticated stream and 30-second polling
   fallback also produce one bounded Obsidian notice per durable failed job or retained failed
   transaction, deduplicated by its identity. Temporary companion connection loss changes status to
-  offline but is not reported as a sync failure. Preserved-side conflict resolution always performs
-  a mutation-free preview and requires a separate explicit apply action that reuses server-side
-  stale, recovery, lease, validation, and application checks. The client validates loopback origins
+  offline but is not reported as a sync failure. The client validates loopback origins
   and protocol payloads, sends credentials only in authorization/subprotocol fields, and contains no
   Git execution path.
 - The initial companion transport refuses non-loopback listeners. HTTP operations use JSON,

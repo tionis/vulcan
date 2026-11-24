@@ -161,7 +161,7 @@ refs/heads/__vulcan-sync/registrations/<device-id>
 ```
 
 The ref lives in the versioned namespace owned by `vulcan-sync`, with builders there rather than at
-call sites. One ref per device means concurrent registrations never conflict and never touch the live
+call sites. One ref per device means concurrent registrations never conflict and never touch the synchronized
 branch. The tree holds one bounded, strictly versioned `registration.json`:
 
 ```text
@@ -183,13 +183,12 @@ The first mutating sync publishes the device's own record when none exists. It i
 registration failure never fails or delays sync, and doctor, dry-run, and status never create one.
 The push is create-only with an exact lease. The decision costs no extra remote round trip: the
 sync's own remote observation already lists `refs/heads/__vulcan-sync/registrations/*` in the same
-`ls-remote` (cheap sync) or `fetch` (full sync) that reads the live ref. A full sync also mirrors those
-refs into `refs/vulcan/registrations/*` and prunes vanished ones. The device compares its own tip with
-its local mirror and fetches its record only when the tip moved, so it sees a revocation or deletion
-on the very next sync. It pushes only to create a missing record or claim a placeholder. Mirroring is
-best effort: if the combined fetch fails, the plain live fetch is retried and the registration step
-falls back to the last mirrored copy (or one explicit lookup if the device has never seen its record),
-so this namespace can never fail a sync. Afterward the device only updates its own record, to
+`ls-remote` that observes the device backup and branch upstream. The device compares its own tip with
+its local mirror under `refs/vulcan/registrations/*` and fetches its record only when the tip moved,
+so it sees a revocation or deletion on the very next sync. It pushes only to create a missing record
+or claim a placeholder. Mirroring is best effort: when the remote was not observed, the registration
+step falls back to the last mirrored copy (or one explicit lookup if the device has never seen its
+record), so this namespace can never fail a sync. Afterward the device only updates its own record, to
 claim a placeholder or change its label.
 
 A device that finds its own record `revoked` never overwrites it. It reports the state in doctor and
@@ -343,7 +342,7 @@ vault, with the device key bound and no SSH agent, `GIT_SSH_COMMAND`, or token i
   and a second run reported the key as present.
 - **Hidden refs through the deploy key:** the bound device key authenticated reads and created and
   deleted `refs/heads/__vulcan-sync/registrations/*` on a vault whose remote already carried the usual
-  `__vulcan-sync` refs. A content push to the live ref through the device key was not exercised,
+  `__vulcan-sync` refs. A content push to a hidden sync ref through the device key was not exercised,
   because there was nothing to push, but it uses the same ref namespace and permission.
 - **Generic setup and OAuth login on a real vault:** from `git@forge.example:owner/repo` alone,
   `sync forge init --kind forgejo --oauth-client-id <ID>` derived the forge URL and `owner/repo`.

@@ -1,6 +1,6 @@
 # Git-backed device synchronization
 
-Vulcan can synchronize a registered directory's complete canonical file tree through a dedicated Git live branch. Each `vulcan sync run` is a finite, direct transaction: it captures the current worktree without touching the normal Git index, reconciles the configured live ref, and applies an accepted tree only after preserving local bytes. Knowledge-profile sync also refreshes an existing cache. The daemon schedules the same workflow but is not required.
+Vulcan synchronizes a registered directory's committed Git history between devices. Each `vulcan sync run` is a finite, direct transaction: it snapshots the current worktree into a device-local safety ref without touching the normal Git index, fetches the checked-out branch, fast-forwards or reconciles it with its upstream, and pushes local commits. Sync never commits your edits; people, agents, and Vulcan's auto-commit do. Knowledge-profile sync also refreshes an existing cache. The daemon schedules the same workflow but is not required.
 
 Registrations live in the device-global `daemon.toml` (`~/.config/vulcan/daemon.toml` on Linux), which you may also edit by hand: CLI commands keep its comments and formatting. The identities Vulcan generates for registrations and named remotes are kept in `daemon.identities.toml` beside it, because API tokens, scan state, and OAuth grants refer to them. Do not edit that file or copy it to another device. A `daemon.toml` from an older version that still carries `registration_id` or `instance_id` lines is migrated on first use: the identities move to `daemon.identities.toml` and only those lines are removed. Going back to an older version afterwards would generate new identities and break existing API tokens and grants. To set up a device from one file, add `source` to each `[[vault]]` and run `vulcan daemon apply`, which clones missing vaults; see [Declarative device configuration](device-config.md).
 
@@ -12,17 +12,17 @@ A Git-sync registration needs a Git repository. `vulcan vault add` on a plain fo
 
 To find vaults you have not registered yet, `vulcan vault discover <dir>` looks at the immediate subdirectories of `<dir>` and reports the ones holding `.obsidian/`, `.vulcan/`, or a `.vulcan.toml` pointer, each with a free suggested ID and the `vulcan vault add` command to run. Already registered vaults are listed with their ID. Remember a parent folder with `vulcan vault scan-dir add <dir>` (stored as `scan_dirs` in `~/.config/vulcan/daemon.toml`) so that a bare `vulcan vault discover` scans it; `vault scan-dir list` and `vault scan-dir remove` manage the list. Discovery never registers anything itself.
 
-The `files-only` profile allows arbitrary files to be managed without initializing or refreshing a Markdown index. It disables knowledge services, scripts, semantic history, agent conflict resolution, and knowledge-specific tree validation for that registered path. Knowledge commands are rejected while the path is registered as files-only; switch back with `vulcan vault set <id> --profile knowledge` when it should act as a knowledge base again. Both profiles currently use full-tree materialization. Capability reports expose the versioned profile and materialization policy; files-only doctoring skips cache checks and reports repository safety. Registration JSON for existing knowledge profiles keeps its previous shape.
+The `files-only` profile allows arbitrary files to be managed without initializing or refreshing a Markdown index. It disables knowledge services, scripts, and agent workers for that registered path. Knowledge commands are rejected while the path is registered as files-only; switch back with `vulcan vault set <id> --profile knowledge` when it should act as a knowledge base again. Both profiles currently use full-tree materialization. Capability reports expose the versioned profile and materialization policy; files-only doctoring skips cache checks and reports repository safety. Registration JSON for existing knowledge profiles keeps its previous shape.
 
-Files-only devices retain concurrent automatic merges for review so a local profile cannot accept bytes that a knowledge device would reject. The daemon's unattended files-only preflight rejects detached HEAD, staged changes, multiple linked worktrees, in-progress Git operations, and nested repositories or submodules. It also checks the branch again before applying synchronized files. Vulcan's repository lock does not exclude external Git processes, so do not switch branches or run Git operations while an unattended sync job is active. Active development checkouts are not a supported unattended-management workflow; use explicit manual synchronization only after reviewing repository state.
+The daemon's unattended files-only preflight rejects detached HEAD, staged changes, multiple linked worktrees, in-progress Git operations, and nested repositories or submodules. It also checks the branch again before applying synchronized files. Vulcan's repository lock does not exclude external Git processes, so do not switch branches or run Git operations while an unattended sync job is active. Active development checkouts are not a supported unattended-management workflow; use explicit manual synchronization only after reviewing repository state.
 
-File synchronization replicates working-tree content; it is not by itself a complete backup. Complete backup needs verified retention and restoration for refs, history, and Git LFS payloads, which the current sync contract does not promise.
+Sync replicates committed history; it is not by itself a complete backup. Complete backup needs verified retention and restoration for refs, history, and Git LFS payloads, which the current sync contract does not promise.
 
 Selective materialization remains planned in [Roadmap 12.20](../ROADMAP.md#1220-selective-materialization-and-large-repository-synchronization). Sparse checkout, partial clone, shallow-history reconciliation, and selective LFS hydration are not currently supported sync combinations. Existing Git/LFS filter checks do not establish those guarantees. The future model preserves excluded paths and reports metadata synchronization separately from local payload availability.
 
 Authentication over SSH uses this installation's device key by default and is set up automatically when you clone or add a vault: see [Device keys](device-keys.md) (`vulcan help device-keys`).
 
-This is device/file-tree synchronization. It replicates the whole vault rather than selecting or translating notes for an external wiki.
+This is device synchronization. It replicates the repository's committed history rather than selecting or translating notes for an external wiki.
 
 On graceful daemon shutdown, Vulcan queues a final retained sync for every active Git-backed wiki
 before stopping its workers. This covers `vulcan daemon stop`, foreground Ctrl-C, and normal
@@ -196,31 +196,31 @@ vulcan sync doctor --fix
 
 `vulcan sync ignore-device-files [--dry-run]` does the same as a single step. Either adds entries
 only for the files no shared `.gitignore` covers yet, and running it on one device is enough: the
-`.gitignore` syncs to the others. The next sync
-publishes the change and stops tracking them, and every device keeps its own copy, including
-devices that were still editing the file. The same applies to any tracked path you add to a
-`.gitignore` yourself; only rules in committed `.gitignore` files count, not `info/exclude` or a
-global excludes file. Files added with `git add --force` despite an existing rule stay tracked. Devices still
-on an older Vulcan version delete their copy instead; Obsidian recreates the layout.
+`.gitignore` reaches the others once it is committed. Files that are already tracked stay tracked
+until you remove them from the index (`git rm --cached .obsidian/workspace.json
+.obsidian/workspace-mobile.json`) and commit; devices that pull that commit may lose their copy,
+which Obsidian recreates. Only rules in committed `.gitignore` files count, not `info/exclude` or a
+global excludes file.
 
-## Committed history only
+## How a cycle works
 
-Notes edited where nobody commits suit the default mode, which snapshots the whole worktree. A
-repository that also holds code, or whose authors commit their own work, can synchronize only
-committed history instead:
+Sync moves only commits. Before 2026-11-24 Vulcan could also snapshot the whole worktree into a
+hidden live branch (`sync.worktree = "all"`, the former default) or only some paths (`"paths"`);
+both modes were removed. `worktree = "none"` is still accepted and does nothing; `"all"`, `"paths"`,
+and the old `sync.paths`, `sync.merge_policy`, `sync.merge_automation`, `sync.agent_auto_accept`,
+and `sync.tree_validation` keys are ignored with a config warning, so delete them. Leftover
+`__vulcan-sync/live` refs on a remote are ignored; nothing deletes them.
 
 ```toml
 # .vulcan/config.toml (shared, committed)
 [sync]
-worktree = "none"     # default "all"
 branch_pull = "ff-only" # optional: never merge or rebase for you; default "git"
-# branch_push = false # optional: fetch and fast-forward, but push yourself
+# branch_push = false   # optional: fetch and fast-forward, but push yourself
 ```
 
-Because sync then moves only commits, Vulcan's own auto-commit owns capture for the vault even
-though it is registered for Git sync. Edits made through MCP, the bot, or other tools that cannot
-run Git become history only when something commits them, so enable batched auto-commit in the same
-file when such writers exist:
+Edits become history only when something commits them. People and agents with a shell commit
+themselves; for edits made through MCP, the bot, or other tools that cannot run Git, enable batched
+auto-commit, which always runs for synced vaults:
 
 ```toml
 [git]
@@ -228,18 +228,15 @@ auto_commit = true
 strategy = "batched"  # the daemon commits after the vault has been quiet
 ```
 
-Each `vulcan sync run` then snapshots this device's worktree into a local safety ref (never
-applied anywhere), fetches the checked-out branch, fast-forwards it when the incoming commits do not
-touch files you are editing, falls back to your pull configuration when it diverged, and pushes your
-commits. The hidden live branch is never created or read, and the snapshot stays in this
-repository, so half-finished edits never leave the device. Set `publish_device_backup = true` in
-`[sync]` to also push the snapshot to this device's private remote branch as an off-device backup.
-The daemon starts a cycle when a commit moves `HEAD` or a branch, not for every saved file, and
-polls the remote as usual.
-
-A device can opt out of worktree synchronization alone with `worktree = "none"` in
-`.vulcan/config.local.toml`; it cannot turn a shared `"none"` back into `"all"`. `branch_push` may be
-set in either file.
+Each `vulcan sync run` snapshots this device's worktree into a local safety ref (never applied
+anywhere), fetches the checked-out branch, fast-forwards it when the incoming commits do not touch
+files you are editing, falls back to `sync.branch_pull` when it diverged, and pushes your commits.
+The branch needs an upstream that exists on the remote; without one the cycle fails as unsupported
+configuration. The snapshot stays in this repository, so half-finished edits never leave the device.
+Set `publish_device_backup = true` in `[sync]` to also push the snapshot to this device's private
+remote branch as an off-device backup. The daemon starts a cycle when a commit moves `HEAD` or a
+branch, not for every saved file, and polls the remote as usual. `branch_push` may be set in either
+file.
 
 When sync cannot fast-forward because the branch diverged, it follows `sync.branch_pull`. The
 default, `git`, uses each device's own `pull.rebase` and `pull.ff`, so a global `pull.rebase = true`
@@ -258,7 +255,7 @@ creates a commit and every divergence pauses. A merge or rebase that sync starts
 is always aborted, leaving the branch as it was.
 
 A conflicted rebase can also be settled by the resolution agent, on a device you choose: list the
-wiki in the daemon's conflict worker (see [Unattended conflict resolution](#unattended-conflict-resolution))
+wiki in the daemon's conflict worker (see [Unattended branch replay](#unattended-branch-replay))
 and set `branch_pull` to `guarded-rebase` or `rebase`. When the branch is still diverged after a
 sync, the worker replays the local commits onto the upstream in a scratch worktree and asks the
 agent to resolve each conflicted commit. The branch moves only if every commit replayed, and a
@@ -268,69 +265,32 @@ file, the agent's answer still has conflict markers, or uncommitted edits would 
 declined replay is not sent to the agent again until either side moves, and the branch stays
 paused with its alert.
 
-Conflict resolution, checkpoints, retention, and semantic history apply only to
-the default mode and refuse here; earlier live state is left untouched for when the mode switches
-back.
-
-## Notes by path, everything else by commit
-
-Between the two, a repository can snapshot only some paths, for example the notes of a wiki that
-also holds code:
-
-```toml
-# .vulcan/config.toml (shared, committed)
-[sync]
-worktree = "paths"
-paths = ["wiki", "Home.md", ".obsidian"]   # files or directories, relative to the repository root
-```
-
-Edits inside these paths sync like the default mode, including from Obsidian on a phone where
-nobody commits. Everything else reaches other devices only through commits: live takes those paths
-from your branch as it was last pushed, and sync never writes them from live. When new commits
-arrive, sync updates every file you have not changed locally. A note you are editing keeps your
-version, and the cycle mentions it. An uncommitted change to a file outside the paths holds the
-branch back until you commit or discard it.
-
-Every device must use the same `paths`, so they are shared configuration only. To change them,
-commit the new list and push. A device whose branch does not include that commit yet stops with a
-scope mismatch instead of reverting the others, and continues once its branch catches up. Semantic
-history works, but only for changes inside the paths. Paths cannot include `.vulcan` configuration,
-and `.vulcan/device-names` is always included. A repository switching from `"all"` simply starts
-over: the first path-scoped snapshot replaces everything outside the paths with the pushed branch.
-
 ## Conflicts and recovery
 
-A conflicting sync preserves the immutable candidates and may publish a safe projection. The accepted remote bytes remain provisionally at the original path, clean paths continue synchronizing, and no conflict artifacts are written into the vault. The immutable conflict-record ref is also published to the remote so the record and both candidate histories remain Git-reachable.
-
-Inspect and resolve through Vulcan rather than editing its refs or conflict-copy structure manually:
+Sync no longer records conflicts: a diverged branch it cannot reconcile pauses with an alert that
+says how to fix it. Conflict records kept from the removed whole-worktree mode stay readable and
+can be archived, but no longer resolved:
 
 ```sh
 vulcan sync conflicts
 vulcan sync conflicts <conflict-id>
-vulcan sync resolve <conflict-id> --side local --dry-run
-vulcan sync resolve <conflict-id> --side local
+vulcan sync conflicts-archive --dry-run
 ```
 
-Complete-file, patch, editor, and reviewed agent-proposal modes are also available. Use repeatable
-`--file '<conflict-path>=<reviewed-source>'` arguments for mixed conflicts containing `.obsidian`
-state, binary content, or Git-synthesized rename destinations: complete-file resolution accepts
-those locally reviewed bytes without exposing them to an LLM. Agent proposals intentionally reject
-the entire conflict when any input is ineligible. Successful resolution closes the conflict state
-by publishing the reviewed tree and a remote resolution ref while retaining the original Git
-objects and durable conflict record.
+`sync conflicts-archive` moves records closed at least `--older-than-days` (default 30) ago into a
+Git-reachable archive.
 
 If a finite cycle is interrupted or the network is unavailable, rerun `vulcan sync run`. Device-local journals and Git refs retain the captured state; do not delete them or replace the vault with a fresh clone as a recovery shortcut.
 
 ## Background failure notifications
 
 The daemon always writes one structured warning or error record when a registered wiki first
-enters a conflicted, paused, or failed sync state. Repeated automatic attempts in the same state do
+enters a paused or failed sync state. Repeated automatic attempts in the same state do
 not flood the service log; a successful cycle resets the notification. Full error detail remains in
 `vulcan sync status <wiki>` rather than logs or desktop messages.
 
-A paused branch is announced too, even when the files themselves synchronized: when local commits
-could not be combined with the upstream, the alert carries `reason: "branch_paused"` (event
-`sync_branch_paused` when the rest of the cycle succeeded) and `branch_pause`, which says why:
+A paused branch is announced too: when local commits could not be combined with the upstream, the
+alert carries `reason: "branch_paused"` and `branch_pause`, which says why:
 `fast_forward_only` (diverged under fast-forward-only pulls), `interactive_rebase`
 (`pull.rebase=interactive`), `shared_commits` or `merge_commits` (a guarded rebase would strand
 another branch or flatten merges), or `rebase_conflict` / `merge_conflict` (the attempt conflicted
@@ -400,184 +360,43 @@ bounded exponential backoff across restarts, and identified by the durable sync 
 should deduplicate on the `Idempotency-Key` header or JSON `job_id`. Remove a sink with
 `vulcan daemon config remove-notification-sink <name> --dry-run` and then apply the reviewed change.
 
-## Debounced semantic commits
+## Unattended branch replay
 
-`sync semantic-auto` is a finite scheduler entrypoint for cron, a systemd timer, or Forgejo Actions.
-Each invocation reads the accepted live revision and a small device-local observation record. It
-exits as `deferred` until that revision has been stable for the quiet interval (or the maximum
-batching interval is reached), then creates a semantic plan, applies it to the configured semantic
-branch, and publishes it with an exact remote lease. An already-current tree exits as `up_to_date`.
-
-```sh
-vulcan sync semantic-auto personal \
-  --quiet-seconds 900 \
-  --maximum-wait-seconds 21600
-```
-
-Use `--agent` for LLM-organized whole-file groups and commit messages. Without `--base-url`, the
-provider endpoint, model, and API key variable come from `vulcan daemon config set-agent semantic`,
-and `--model` or `--api-key-env` override single values. An explicit `--base-url` uses only the
-flags given (`--model` is then required) and never inherits the configured key variable; with no
-configured agent the endpoint defaults to `http://localhost:11434/v1`. The model cannot change vault bytes: the generated history must still
-reproduce the exact accepted live tree. `--dry-run` neither advances the debounce record nor creates
-Git objects or refs. `--no-publish` keeps a completed semantic history local. Schedule only one
-writer per semantic branch; cross-run races are still rejected by the local compare-and-swap and
-remote exact lease.
-
-To run the same workflow inside Vulcan's installed daemon, configure the provider and an explicit
-wiki allowlist, then restart the daemon (configuration is loaded at startup):
-
-```sh
-vulcan daemon config set-agent semantic \
-  --base-url <openai-compatible-url> \
-  --model <model> \
-  --api-key-env VULCAN_SEMANTIC_KEY
-vulcan daemon config set-semantic-worker \
-  --wiki personal \
-  --semantic-ref refs/heads/main \
-  --quiet-seconds 900 \
-  --maximum-wait-seconds 21600 \
-  --poll-seconds 30
-vulcan daemon semantic-status
-```
-
-The worker only visits listed wikis, skips paused wikis and wikis with queued/running file-tree
-sync jobs, applies the registration's Git and network permission profile, and records the latest
-per-wiki outcome outside the vault. Disable it with
-`vulcan daemon config clear-semantic-worker`. Provider keys remain environment-only; foreground
-and installed Linux/macOS services can read them from `$XDG_CONFIG_HOME/vulcan/daemon.env`
-(normally `~/.config/vulcan/daemon.env`). Keep that file mode `0600` on Unix and use literal
-`NAME=value` records; inherited environment variables take precedence.
-
-## Unattended conflict resolution
-
-A designated daemon can resolve conservative high-confidence conflicts and publish the accepted
-tree for other devices without an operator in the loop. The same worker also settles a branch
-whose `guarded-rebase` stopped on a conflict (see above). Pairing it with the semantic worker keeps
-the byte-exact sync history separate from a readable commit history on `main`. The following is a
-complete setup for an already registered `personal` wiki; replace the paths, provider details, and
-environment-variable names, and make both named secrets available to the daemon process:
+A designated daemon can settle a branch whose `guarded-rebase` (or `rebase`) pull stopped on a
+conflict, as described in [How a cycle works](#how-a-cycle-works). The following is a complete
+setup for an already registered `personal` wiki; replace the provider details and the
+environment-variable name, and make the named secret available to the daemon process:
 
 ```sh
 vulcan daemon config set-agent resolution \
   --base-url <openai-compatible-url> \
   --model <model> \
   --api-key-env VULCAN_RESOLUTION_KEY
-vulcan --vault /path/to/vault config set sync.agent_auto_accept true --target local
-vulcan daemon config set-conflict-worker \
-  --wiki personal \
-  --max-groups-per-run 128 \
-  --poll-seconds 30 \
-  --dry-run
+vulcan daemon config set-conflict-worker --wiki personal --poll-seconds 30 --dry-run
 
-# Review the non-secret preview, then apply the same allowlist.
-vulcan daemon config set-conflict-worker \
-  --wiki personal \
-  --max-groups-per-run 128 \
-  --poll-seconds 30
-
-vulcan daemon config set-agent semantic \
-  --base-url <openai-compatible-url> \
-  --model <model> \
-  --api-key-env VULCAN_SEMANTIC_KEY
-vulcan daemon config set-semantic-worker \
-  --wiki personal \
-  --semantic-ref refs/heads/main \
-  --quiet-seconds 900 \
-  --maximum-wait-seconds 21600 \
-  --poll-seconds 30 \
-  --dry-run
-
-# Review the preview, apply it without --dry-run, and reload daemon configuration.
-vulcan daemon config set-semantic-worker \
-  --wiki personal \
-  --semantic-ref refs/heads/main \
-  --quiet-seconds 900 \
-  --maximum-wait-seconds 21600 \
-  --poll-seconds 30
+# Review the non-secret preview, apply it without --dry-run, and restart the daemon.
+vulcan daemon config set-conflict-worker --wiki personal --poll-seconds 30
 vulcan daemon stop
 vulcan daemon start --detach
 vulcan daemon status
 vulcan daemon conflict-status
-vulcan daemon semantic-status
 ```
 
-If a named credential variable is not set in the daemon's environment or `daemon.env`, the daemon
-still starts and synchronizes. That agent is unavailable, the workers that need it are listed as
-`disabled` in `vulcan daemon status` with the reason (for example
-`resolution agent disabled: VULCAN_RESOLUTION_KEY is not set`), and the companion does not
-advertise the matching agent capability. This lets one shared `daemon.toml` enable unattended
-resolution only on the device that holds the key.
+If the named credential variable is not set in the daemon's environment or `daemon.env`, the daemon
+still starts and synchronizes. The agent is unavailable and the worker is listed as `disabled` in
+`vulcan daemon status` with the reason (for example `resolution agent disabled:
+VULCAN_RESOLUTION_KEY is not set`). This lets one shared `daemon.toml` enable branch replay only on
+the device that holds the key. Provider keys remain environment-only; foreground and installed
+Linux/macOS services can read them from `$XDG_CONFIG_HOME/vulcan/daemon.env` (normally
+`~/.config/vulcan/daemon.env`). Keep that file mode `0600` on Unix and use literal `NAME=value`
+records; inherited environment variables take precedence.
 
-The worker skips paused or actively syncing wikis and only sends pending singleton Markdown or text
-overlaps with complete regular-file evidence under strict byte ceilings. It never enables broad
-context. Binary, structural, missing-side, device-state, oversized, and other ineligible conflicts
-remain available for ordinary review. Provider output still passes the normal exact-path, syntax,
-link, deletion, tree, recovery, stale-input, and remote-lease checks before it can be accepted. A
-provider failure is reported in durable status and backs off for five minutes across daemon restarts.
-Disable unattended resolution with `vulcan daemon config clear-conflict-worker`; disabling the local
-`sync.agent_auto_accept` switch is an additional per-vault stop. Run only one configured resolver
-daemon for a vault: claims are shared inside one daemon process, while Git leases provide safety—not
-token-spend coordination—across devices.
+The worker skips paused or actively syncing wikis and applies the registration's Git and network
+permission profile. A provider failure is reported in durable status and backs off for five minutes
+across daemon restarts. Disable it with `vulcan daemon config clear-conflict-worker`. Run only one
+configured worker per vault.
 
-Accepted resolutions immediately advance the canonical sync history consumed by other devices. To
-also maintain readable commits on `main`, configure the semantic worker above; it can organize and
-message the accepted bytes but cannot modify them.
-
-For automation and detailed diagnosis, request JSON status:
-
-```sh
-vulcan --output json daemon conflict-status
-```
-
-After a successful pass it has this shape (optional outcome fields are omitted when absent):
-
-```json
-{
-  "version": 1,
-  "checked_unix_ms": 1789900000000,
-  "entries": [
-    {
-      "wiki_id": "personal",
-      "unresolved_conflicts": 3,
-      "eligible_groups": 2,
-      "conflict_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "proposal_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      "resolution_commit": "0123456789abcdef0123456789abcdef01234567"
-    }
-  ]
-}
-```
-
-`checked_unix_ms` is the durable pass time. Each entry reports the wiki, unresolved-conflict count,
-and number of eligible groups selected in that pass. `conflict_id`, `proposal_id`, and
-`resolution_commit` identify an accepted result. A non-action outcome instead uses `skipped`; a
-failure uses `error` plus `retry_after_unix_ms`, the earliest epoch-millisecond retry time.
-
-### Troubleshooting the conflict worker
-
-- If status says that the worker has not completed a pass, confirm `vulcan daemon status`, inspect
-  `vulcan daemon config show`, verify the named provider key exists in the daemon environment, and
-  restart after configuration changes. An older installed `vulcan` binary may not contain these
-  commands; rebuild or update it before diagnosing daemon state.
-- `waiting for provider error backoff` means the preceding provider or approval attempt failed.
-  Read `error` and `retry_after_unix_ms` from JSON status, repair credentials, connectivity, or the
-  reported safety failure, and wait until that time. The five-minute backoff is durable across
-  restarts, so restarting is not a bypass.
-- `no pending conflict groups met the high-confidence policy` is an expected safe outcome for
-  binary, structural, missing-side, device-state, oversized, non-text, or otherwise ineligible
-  groups. Inspect them with `vulcan sync conflicts` and resolve them through the ordinary reviewed
-  workflow.
-- If proposal creation succeeded but automatic approval failed, the error retains the proposal ID.
-  Inspect the conflict, then preview explicit approval with
-  `vulcan sync resolve <conflict-id> --approve-proposal <proposal-id> --dry-run`, or preview rejection
-  with `vulcan sync reject <conflict-id> <proposal-id> --dry-run`. Do not edit proposal refs or state
-  files manually.
-- If local auto-accept is disabled, enable it only in device-local config with
-  `vulcan --vault <path> config set sync.agent_auto_accept true --target local`; do not put this
-  trust decision in shared vault config.
-- A backlog drains deliberately: each wiki processes at most one conflict per poll, with no more
-  than `max_groups_per_run` complete groups from that conflict. Monitor successive status passes
-  instead of raising the bound past 128.
-- Operate one resolver daemon per vault. Remote leases prevent unsafe publication races across
-  devices, but they do not prevent duplicate provider requests and token spend.
+`vulcan --output json daemon conflict-status` reports, per wiki, `replayed_branch` (the commit a
+paused branch was replayed to), `declined_replay` (a `head..upstream` range that will not be retried
+until either side moves), `skipped`, or `error` plus `retry_after_unix_ms`, the earliest
+epoch-millisecond retry time. `checked_unix_ms` is the durable pass time.
