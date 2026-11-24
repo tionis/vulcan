@@ -1508,6 +1508,10 @@ impl From<std::io::Error> for GitEngineError {
     }
 }
 
+/// How long the capture's `git add` may hash the working tree, however
+/// short the engine's timeout for other (mostly network) commands is.
+const LOCAL_CAPTURE_TIMEOUT: Duration = Duration::from_hours(4);
+
 /// Text to replace in Git's stderr, and the label replacing it.
 type StderrRedaction = (Box<[u8]>, &'static str);
 
@@ -2093,7 +2097,13 @@ impl GitCliEngine {
         let mut command = self.index_command(repository, index_path)?;
         command.args(["add", "-A", "--", "."]);
         command.args(DEVICE_LOCAL_CAPTURE_EXCLUDES);
-        ensure_success(operation, self.execute(command)?)?;
+        // Hashing a large tree is local work that can outlast the network
+        // timeout, most of all the first pass through Git LFS's clean filter;
+        // later passes reuse the index's stat data.
+        let local = self
+            .clone()
+            .with_command_timeout(self.command_timeout.max(LOCAL_CAPTURE_TIMEOUT));
+        ensure_success(operation, local.execute(command)?)?;
         let mut command = self.index_command(repository, index_path)?;
         command.args(["update-index", "--force-remove", "--"]);
         command.args(DEVICE_LOCAL_VULCAN_PATHS);
@@ -7421,6 +7431,29 @@ mod tests {
             .expect("third capture");
         assert_ne!(third, second);
         assert!(runs() > after_first);
+    }
+
+    #[test]
+    fn hashing_the_worktree_may_outlast_the_command_timeout() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let root = temporary.path();
+        init_repo(root);
+        fs::write(root.join("Home.md"), "home\n").expect("note");
+        let head = commit_all(root, "initial");
+        // A clean filter slower than the engine's timeout, as Git LFS is on
+        // a large library.
+        run_git(
+            root,
+            &["config", "filter.slow.clean", "sh -c 'sleep 1; cat'"],
+        );
+        run_git(root, &["config", "filter.slow.smudge", "cat"]);
+        fs::write(root.join(".gitattributes"), "*.bin filter=slow\n").expect("attributes");
+        fs::write(root.join("big.bin"), "media").expect("media file");
+        let engine = GitCliEngine::default().with_command_timeout(Duration::from_millis(500));
+        let repository = engine.discover_repository(root).expect("repository");
+        engine
+            .snapshot_worktree_tree(&repository, Some(&head))
+            .expect("the capture's hashing is not cut off by the command timeout");
     }
 
     #[test]
