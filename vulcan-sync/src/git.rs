@@ -23,6 +23,9 @@ pub type GitBlobVisitor<'a> = dyn FnMut(&GitOid, Vec<u8>) -> Result<(), GitEngin
 
 const MAX_ERROR_BYTES: usize = 16 * 1024;
 const MAX_DIAGNOSTIC_PATH_BYTES: usize = 16 * 1024 * 1024;
+/// Bound on the tracked-path list the requirements check reads: room for
+/// millions of paths, since a photo library easily passes 16 MiB.
+const MAX_TRACKED_PATH_BYTES: usize = 256 * 1024 * 1024;
 const MAX_CONFLICT_BLOB_BYTES: usize = 64 * 1024 * 1024;
 /// Paths per scoped `ls-tree`, keeping each command line well bounded.
 const SCOPED_TREE_LISTING_CHUNK: usize = 256;
@@ -4422,11 +4425,11 @@ impl GitEngine for GitCliEngine {
             "list tracked paths for sync diagnostics",
             ["ls-files", "-z"],
         )?;
-        if tracked.stdout.len() > MAX_DIAGNOSTIC_PATH_BYTES {
+        if tracked.stdout.len() > MAX_TRACKED_PATH_BYTES {
             return Err(GitEngineError::InvalidOutput {
                 operation: "list tracked paths for sync diagnostics",
                 detail: format!(
-                    "tracked path list exceeds the {MAX_DIAGNOSTIC_PATH_BYTES} byte diagnostic limit"
+                    "tracked path list exceeds the {MAX_TRACKED_PATH_BYTES} byte diagnostic limit"
                 ),
             });
         }
@@ -4903,7 +4906,7 @@ impl GitCliEngine {
         let attributes =
             self.execute_with_input(command, "inspect configured Git filters", tracked_paths)?;
         let attributes = ensure_success("inspect configured Git filters", attributes)?;
-        if attributes.stdout.len() > MAX_DIAGNOSTIC_PATH_BYTES.saturating_mul(4) {
+        if attributes.stdout.len() > MAX_TRACKED_PATH_BYTES.saturating_mul(4) {
             return Err(GitEngineError::InvalidOutput {
                 operation: "inspect configured Git filters",
                 detail: "Git filter diagnostic output exceeds the bounded response limit"
