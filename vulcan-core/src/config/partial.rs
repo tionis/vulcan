@@ -150,12 +150,13 @@ pub(super) struct PartialGitConfig {
 
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct PartialSyncConfig {
-    pub(super) merge_policy: Option<MergePolicy>,
-    pub(super) merge_automation: Option<MergeAutomation>,
-    pub(super) agent_auto_accept: Option<bool>,
-    pub(super) tree_validation: Option<SyncTreeValidationConfig>,
-    pub(super) worktree: Option<WorktreeSyncMode>,
-    pub(super) paths: Option<Vec<String>>,
+    // Retired keys, read in any shape only to report them.
+    pub(super) merge_policy: Option<toml::Value>,
+    pub(super) merge_automation: Option<toml::Value>,
+    pub(super) agent_auto_accept: Option<toml::Value>,
+    pub(super) tree_validation: Option<toml::Value>,
+    pub(super) worktree: Option<toml::Value>,
+    pub(super) paths: Option<toml::Value>,
     pub(super) branch_push: Option<bool>,
     pub(super) branch_pull: Option<BranchPullPolicy>,
     pub(super) publish_device_backup: Option<bool>,

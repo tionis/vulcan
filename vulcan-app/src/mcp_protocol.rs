@@ -339,8 +339,6 @@ pub struct McpToolCallParams {
 pub struct McpSyncTargetArgs {
     #[serde(default)]
     pub remote: Option<String>,
-    #[serde(default)]
-    pub live_ref: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -348,8 +346,6 @@ pub struct McpSyncTargetArgs {
 pub struct McpSyncDoctorArgs {
     #[serde(default)]
     pub remote: Option<String>,
-    #[serde(default)]
-    pub live_ref: Option<String>,
     #[serde(default)]
     pub platform: Option<String>,
 }

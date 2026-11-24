@@ -1001,30 +1001,6 @@ fn dynamic_config_descriptors() -> Vec<ConfigDescriptor> {
     };
 
     push(
-        "sync.merge_policy.rules",
-        ConfigValueKind::Array,
-        ConfigTargetSupport::SharedOnly,
-        Some("vulcan config edit"),
-        None,
-        &[],
-    );
-    push(
-        "sync.tree_validation.max_deleted_paths",
-        ConfigValueKind::Integer,
-        ConfigTargetSupport::SharedOnly,
-        None,
-        Some(TomlValue::Integer(100)),
-        &[],
-    );
-    push(
-        "sync.tree_validation.max_deleted_percent",
-        ConfigValueKind::Integer,
-        ConfigTargetSupport::SharedOnly,
-        None,
-        Some(TomlValue::Integer(25)),
-        &[],
-    );
-    push(
         "aliases.<name>",
         ConfigValueKind::String,
         ConfigTargetSupport::SharedAndLocal,
@@ -1806,13 +1782,7 @@ fn resolve_config_descriptor(key: &str) -> Result<ConfigDescriptorMatch, AppErro
 }
 
 fn config_target_support_for_key(key: &str) -> ConfigTargetSupport {
-    if matches!(key, "sync.merge_automation" | "sync.agent_auto_accept") {
-        ConfigTargetSupport::LocalOnly
-    } else if key == "sync.merge_policy"
-        || key.starts_with("sync.merge_policy.")
-        || key == "sync.tree_validation"
-        || key.starts_with("sync.tree_validation.")
-        || key == "export"
+    if key == "export"
         || key.starts_with("export.")
         || key == "folder_notes"
         || key.starts_with("folder_notes.")
@@ -2017,7 +1987,7 @@ fn sync_category_descriptor() -> CategoryDescriptor {
         key: "sync",
         title: "Synchronization",
         description:
-            "Shared deterministic merge and whole-tree validation policy, plus a device-local automation ceiling.",
+            "How Git sync integrates and publishes the checked-out branch, the device backup, and daemon polling.",
     }
 }
 
@@ -2032,10 +2002,8 @@ fn integration_routes_category_descriptor() -> CategoryDescriptor {
 
 fn sync_path_description(path: &str) -> Option<&'static str> {
     Some(match path {
-        "sync.merge_automation" => "Set the device-local ceiling to allow shared policy automation or require review for every Git conflict.",
-        "sync.agent_auto_accept" => "Allow an explicitly requested agent proposal to enter the normal approval transaction automatically on this device. The default is false.",
         "sync.branch_pull" => "How sync reconciles the checked-out branch with its upstream: `git` (default) follows each device's `pull.rebase`/`pull.ff` settings; `ff-only`, `merge`, or `rebase` fixes the strategy for every device, and `guarded-rebase` rebases only when the replayed commits are on no other branch, tag, remote-tracking ref, or worktree and include no merges, pausing otherwise. Set it in the shared config so it travels with the repository.",
-        "sync.publish_device_backup" => "With `worktree = \"none\"`, also push this device's safety snapshot of uncommitted edits to its private remote branch. Off by default, so uncommitted text never leaves the device; the worktree modes always publish it.",
+        "sync.publish_device_backup" => "Also push this device's safety snapshot of uncommitted edits to its private remote branch. Off by default, so uncommitted text never leaves the device.",
         "sync.poll_min_seconds" => "Shortest interval, in seconds, between the daemon's remote checks of an active wiki (default 15, never below 5). Activity resets polling to this interval.",
         "sync.poll_max_seconds" => "Longest interval, in seconds, between the daemon's remote checks of an idle wiki (default 900). Each quiet check doubles the interval up to this ceiling.",
         _ => return None,
@@ -2061,15 +2029,6 @@ fn config_path_description(path: &str) -> String {
         "dataview.render_dataview_js" => "DataviewJS policy for `render`, `note get`, `daily show`, browse previews, editors, MCP `note_get`, and evaluated exports when no explicit `--dataviewjs` is given: `off` leaves a notice, `static` runs blocks in the strict sandbox (deterministic, without wall-clock time, only for static sites and evaluated exports), `on` uses the configured sandbox tier but only in a vault trusted with `vulcan trust` (else `static`). Unset: `on` in trusted vaults, `static` elsewhere. Rendering never writes.".to_string(),
         "folder_notes.placement" => "Choose whether a folder note lives inside its folder or beside it in the parent folder.".to_string(),
         "folder_notes.name" => "Set the exact folder-note stem/template; `{{folder_name}}` expands to the folder's basename.".to_string(),
-        _ if path.starts_with("sync.merge_policy") => {
-            "Define the versioned shared ordered path/type rules used for deterministic Git conflict handling.".to_string()
-        }
-        "sync.tree_validation.max_deleted_percent" => {
-            "Define shared whole-tree safety ceilings checked before an automatically resolved Git merge is published. A result is rejected only when it exceeds both the path-count and percentage ceilings.".to_string()
-        }
-        _ if path.starts_with("sync.tree_validation") => {
-            "Define shared whole-tree safety ceilings checked before an automatically resolved Git merge is published.".to_string()
-        }
         _ if path.starts_with("periodic.") => {
             "Periodic note folder, filename format, template, cadence, and schedule heading.".to_string()
         }
@@ -3200,8 +3159,7 @@ mod tests {
         build_config_show_report, build_config_show_report_from_overrides,
         config_descriptor_catalog, config_set_changed_files, config_toml_path_exists,
         default_config_value_map, load_config_file_toml, plan_config_document_save,
-        plan_config_set_report, remove_config_toml_value, set_config_toml_value,
-        ConfigTargetSupport, ConfigValueKind,
+        plan_config_set_report, remove_config_toml_value, set_config_toml_value, ConfigValueKind,
     };
     use std::collections::BTreeSet;
     use std::fs;
@@ -3539,28 +3497,14 @@ read = { allow = ["folder:Projects/**"] }
             Some("vulcan refactor folder-notes")
         );
 
-        let merge_policy = catalog
-            .iter()
-            .find(|descriptor| descriptor.key == "sync.merge_policy.version")
-            .expect("sync merge-policy descriptor should exist");
-        assert_eq!(merge_policy.section, "sync");
-        assert_eq!(merge_policy.target_support, ConfigTargetSupport::SharedOnly);
-        let merge_rules = catalog
-            .iter()
-            .find(|descriptor| descriptor.key == "sync.merge_policy.rules")
-            .expect("sync merge-policy rules descriptor should exist");
-        assert_eq!(merge_rules.kind, ConfigValueKind::Array);
-        assert_eq!(merge_rules.target_support, ConfigTargetSupport::SharedOnly);
-        assert_eq!(
-            merge_rules.preferred_command.as_deref(),
-            Some("vulcan config edit")
+        assert!(
+            !catalog
+                .iter()
+                .any(|descriptor| descriptor.key.starts_with("sync.merge_")
+                    || descriptor.key.starts_with("sync.tree_validation")
+                    || descriptor.key == "sync.worktree"),
+            "removed whole-worktree sync keys must not be offered"
         );
-        let automation = catalog
-            .iter()
-            .find(|descriptor| descriptor.key == "sync.merge_automation")
-            .expect("sync automation descriptor should exist");
-        assert_eq!(automation.kind, ConfigValueKind::Enum);
-        assert_eq!(automation.target_support, ConfigTargetSupport::LocalOnly);
         for descriptor in &catalog {
             assert!(
                 !descriptor.description.trim().is_empty(),
@@ -3572,34 +3516,6 @@ read = { allow = ["folder:Projects/**"] }
                 "descriptor `{}` should include at least one example",
                 descriptor.key
             );
-        }
-    }
-
-    #[test]
-    fn sync_agent_auto_accept_descriptor_is_local_boolean() {
-        let catalog = config_descriptor_catalog();
-        let descriptor = catalog
-            .iter()
-            .find(|descriptor| descriptor.key == "sync.agent_auto_accept")
-            .expect("agent auto-accept descriptor should exist");
-        assert_eq!(descriptor.kind, ConfigValueKind::Boolean);
-        assert_eq!(descriptor.target_support, ConfigTargetSupport::LocalOnly);
-    }
-
-    #[test]
-    fn sync_tree_validation_descriptors_are_shared_integers() {
-        let catalog = config_descriptor_catalog();
-        for (key, default) in [
-            ("sync.tree_validation.max_deleted_paths", "100"),
-            ("sync.tree_validation.max_deleted_percent", "25"),
-        ] {
-            let descriptor = catalog
-                .iter()
-                .find(|descriptor| descriptor.key == key)
-                .expect("sync tree-validation descriptor should exist");
-            assert_eq!(descriptor.kind, ConfigValueKind::Integer);
-            assert_eq!(descriptor.target_support, ConfigTargetSupport::SharedOnly);
-            assert_eq!(descriptor.default_display.as_deref(), Some(default));
         }
     }
 

@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use toml::Value as TomlValue;
-use vulcan_sync::{BranchPullPolicy, MergeAutomation, MergePolicy, WorktreeSyncMode};
+use vulcan_sync::BranchPullPolicy;
 
 const DEFAULT_CONFIG_TEMPLATE: &str = include_str!("default_config.toml");
 
@@ -282,58 +282,8 @@ pub struct GitConfig {
     pub batch_messages: GitBatchMessages,
 }
 
-const fn default_sync_max_deleted_paths() -> usize {
-    100
-}
-
-const fn default_sync_max_deleted_percent() -> u8 {
-    25
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SyncTreeValidationConfig {
-    #[serde(default = "default_sync_max_deleted_paths")]
-    pub max_deleted_paths: usize,
-    #[serde(default = "default_sync_max_deleted_percent")]
-    pub max_deleted_percent: u8,
-}
-
-impl Default for SyncTreeValidationConfig {
-    fn default() -> Self {
-        Self {
-            max_deleted_paths: default_sync_max_deleted_paths(),
-            max_deleted_percent: default_sync_max_deleted_percent(),
-        }
-    }
-}
-
-impl SyncTreeValidationConfig {
-    pub fn validate(&self) -> Result<(), String> {
-        if self.max_deleted_percent > 100 {
-            Err("sync.tree_validation.max_deleted_percent must be between 0 and 100".to_string())
-        } else {
-            Ok(())
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncConfig {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub merge_policy: Option<MergePolicy>,
-    #[serde(default)]
-    pub merge_automation: MergeAutomation,
-    #[serde(default)]
-    pub agent_auto_accept: bool,
-    #[serde(default)]
-    pub tree_validation: SyncTreeValidationConfig,
-    /// Shared mode; a device may only narrow it to `none`.
-    #[serde(default, skip_serializing_if = "WorktreeSyncMode::is_all")]
-    pub worktree: WorktreeSyncMode,
-    /// Repository-relative path prefixes synchronized from the worktree
-    /// when `worktree` is `paths`. Shared only.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub paths: Vec<String>,
     #[serde(
         default = "defaults::default_true",
         skip_serializing_if = "sync_branch_push_is_default"
@@ -343,10 +293,9 @@ pub struct SyncConfig {
     /// follows each device's Git configuration.
     #[serde(default, skip_serializing_if = "BranchPullPolicy::is_git")]
     pub branch_pull: BranchPullPolicy,
-    /// Whether committed-history-only sync (`worktree = "none"`) pushes
-    /// this device's safety snapshot of uncommitted edits to the remote.
-    /// Off by default, so uncommitted text never leaves the device; the
-    /// worktree modes always publish it.
+    /// Whether sync pushes this device's safety snapshot of uncommitted
+    /// edits to the remote. Off by default, so uncommitted text never
+    /// leaves the device.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub publish_device_backup: bool,
     /// Shortest daemon interval, in seconds, between remote checks while a
@@ -394,12 +343,6 @@ fn sync_branch_push_is_default(value: &bool) -> bool {
 impl Default for SyncConfig {
     fn default() -> Self {
         Self {
-            merge_policy: None,
-            merge_automation: MergeAutomation::default(),
-            agent_auto_accept: false,
-            tree_validation: SyncTreeValidationConfig::default(),
-            worktree: WorktreeSyncMode::default(),
-            paths: Vec::new(),
             branch_push: true,
             branch_pull: BranchPullPolicy::Git,
             publish_device_backup: false,
@@ -3149,24 +3092,6 @@ fn validate_partial_vulcan_config(config: &PartialVulcanConfig) -> Result<(), Co
             .validate()
             .map_err(ConfigImportError::InvalidConfig)?;
     }
-    if let Some(policy) = config
-        .sync
-        .as_ref()
-        .and_then(|sync| sync.merge_policy.as_ref())
-    {
-        policy
-            .validate()
-            .map_err(|error| ConfigImportError::InvalidConfig(error.to_string()))?;
-    }
-    if let Some(validation) = config
-        .sync
-        .as_ref()
-        .and_then(|sync| sync.tree_validation.as_ref())
-    {
-        validation
-            .validate()
-            .map_err(ConfigImportError::InvalidConfig)?;
-    }
     Ok(())
 }
 
@@ -3191,7 +3116,7 @@ pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
                 &mut loaded.diagnostics,
             );
         }
-        remove_shared_local_sync_ceiling(
+        remove_retired_sync_keys(
             &mut vulcan_config,
             paths.config_file(),
             &mut loaded.diagnostics,
@@ -3213,7 +3138,7 @@ pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
                 message: "ignored local [folder_notes]: folder-note conventions are repository-level shared configuration".to_string(),
             });
         }
-        remove_local_shared_sync_policy(
+        remove_retired_sync_keys(
             &mut local_config,
             paths.local_config_file(),
             &mut loaded.diagnostics,
@@ -3224,7 +3149,11 @@ pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
     loaded
 }
 
-fn remove_shared_local_sync_ceiling(
+/// Sync keys of the removed whole-worktree and path-scoped modes. They are
+/// dropped with a diagnostic so an old configuration keeps loading but never
+/// silently changes meaning. `worktree = "none"` names what sync now always
+/// does and is accepted without one.
+fn remove_retired_sync_keys(
     config: &mut PartialVulcanConfig,
     path: &Path,
     diagnostics: &mut Vec<ConfigDiagnostic>,
@@ -3232,68 +3161,32 @@ fn remove_shared_local_sync_ceiling(
     let Some(sync) = config.sync.as_mut() else {
         return;
     };
-    if sync.merge_automation.take().is_some() {
+    let mut push = |message: String| {
         diagnostics.push(ConfigDiagnostic {
             kind: ConfigDiagnosticKind::Message,
             path: path.to_path_buf(),
-            message: "ignored shared sync.merge_automation: the automation ceiling is device-local configuration".to_string(),
+            message,
         });
+    };
+    if let Some(worktree) = sync.worktree.take() {
+        if worktree.as_str() != Some("none") {
+            push(format!(
+                "ignored sync.worktree = {worktree}: whole-worktree and path-scoped sync were removed; Git sync now always synchronizes committed history only (the former \"none\" mode)"
+            ));
+        }
     }
-    if sync.agent_auto_accept.take().is_some() {
-        diagnostics.push(ConfigDiagnostic {
-            kind: ConfigDiagnosticKind::Message,
-            path: path.to_path_buf(),
-            message: "ignored shared sync.agent_auto_accept: agent acceptance is device-local configuration".to_string(),
-        });
-    }
-}
-
-fn remove_local_shared_sync_policy(
-    config: &mut PartialVulcanConfig,
-    path: &Path,
-    diagnostics: &mut Vec<ConfigDiagnostic>,
-) {
-    let (policy, validation, widened, scope) =
-        config
-            .sync
-            .as_mut()
-            .map_or((false, false, false, false), |sync| {
-                (
-                    sync.merge_policy.take().is_some(),
-                    sync.tree_validation.take().is_some(),
-                    sync.worktree
-                        .take_if(|worktree| worktree.syncs_live())
-                        .is_some(),
-                    sync.paths.take().is_some(),
-                )
-            });
-    if widened {
-        diagnostics.push(ConfigDiagnostic {
-            kind: ConfigDiagnosticKind::Message,
-            path: path.to_path_buf(),
-            message: "ignored local sync.worktree: a device may only narrow worktree synchronization to \"none\"".to_string(),
-        });
-    }
-    if scope {
-        diagnostics.push(ConfigDiagnostic {
-            kind: ConfigDiagnosticKind::Message,
-            path: path.to_path_buf(),
-            message: "ignored local sync.paths: every device must synchronize the same paths, so the scope is repository-level shared configuration".to_string(),
-        });
-    }
-    if policy {
-        diagnostics.push(ConfigDiagnostic {
-            kind: ConfigDiagnosticKind::Message,
-            path: path.to_path_buf(),
-            message: "ignored local sync.merge_policy: merge policy is repository-level shared configuration".to_string(),
-        });
-    }
-    if validation {
-        diagnostics.push(ConfigDiagnostic {
-            kind: ConfigDiagnosticKind::Message,
-            path: path.to_path_buf(),
-            message: "ignored local sync.tree_validation: whole-tree validation policy is repository-level shared configuration".to_string(),
-        });
+    for (key, value) in [
+        ("paths", sync.paths.take()),
+        ("merge_policy", sync.merge_policy.take()),
+        ("merge_automation", sync.merge_automation.take()),
+        ("agent_auto_accept", sync.agent_auto_accept.take()),
+        ("tree_validation", sync.tree_validation.take()),
+    ] {
+        if value.is_some() {
+            push(format!(
+                "ignored sync.{key}: it configured whole-worktree sync, which was removed; Git sync now synchronizes committed history only"
+            ));
+        }
     }
 }
 
@@ -3363,7 +3256,6 @@ pub fn load_vault_config_with_overrides(
         "Vulcan config",
         paths.config_file(),
         &mut loaded.diagnostics,
-        false,
     );
     apply_device_layers(&mut loaded.config, paths, &mut loaded.diagnostics);
     apply_vulcan_override_value(
@@ -3372,7 +3264,6 @@ pub fn load_vault_config_with_overrides(
         "local Vulcan config",
         paths.local_config_file(),
         &mut loaded.diagnostics,
-        true,
     );
     loaded
 }
@@ -3545,7 +3436,7 @@ fn apply_device_layers(
                 "ignored device [folder_notes]: folder-note conventions are repository-level shared configuration",
             ));
         }
-        remove_local_shared_sync_policy(&mut vault_config, &device.path, diagnostics);
+        remove_retired_sync_keys(&mut vault_config, &device.path, diagnostics);
         apply_vulcan_overrides(config, vault_config);
     }
     device::report_local_conflicts(&device, paths.local_config_file(), None, diagnostics);
@@ -3588,18 +3479,13 @@ fn apply_vulcan_override_value(
     description: &str,
     path: &Path,
     diagnostics: &mut Vec<ConfigDiagnostic>,
-    local: bool,
 ) {
     let Some(mut parsed) =
         parse_in_memory_vulcan_override(override_value, description, path, diagnostics)
     else {
         return;
     };
-    if local {
-        remove_local_shared_sync_policy(&mut parsed, path, diagnostics);
-    } else {
-        remove_shared_local_sync_ceiling(&mut parsed, path, diagnostics);
-    }
+    remove_retired_sync_keys(&mut parsed, path, diagnostics);
     apply_vulcan_overrides(config, parsed);
 }
 
@@ -4981,24 +4867,6 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
     }
     if let Some(sync) = overrides.sync {
-        if let Some(merge_policy) = sync.merge_policy {
-            config.sync.merge_policy = Some(merge_policy);
-        }
-        if let Some(merge_automation) = sync.merge_automation {
-            config.sync.merge_automation = merge_automation;
-        }
-        if let Some(agent_auto_accept) = sync.agent_auto_accept {
-            config.sync.agent_auto_accept = agent_auto_accept;
-        }
-        if let Some(tree_validation) = sync.tree_validation {
-            config.sync.tree_validation = tree_validation;
-        }
-        if let Some(worktree) = sync.worktree {
-            config.sync.worktree = worktree;
-        }
-        if let Some(paths) = sync.paths {
-            config.sync.paths = paths;
-        }
         if let Some(branch_push) = sync.branch_push {
             config.sync.branch_push = branch_push;
         }

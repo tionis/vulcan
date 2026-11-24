@@ -536,6 +536,17 @@ fn two_installations(root: &Path, remote: &Path) -> (std::path::PathBuf, std::pa
         fs::write(vault.join("Home.md"), "note\n").expect("note");
         git(&vault, &["add", "Home.md"]);
         git(&vault, &["commit", "--quiet", "-m", "initial"]);
+        // Sync moves the checked-out branch, so both clones share one history.
+        if installation == &admin {
+            git(&vault, &["push", "--quiet", "-u", "origin", "main"]);
+        } else {
+            git(&vault, &["fetch", "--quiet", "origin"]);
+            git(&vault, &["reset", "--quiet", "--hard", "origin/main"]);
+            git(
+                &vault,
+                &["branch", "--quiet", "--set-upstream-to", "origin/main"],
+            );
+        }
     }
     (admin, device)
 }

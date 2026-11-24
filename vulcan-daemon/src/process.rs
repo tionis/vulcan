@@ -1794,6 +1794,7 @@ mod tests {
                 "base"
             ]
         ));
+        assert!(git(&vault, &["push", "--quiet", "-u", "origin", "main"]));
         DaemonConfig {
             bind: "127.0.0.1:0".to_string(),
             vaults: vec![WikiRegistration {
@@ -2291,22 +2292,17 @@ mod tests {
         assert!(status.uptime_ms.is_some());
         let daemon_bind = status.runtime.as_ref().expect("runtime record").bind;
         assert!(daemon_bind.ip().is_loopback());
+        // Startup reconciliation publishes this device's registration.
         let synchronized = (0..100).any(|_| {
-            if git(
-                temporary.path(),
-                &[
-                    "--git-dir",
-                    remote.to_str().expect("remote"),
-                    "rev-parse",
-                    "--verify",
-                    "refs/heads/__vulcan-sync/live",
-                ],
-            ) {
-                true
-            } else {
+            let registered = std::process::Command::new("git")
+                .args(["--git-dir", remote.to_str().expect("remote")])
+                .args(["for-each-ref", "refs/heads/__vulcan-sync/registrations"])
+                .output()
+                .is_ok_and(|output| output.status.success() && !output.stdout.is_empty());
+            if !registered {
                 thread::sleep(Duration::from_millis(50));
-                false
             }
+            registered
         });
         assert!(synchronized, "startup reconciliation should sync the wiki");
         assert_daemon_sync_attempted(&context);
@@ -2366,14 +2362,16 @@ mod tests {
         fs::write(&ledger, &saved_ledger).expect("restore ledger");
         let rebound = std::net::TcpListener::bind(daemon_bind).expect("companion port released");
         drop(rebound);
-        assert!(git(
+        // Uncommitted edits stay on the device: shutdown never publishes them.
+        assert!(vault.join("Last-minute.md").is_file());
+        assert!(!git(
             temporary.path(),
             &[
                 "--git-dir",
                 remote.to_str().expect("remote"),
                 "cat-file",
                 "-e",
-                "refs/heads/__vulcan-sync/live:Last-minute.md",
+                "refs/heads/main:Last-minute.md",
             ]
         ));
         let supervisor =

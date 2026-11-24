@@ -488,6 +488,7 @@ fn sync_run_defaults_to_a_compact_result_and_keeps_durable_progress_opt_in() {
     );
     fs::write(vault.join("Home.md"), "home\n").expect("home note");
     commit_all(&vault, "initial");
+    run_git_ok(&vault, &["push", "--quiet", "-u", "origin", "HEAD"]);
 
     let state_home = temporary.path().join("state");
     let config_home = temporary.path().join("config");
@@ -506,28 +507,20 @@ fn sync_run_defaults_to_a_compact_result_and_keeps_durable_progress_opt_in() {
         command.output().expect("sync command should run")
     };
 
-    let bootstrap = run_sync(&[]);
-    assert!(bootstrap.status.success());
-    let bootstrap_stdout = String::from_utf8(bootstrap.stdout).expect("bootstrap stdout");
-    assert!(bootstrap_stdout.starts_with("Sync: initialized origin\nDevice backup: snapshot "));
-    assert!(bootstrap_stdout.contains("refs/heads/__vulcan-sync/devices/"));
-    assert!(bootstrap_stdout.ends_with("(published).\n"));
-    assert!(bootstrap.stderr.is_empty());
-
+    // Without `sync.publish_device_backup` the snapshot stays local, so a
+    // steady cycle prints a single line.
     let steady = run_sync(&[]);
     assert!(steady.status.success());
     let steady_stdout = String::from_utf8(steady.stdout).expect("steady stdout");
-    assert!(steady_stdout.starts_with("Sync: up to date with origin\nDevice backup: snapshot "));
-    assert!(steady_stdout.contains("refs/heads/__vulcan-sync/devices/"));
+    assert_eq!(steady_stdout, "Sync: up to date with origin\n");
     assert!(steady.stderr.is_empty());
 
     let verbose = run_sync(&["--verbose"]);
     assert!(verbose.status.success());
     let stdout = String::from_utf8(verbose.stdout).expect("verbose stdout");
     let stderr = String::from_utf8(verbose.stderr).expect("verbose stderr");
-    assert!(stdout.starts_with("Sync: up to date with origin\nDevice backup: snapshot "));
-    assert!(stdout.contains("\nRemote ref: refs/heads/"));
-    assert!(stdout.contains("\nAccepted: "));
+    assert!(stdout.starts_with("Sync: up to date with origin\n"));
+    assert!(stdout.contains("\nOperational stats: "));
     assert!(stderr.contains("Sync attempt 1/4: preparing repository"));
     assert!(stderr.contains("Sync attempt 1/4: cycle complete"));
 
@@ -6471,7 +6464,7 @@ fn git_help_documents_sandboxed_operations() {
 }
 
 #[test]
-fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
+fn sync_cli_pushes_and_pulls_commits_without_vulcan_initialization() {
     let temporary = TempDir::new().expect("temp dir should be created");
     let state_home = temporary.path().join("state");
     let remote = temporary.path().join("remote.git");
@@ -6498,6 +6491,7 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
     );
     fs::write(writer.join("Home.md"), "initial\n").expect("home note should be written");
     commit_all(&writer, "Initial");
+    run_git_ok(&writer, &["push", "--quiet", "-u", "origin", "HEAD"]);
 
     let bootstrap = Command::cargo_bin("vulcan")
         .expect("binary should build")
@@ -6513,9 +6507,9 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
         .assert()
         .success();
     let bootstrap_json = parse_stdout_json(&bootstrap);
-    assert_eq!(bootstrap_json["outcome"], "bootstrapped");
-    assert_eq!(bootstrap_json["actions"], serde_json::json!(["pushed"]));
+    assert_eq!(bootstrap_json["outcome"], "up_to_date");
     assert_eq!(bootstrap_json["refs"]["namespace_version"], 3);
+    assert!(bootstrap_json.get("worktree").is_none());
     assert_eq!(
         bootstrap_json["requirements"]["required_filters"],
         serde_json::json!([])
@@ -6537,6 +6531,7 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
     );
 
     fs::write(writer.join("Shared.md"), "from writer\n").expect("shared note should be written");
+    commit_all(&writer, "Shared");
     Command::cargo_bin("vulcan")
         .expect("binary should build")
         .env("XDG_STATE_HOME", &state_home)
@@ -6563,13 +6558,7 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
         .success();
     let pull_json = parse_stdout_json(&pull);
     assert_eq!(pull_json["outcome"], "pulled");
-    assert_eq!(pull_json["application"]["additions"], 1);
-    assert_eq!(pull_json["application"]["updates"], 0);
-    assert_eq!(pull_json["application"]["deletions"], 0);
-    assert_eq!(pull_json["application"]["type_changes"], 0);
-    assert_eq!(pull_json["application"]["paths"][0]["path"], "Shared.md");
-    assert_eq!(pull_json["application"]["paths"][0]["action"], "add");
-    assert!(pull_json["application"]["paths"][0]["target"]["oid"].is_string());
+    assert!(pull_json.get("application").is_none());
     assert_eq!(
         fs::read_to_string(reader.join("Shared.md")).expect("shared note should be pulled"),
         "from writer\n"
@@ -6591,8 +6580,7 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
     let status_json = parse_stdout_json(&status);
     assert_eq!(status_json["outcome"], "planned");
     assert_eq!(status_json["actions"], serde_json::json!([]));
-    assert_eq!(status_json["preview"]["file_state"], "up_to_date");
-    assert_eq!(status_json["preview"]["worktree_matches_local"], true);
+    assert!(status_json.get("preview").is_none());
     assert!(status_json["state"].get("recovered_from").is_none());
     let device_id = status_json["device_id"]
         .as_str()
@@ -6616,7 +6604,7 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
         .success()
         .stdout(
             predicate::str::contains("Sync preview:")
-                .and(predicate::str::contains("file lane appears up to date"))
+                .and(predicate::str::contains("is up to date"))
                 .and(predicate::str::contains("no changes applied"))
                 .and(predicate::str::contains(format!("Device: {device_id}")))
                 .and(predicate::str::contains("Sync: planned").not()),
@@ -6653,6 +6641,13 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
         ],
     );
     fs::write(reader.join("Local.md"), "local edit\n").expect("local edit");
+    // Only a vault that opts in publishes the device backup.
+    fs::create_dir_all(reader.join(".vulcan")).expect("Vulcan directory");
+    fs::write(
+        reader.join(".vulcan/config.local.toml"),
+        "[sync]\npublish_device_backup = true\n",
+    )
+    .expect("opt in to the device backup");
     Command::cargo_bin("vulcan")
         .expect("binary should build")
         .env("XDG_STATE_HOME", &state_home)
@@ -6689,7 +6684,7 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
     assert!(doctor_json["installation"]["version"]["raw"].is_string());
     assert!(doctor_json["checks"].as_array().is_some_and(|checks| checks
         .iter()
-        .any(|check| { check["code"] == "git.remote" && check["severity"] == "pass" })));
+        .any(|check| check["code"] == "sync.device-identity")));
 
     let config_home = temporary.path().join("config");
     fs::create_dir(&config_home).expect("config home should be created");
@@ -6708,6 +6703,7 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
             .success();
     }
     fs::write(writer.join("Grouped.md"), "group sync\n").expect("grouped note should be written");
+    commit_all(&writer, "Grouped");
     let grouped = cargo_vulcan_with_xdg_config(config_home)
         .args(["--output", "json", "sync", "run", "--group", "pair"])
         .assert()
@@ -6739,7 +6735,7 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
             predicate::str::contains(
                 "Registered sync preview wiki:a-writer: 1 clear, 0 with unresolved conflicts, 0 incomplete, 0 inspection failures (no changes applied)",
             )
-            .and(predicate::str::contains("file lane appears up to date"))
+            .and(predicate::str::contains("is up to date"))
             .and(predicate::str::contains("\tPlanned\t").not()),
         );
 }
@@ -6795,6 +6791,9 @@ fn registered_sync_status_surfaces_retained_unresolved_conflicts() {
     assert_eq!(reports[1]["code"], "issues_detected");
 }
 
+/// A vault whose sync state retains an unresolved conflict record written by
+/// the removed whole-worktree mode, in its version-1 layout. Sync no longer
+/// creates such records, but existing ones stay readable and archivable.
 fn setup_cli_sync_conflict() -> (TempDir, std::path::PathBuf, std::path::PathBuf, String) {
     let temporary = TempDir::new().expect("temp dir should be created");
     let state_home = temporary.path().join("state");
@@ -6808,11 +6807,11 @@ fn setup_cli_sync_conflict() -> (TempDir, std::path::PathBuf, std::path::PathBuf
             remote.to_str().expect("remote path"),
         ],
     );
-    let writer = temporary.path().join("writer");
-    fs::create_dir(&writer).expect("writer directory");
-    init_git_repo(&writer);
+    let reader = temporary.path().join("reader");
+    fs::create_dir(&reader).expect("reader directory");
+    init_git_repo(&reader);
     run_git_ok(
-        &writer,
+        &reader,
         &[
             "remote",
             "add",
@@ -6820,46 +6819,67 @@ fn setup_cli_sync_conflict() -> (TempDir, std::path::PathBuf, std::path::PathBuf
             remote.to_str().expect("remote path"),
         ],
     );
-    fs::write(writer.join("Home.md"), "base\n").expect("base note");
-    commit_all(&writer, "Base");
-    let run_sync = |vault: &std::path::Path| {
-        Command::cargo_bin("vulcan")
-            .expect("binary should build")
-            .env("XDG_STATE_HOME", &state_home)
-            .args([
-                "--vault",
-                vault.to_str().expect("vault path"),
-                "--output",
-                "json",
-                "sync",
-                "run",
-            ])
-            .assert()
-            .success()
-    };
-    run_sync(&writer);
-    let reader = temporary.path().join("reader");
-    clone_git_repo(temporary.path(), &writer, &reader);
-    run_git_ok(
-        &reader,
-        &[
-            "remote",
-            "set-url",
-            "origin",
-            remote.to_str().expect("remote path"),
-        ],
-    );
-    run_sync(&reader);
-    fs::write(writer.join("Home.md"), "writer\n").expect("writer edit");
-    fs::write(writer.join("Writer.md"), "clean remote addition\n").expect("writer addition");
-    fs::write(reader.join("Home.md"), "reader\n").expect("reader edit");
-    run_sync(&writer);
-    let conflict = run_sync(&reader);
-    let conflict = parse_stdout_json(&conflict);
-    let id = conflict["conflict_record"]["id"]
+    fs::write(reader.join("Home.md"), "base\n").expect("base note");
+    commit_all(&reader, "Base");
+    run_git_ok(&reader, &["push", "--quiet", "-u", "origin", "HEAD"]);
+    let synced = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("XDG_STATE_HOME", &state_home)
+        .args([
+            "--vault",
+            reader.to_str().expect("vault path"),
+            "--output",
+            "json",
+            "sync",
+            "run",
+        ])
+        .assert()
+        .success();
+    let synced = parse_stdout_json(&synced);
+    let repository_key = synced["state"]["repository_key"]
         .as_str()
-        .expect("conflict ID")
+        .expect("repository key")
         .to_string();
+    let journal = std::path::PathBuf::from(
+        synced["state"]["journal_path"]
+            .as_str()
+            .expect("journal path"),
+    );
+    let id = "0123456789abcdef0123456789abcdef".to_string();
+    let directory = journal
+        .parent()
+        .expect("repository state directory")
+        .join("conflicts")
+        .join(&id);
+    fs::create_dir_all(&directory).expect("conflict directory");
+    let record = serde_json::json!({
+        "version": 1,
+        "id": id,
+        "repository_key": repository_key,
+        "work_tree": reader,
+        "base_revision": "base",
+        "local_revision": "local",
+        "remote_revision": "remote",
+        "scope": "paths",
+        "policy_version": 1,
+        "policy_hash": "policy",
+        "preserved_base_ref": null,
+        "preserved_local_ref": "refs/local",
+        "preserved_remote_ref": "refs/remote",
+        "provenance_revision": "provenance",
+        "paths": [{
+            "path": "Home.md",
+            "base": {"revision": "base"},
+            "local": {"revision": "local"},
+            "remote": {"revision": "remote"}
+        }],
+        "diagnostics": "conflict"
+    });
+    fs::write(
+        directory.join("record.json"),
+        serde_json::to_vec_pretty(&record).expect("record"),
+    )
+    .expect("record file");
     (temporary, state_home, reader, id)
 }
 
@@ -6885,36 +6905,15 @@ fn sync_conflicts_cli_lists_and_shows_immutable_records() {
 
     let detail = parse_stdout_json(&command(&[&id]));
     assert_eq!(detail["record"]["id"], id);
-    assert!(detail["record"]["preserved_record_ref"].is_string());
     assert!(detail["record"]["provenance_revision"].is_string());
     assert_eq!(detail["record"]["paths"][0]["path"], "Home.md");
     assert!(detail["record"]["paths"][0]["group_id"].is_string());
     assert_eq!(detail["progress"]["total_groups"], 1);
-    assert_eq!(
-        detail["record"]["paths"][0]["classification"]["class"],
-        "overlapping_text"
-    );
-    assert_eq!(
-        detail["record"]["paths"][0]["classification"]["effective_resolution"],
-        "require_review"
-    );
-    assert_eq!(
-        detail["record"]["paths"][0]["classification"]["diagnostic_code"],
-        "sync.conflict.overlapping-text"
-    );
-    assert_eq!(
-        detail["record"]["paths"][0]["classification"]["formatting_candidate"],
-        false
-    );
     assert_eq!(detail["resolution"], "unresolved");
     let paged = parse_stdout_json(&command(&[&id, "--path-limit", "1"]));
     assert_eq!(paged["path_page"]["offset"], 0);
     assert_eq!(paged["path_page"]["limit"], 1);
     assert_eq!(paged["path_page"]["total"], 1);
-    assert_eq!(
-        fs::read_to_string(reader.join("Home.md")).expect("reader note"),
-        "writer\n"
-    );
 
     let human_list = Command::cargo_bin("vulcan")
         .expect("binary should build")
@@ -9784,30 +9783,18 @@ fn vault_clone_supports_dry_run_colocated_and_detached_git_layouts() {
         .assert()
         .success();
     let sync_json = parse_stdout_json(&sync);
-    assert_eq!(sync_json["items"][0]["report"]["outcome"], "bootstrapped");
+    // Sync moves only commits: the uncommitted note stays on this device.
+    assert_eq!(sync_json["items"][0]["report"]["outcome"], "up_to_date");
     assert_eq!(
         sync_json["items"][0]["report"]["platform_policy"]["profile"],
         "android_shared"
     );
     assert_eq!(
-        sync_json["items"][0]["report"]["accepted_platform_preflight"]["compatible"],
-        true
-    );
-    let accepted = sync_json["items"][0]["report"]["accepted"]
-        .as_str()
-        .expect("accepted revision");
-    assert_eq!(
-        run_git_stdout(&detached, &["show", &format!("{accepted}:Mobile.md")]),
-        "written from Termux"
-    );
-    assert_eq!(
         run_git_stdout(
             &detached,
             &["ls-remote", "origin", "refs/heads/__vulcan-sync/live"]
-        )
-        .split_whitespace()
-        .next(),
-        Some(accepted)
+        ),
+        ""
     );
     assert!(!state_home.join("vulcan/daemon/runtime.json").exists());
 
@@ -17813,14 +17800,10 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("`safe.directory`"));
     assert!(git_skill.contains("vulcan sync doctor [<wiki>]"));
     assert!(git_skill.contains("vulcan vault add <id> <path> --profile files-only"));
-    assert!(git_skill.contains("`merger` (for structured results"));
-    assert!(git_skill.contains("`Vulcan-Sync-Merger` trailers"));
     assert!(git_skill.contains("Vulcan's lock does not exclude external Git processes"));
     assert!(git_skill.contains("state.apply-marker"));
-    assert!(git_skill.contains("vulcan-sync/apply.json"));
     assert!(git_skill.contains("vulcan sync run --dry-run"));
     assert!(git_skill.contains("vulcan sync run --max-retries <n>"));
-    assert!(git_skill.contains("Vulcan-Sync-*` trailers"));
     assert!(git_skill.contains("`refs.namespace_version`"));
     assert!(git_skill.contains("remain local under `refs/vulcan/**`"));
     assert!(git_skill.contains("vulcan sync devices prune-backup <device-id> --dry-run"));
@@ -17835,7 +17818,6 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan daemon companion --reveal-token"));
     assert!(git_skill.contains("vulcan daemon companion install [<wiki>] --dry-run"));
     assert!(git_skill.contains("reference Obsidian companion"));
-    assert!(git_skill.contains("skip busy, paused, or conflicted state"));
     assert!(git_skill.contains("daemon config set-conflict-worker --wiki <id>"));
     assert!(git_skill.contains("daemon conflict-status"));
     assert!(git_skill.contains("vulcan daemon config set-agent resolution"));
@@ -17847,35 +17829,20 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan sync termux-install <wiki>"));
     assert!(git_skill.contains("sync termux-uninstall"));
     assert!(git_skill.contains("state.recovered_from"));
-    assert!(git_skill.contains("application.additions"));
-    assert!(git_skill.contains("worktree_changed"));
-    assert!(git_skill.contains("remote/network failure after capture"));
-    assert!(git_skill.contains("automatic_resolutions"));
-    assert!(git_skill.contains("validation.checks"));
-    assert!(git_skill.contains("device-local automation ceiling"));
-    assert!(git_skill.contains("conflict_record"));
-    assert!(git_skill.contains("conflict.projection"));
-    assert!(git_skill.contains("no conflict artifacts enter the vault"));
-    assert!(git_skill.contains("When `published` and `applied` are true"));
-    assert!(git_skill.contains("immutable record ref is also published remotely"));
     assert!(git_skill.contains("vulcan sync conflicts <id>"));
-    assert!(git_skill.contains("stable `classification`"));
-    assert!(git_skill.contains("`provenance_revision`"));
     let sync_skill = fs::read_to_string(vault_root.join(".agents/skills/sync-workflow/SKILL.md"))
         .expect("sync workflow skill should be readable");
     assert!(sync_skill.contains("vulcan daemon config set-conflict-worker"));
     assert!(sync_skill.contains("vulcan daemon conflict-status"));
     assert!(sync_skill.contains("name: sync-workflow"));
+    assert!(sync_skill.contains("## What sync moves"));
+    assert!(!sync_skill.contains("sync.worktree = \"paths\""));
     assert!(sync_skill.contains("vault add --no-sync"));
     assert!(sync_skill.contains("vault add <id> <path> --git-init"));
     assert!(sync_skill.contains("vulcan daemon config set-automatic-sync"));
     assert!(sync_skill.contains("vulcan device key status --output json"));
     assert!(sync_skill.contains("`vulcan device key verify` proves possession"));
-    assert!(sync_skill.contains("sync.worktree = \"none\""));
     assert!(sync_skill.contains("branch_paused"));
-    assert!(sync_skill.contains("sync.worktree = \"paths\""));
-    assert!(sync_skill.contains("ScopeMismatch"));
-    assert!(sync_skill.contains("selective materialization remains Roadmap 12.20 work"));
     assert!(sync_skill.contains("vulcan device show --output json"));
     assert!(sync_skill.contains("vulcan device init --dry-run"));
     assert!(sync_skill.contains("vulcan devices list --output json"));
@@ -17891,8 +17858,6 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("companion-listener services"));
     assert!(sync_skill.contains("disables only its sync observation consumer"));
     assert!(sync_skill.contains("read-only check completed, not that synchronization succeeded"));
-    assert!(sync_skill.contains("does not fetch, merge, apply, or"));
-    assert!(sync_skill.contains("detect whether differing trees conflict"));
     assert!(sync_skill.contains("vulcan sync conflicts <conflict-id>"));
     assert!(sync_skill.contains("detached private Git directory"));
     assert!(sync_skill.contains("`android-shared` policy"));
@@ -17931,7 +17896,6 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("vulcan sync devices prune-backup <device-id> --dry-run"));
     assert!(sync_skill.contains("`remove` spelling remains a"));
     assert!(sync_skill.contains("device, Git, and vault access are unchanged"));
-    assert!(sync_skill.contains("## Branch lane"));
     assert!(sync_skill.contains("battery-not-low and storage-not-low"));
     assert!(sync_skill.contains("never replace a rejected push with unconditional force"));
     let diagnostics_skill =
@@ -18145,14 +18109,14 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         include_str!("../../docs/assistant/skills/configuration-and-permissions.md")
     );
     assert!(configuration_skill.contains("vulcan vault clone/add/list/show/set/remove"));
+    assert!(configuration_skill.contains("sync.publish_device_backup"));
+    assert!(!configuration_skill.contains("sync.merge_policy"));
     assert!(configuration_skill.contains("--no-sync"));
     assert!(configuration_skill.contains("vulcan vault recover-git"));
     assert!(configuration_skill.contains("vulcan sync pause/resume [<wiki>]"));
     assert!(configuration_skill.contains("Clone dry-run does not contact the remote"));
     assert!(configuration_skill.contains("--platform android-shared"));
     assert!(configuration_skill.contains("must never be treated as permission to delete"));
-    assert!(configuration_skill.contains("sync.merge_policy"));
-    assert!(configuration_skill.contains("sync.merge_automation require_review --target local"));
     assert!(configuration_skill.contains("mode-`0600` `$XDG_CONFIG_HOME/vulcan/daemon.env`"));
     let diagnostics_skill =
         fs::read_to_string(vault_root.join(".agents/skills/diagnostics-and-repair/SKILL.md"))
@@ -18160,13 +18124,11 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(diagnostics_skill.contains("state.recovered_from"));
     assert!(diagnostics_skill.contains("vulcan sync doctor [<wiki>]"));
     assert!(diagnostics_skill.contains("sync doctor --profile files-only"));
-    assert!(diagnostics_skill.contains("immutable conflict ID"));
     assert!(diagnostics_skill.contains("vulcan sync conflicts <id>"));
     assert!(diagnostics_skill.contains("offline/cancelled cycle"));
     assert!(diagnostics_skill.contains("outside `.vulcan/cache.db`"));
     assert!(diagnostics_skill.contains("stable device identity"));
     assert!(diagnostics_skill.contains("state.apply-marker"));
-    assert!(diagnostics_skill.contains("vulcan-sync/apply.json"));
     assert!(diagnostics_skill.contains("vulcan daemon start --detach"));
     assert!(diagnostics_skill.contains("refresh the native service after moving or upgrading"));
     assert!(diagnostics_skill.contains("hardware-held `stable-2026-10` identity"));
@@ -39086,7 +39048,7 @@ fn editor_helix_merges_reports_and_removes_its_configuration() {
 }
 
 #[test]
-fn auto_commit_stands_down_for_git_sync_and_reports_batched_vaults() {
+fn auto_commit_runs_alongside_git_sync_and_reports_batched_vaults() {
     let temporary = TempDir::new().expect("temp dir");
     let config_home = temporary.path().join("config");
     fs::create_dir(&config_home).expect("config home");
@@ -39120,19 +39082,17 @@ fn auto_commit_stands_down_for_git_sync_and_reports_batched_vaults() {
         .assert()
         .success();
 
-    // Git sync owns capture for `synced`, so its per-write commit stands down.
+    // Git sync moves only commits, so a synced vault keeps its per-write commit.
     cargo_vulcan_with_xdg_config(&config_home)
         .arg("--vault")
         .arg(&synced)
         .args(["note", "create", "Fresh"])
         .assert()
         .success()
-        .stderr(predicate::str::contains(
-            "Git sync for `synced` captures this vault's changes",
-        ));
+        .stderr(predicate::str::contains("captures this vault's changes").not());
     assert_eq!(
         run_git_stdout(&synced, &["rev-list", "--count", "HEAD"]),
-        "1"
+        "2"
     );
     // A batched vault leaves the commit to the daemon.
     cargo_vulcan_with_xdg_config(&config_home)
@@ -39180,10 +39140,9 @@ fn auto_commit_stands_down_for_git_sync_and_reports_batched_vaults() {
             .expect("registered vault")
             .clone()
     };
-    assert_eq!(entry("synced")["capture_owner"], "git_sync");
+    assert!(entry("synced").get("capture_owner").is_none());
     assert_eq!(entry("synced")["strategy"], "per-write");
     let plain_status = entry("plain");
-    assert_eq!(plain_status["capture_owner"], "auto_commit");
     assert_eq!(plain_status["strategy"], "batched");
     assert_eq!(plain_status["batch_messages"], "agent");
     // Intervals below the supported minimum are raised to it.
@@ -39207,7 +39166,7 @@ fn auto_commit_stands_down_for_git_sync_and_reports_batched_vaults() {
 }
 
 #[test]
-fn git_batch_commit_previews_commits_and_honors_capture_ownership() {
+fn git_batch_commit_previews_commits_and_runs_for_synced_vaults() {
     let temporary = TempDir::new().expect("temp dir");
     let config_home = temporary.path().join("config");
     fs::create_dir(&config_home).expect("config home");
@@ -39270,11 +39229,11 @@ fn git_batch_commit_previews_commits_and_honors_capture_ownership() {
         .assert()
         .success();
     fs::write(vault.join("Home.md"), "# Home again\n").expect("edit");
-    let owned = batch(&[]);
-    assert_eq!(owned["status"], "owned_by_sync");
+    let synced = batch(&[]);
+    assert_eq!(synced["status"], "committed");
     assert_eq!(
         run_git_stdout(&vault, &["rev-list", "--count", "HEAD"]),
-        "3"
+        "4"
     );
 }
 

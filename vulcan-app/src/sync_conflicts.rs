@@ -1,6 +1,8 @@
 //! Durable device-local conflict records and preserved file artifacts.
 
-use crate::durable_file::{self, DurableCreate};
+#[cfg(test)]
+use crate::durable_file::DurableCreate;
+use crate::durable_file::{self};
 use crate::sync_state::SyncStateStore;
 use crate::AppError;
 use serde::{Deserialize, Serialize};
@@ -8,9 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use vulcan_sync::{
-    conflict_archive_ref, conflict_ref, GitCarriedPath, GitConflictClassification,
-    GitConflictProjection, GitConflictRefs, GitConflictScope, GitEngine, GitOid, GitRefName,
-    GitRemote, GitRepository, GitSyncConflict, GitSyncOptions, GitTreeEntry, LOCAL_VULCAN_REF_ROOT,
+    conflict_archive_ref, GitConflictClassification, GitConflictScope, GitEngine, GitOid,
+    GitRefName, GitRemote, GitRepository, GitSyncOptions, GitTreeEntry, LOCAL_VULCAN_REF_ROOT,
     REMOTE_CONFLICT_BRANCH_ROOT,
 };
 
@@ -31,11 +32,6 @@ const MAX_CONFLICT_DIAGNOSTICS_BYTES: usize = 1024 * 1024;
 const MAX_CONFLICT_RESOLUTION_BYTES: u64 = 1024 * 1024;
 const MAX_CONFLICT_GROUPS_PER_BATCH: usize = 128;
 const MAX_CONFLICT_SUMMARY_PATHS: usize = 16;
-/// Fully resolved conflicts keep their records and resolution metadata
-/// forever, but only the newest few resolved conflicts retain the
-/// device-local artifact copies; the immutable Git refs remain the durable
-/// byte archive.
-const MAX_RETAINED_RESOLVED_ARTIFACT_SETS: usize = 32;
 /// Beside a repository's `conflicts/`: one empty marker per conflict that may
 /// still be unresolved, so sync maintenance reads only those records instead
 /// of every conflict ever recorded.
@@ -48,8 +44,6 @@ const CLOSED_CONFLICTS_DIR: &str = "closed-conflicts";
 /// resolved or superseded.
 pub const CONFLICT_ARCHIVE_AFTER: std::time::Duration =
     std::time::Duration::from_secs(30 * 24 * 60 * 60);
-/// Automatic archive runs happen at most this often per repository.
-const ARCHIVE_RUN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 /// At most this many conflicts move per archive run, bounding each run.
 const MAX_ARCHIVED_PER_RUN: usize = 256;
 /// Device-local mirror of the archive's conflict count, so listings report
@@ -806,58 +800,6 @@ fn archived_conflict_store(
     Ok(Some((temporary, store)))
 }
 
-/// What one carry-forward pass changed.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct CarryForwardSummary {
-    /// Conflicts carried forward and superseded.
-    pub carried: usize,
-    /// Worktree paths rewritten with a merged local change, to publish next.
-    pub written_paths: Vec<String>,
-    /// Replacement conflicts recorded against the current frontier.
-    pub replacements: Vec<String>,
-}
-
-struct RecordCarryForward {
-    written_paths: Vec<String>,
-    replacement: Option<String>,
-}
-
-/// Resolves a conflict path inside the worktree, refusing anything but plain
-/// relative components.
-fn carried_worktree_path(work_tree: &Path, path: &str) -> Result<PathBuf, AppError> {
-    let relative = Path::new(path);
-    if path.is_empty()
-        || !relative
-            .components()
-            .all(|component| matches!(component, std::path::Component::Normal(_)))
-    {
-        return Err(AppError::operation(format!(
-            "refusing unsafe conflict path `{path}`"
-        )));
-    }
-    Ok(work_tree.join(relative))
-}
-
-#[cfg(unix)]
-fn set_carried_mode(path: &Path, mode: Option<&str>) -> Result<(), AppError> {
-    use std::os::unix::fs::PermissionsExt;
-    let executable = mode == Some("100755");
-    let mut permissions = fs::metadata(path)
-        .map_err(AppError::operation)?
-        .permissions();
-    let current = permissions.mode();
-    let wanted = if executable {
-        current | ((current & 0o444) >> 2)
-    } else {
-        current & !0o111
-    };
-    if wanted != current {
-        permissions.set_mode(wanted);
-        fs::set_permissions(path, permissions).map_err(AppError::operation)?;
-    }
-    Ok(())
-}
-
 #[cfg(not(unix))]
 #[allow(clippy::unnecessary_wraps)] // One fallible contract across platforms.
 fn set_carried_mode(_path: &Path, _mode: Option<&str>) -> Result<(), AppError> {
@@ -1007,36 +949,6 @@ fn archive_count(
         .unwrap_or(0))
 }
 
-/// Leaf tree entries at `paths` in `revision`, keyed by path, without
-/// loading contents or listing the rest of the tree.
-fn tree_entries_by_path(
-    engine: &dyn GitEngine,
-    repository: &GitRepository,
-    revision: &GitOid,
-    paths: &[String],
-) -> Result<BTreeMap<String, GitTreeEntry>, AppError> {
-    Ok(engine
-        .tree_entries_for_paths(repository, revision, paths)
-        .map_err(AppError::operation)?
-        .into_iter()
-        .map(|entry| (entry.path.clone(), entry))
-        .collect())
-}
-
-pub(crate) fn conflict_live_input(record: &SyncConflictRecord) -> Result<&str, AppError> {
-    if record
-        .projection
-        .as_ref()
-        .is_some_and(|projection| projection.published)
-    {
-        record.provenance_revision.as_deref().ok_or_else(|| {
-            AppError::operation("published conflict projection has no provenance revision")
-        })
-    } else {
-        Ok(&record.remote_revision)
-    }
-}
-
 fn effective_conflict_scope(record: &SyncConflictRecord) -> GitConflictScope {
     if record.scope == GitConflictScope::TreeValidation || record.paths.is_empty() {
         GitConflictScope::TreeValidation
@@ -1061,155 +973,6 @@ impl SyncConflictStore {
     #[must_use]
     pub fn at(root: PathBuf) -> Self {
         Self { root }
-    }
-
-    pub fn persist(
-        &self,
-        engine: &dyn GitEngine,
-        repository: &GitRepository,
-        repository_key: &str,
-        conflict: &GitSyncConflict,
-    ) -> Result<SyncConflictRecord, AppError> {
-        self.persist_with_origin(engine, repository, repository_key, conflict, None)
-    }
-
-    fn persist_with_origin(
-        &self,
-        engine: &dyn GitEngine,
-        repository: &GitRepository,
-        repository_key: &str,
-        conflict: &GitSyncConflict,
-        carried_from: Option<&str>,
-    ) -> Result<SyncConflictRecord, AppError> {
-        validate_hex_id("repository key", repository_key)?;
-        validate_hex_id("conflict ID", &conflict.id)?;
-        let directory = self.conflict_directory(repository_key, &conflict.id)?;
-        let record_path = directory.join("record.json");
-        if record_path.exists() {
-            let existing = self.get(repository_key, &conflict.id)?;
-            verify_record_inputs(&existing, conflict)?;
-            return Ok(existing);
-        }
-        let work_tree = repository.work_tree.clone().ok_or_else(|| {
-            AppError::operation("cannot preserve a sync conflict for a bare repository")
-        })?;
-        fs::create_dir_all(&directory).map_err(AppError::operation)?;
-        // Indexed before the record exists, so a crash never hides it.
-        self.mark_open(repository_key, &conflict.id)?;
-        let base_objects = conflict
-            .base
-            .as_ref()
-            .map(|revision| engine.path_objects(repository, revision, &conflict.paths))
-            .transpose()
-            .map_err(AppError::operation)?
-            .unwrap_or_default();
-        let local_objects = engine
-            .path_objects(repository, &conflict.local, &conflict.paths)
-            .map_err(AppError::operation)?;
-        let remote_objects = engine
-            .path_objects(repository, &conflict.remote, &conflict.paths)
-            .map_err(AppError::operation)?;
-        let classifications = conflict
-            .classifications
-            .iter()
-            .map(|classification| (classification.path.as_str(), classification))
-            .collect::<BTreeMap<_, _>>();
-        let mut paths = Vec::with_capacity(conflict.paths.len());
-        for path in &conflict.paths {
-            paths.push(SyncConflictPathRecord {
-                path: path.clone(),
-                group_id: String::new(),
-                group_kind: SyncConflictGroupKind::Path,
-                classification: classifications
-                    .get(path.as_str())
-                    .map(|value| (*value).clone()),
-                base: preserve_side(conflict.base.as_ref(), base_objects.get(path)),
-                local: preserve_side(Some(&conflict.local), local_objects.get(path)),
-                remote: preserve_side(Some(&conflict.remote), remote_objects.get(path)),
-            });
-        }
-        assign_conflict_groups(conflict.scope, &mut paths);
-        let record = SyncConflictRecord {
-            version: SYNC_CONFLICT_RECORD_VERSION,
-            id: conflict.id.clone(),
-            repository_key: repository_key.to_string(),
-            work_tree,
-            base_revision: conflict.base.as_ref().map(ToString::to_string),
-            local_revision: conflict.local.to_string(),
-            remote_revision: conflict.remote.to_string(),
-            scope: conflict.scope,
-            policy_version: conflict.policy_version,
-            policy_hash: conflict.policy_hash.clone(),
-            preserved_base_ref: conflict
-                .preserved_refs
-                .base
-                .as_ref()
-                .map(ToString::to_string),
-            preserved_local_ref: conflict.preserved_refs.local.to_string(),
-            preserved_remote_ref: conflict.preserved_refs.remote.to_string(),
-            preserved_record_ref: Some(conflict.preserved_refs.record.to_string()),
-            provenance_revision: Some(conflict.provenance_revision.to_string()),
-            projection: conflict.projection.as_ref().map(|projection| {
-                SyncConflictProjectionRecord {
-                    tree: projection.tree.to_string(),
-                    published: projection.published,
-                    applied: projection.applied,
-                }
-            }),
-            paths,
-            diagnostics: conflict.diagnostics.clone(),
-            carried_from: carried_from.map(str::to_string),
-        };
-        write_paged_record_noclobber(&directory, &record)?;
-        self.prune_resolved_artifacts(repository_key)?;
-        Ok(record)
-    }
-
-    /// Removes artifact copies of fully applied conflict resolutions beyond
-    /// the newest retained sets. Records and resolution metadata are small
-    /// and permanent; unresolved and in-progress resolutions are never
-    /// pruned.
-    pub fn prune_resolved_artifacts(&self, repository_key: &str) -> Result<usize, AppError> {
-        validate_hex_id("repository key", repository_key)?;
-        let root = self.root.join(repository_key).join("conflicts");
-        let entries = match fs::read_dir(&root) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-            Err(error) => return Err(AppError::operation(error)),
-        };
-        let mut resolved = Vec::new();
-        for entry in entries {
-            let entry = entry.map_err(AppError::operation)?;
-            if !entry.file_type().map_err(AppError::operation)?.is_dir() {
-                continue;
-            }
-            // Pruned conflicts have no artifacts left; skip them unread.
-            let artifacts = entry.path().join("artifacts");
-            if !artifacts.is_dir() {
-                continue;
-            }
-            let id = entry.file_name().to_string_lossy().to_string();
-            let Some(resolution) = self.get_resolution(repository_key, &id)? else {
-                continue;
-            };
-            if !resolution.applied {
-                continue;
-            }
-            let modified = fs::metadata(entry.path().join("resolution.json"))
-                .and_then(|metadata| metadata.modified())
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-            resolved.push((modified, artifacts));
-        }
-        resolved.sort_by_key(|entry| std::cmp::Reverse(entry.0));
-        let mut pruned = 0;
-        for (_, artifacts) in resolved
-            .into_iter()
-            .skip(MAX_RETAINED_RESOLVED_ARTIFACT_SETS)
-        {
-            fs::remove_dir_all(&artifacts).map_err(AppError::operation)?;
-            pruned += 1;
-        }
-        Ok(pruned)
     }
 
     /// The records of unresolved conflicts, read through the open index:
@@ -1500,22 +1263,6 @@ impl SyncConflictStore {
             .filter(|resolution| !resolution.is_abandoned()))
     }
 
-    pub fn save_resolution(
-        &self,
-        repository_key: &str,
-        resolution: &SyncConflictResolutionRecord,
-    ) -> Result<(), AppError> {
-        if resolution.version != SYNC_CONFLICT_RESOLUTION_VERSION {
-            return Err(AppError::operation(
-                "cannot save an unsupported sync conflict resolution version",
-            ));
-        }
-        let path = self
-            .conflict_directory(repository_key, &resolution.conflict_id)?
-            .join("resolution.json");
-        write_json_replace(&path, resolution)
-    }
-
     pub fn list_batches(
         &self,
         repository_key: &str,
@@ -1558,43 +1305,6 @@ impl SyncConflictStore {
         Ok(batches)
     }
 
-    pub fn save_batch(
-        &self,
-        repository_key: &str,
-        batch: &SyncConflictBatchRecord,
-    ) -> Result<(), AppError> {
-        validate_batch_record(batch, &batch.conflict_id, &batch.batch_id)?;
-        let record = self.get(repository_key, &batch.conflict_id)?;
-        let known = conflict_groups(&record)
-            .into_iter()
-            .map(|group| group.id)
-            .collect::<BTreeSet<_>>();
-        if batch.group_ids.iter().any(|id| !known.contains(id)) {
-            return Err(AppError::operation(
-                "sync conflict batch selects an unknown resolution group",
-            ));
-        }
-        for existing in self.list_batches(repository_key, &batch.conflict_id)? {
-            if existing.batch_id != batch.batch_id
-                && !existing.needs_rebase
-                && existing
-                    .group_ids
-                    .iter()
-                    .any(|id| batch.group_ids.contains(id))
-            {
-                return Err(AppError::operation(format!(
-                    "sync conflict batch overlaps active batch `{}`",
-                    existing.batch_id
-                )));
-            }
-        }
-        let path = self
-            .conflict_directory(repository_key, &batch.conflict_id)?
-            .join("batches")
-            .join(format!("{}.json", batch.batch_id));
-        write_json_replace(&path, batch)
-    }
-
     pub fn group_progress(
         &self,
         repository_key: &str,
@@ -1628,365 +1338,6 @@ impl SyncConflictStore {
             })
             .collect::<Vec<_>>();
         Ok(summarize_group_progress(groups))
-    }
-
-    pub fn supersede_unresolved_except(
-        &self,
-        repository_key: &str,
-        current_conflict_id: Option<&str>,
-        current_revision: &str,
-    ) -> Result<usize, AppError> {
-        validate_hex_id("repository key", repository_key)?;
-        if let Some(id) = current_conflict_id {
-            validate_hex_id("conflict ID", id)?;
-        }
-        let replacement_paths = current_conflict_id
-            .map(|id| self.get(repository_key, id))
-            .transpose()?
-            .map(|record| {
-                record
-                    .paths
-                    .into_iter()
-                    .map(|path| path.path)
-                    .collect::<BTreeSet<_>>()
-            });
-        let mut superseded = 0;
-        for record in self.open_records(repository_key)? {
-            if current_conflict_id == Some(record.id.as_str()) {
-                continue;
-            }
-            let progress = self.group_progress(repository_key, &record)?;
-            if self.resolution_state_with_progress(repository_key, &record.id, &progress)?
-                != SyncConflictResolutionState::Unresolved
-            {
-                continue;
-            }
-            let unfinished_paths = progress
-                .groups
-                .iter()
-                .filter(|group| {
-                    matches!(
-                        group.state,
-                        SyncConflictGroupState::Pending | SyncConflictGroupState::NeedsRebase
-                    )
-                })
-                .flat_map(|group| group.paths.iter())
-                .collect::<BTreeSet<_>>();
-            let has_independent_obligation =
-                replacement_paths
-                    .as_ref()
-                    .map_or(!unfinished_paths.is_empty(), |replacement| {
-                        unfinished_paths
-                            .iter()
-                            .any(|path| !replacement.contains(path.as_str()))
-                    });
-            if has_independent_obligation
-                || (current_conflict_id.is_none()
-                    && conflict_live_input(&record)? == current_revision)
-            {
-                continue;
-            }
-            self.write_supersession(
-                repository_key,
-                &record.id,
-                current_revision,
-                current_conflict_id,
-            )?;
-            self.mark_closed(repository_key, &record.id)?;
-            superseded += 1;
-        }
-        Ok(superseded)
-    }
-
-    /// Carries overtaken conflicts forward onto the accepted `frontier`.
-    ///
-    /// A conflict is overtaken when an unfinished group has a path whose tree
-    /// entry on the frontier differs from the conflict's recorded live input:
-    /// later accepted edits changed it again, so no resolution of the
-    /// recorded sides can complete that group. Every unfinished path is then
-    /// re-merged from the preserved base and local sides onto the frontier
-    /// version; an unchanged group simply reproduces its original conflict.
-    /// Clean results are written to the worktree as ordinary local edits for
-    /// the next sync to publish; paths that still conflict move to one
-    /// replacement conflict recorded against the frontier, which resolves like
-    /// any other. The old record is then superseded, and its evidence and
-    /// refs are kept.
-    ///
-    /// Structural groups (renames, directory/file collisions) are never
-    /// merged; they move to the replacement as a unit. Whole-tree validation
-    /// conflicts, conflicts with a resolution being published, and a worktree
-    /// that no longer matches the frontier are left untouched. The caller
-    /// holds the vault and repository locks.
-    pub fn carry_forward_stale_unresolved(
-        &self,
-        engine: &dyn GitEngine,
-        repository: &GitRepository,
-        repository_key: &str,
-        frontier: &GitOid,
-        options: &GitSyncOptions,
-    ) -> Result<CarryForwardSummary, AppError> {
-        validate_hex_id("repository key", repository_key)?;
-        let work_tree = repository.work_tree.clone().ok_or_else(|| {
-            AppError::operation("cannot carry sync conflicts forward in a bare repository")
-        })?;
-        let mut summary = CarryForwardSummary::default();
-        for record in self.open_records(repository_key)? {
-            let Some(paths) =
-                self.overtaken_paths(engine, repository, repository_key, frontier, &record)?
-            else {
-                continue;
-            };
-            // One conflict's failure must not block the others or the sync.
-            if let Ok(Some(outcome)) = self.carry_forward_record(
-                engine, repository, &work_tree, frontier, options, &record, &paths,
-            ) {
-                summary.written_paths.extend(outcome.written_paths);
-                summary.replacements.extend(outcome.replacement);
-                summary.carried += 1;
-            }
-        }
-        Ok(summary)
-    }
-
-    /// The unfinished paths of an unresolved conflict with an unfinished group
-    /// overtaken on `frontier`, or `None` when nothing was overtaken.
-    fn overtaken_paths(
-        &self,
-        engine: &dyn GitEngine,
-        repository: &GitRepository,
-        repository_key: &str,
-        frontier: &GitOid,
-        record: &SyncConflictRecord,
-    ) -> Result<Option<Vec<String>>, AppError> {
-        let progress = self.group_progress(repository_key, record)?;
-        if self.resolution_state_with_progress(repository_key, &record.id, &progress)?
-            != SyncConflictResolutionState::Unresolved
-            || !progress.groups_complete
-            || record.base_revision.is_none()
-            // A resolution already on its way to the live branch finishes first.
-            || progress.groups.iter().any(|group| {
-                matches!(
-                    group.state,
-                    SyncConflictGroupState::Prepared | SyncConflictGroupState::Published
-                )
-            })
-            || self
-                .get_resolution(repository_key, &record.id)?
-                .is_some_and(|resolution| resolution.published)
-        {
-            return Ok(None);
-        }
-        let kinds = conflict_groups(record)
-            .into_iter()
-            .map(|group| (group.id, group.kind))
-            .collect::<BTreeMap<_, _>>();
-        let unfinished = progress
-            .groups
-            .iter()
-            .filter(|group| {
-                matches!(
-                    group.state,
-                    SyncConflictGroupState::Pending | SyncConflictGroupState::NeedsRebase
-                )
-            })
-            .collect::<Vec<_>>();
-        // A whole-tree validation failure has no paths to carry.
-        if unfinished.is_empty()
-            || unfinished.iter().any(|group| {
-                !matches!(
-                    kinds.get(&group.id),
-                    Some(SyncConflictGroupKind::Path | SyncConflictGroupKind::Structural)
-                )
-            })
-        {
-            return Ok(None);
-        }
-        let original = GitOid::parse(conflict_live_input(record)?).map_err(AppError::operation)?;
-        if original == *frontier {
-            return Ok(None);
-        }
-        let mut paths = unfinished
-            .iter()
-            .flat_map(|group| group.paths.iter().cloned())
-            .collect::<Vec<_>>();
-        paths.sort();
-        paths.dedup();
-        // Only this conflict's paths are listed, so the check costs the
-        // conflict's size, not the vault's.
-        let frontier_entries = tree_entries_by_path(engine, repository, frontier, &paths)?;
-        let original_entries = tree_entries_by_path(engine, repository, &original, &paths)?;
-        let overtaken = unfinished.iter().any(|group| {
-            group.paths.iter().any(|path| {
-                original_entries.get(path.as_str()) != frontier_entries.get(path.as_str())
-            })
-        });
-        Ok(overtaken.then_some(paths))
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn carry_forward_record(
-        &self,
-        engine: &dyn GitEngine,
-        repository: &GitRepository,
-        work_tree: &Path,
-        frontier: &GitOid,
-        options: &GitSyncOptions,
-        record: &SyncConflictRecord,
-        paths: &[String],
-    ) -> Result<Option<RecordCarryForward>, AppError> {
-        let base = GitOid::parse(
-            record
-                .base_revision
-                .as_deref()
-                .ok_or_else(|| AppError::operation("conflict has no merge base"))?,
-        )
-        .map_err(AppError::operation)?;
-        let local = GitOid::parse(&record.local_revision).map_err(AppError::operation)?;
-        let objects = |revision: &GitOid| {
-            engine
-                .path_objects(repository, revision, paths)
-                .map_err(AppError::operation)
-        };
-        let (base_objects, local_objects, current_objects) =
-            (objects(&base)?, objects(&local)?, objects(frontier)?);
-        // Renames and directory/file collisions are decided as one unit, so
-        // their paths move to the replacement together, never merged apart.
-        let structural = record
-            .paths
-            .iter()
-            .filter(|path| path.group_kind == SyncConflictGroupKind::Structural)
-            .map(|path| path.path.as_str())
-            .collect::<BTreeSet<_>>();
-        let mut merged = Vec::new();
-        let mut unresolved = Vec::new();
-        for path in paths {
-            if structural.contains(path.as_str()) {
-                unresolved.push(path.clone());
-                continue;
-            }
-            match vulcan_sync::merge_carried_path(
-                engine,
-                options,
-                path,
-                base_objects.get(path),
-                local_objects.get(path),
-                current_objects.get(path),
-            )
-            .map_err(AppError::operation)?
-            {
-                GitCarriedPath::Unchanged => {}
-                GitCarriedPath::Merged(resolved) => merged.push(resolved),
-                GitCarriedPath::Unresolved => unresolved.push(path.clone()),
-            }
-        }
-        // Merged bytes replace only files still exactly at the frontier
-        // version; an unsynchronized edit waits for the next sync instead.
-        let mut writes = Vec::with_capacity(merged.len());
-        for resolved in &merged {
-            let target = carried_worktree_path(work_tree, &resolved.path)?;
-            let expected = current_objects
-                .get(&resolved.path)
-                .and_then(|object| object.data.as_deref());
-            let metadata = fs::symlink_metadata(&target).ok();
-            if !metadata.is_some_and(|metadata| metadata.is_file())
-                || expected.is_none()
-                || fs::read(&target).ok().as_deref() != expected
-            {
-                return Ok(None);
-            }
-            writes.push((target, resolved));
-        }
-        for (target, resolved) in &writes {
-            durable_file::replace(target, resolved.data.as_deref().unwrap_or_default())?;
-            set_carried_mode(target, resolved.mode.as_deref())?;
-        }
-        let replacement = if unresolved.is_empty() {
-            None
-        } else {
-            Some(self.persist_carried_replacement(
-                engine,
-                repository,
-                &record.repository_key,
-                record,
-                &base,
-                &local,
-                frontier,
-                &unresolved,
-            )?)
-        };
-        self.write_supersession(
-            &record.repository_key,
-            &record.id,
-            frontier.as_str(),
-            replacement.as_deref(),
-        )?;
-        if let Some(root) = &record.carried_from {
-            // Best effort: a leftover intermediate only costs disk space.
-            let _ = self.collapse_intermediate(
-                engine,
-                repository,
-                root,
-                record,
-                frontier,
-                replacement.as_deref(),
-            );
-        }
-        Ok(Some(RecordCarryForward {
-            written_paths: merged.into_iter().map(|resolved| resolved.path).collect(),
-            replacement,
-        }))
-    }
-
-    /// Removes a replacement that was itself carried forward, so a file that
-    /// another device keeps changing leaves at most the original conflict
-    /// and one current replacement instead of a record, artifact copies, and
-    /// refs per sync. Nothing unique is lost: the intermediate's base and
-    /// local sides are the original's, and its remote side is a past live
-    /// commit. The original's supersession is repointed first. Intermediates
-    /// someone started resolving (batches, a resolution, proposals) are kept.
-    fn collapse_intermediate(
-        &self,
-        engine: &dyn GitEngine,
-        repository: &GitRepository,
-        root: &str,
-        intermediate: &SyncConflictRecord,
-        frontier: &GitOid,
-        replacement: Option<&str>,
-    ) -> Result<(), AppError> {
-        let key = &intermediate.repository_key;
-        let directory = self.conflict_directory(key, &intermediate.id)?;
-        if ["batches", "resolution.json", "proposals"]
-            .iter()
-            .any(|entry| directory.join(entry).exists())
-        {
-            return Ok(());
-        }
-        self.write_supersession(key, root, frontier.as_str(), replacement)?;
-        let preserved = [
-            ("base", intermediate.base_revision.as_deref()),
-            ("local", Some(intermediate.local_revision.as_str())),
-            ("remote", Some(intermediate.remote_revision.as_str())),
-            ("record", intermediate.provenance_revision.as_deref()),
-        ];
-        for (role, commit) in preserved {
-            let Some(commit) = commit else { continue };
-            let reference = conflict_ref(&intermediate.id, role).map_err(AppError::operation)?;
-            let commit = GitOid::parse(commit).map_err(AppError::operation)?;
-            engine
-                .delete_ref(repository, &reference, &commit)
-                .map_err(AppError::operation)?;
-        }
-        self.mark_closed(key, &intermediate.id)?;
-        fs::remove_dir_all(&directory).map_err(AppError::operation)?;
-        // The record is gone, so no full re-index will list it again.
-        durable_file::remove(
-            &self
-                .root
-                .join(key)
-                .join(CLOSED_CONFLICTS_DIR)
-                .join(&intermediate.id),
-        )
-        .map(drop)
     }
 
     /// Moves conflicts closed (resolved or superseded) for at least
@@ -2211,29 +1562,12 @@ impl SyncConflictStore {
         Ok(())
     }
 
-    /// The device-local state directory of one repository.
-    pub(crate) fn repository_state_dir(&self, repository_key: &str) -> PathBuf {
-        self.root.join(repository_key)
-    }
-
     /// Whether the conflict's record is in the live store (not archived).
     pub fn is_live(&self, repository_key: &str, conflict_id: &str) -> Result<bool, AppError> {
         Ok(self
             .conflict_directory(repository_key, conflict_id)?
             .join("record.json")
             .is_file())
-    }
-
-    /// Whether automatic archiving may run: at most once a day, so conflicts
-    /// that close one by one become one archive segment per day rather than
-    /// one per sync. The last run is the mirror count file's write time.
-    #[must_use]
-    pub fn archive_due(&self, repository_key: &str) -> bool {
-        fs::metadata(self.root.join(repository_key).join(ARCHIVED_COUNT_FILE))
-            .and_then(|metadata| metadata.modified())
-            .ok()
-            .and_then(|modified| std::time::SystemTime::now().duration_since(modified).ok())
-            .is_none_or(|age| age >= ARCHIVE_RUN_INTERVAL)
     }
 
     /// Conflicts in the archive, from the device-local mirror of its count.
@@ -2244,99 +1578,6 @@ impl SyncConflictStore {
             .and_then(|directory| fs::read_to_string(directory.join(ARCHIVED_COUNT_FILE)).ok())
             .and_then(|count| count.trim().parse().ok())
             .unwrap_or(0)
-    }
-
-    /// Records the still-conflicting paths against `frontier`: the preserved
-    /// base and local sides stay the same, and the frontier becomes both the
-    /// remote side and the applied projection, so side, file, and editor
-    /// resolution all work against what is live now.
-    #[allow(clippy::too_many_arguments)]
-    fn persist_carried_replacement(
-        &self,
-        engine: &dyn GitEngine,
-        repository: &GitRepository,
-        repository_key: &str,
-        record: &SyncConflictRecord,
-        base: &GitOid,
-        local: &GitOid,
-        frontier: &GitOid,
-        paths: &[String],
-    ) -> Result<String, AppError> {
-        let id = vulcan_sync::sync_conflict_id(
-            record.policy_version,
-            &record.policy_hash,
-            Some(base),
-            local,
-            frontier,
-            paths,
-        );
-        let preserved_ref = |role: &str, commit: &GitOid| {
-            let reference = conflict_ref(&id, role).map_err(AppError::operation)?;
-            engine
-                .update_ref(repository, &reference, commit)
-                .map_err(AppError::operation)?;
-            Ok::<_, AppError>(reference)
-        };
-        let preserved_refs = GitConflictRefs {
-            base: Some(preserved_ref("base", base)?),
-            local: preserved_ref("local", local)?,
-            remote: preserved_ref("remote", frontier)?,
-            record: preserved_ref("record", frontier)?,
-        };
-        let classifications = record
-            .paths
-            .iter()
-            .filter(|path| paths.contains(&path.path))
-            .filter_map(|path| path.classification.clone())
-            .collect();
-        let conflict = GitSyncConflict {
-            id: id.clone(),
-            scope: GitConflictScope::Paths,
-            base: Some(base.clone()),
-            remote: frontier.clone(),
-            local: local.clone(),
-            paths: paths.to_vec(),
-            classifications,
-            policy_version: record.policy_version,
-            policy_hash: record.policy_hash.clone(),
-            preserved_refs,
-            provenance_revision: frontier.clone(),
-            projection: Some(GitConflictProjection {
-                tree: engine
-                    .tree_oid(repository, frontier)
-                    .map_err(AppError::operation)?,
-                published: true,
-                applied: true,
-            }),
-            merge_tree: None,
-            diagnostics: format!(
-                "carried forward from conflict {}: these files changed again on the live branch and still conflict with this device's version",
-                record.carried_from.as_deref().unwrap_or(&record.id)
-            ),
-        };
-        // A chain of replacements always names the original conflict.
-        let origin = record.carried_from.as_deref().unwrap_or(&record.id);
-        self.persist_with_origin(engine, repository, repository_key, &conflict, Some(origin))?;
-        Ok(id)
-    }
-
-    fn write_supersession(
-        &self,
-        repository_key: &str,
-        conflict_id: &str,
-        current_revision: &str,
-        replacement_conflict_id: Option<&str>,
-    ) -> Result<(), AppError> {
-        let supersession = SyncConflictSupersessionRecord {
-            version: SYNC_CONFLICT_SUPERSESSION_VERSION,
-            conflict_id: conflict_id.to_string(),
-            current_revision: current_revision.to_string(),
-            replacement_conflict_id: replacement_conflict_id.map(str::to_string),
-        };
-        let path = self
-            .conflict_directory(repository_key, conflict_id)?
-            .join("supersession.json");
-        write_json_replace(&path, &supersession)
     }
 
     fn get_supersession(
@@ -2533,36 +1774,6 @@ fn summarize_group_progress(groups: Vec<SyncConflictGroupProgress>) -> SyncConfl
     progress
 }
 
-/// Describes one preserved side. Its bytes stay in Git: the conflict's
-/// preserved refs keep the commits reachable, and the archive keeps the
-/// blobs, so no second copy is written beside the record.
-fn preserve_side(
-    revision: Option<&GitOid>,
-    object: Option<&vulcan_sync::GitPathObject>,
-) -> SyncConflictSideRecord {
-    let Some(revision) = revision else {
-        return SyncConflictSideRecord {
-            revision: "absent".to_string(),
-            object_id: None,
-            mode: None,
-            kind: None,
-            artifact: None,
-            content_hash: None,
-            bytes: None,
-        };
-    };
-    let data = object.and_then(|object| object.data.as_deref());
-    SyncConflictSideRecord {
-        revision: revision.to_string(),
-        object_id: object.map(|object| object.oid.to_string()),
-        mode: object.map(|object| object.mode.clone()),
-        kind: object.map(|object| object.kind.clone()),
-        artifact: None,
-        content_hash: data.map(|data| blake3::hash(data).to_hex().to_string()),
-        bytes: data.map(|data| data.len() as u64),
-    }
-}
-
 #[cfg(test)]
 fn write_json_noclobber(path: &Path, value: &SyncConflictRecord) -> Result<(), AppError> {
     let bytes = serialize_conflict_record(value, MAX_CONFLICT_RECORD_BYTES)?;
@@ -2575,6 +1786,7 @@ fn write_json_noclobber(path: &Path, value: &SyncConflictRecord) -> Result<(), A
     }
 }
 
+#[cfg(test)]
 fn write_paged_record_noclobber(
     directory: &Path,
     record: &SyncConflictRecord,
@@ -2655,6 +1867,7 @@ fn write_paged_record_noclobber(
     }
 }
 
+#[cfg(test)]
 fn serialized_path_page_len(
     index: usize,
     paths: &[SyncConflictPathRecord],
@@ -2670,6 +1883,7 @@ fn serialized_path_page_len(
         + 1)
 }
 
+#[cfg(test)]
 fn write_conflict_path_page(
     pages_directory: &Path,
     index: usize,
@@ -3202,16 +2416,7 @@ fn serialize_conflict_record(
     Ok(bytes)
 }
 
-fn write_json_replace<T: Serialize>(path: &Path, value: &T) -> Result<(), AppError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| AppError::operation("conflict resolution has no parent directory"))?;
-    fs::create_dir_all(parent).map_err(AppError::operation)?;
-    let mut bytes = serde_json::to_vec_pretty(value).map_err(AppError::operation)?;
-    bytes.push(b'\n');
-    durable_file::replace(path, &bytes)
-}
-
+#[cfg(test)]
 fn write_bytes_noclobber(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
     if path.exists() {
         let existing = fs::read(path).map_err(AppError::operation)?;
@@ -3262,63 +2467,6 @@ fn validate_record(
     Ok(())
 }
 
-fn verify_record_inputs(
-    record: &SyncConflictRecord,
-    conflict: &GitSyncConflict,
-) -> Result<(), AppError> {
-    if record.base_revision.as_deref() != conflict.base.as_ref().map(GitOid::as_str)
-        || record.local_revision != conflict.local.as_str()
-        || record.remote_revision != conflict.remote.as_str()
-        || effective_conflict_scope(record) != conflict.scope
-        || record.policy_version != conflict.policy_version
-        || record.policy_hash != conflict.policy_hash
-        || record
-            .provenance_revision
-            .as_deref()
-            .is_some_and(|revision| revision != conflict.provenance_revision.as_str())
-        || record
-            .preserved_record_ref
-            .as_deref()
-            .is_some_and(|reference| reference != conflict.preserved_refs.record.as_str())
-        || !projection_matches(record.projection.as_ref(), conflict)
-        || record
-            .paths
-            .iter()
-            .map(|path| &path.path)
-            .ne(conflict.paths.iter())
-        || (record
-            .paths
-            .iter()
-            .any(|path| path.classification.is_some())
-            && record
-                .paths
-                .iter()
-                .filter_map(|path| path.classification.as_ref())
-                .ne(conflict.classifications.iter()))
-    {
-        return Err(AppError::operation(format!(
-            "immutable conflict record `{}` does not match the current conflict inputs",
-            conflict.id
-        )));
-    }
-    Ok(())
-}
-
-fn projection_matches(
-    record: Option<&SyncConflictProjectionRecord>,
-    conflict: &GitSyncConflict,
-) -> bool {
-    match (record, conflict.projection.as_ref()) {
-        (None, None) => true,
-        (None, Some(_)) | (Some(_), None) => false,
-        (Some(record), Some(projection)) => {
-            record.tree == projection.tree.as_str()
-                && record.published == projection.published
-                && record.applied == projection.applied
-        }
-    }
-}
-
 /// The modification time of a repository's `conflicts/` directory as a
 /// stamp, and whether it is old enough to trust; `None` before any conflict.
 fn conflicts_directory_time(repository: &Path) -> Result<Option<(String, bool)>, AppError> {
@@ -3351,7 +2499,7 @@ fn validate_hex_id(label: &str, value: &str) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, SystemTime};
+
     use vulcan_core::VaultPaths;
 
     fn absent_side(revision: &str) -> SyncConflictSideRecord {
@@ -3398,153 +2546,6 @@ mod tests {
         };
         assign_conflict_groups(record.scope, &mut record.paths);
         record
-    }
-
-    fn write_unresolved(store: &SyncConflictStore, key: &str, id: &str, root: &Path) {
-        let directory = store.conflict_directory(key, id).expect("directory");
-        fs::create_dir_all(&directory).expect("conflict directory");
-        write_json_noclobber(
-            &directory.join("record.json"),
-            &unresolved_record(id, key, root),
-        )
-        .expect("record");
-    }
-
-    /// Ages the `conflicts/` directory past the index settle time.
-    fn settle_conflicts_directory(store: &SyncConflictStore, key: &str) {
-        let path = store.root.join(key).join("conflicts");
-        #[cfg(not(windows))]
-        let directory = fs::File::open(path).expect("open");
-        // Windows opens a directory only with backup semantics, and setting
-        // its time needs attribute-write access.
-        #[cfg(windows)]
-        let directory = {
-            use std::os::windows::fs::OpenOptionsExt;
-            const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
-            const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-            fs::OpenOptions::new()
-                .access_mode(FILE_WRITE_ATTRIBUTES)
-                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-                .open(path)
-                .expect("open")
-        };
-        directory
-            .set_modified(std::time::SystemTime::now() - 2 * OPEN_INDEX_SETTLE)
-            .expect("age conflicts directory");
-    }
-
-    #[test]
-    fn sync_maintenance_reads_only_open_conflicts_once_indexed() {
-        let temporary = tempfile::tempdir().expect("temporary directory");
-        let key = "a".repeat(32);
-        let old_id = "b".repeat(32);
-        let current_id = "c".repeat(32);
-        let store = SyncConflictStore::at(temporary.path().join("state"));
-        write_unresolved(&store, &key, &old_id, temporary.path());
-        write_unresolved(&store, &key, &current_id, temporary.path());
-        settle_conflicts_directory(&store, &key);
-        assert_eq!(
-            store
-                .supersede_unresolved_except(&key, Some(&current_id), "revision")
-                .expect("supersede"),
-            1
-        );
-        // A superseded conflict is final: later scans must not open it again.
-        let old_record = store
-            .conflict_directory(&key, &old_id)
-            .expect("directory")
-            .join("record.json");
-        fs::write(&old_record, b"not a record").expect("corrupt closed record");
-        let open = store.open_records(&key).expect("open records");
-        assert_eq!(
-            open.iter()
-                .map(|record| record.id.as_str())
-                .collect::<Vec<_>>(),
-            [current_id.as_str()]
-        );
-
-        // A conflict directory created without the index, as an older
-        // version would, changes the directory time and is found again. The
-        // full re-index skips the closed conflict without reading its
-        // (still corrupt) record.
-        let legacy_id = "d".repeat(32);
-        write_unresolved(&store, &key, &legacy_id, temporary.path());
-        let open = store.open_records(&key).expect("reindexed");
-        assert!(open.iter().any(|record| record.id == legacy_id));
-        assert!(!open.iter().any(|record| record.id == old_id));
-    }
-
-    fn resolved_conflict(store: &SyncConflictStore, key: &str, id: &str, age_seconds: u64) {
-        let directory = store.conflict_directory(key, id).expect("directory");
-        fs::create_dir_all(directory.join("artifacts")).expect("artifacts");
-        fs::write(directory.join("record.json"), b"{}").expect("record");
-        let resolution = SyncConflictResolutionRecord {
-            version: SYNC_CONFLICT_RESOLUTION_VERSION,
-            conflict_id: id.to_string(),
-            side: Some(SyncConflictResolutionSide::Local),
-            proposal_id: None,
-            base_revision: "base".to_string(),
-            local_revision: "local".to_string(),
-            remote_revision: "remote".to_string(),
-            live_input_revision: None,
-            recovery_revision: "recovery".to_string(),
-            resolved_tree: "tree".to_string(),
-            resolution_commit: "commit".to_string(),
-            published: true,
-            applied: true,
-        };
-        let resolution_path = directory.join("resolution.json");
-        fs::write(
-            &resolution_path,
-            serde_json::to_vec(&resolution).expect("resolution"),
-        )
-        .expect("resolution file");
-        fs::write(directory.join("artifacts/0000-local.bin"), b"bytes").expect("artifact");
-        fs::OpenOptions::new()
-            .write(true)
-            .open(&resolution_path)
-            .expect("resolution handle")
-            .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(age_seconds))
-            .expect("resolution mtime");
-    }
-
-    #[test]
-    fn resolved_conflict_artifacts_are_pruned_beyond_the_retention_bound() {
-        let temporary = tempfile::tempdir().expect("temporary directory");
-        let key = "a".repeat(32);
-        let store = SyncConflictStore::at(temporary.path().to_path_buf());
-        let total = MAX_RETAINED_RESOLVED_ARTIFACT_SETS + 4;
-        for index in 0..total {
-            // Distinct ascending hex IDs: 00...00, 00...01, ...
-            let id = format!("{index:032x}");
-            resolved_conflict(&store, &key, &id, index as u64);
-        }
-        // An unresolved conflict must keep its artifacts forever.
-        let unresolved = "f".repeat(32);
-        let directory = store
-            .conflict_directory(&key, &unresolved)
-            .expect("directory");
-        fs::create_dir_all(directory.join("artifacts")).expect("artifacts");
-        fs::write(directory.join("artifacts/0000-local.bin"), b"bytes").expect("artifact");
-
-        let pruned = store.prune_resolved_artifacts(&key).expect("prune");
-
-        assert_eq!(pruned, 4);
-        for index in 0..total {
-            let id = format!("{index:032x}");
-            let artifacts = store
-                .conflict_directory(&key, &id)
-                .expect("directory")
-                .join("artifacts");
-            if index < 4 {
-                assert!(!artifacts.exists(), "oldest {id} should be pruned");
-            } else {
-                assert!(artifacts.exists(), "newest {id} should be retained");
-            }
-        }
-        assert!(directory.join("artifacts").exists());
-        // Re-running is a no-op.
-        assert_eq!(store.prune_resolved_artifacts(&key).expect("re-prune"), 0);
     }
 
     fn write_version_one_record(
@@ -3903,74 +2904,6 @@ mod tests {
             .find(|group| group.kind == SyncConflictGroupKind::Structural)
             .expect("structural group");
         assert_eq!(structural.paths, vec!["Home.md", "Moved/two.md"]);
-    }
-
-    #[test]
-    fn batch_progress_is_durable_bounded_and_allows_replanning_stale_groups() {
-        let temporary = tempfile::tempdir().expect("temporary directory");
-        let key = "a".repeat(32);
-        let id = "b".repeat(32);
-        let store = SyncConflictStore::at(temporary.path().join("state"));
-        let directory = store.conflict_directory(&key, &id).expect("directory");
-        fs::create_dir_all(&directory).expect("conflict directory");
-        let mut record = unresolved_record(&id, &key, temporary.path());
-        record.paths[0].local.object_id = Some("1".repeat(40));
-        record.paths[0].remote.object_id = Some("2".repeat(40));
-        let mut second = record.paths[0].clone();
-        second.path = "Second.md".to_string();
-        record.paths.push(second);
-        assign_conflict_groups(record.scope, &mut record.paths);
-        write_paged_record_noclobber(&directory, &record).expect("record");
-        let groups = conflict_groups(&record);
-
-        let batch = |group_id: String,
-                     expected: &str,
-                     published: bool,
-                     applied: bool,
-                     needs_rebase: bool| {
-            let group_ids = vec![group_id];
-            let batch_id = conflict_batch_id(&id, &group_ids, expected, "side:local");
-            SyncConflictBatchRecord {
-                version: SYNC_CONFLICT_BATCH_VERSION,
-                conflict_id: id.clone(),
-                batch_id,
-                selection_digest: conflict_group_selection_digest(&group_ids),
-                group_ids,
-                group_path_counts: BTreeMap::new(),
-                expected_revision: expected.to_string(),
-                side: Some(SyncConflictResolutionSide::Local),
-                proposal_id: None,
-                recovery_revision: "recovery".to_string(),
-                resolved_tree: "tree".to_string(),
-                resolution_commit: "commit".to_string(),
-                published,
-                applied,
-                needs_rebase,
-            }
-        };
-        store
-            .save_batch(&key, &batch(groups[0].id.clone(), "one", true, true, false))
-            .expect("applied batch");
-        store
-            .save_batch(
-                &key,
-                &batch(groups[1].id.clone(), "one", false, false, true),
-            )
-            .expect("stale batch");
-        store
-            .save_batch(
-                &key,
-                &batch(groups[1].id.clone(), "two", false, false, false),
-            )
-            .expect("replacement batch");
-
-        let progress = store.group_progress(&key, &record).expect("progress");
-        assert_eq!(progress.total_groups, 2);
-        assert_eq!(progress.applied_groups, 1);
-        assert_eq!(progress.prepared_groups, 1);
-        assert_eq!(progress.pending_groups, 0);
-        assert_eq!(progress.needs_rebase_groups, 0);
-        assert_eq!(store.list_batches(&key, &id).expect("batches").len(), 3);
     }
 
     #[test]

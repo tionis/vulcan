@@ -9903,8 +9903,8 @@
         ]
       },
       {
-        "about": "Synchronize a vault through a hidden Git live ref",
-        "after_help": "Notes:\n  `sync clone` automatically selects a detached Android-shared layout in Termux.\n  `sync termux-install` creates an Android job; `sync schedule show/set` inspects or changes its saved settings.\n  Run/status/doctor work directly against the selected vault path and do not require a daemon or wiki registration.\n  The default remote is `origin`; the default live ref is `refs/heads/__vulcan-sync/live`.\n  Non-dry-run cycles publish local bytes to a per-device safety ref before pull or reconciliation.\n  Staged changes are captured; in-progress Git operations pause worktree synchronization.\n  Pause/resume updates device-local automatic behavior only; manual run and status remain available.\n\nExamples:\n  vulcan sync clone https://git.example/wiki.git /storage/emulated/0/Documents/wiki --dry-run\n  vulcan sync termux-install personal --period-minutes 30 --dry-run\n  vulcan sync schedule show personal\n  vulcan sync schedule set personal --period-minutes 60 --dry-run\n  vulcan sync run\n  vulcan sync run personal\n  vulcan sync run --group daily\n  vulcan sync status --all\n  vulcan sync run --dry-run\n  vulcan sync status\n  vulcan sync doctor\n  vulcan sync conflicts\n  vulcan sync conflicts <conflict-id>\n  vulcan sync conflicts-archive --older-than-days 7 --dry-run\n  vulcan sync doctor --fix --dry-run\n  vulcan sync ignore-device-files --dry-run\n  vulcan sync devices list --wiki personal\n  vulcan sync devices fetch <device-id> --wiki personal --dry-run\n  vulcan sync devices prune-backup <device-id> --wiki personal --dry-run\n  vulcan sync pause personal\n  vulcan sync resume personal\n  vulcan --vault ./wiki sync run --remote origin",
+        "about": "Synchronize a vault's committed Git history across devices",
+        "after_help": "Notes:\n  `sync clone` automatically selects a detached Android-shared layout in Termux.\n  `sync termux-install` creates an Android job; `sync schedule show/set` inspects or changes its saved settings.\n  Run/status/doctor work directly against the selected vault path and do not require a daemon or wiki registration.\n  Sync moves committed history: it pulls and pushes the checked-out branch of remote `origin` by default.\n  Uncommitted edits stay on the device; non-dry-run cycles snapshot them locally first, and push that\n  snapshot to a per-device backup ref only with `sync.publish_device_backup = true`.\n  In-progress Git operations pause synchronization.\n  Pause/resume updates device-local automatic behavior only; manual run and status remain available.\n\nExamples:\n  vulcan sync clone https://git.example/wiki.git /storage/emulated/0/Documents/wiki --dry-run\n  vulcan sync termux-install personal --period-minutes 30 --dry-run\n  vulcan sync schedule show personal\n  vulcan sync schedule set personal --period-minutes 60 --dry-run\n  vulcan sync run\n  vulcan sync run personal\n  vulcan sync run --group daily\n  vulcan sync status --all\n  vulcan sync run --dry-run\n  vulcan sync status\n  vulcan sync doctor\n  vulcan sync conflicts\n  vulcan sync conflicts <conflict-id>\n  vulcan sync conflicts-archive --older-than-days 7 --dry-run\n  vulcan sync doctor --fix --dry-run\n  vulcan sync ignore-device-files --dry-run\n  vulcan sync devices list --wiki personal\n  vulcan sync devices fetch <device-id> --wiki personal --dry-run\n  vulcan sync devices prune-backup <device-id> --wiki personal --dry-run\n  vulcan sync pause personal\n  vulcan sync resume personal\n  vulcan --vault ./wiki sync run --remote origin",
         "name": "sync",
         "options": [],
         "subcommands": [
@@ -10117,7 +10117,7 @@
                     ]
                   },
                   {
-                    "help": "Git remote carrying the live ref",
+                    "help": "Git remote to synchronize with",
                     "id": "remote",
                     "long": "remote",
                     "possible_values": [],
@@ -10125,17 +10125,6 @@
                     "short": null,
                     "value_names": [
                       "REMOTE"
-                    ]
-                  },
-                  {
-                    "help": "Fully qualified remote live ref",
-                    "id": "live_ref",
-                    "long": "live-ref",
-                    "possible_values": [],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "LIVE_REF"
                     ]
                   },
                   {
@@ -10339,7 +10328,7 @@
                     ]
                   },
                   {
-                    "help": "Git remote carrying the live ref",
+                    "help": "Git remote to synchronize with",
                     "id": "remote",
                     "long": "remote",
                     "possible_values": [],
@@ -10347,17 +10336,6 @@
                     "short": null,
                     "value_names": [
                       "REMOTE"
-                    ]
-                  },
-                  {
-                    "help": "Fully qualified remote live ref",
-                    "id": "live_ref",
-                    "long": "live-ref",
-                    "possible_values": [],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "LIVE_REF"
                     ]
                   },
                   {
@@ -10585,7 +10563,7 @@
                     ]
                   },
                   {
-                    "help": "Git remote carrying the live ref",
+                    "help": "Git remote to synchronize with",
                     "id": "remote",
                     "long": "remote",
                     "possible_values": [],
@@ -10593,17 +10571,6 @@
                     "short": null,
                     "value_names": [
                       "REMOTE"
-                    ]
-                  },
-                  {
-                    "help": "Fully qualified remote live ref",
-                    "id": "live_ref",
-                    "long": "live-ref",
-                    "possible_values": [],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "LIVE_REF"
                     ]
                   },
                   {
@@ -10661,7 +10628,7 @@
                     ]
                   },
                   {
-                    "help": "Git remote carrying the live ref",
+                    "help": "Git remote to synchronize with",
                     "id": "remote",
                     "long": "remote",
                     "possible_values": [],
@@ -10669,17 +10636,6 @@
                     "short": null,
                     "value_names": [
                       "REMOTE"
-                    ]
-                  },
-                  {
-                    "help": "Fully qualified remote live ref",
-                    "id": "live_ref",
-                    "long": "live-ref",
-                    "possible_values": [],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "LIVE_REF"
                     ]
                   },
                   {
@@ -10726,7 +10682,7 @@
                     ]
                   },
                   {
-                    "help": "Git remote carrying the live ref",
+                    "help": "Git remote to synchronize with",
                     "id": "remote",
                     "long": "remote",
                     "possible_values": [],
@@ -10734,17 +10690,6 @@
                     "short": null,
                     "value_names": [
                       "REMOTE"
-                    ]
-                  },
-                  {
-                    "help": "Fully qualified remote live ref",
-                    "id": "live_ref",
-                    "long": "live-ref",
-                    "possible_values": [],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "LIVE_REF"
                     ]
                   },
                   {
@@ -10791,7 +10736,7 @@
                     ]
                   },
                   {
-                    "help": "Git remote carrying the live ref",
+                    "help": "Git remote to synchronize with",
                     "id": "remote",
                     "long": "remote",
                     "possible_values": [],
@@ -10799,17 +10744,6 @@
                     "short": null,
                     "value_names": [
                       "REMOTE"
-                    ]
-                  },
-                  {
-                    "help": "Fully qualified remote live ref",
-                    "id": "live_ref",
-                    "long": "live-ref",
-                    "possible_values": [],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "LIVE_REF"
                     ]
                   },
                   {
@@ -10953,7 +10887,7 @@
                     ]
                   },
                   {
-                    "help": "Git remote carrying the live ref",
+                    "help": "Git remote to synchronize with",
                     "id": "remote",
                     "long": "remote",
                     "possible_values": [],
@@ -10961,17 +10895,6 @@
                     "short": null,
                     "value_names": [
                       "REMOTE"
-                    ]
-                  },
-                  {
-                    "help": "Fully qualified remote live ref",
-                    "id": "live_ref",
-                    "long": "live-ref",
-                    "possible_values": [],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "LIVE_REF"
                     ]
                   },
                   {
@@ -11018,7 +10941,7 @@
                     ]
                   },
                   {
-                    "help": "Git remote carrying the live ref",
+                    "help": "Git remote to synchronize with",
                     "id": "remote",
                     "long": "remote",
                     "possible_values": [],
@@ -11026,17 +10949,6 @@
                     "short": null,
                     "value_names": [
                       "REMOTE"
-                    ]
-                  },
-                  {
-                    "help": "Fully qualified remote live ref",
-                    "id": "live_ref",
-                    "long": "live-ref",
-                    "possible_values": [],
-                    "required": false,
-                    "short": null,
-                    "value_names": [
-                      "LIVE_REF"
                     ]
                   },
                   {
@@ -11421,7 +11333,7 @@
                 ]
               },
               {
-                "help": "Git remote carrying the live ref",
+                "help": "Git remote to synchronize with",
                 "id": "remote",
                 "long": "remote",
                 "possible_values": [],
@@ -11429,17 +11341,6 @@
                 "short": null,
                 "value_names": [
                   "REMOTE"
-                ]
-              },
-              {
-                "help": "Fully qualified remote live ref",
-                "id": "live_ref",
-                "long": "live-ref",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "LIVE_REF"
                 ]
               },
               {
@@ -11604,7 +11505,7 @@
                 ]
               },
               {
-                "help": "Git remote carrying the live ref",
+                "help": "Git remote to synchronize with",
                 "id": "remote",
                 "long": "remote",
                 "possible_values": [],
@@ -11612,17 +11513,6 @@
                 "short": null,
                 "value_names": [
                   "REMOTE"
-                ]
-              },
-              {
-                "help": "Fully qualified remote live ref",
-                "id": "live_ref",
-                "long": "live-ref",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "LIVE_REF"
                 ]
               },
               {
@@ -11966,7 +11856,7 @@
                 ]
               },
               {
-                "help": "Git remote carrying the live ref",
+                "help": "Git remote to synchronize with",
                 "id": "remote",
                 "long": "remote",
                 "possible_values": [],
@@ -11974,17 +11864,6 @@
                 "short": null,
                 "value_names": [
                   "REMOTE"
-                ]
-              },
-              {
-                "help": "Fully qualified remote live ref",
-                "id": "live_ref",
-                "long": "live-ref",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "LIVE_REF"
                 ]
               },
               {

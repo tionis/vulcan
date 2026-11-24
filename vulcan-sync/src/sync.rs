@@ -1,23 +1,17 @@
 use crate::{
-    conflict_ref, local_epoch_ref, local_sync_ref, remote_conflict_ref, remote_device_ref,
-    remote_epoch_ref, sync_profile_key, BranchAdvanceOutcome, BranchPullConfig, FastForwardOutcome,
-    GitBranchUpstream, GitCaptureRequest, GitContentMergeResolutionRequest, GitEngine,
-    GitEngineError, GitInstallation, GitOid, GitPathObject, GitPlatformPreflight,
-    GitPlatformProfile, GitPushResult, GitRefMirror, GitRefName, GitRefPush, GitReference,
-    GitRemote, GitRepository, GitRepositoryRequirements, GitResolvedPath, GitSafetyState,
-    GitTreeApplyPlan, MergeAutomation, MergeBranchOutcome, MergeFileKind, MergePolicy,
-    MergeResolution, PullFastForward, PullRebase, RebaseOutcome, ScopedBranchAdvance, SyncAction,
-    SyncBackend, SyncCapabilities, SyncCapability, SyncConflict, SyncContext, SyncError,
+    local_sync_ref, remote_device_ref, sync_profile_key, BranchAdvanceOutcome, BranchPullConfig,
+    FastForwardOutcome, GitBranchUpstream, GitCaptureRequest, GitEngine, GitEngineError,
+    GitInstallation, GitOid, GitPlatformPreflight, GitPlatformProfile, GitPushResult, GitRefName,
+    GitReference, GitRemote, GitRepository, GitRepositoryRequirements, GitSafetyState,
+    MergeBranchOutcome, MergeFileKind, MergeResolution, PullFastForward, PullRebase, RebaseOutcome,
+    SyncAction, SyncBackend, SyncCapabilities, SyncCapability, SyncContext, SyncError,
     SyncErrorCategory, SyncOperation, SyncOperationMode, SyncOutcome, SyncPlan, SyncProgress,
-    SyncReport, SyncResolutionState, SyncState, SyncStatus, DEFAULT_REMOTE_LIVE_REF,
-    GIT_PLATFORM_PREFLIGHT_VERSION, LOCAL_REGISTRATION_MIRROR_ROOT,
+    SyncReport, SyncState, SyncStatus, DEFAULT_REMOTE_LIVE_REF, GIT_PLATFORM_PREFLIGHT_VERSION,
     REMOTE_REGISTRATION_BRANCH_ROOT, SYNC_CONTRACT_VERSION, VULCAN_REF_NAMESPACE_VERSION,
 };
-use crate::{GitWorktreeScope, PATH_SCOPED_REF_NAMESPACE_VERSION};
-use serde::{Deserialize, Serialize, Serializer};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use serde::{Deserialize, Serialize};
 use std::error::Error;
-use std::fmt::{Display, Formatter, Write as _};
+use std::fmt::{Display, Formatter};
 use std::fs::{self};
 use std::io::Write as _;
 use std::path::Path;
@@ -32,23 +26,12 @@ const MAX_PLATFORM_PREFLIGHT_CACHE_BYTES: u64 = 256 * 1024;
 /// `merge-tree --write-tree` (used for conflict-free divergence merging)
 /// requires Git 2.38.
 const MINIMUM_GIT_VERSION: (u32, u32, u32) = (2, 38, 0);
-const MAX_SYNC_REPORT_CONFLICT_PATHS: usize = 16;
-const MAX_SYNC_REPORT_CONFLICT_DIAGNOSTIC_CHARS: usize = 4096;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PlatformPreflightCache {
     version: u32,
     policy_key: String,
     preflight: GitPlatformPreflight,
-}
-
-#[must_use]
-pub fn git_live_epoch_id(profile: &str, previous: &GitOid) -> String {
-    blake3::hash(
-        format!("vulcan-sync-epoch-v{SYNC_PROTOCOL_VERSION}\0{profile}\0{previous}").as_bytes(),
-    )
-    .to_hex()[..32]
-        .to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -127,27 +110,17 @@ fn device_base32_index(byte: u8) -> Option<u8> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitSyncOptions {
     pub remote: GitRemote,
-    pub live_ref: GitRefName,
     pub max_retries: usize,
     pub command_timeout: Duration,
     pub dry_run: bool,
     pub device_id: GitSyncDeviceId,
-    pub merge_policy: MergePolicy,
-    pub merge_automation: MergeAutomation,
     pub platform: GitPlatformProfile,
-    pub remote_observation: GitRemoteObservation,
-    /// Whether cycles synchronize the worktree through live or only the
-    /// checked-out branch's committed history.
-    pub worktree: WorktreeSyncMode,
-    /// The scoped paths when `worktree` is `Paths`; ignored otherwise.
-    pub scope: Option<GitWorktreeScope>,
     /// Whether cycles publish local commits to the branch upstream.
     pub branch_push: bool,
     /// How cycles reconcile the checked-out branch with its upstream.
     pub branch_pull: BranchPullPolicy,
-    /// Whether committed-history-only cycles push the device safety head.
-    /// Worktree modes always publish it; without it the snapshot of
-    /// uncommitted edits stays in this repository.
+    /// Whether cycles push the device safety head; without it the snapshot
+    /// of uncommitted edits stays in this repository.
     pub publish_device_backup: bool,
 }
 
@@ -218,60 +191,20 @@ fn resolve_branch_pull_config(
     }
 }
 
-/// What a cycle synchronizes besides the checked-out branch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum WorktreeSyncMode {
-    /// Snapshot the whole worktree into live and apply accepted live trees.
-    #[default]
-    All,
-    /// Synchronize committed history only: live is never read or written.
-    /// The worktree is still captured for this device's safety head.
-    None,
-    /// Snapshot only the scoped paths; live holds everything else as the
-    /// checked-out branch published it.
-    Paths,
-}
-
-impl WorktreeSyncMode {
-    #[must_use]
-    pub const fn syncs_live(self) -> bool {
-        matches!(self, Self::All | Self::Paths)
-    }
-
-    #[must_use]
-    pub const fn is_all(&self) -> bool {
-        matches!(self, Self::All)
-    }
-}
-
 impl Default for GitSyncOptions {
     fn default() -> Self {
         Self {
             remote: GitRemote::parse("origin").expect("the default Git remote is valid"),
-            live_ref: GitRefName::parse(DEFAULT_REMOTE_LIVE_REF)
-                .expect("the default live ref is valid"),
             max_retries: 4,
             command_timeout: Duration::from_secs(300),
             dry_run: false,
             device_id: GitSyncDeviceId::anonymous(),
-            merge_policy: MergePolicy::default(),
-            merge_automation: MergeAutomation::default(),
             platform: GitPlatformProfile::native(),
-            remote_observation: GitRemoteObservation::Query,
-            worktree: WorktreeSyncMode::All,
-            scope: None,
             branch_push: true,
             branch_pull: BranchPullPolicy::Git,
             publish_device_backup: true,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GitRemoteObservation {
-    Query,
-    Fetch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -280,29 +213,8 @@ pub enum GitSyncOutcome {
     Planned,
     Paused,
     UpToDate,
-    Bootstrapped,
     Pushed,
     Pulled,
-    Merged,
-    Conflicted,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GitSyncPreviewFileState {
-    UpToDate,
-    LocalChanges,
-    RemoteDiffers,
-    LocalAndRemoteDiffer,
-    LocalMissing,
-    RemoteMissing,
-    Uninitialized,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct GitSyncPreview {
-    pub file_state: GitSyncPreviewFileState,
-    pub worktree_matches_local: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -338,7 +250,6 @@ pub struct GitSyncProgress {
     pub repository: GitRepository,
     pub local_snapshot: Option<GitOid>,
     pub local_tree: Option<GitOid>,
-    pub accepted: Option<GitOid>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -365,14 +276,6 @@ impl Error for GitSyncObserverError {}
 
 pub trait GitSyncObserver {
     fn progress(&mut self, progress: &GitSyncProgress) -> Result<(), GitSyncObserverError>;
-
-    fn validate_automatic_merge(
-        &mut self,
-        _engine: &dyn GitEngine,
-        _request: &GitAutomaticMergeValidation<'_>,
-    ) -> Result<Vec<GitAutomaticValidationCheck>, GitSyncObserverError> {
-        Ok(Vec::new())
-    }
 }
 
 #[derive(Debug, Default)]
@@ -411,30 +314,31 @@ impl SyncCancellationToken {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GitSyncRefs {
     pub namespace_version: u32,
-    pub live: GitRefName,
+    /// Local snapshot of the worktree, the base of the device backup.
     pub local: GitRefName,
-    pub fetched: GitRefName,
-    pub pending: GitRefName,
-    /// Remote per-device backup head. It advances independently of the
-    /// canonical live ref so a conflict cannot strand captured bytes locally.
+    /// Remote per-device backup head.
     pub device: GitRefName,
     /// Local observation of the last successfully published device head.
     pub device_tracking: GitRefName,
 }
 
+/// The ref profile of a sync remote. Profiles were keyed by remote and live
+/// ref; every profile now uses the former default live ref so existing local
+/// snapshots and device backups keep their names.
+#[must_use]
+pub fn sync_profile(remote: &GitRemote) -> String {
+    sync_profile_key(
+        remote,
+        &GitRefName::parse(DEFAULT_REMOTE_LIVE_REF).expect("the default live ref is valid"),
+    )
+}
+
 impl GitSyncRefs {
     pub fn for_options(options: &GitSyncOptions) -> Result<Self, GitSyncError> {
-        let profile = sync_profile_key(&options.remote, &options.live_ref);
+        let profile = sync_profile(&options.remote);
         Ok(Self {
-            namespace_version: if options.worktree == WorktreeSyncMode::Paths {
-                PATH_SCOPED_REF_NAMESPACE_VERSION
-            } else {
-                VULCAN_REF_NAMESPACE_VERSION
-            },
-            live: options.live_ref.clone(),
+            namespace_version: VULCAN_REF_NAMESPACE_VERSION,
             local: local_sync_ref(&profile, "local")?,
-            fetched: local_sync_ref(&profile, "remotes")?,
-            pending: local_sync_ref(&profile, "pending")?,
             device: remote_device_ref(&profile, options.device_id.as_str())?,
             device_tracking: local_sync_ref(&profile, "device")?,
         })
@@ -535,64 +439,6 @@ pub struct GitConflictClassification {
     /// resolution action or authorizes an automatic winner.
     #[serde(default)]
     pub formatting_candidate: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct GitAutomaticResolution {
-    pub path: String,
-    pub kind: MergeFileKind,
-    pub rule_id: String,
-    pub validation: GitAutomaticResolutionValidation,
-    /// The registered merger that produced the result, for structured
-    /// resolutions.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub merger: Option<GitMergerEvidence>,
-}
-
-/// Which registered merger resolved a path, and the exact Git blobs it
-/// read and wrote.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct GitMergerEvidence {
-    pub id: String,
-    pub version: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub base: Option<GitOid>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub local: Option<GitOid>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub remote: Option<GitOid>,
-    /// The merged blob, as written into the resolved tree.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub output: Option<GitOid>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct GitAutomaticResolutionValidation {
-    pub checks: Vec<GitAutomaticValidationCheck>,
-}
-
-pub struct GitAutomaticMergeValidation<'a> {
-    pub repository: &'a GitRepository,
-    pub base: &'a GitOid,
-    pub local_candidate: &'a GitOid,
-    pub accepted_remote: &'a GitOid,
-    pub merged_tree: &'a GitOid,
-    pub resolved_paths: &'a [String],
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GitAutomaticValidationCheck {
-    PathSafe,
-    SyntaxValid,
-    SchemaValid,
-    MarkdownLinksPreserved,
-    ExactTreeObject,
-    NoFileDeletion,
-    WholeTreeLinksValid,
-    MassDeletionPolicy,
-    /// The deleting side's `.gitignore` newly ignores the path.
-    NewlyIgnored,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -706,9 +552,6 @@ pub struct GitSyncReport {
     pub installation: GitInstallation,
     pub repository: GitRepository,
     pub remote: GitRemote,
-    /// Omitted for the default whole-worktree mode.
-    #[serde(skip_serializing_if = "WorktreeSyncMode::is_all")]
-    pub worktree: WorktreeSyncMode,
     /// This installation's device ID, which names its backup ref.
     pub device_id: GitSyncDeviceId,
     pub refs: GitSyncRefs,
@@ -719,147 +562,22 @@ pub struct GitSyncReport {
     pub head_before: Option<GitOid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub head_ref_before: Option<GitRefName>,
-    pub remote_before: Option<GitOid>,
     pub local_before: Option<GitOid>,
     pub local_snapshot: Option<GitOid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device_backup: Option<GitDeviceBackup>,
-    /// Remote device-registration refs seen in the same trip as the live-ref
-    /// observation. `None` means they were not observed; never serialized.
+    /// Remote device-registration refs seen in the same trip as the device
+    /// backup observation. `None` means they were not observed; never serialized.
     #[serde(skip)]
     pub registration_tips: Option<Vec<GitReference>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local_platform_preflight: Option<GitPlatformPreflight>,
-    pub accepted: Option<GitOid>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub accepted_platform_preflight: Option<GitPlatformPreflight>,
     pub actions: Vec<GitSyncAction>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub automatic_resolutions: Vec<GitAutomaticResolution>,
     pub retries: usize,
-    #[serde(serialize_with = "serialize_sync_report_conflict")]
-    pub conflict: Option<GitSyncConflict>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pause: Option<GitSyncPause>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(serialize_with = "serialize_sync_report_application")]
-    pub application: Option<GitTreeApplyPlan>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<GitBranchSync>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub preview: Option<GitSyncPreview>,
-}
-
-#[derive(Serialize)]
-struct GitTreeApplyReportSummary<'a> {
-    expected_revision: &'a GitOid,
-    target_revision: &'a GitOid,
-    additions: usize,
-    updates: usize,
-    deletions: usize,
-    type_changes: usize,
-    paths: &'a [crate::GitTreeApplyPath],
-    paths_returned: usize,
-    paths_complete: bool,
-    path_count: usize,
-}
-
-#[allow(clippy::ref_option)] // serde's field serializer receives a reference to the field type.
-fn serialize_sync_report_application<S>(
-    application: &Option<GitTreeApplyPlan>,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    let summary = application.as_ref().map(|application| {
-        let paths_returned = application.paths.len().min(MAX_SYNC_REPORT_CONFLICT_PATHS);
-        GitTreeApplyReportSummary {
-            expected_revision: &application.expected_revision,
-            target_revision: &application.target_revision,
-            additions: application.additions,
-            updates: application.updates,
-            deletions: application.deletions,
-            type_changes: application.type_changes,
-            paths: &application.paths[..paths_returned],
-            paths_returned,
-            paths_complete: paths_returned == application.paths.len(),
-            path_count: application.paths.len(),
-        }
-    });
-    summary.serialize(serializer)
-}
-
-#[derive(Serialize)]
-struct GitSyncConflictReportSummary<'a> {
-    id: &'a str,
-    scope: GitConflictScope,
-    base: Option<&'a GitOid>,
-    remote: &'a GitOid,
-    local: &'a GitOid,
-    paths: &'a [String],
-    paths_returned: usize,
-    paths_complete: bool,
-    path_count: usize,
-    classifications: &'a [GitConflictClassification],
-    classifications_returned: usize,
-    classifications_complete: bool,
-    policy_version: u32,
-    policy_hash: &'a str,
-    preserved_refs: &'a GitConflictRefs,
-    provenance_revision: &'a GitOid,
-    projection: Option<&'a GitConflictProjection>,
-    merge_tree: Option<&'a GitOid>,
-    diagnostics: String,
-    diagnostics_complete: bool,
-    detail_conflict_id: &'a str,
-}
-
-#[allow(clippy::ref_option)] // serde's field serializer receives a reference to the field type.
-fn serialize_sync_report_conflict<S>(
-    conflict: &Option<GitSyncConflict>,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    let summary = conflict.as_ref().map(|conflict| {
-        let paths_returned = conflict.paths.len().min(MAX_SYNC_REPORT_CONFLICT_PATHS);
-        let classifications_returned = conflict
-            .classifications
-            .len()
-            .min(MAX_SYNC_REPORT_CONFLICT_PATHS);
-        let mut diagnostic_chars = conflict.diagnostics.chars();
-        let diagnostics = diagnostic_chars
-            .by_ref()
-            .take(MAX_SYNC_REPORT_CONFLICT_DIAGNOSTIC_CHARS)
-            .collect::<String>();
-        let diagnostics_complete = diagnostic_chars.next().is_none();
-        GitSyncConflictReportSummary {
-            id: &conflict.id,
-            scope: conflict.scope,
-            base: conflict.base.as_ref(),
-            remote: &conflict.remote,
-            local: &conflict.local,
-            paths: &conflict.paths[..paths_returned],
-            paths_returned,
-            paths_complete: paths_returned == conflict.paths.len(),
-            path_count: conflict.paths.len(),
-            classifications: &conflict.classifications[..classifications_returned],
-            classifications_returned,
-            classifications_complete: classifications_returned == conflict.classifications.len(),
-            policy_version: conflict.policy_version,
-            policy_hash: &conflict.policy_hash,
-            preserved_refs: &conflict.preserved_refs,
-            provenance_revision: &conflict.provenance_revision,
-            projection: conflict.projection.as_ref(),
-            merge_tree: conflict.merge_tree.as_ref(),
-            diagnostics_complete,
-            diagnostics,
-            detail_conflict_id: &conflict.id,
-        }
-    });
-    summary.serialize(serializer)
 }
 
 impl GitSyncReport {
@@ -870,7 +588,7 @@ impl GitSyncReport {
         refs: GitSyncRefs,
         repository_preflight: (GitSafetyState, GitRepositoryRequirements),
         head_before: (Option<GitOid>, Option<GitRefName>),
-        observed: (Option<GitOid>, Option<GitOid>),
+        local_before: Option<GitOid>,
     ) -> Self {
         Self {
             dry_run: options.dry_run,
@@ -878,7 +596,6 @@ impl GitSyncReport {
             installation,
             repository,
             remote: options.remote.clone(),
-            worktree: options.worktree,
             device_id: options.device_id.clone(),
             refs,
             safety: repository_preflight.0,
@@ -886,22 +603,15 @@ impl GitSyncReport {
             platform_policy: options.platform.policy(),
             head_before: head_before.0,
             head_ref_before: head_before.1,
-            remote_before: observed.0,
-            local_before: observed.1,
+            local_before,
             local_snapshot: None,
             device_backup: None,
             registration_tips: None,
             local_platform_preflight: None,
-            accepted: None,
-            accepted_platform_preflight: None,
             actions: Vec::new(),
-            automatic_resolutions: Vec::new(),
             retries: 0,
-            conflict: None,
             pause: None,
-            application: None,
             branch: None,
-            preview: None,
         }
     }
 }
@@ -1082,7 +792,7 @@ impl GitSyncObserver for BackendObserver<'_> {
                 state: sync_state_from_phase(progress.phase),
                 attempt: progress.attempt,
                 local_revision: progress.local_snapshot.as_ref().map(ToString::to_string),
-                accepted_revision: progress.accepted.as_ref().map(ToString::to_string),
+                accepted_revision: None,
             })
             .map_err(|error| GitSyncObserverError::new(error.to_string()))
     }
@@ -1105,24 +815,8 @@ fn sync_state_from_phase(phase: GitSyncPhase) -> SyncState {
 }
 
 fn git_report_to_backend_report(report: GitSyncReport) -> SyncReport {
-    let conflict = report.conflict.as_ref().map(|conflict| SyncConflict {
-        id: conflict.id.clone(),
-        paths: conflict
-            .paths
-            .iter()
-            .map(std::path::PathBuf::from)
-            .collect(),
-        base_revision: conflict.base.as_ref().map(ToString::to_string),
-        local_revision: conflict.local.to_string(),
-        remote_revision: conflict.remote.to_string(),
-        policy_version: conflict.policy_version,
-        resolution: SyncResolutionState::Unresolved,
-        preserved: true,
-        detail: Some(conflict.diagnostics.clone()),
-    });
     let state = match report.outcome {
         GitSyncOutcome::Paused => SyncState::Paused,
-        GitSyncOutcome::Conflicted => SyncState::Conflicted,
         GitSyncOutcome::Planned if report.safety.operation.is_some() => SyncState::Dirty,
         _ => SyncState::Clean,
     };
@@ -1135,9 +829,9 @@ fn git_report_to_backend_report(report: GitSyncReport) -> SyncReport {
             .clone()
             .unwrap_or_else(|| report.repository.git_dir.clone()),
         local_revision: report.local_snapshot.as_ref().map(ToString::to_string),
-        remote_revision: report.remote_before.as_ref().map(ToString::to_string),
-        accepted_revision: report.accepted.as_ref().map(ToString::to_string),
-        unresolved_conflicts: usize::from(conflict.is_some()),
+        remote_revision: None,
+        accepted_revision: None,
+        unresolved_conflicts: 0,
         detail: report.pause.as_ref().map(|pause| match pause.reason {
             GitSyncPauseReason::HeadMoved => format!(
                 "HEAD moved from {} to {} during synchronization",
@@ -1165,11 +859,8 @@ fn git_report_to_backend_report(report: GitSyncReport) -> SyncReport {
             GitSyncOutcome::Planned => SyncOutcome::Planned,
             GitSyncOutcome::Paused => SyncOutcome::Paused,
             GitSyncOutcome::UpToDate => SyncOutcome::UpToDate,
-            GitSyncOutcome::Bootstrapped => SyncOutcome::Bootstrapped,
             GitSyncOutcome::Pushed => SyncOutcome::Pushed,
             GitSyncOutcome::Pulled => SyncOutcome::Pulled,
-            GitSyncOutcome::Merged => SyncOutcome::Merged,
-            GitSyncOutcome::Conflicted => SyncOutcome::Conflicted,
         },
         status,
         actions: report
@@ -1186,7 +877,7 @@ fn git_report_to_backend_report(report: GitSyncReport) -> SyncReport {
         } else {
             report.retries + 1
         },
-        conflicts: conflict.into_iter().collect(),
+        conflicts: Vec::new(),
     }
 }
 
@@ -1258,16 +949,9 @@ pub fn sync_git_once_with_control(
     observer: &mut dyn GitSyncObserver,
 ) -> Result<GitSyncReport, GitSyncError> {
     cancellation.check()?;
-    options.merge_policy.validate().map_err(|error| {
-        GitSyncError::Git(GitEngineError::UnsupportedRepository {
-            detail: error.to_string(),
-        })
-    })?;
     let installation = engine.installation()?;
     require_git_version(&installation)?;
-    let repository = engine
-        .discover_repository(vault_path)?
-        .with_worktree_scope(options_scope(options)?);
+    let repository = engine.discover_repository(vault_path)?;
     let refs = GitSyncRefs::for_options(options)?;
     let safety = engine.safety_state(&repository)?;
     let requirements = engine.repository_requirements(&repository, vault_path)?;
@@ -1281,7 +965,7 @@ pub fn sync_git_once_with_control(
         refs,
         (safety, requirements),
         (head_before, head_ref_before),
-        (None, local_before),
+        local_before,
     );
     emit_progress(observer, GitSyncPhase::Preparing, 0, &report, None)?;
     require_filter_drivers(&report.requirements)?;
@@ -1299,19 +983,6 @@ pub fn sync_git_once_with_control(
                 false,
             )?);
         }
-        let worktree_matches_local = report
-            .local_before
-            .as_ref()
-            .map(|revision| engine.worktree_matches_tree(&report.repository, revision))
-            .transpose()?;
-        report.preview = options.worktree.syncs_live().then(|| GitSyncPreview {
-            file_state: preview_file_state(
-                report.local_before.as_ref(),
-                report.remote_before.as_ref(),
-                worktree_matches_local,
-            ),
-            worktree_matches_local,
-        });
         preview_branch_pull(
             engine,
             &mut report,
@@ -1351,24 +1022,6 @@ pub fn sync_git_once_with_control(
     }
 
     Err(GitSyncError::RetryLimit { attempts })
-}
-
-fn preview_file_state(
-    local: Option<&GitOid>,
-    remote: Option<&GitOid>,
-    worktree_matches_local: Option<bool>,
-) -> GitSyncPreviewFileState {
-    match (local, remote, worktree_matches_local) {
-        (None, None, _) => GitSyncPreviewFileState::Uninitialized,
-        (None, Some(_), _) => GitSyncPreviewFileState::LocalMissing,
-        (Some(_), None, Some(true)) => GitSyncPreviewFileState::RemoteMissing,
-        (Some(local), Some(remote), Some(true)) if local == remote => {
-            GitSyncPreviewFileState::UpToDate
-        }
-        (Some(local), Some(remote), _) if local == remote => GitSyncPreviewFileState::LocalChanges,
-        (Some(_), Some(_), Some(true)) => GitSyncPreviewFileState::RemoteDiffers,
-        (Some(_), _, _) => GitSyncPreviewFileState::LocalAndRemoteDiffer,
-    }
 }
 
 fn require_git_version(installation: &GitInstallation) -> Result<(), GitSyncError> {
@@ -1428,7 +1081,6 @@ fn emit_progress(
             repository: report.repository.clone(),
             local_snapshot: report.local_snapshot.clone(),
             local_tree,
-            accepted: report.accepted.clone(),
         })
         .map_err(GitSyncError::from)
 }
@@ -1458,26 +1110,6 @@ impl AttemptControl<'_> {
     ) -> Result<(), GitSyncError> {
         emit_progress(self.observer, phase, self.attempt, report, local_tree)
     }
-
-    fn validate_automatic_merge(
-        &mut self,
-        engine: &dyn GitEngine,
-        request: &GitAutomaticMergeValidation<'_>,
-    ) -> Result<Vec<GitAutomaticValidationCheck>, String> {
-        self.check().map_err(|error| error.to_string())?;
-        let checks = self
-            .observer
-            .validate_automatic_merge(engine, request)
-            .map_err(|error| error.to_string())?;
-        self.check().map_err(|error| error.to_string())?;
-        Ok(checks)
-    }
-}
-
-struct AttemptRefs {
-    local: Option<GitOid>,
-    fetched: Option<GitOid>,
-    pending: Option<GitOid>,
 }
 
 /// A remote ref's tip as observed by a query; `None` means the ref is absent.
@@ -1495,18 +1127,12 @@ struct AttemptRemote {
     observed: bool,
     /// Exact device backup head, or `None` once it is no longer known.
     device: Option<ObservedTip>,
-    /// Live tip and registration refs, observed only in query mode.
-    live: Option<(Option<GitOid>, Option<Vec<GitReference>>)>,
-    /// Registration refs observed without live, when live is not synchronized.
+    /// Remote device-registration refs observed in the same query.
     registrations: Option<Vec<GitReference>>,
     /// Branch upstream resolution, consumed by the branch lane.
     upstream: Option<Result<Option<GitBranchUpstream>, GitEngineError>>,
     /// Exact upstream branch tip when the upstream lives on the sync remote.
     upstream_tip: Option<(GitRemote, GitRefName, ObservedTip)>,
-    /// The local copy of live when the attempt began.
-    fetched_before: Option<GitOid>,
-    /// Capture already fast-forwarded onto live together with the backup.
-    live_published: Option<GitOid>,
 }
 
 fn resolve_branch_upstream(
@@ -1536,10 +1162,8 @@ impl AttemptRemote {
         report: &GitSyncReport,
     ) -> Result<(), GitSyncError> {
         if !self.observed {
-            let fetched_before = self.fetched_before.take();
             let upstream = self.upstream.take();
             *self = observe_attempt_remote(engine, options, report, upstream)?;
-            self.fetched_before = fetched_before;
         }
         Ok(())
     }
@@ -1554,14 +1178,8 @@ fn observe_attempt_remote(
     let upstream = upstream.or_else(|| resolve_branch_upstream(engine, report));
     let upstream_ref = sync_remote_upstream(options, upstream.as_ref())
         .map(|upstream| (upstream.remote.clone(), upstream.merge_ref.clone()));
-    let syncs_live = options.worktree.syncs_live();
-    let query_live = syncs_live && options.remote_observation == GitRemoteObservation::Query;
-    let query_registrations = query_live || !syncs_live;
     let registrations = GitRefName::parse(REMOTE_REGISTRATION_BRANCH_ROOT)?;
     let mut references = vec![&report.refs.device];
-    if query_live {
-        references.push(&report.refs.live);
-    }
     if let Some((_, upstream_ref)) = &upstream_ref {
         references.push(upstream_ref);
     }
@@ -1569,70 +1187,19 @@ fn observe_attempt_remote(
         &report.repository,
         &options.remote,
         &references,
-        query_registrations.then_some(&registrations),
+        Some(&registrations),
     )?;
     let mut tips = tips.into_iter();
     let device = tips.next().flatten();
-    let (live, registrations) = if query_live {
-        (Some((tips.next().flatten(), registration_tips)), None)
-    } else {
-        (None, registration_tips)
-    };
     let upstream_tip = upstream_ref
         .map(|(remote, reference)| (remote, reference, ObservedTip(tips.next().flatten())));
     Ok(AttemptRemote {
         observed: true,
         device: Some(ObservedTip(device)),
-        live,
-        registrations,
+        registrations: registration_tips,
         upstream,
         upstream_tip,
-        ..AttemptRemote::default()
     })
-}
-
-fn read_attempt_refs(
-    engine: &dyn GitEngine,
-    report: &GitSyncReport,
-) -> Result<AttemptRefs, GitSyncError> {
-    let targets = engine.read_refs(
-        &report.repository,
-        &[
-            &report.refs.local,
-            &report.refs.fetched,
-            &report.refs.pending,
-        ],
-    )?;
-    Ok(AttemptRefs {
-        local: targets.get(&report.refs.local).cloned(),
-        fetched: targets.get(&report.refs.fetched).cloned(),
-        pending: targets.get(&report.refs.pending).cloned(),
-    })
-}
-
-fn update_accepted_refs_if_needed(
-    engine: &dyn GitEngine,
-    report: &GitSyncReport,
-    capture: &crate::GitCapture,
-    remote_tip: Option<&GitOid>,
-    pending_before: Option<&GitOid>,
-    accepted: &GitOid,
-) -> Result<(), GitSyncError> {
-    if capture.commit == *accepted
-        && remote_tip == Some(accepted)
-        && pending_before == Some(accepted)
-    {
-        return Ok(());
-    }
-    engine.update_refs(
-        &report.repository,
-        &[
-            (&report.refs.local, accepted),
-            (&report.refs.fetched, accepted),
-            (&report.refs.pending, accepted),
-        ],
-    )?;
-    Ok(())
 }
 
 fn capture_local_worktree(
@@ -1647,24 +1214,13 @@ fn capture_local_worktree(
         None => engine.head_commit(&report.repository)?,
     };
     let link = missing_branch_link(engine, report, tracking, base.as_ref())?;
-    let published = if report.repository.worktree_scope.is_some() {
-        git_published_branch_tip(engine, &report.repository)?
-    } else {
-        None
-    };
     Ok(engine.capture_worktree(
         &report.repository,
         &GitCaptureRequest {
             base: base.clone(),
             target_ref: report.refs.local.clone(),
             target_before,
-            message: snapshot_message(
-                &report.refs,
-                options,
-                base.as_ref(),
-                link.as_ref(),
-                published.as_ref(),
-            ),
+            message: snapshot_message(&report.refs, options, base.as_ref(), link.as_ref()),
             link,
         },
     )?)
@@ -1922,11 +1478,7 @@ fn pull_branch_lane(
             report.branch = Some(lane);
             return Ok(());
         }
-        // Path-scoped worktrees receive unscoped bytes only from the branch,
-        // so adopting through the index alone would leave them stale.
-        if report.repository.worktree_scope.is_none()
-            && try_adopt_upstream(engine, report, &branch, &head, &fetched, capture, &mut lane)?
-        {
+        if try_adopt_upstream(engine, report, &branch, &head, &fetched, capture, &mut lane)? {
             report.branch = Some(lane);
             return Ok(());
         }
@@ -1953,9 +1505,7 @@ fn pull_branch_lane(
             return Ok(());
         }
     };
-    if try_scoped_fast_forward(engine, report, &branch, &fetched, config, &mut lane)?
-        || try_branch_fast_forward(engine, report, &branch, &fetched, config, &mut lane)?
-    {
+    if try_branch_fast_forward(engine, report, &branch, &fetched, config, &mut lane)? {
         report.branch = Some(lane);
         return Ok(());
     }
@@ -2017,102 +1567,6 @@ fn try_adopt_upstream(
         }
     }
     Ok(true)
-}
-
-/// Adopts the fetched upstream tip after the accepted live tip was applied,
-/// when the pull deferred because the worktree already held upstream bytes
-/// that only arrived through live.
-fn adopt_upstream_after_application(
-    engine: &dyn GitEngine,
-    report: &mut GitSyncReport,
-    accepted: &GitOid,
-) -> Result<(), GitSyncError> {
-    if report.repository.worktree_scope.is_some() {
-        return Ok(());
-    }
-    let Some(mut lane) = report
-        .branch
-        .take_if(|lane| lane.action == GitBranchSyncAction::Deferred)
-    else {
-        return Ok(());
-    };
-    if let (Some(tracking), Some(head)) = (lane.tracking.clone(), report.head_before.clone()) {
-        if let Some(upstream) = engine.read_ref(&report.repository, &tracking)? {
-            let branch = lane.branch.clone();
-            try_adopt_upstream(
-                engine, report, &branch, &head, &upstream, accepted, &mut lane,
-            )?;
-        }
-    }
-    report.branch = Some(lane);
-    Ok(())
-}
-
-/// Path-scoped fast-forward: scoped paths may hold uncommitted bytes that
-/// arrived through live, which would make `merge --ff-only` refuse every
-/// advance touching them. Returns true when the lane is complete.
-fn try_scoped_fast_forward(
-    engine: &dyn GitEngine,
-    report: &mut GitSyncReport,
-    branch: &GitRefName,
-    fetched: &GitOid,
-    config: BranchPullConfig,
-    lane: &mut GitBranchSync,
-) -> Result<bool, GitSyncError> {
-    let Some(scope) = report.repository.worktree_scope.clone() else {
-        return Ok(false);
-    };
-    let Some(head) = lane.before.clone() else {
-        return Ok(false);
-    };
-    if config.fast_forward == PullFastForward::Never
-        || !engine.is_ancestor(&report.repository, &head, fetched)?
-    {
-        return Ok(false);
-    }
-    match engine.advance_branch_scoped(&report.repository, &scope, branch, &head, fetched)? {
-        ScopedBranchAdvance::Advanced { kept } => {
-            record_branch_move(engine, report, lane, GitBranchSyncAction::FastForwarded)?;
-            lane.detail = (!kept.is_empty()).then(|| {
-                format!(
-                    "kept uncommitted local bytes of {} scoped path(s) the new commits change: {}",
-                    kept.len(),
-                    preview_paths(&kept)
-                )
-            });
-        }
-        ScopedBranchAdvance::BlockedDirty(paths) if paths.is_empty() => {
-            lane.action = GitBranchSyncAction::Deferred;
-            lane.detail =
-                Some("a file changed while updating the branch; retrying next cycle".to_string());
-        }
-        ScopedBranchAdvance::BlockedDirty(paths) => {
-            lane.action = GitBranchSyncAction::Deferred;
-            lane.detail = Some(format!(
-                "uncommitted changes outside sync.paths would be overwritten: {}; retrying next cycle",
-                preview_paths(&paths)
-            ));
-        }
-        ScopedBranchAdvance::BlockedStaged => {
-            lane.action = GitBranchSyncAction::Deferred;
-            lane.detail = Some(
-                "staged changes conflict with the upstream branch; retrying next cycle".to_string(),
-            );
-        }
-        ScopedBranchAdvance::Stale => {
-            lane.action = GitBranchSyncAction::Failed;
-            lane.detail = Some("the branch moved while fast-forwarding it".to_string());
-        }
-    }
-    Ok(true)
-}
-
-fn preview_paths(paths: &[String]) -> String {
-    let mut preview = paths.iter().take(5).cloned().collect::<Vec<_>>().join(", ");
-    if paths.len() > 5 {
-        let _ = write!(preview, " and {} more", paths.len() - 5);
-    }
-    preview
 }
 
 /// Attempts the fast-forward step of a branch pull. Returns true when the
@@ -2347,21 +1801,12 @@ fn preview_remote_refs(
     let upstream_ref = upstream
         .filter(|upstream| upstream.remote == options.remote)
         .map(|upstream| &upstream.merge_ref);
-    let syncs_live = options.worktree.syncs_live();
-    let mut references = Vec::new();
-    if syncs_live {
-        references.push(&report.refs.live);
-    }
-    references.extend(upstream_ref);
-    if references.is_empty() {
+    let Some(upstream_ref) = upstream_ref else {
         return Ok(None);
-    }
-    let (tips, _) = engine.remote_refs(&report.repository, &options.remote, &references, None)?;
-    let mut tips = tips.into_iter();
-    if syncs_live {
-        report.remote_before = tips.next().flatten();
-    }
-    Ok(upstream_ref.map(|_| ObservedTip(tips.next().flatten())))
+    };
+    let (tips, _) =
+        engine.remote_refs(&report.repository, &options.remote, &[upstream_ref], None)?;
+    Ok(Some(ObservedTip(tips.into_iter().next().flatten())))
 }
 
 fn preview_branch_pull(
@@ -2512,6 +1957,9 @@ fn push_branch_lane(
     Ok(())
 }
 
+/// One committed-history-only attempt: capture the worktree for this device's
+/// safety head, then pull and push the checked-out branch. Live is never
+/// queried, fetched, pushed, or applied.
 fn run_attempt(
     engine: &dyn GitEngine,
     options: &GitSyncOptions,
@@ -2519,112 +1967,6 @@ fn run_attempt(
     control: &mut AttemptControl<'_>,
 ) -> Result<AttemptResult, GitSyncError> {
     control.check()?;
-    if !options.worktree.syncs_live() {
-        return run_branch_only_attempt(engine, options, report, control);
-    }
-
-    // Capture and publish before any pull, merge, or rebase can rewrite the
-    // checkout. If the branch lane moves the tree, publish a fresh safety
-    // snapshot before allowing file-lane reconciliation to publish anything.
-    let refs_before = read_attempt_refs(engine, report)?;
-    let mut remote = AttemptRemote {
-        fetched_before: refs_before.fetched.clone(),
-        ..AttemptRemote::default()
-    };
-    let Some(capture) = capture_and_publish_device_backup(
-        engine,
-        options,
-        report,
-        control,
-        &mut remote,
-        refs_before.local.clone(),
-    )?
-    else {
-        return Ok(AttemptResult::Retry);
-    };
-
-    let Some(capture) = pull_branch_and_refresh_device_backup(
-        engine,
-        options,
-        report,
-        control,
-        &mut remote,
-        capture,
-        refs_before.local,
-    )?
-    else {
-        return Ok(AttemptResult::Retry);
-    };
-    require_local_platform(engine, options, report, &capture.commit)?;
-
-    control.check()?;
-    control.emit(GitSyncPhase::Fetching, report, None)?;
-    let (remote_tip, fetched_during_observation) =
-        observe_remote_tip(engine, options, report, &mut remote)?;
-    let fetched_before = if fetched_during_observation {
-        remote_tip.as_ref()
-    } else {
-        refs_before.fetched.as_ref()
-    };
-    if control.attempt == 0 {
-        report.remote_before.clone_from(&remote_tip);
-    }
-    if finish_paused_attempt(
-        engine,
-        options,
-        report,
-        control,
-        remote_tip.as_ref(),
-        fetched_before,
-    )? {
-        return Ok(AttemptResult::Finished);
-    }
-    let Some((accepted, outcome, pushed)) = reconcile(
-        engine,
-        options,
-        report,
-        &capture,
-        (remote_tip.clone(), fetched_before),
-        remote.live_published.as_ref(),
-        control,
-    )?
-    else {
-        return Ok(if report.outcome == GitSyncOutcome::Conflicted {
-            AttemptResult::Finished
-        } else {
-            AttemptResult::Retry
-        });
-    };
-
-    if let Some(result) = verify_and_apply_reconciliation(
-        engine, options, report, control, &capture, &accepted, outcome, pushed,
-    )? {
-        return Ok(result);
-    }
-    update_accepted_refs_if_needed(
-        engine,
-        report,
-        &capture,
-        remote_tip.as_ref(),
-        refs_before.pending.as_ref(),
-        &accepted,
-    )?;
-    adopt_upstream_after_application(engine, report, &accepted)?;
-    report.outcome = outcome;
-    report.accepted = Some(accepted);
-    control.emit(GitSyncPhase::Completed, report, None)?;
-    Ok(AttemptResult::Finished)
-}
-
-/// One committed-history-only attempt: capture the worktree for this device's
-/// safety head, then pull and push the checked-out branch. Live is never
-/// queried, fetched, pushed, or applied.
-fn run_branch_only_attempt(
-    engine: &dyn GitEngine,
-    options: &GitSyncOptions,
-    report: &mut GitSyncReport,
-    control: &mut AttemptControl<'_>,
-) -> Result<AttemptResult, GitSyncError> {
     let local = engine.read_ref(&report.repository, &report.refs.local)?;
     let mut remote = AttemptRemote::default();
     let Some(capture) = capture_and_publish_device_backup(
@@ -2718,61 +2060,9 @@ fn run_branch_only_attempt(
 fn branch_only_unsupported(detail: &str) -> GitSyncError {
     GitSyncError::Git(GitEngineError::UnsupportedRepository {
         detail: format!(
-            "committed-history sync (sync.worktree = \"none\") needs a checked-out branch whose upstream exists on the remote: {detail}"
+            "Git sync needs a checked-out branch whose upstream exists on the remote: {detail}"
         ),
     })
-}
-
-#[allow(clippy::too_many_arguments)]
-fn verify_and_apply_reconciliation(
-    engine: &dyn GitEngine,
-    options: &GitSyncOptions,
-    report: &mut GitSyncReport,
-    control: &mut AttemptControl<'_>,
-    capture: &crate::GitCapture,
-    accepted: &GitOid,
-    outcome: GitSyncOutcome,
-    pushed: bool,
-) -> Result<Option<AttemptResult>, GitSyncError> {
-    require_accepted_platform(engine, options, report, accepted)?;
-    control.check()?;
-    control.emit(GitSyncPhase::Verifying, report, None)?;
-    if !engine.worktree_matches_tree(&report.repository, &capture.commit)? {
-        return Ok(Some(AttemptResult::Retry));
-    }
-    if pushed {
-        report.actions.push(GitSyncAction::Pushed);
-    }
-    report.accepted = Some(accepted.clone());
-    if accepted != &capture.commit
-        && capture.tree != engine.tree_oid(&report.repository, accepted)?
-    {
-        if let Some(pause) = sync_pause(engine, report)? {
-            engine.update_ref(&report.repository, &report.refs.pending, accepted)?;
-            report.pause = Some(pause);
-            report.outcome = GitSyncOutcome::Paused;
-            control.emit(GitSyncPhase::Paused, report, None)?;
-            return Ok(Some(AttemptResult::Finished));
-        }
-        control.check()?;
-        control.emit(GitSyncPhase::Applying, report, None)?;
-        report.application = apply_accepted_tree(engine, report, &capture.commit, accepted)?;
-        if report.application.is_none() {
-            return Ok(Some(AttemptResult::Retry));
-        }
-        report.actions.push(GitSyncAction::WorktreeApplied);
-    }
-    if outcome == GitSyncOutcome::Conflicted {
-        if let Some(projection) = report
-            .conflict
-            .as_mut()
-            .and_then(|conflict| conflict.projection.as_mut())
-        {
-            projection.published = true;
-            projection.applied = true;
-        }
-    }
-    Ok(None)
 }
 
 fn capture_and_publish_device_backup(
@@ -2800,41 +2090,18 @@ fn capture_and_publish_device_backup(
     }
     control.emit(GitSyncPhase::Captured, report, Some(capture.tree.clone()))?;
     control.check()?;
-    if !options.worktree.syncs_live() && !options.publish_device_backup {
+    if !options.publish_device_backup {
         // Uncommitted edits stay on this device; the local snapshot still
         // keeps them recoverable while the branch lane moves the checkout.
         return Ok(Some(capture));
     }
     control.emit(GitSyncPhase::BackingUp, report, Some(capture.tree.clone()))?;
     remote.ensure_observed(engine, options, report)?;
-    if publish_backup_and_live_together(engine, options, report, control, &capture, remote)?
-        || publish_device_backup(engine, options, report, &capture, &mut remote.device)?
-    {
+    if publish_device_backup(engine, options, report, &capture, &mut remote.device)? {
         Ok(Some(capture))
     } else {
         Ok(None)
     }
-}
-
-fn finish_paused_attempt(
-    engine: &dyn GitEngine,
-    options: &GitSyncOptions,
-    report: &mut GitSyncReport,
-    control: &mut AttemptControl<'_>,
-    remote_tip: Option<&GitOid>,
-    fetched_before: Option<&GitOid>,
-) -> Result<bool, GitSyncError> {
-    let Some(pause) = sync_pause(engine, report)? else {
-        return Ok(false);
-    };
-    if let Some(remote_tip) = remote_tip {
-        ensure_remote_tip(engine, options, report, fetched_before, remote_tip)?;
-        control.emit(GitSyncPhase::Fetched, report, None)?;
-    }
-    report.pause = Some(pause);
-    report.outcome = GitSyncOutcome::Paused;
-    control.emit(GitSyncPhase::Paused, report, None)?;
-    Ok(true)
 }
 
 fn pull_branch_and_refresh_device_backup(
@@ -2847,7 +2114,10 @@ fn pull_branch_and_refresh_device_backup(
     base: Option<GitOid>,
 ) -> Result<Option<crate::GitCapture>, GitSyncError> {
     control.check()?;
+    control.emit(GitSyncPhase::Fetching, report, Some(capture.tree.clone()))?;
     pull_branch_lane(engine, report, remote, &capture.commit, options.branch_pull)?;
+    control.check()?;
+    control.emit(GitSyncPhase::Pushing, report, Some(capture.tree.clone()))?;
     push_branch_lane(engine, options, report)?;
     let may_have_rewritten_worktree = report.branch.as_ref().is_some_and(|branch| {
         matches!(
@@ -2900,161 +2170,6 @@ fn publish_device_backup(
             .map(|backup| ObservedTip(Some(backup.published_revision.clone())));
     }
     Ok(published)
-}
-
-/// A device backup that can be published together with live.
-struct CombinedPublication {
-    live_before: GitOid,
-    device_before: Option<GitOid>,
-    device_target: GitOid,
-    device_outcome: GitDeviceBackupOutcome,
-}
-
-/// Publishes the device backup and fast-forwards live to the capture in one
-/// push when the attempt's observation already shows that reconciliation would
-/// be exactly that fast-forward. This saves a remote connection and a run of
-/// pre-push hooks such as Git LFS. The push is not atomic, so the backup lands
-/// even when live moved first. Returns `false` when ineligible or when the
-/// backup was refused, leaving the ordinary flow to publish it.
-fn publish_backup_and_live_together(
-    engine: &dyn GitEngine,
-    options: &GitSyncOptions,
-    report: &mut GitSyncReport,
-    control: &mut AttemptControl<'_>,
-    capture: &crate::GitCapture,
-    remote: &mut AttemptRemote,
-) -> Result<bool, GitSyncError> {
-    let Some(plan) = combined_publication(engine, options, report, capture, remote)? else {
-        return Ok(false);
-    };
-    control.check()?;
-    control.emit(GitSyncPhase::Pushing, report, None)?;
-    if !captured_worktree_is_current(engine, &report.repository, capture)? {
-        return Ok(false);
-    }
-    let results = engine.push_refs(
-        &report.repository,
-        &options.remote,
-        &[
-            GitRefPush {
-                source: &plan.device_target,
-                destination: &report.refs.device,
-                expected: plan.device_before.as_ref(),
-            },
-            GitRefPush {
-                source: &capture.commit,
-                destination: &report.refs.live,
-                expected: Some(&plan.live_before),
-            },
-        ],
-    )?;
-    if results[1] == GitPushResult::Updated {
-        remote.live_published = Some(capture.commit.clone());
-    }
-    if results[0] == GitPushResult::Rejected {
-        remote.device = None;
-        return Ok(false);
-    }
-    if plan.device_before.as_ref() != Some(&plan.device_target) {
-        engine.update_ref(
-            &report.repository,
-            &report.refs.device_tracking,
-            &plan.device_target,
-        )?;
-    }
-    remote.device = Some(ObservedTip(Some(plan.device_target.clone())));
-    record_device_backup(
-        report,
-        options,
-        capture,
-        plan.device_target,
-        plan.device_outcome,
-    );
-    Ok(true)
-}
-
-/// Decides, from local state and the attempt's observation alone, whether this
-/// attempt would publish by fast-forwarding live to the capture with nothing
-/// able to rewrite the worktree first.
-fn combined_publication(
-    engine: &dyn GitEngine,
-    options: &GitSyncOptions,
-    report: &GitSyncReport,
-    capture: &crate::GitCapture,
-    remote: &AttemptRemote,
-) -> Result<Option<CombinedPublication>, GitSyncError> {
-    let repository = &report.repository;
-    if options.remote_observation != GitRemoteObservation::Query || remote.live_published.is_some()
-    {
-        return Ok(None);
-    }
-    // Live must be known locally and be a strict ancestor of the capture.
-    let Some((Some(live), _)) = &remote.live else {
-        return Ok(None);
-    };
-    if remote.fetched_before.as_ref() != Some(live)
-        || &capture.commit == live
-        || !engine.is_ancestor(repository, live, &capture.commit)?
-        || require_supported_remote_namespace(engine, repository, live).is_err()
-    {
-        return Ok(None);
-    }
-    if !branch_lane_is_quiet(engine, report, remote)? || sync_pause(engine, report)?.is_some() {
-        return Ok(None);
-    }
-    let Some(ObservedTip(device_before)) = remote.device.clone() else {
-        return Ok(None);
-    };
-    let tracked = engine.read_ref(repository, &report.refs.device_tracking)?;
-    if device_before.is_some() && device_before != tracked {
-        return Ok(None);
-    }
-    let (device_target, device_outcome) =
-        device_backup_target(engine, options, report, capture, device_before.as_ref())?;
-    if device_before.as_ref() == Some(&device_target) {
-        // The backup is current; the ordinary flow pushes live alone.
-        return Ok(None);
-    }
-    Ok(Some(CombinedPublication {
-        live_before: live.clone(),
-        device_before,
-        device_target,
-        device_outcome,
-    }))
-}
-
-/// Whether the branch lane is certain not to move the checkout this attempt:
-/// there is no lane, or the observed upstream tip is already tracked locally
-/// and contained in `HEAD`.
-fn branch_lane_is_quiet(
-    engine: &dyn GitEngine,
-    report: &GitSyncReport,
-    remote: &AttemptRemote,
-) -> Result<bool, GitSyncError> {
-    let Some(Ok(Some(upstream))) = &remote.upstream else {
-        return Ok(true);
-    };
-    let Some((_, _, ObservedTip(tip))) = remote
-        .upstream_tip
-        .as_ref()
-        .filter(|(r, reference, _)| r == &upstream.remote && reference == &upstream.merge_ref)
-    else {
-        return Ok(false);
-    };
-    let Some(tip) = tip else {
-        return Ok(true);
-    };
-    if engine
-        .read_ref(&report.repository, &upstream.tracking_ref)?
-        .as_ref()
-        != Some(tip)
-    {
-        return Ok(false);
-    }
-    Ok(match &report.head_before {
-        Some(head) => head == tip || engine.is_ancestor(&report.repository, tip, head)?,
-        None => false,
-    })
 }
 
 /// Publishes against the device head observed at the start of the attempt.
@@ -3256,77 +2371,6 @@ fn device_backup_message(
     )
 }
 
-fn apply_accepted_tree(
-    engine: &dyn GitEngine,
-    report: &GitSyncReport,
-    expected_worktree: &GitOid,
-    accepted: &GitOid,
-) -> Result<Option<GitTreeApplyPlan>, GitSyncError> {
-    match engine.apply_tree(&report.repository, expected_worktree, accepted) {
-        Ok(application) => Ok(Some(application)),
-        Err(GitEngineError::WorktreeChanged) => Ok(None),
-        Err(error) => Err(error.into()),
-    }
-}
-
-fn observe_remote_tip(
-    engine: &dyn GitEngine,
-    options: &GitSyncOptions,
-    report: &mut GitSyncReport,
-    remote: &mut AttemptRemote,
-) -> Result<(Option<GitOid>, bool), GitSyncError> {
-    let registrations = GitRefName::parse(REMOTE_REGISTRATION_BRANCH_ROOT)?;
-    match options.remote_observation {
-        GitRemoteObservation::Query => {
-            // Nothing in this attempt writes the live ref before reconciliation,
-            // which leases its push, so the attempt's observation is current
-            // enough and saves a second round trip.
-            if let Some((tip, tips)) = remote.live.take() {
-                report.registration_tips = tips;
-                return Ok((tip, false));
-            }
-            let (tip, tips) = engine.remote_ref_with_prefix(
-                &report.repository,
-                &options.remote,
-                &report.refs.live,
-                &registrations,
-            )?;
-            report.registration_tips = tips;
-            Ok((tip, false))
-        }
-        GitRemoteObservation::Fetch => {
-            let mirror_root = GitRefName::parse(LOCAL_REGISTRATION_MIRROR_ROOT)?;
-            match engine.fetch_ref_with_mirror(
-                &report.repository,
-                &options.remote,
-                &report.refs.live,
-                &report.refs.fetched,
-                &GitRefMirror {
-                    remote_prefix: &registrations,
-                    local_prefix: &mirror_root,
-                },
-            ) {
-                Ok((revision, tips)) => {
-                    report.registration_tips = tips;
-                    Ok((Some(revision), true))
-                }
-                Err(fetch_error) => {
-                    let observed = engine.remote_ref(
-                        &report.repository,
-                        &options.remote,
-                        &report.refs.live,
-                    )?;
-                    if observed.is_none() {
-                        Ok((None, false))
-                    } else {
-                        Err(fetch_error.into())
-                    }
-                }
-            }
-        }
-    }
-}
-
 fn sync_pause(
     engine: &dyn GitEngine,
     report: &GitSyncReport,
@@ -3456,2191 +2500,24 @@ fn save_platform_preflight_cache(
     Ok(())
 }
 
-fn require_accepted_platform(
-    engine: &dyn GitEngine,
-    options: &GitSyncOptions,
-    report: &mut GitSyncReport,
-    revision: &GitOid,
-) -> Result<(), GitSyncError> {
-    if report
-        .accepted_platform_preflight
-        .as_ref()
-        .is_some_and(|preflight| preflight.revision == *revision)
-    {
-        return Ok(());
-    }
-    if let Some(preflight) = report
-        .local_platform_preflight
-        .as_ref()
-        .filter(|preflight| preflight.revision == *revision)
-    {
-        report.accepted_platform_preflight = Some(preflight.clone());
-        return Ok(());
-    }
-    let preflight =
-        platform_preflight(engine, &report.repository, revision, options.platform, true)?;
-    if !preflight.compatible {
-        return Err(GitSyncError::PlatformIncompatible(preflight));
-    }
-    report.accepted_platform_preflight = Some(preflight);
-    Ok(())
-}
-
-fn require_local_platform(
-    engine: &dyn GitEngine,
-    options: &GitSyncOptions,
-    report: &mut GitSyncReport,
-    revision: &GitOid,
-) -> Result<(), GitSyncError> {
-    let preflight =
-        platform_preflight(engine, &report.repository, revision, options.platform, true)?;
-    if !preflight.compatible {
-        return Err(GitSyncError::PlatformIncompatible(preflight));
-    }
-    report.local_platform_preflight = Some(preflight);
-    Ok(())
-}
-
-fn reconcile(
-    engine: &dyn GitEngine,
-    options: &GitSyncOptions,
-    report: &mut GitSyncReport,
-    capture: &crate::GitCapture,
-    (remote_tip, fetched_before): (Option<GitOid>, Option<&GitOid>),
-    live_published: Option<&GitOid>,
-    control: &mut AttemptControl<'_>,
-) -> Result<Option<(GitOid, GitSyncOutcome, bool)>, GitSyncError> {
-    // The backup push already fast-forwarded live to this capture.
-    if live_published == Some(&capture.commit) {
-        return Ok(Some((capture.commit.clone(), GitSyncOutcome::Pushed, true)));
-    }
-    let Some(remote_tip) = remote_tip else {
-        control.check()?;
-        control.emit(GitSyncPhase::Pushing, report, None)?;
-        if !captured_worktree_is_current(engine, &report.repository, capture)? {
-            return Ok(None);
-        }
-        return Ok(
-            match engine.push_ref(
-                &report.repository,
-                &options.remote,
-                &capture.commit,
-                &report.refs.live,
-                None,
-            )? {
-                GitPushResult::Updated => {
-                    Some((capture.commit.clone(), GitSyncOutcome::Bootstrapped, true))
-                }
-                GitPushResult::Rejected => None,
-            },
-        );
-    };
-    let remote = ensure_remote_tip(engine, options, report, fetched_before, &remote_tip)?;
-    require_supported_remote_namespace(engine, &report.repository, &remote)?;
-    if capture.commit != remote {
-        require_compatible_scope(engine, report, &remote)?;
-    }
-    control.emit(GitSyncPhase::Fetched, report, None)?;
-    if capture.commit == remote {
-        return Ok(Some((remote, GitSyncOutcome::UpToDate, false)));
-    }
-    if engine.is_ancestor(&report.repository, &remote, &capture.commit)? {
-        control.check()?;
-        control.emit(GitSyncPhase::Pushing, report, None)?;
-        if !captured_worktree_is_current(engine, &report.repository, capture)? {
-            return Ok(None);
-        }
-        return Ok(
-            match engine.push_ref(
-                &report.repository,
-                &options.remote,
-                &capture.commit,
-                &report.refs.live,
-                Some(&remote),
-            )? {
-                GitPushResult::Updated => {
-                    Some((capture.commit.clone(), GitSyncOutcome::Pushed, true))
-                }
-                GitPushResult::Rejected => None,
-            },
-        );
-    }
-    if engine.is_ancestor(&report.repository, &capture.commit, &remote)? {
-        return Ok(Some((remote, GitSyncOutcome::Pulled, false)));
-    }
-    if let Some(epoch) = find_git_live_epoch(engine, &report.repository, &report.refs, &remote)? {
-        if engine.is_ancestor(&report.repository, &epoch.root, &capture.commit)? {
-            return merge_divergence(engine, options, report, capture, &remote, control);
-        }
-        return reconcile_epoch_root(engine, options, report, capture, remote, &epoch, control);
-    }
-    merge_divergence(engine, options, report, capture, &remote, control)
-}
-
-fn require_supported_remote_namespace(
-    engine: &dyn GitEngine,
-    repository: &GitRepository,
-    revision: &GitOid,
-) -> Result<(), GitSyncError> {
-    let message = engine.commit_metadata(repository, revision)?.message;
-    let mut versions = message
-        .lines()
-        .filter_map(|line| line.strip_prefix("Vulcan-Ref-Namespace: "));
-    let Some(raw) = versions.next() else {
-        // Legacy and ordinary commits may not carry a namespace trailer.
-        return Ok(());
-    };
-    let version = raw
-        .parse::<u32>()
-        .map_err(|_| unsupported_remote_namespace())?;
-    if versions.next().is_some() || version == 0 {
-        return Err(unsupported_remote_namespace());
-    }
-    if version > PATH_SCOPED_REF_NAMESPACE_VERSION {
-        return Err(GitSyncError::Git(GitEngineError::UnsupportedRepository {
-            detail: format!(
-                "remote live declares unsupported Vulcan ref namespace version `{version}`; upgrade Vulcan before reconciling this vault"
-            ),
-        }));
-    }
-    Ok(())
-}
-
-fn unsupported_remote_namespace() -> GitSyncError {
-    GitSyncError::Git(GitEngineError::UnsupportedRepository {
-        detail: "remote live declares a malformed Vulcan ref namespace version; inspect the commit trailer before reconciling this vault".to_string(),
-    })
-}
-
-fn ensure_remote_tip(
-    engine: &dyn GitEngine,
-    options: &GitSyncOptions,
-    report: &GitSyncReport,
-    fetched_before: Option<&GitOid>,
-    remote_tip: &GitOid,
-) -> Result<GitOid, GitSyncError> {
-    if fetched_before == Some(remote_tip) {
-        return Ok(remote_tip.clone());
-    }
-    engine
-        .fetch_ref(
-            &report.repository,
-            &options.remote,
-            &report.refs.live,
-            &report.refs.fetched,
-        )
-        .map_err(GitSyncError::from)
-}
-
-const MAX_EPOCH_DISCOVERY_COMMITS: usize = 100_001;
-const MAX_MISSED_EPOCHS: usize = 1_024;
-
-#[derive(Debug, Clone)]
-pub struct GitLiveEpoch {
-    pub root: GitOid,
-    pub id: String,
-    pub previous: GitOid,
-    pub remote_archive: GitRefName,
-    pub local_archive: GitRefName,
-}
-
-/// Commits read per `cat-file --batch` process while scanning live history.
-const EPOCH_DISCOVERY_BATCH: usize = 512;
-const LIVE_EPOCH_CACHE_VERSION: u32 = 1;
-const MAX_LIVE_EPOCH_CACHE_BYTES: u64 = 64 * 1024;
-
-/// Finds the epoch of `live`: the nearest first-parent commit carrying a
-/// `Vulcan-Sync-Epoch` trailer, which must be a parentless epoch root.
-///
-/// The answer for the last examined live tip is cached in the Git directory.
-/// When `live` descends from that tip along first parents, the normal case for
-/// a moving live ref, only the new commits are read, so the cost tracks recent
-/// activity rather than total history. Otherwise history is read in batches.
-pub fn find_git_live_epoch(
-    engine: &dyn GitEngine,
-    repository: &GitRepository,
-    refs: &GitSyncRefs,
-    live: &GitOid,
-) -> Result<Option<GitLiveEpoch>, GitSyncError> {
-    let cached = load_live_epoch_cache(repository, refs);
-    if let Some(cached) = &cached {
-        if &cached.tip == live {
-            return cached.epoch();
-        }
-    }
-    let incremental = match &cached {
-        Some(cached) => find_epoch_since(engine, repository, refs, live, cached)?,
-        None => EpochLookup::Unknown,
-    };
-    let epoch = if let EpochLookup::Known(epoch) = incremental {
-        epoch
-    } else {
-        let history = engine.first_parent_history(repository, live, MAX_EPOCH_DISCOVERY_COMMITS)?;
-        find_epoch_in(engine, repository, refs, &history)?.0
-    };
-    // The cache only saves work; failing to write it never fails discovery.
-    let _ = save_live_epoch_cache(repository, refs, live, epoch.as_ref());
-    Ok(epoch)
-}
-
-enum EpochLookup {
-    /// The cache could not answer; scan the full history.
-    Unknown,
-    Known(Option<GitLiveEpoch>),
-}
-
-/// Resolves `live` from the cached tip when that tip is its first-parent
-/// ancestor.
-fn find_epoch_since(
-    engine: &dyn GitEngine,
-    repository: &GitRepository,
-    refs: &GitSyncRefs,
-    live: &GitOid,
-    cached: &LiveEpochCache,
-) -> Result<EpochLookup, GitSyncError> {
-    // A cached tip that is gone or unrelated simply leaves the full scan.
-    let Ok(range) =
-        engine.first_parent_range(repository, live, &cached.tip, MAX_EPOCH_DISCOVERY_COMMITS)
-    else {
-        return Ok(EpochLookup::Unknown);
-    };
-    if range.is_empty() {
-        return Ok(EpochLookup::Unknown);
-    }
-    // The range is a prefix of the full first-parent walk, so an epoch or an
-    // error found in it is exactly what the full scan would report.
-    let (epoch, boundary) = find_epoch_in(engine, repository, refs, &range)?;
-    if epoch.is_some() {
-        return Ok(EpochLookup::Known(epoch));
-    }
-    if boundary.as_ref() != Some(&cached.tip) {
-        return Ok(EpochLookup::Unknown);
-    }
-    cached.epoch().map(EpochLookup::Known)
-}
-
-/// Scans `history` (newest first) for the first epoch trailer. Also returns
-/// the first parent of the last scanned commit, where the walk would continue.
-fn find_epoch_in(
-    engine: &dyn GitEngine,
-    repository: &GitRepository,
-    refs: &GitSyncRefs,
-    history: &[GitOid],
-) -> Result<(Option<GitLiveEpoch>, Option<GitOid>), GitSyncError> {
-    let mut boundary = None;
-    for chunk in history.chunks(EPOCH_DISCOVERY_BATCH) {
-        let metadata = engine.commit_metadata_batch(repository, chunk)?;
-        for (commit, metadata) in chunk.iter().zip(&metadata) {
-            if let Some(epoch) = classify_epoch_commit(refs, commit, metadata)? {
-                return Ok((Some(epoch), None));
-            }
-            boundary = metadata.parents.first().cloned();
-        }
-    }
-    Ok((None, boundary))
-}
-
-/// `Ok(None)` for a commit without an epoch trailer, the epoch for a valid
-/// epoch root, and an error for any other commit carrying the trailer.
-fn classify_epoch_commit(
-    refs: &GitSyncRefs,
-    commit: &GitOid,
-    metadata: &crate::GitCommitMetadata,
-) -> Result<Option<GitLiveEpoch>, GitSyncError> {
-    let Some(id) = trailer(&metadata.message, "Vulcan-Sync-Epoch") else {
-        return Ok(None);
-    };
-    if metadata.parents.is_empty() {
-        let previous = trailer(&metadata.message, "Vulcan-Sync-Previous-Epoch")
-            .ok_or_else(|| invalid_epoch("epoch root has no previous-epoch trailer"))
-            .and_then(|value| GitOid::parse(value).map_err(GitSyncError::from))?;
-        let remote_archive = trailer(&metadata.message, "Vulcan-Sync-Epoch-Archive")
-            .ok_or_else(|| invalid_epoch("epoch root has no archive-ref trailer"))
-            .and_then(|value| GitRefName::parse(value).map_err(GitSyncError::from))?;
-        let profile = refs
-            .local
-            .as_str()
-            .split('/')
-            .nth(3)
-            .ok_or_else(|| invalid_epoch("local sync ref has no profile component"))?;
-        if trailer(&metadata.message, "Vulcan-Sync-Profile") != Some(profile) {
-            return Err(invalid_epoch(
-                "epoch root profile does not match this sync target",
-            ));
-        }
-        let expected_archive_prefix = format!("{}/{profile}/", crate::REMOTE_EPOCH_BRANCH_ROOT);
-        if !remote_archive
-            .as_str()
-            .starts_with(&expected_archive_prefix)
-        {
-            return Err(invalid_epoch(
-                "epoch archive ref is outside the target profile",
-            ));
-        }
-        if id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(invalid_epoch(
-                "epoch ID is not a 32-character hexadecimal value",
-            ));
-        }
-        if id != git_live_epoch_id(profile, &previous) {
-            return Err(invalid_epoch(
-                "epoch ID does not match its profile and previous tip",
-            ));
-        }
-        if remote_archive != remote_epoch_ref(profile, id)? {
-            return Err(invalid_epoch(
-                "epoch archive ref does not match the epoch ID",
-            ));
-        }
-        let local_archive = local_epoch_ref(profile, id)?;
-        return Ok(Some(GitLiveEpoch {
-            root: commit.clone(),
-            id: id.to_string(),
-            previous,
-            remote_archive,
-            local_archive,
-        }));
-    }
-    Err(invalid_epoch("epoch trailer appears on a non-root commit"))
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct LiveEpochCache {
-    version: u32,
-    profile: String,
-    tip: GitOid,
-    epoch: Option<CachedLiveEpoch>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct CachedLiveEpoch {
-    root: GitOid,
-    id: String,
-    previous: GitOid,
-    remote_archive: String,
-    local_archive: String,
-}
-
-impl LiveEpochCache {
-    fn epoch(&self) -> Result<Option<GitLiveEpoch>, GitSyncError> {
-        self.epoch
-            .as_ref()
-            .map(|epoch| {
-                Ok(GitLiveEpoch {
-                    root: epoch.root.clone(),
-                    id: epoch.id.clone(),
-                    previous: epoch.previous.clone(),
-                    remote_archive: GitRefName::parse(&epoch.remote_archive)?,
-                    local_archive: GitRefName::parse(&epoch.local_archive)?,
-                })
-            })
-            .transpose()
-    }
-}
-
-fn live_epoch_cache_path(repository: &GitRepository) -> std::path::PathBuf {
-    repository
-        .git_dir
-        .join("vulcan-sync/live-epoch-cache-v1.json")
-}
-
-fn load_live_epoch_cache(repository: &GitRepository, refs: &GitSyncRefs) -> Option<LiveEpochCache> {
-    let path = live_epoch_cache_path(repository);
-    let metadata = fs::symlink_metadata(&path).ok()?;
-    if !metadata.file_type().is_file() || metadata.len() > MAX_LIVE_EPOCH_CACHE_BYTES {
-        return None;
-    }
-    let cache = serde_json::from_slice::<LiveEpochCache>(&fs::read(path).ok()?).ok()?;
-    (cache.version == LIVE_EPOCH_CACHE_VERSION && cache.profile == refs.local.as_str())
-        .then_some(cache)
-}
-
-fn save_live_epoch_cache(
-    repository: &GitRepository,
-    refs: &GitSyncRefs,
-    tip: &GitOid,
-    epoch: Option<&GitLiveEpoch>,
-) -> Result<(), GitSyncError> {
-    let path = live_epoch_cache_path(repository);
-    let parent = path
-        .parent()
-        .expect("the live epoch cache path always has a parent");
-    fs::create_dir_all(parent)?;
-    let bytes = serde_json::to_vec(&LiveEpochCache {
-        version: LIVE_EPOCH_CACHE_VERSION,
-        profile: refs.local.to_string(),
-        tip: tip.clone(),
-        epoch: epoch.map(|epoch| CachedLiveEpoch {
-            root: epoch.root.clone(),
-            id: epoch.id.clone(),
-            previous: epoch.previous.clone(),
-            remote_archive: epoch.remote_archive.to_string(),
-            local_archive: epoch.local_archive.to_string(),
-        }),
-    })
-    .map_err(|error| {
-        GitSyncError::Git(GitEngineError::InvalidOutput {
-            operation: "cache the live epoch",
-            detail: error.to_string(),
-        })
-    })?;
-    let mut temporary = NamedTempFile::new_in(parent)?;
-    temporary.write_all(&bytes)?;
-    temporary
-        .persist(path)
-        .map_err(|error| GitSyncError::Io(error.error))?;
-    Ok(())
-}
-
-fn trailer<'a>(message: &'a str, key: &str) -> Option<&'a str> {
-    let prefix = format!("{key}: ");
-    let mut values = message
-        .lines()
-        .filter_map(|line| line.strip_prefix(&prefix));
-    let value = values.next()?;
-    if value.is_empty() || values.next().is_some() {
-        None
-    } else {
-        Some(value)
-    }
-}
-
-fn invalid_epoch(detail: &str) -> GitSyncError {
-    GitSyncError::Git(GitEngineError::UnsupportedRepository {
-        detail: format!("invalid Vulcan live epoch root: {detail}"),
-    })
-}
-
-fn reconcile_epoch_root(
-    engine: &dyn GitEngine,
-    options: &GitSyncOptions,
-    report: &mut GitSyncReport,
-    capture: &crate::GitCapture,
-    remote_live: GitOid,
-    epoch: &GitLiveEpoch,
-    control: &mut AttemptControl<'_>,
-) -> Result<Option<(GitOid, GitSyncOutcome, bool)>, GitSyncError> {
-    let bridge_parent = epoch_bridge_parent(
-        engine,
-        options,
-        &report.repository,
-        &report.refs,
-        &capture.commit,
-        epoch.clone(),
-    )?;
-    let remote_tree = engine.tree_oid(&report.repository, &remote_live)?;
-    if capture.tree == remote_tree {
-        return Ok(Some((remote_live, GitSyncOutcome::Pulled, false)));
-    }
-
-    control.check()?;
-    control.emit(GitSyncPhase::Merging, report, None)?;
-    report.automatic_resolutions.clear();
-    let bridge = engine.create_reproducible_commit(
-        &report.repository,
-        &remote_tree,
-        std::slice::from_ref(&bridge_parent),
-        &format!(
-            "vulcan epoch reconciliation bridge\n\nVulcan-Sync-Version: {SYNC_PROTOCOL_VERSION}\nVulcan-Sync-Epoch: {}\nVulcan-Sync-Previous-Epoch: {}\nVulcan-Sync-Semantic: false\n",
-            epoch.id, bridge_parent
-        ),
-    )?;
-    let normalized = normalize_scoped_capture(engine, options, report, capture, &bridge)?;
-    let capture = normalized.as_ref().unwrap_or(capture);
-    let mut merge = engine.merge_commits(&report.repository, &bridge, &capture.commit)?;
-    let tree = resolve_merge_candidate_tree(
-        engine,
-        options,
-        report,
-        control,
-        &capture.commit,
-        &bridge,
-        &mut merge,
-    );
-    let Some(tree) = tree else {
-        report.outcome = GitSyncOutcome::Conflicted;
-        report.conflict = Some(build_sync_conflict(
-            engine,
-            options,
-            &report.repository,
-            capture,
-            remote_live,
-            ConflictProjectionSource::None,
-            merge,
-        )?);
-        control.emit(GitSyncPhase::Conflicted, report, None)?;
-        return Ok(None);
-    };
-    if tree == remote_tree {
-        return Ok(Some((remote_live, GitSyncOutcome::Pulled, false)));
-    }
-    let rebased = engine.create_commit(
-        &report.repository,
-        &tree,
-        std::slice::from_ref(&remote_live),
-        &format!(
-            "vulcan live epoch reconciliation\n\n{}Vulcan-Sync-Rebased-Epoch: {}\nVulcan-Sync-Rebased-From: {}\n{}",
-            sync_trailers(&report.refs, options, capture.commit.as_str()),
-            epoch.id,
-            bridge_parent,
-            git_scope_trailers(engine, &report.repository)?
-        ),
-    )?;
-    require_accepted_platform(engine, options, report, &rebased)?;
-    engine.update_ref(&report.repository, &report.refs.pending, &rebased)?;
-    control.check()?;
-    control.emit(GitSyncPhase::Pushing, report, None)?;
-    if !captured_worktree_is_current(engine, &report.repository, capture)? {
-        return Ok(None);
-    }
-    Ok(
-        match engine.push_ref(
-            &report.repository,
-            &options.remote,
-            &rebased,
-            &report.refs.live,
-            Some(&remote_live),
-        )? {
-            GitPushResult::Updated => Some((rebased, GitSyncOutcome::Merged, true)),
-            GitPushResult::Rejected => None,
-        },
-    )
-}
-
-fn epoch_bridge_parent(
-    engine: &dyn GitEngine,
-    options: &GitSyncOptions,
-    repository: &GitRepository,
-    refs: &GitSyncRefs,
-    capture: &GitOid,
-    mut epoch: GitLiveEpoch,
-) -> Result<GitOid, GitSyncError> {
-    let mut visited = HashSet::new();
-    for _ in 0..MAX_MISSED_EPOCHS {
-        if !visited.insert(epoch.root.to_string()) {
-            return Err(invalid_epoch("epoch archive chain contains a cycle"));
-        }
-        let archived = fetch_epoch_archive(engine, options, repository, &epoch)?;
-        // Live history links the checked-out branch, so unrelated epochs can
-        // share branch commits. Membership in the archived epoch therefore
-        // requires its own root; only the oldest, rootless epoch falls back
-        // to any shared ancestry.
-        let older = find_git_live_epoch(engine, repository, refs, &archived)?;
-        let contained = match &older {
-            Some(older) => engine.is_ancestor(repository, &older.root, capture)?,
-            None => engine.merge_base(repository, &archived, capture)?.is_some(),
-        };
-        if contained {
-            return Ok(archived);
-        }
-        epoch = older.ok_or_else(|| {
-            invalid_epoch("offline candidate has no common ancestry with the epoch archive chain")
-        })?;
-    }
-    Err(invalid_epoch(
-        "offline candidate exceeds the supported missed-epoch bound",
-    ))
-}
-
-fn fetch_epoch_archive(
-    engine: &dyn GitEngine,
-    options: &GitSyncOptions,
-    repository: &GitRepository,
-    epoch: &GitLiveEpoch,
-) -> Result<GitOid, GitSyncError> {
-    match engine.remote_ref(repository, &options.remote, &epoch.remote_archive)? {
-        Some(remote) if remote != epoch.previous => {
-            return Err(invalid_epoch(
-                "remote archive does not match previous-epoch trailer",
-            ));
-        }
-        Some(_) => {}
-        None => {
-            return Err(invalid_epoch(
-                "required archive has expired; this offline candidate predates the retained epoch horizon",
-            ));
-        }
-    }
-    if let Some(local_archive) = engine.read_ref(repository, &epoch.local_archive)? {
-        if local_archive != epoch.previous {
-            return Err(invalid_epoch(
-                "existing local archive does not match previous-epoch trailer",
-            ));
-        }
-    }
-    let archived = engine.fetch_ref(
-        repository,
-        &options.remote,
-        &epoch.remote_archive,
-        &epoch.local_archive,
-    )?;
-    if archived != epoch.previous {
-        return Err(invalid_epoch(
-            "fetched archive does not match previous-epoch trailer",
-        ));
-    }
-    let root_tree = engine.tree_oid(repository, &epoch.root)?;
-    if engine.tree_oid(repository, &archived)? != root_tree {
-        return Err(invalid_epoch(
-            "epoch root tree differs from its archived predecessor",
-        ));
-    }
-    Ok(archived)
-}
-
-/// Path-scoped merges compare only scoped paths: the local candidate takes
-/// every unscoped path from the remote tip first, so the two sides never
-/// differ outside the scope. The next snapshot restores this device's own
-/// published content there. `None` when nothing needs normalizing.
-fn normalize_scoped_capture(
-    engine: &dyn GitEngine,
-    options: &GitSyncOptions,
-    report: &GitSyncReport,
-    capture: &crate::GitCapture,
-    remote: &GitOid,
-) -> Result<Option<crate::GitCapture>, GitSyncError> {
-    let Some(scope) = &report.repository.worktree_scope else {
-        return Ok(None);
-    };
-    let tree = engine.overlay_scoped_tree(&report.repository, scope, remote, &capture.commit)?;
-    if tree == capture.tree {
-        return Ok(None);
-    }
-    let published = git_published_branch_tip(engine, &report.repository)?;
-    let message = format!(
-        "vulcan live scope alignment\n\n{}{}",
-        sync_trailers(
-            &report.refs,
-            options,
-            &format!("{}+{remote}", capture.commit)
-        ),
-        scope_trailers(options, published.as_ref())
-    );
-    let commit = engine.create_commit(
-        &report.repository,
-        &tree,
-        std::slice::from_ref(&capture.commit),
-        &message,
-    )?;
-    Ok(Some(crate::GitCapture {
-        commit,
-        tree,
-        created: true,
-    }))
-}
-
-fn merge_divergence(
-    engine: &dyn GitEngine,
-    options: &GitSyncOptions,
-    report: &mut GitSyncReport,
-    capture: &crate::GitCapture,
-    remote: &GitOid,
-    control: &mut AttemptControl<'_>,
-) -> Result<Option<(GitOid, GitSyncOutcome, bool)>, GitSyncError> {
-    control.check()?;
-    control.emit(GitSyncPhase::Merging, report, None)?;
-    report.automatic_resolutions.clear();
-    let normalized = normalize_scoped_capture(engine, options, report, capture, remote)?;
-    let capture = normalized.as_ref().unwrap_or(capture);
-    let mut merge = engine.merge_commits(&report.repository, remote, &capture.commit)?;
-    let tree = resolve_merge_candidate_tree(
-        engine,
-        options,
-        report,
-        control,
-        &capture.commit,
-        remote,
-        &mut merge,
-    );
-    if tree.is_none() {
-        let projection_source = (!report.automatic_resolutions.is_empty())
-            .then(|| merge.tree.clone())
-            .flatten()
-            .map_or(
-                ConflictProjectionSource::Remote(remote),
-                ConflictProjectionSource::Tree,
-            );
-        let conflict = build_sync_conflict(
-            engine,
-            options,
-            &report.repository,
-            capture,
-            remote.clone(),
-            projection_source,
-            merge,
-        )?;
-        return publish_projected_conflict(
-            engine, options, report, capture, remote, conflict, control,
-        );
-    }
-    let tree = tree.ok_or_else(|| {
-        GitSyncError::Git(GitEngineError::InvalidOutput {
-            operation: "merge live sync commits",
-            detail: "the clean merge report omitted its tree".to_string(),
-        })
-    })?;
-    let published = if report.repository.worktree_scope.is_some() {
-        git_published_branch_tip(engine, &report.repository)?
-    } else {
-        None
-    };
-    let merged = engine.create_commit(
-        &report.repository,
-        &tree,
-        &[remote.clone(), capture.commit.clone()],
-        &merge_message(
-            &report.refs,
-            options,
-            remote,
-            &capture.commit,
-            published.as_ref(),
-            &report.automatic_resolutions,
-        ),
-    )?;
-    require_accepted_platform(engine, options, report, &merged)?;
-    engine.update_ref(&report.repository, &report.refs.pending, &merged)?;
-    control.check()?;
-    control.emit(GitSyncPhase::Pushing, report, None)?;
-    if !captured_worktree_is_current(engine, &report.repository, capture)? {
-        return Ok(None);
-    }
-    Ok(
-        match engine.push_ref(
-            &report.repository,
-            &options.remote,
-            &merged,
-            &report.refs.live,
-            Some(remote),
-        )? {
-            GitPushResult::Updated => Some((merged, GitSyncOutcome::Merged, true)),
-            GitPushResult::Rejected => None,
-        },
-    )
-}
-
-fn resolve_merge_candidate_tree(
-    engine: &dyn GitEngine,
-    options: &GitSyncOptions,
-    report: &mut GitSyncReport,
-    control: &mut AttemptControl<'_>,
-    local: &GitOid,
-    remote: &GitOid,
-    merge: &mut crate::GitMerge,
-) -> Option<GitOid> {
-    if merge.clean {
-        // Clean Git merges skip structured resolution but must still pass
-        // the whole-tree link and deletion gates: a clean rename plus an
-        // unrelated new link can otherwise silently break references.
-        if let (Some(base), Some(tree)) = (merge.base.as_ref(), merge.tree.clone()) {
-            let candidate = AutomaticMergeCandidate {
-                repository: &report.repository,
-                base,
-                local,
-                remote,
-                tree: &tree,
-            };
-            if let Err(detail) = validate_automatic_tree(control, engine, &candidate, &mut []) {
-                if !merge.diagnostics.is_empty() {
-                    merge.diagnostics.push('\n');
-                }
-                write!(
-                    merge.diagnostics,
-                    "Vulcan automatic merge validation: {detail}"
-                )
-                .expect("writing to a String cannot fail");
-                return None;
-            }
-            return Some(tree);
-        }
-        return merge.tree.clone();
-    }
-    match try_structured_merge(
-        engine,
-        options,
-        &report.repository,
-        merge.base.as_ref(),
-        local,
-        remote,
-        &merge.conflict_paths,
-    ) {
-        Ok(Some(mut attempt)) => {
-            let validation = merge
-                .base
-                .as_ref()
-                .ok_or_else(|| "structured merge validation requires a merge base".to_string())
-                .and_then(|base| {
-                    validate_automatic_tree(
-                        control,
-                        engine,
-                        &AutomaticMergeCandidate {
-                            repository: &report.repository,
-                            base,
-                            local,
-                            remote,
-                            tree: &attempt.tree,
-                        },
-                        &mut attempt.resolutions,
-                    )
-                });
-            match validation {
-                Ok(()) => {
-                    report.automatic_resolutions = attempt.resolutions;
-                    if attempt.unresolved_paths.is_empty() {
-                        Some(attempt.tree)
-                    } else {
-                        merge.tree = Some(attempt.tree);
-                        merge.conflict_paths = attempt.unresolved_paths;
-                        append_structured_merge_failure(
-                            merge,
-                            "some paths still require review; deterministic results were retained in the projected tree",
-                        );
-                        None
-                    }
-                }
-                Err(detail) => {
-                    append_structured_merge_failure(merge, &detail);
-                    None
-                }
-            }
-        }
-        Ok(None) => None,
-        Err(detail) => {
-            append_structured_merge_failure(merge, &detail);
-            None
-        }
-    }
-}
-
-struct AutomaticMergeCandidate<'a> {
-    repository: &'a GitRepository,
-    base: &'a GitOid,
-    local: &'a GitOid,
-    remote: &'a GitOid,
-    tree: &'a GitOid,
-}
-
-fn validate_automatic_tree(
-    control: &mut AttemptControl<'_>,
-    engine: &dyn GitEngine,
-    candidate: &AutomaticMergeCandidate<'_>,
-    resolutions: &mut [GitAutomaticResolution],
-) -> Result<(), String> {
-    let resolved_paths = resolutions
-        .iter()
-        .map(|resolution| resolution.path.clone())
-        .collect::<Vec<_>>();
-    let checks = control.validate_automatic_merge(
-        engine,
-        &GitAutomaticMergeValidation {
-            repository: candidate.repository,
-            base: candidate.base,
-            local_candidate: candidate.local,
-            accepted_remote: candidate.remote,
-            merged_tree: candidate.tree,
-            resolved_paths: &resolved_paths,
-        },
-    )?;
-    for resolution in resolutions {
-        resolution.validation.checks.extend(checks.iter().copied());
-    }
-    Ok(())
-}
-
-fn append_structured_merge_failure(merge: &mut crate::GitMerge, detail: &str) {
-    if !merge.diagnostics.is_empty() {
-        merge.diagnostics.push('\n');
-    }
-    write!(merge.diagnostics, "Vulcan structured merge: {detail}")
-        .expect("writing to a String cannot fail");
-}
-
-fn captured_worktree_is_current(
-    engine: &dyn GitEngine,
-    repository: &GitRepository,
-    capture: &crate::GitCapture,
-) -> Result<bool, GitSyncError> {
-    engine
-        .worktree_matches_tree(repository, &capture.commit)
-        .map_err(GitSyncError::from)
-}
-
-fn publish_projected_conflict(
-    engine: &dyn GitEngine,
-    options: &GitSyncOptions,
-    report: &mut GitSyncReport,
-    capture: &crate::GitCapture,
-    remote: &GitOid,
-    conflict: GitSyncConflict,
-    control: &mut AttemptControl<'_>,
-) -> Result<Option<(GitOid, GitSyncOutcome, bool)>, GitSyncError> {
-    let Some(projected) = conflict
-        .projection
-        .as_ref()
-        .map(|_| conflict.provenance_revision.clone())
-    else {
-        report.outcome = GitSyncOutcome::Conflicted;
-        report.conflict = Some(conflict);
-        control.emit(GitSyncPhase::Conflicted, report, None)?;
-        return Ok(None);
-    };
-    report.outcome = GitSyncOutcome::Conflicted;
-    report.conflict = Some(conflict);
-    control.emit(GitSyncPhase::Conflicted, report, None)?;
-    require_accepted_platform(engine, options, report, &projected)?;
-    let conflict = report
-        .conflict
-        .as_ref()
-        .expect("conflict report was just populated");
-    let record_ref = remote_conflict_ref(&conflict.id, "record")?;
-    match engine.remote_ref(&report.repository, &options.remote, &record_ref)? {
-        Some(existing) if existing == projected => {}
-        Some(_) => {
-            return Err(GitEngineError::UnsupportedRepository {
-                detail: format!(
-                    "remote conflict record `{record_ref}` identifies a different commit"
-                ),
-            }
-            .into());
-        }
-        None => {
-            if engine.push_ref(
-                &report.repository,
-                &options.remote,
-                &projected,
-                &record_ref,
-                None,
-            )? == GitPushResult::Rejected
-            {
-                let existing =
-                    engine.remote_ref(&report.repository, &options.remote, &record_ref)?;
-                if existing.as_ref() != Some(&projected) {
-                    return Err(GitEngineError::UnsupportedRepository {
-                        detail: format!(
-                            "remote conflict record `{record_ref}` was created concurrently with a different commit"
-                        ),
-                    }
-                    .into());
-                }
-            }
-        }
-    }
-    engine.update_ref(&report.repository, &report.refs.pending, &projected)?;
-    control.check()?;
-    control.emit(GitSyncPhase::Pushing, report, None)?;
-    if !captured_worktree_is_current(engine, &report.repository, capture)? {
-        report.outcome = GitSyncOutcome::Planned;
-        report.conflict = None;
-        return Ok(None);
-    }
-    match engine.push_ref(
-        &report.repository,
-        &options.remote,
-        &projected,
-        &report.refs.live,
-        Some(remote),
-    )? {
-        GitPushResult::Updated => Ok(Some((projected, GitSyncOutcome::Conflicted, true))),
-        GitPushResult::Rejected => {
-            let remote_after =
-                engine.remote_ref(&report.repository, &options.remote, &report.refs.live)?;
-            if remote_after.as_ref() == Some(&projected) {
-                Ok(Some((projected, GitSyncOutcome::Conflicted, false)))
-            } else {
-                report.outcome = GitSyncOutcome::Planned;
-                report.conflict = None;
-                Ok(None)
-            }
-        }
-    }
-}
-
-enum ConflictProjectionSource<'a> {
-    None,
-    Remote(&'a GitOid),
-    Tree(GitOid),
-}
-
-fn build_sync_conflict(
-    engine: &dyn GitEngine,
-    options: &GitSyncOptions,
-    repository: &GitRepository,
-    capture: &crate::GitCapture,
-    remote: GitOid,
-    projection_source: ConflictProjectionSource<'_>,
-    merge: crate::GitMerge,
-) -> Result<GitSyncConflict, GitSyncError> {
-    let scope = if merge.clean && merge.conflict_paths.is_empty() && merge.tree.is_some() {
-        GitConflictScope::TreeValidation
-    } else {
-        GitConflictScope::Paths
-    };
-    let classifications = classify_conflicts(
-        engine,
-        options,
-        repository,
-        merge.base.as_ref(),
-        &capture.commit,
-        &remote,
-        &merge.conflict_paths,
-        &merge.diagnostics,
-    )?;
-    let (id, policy_hash) = conflict_identity(
-        &options.merge_policy,
-        merge.base.as_ref(),
-        &capture.commit,
-        &remote,
-        &merge.conflict_paths,
-    )?;
-    let projection = match projection_source {
-        ConflictProjectionSource::None => None,
-        ConflictProjectionSource::Tree(tree) => Some(GitConflictProjection {
-            tree,
-            published: false,
-            applied: false,
-        }),
-        ConflictProjectionSource::Remote(projection_remote) => build_conflict_projection(
-            engine,
-            repository,
-            merge.base.as_ref(),
-            &capture.commit,
-            projection_remote,
-            &merge.conflict_paths,
-        )?,
-    };
-    let (preserved_refs, provenance_revision) = preserve_conflict_refs(
-        engine,
-        repository,
-        &ConflictPreservationRequest {
-            options,
-            id: &id,
-            policy_hash: &policy_hash,
-            base: merge.base.as_ref(),
-            local: &capture.commit,
-            remote: &remote,
-            merge_tree: projection
-                .as_ref()
-                .map(|candidate| &candidate.tree)
-                .or(merge.tree.as_ref()),
-        },
-    )?;
-    Ok(GitSyncConflict {
-        id,
-        scope,
-        base: merge.base,
-        remote,
-        local: capture.commit.clone(),
-        paths: merge.conflict_paths,
-        classifications,
-        policy_version: options.merge_policy.version,
-        policy_hash,
-        preserved_refs,
-        provenance_revision,
-        projection,
-        merge_tree: merge.tree,
-        diagnostics: merge.diagnostics,
-    })
-}
-
-fn build_conflict_projection(
-    engine: &dyn GitEngine,
-    repository: &GitRepository,
-    base: Option<&GitOid>,
-    local: &GitOid,
-    remote: &GitOid,
-    conflict_paths: &[String],
-) -> Result<Option<GitConflictProjection>, GitSyncError> {
-    let Some(base) = base else {
-        return Ok(None);
-    };
-    // A clean merge rejected by whole-tree validation names no conflicted
-    // paths; there is nothing to project, but the preserved-refs
-    // record below still anchors the decision.
-    if conflict_paths.is_empty() {
-        return Ok(None);
-    }
-    let remote_objects = engine.path_objects(repository, remote, conflict_paths)?;
-    let local_objects = engine.path_objects(repository, local, conflict_paths)?;
-    let mut resolved = Vec::new();
-    for path in conflict_paths {
-        let remote_object = remote_objects.get(path);
-        let local_object = local_objects.get(path);
-        // Git can report a synthesized destination for directory-rename and
-        // file-location conflicts even though that path exists in neither
-        // input tree. A path-only projection cannot faithfully preserve
-        // or resolve that topology, so leave the structural conflict behind
-        // immutable refs instead of publishing a misleading candidate tree.
-        if remote_object.is_none() && local_object.is_none() {
-            return Ok(None);
-        }
-        if remote_object.is_some_and(|object| !is_projectable_blob(object))
-            || local_object.is_some_and(|object| !is_projectable_blob(object))
-        {
-            return Ok(None);
-        }
-        resolved.push(resolved_path(path.clone(), remote_object));
-    }
-    let tree = engine.resolve_merge_tree_with_paths(
-        repository,
-        &GitContentMergeResolutionRequest {
-            base: base.clone(),
-            accepted_remote: remote.clone(),
-            local_candidate: local.clone(),
-            paths: resolved,
-        },
-    )?;
-    Ok(Some(GitConflictProjection {
-        tree,
-        published: false,
-        applied: false,
-    }))
-}
-
-fn is_projectable_blob(object: &GitPathObject) -> bool {
-    object.kind == "blob"
-        && matches!(object.mode.as_str(), "100644" | "100755")
-        && object.data.is_some()
-}
-
-fn resolved_path(path: String, object: Option<&GitPathObject>) -> GitResolvedPath {
-    object.map_or(
-        GitResolvedPath {
-            path: path.clone(),
-            mode: None,
-            data: None,
-        },
-        |object| GitResolvedPath {
-            path,
-            mode: Some(object.mode.clone()),
-            data: object.data.clone(),
-        },
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn classify_conflicts(
-    engine: &dyn GitEngine,
-    options: &GitSyncOptions,
-    repository: &GitRepository,
-    base: Option<&GitOid>,
-    local: &GitOid,
-    remote: &GitOid,
-    paths: &[String],
-    diagnostics: &str,
-) -> Result<Vec<GitConflictClassification>, GitSyncError> {
-    let base_objects = base
-        .map(|base| engine.path_objects(repository, base, paths))
-        .transpose()?
-        .unwrap_or_default();
-    let local_objects = engine.path_objects(repository, local, paths)?;
-    let remote_objects = engine.path_objects(repository, remote, paths)?;
-    let classification_context = ConflictClassificationContext::new(paths, diagnostics);
-    paths
-        .iter()
-        .map(|path| {
-            let base_object = base_objects.get(path);
-            let local_object = local_objects.get(path);
-            let remote_object = remote_objects.get(path);
-            let file_kind = MergeFileKind::classify(
-                path,
-                &[
-                    object_data(base_object),
-                    object_data(local_object),
-                    object_data(remote_object),
-                ],
-            );
-            let decision = options
-                .merge_policy
-                .decision_for(path, file_kind, MergeAutomation::AllowPolicy)
-                .map_err(|error| {
-                    GitSyncError::Git(GitEngineError::InvalidOutput {
-                        operation: "classify a sync conflict",
-                        detail: error.to_string(),
-                    })
-                })?;
-            let class = conflict_class(
-                path,
-                &classification_context,
-                base_object,
-                local_object,
-                remote_object,
-                file_kind,
-            );
-            let formatting_candidate = formatting_candidate(
-                file_kind,
-                object_data(base_object),
-                object_data(local_object),
-                object_data(remote_object),
-            );
-            Ok(GitConflictClassification {
-                path: path.clone(),
-                class,
-                file_kind,
-                rule_id: decision.rule_id,
-                configured_resolution: decision.resolution,
-                effective_resolution: MergeResolution::RequireReview,
-                diagnostic_code: conflict_diagnostic_code(class).to_string(),
-                formatting_candidate,
-            })
-        })
-        .collect()
-}
-
-fn formatting_candidate(
-    file_kind: MergeFileKind,
-    base: Option<&[u8]>,
-    local: Option<&[u8]>,
-    remote: Option<&[u8]>,
-) -> bool {
-    if !matches!(file_kind, MergeFileKind::Markdown | MergeFileKind::Text) {
-        return false;
-    }
-    let Some(local) = local.and_then(|value| std::str::from_utf8(value).ok()) else {
-        return false;
-    };
-    let Some(remote) = remote.and_then(|value| std::str::from_utf8(value).ok()) else {
-        return false;
-    };
-    let base = base.and_then(|value| std::str::from_utf8(value).ok());
-    formatting_equivalent(local, remote)
-        || base.is_some_and(|base| {
-            formatting_equivalent(base, local) || formatting_equivalent(base, remote)
-        })
-}
-
-fn formatting_equivalent(left: &str, right: &str) -> bool {
-    left != right
-        && !has_format_sensitive_markdown(left)
-        && !has_format_sensitive_markdown(right)
-        && left.split_whitespace().eq(right.split_whitespace())
-}
-
-fn has_format_sensitive_markdown(value: &str) -> bool {
-    value.contains("```")
-        || value.contains("~~~")
-        || value.contains("  \n")
-        || value.lines().any(|line| {
-            line.starts_with('\t') || line.starts_with("    ") || line.trim_start().starts_with('<')
-        })
-}
-
-struct ConflictClassificationContext {
-    case_collisions: HashSet<String>,
-    rename_rename: HashSet<String>,
-    directory_file: HashSet<String>,
-    singleton_rename_rename: bool,
-    singleton_directory_file: bool,
-    #[cfg(test)]
-    normalized_paths: usize,
-    #[cfg(test)]
-    diagnostic_lines_scanned: usize,
-}
-
-impl ConflictClassificationContext {
-    fn new(paths: &[String], diagnostics: &str) -> Self {
-        let normalized = paths
-            .iter()
-            .map(|path| path.to_lowercase())
-            .collect::<Vec<_>>();
-        let mut counts = HashMap::<&str, usize>::new();
-        for path in &normalized {
-            *counts.entry(path.as_str()).or_default() += 1;
-        }
-        let case_collisions = paths
-            .iter()
-            .zip(&normalized)
-            .filter(|(_, normalized)| counts[normalized.as_str()] > 1)
-            .map(|(path, _)| path.clone())
-            .collect();
-        let mut rename_rename = HashSet::new();
-        let mut directory_file = HashSet::new();
-        let matcher = (!normalized.is_empty()).then(|| {
-            aho_corasick::AhoCorasick::new(&normalized)
-                .expect("validated conflict paths compile as literal search patterns")
-        });
-        #[cfg(test)]
-        let mut diagnostic_lines_scanned = 0;
-        if let Some(matcher) = matcher {
-            for line in diagnostics.lines() {
-                #[cfg(test)]
-                {
-                    diagnostic_lines_scanned += 1;
-                }
-                let line = line.to_ascii_lowercase();
-                let target = if line.contains("rename/rename") {
-                    Some(&mut rename_rename)
-                } else if line.contains("directory/file") {
-                    Some(&mut directory_file)
-                } else {
-                    None
-                };
-                if let Some(target) = target {
-                    for matched in matcher.find_overlapping_iter(&line) {
-                        target.insert(paths[matched.pattern().as_usize()].clone());
-                    }
-                }
-            }
-        }
-        let diagnostic = (paths.len() == 1).then(|| diagnostics.to_ascii_lowercase());
-        Self {
-            case_collisions,
-            rename_rename,
-            directory_file,
-            singleton_rename_rename: diagnostic
-                .as_ref()
-                .is_some_and(|value| value.contains("rename/rename")),
-            singleton_directory_file: diagnostic
-                .as_ref()
-                .is_some_and(|value| value.contains("directory/file")),
-            #[cfg(test)]
-            normalized_paths: normalized.len(),
-            #[cfg(test)]
-            diagnostic_lines_scanned,
-        }
-    }
-}
-
-fn conflict_class(
-    path: &str,
-    context: &ConflictClassificationContext,
-    base: Option<&crate::GitPathObject>,
-    local: Option<&crate::GitPathObject>,
-    remote: Option<&crate::GitPathObject>,
-    file_kind: MergeFileKind,
-) -> GitConflictClass {
-    if context.case_collisions.contains(path) {
-        return GitConflictClass::CaseCollision;
-    }
-    if context.singleton_rename_rename || context.rename_rename.contains(path) {
-        return GitConflictClass::RenameRename;
-    }
-    if context.singleton_directory_file || context.directory_file.contains(path) {
-        return GitConflictClass::DirectoryFile;
-    }
-    if [base, local, remote]
-        .into_iter()
-        .flatten()
-        .any(|object| object.kind != "blob")
-    {
-        return GitConflictClass::UnsupportedObject;
-    }
-    if base.is_some() && (local.is_none() != remote.is_none()) {
-        return GitConflictClass::DeleteModify;
-    }
-    match file_kind {
-        MergeFileKind::ObsidianState => GitConflictClass::DeviceLocalState,
-        MergeFileKind::Binary => GitConflictClass::OverlappingBinary,
-        MergeFileKind::Missing => GitConflictClass::Ambiguous,
-        _ if base.is_some() && local.is_some() && remote.is_some() => {
-            GitConflictClass::OverlappingText
-        }
-        _ => GitConflictClass::Ambiguous,
-    }
-}
-
-const fn conflict_diagnostic_code(class: GitConflictClass) -> &'static str {
-    match class {
-        GitConflictClass::OverlappingText => "sync.conflict.overlapping-text",
-        GitConflictClass::OverlappingBinary => "sync.conflict.overlapping-binary",
-        GitConflictClass::DeleteModify => "sync.conflict.delete-modify",
-        GitConflictClass::RenameRename => "sync.conflict.rename-rename",
-        GitConflictClass::DirectoryFile => "sync.conflict.directory-file",
-        GitConflictClass::CaseCollision => "sync.conflict.case-collision",
-        GitConflictClass::DeviceLocalState => "sync.conflict.device-local-state",
-        GitConflictClass::UnsupportedObject => "sync.conflict.unsupported-object",
-        GitConflictClass::Ambiguous => "sync.conflict.ambiguous",
-    }
-}
-
-#[cfg(test)]
-fn test_conflict_class(
-    path: &str,
-    paths: &[String],
-    diagnostics: &str,
-    base: Option<&crate::GitPathObject>,
-    local: Option<&crate::GitPathObject>,
-    remote: Option<&crate::GitPathObject>,
-    file_kind: MergeFileKind,
-) -> GitConflictClass {
-    conflict_class(
-        path,
-        &ConflictClassificationContext::new(paths, diagnostics),
-        base,
-        local,
-        remote,
-        file_kind,
-    )
-}
-
-struct StructuredMergeAttempt {
-    tree: GitOid,
-    resolutions: Vec<GitAutomaticResolution>,
-    unresolved_paths: Vec<String>,
-}
-
-struct StructuredPathInput<'a> {
-    path: &'a str,
-    base: Option<&'a GitPathObject>,
-    local: Option<&'a GitPathObject>,
-    remote: Option<&'a GitPathObject>,
-    local_identity: &'a str,
-    remote_identity: &'a str,
-}
-
-fn try_structured_path(
-    options: &GitSyncOptions,
-    input: &StructuredPathInput<'_>,
-) -> Result<Option<(GitResolvedPath, GitAutomaticResolution)>, String> {
-    let kind = MergeFileKind::classify(
-        input.path,
-        &[
-            object_data(input.base),
-            object_data(input.local),
-            object_data(input.remote),
-        ],
-    );
-    let decision = options
-        .merge_policy
-        .decision_for(input.path, kind, options.merge_automation)
-        .map_err(|error| error.to_string())?;
-    match decision.resolution {
-        MergeResolution::Structured => {}
-        MergeResolution::RequireReview => return Ok(None),
-        MergeResolution::PreferLocal => {
-            // Only a surviving regular file wins; a local deletion still
-            // needs review rather than silently removing shared state.
-            let Some(local) = input.local.filter(|object| is_projectable_blob(object)) else {
-                return Ok(None);
-            };
-            return Ok(Some((
-                GitResolvedPath {
-                    path: input.path.to_string(),
-                    mode: Some(local.mode.clone()),
-                    data: local.data.clone(),
-                },
-                GitAutomaticResolution {
-                    path: input.path.to_string(),
-                    kind,
-                    rule_id: decision.rule_id,
-                    validation: automatic_validation(kind),
-                    merger: None,
-                },
-            )));
-        }
-    }
-    let Some(merger) = crate::structured_merge::artifact_merger_for(kind) else {
-        return Ok(None);
-    };
-    let Some(crate::structured_merge::StructuredMergeOutcome::Resolved(Some(data))) =
-        crate::structured_merge::merge_structured_path(
-            kind,
-            object_data(input.base),
-            object_data(input.local),
-            object_data(input.remote),
-            input.local_identity,
-            input.remote_identity,
-        )
-        .ok()
-    else {
-        return Ok(None);
-    };
-    let MergedObjectMode::Resolved(Some(mode)) =
-        merge_object_mode(input.base, input.local, input.remote)
-    else {
-        return Ok(None);
-    };
-    Ok(Some((
-        GitResolvedPath {
-            path: input.path.to_string(),
-            mode: Some(mode),
-            data: Some(data),
-        },
-        GitAutomaticResolution {
-            path: input.path.to_string(),
-            kind,
-            rule_id: decision.rule_id,
-            validation: automatic_validation(kind),
-            merger: Some(GitMergerEvidence {
-                id: merger.id.to_string(),
-                version: merger.version,
-                base: input.base.map(|object| object.oid.clone()),
-                local: input.local.map(|object| object.oid.clone()),
-                remote: input.remote.map(|object| object.oid.clone()),
-                // Known once the result is written into the resolved tree.
-                output: None,
-            }),
-        },
-    )))
-}
-
-fn try_structured_merge(
-    engine: &dyn GitEngine,
-    options: &GitSyncOptions,
-    repository: &GitRepository,
-    base: Option<&GitOid>,
-    local: &GitOid,
-    remote: &GitOid,
-    paths: &[String],
-) -> Result<Option<StructuredMergeAttempt>, String> {
-    let Some(base) = base else {
-        return Ok(None);
-    };
-    if paths.is_empty() {
-        return Ok(None);
-    }
-    let base_objects = engine
-        .path_objects(repository, base, paths)
-        .map_err(|error| error.to_string())?;
-    let local_objects = engine
-        .path_objects(repository, local, paths)
-        .map_err(|error| error.to_string())?;
-    let remote_objects = engine
-        .path_objects(repository, remote, paths)
-        .map_err(|error| error.to_string())?;
-    let untracked = untracked_by_deleting_side(
-        engine,
-        repository,
-        base,
-        (local, &local_objects),
-        (remote, &remote_objects),
-        paths.iter().filter(|path| base_objects.contains_key(*path)),
-    )?;
-    let mut resolved_paths = Vec::with_capacity(paths.len());
-    let mut automatically_resolved = Vec::with_capacity(paths.len());
-    let mut resolutions = Vec::with_capacity(paths.len());
-    let mut unresolved_paths = Vec::new();
-    for path in paths {
-        let base_object = base_objects.get(path);
-        let local_object = local_objects.get(path);
-        let remote_object = remote_objects.get(path);
-        if [&base_object, &local_object, &remote_object]
-            .into_iter()
-            .flatten()
-            .any(|object| object.kind != "blob")
-        {
-            return Ok(None);
-        }
-        if untracked.contains(path) {
-            resolved_paths.push(resolved_path(path.clone(), None));
-            automatically_resolved.push(resolved_path(path.clone(), None));
-            resolutions.push(untracked_resolution(
-                path,
-                [base_object, local_object, remote_object],
-            ));
-            continue;
-        }
-        let input = StructuredPathInput {
-            path,
-            base: base_object,
-            local: local_object,
-            remote: remote_object,
-            local_identity: local.as_str(),
-            remote_identity: remote.as_str(),
-        };
-        if let Some((resolved, resolution)) = try_structured_path(options, &input)? {
-            automatically_resolved.push(resolved.clone());
-            resolved_paths.push(resolved);
-            resolutions.push(resolution);
-        } else {
-            if remote_object.is_some_and(|object| !is_projectable_blob(object)) {
-                return Ok(None);
-            }
-            unresolved_paths.push(path.clone());
-            resolved_paths.push(resolved_path(path.clone(), remote_object));
-        }
-    }
-    if resolutions.is_empty() {
-        return Ok(None);
-    }
-    let request = GitContentMergeResolutionRequest {
-        base: base.clone(),
-        accepted_remote: remote.clone(),
-        local_candidate: local.clone(),
-        paths: resolved_paths,
-    };
-    let tree = engine
-        .resolve_merge_tree_with_paths(repository, &request)
-        .map_err(|error| error.to_string())?;
-    let written = validate_resolved_tree(
-        engine,
-        repository,
-        &tree,
-        &automatically_resolved,
-        &untracked,
-    )?;
-    for resolution in &mut resolutions {
-        resolution
-            .validation
-            .checks
-            .push(GitAutomaticValidationCheck::ExactTreeObject);
-        if let Some(merger) = &mut resolution.merger {
-            merger.output = written.get(&resolution.path).cloned();
-        }
-    }
-    Ok(Some(StructuredMergeAttempt {
-        tree,
-        resolutions,
-        unresolved_paths,
-    }))
-}
-
-fn untracked_resolution(
-    path: &str,
-    objects: [Option<&GitPathObject>; 3],
-) -> GitAutomaticResolution {
-    GitAutomaticResolution {
-        path: path.to_string(),
-        kind: MergeFileKind::classify(path, &objects.map(object_data)),
-        rule_id: GITIGNORE_UNTRACK_RULE_ID.to_string(),
-        validation: GitAutomaticResolutionValidation {
-            checks: vec![
-                GitAutomaticValidationCheck::PathSafe,
-                GitAutomaticValidationCheck::NewlyIgnored,
-            ],
-        },
-        merger: None,
-    }
-}
-
-/// The rule reported for a delete/modify conflict resolved as untracking.
-const GITIGNORE_UNTRACK_RULE_ID: &str = "gitignore-untracked";
-
-/// Conflicted paths that one side deleted while its `.gitignore` newly
-/// ignores them: that side untracked the path, so the merge drops it, and
-/// applying the result keeps each device's copy. Deciding from the deleting
-/// side's tree makes the result independent of which device merges.
-fn untracked_by_deleting_side<'a>(
-    engine: &dyn GitEngine,
-    repository: &GitRepository,
-    base: &GitOid,
-    local: (&GitOid, &BTreeMap<String, GitPathObject>),
-    remote: (&GitOid, &BTreeMap<String, GitPathObject>),
-    tracked_in_base: impl Iterator<Item = &'a String>,
-) -> Result<BTreeSet<String>, String> {
-    let (mut deleted_locally, mut deleted_remotely) = (Vec::new(), Vec::new());
-    for path in tracked_in_base {
-        match (local.1.contains_key(path), remote.1.contains_key(path)) {
-            (false, true) => deleted_locally.push(path.clone()),
-            (true, false) => deleted_remotely.push(path.clone()),
-            _ => {}
-        }
-    }
-    let mut untracked = BTreeSet::new();
-    for (side, deleted) in [(local.0, deleted_locally), (remote.0, deleted_remotely)] {
-        untracked.extend(
-            crate::tree_ignore::newly_ignored(engine, repository, base, side, &deleted)
-                .map_err(|error| error.to_string())?,
-        );
-    }
-    Ok(untracked)
-}
-
-fn automatic_validation(kind: MergeFileKind) -> GitAutomaticResolutionValidation {
-    GitAutomaticResolutionValidation {
-        checks: [
-            GitAutomaticValidationCheck::PathSafe,
-            GitAutomaticValidationCheck::SyntaxValid,
-            GitAutomaticValidationCheck::SchemaValid,
-            GitAutomaticValidationCheck::NoFileDeletion,
-        ]
-        .into_iter()
-        .chain(
-            (kind == MergeFileKind::Markdown)
-                .then_some(GitAutomaticValidationCheck::MarkdownLinksPreserved),
-        )
-        .collect(),
-    }
-}
-
-fn validate_resolved_tree(
-    engine: &dyn GitEngine,
-    repository: &GitRepository,
-    tree: &GitOid,
-    resolved_paths: &[GitResolvedPath],
-    untracked: &BTreeSet<String>,
-) -> Result<BTreeMap<String, GitOid>, String> {
-    let selected = resolved_paths
-        .iter()
-        .map(|path| path.path.clone())
-        .collect::<Vec<_>>();
-    let actual_objects = engine
-        .path_objects(repository, tree, &selected)
-        .map_err(|error| error.to_string())?;
-    for resolved in resolved_paths {
-        let Some(expected_data) = resolved.data.as_ref() else {
-            if untracked.contains(&resolved.path) {
-                if actual_objects.contains_key(&resolved.path) {
-                    return Err(format!(
-                        "resolved tree still tracks untracked path `{}`",
-                        resolved.path
-                    ));
-                }
-                continue;
-            }
-            return Err(format!(
-                "automatic resolution may not delete conflicted path `{}`",
-                resolved.path
-            ));
-        };
-        let actual = actual_objects
-            .get(&resolved.path)
-            .ok_or_else(|| format!("resolved tree omitted `{}`", resolved.path))?;
-        if actual.kind != "blob"
-            || actual.mode.as_str() != resolved.mode.as_deref().unwrap_or_default()
-            || actual.data.as_deref() != Some(expected_data.as_slice())
-        {
-            return Err(format!(
-                "resolved tree object for `{}` differs from the validated result",
-                resolved.path
-            ));
-        }
-    }
-    Ok(actual_objects
-        .into_iter()
-        .map(|(path, object)| (path, object.oid))
-        .collect())
-}
-
-fn object_data(object: Option<&GitPathObject>) -> Option<&[u8]> {
-    object.and_then(|object| object.data.as_deref())
-}
-
-enum MergedObjectMode {
-    Resolved(Option<String>),
-    Unresolved,
-}
-
-fn merge_object_mode(
-    base: Option<&GitPathObject>,
-    local: Option<&GitPathObject>,
-    remote: Option<&GitPathObject>,
-) -> MergedObjectMode {
-    let base = base.map(|object| object.mode.as_str());
-    let local = local.map(|object| object.mode.as_str());
-    let remote = remote.map(|object| object.mode.as_str());
-    if local == remote {
-        MergedObjectMode::Resolved(local.map(str::to_string))
-    } else if local == base {
-        MergedObjectMode::Resolved(remote.map(str::to_string))
-    } else if remote == base {
-        MergedObjectMode::Resolved(local.map(str::to_string))
-    } else {
-        MergedObjectMode::Unresolved
-    }
-}
-
-fn conflict_identity(
-    policy: &MergePolicy,
-    base: Option<&GitOid>,
-    local: &GitOid,
-    remote: &GitOid,
-    paths: &[String],
-) -> Result<(String, String), GitSyncError> {
-    let policy_hash = policy.policy_hash().map_err(|error| {
-        GitSyncError::Git(GitEngineError::UnsupportedRepository {
-            detail: error.to_string(),
-        })
-    })?;
-    Ok((
-        sync_conflict_id(policy.version, &policy_hash, base, local, remote, paths),
-        policy_hash,
-    ))
-}
-
-/// Deterministic conflict ID from the policy identity, merge base,
-/// order-independent candidate tips, and sorted conflicted paths.
-#[must_use]
-pub fn sync_conflict_id(
-    policy_version: u32,
-    policy_hash: &str,
-    base: Option<&GitOid>,
-    local: &GitOid,
-    remote: &GitOid,
-    paths: &[String],
-) -> String {
-    let mut candidates = [local.as_str(), remote.as_str()];
-    candidates.sort_unstable();
-    let mut canonical_paths = paths.to_vec();
-    canonical_paths.sort();
-    canonical_paths.dedup();
-    let identity = format!(
-        "{policy_version}\0{policy_hash}\0{}\0{}\0{}\0{}",
-        base.map_or("-", GitOid::as_str),
-        candidates[0],
-        candidates[1],
-        canonical_paths.join("\0")
-    );
-    blake3::hash(identity.as_bytes()).to_hex()[..32].to_string()
-}
-
-/// How a preserved local side fares when merged onto a later accepted version.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GitCarriedPath {
-    /// The accepted version already holds the local result; nothing to carry.
-    Unchanged,
-    /// The local change merges onto the accepted version without review.
-    Merged(GitResolvedPath),
-    /// The local change still conflicts with the accepted version.
-    Unresolved,
-}
-
-/// Merges one preserved conflict path's local side onto the current
-/// accepted version, as a sync would: a line merge first, then the shared
-/// merge policy's structured or `prefer_local` handling for paths that still
-/// overlap. Deletions, non-regular files, and mode conflicts stay unresolved.
-pub fn merge_carried_path(
-    engine: &dyn GitEngine,
-    options: &GitSyncOptions,
-    path: &str,
-    base: Option<&GitPathObject>,
-    local: Option<&GitPathObject>,
-    current: Option<&GitPathObject>,
-) -> Result<GitCarriedPath, GitSyncError> {
-    let same = |left: Option<&GitPathObject>, right: Option<&GitPathObject>| match (left, right) {
-        (None, None) => true,
-        (Some(left), Some(right)) => left.mode == right.mode && left.oid == right.oid,
-        _ => false,
-    };
-    if same(local, current) || same(local, base) {
-        return Ok(GitCarriedPath::Unchanged);
-    }
-    let (Some(base), Some(local), Some(current)) = (base, local, current) else {
-        return Ok(GitCarriedPath::Unresolved);
-    };
-    if ![base, local, current].into_iter().all(is_projectable_blob) {
-        return Ok(GitCarriedPath::Unresolved);
-    }
-    let MergedObjectMode::Resolved(Some(mode)) =
-        merge_object_mode(Some(base), Some(local), Some(current))
-    else {
-        return Ok(GitCarriedPath::Unresolved);
-    };
-    let merged = |data: Vec<u8>| {
-        if current.data.as_deref() == Some(data.as_slice()) && current.mode == mode {
-            GitCarriedPath::Unchanged
-        } else {
-            GitCarriedPath::Merged(GitResolvedPath {
-                path: path.to_string(),
-                mode: Some(mode.clone()),
-                data: Some(data),
-            })
-        }
-    };
-    let sides = [
-        object_data(Some(base)),
-        object_data(Some(local)),
-        object_data(Some(current)),
-    ];
-    let kind = MergeFileKind::classify(path, &sides);
-    if kind != MergeFileKind::Binary {
-        if let Some(data) = engine.merge_file(
-            sides[0].unwrap_or_default(),
-            sides[1].unwrap_or_default(),
-            sides[2].unwrap_or_default(),
-        )? {
-            return Ok(merged(data));
-        }
-    }
-    let input = StructuredPathInput {
-        path,
-        base: Some(base),
-        local: Some(local),
-        remote: Some(current),
-        local_identity: local.oid.as_str(),
-        remote_identity: current.oid.as_str(),
-    };
-    Ok(
-        match try_structured_path(options, &input)
-            .map_err(|detail| GitSyncError::Git(GitEngineError::UnsupportedRepository { detail }))?
-        {
-            Some((resolved, _)) => match resolved.data {
-                Some(data) => merged(data),
-                None => GitCarriedPath::Unresolved,
-            },
-            None => GitCarriedPath::Unresolved,
-        },
-    )
-}
-
-struct ConflictPreservationRequest<'a> {
-    options: &'a GitSyncOptions,
-    id: &'a str,
-    policy_hash: &'a str,
-    base: Option<&'a GitOid>,
-    local: &'a GitOid,
-    remote: &'a GitOid,
-    merge_tree: Option<&'a GitOid>,
-}
-
-fn preserve_conflict_refs(
-    engine: &dyn GitEngine,
-    repository: &GitRepository,
-    request: &ConflictPreservationRequest<'_>,
-) -> Result<(GitConflictRefs, GitOid), GitSyncError> {
-    let options = request.options;
-    let id = request.id;
-    let policy_hash = request.policy_hash;
-    let base = request.base;
-    let local = request.local;
-    let remote = request.remote;
-    let merge_tree = request.merge_tree;
-    let base_ref = base.map(|_| conflict_ref(id, "base")).transpose()?;
-    let local_ref = conflict_ref(id, "local")?;
-    let remote_ref = conflict_ref(id, "remote")?;
-    let record_ref = conflict_ref(id, "record")?;
-    if let (Some(base), Some(reference)) = (base, base_ref.as_ref()) {
-        preserve_exact_ref(engine, repository, reference, base)?;
-    }
-    preserve_exact_ref(engine, repository, &local_ref, local)?;
-    preserve_exact_ref(engine, repository, &remote_ref, remote)?;
-    let tree = merge_tree
-        .cloned()
-        .map_or_else(|| engine.tree_oid(repository, local), Ok)?;
-    let refs = GitSyncRefs::for_options(options)?;
-    let base_trailer = base.map_or_else(
-        || "Vulcan-Conflict-Base: none\n".to_string(),
-        |base| format!("Vulcan-Conflict-Base: {base}\n"),
-    );
-    let provenance_revision = engine.create_reproducible_commit(
-        repository,
-        &tree,
-        &[remote.clone(), local.clone()],
-        &format!(
-            "vulcan preserved conflict\n\nVulcan-Conflict: {id}\n{base_trailer}{}{}",
-            sync_trailers(
-                &refs,
-                options,
-                &format!("{remote}+{local};policy={policy_hash}"),
-            ),
-            git_scope_trailers(engine, repository)?
-        ),
-    )?;
-    preserve_exact_ref(engine, repository, &record_ref, &provenance_revision)?;
-    Ok((
-        GitConflictRefs {
-            base: base_ref,
-            local: local_ref,
-            remote: remote_ref,
-            record: record_ref,
-        },
-        provenance_revision,
-    ))
-}
-
-fn preserve_exact_ref(
-    engine: &dyn GitEngine,
-    repository: &GitRepository,
-    reference: &GitRefName,
-    target: &GitOid,
-) -> Result<(), GitSyncError> {
-    if engine.read_ref(repository, reference)?.as_ref() == Some(target) {
-        return Ok(());
-    }
-    if engine.create_ref(repository, reference, target)? == crate::GitRefCreateResult::Created
-        || engine.read_ref(repository, reference)?.as_ref() == Some(target)
-    {
-        return Ok(());
-    }
-    Err(GitEngineError::UnsupportedRepository {
-        detail: format!(
-            "preserved conflict ref `{reference}` already identifies a different commit"
-        ),
-    }
-    .into())
-}
-
 fn snapshot_message(
     refs: &GitSyncRefs,
     options: &GitSyncOptions,
     source: Option<&GitOid>,
     link: Option<&GitOid>,
-    published: Option<&GitOid>,
 ) -> String {
     let link = link.map_or_else(String::new, |link| {
         format!("Vulcan-Sync-Branch-Link: {link}\n")
     });
     format!(
-        "vulcan live snapshot\n\n{}{link}{}",
+        "vulcan live snapshot\n\n{}{link}",
         sync_trailers(refs, options, source.map_or("unborn", GitOid::as_str)),
-        scope_trailers(options, published)
     )
-}
-
-/// Path-scoped provenance: the scope identity and the published branch tip
-/// whose tree supplied every unscoped path. Empty in the other modes.
-fn scope_trailers(options: &GitSyncOptions, published: Option<&GitOid>) -> String {
-    scope_trailer_lines(
-        options
-            .scope
-            .as_ref()
-            .filter(|_| options.worktree == WorktreeSyncMode::Paths),
-        published,
-    )
-}
-
-fn scope_trailer_lines(scope: Option<&GitWorktreeScope>, published: Option<&GitOid>) -> String {
-    let Some(scope) = scope else {
-        return String::new();
-    };
-    let published =
-        published.map_or_else(String::new, |tip| format!("{SCOPE_TIP_TRAILER}: {tip}\n"));
-    format!("{SCOPE_TRAILER}: {}\n{published}", scope.hash())
-}
-
-/// The ref namespace version a live commit for `repository` declares.
-#[must_use]
-pub fn git_ref_namespace_version(repository: &GitRepository) -> u32 {
-    if repository.worktree_scope.is_some() {
-        PATH_SCOPED_REF_NAMESPACE_VERSION
-    } else {
-        VULCAN_REF_NAMESPACE_VERSION
-    }
-}
-
-/// Scope provenance for a live commit written outside a sync cycle (conflict
-/// resolution, proposal approval, epoch rollover): the scope hash and the
-/// published branch tip. Empty for a repository without a worktree scope.
-pub fn git_scope_trailers(
-    engine: &dyn GitEngine,
-    repository: &GitRepository,
-) -> Result<String, GitSyncError> {
-    let Some(scope) = &repository.worktree_scope else {
-        return Ok(String::new());
-    };
-    let published = git_published_branch_tip(engine, repository)?;
-    Ok(scope_trailer_lines(Some(scope), published.as_ref()))
-}
-
-/// [`git_scope_trailers`] with an explicit published tip, for reproducible
-/// commits that must not depend on when they were created.
-#[must_use]
-pub fn git_scope_trailers_for(repository: &GitRepository, published: Option<&GitOid>) -> String {
-    scope_trailer_lines(repository.worktree_scope.as_ref(), published)
-}
-
-const SCOPE_TRAILER: &str = "Vulcan-Sync-Scope";
-const SCOPE_TIP_TRAILER: &str = "Vulcan-Sync-Scope-Branch";
-
-/// The scope a cycle runs with: required in path-scoped mode, absent otherwise.
-fn options_scope(options: &GitSyncOptions) -> Result<Option<GitWorktreeScope>, GitSyncError> {
-    match (options.worktree, &options.scope) {
-        (WorktreeSyncMode::Paths, Some(scope)) => Ok(Some(scope.clone())),
-        (WorktreeSyncMode::Paths, None) => {
-            Err(GitSyncError::Git(GitEngineError::UnsupportedRepository {
-                detail: "path-scoped sync (sync.worktree = \"paths\") needs sync.paths".to_string(),
-            }))
-        }
-        _ => Ok(None),
-    }
-}
-
-/// Refuses to reconcile with a live tip written under a different path scope
-/// (or none) unless this device's published branch is strictly newer than
-/// the one that tip records, so a device with stale configuration never
-/// rewrites paths another device still synchronizes from its worktree.
-fn require_compatible_scope(
-    engine: &dyn GitEngine,
-    report: &GitSyncReport,
-    remote: &GitOid,
-) -> Result<(), GitSyncError> {
-    let message = engine.commit_metadata(&report.repository, remote)?.message;
-    let remote_scope = trailer(&message, SCOPE_TRAILER);
-    let ours = report
-        .repository
-        .worktree_scope
-        .as_ref()
-        .map(GitWorktreeScope::hash);
-    if remote_scope.is_none() || remote_scope == ours.as_deref() {
-        // Unscoped history (or Vulcan commits without provenance) may always
-        // be adopted: switching to path scopes starts from it.
-        return Ok(());
-    }
-    let mismatch = |reason: &str| {
-        GitSyncError::ScopeMismatch {
-        detail: format!(
-            "remote live was written with a different sync.paths scope than this device uses, and {reason}; sync again once this device's branch includes the configuration change"
-        ),
-    }
-    };
-    let Some(theirs) =
-        trailer(&message, SCOPE_TIP_TRAILER).and_then(|tip| GitOid::parse(tip.trim()).ok())
-    else {
-        return Err(mismatch("it records no published branch"));
-    };
-    let Some(ours) = git_published_branch_tip(engine, &report.repository)? else {
-        return Err(mismatch("this device has no published branch"));
-    };
-    if ours != theirs && engine.is_ancestor(&report.repository, &theirs, &ours)? {
-        Ok(())
-    } else {
-        Err(mismatch("its branch is at least as new as this device's"))
-    }
-}
-
-fn merge_message(
-    refs: &GitSyncRefs,
-    options: &GitSyncOptions,
-    remote: &GitOid,
-    local: &GitOid,
-    published: Option<&GitOid>,
-    resolutions: &[GitAutomaticResolution],
-) -> String {
-    format!(
-        "vulcan live merge\n\n{}{}{}",
-        sync_trailers(refs, options, &format!("{remote}+{local}")),
-        scope_trailers(options, published),
-        merger_trailers(resolutions)
-    )
-}
-
-/// Merge commits record at most this many `Vulcan-Sync-Merger` trailers;
-/// the rest are counted in `Vulcan-Sync-Merger-Omitted`.
-const MAX_MERGER_TRAILERS: usize = 32;
-
-/// One `Vulcan-Sync-Merger` trailer per path a registered merger resolved:
-/// the merger and version, the exact base, local, and remote input blobs
-/// (`-` for a side without the file), the output blob, and the path as a
-/// JSON string. Every value follows from the merge inputs alone, so the
-/// trailers add nothing device-specific to the commit.
-fn merger_trailers(resolutions: &[GitAutomaticResolution]) -> String {
-    fn side(oid: Option<&GitOid>) -> &str {
-        oid.map_or("-", GitOid::as_str)
-    }
-    use std::fmt::Write as _;
-    let evidence = resolutions
-        .iter()
-        .filter_map(|resolution| Some((resolution.path.as_str(), resolution.merger.as_ref()?)))
-        .collect::<Vec<_>>();
-    let mut trailers = String::new();
-    for (path, merger) in evidence.iter().take(MAX_MERGER_TRAILERS) {
-        let _ = writeln!(
-            trailers,
-            "Vulcan-Sync-Merger: {}@{} base={} local={} remote={} output={} path={}",
-            merger.id,
-            merger.version,
-            side(merger.base.as_ref()),
-            side(merger.local.as_ref()),
-            side(merger.remote.as_ref()),
-            side(merger.output.as_ref()),
-            serde_json::to_string(path).expect("a string serializes"),
-        );
-    }
-    if evidence.len() > MAX_MERGER_TRAILERS {
-        let _ = writeln!(
-            trailers,
-            "Vulcan-Sync-Merger-Omitted: {}",
-            evidence.len() - MAX_MERGER_TRAILERS
-        );
-    }
-    trailers
 }
 
 fn sync_trailers(refs: &GitSyncRefs, options: &GitSyncOptions, source: &str) -> String {
-    let policy_hash = options
-        .merge_policy
-        .policy_hash()
-        .expect("sync policy is validated before creating commits");
     format!(
-        "Vulcan-Sync-Version: {SYNC_PROTOCOL_VERSION}\nVulcan-Ref-Namespace: {}\nVulcan-Sync-Device: {}\nVulcan-Sync-Profile: {}\nVulcan-Sync-Policy: {}:{policy_hash}\nVulcan-Sync-Source: {source}\nVulcan-Sync-Semantic: false\n",
+        "Vulcan-Sync-Version: {SYNC_PROTOCOL_VERSION}\nVulcan-Ref-Namespace: {}\nVulcan-Sync-Device: {}\nVulcan-Sync-Profile: {}\nVulcan-Sync-Source: {source}\nVulcan-Sync-Semantic: false\n",
         refs.namespace_version,
         options.device_id.as_str(),
         refs.local
@@ -5648,7 +2525,6 @@ fn sync_trailers(refs: &GitSyncRefs, options: &GitSyncOptions, source: &str) -> 
             .split('/')
             .nth(3)
             .unwrap_or("unknown"),
-        options.merge_policy.version,
     )
 }
 
@@ -5689,9 +2565,9 @@ fn remove_lock_files(directory: &Path, depth: usize) {
 mod tests {
     use super::*;
     use crate::GitCliEngine;
-    use fs2::FileExt;
+
     use std::fs;
-    use std::fs::OpenOptions;
+
     use std::path::PathBuf;
     use std::process::Command;
     use tempfile::TempDir;
@@ -5731,116 +2607,6 @@ mod tests {
         }
     }
 
-    fn conflict_blob(data: &[u8]) -> GitPathObject {
-        GitPathObject {
-            mode: "100644".to_string(),
-            kind: "blob".to_string(),
-            oid: GitOid::parse("1111111111111111111111111111111111111111").expect("object ID"),
-            data: Some(data.to_vec()),
-        }
-    }
-
-    #[test]
-    fn serialized_sync_conflicts_are_bounded_summaries() {
-        #[derive(Serialize)]
-        struct Wrapper {
-            #[serde(serialize_with = "serialize_sync_report_conflict")]
-            conflict: Option<GitSyncConflict>,
-            #[serde(serialize_with = "serialize_sync_report_application")]
-            application: Option<GitTreeApplyPlan>,
-        }
-
-        let paths = (0..10_000)
-            .map(|index| format!("notes/{index:05}.md"))
-            .collect::<Vec<_>>();
-        let classifications = paths
-            .iter()
-            .map(|path| GitConflictClassification {
-                path: path.clone(),
-                class: GitConflictClass::OverlappingText,
-                file_kind: MergeFileKind::Markdown,
-                rule_id: "default".to_string(),
-                configured_resolution: MergeResolution::RequireReview,
-                effective_resolution: MergeResolution::RequireReview,
-                diagnostic_code: "content".to_string(),
-                formatting_candidate: false,
-            })
-            .collect();
-        let oid = GitOid::parse("1111111111111111111111111111111111111111").expect("object ID");
-        let git_ref = |name: &str| GitRefName::parse(name).expect("Git ref");
-        let conflict = GitSyncConflict {
-            id: "conflict-1".to_string(),
-            scope: GitConflictScope::Paths,
-            base: Some(oid.clone()),
-            remote: oid.clone(),
-            local: oid.clone(),
-            paths,
-            classifications,
-            policy_version: 1,
-            policy_hash: "policy".to_string(),
-            preserved_refs: GitConflictRefs {
-                base: Some(git_ref("refs/vulcan/sync/conflicts/conflict-1/base")),
-                local: git_ref("refs/vulcan/sync/conflicts/conflict-1/local"),
-                remote: git_ref("refs/vulcan/sync/conflicts/conflict-1/remote"),
-                record: git_ref("refs/vulcan/sync/conflicts/conflict-1/record"),
-            },
-            provenance_revision: oid.clone(),
-            projection: None,
-            merge_tree: None,
-            diagnostics: "d".repeat(10_000),
-        };
-
-        let application = GitTreeApplyPlan {
-            expected_revision: oid.clone(),
-            target_revision: oid,
-            additions: 0,
-            updates: 10_000,
-            deletions: 0,
-            type_changes: 0,
-            paths: (0..10_000)
-                .map(|index| crate::GitTreeApplyPath {
-                    path: format!("notes/{index:05}.md"),
-                    action: crate::GitTreeApplyAction::Update,
-                    expected: None,
-                    target: None,
-                })
-                .collect(),
-        };
-        let encoded = serde_json::to_vec(&Wrapper {
-            conflict: Some(conflict),
-            application: Some(application),
-        })
-        .expect("serialize summary");
-        let value: serde_json::Value = serde_json::from_slice(&encoded).expect("JSON");
-        let summary = &value["conflict"];
-        assert_eq!(summary["path_count"], 10_000);
-        assert_eq!(summary["paths"].as_array().expect("paths").len(), 16);
-        assert_eq!(
-            summary["classifications"]
-                .as_array()
-                .expect("classes")
-                .len(),
-            16
-        );
-        assert_eq!(summary["paths_complete"], false);
-        assert_eq!(summary["classifications_complete"], false);
-        assert_eq!(
-            summary["diagnostics"].as_str().expect("diagnostics").len(),
-            4096
-        );
-        assert_eq!(summary["diagnostics_complete"], false);
-        assert_eq!(summary["detail_conflict_id"], "conflict-1");
-        let application = &value["application"];
-        assert_eq!(application["path_count"], 10_000);
-        assert_eq!(application["paths"].as_array().expect("paths").len(), 16);
-        assert_eq!(application["paths_complete"], false);
-        assert!(
-            encoded.len() < 128 * 1024,
-            "summary was {} bytes",
-            encoded.len()
-        );
-    }
-
     #[test]
     fn git_versions_below_the_merge_tree_floor_are_rejected() {
         let installation = |major: u32, minor: u32, patch: u32| GitInstallation {
@@ -5857,216 +2623,6 @@ mod tests {
         assert!(require_git_version(&installation(2, 37, 1)).is_err());
         assert!(require_git_version(&installation(2, 38, 0)).is_ok());
         assert!(require_git_version(&installation(2, 47, 0)).is_ok());
-    }
-
-    #[test]
-    fn conflict_classes_cover_structural_content_and_portability_failures() {
-        let text = conflict_blob(b"text\n");
-        let binary = conflict_blob(b"\0binary");
-        let paths = vec!["Note.md".to_string()];
-        assert_eq!(
-            test_conflict_class(
-                "Note.md",
-                &paths,
-                "CONFLICT (content)",
-                Some(&text),
-                Some(&text),
-                Some(&text),
-                MergeFileKind::Markdown,
-            ),
-            GitConflictClass::OverlappingText
-        );
-        assert_eq!(
-            test_conflict_class(
-                "asset.bin",
-                &["asset.bin".to_string()],
-                "CONFLICT (content)",
-                Some(&binary),
-                Some(&binary),
-                Some(&binary),
-                MergeFileKind::Binary,
-            ),
-            GitConflictClass::OverlappingBinary
-        );
-        assert_eq!(
-            test_conflict_class(
-                "Note.md",
-                &paths,
-                "CONFLICT (modify/delete)",
-                Some(&text),
-                Some(&text),
-                None,
-                MergeFileKind::Markdown,
-            ),
-            GitConflictClass::DeleteModify
-        );
-        assert_eq!(
-            test_conflict_class(
-                "renamed.md",
-                &["renamed.md".to_string()],
-                "CONFLICT (rename/rename)",
-                Some(&text),
-                Some(&text),
-                Some(&text),
-                MergeFileKind::Markdown,
-            ),
-            GitConflictClass::RenameRename
-        );
-        assert_eq!(
-            test_conflict_class(
-                "Notes",
-                &["Notes".to_string()],
-                "CONFLICT (directory/file)",
-                Some(&text),
-                Some(&text),
-                Some(&text),
-                MergeFileKind::Text,
-            ),
-            GitConflictClass::DirectoryFile
-        );
-        assert_eq!(
-            test_conflict_class(
-                "Note.md",
-                &["Note.md".to_string(), "note.md".to_string()],
-                "",
-                Some(&text),
-                Some(&text),
-                Some(&text),
-                MergeFileKind::Markdown,
-            ),
-            GitConflictClass::CaseCollision
-        );
-        assert_eq!(
-            test_conflict_class(
-                ".obsidian/workspace.json",
-                &[".obsidian/workspace.json".to_string()],
-                "CONFLICT (content)",
-                Some(&text),
-                Some(&text),
-                Some(&text),
-                MergeFileKind::ObsidianState,
-            ),
-            GitConflictClass::DeviceLocalState
-        );
-    }
-
-    #[test]
-    fn classification_context_indexes_large_reordered_path_sets_once() {
-        let mut paths = (0..10_000)
-            .map(|index| format!("Notes/Note{index:05}.md"))
-            .collect::<Vec<_>>();
-        paths.push("notes/note00042.md".to_string());
-        let diagnostics = "CONFLICT (rename/rename): Notes/Note00077.md renamed in both branches\n\
-CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
-        let context = ConflictClassificationContext::new(&paths, diagnostics);
-        assert_eq!(context.normalized_paths, paths.len());
-        assert_eq!(context.diagnostic_lines_scanned, 2);
-        assert!(context.case_collisions.contains("Notes/Note00042.md"));
-        assert!(context.case_collisions.contains("notes/note00042.md"));
-        assert!(context.rename_rename.contains("Notes/Note00077.md"));
-        assert!(context.directory_file.contains("Notes/Note00088.md"));
-
-        paths.reverse();
-        let reordered = ConflictClassificationContext::new(&paths, diagnostics);
-        assert_eq!(reordered.normalized_paths, paths.len());
-        assert_eq!(reordered.diagnostic_lines_scanned, 2);
-        assert_eq!(reordered.case_collisions, context.case_collisions);
-        assert_eq!(reordered.rename_rename, context.rename_rename);
-        assert_eq!(reordered.directory_file, context.directory_file);
-    }
-
-    #[derive(Default)]
-    struct RecordingObserver {
-        phases: Vec<GitSyncPhase>,
-        cancel_on: Option<GitSyncPhase>,
-        cancellation: SyncCancellationToken,
-    }
-
-    impl GitSyncObserver for RecordingObserver {
-        fn progress(&mut self, progress: &GitSyncProgress) -> Result<(), GitSyncObserverError> {
-            self.phases.push(progress.phase);
-            if self.cancel_on == Some(progress.phase) {
-                self.cancellation.cancel();
-            }
-            Ok(())
-        }
-    }
-
-    struct RejectFirstPushObserver {
-        repository: PathBuf,
-        fired: bool,
-    }
-
-    struct EditBeforePushObserver {
-        repository: PathBuf,
-        remote: PathBuf,
-        fired: bool,
-        remote_was_absent_on_retry: bool,
-    }
-
-    struct EditDuringVerificationObserver {
-        repository: PathBuf,
-        fired: bool,
-    }
-
-    struct EditDuringApplicationObserver {
-        repository: PathBuf,
-        fired: bool,
-    }
-
-    impl GitSyncObserver for EditBeforePushObserver {
-        fn progress(&mut self, progress: &GitSyncProgress) -> Result<(), GitSyncObserverError> {
-            if progress.phase == GitSyncPhase::Pushing && !self.fired {
-                self.fired = true;
-                fs::write(
-                    self.repository.join("Home.md"),
-                    "edited during pre-push validation\n",
-                )
-                .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
-            } else if progress.phase == GitSyncPhase::Capturing && progress.attempt == 1 {
-                let status = Command::new("git")
-                    .args(["--git-dir"])
-                    .arg(&self.remote)
-                    .args([
-                        "rev-parse",
-                        "--quiet",
-                        "--verify",
-                        "refs/heads/__vulcan-sync/live",
-                    ])
-                    .status()
-                    .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
-                self.remote_was_absent_on_retry = !status.success();
-            }
-            Ok(())
-        }
-    }
-
-    impl GitSyncObserver for EditDuringVerificationObserver {
-        fn progress(&mut self, progress: &GitSyncProgress) -> Result<(), GitSyncObserverError> {
-            if progress.phase == GitSyncPhase::Verifying && !self.fired {
-                self.fired = true;
-                fs::write(
-                    self.repository.join("Home.md"),
-                    "edited during verification\n",
-                )
-                .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
-            }
-            Ok(())
-        }
-    }
-
-    impl GitSyncObserver for EditDuringApplicationObserver {
-        fn progress(&mut self, progress: &GitSyncProgress) -> Result<(), GitSyncObserverError> {
-            if progress.phase == GitSyncPhase::Applying && !self.fired {
-                self.fired = true;
-                fs::write(
-                    self.repository.join("Home.md"),
-                    "edited while the remote tree was being applied\n",
-                )
-                .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
-            }
-            Ok(())
-        }
     }
 
     struct MoveHeadObserver {
@@ -6106,24 +2662,6 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         }
     }
 
-    impl GitSyncObserver for RejectFirstPushObserver {
-        fn progress(&mut self, progress: &GitSyncProgress) -> Result<(), GitSyncObserverError> {
-            if progress.phase == GitSyncPhase::Pushing && !self.fired {
-                self.fired = true;
-                run_git(
-                    &self.repository,
-                    &[
-                        "push",
-                        "--quiet",
-                        "origin",
-                        "HEAD:refs/heads/__vulcan-sync/live",
-                    ],
-                );
-            }
-            Ok(())
-        }
-    }
-
     fn run_git(path: &Path, arguments: &[&str]) {
         let status = Command::new("git")
             .current_dir(path)
@@ -6144,115 +2682,6 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
             .expect("Git output should be UTF-8")
             .trim()
             .to_string()
-    }
-
-    fn assert_conflict_projection(reader: &Path, conflict: &GitSyncConflict) {
-        let projection = conflict
-            .projection
-            .as_ref()
-            .expect("blob conflicts have a safe projection candidate");
-        assert_eq!(
-            git_stdout(reader, &["show", &format!("{}:Home.md", projection.tree)]),
-            "writer version"
-        );
-        for path in ["Writer.md", "Reader.md"] {
-            assert!(
-                !git_stdout(reader, &["show", &format!("{}:{path}", projection.tree)]).is_empty()
-            );
-        }
-        assert!(!reader.join(".sync-conflicts").exists());
-    }
-
-    fn assert_published_conflict_state(
-        engine: &dyn GitEngine,
-        reader: &Path,
-        report: &GitSyncReport,
-    ) {
-        let conflict = report.conflict.as_ref().expect("conflict details");
-        assert_conflict_projection(reader, conflict);
-        let projection = conflict.projection.as_ref().expect("projection");
-        assert!(projection.published);
-        assert!(projection.applied);
-        assert!(report.actions.contains(&GitSyncAction::Pushed));
-        assert!(report.actions.contains(&GitSyncAction::WorktreeApplied));
-        assert_eq!(
-            engine
-                .read_ref(&report.repository, &conflict.preserved_refs.local)
-                .expect("conflict local ref"),
-            Some(conflict.local.clone())
-        );
-        assert_eq!(
-            engine
-                .read_ref(&report.repository, &conflict.preserved_refs.remote)
-                .expect("conflict remote ref"),
-            Some(conflict.remote.clone())
-        );
-        assert_eq!(
-            conflict.preserved_refs.base.as_ref().map(|reference| engine
-                .read_ref(&report.repository, reference)
-                .expect("base ref")),
-            Some(conflict.base.clone())
-        );
-        assert_eq!(
-            engine
-                .read_ref(&report.repository, &conflict.preserved_refs.record)
-                .expect("provenance ref"),
-            Some(conflict.provenance_revision.clone())
-        );
-        assert_eq!(
-            engine
-                .remote_ref(
-                    &report.repository,
-                    &GitSyncOptions::default().remote,
-                    &remote_conflict_ref(&conflict.id, "record").expect("remote conflict ref"),
-                )
-                .expect("remote provenance ref"),
-            Some(conflict.provenance_revision.clone())
-        );
-        let provenance_message = git_stdout(
-            reader,
-            &[
-                "show",
-                "-s",
-                "--format=%B",
-                conflict.provenance_revision.as_str(),
-            ],
-        );
-        assert!(provenance_message.contains(&format!("Vulcan-Conflict: {}", conflict.id)));
-        assert!(provenance_message.contains("Vulcan-Sync-Semantic: false"));
-        assert_eq!(
-            fs::read_to_string(reader.join("Home.md")).expect("accepted remote note"),
-            "writer version\n"
-        );
-        assert!(!reader.join(".sync-conflicts").exists());
-        assert_eq!(
-            engine
-                .read_ref(&report.repository, &report.refs.local)
-                .expect("accepted local ref"),
-            report.accepted
-        );
-
-        let repeated = sync_git_once(engine, reader, &GitSyncOptions::default())
-            .expect("repeat convergence report");
-        assert_eq!(repeated.outcome, GitSyncOutcome::UpToDate);
-        assert!(repeated.conflict.is_none());
-        engine
-            .update_ref(
-                &report.repository,
-                &conflict.preserved_refs.record,
-                &conflict.local,
-            )
-            .expect("simulate provenance ref tampering");
-        let error = preserve_exact_ref(
-            engine,
-            &report.repository,
-            &conflict.preserved_refs.record,
-            &conflict.provenance_revision,
-        )
-        .expect_err("a changed preservation ref must fail closed");
-        assert!(error
-            .to_string()
-            .contains("already identifies a different commit"));
     }
 
     fn init_repo(path: &Path) {
@@ -6333,50 +2762,6 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         (temporary, remote, writer)
     }
 
-    #[test]
-    fn repository_lock_contention_fails_before_sync_mutation() {
-        let (_temporary, _remote, writer) = setup_remote_and_writer();
-        let engine = GitCliEngine::default();
-        let repository = engine.discover_repository(&writer).expect("repository");
-        let lock_path = repository.git_dir.join("vulcan-sync/sync.lock");
-        fs::create_dir_all(lock_path.parent().expect("lock parent")).expect("lock parent");
-        let lock = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(&lock_path)
-            .expect("lock file");
-        lock.try_lock_exclusive().expect("fixture lock");
-        let refs_before = engine
-            .list_refs(
-                &repository,
-                &GitRefName::parse("refs/vulcan").expect("Vulcan ref prefix"),
-            )
-            .expect("refs before contention");
-
-        let error = sync_git_once(&engine, &writer, &GitSyncOptions::default())
-            .expect_err("contended repository must fail");
-
-        assert!(matches!(error, GitSyncError::Locked));
-        assert_eq!(
-            engine
-                .list_refs(
-                    &repository,
-                    &GitRefName::parse("refs/vulcan").expect("Vulcan ref prefix"),
-                )
-                .expect("refs after contention"),
-            refs_before
-        );
-        FileExt::unlock(&lock).expect("release fixture lock");
-        drop(lock);
-        assert!(lock_path.exists(), "the advisory lock file remains on disk");
-
-        let recovered = sync_git_once(&engine, &writer, &GitSyncOptions::default())
-            .expect("an unlocked stale lock file must not block synchronization");
-        assert_eq!(recovered.outcome, GitSyncOutcome::Bootstrapped);
-    }
-
     fn clone_reader(temporary: &TempDir, remote: &Path, writer: &Path) -> PathBuf {
         let reader = temporary.path().join("reader");
         run_git(
@@ -6405,201 +2790,9 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         reader
     }
 
-    #[cfg(unix)]
-    fn assert_reused_engine_process_budget(engine: &GitCliEngine, writer: &Path, trace: &Path) {
-        fs::write(trace, "").expect("reset shared-engine invocation trace");
-        sync_git_once(engine, writer, &GitSyncOptions::default())
-            .expect("steady sync through reused engine");
-        let commands = fs::read_to_string(trace).expect("shared-engine invocation trace");
-        let lines = commands.lines().collect::<Vec<_>>();
-        assert!(
-            lines.iter().all(|line| *line != "--version"),
-            "a reused engine should retain its validated installation: {commands}"
-        );
-        assert_eq!(
-            lines
-                .iter()
-                .filter(|line| line.contains(" config --get-regexp"))
-                .count(),
-            1,
-            "an untracked branch should require one fallback config read: {commands}"
-        );
-        assert_eq!(
-            lines
-                .iter()
-                .filter(|line| line.contains(" for-each-ref --format=%(upstream:"))
-                .count(),
-            1,
-            "the branch lane should ask Git to resolve its upstream: {commands}"
-        );
-        assert!(
-            lines.len() <= 27,
-            "reused-engine sync exceeded its 27-process budget (including the remote namespace check) ({}): {commands}",
-            lines.len()
-        );
-    }
-
-    #[cfg(unix)]
-    fn assert_single_remote_observation(lines: &[&str], commands: &str, report: &GitSyncReport) {
-        assert_eq!(
-            lines
-                .iter()
-                .filter(|line| line.contains(" ls-remote "))
-                .count(),
-            1,
-            "steady sync should observe the remote in one query: {commands}"
-        );
-        assert!(
-            lines.iter().any(|line| line.contains(" ls-remote ")
-                && line.contains(report.refs.device.as_str())
-                && line.contains(report.refs.live.as_str())),
-            "the single query should cover the device backup and live refs: {commands}"
-        );
-        assert!(
-            lines.iter().all(|line| !line.contains(" push ")),
-            "an already published device backup must not open a push connection: {commands}"
-        );
-    }
-
-    #[cfg(unix)]
-    fn assert_direct_engine_probes(lines: &[&str], commands: &str) {
-        assert_eq!(
-            lines.iter().filter(|line| **line == "--version").count(),
-            1,
-            "a fresh direct engine should probe Git once: {commands}"
-        );
-        assert_eq!(
-            lines
-                .iter()
-                .filter(|line| line.ends_with(" rev-parse --verify --quiet HEAD^{commit}"))
-                .count(),
-            2,
-            "an existing local sync ref should avoid a redundant capture-base lookup: {commands}"
-        );
-        assert_eq!(
-            lines
-                .iter()
-                .filter(|line| line.contains(" config --get-regexp"))
-                .count(),
-            1,
-            "an untracked branch should require one fallback config read: {commands}"
-        );
-        assert_eq!(
-            lines
-                .iter()
-                .filter(|line| line.contains(" for-each-ref --format=%(upstream:"))
-                .count(),
-            1,
-            "the branch lane should ask Git to resolve its upstream: {commands}"
-        );
-    }
-
-    #[test]
-    fn first_sync_bootstraps_the_remote_live_ref() {
-        let (_temporary, _remote, writer) = setup_remote_and_writer();
-
-        let report = sync_git_once(
-            &GitCliEngine::default(),
-            &writer,
-            &GitSyncOptions::default(),
-        )
-        .expect("sync should succeed");
-
-        assert_eq!(report.outcome, GitSyncOutcome::Bootstrapped);
-        assert_eq!(report.refs.namespace_version, VULCAN_REF_NAMESPACE_VERSION);
-        assert!(report.actions.contains(&GitSyncAction::Pushed));
-        assert!(!report.actions.contains(&GitSyncAction::WorktreeApplied));
-        assert_eq!(report.accepted, report.local_snapshot);
-        assert!(report.requirements.required_filters.is_empty());
-    }
-
-    #[test]
-    fn future_remote_namespace_blocks_reconciliation_after_safety_backup() {
-        let (_temporary, _remote, writer) = setup_remote_and_writer();
-        let engine = GitCliEngine::default();
-        let options = GitSyncOptions::default();
-        let bootstrap = sync_git_once(&engine, &writer, &options).expect("bootstrap");
-        let accepted = bootstrap.accepted.expect("accepted revision");
-        let tree = git_stdout(&writer, &["rev-parse", &format!("{accepted}^{{tree}}")]);
-        let future = git_stdout(
-            &writer,
-            &[
-                "commit-tree",
-                &tree,
-                "-p",
-                accepted.as_str(),
-                "-m",
-                "future writer\n\nVulcan-Ref-Namespace: 5",
-            ],
-        );
-        run_git(
-            &writer,
-            &[
-                "push",
-                "--quiet",
-                "origin",
-                &format!("{future}:{}", bootstrap.refs.live),
-            ],
-        );
-        fs::write(writer.join("Home.md"), "local bytes before upgrade\n").expect("local edit");
-
-        let error = sync_git_once(&engine, &writer, &options)
-            .expect_err("unknown remote namespace must block reconciliation");
-        assert!(error
-            .to_string()
-            .contains("unsupported Vulcan ref namespace version `5`"));
-        let repository = engine.discover_repository(&writer).expect("repository");
-        assert_eq!(
-            engine
-                .remote_ref(&repository, &options.remote, &bootstrap.refs.live)
-                .expect("remote live")
-                .expect("live revision")
-                .as_str(),
-            future
-        );
-        let backup = engine
-            .remote_ref(&repository, &options.remote, &bootstrap.refs.device)
-            .expect("remote safety head")
-            .expect("published backup");
-        assert_eq!(
-            git_stdout(&writer, &["show", &format!("{backup}:Home.md")]),
-            "local bytes before upgrade"
-        );
-    }
-
-    #[test]
-    fn uploaded_uncommitted_worktree_reuses_the_hidden_snapshot() {
-        let (_temporary, _remote, writer) = setup_remote_and_writer();
-        let engine = GitCliEngine::default();
-        let repository = engine.discover_repository(&writer).expect("repository");
-        let head = engine
-            .head_commit(&repository)
-            .expect("HEAD")
-            .expect("initial commit");
-        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap");
-        fs::write(writer.join("Home.md"), "uploaded but not committed\n")
-            .expect("uncommitted edit");
-
-        let uploaded = sync_git_once(&engine, &writer, &GitSyncOptions::default())
-            .expect("upload uncommitted worktree");
-        assert_eq!(uploaded.outcome, GitSyncOutcome::Pushed);
-        assert!(uploaded.actions.contains(&GitSyncAction::SnapshotCreated));
-        assert_ne!(uploaded.accepted, Some(head.clone()));
-        assert_eq!(
-            engine.head_commit(&repository).expect("unchanged HEAD"),
-            Some(head)
-        );
-
-        let repeated = sync_git_once(&engine, &writer, &GitSyncOptions::default())
-            .expect("repeat already uploaded worktree");
-        assert_eq!(repeated.outcome, GitSyncOutcome::UpToDate);
-        assert_eq!(repeated.accepted, uploaded.accepted);
-        assert!(!repeated.actions.contains(&GitSyncAction::SnapshotCreated));
-    }
-
     #[test]
     fn steady_sync_republishes_a_deleted_device_backup() {
-        let (_temporary, _remote, writer) = setup_remote_and_writer();
+        let (_temporary, _remote, writer) = setup_tracked_branch();
         let engine = GitCliEngine::default();
         let options = GitSyncOptions::default();
         let bootstrap = sync_git_once(&engine, &writer, &options).expect("bootstrap");
@@ -6649,7 +2842,7 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
 
     #[test]
     fn steady_sync_bridges_a_device_backup_moved_elsewhere() {
-        let (_temporary, _remote, writer) = setup_remote_and_writer();
+        let (_temporary, _remote, writer) = setup_tracked_branch();
         let engine = GitCliEngine::default();
         let options = GitSyncOptions::default();
         let bootstrap = sync_git_once(&engine, &writer, &options).expect("bootstrap");
@@ -6701,314 +2894,8 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
     }
 
     #[test]
-    fn exact_cached_remote_tip_does_not_open_a_fetch_connection() {
-        let (_temporary, _remote, writer) = setup_remote_and_writer();
-        let engine = GitCliEngine::default();
-        let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
-            .expect("initial sync should succeed");
-        let remote_tip = report.accepted.clone().expect("accepted revision");
-        let offline_options = GitSyncOptions {
-            remote: GitRemote::parse("missing-remote").expect("remote name"),
-            ..GitSyncOptions::default()
-        };
-
-        assert_eq!(
-            ensure_remote_tip(
-                &engine,
-                &offline_options,
-                &report,
-                Some(&remote_tip),
-                &remote_tip,
-            )
-            .expect("the exact cached tip should not fetch"),
-            remote_tip
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn unchanged_sync_has_a_bounded_git_process_budget() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let (temporary, _remote, writer) = setup_remote_and_writer();
-        run_git(&writer, &["config", "filter.lfs.clean", "cat"]);
-        run_git(&writer, &["config", "filter.lfs.smudge", "cat"]);
-        fs::write(writer.join(".gitattributes"), "*.bin filter=lfs\n").expect("LFS attributes");
-        fs::write(writer.join("asset.bin"), "representative filtered bytes\n")
-            .expect("filtered asset");
-        commit_all(&writer, "add representative LFS paths");
-        backdate_worktree(&writer);
-        let trace = temporary.path().join("git-invocations.log");
-        let wrapper = temporary.path().join("git-wrapper");
-        fs::write(
-            &wrapper,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \" $* \" in\n  *\" lfs version \"*) printf '%s\\n' 'git-lfs/3.0.0'; exit 0 ;;\nesac\nexec git \"$@\"\n",
-                trace.display()
-            ),
-        )
-        .expect("Git wrapper");
-        let mut permissions = fs::metadata(&wrapper)
-            .expect("wrapper metadata")
-            .permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&wrapper, permissions).expect("executable wrapper");
-        let engine = GitCliEngine::new(&wrapper);
-
-        sync_git_once(&engine, &writer, &GitSyncOptions::default())
-            .expect("bootstrap through wrapper");
-        fs::write(&trace, "").expect("reset invocation trace");
-        let fresh_engine = GitCliEngine::new(&wrapper);
-        let report = sync_git_once(&fresh_engine, &writer, &GitSyncOptions::default())
-            .expect("steady sync through wrapper");
-        assert_eq!(report.outcome, GitSyncOutcome::UpToDate);
-
-        let commands = fs::read_to_string(&trace).expect("invocation trace");
-        let lines = commands.lines().collect::<Vec<_>>();
-        assert_eq!(
-            lines
-                .iter()
-                .filter(|line| line.contains(" add -A -- ."))
-                .count(),
-            0,
-            "a clean steady capture must bypass the full two-pass scan: {commands}"
-        );
-        assert_single_remote_observation(&lines, &commands, &report);
-        assert!(
-            lines.iter().all(|line| !line.contains(" fetch ")),
-            "an exact cached remote tip must not be fetched again: {commands}"
-        );
-        assert_eq!(
-            lines
-                .iter()
-                .filter(|line| line.contains(" update-ref --stdin"))
-                .count(),
-            0,
-            "already accepted refs should not be rewritten: {commands}"
-        );
-        assert!(
-            lines.iter().all(|line| !line.contains(" check-attr ")),
-            "steady requirements should reuse the validated attribute cache: {commands}"
-        );
-        assert!(
-            lines.iter().all(|line| !line.contains(" ls-tree -r -z ")),
-            "steady platform validation should reuse its immutable-tree cache: {commands}"
-        );
-        assert_eq!(
-            lines
-                .iter()
-                .filter(|line| line.contains(" lfs version"))
-                .count(),
-            1,
-            "LFS readiness must remain fresh while path analysis is cached: {commands}"
-        );
-        assert!(
-            lines.iter().all(|line| {
-                !line.contains(&format!(" update-ref {} ", report.refs.local.as_str()))
-            }),
-            "an unchanged capture must not rewrite its existing local ref: {commands}"
-        );
-        assert!(
-            lines
-                .iter()
-                .all(|line| !line.contains(" update-index --refresh")),
-            "steady verification should reuse the capture stat cache: {commands}"
-        );
-        assert!(
-            lines.len() <= 28,
-            "steady sync exceeded its 28-process budget (including the remote namespace check) ({}): {commands}",
-            lines.len()
-        );
-        assert_direct_engine_probes(&lines, &commands);
-
-        assert_reused_engine_process_budget(&engine, &writer, &trace);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn notification_observation_fetches_without_a_preliminary_remote_query() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let (temporary, _remote, writer) = setup_remote_and_writer();
-        let trace = temporary.path().join("git-invocations.log");
-        let wrapper = temporary.path().join("git-wrapper");
-        fs::write(
-            &wrapper,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec git \"$@\"\n",
-                trace.display()
-            ),
-        )
-        .expect("Git wrapper");
-        let mut permissions = fs::metadata(&wrapper)
-            .expect("wrapper metadata")
-            .permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&wrapper, permissions).expect("executable wrapper");
-        let engine = GitCliEngine::new(&wrapper);
-        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap");
-
-        fs::write(&trace, "").expect("reset notification invocation trace");
-        let notification_report = sync_git_once(
-            &engine,
-            &writer,
-            &GitSyncOptions {
-                remote_observation: GitRemoteObservation::Fetch,
-                ..GitSyncOptions::default()
-            },
-        )
-        .expect("notification-triggered verification");
-        assert_eq!(notification_report.outcome, GitSyncOutcome::UpToDate);
-        let notification_commands =
-            fs::read_to_string(&trace).expect("notification invocation trace");
-        let live = notification_report.refs.live.as_str();
-        assert!(
-            notification_commands
-                .lines()
-                .filter(|line| line.contains(" ls-remote "))
-                .all(|line| !line.contains(live)),
-            "fetch-first verification must skip the preliminary live-ref query: {notification_commands}"
-        );
-        assert!(
-            notification_commands.lines().all(|line| !line.contains(" push ")),
-            "an already published device backup must not open a push connection: {notification_commands}"
-        );
-        assert_eq!(
-            notification_commands
-                .lines()
-                .filter(|line| line.contains(" fetch "))
-                .count(),
-            1,
-            "fetch-first verification should fetch the live ref once: {notification_commands}"
-        );
-    }
-
-    #[test]
-    fn unavailable_filter_driver_blocks_capture_and_remote_access() {
-        let (_temporary, remote, writer) = setup_remote_and_writer();
-        fs::write(
-            writer.join(".gitattributes"),
-            "*.protected filter=missing\n",
-        )
-        .expect("attributes");
-        fs::write(writer.join("asset.protected"), "canonical bytes\n").expect("asset");
-        commit_all(&writer, "declare missing filter");
-        let engine = GitCliEngine::default();
-        let options = GitSyncOptions::default();
-        let refs = GitSyncRefs::for_options(&options).expect("sync refs");
-
-        let error = sync_git_once(&engine, &writer, &options).expect_err("filter rejection");
-
-        assert!(matches!(
-            error,
-            GitSyncError::Git(GitEngineError::UnsupportedRepository { .. })
-        ));
-        let repository = engine.discover_repository(&writer).expect("repository");
-        assert_eq!(
-            engine
-                .read_ref(&repository, &refs.local)
-                .expect("local ref"),
-            None,
-            "filter preflight must run before capture"
-        );
-        let remote_live = Command::new("git")
-            .args(["--git-dir"])
-            .arg(&remote)
-            .args(["rev-parse", "--quiet", "--verify", refs.live.as_str()])
-            .status()
-            .expect("Git should launch");
-        assert!(!remote_live.success(), "remote live ref must remain absent");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn incompatible_local_tree_is_captured_before_remote_contact() {
-        let (_temporary, _remote, writer) = setup_remote_and_writer();
-        fs::write(writer.join("CON.txt"), "reserved on portable targets\n")
-            .expect("reserved fixture");
-        let engine = GitCliEngine::default();
-        let options = GitSyncOptions {
-            platform: GitPlatformProfile::AndroidShared,
-            ..GitSyncOptions::default()
-        };
-
-        let error = sync_git_once(&engine, &writer, &options).expect_err("platform rejection");
-        let GitSyncError::PlatformIncompatible(preflight) = error else {
-            panic!("unexpected error: {error}");
-        };
-        assert_eq!(preflight.policy.profile, GitPlatformProfile::AndroidShared);
-        assert!(preflight.diagnostics.iter().any(|item| {
-            item.code == "platform.reserved-name"
-                && item.severity == crate::GitPlatformDiagnosticSeverity::Error
-        }));
-        let repository = engine.discover_repository(&writer).expect("repository");
-        let refs = GitSyncRefs::for_options(&options).expect("sync refs");
-        assert!(engine
-            .read_ref(&repository, &refs.local)
-            .expect("captured local ref")
-            .is_some());
-        assert_eq!(
-            engine
-                .remote_ref(&repository, &options.remote, &options.live_ref)
-                .expect("remote live ref"),
-            None
-        );
-        assert_eq!(
-            fs::read_to_string(writer.join("CON.txt")).expect("preserved local bytes"),
-            "reserved on portable targets\n"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn platform_preflight_cache_is_scoped_to_the_exact_policy() {
-        let (_temporary, _remote, writer) = setup_remote_and_writer();
-        fs::write(writer.join("CON.txt"), "reserved on portable targets\n")
-            .expect("reserved fixture");
-        commit_all(&writer, "add platform-specific path");
-        let engine = GitCliEngine::default();
-        let linux_options = GitSyncOptions {
-            platform: GitPlatformProfile::LinuxNative,
-            ..GitSyncOptions::default()
-        };
-        let linux_report = sync_git_once(&engine, &writer, &linux_options).expect("Linux sync");
-        let revision = linux_report.accepted.as_ref().expect("accepted revision");
-        let policy_key = platform_policy_cache_key(&linux_options.platform.policy());
-        let cache_bytes = fs::read(platform_preflight_cache_path(&linux_report.repository))
-            .expect("persisted platform cache");
-        serde_json::from_slice::<PlatformPreflightCache>(&cache_bytes)
-            .expect("valid persisted platform cache");
-        assert!(
-            load_platform_preflight_cache(&linux_report.repository, revision, &policy_key)
-                .is_some(),
-            "the exact revision and policy should reuse the persisted preflight"
-        );
-        fs::write(
-            platform_preflight_cache_path(&linux_report.repository),
-            b"not valid JSON",
-        )
-        .expect("corrupt platform cache fixture");
-        sync_git_once(&engine, &writer, &linux_options)
-            .expect("a malformed platform cache should be rebuilt");
-        assert!(
-            load_platform_preflight_cache(&linux_report.repository, revision, &policy_key)
-                .is_some(),
-            "the rebuilt cache should be reusable"
-        );
-
-        let android_options = GitSyncOptions {
-            platform: GitPlatformProfile::AndroidShared,
-            ..GitSyncOptions::default()
-        };
-        let error = sync_git_once(&engine, &writer, &android_options)
-            .expect_err("a different platform policy must be evaluated independently");
-
-        assert!(matches!(error, GitSyncError::PlatformIncompatible(_)));
-    }
-
-    #[test]
-    fn applying_a_remote_change_rewrites_only_the_changed_paths() {
-        let (temporary, remote, writer) = setup_remote_and_writer();
+    fn pulling_a_remote_commit_rewrites_only_the_changed_paths() {
+        let (temporary, remote, writer) = setup_tracked_branch();
         fs::create_dir(writer.join("Notes")).expect("notes directory");
         fs::write(writer.join("Other.md"), "untouched\n").expect("other note");
         fs::write(writer.join("Notes/Deep.md"), "untouched too\n").expect("deep note");
@@ -7028,10 +2915,11 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         let home_before = mtime("Home.md");
 
         fs::write(writer.join("Home.md"), "changed remotely\n").expect("remote edit");
+        commit_all(&writer, "remote edit");
         sync_git_once(&engine, &writer, &options).expect("writer publish");
-        let report = sync_git_once(&engine, &reader, &options).expect("reader apply");
+        let report = sync_git_once(&engine, &reader, &options).expect("reader pull");
 
-        assert!(report.actions.contains(&GitSyncAction::WorktreeApplied));
+        assert_eq!(report.outcome, GitSyncOutcome::Pulled);
         assert_eq!(
             fs::read_to_string(reader.join("Home.md")).expect("applied note"),
             "changed remotely\n"
@@ -7046,89 +2934,9 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         }
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn incompatible_remote_tree_is_not_applied_or_republished() {
-        let (temporary, remote, writer) = setup_remote_and_writer();
-        let engine = GitCliEngine::default();
-        let initial = sync_git_once(&engine, &writer, &GitSyncOptions::default())
-            .expect("bootstrap")
-            .accepted
-            .expect("initial accepted revision");
-        let reader = clone_reader(&temporary, &remote, &writer);
-        fs::write(writer.join("CON.txt"), "remote reserved path\n").expect("reserved fixture");
-        let pushed = sync_git_once(&engine, &writer, &GitSyncOptions::default())
-            .expect("native writer push")
-            .accepted
-            .expect("remote accepted revision");
-        assert_ne!(initial, pushed);
-        let options = GitSyncOptions {
-            platform: GitPlatformProfile::AndroidShared,
-            ..GitSyncOptions::default()
-        };
-
-        assert!(matches!(
-            sync_git_once(&engine, &reader, &options),
-            Err(GitSyncError::PlatformIncompatible(_))
-        ));
-        assert!(!reader.join("CON.txt").exists());
-        assert_eq!(
-            fs::read_to_string(reader.join("Home.md")).expect("preserved reader bytes"),
-            "initial\n"
-        );
-        let repository = engine
-            .discover_repository(&reader)
-            .expect("reader repository");
-        assert_eq!(
-            engine
-                .remote_ref(&repository, &options.remote, &options.live_ref)
-                .expect("remote live ref"),
-            Some(pushed)
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn representational_platform_warnings_are_retained_in_success_reports() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let (_temporary, _remote, writer) = setup_remote_and_writer();
-        let script = writer.join("sync.sh");
-        fs::write(&script, "#!/bin/sh\n").expect("script");
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("executable mode");
-        let options = GitSyncOptions {
-            platform: GitPlatformProfile::AndroidShared,
-            ..GitSyncOptions::default()
-        };
-
-        let report = sync_git_once(&GitCliEngine::default(), &writer, &options)
-            .expect("warnings do not block sync");
-
-        assert_eq!(
-            report.platform_policy.profile,
-            GitPlatformProfile::AndroidShared
-        );
-        for preflight in [
-            report
-                .local_platform_preflight
-                .as_ref()
-                .expect("local preflight"),
-            report
-                .accepted_platform_preflight
-                .as_ref()
-                .expect("accepted preflight"),
-        ] {
-            assert!(preflight.compatible);
-            assert!(preflight.diagnostics.iter().any(|item| {
-                item.code == "platform.executable-bit"
-                    && item.severity == crate::GitPlatformDiagnosticSeverity::Warning
-            }));
-        }
-    }
-
     #[test]
     fn live_snapshot_commits_record_versioned_machine_readable_provenance() {
-        let (_temporary, _remote, writer) = setup_remote_and_writer();
+        let (_temporary, _remote, writer) = setup_tracked_branch();
         fs::write(writer.join("Home.md"), "changed before sync\n").expect("local edit");
         let device_id =
             GitSyncDeviceId::parse(format!("vdev1_{}", "a".repeat(52))).expect("device ID");
@@ -7147,74 +2955,13 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         assert!(message.contains("Vulcan-Ref-Namespace: 3"));
         assert!(message.contains(&format!("Vulcan-Sync-Device: {}", device_id.as_str())));
         assert!(message.contains("Vulcan-Sync-Profile:"));
-        assert!(message.contains("Vulcan-Sync-Policy: 1:"));
         assert!(message.contains("Vulcan-Sync-Source:"));
         assert!(message.contains("Vulcan-Sync-Semantic: false"));
     }
 
     #[test]
-    fn conflict_identity_is_independent_of_candidate_and_path_arrival_order() {
-        let policy = MergePolicy::default();
-        let base = GitOid::parse("0".repeat(40)).expect("base oid");
-        let first = GitOid::parse("1".repeat(40)).expect("first oid");
-        let second = GitOid::parse("2".repeat(40)).expect("second oid");
-        let (forward, forward_policy) = conflict_identity(
-            &policy,
-            Some(&base),
-            &first,
-            &second,
-            &["B.md".to_string(), "A.md".to_string(), "A.md".to_string()],
-        )
-        .expect("forward identity");
-        let (swapped, swapped_policy) = conflict_identity(
-            &policy,
-            Some(&base),
-            &second,
-            &first,
-            &["A.md".to_string(), "B.md".to_string()],
-        )
-        .expect("swapped identity");
-        assert_eq!(forward, swapped);
-        assert_eq!(forward_policy, swapped_policy);
-    }
-
-    #[test]
-    fn progress_reports_ordered_finite_cycle_phases() {
-        let (_temporary, _remote, writer) = setup_remote_and_writer();
-        let cancellation = SyncCancellationToken::default();
-        let mut observer = RecordingObserver {
-            cancellation: cancellation.clone(),
-            ..RecordingObserver::default()
-        };
-
-        let report = sync_git_once_with_control(
-            &GitCliEngine::default(),
-            &writer,
-            &GitSyncOptions::default(),
-            &cancellation,
-            &mut observer,
-        )
-        .expect("sync with progress");
-
-        assert_eq!(report.outcome, GitSyncOutcome::Bootstrapped);
-        assert_eq!(
-            observer.phases,
-            [
-                GitSyncPhase::Preparing,
-                GitSyncPhase::Capturing,
-                GitSyncPhase::Captured,
-                GitSyncPhase::BackingUp,
-                GitSyncPhase::Fetching,
-                GitSyncPhase::Pushing,
-                GitSyncPhase::Verifying,
-                GitSyncPhase::Completed,
-            ]
-        );
-    }
-
-    #[test]
     fn git_backend_exposes_capabilities_and_runs_the_shared_contract() {
-        let (_temporary, _remote, writer) = setup_remote_and_writer();
+        let (_temporary, _remote, writer) = setup_tracked_branch();
         let engine = GitCliEngine::default();
         let backend = GitSyncBackend::new(&engine, GitSyncOptions::default());
         let observer = crate::IgnoreSyncProgress;
@@ -7236,10 +2983,9 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
             .sync_once(&context, &SyncCancellationToken::default())
             .expect("backend cycle");
         assert_eq!(report.version, SYNC_CONTRACT_VERSION);
-        assert_eq!(report.outcome, SyncOutcome::Bootstrapped);
+        assert_eq!(report.outcome, SyncOutcome::UpToDate);
         assert_eq!(report.status.state, SyncState::Clean);
         assert_eq!(report.attempts, 1);
-        assert!(report.status.accepted_revision.is_some());
     }
 
     #[test]
@@ -7271,171 +3017,6 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         assert_eq!(retry_backoff(1), Duration::from_millis(50));
         assert_eq!(retry_backoff(4), Duration::from_millis(400));
         assert_eq!(retry_backoff(usize::MAX), Duration::from_millis(400));
-    }
-
-    #[test]
-    fn rejected_compare_and_swap_is_refetched_and_retried() {
-        let (temporary, remote, writer) = setup_remote_and_writer();
-        let peer = clone_reader(&temporary, &remote, &writer);
-        fs::write(peer.join("Race.md"), "peer won the first push\n").expect("peer edit");
-        commit_all(&peer, "peer race");
-        let cancellation = SyncCancellationToken::default();
-        let mut observer = RejectFirstPushObserver {
-            repository: peer,
-            fired: false,
-        };
-
-        let report = sync_git_once_with_control(
-            &GitCliEngine::default(),
-            &writer,
-            &GitSyncOptions::default(),
-            &cancellation,
-            &mut observer,
-        )
-        .expect("rejected push should converge on retry");
-
-        assert!(observer.fired);
-        assert_eq!(report.retries, 1);
-        assert_eq!(report.outcome, GitSyncOutcome::Pulled);
-        assert_eq!(
-            fs::read_to_string(writer.join("Race.md")).expect("peer file pulled"),
-            "peer won the first push\n"
-        );
-    }
-
-    #[test]
-    fn worktree_change_before_bootstrap_push_is_recaptured_before_publication() {
-        let (_temporary, remote, writer) = setup_remote_and_writer();
-        let cancellation = SyncCancellationToken::default();
-        let mut observer = EditBeforePushObserver {
-            repository: writer.clone(),
-            remote,
-            fired: false,
-            remote_was_absent_on_retry: false,
-        };
-
-        let report = sync_git_once_with_control(
-            &GitCliEngine::default(),
-            &writer,
-            &GitSyncOptions::default(),
-            &cancellation,
-            &mut observer,
-        )
-        .expect("changed worktree should be recaptured");
-
-        assert!(observer.fired);
-        assert!(observer.remote_was_absent_on_retry);
-        assert_eq!(report.retries, 1);
-        assert_eq!(report.outcome, GitSyncOutcome::Bootstrapped);
-        assert_eq!(
-            fs::read_to_string(writer.join("Home.md")).expect("current note"),
-            "edited during pre-push validation\n"
-        );
-    }
-
-    #[test]
-    fn worktree_change_during_verification_is_recaptured() {
-        let (_temporary, _remote, writer) = setup_remote_and_writer();
-        let cancellation = SyncCancellationToken::default();
-        let mut observer = EditDuringVerificationObserver {
-            repository: writer.clone(),
-            fired: false,
-        };
-
-        let report = sync_git_once_with_control(
-            &GitCliEngine::default(),
-            &writer,
-            &GitSyncOptions::default(),
-            &cancellation,
-            &mut observer,
-        )
-        .expect("changed worktree should be recaptured");
-
-        assert!(observer.fired);
-        assert_eq!(report.retries, 1);
-        assert_eq!(report.outcome, GitSyncOutcome::Pushed);
-        assert_eq!(
-            fs::read_to_string(writer.join("Home.md")).expect("current note"),
-            "edited during verification\n"
-        );
-    }
-
-    #[test]
-    fn worktree_change_during_application_is_recaptured() {
-        let (temporary, remote, writer) = setup_remote_and_writer();
-        sync_git_once(
-            &GitCliEngine::default(),
-            &writer,
-            &GitSyncOptions::default(),
-        )
-        .expect("bootstrap writer live ref");
-        let peer = clone_reader(&temporary, &remote, &writer);
-        fs::write(peer.join("Remote.md"), "added remotely\n").expect("remote edit");
-        commit_all(&peer, "remote edit");
-        sync_git_once(&GitCliEngine::default(), &peer, &GitSyncOptions::default())
-            .expect("publish peer live ref");
-        let cancellation = SyncCancellationToken::default();
-        let mut observer = EditDuringApplicationObserver {
-            repository: writer.clone(),
-            fired: false,
-        };
-
-        let report = sync_git_once_with_control(
-            &GitCliEngine::default(),
-            &writer,
-            &GitSyncOptions::default(),
-            &cancellation,
-            &mut observer,
-        )
-        .expect("worktree edit during application should be recaptured");
-
-        assert!(observer.fired);
-        assert_eq!(report.retries, 1);
-        assert!(matches!(
-            report.outcome,
-            GitSyncOutcome::Pulled | GitSyncOutcome::Merged
-        ));
-        assert_eq!(
-            fs::read_to_string(writer.join("Home.md")).expect("current note"),
-            "edited while the remote tree was being applied\n"
-        );
-        assert_eq!(
-            fs::read_to_string(writer.join("Remote.md")).expect("remote note"),
-            "added remotely\n"
-        );
-    }
-
-    #[test]
-    fn cancellation_after_capture_preserves_the_local_snapshot_ref() {
-        let (_temporary, _remote, writer) = setup_remote_and_writer();
-        let engine = GitCliEngine::default();
-        let options = GitSyncOptions::default();
-        let cancellation = SyncCancellationToken::default();
-        let mut observer = RecordingObserver {
-            cancel_on: Some(GitSyncPhase::Captured),
-            cancellation: cancellation.clone(),
-            ..RecordingObserver::default()
-        };
-
-        assert!(matches!(
-            sync_git_once_with_control(&engine, &writer, &options, &cancellation, &mut observer,),
-            Err(GitSyncError::Cancelled)
-        ));
-
-        let repository = engine
-            .discover_repository(&writer)
-            .expect("repository after cancellation");
-        let refs = GitSyncRefs::for_options(&options).expect("sync refs");
-        assert!(engine
-            .read_ref(&repository, &refs.local)
-            .expect("local ref")
-            .is_some());
-        assert_eq!(
-            engine
-                .remote_ref(&repository, &options.remote, &options.live_ref)
-                .expect("remote ref"),
-            None
-        );
     }
 
     #[test]
@@ -7471,149 +3052,6 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
             .read_ref(&repository, &refs.local)
             .expect("local candidate")
             .is_some());
-    }
-
-    #[test]
-    fn dry_run_does_not_create_local_refs_or_remote_state() {
-        let (_temporary, _remote, writer) = setup_remote_and_writer();
-        let options = GitSyncOptions {
-            dry_run: true,
-            ..GitSyncOptions::default()
-        };
-        let engine = GitCliEngine::default();
-
-        let report = sync_git_once(&engine, &writer, &options).expect("plan should succeed");
-
-        assert_eq!(report.outcome, GitSyncOutcome::Planned);
-        assert_eq!(
-            report.preview,
-            Some(GitSyncPreview {
-                file_state: GitSyncPreviewFileState::Uninitialized,
-                worktree_matches_local: None,
-            })
-        );
-        assert_eq!(report.remote_before, None);
-        assert_eq!(
-            engine
-                .read_ref(&report.repository, &report.refs.local)
-                .expect("local ref"),
-            None
-        );
-        assert_eq!(
-            engine
-                .remote_ref(&report.repository, &options.remote, &options.live_ref)
-                .expect("remote ref"),
-            None
-        );
-        assert!(
-            !report
-                .repository
-                .git_dir
-                .join("vulcan-sync/requirements-cache-v1.json")
-                .exists(),
-            "dry-run requirements inspection must remain mutation-free"
-        );
-        assert!(
-            !platform_preflight_cache_path(&report.repository).exists(),
-            "dry-run platform inspection must remain mutation-free"
-        );
-    }
-
-    #[test]
-    fn preview_file_state_distinguishes_clean_local_remote_and_diverged_state() {
-        let local = GitOid::parse("1111111111111111111111111111111111111111").expect("local oid");
-        let remote = GitOid::parse("2222222222222222222222222222222222222222").expect("remote oid");
-
-        assert_eq!(
-            preview_file_state(Some(&local), Some(&local), Some(true)),
-            GitSyncPreviewFileState::UpToDate
-        );
-        assert_eq!(
-            preview_file_state(Some(&local), Some(&local), Some(false)),
-            GitSyncPreviewFileState::LocalChanges
-        );
-        assert_eq!(
-            preview_file_state(Some(&local), Some(&remote), Some(true)),
-            GitSyncPreviewFileState::RemoteDiffers
-        );
-        assert_eq!(
-            preview_file_state(Some(&local), Some(&remote), Some(false)),
-            GitSyncPreviewFileState::LocalAndRemoteDiffer
-        );
-    }
-
-    #[test]
-    fn staged_changes_sync_as_filesystem_state_without_touching_the_index() {
-        let (_temporary, remote, writer) = setup_remote_and_writer();
-        fs::write(writer.join("Home.md"), "staged\n").expect("staged note");
-        run_git(&writer, &["add", "Home.md"]);
-        let staged_before = git_stdout(&writer, &["rev-parse", ":Home.md"]);
-
-        let report = sync_git_once(
-            &GitCliEngine::default(),
-            &writer,
-            &GitSyncOptions::default(),
-        )
-        .expect("sync with staged changes should report normally");
-
-        assert_eq!(report.outcome, GitSyncOutcome::Bootstrapped);
-        assert!(report.safety.staged_changes);
-        assert!(report.pause.is_none());
-        assert_eq!(
-            git_stdout(&writer, &["rev-parse", ":Home.md"]),
-            staged_before,
-            "the normal index entry must survive synchronization untouched"
-        );
-        let accepted = report.accepted.expect("accepted snapshot");
-        let engine = GitCliEngine::default();
-        let repository = engine.discover_repository(&writer).expect("repository");
-        let object = engine
-            .path_object(&repository, &accepted, "Home.md")
-            .expect("path object")
-            .expect("accepted snapshot contains the staged file");
-        assert_eq!(
-            object.data.expect("staged file bytes"),
-            b"staged\n",
-            "staged worktree bytes sync as ordinary filesystem state"
-        );
-        assert_eq!(
-            engine
-                .remote_ref(
-                    &repository,
-                    &GitRemote::parse(remote.to_string_lossy()).expect("remote"),
-                    &report.refs.live,
-                )
-                .expect("remote query"),
-            Some(accepted)
-        );
-    }
-
-    #[test]
-    fn staged_changes_do_not_block_remote_reconciliation() {
-        let (temporary, remote, writer) = setup_remote_and_writer();
-        let engine = GitCliEngine::default();
-        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap sync");
-        let reader = clone_reader(&temporary, &remote, &writer);
-        fs::write(writer.join("Remote.md"), "remote\n").expect("remote note");
-        let pushed =
-            sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("remote update");
-        let remote_tip = pushed.accepted.expect("accepted remote update");
-        fs::write(reader.join("Home.md"), "staged locally\n").expect("local staged edit");
-        run_git(&reader, &["add", "Home.md"]);
-        let staged_before = git_stdout(&reader, &["rev-parse", ":Home.md"]);
-
-        let report = sync_git_once(&engine, &reader, &GitSyncOptions::default())
-            .expect("sync with staged changes should report normally");
-
-        assert_eq!(report.outcome, GitSyncOutcome::Merged);
-        assert!(report.pause.is_none());
-        assert_eq!(report.remote_before, Some(remote_tip));
-        assert!(reader.join("Remote.md").exists());
-        assert_eq!(
-            git_stdout(&reader, &["rev-parse", ":Home.md"]),
-            staged_before,
-            "the normal index entry must survive reconciliation untouched"
-        );
     }
 
     fn setup_tracked_branch() -> (TempDir, PathBuf, PathBuf) {
@@ -7674,7 +3112,7 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
     #[cfg(unix)]
     #[test]
     fn racily_clean_sync_index_is_refreshed_once() {
-        let (temporary, _remote, writer) = setup_remote_and_writer();
+        let (temporary, _remote, writer) = setup_tracked_branch();
         let (engine, trace) = traced_engine(&temporary);
         let options = GitSyncOptions::default();
         // An older note lets the refresh write an index that is no longer racy.
@@ -7742,207 +3180,10 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         (GitCliEngine::new(&wrapper), trace)
     }
 
-    /// Publishes `count` first-parent commits on top of the remote live ref,
-    /// each with `message`, and returns the new live tip.
-    fn advance_live_history(
-        writer: &Path,
-        live: &GitRefName,
-        count: usize,
-        message: &str,
-    ) -> String {
-        run_git(
-            writer,
-            &[
-                "fetch",
-                "--quiet",
-                "origin",
-                &format!("+{live}:refs/test/live"),
-            ],
-        );
-        let mut tip = git_stdout(writer, &["rev-parse", "refs/test/live"]);
-        let tree = git_stdout(writer, &["rev-parse", &format!("{tip}^{{tree}}")]);
-        for _ in 0..count {
-            tip = git_stdout(writer, &["commit-tree", &tree, "-p", &tip, "-m", message]);
-        }
-        run_git(
-            writer,
-            &["push", "--quiet", "origin", &format!("{tip}:{live}")],
-        );
-        tip
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn epoch_discovery_reads_history_in_batches_and_then_incrementally() {
-        let (temporary, _remote, writer) = setup_remote_and_writer();
-        let (engine, trace) = traced_engine(&temporary);
-        let options = GitSyncOptions::default();
-        let bootstrap = sync_git_once(&engine, &writer, &options).expect("bootstrap");
-        let live = bootstrap.refs.live.clone();
-        let first_tip = advance_live_history(&writer, &live, 300, "remote device commit");
-        fs::write(writer.join("Local.md"), "local edit one\n").expect("local edit");
-
-        fs::write(&trace, "").expect("reset invocation trace");
-        let merged = sync_git_once(&engine, &writer, &options).expect("first merge");
-        assert_eq!(merged.outcome, GitSyncOutcome::Merged);
-        let commands = fs::read_to_string(&trace).expect("invocation trace");
-        assert!(
-            commands
-                .lines()
-                .filter(|line| line.contains(" cat-file commit "))
-                .count()
-                <= 2,
-            "epoch discovery must not read commits one process at a time: {commands}"
-        );
-        assert!(
-            commands
-                .lines()
-                .filter(|line| line.contains(" cat-file --batch"))
-                .count()
-                <= 4,
-            "a 300-commit history should take a constant number of batch reads: {commands}"
-        );
-
-        advance_live_history(&writer, &live, 2, "another remote commit");
-        fs::write(writer.join("Local.md"), "local edit two\n").expect("second local edit");
-        fs::write(&trace, "").expect("reset invocation trace");
-        let merged = sync_git_once(&engine, &writer, &options).expect("second merge");
-        assert_eq!(merged.outcome, GitSyncOutcome::Merged);
-        let commands = fs::read_to_string(&trace).expect("invocation trace");
-        assert!(
-            commands
-                .lines()
-                .any(|line| line.contains(" rev-list --first-parent")
-                    && line.contains(&format!("^{first_tip}"))),
-            "the second merge should resume from the cached tip: {commands}"
-        );
-        assert!(
-            commands
-                .lines()
-                .filter(|line| line.contains(" rev-list --first-parent --max-count="))
-                .all(|line| line.contains('^')),
-            "the second merge must not walk the full history again: {commands}"
-        );
-    }
-
-    #[test]
-    fn cached_epoch_discovery_still_rejects_a_new_non_root_epoch_trailer() {
-        let (_temporary, _remote, writer) = setup_remote_and_writer();
-        let engine = GitCliEngine::default();
-        let options = GitSyncOptions::default();
-        let bootstrap = sync_git_once(&engine, &writer, &options).expect("bootstrap");
-        let repository = engine.discover_repository(&writer).expect("repository");
-        let accepted = bootstrap.accepted.clone().expect("accepted revision");
-        assert!(
-            find_git_live_epoch(&engine, &repository, &bootstrap.refs, &accepted)
-                .expect("cache the epoch of the accepted tip")
-                .is_none()
-        );
-
-        let tip = advance_live_history(
-            &writer,
-            &bootstrap.refs.live,
-            1,
-            "forged\n\nVulcan-Sync-Epoch: 0123456789abcdef0123456789abcdef",
-        );
-        let tip = GitOid::parse(tip).expect("tip");
-        let error = find_git_live_epoch(&engine, &repository, &bootstrap.refs, &tip)
-            .expect_err("a non-root epoch trailer must stay invalid");
-        assert!(error.to_string().contains("non-root"), "{error}");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn local_edit_publishes_backup_and_live_in_one_push() {
-        let (temporary, _remote, writer) = setup_tracked_branch();
-        let (engine, trace) = traced_engine(&temporary);
-        let options = GitSyncOptions::default();
-        sync_git_once(&engine, &writer, &options).expect("bootstrap");
-        fs::write(writer.join("Home.md"), "edited locally\n").expect("local edit");
-
-        fs::write(&trace, "").expect("reset invocation trace");
-        let report = sync_git_once(&engine, &writer, &options).expect("publish local edit");
-
-        assert_eq!(report.outcome, GitSyncOutcome::Pushed);
-        assert!(report.actions.contains(&GitSyncAction::Pushed));
-        let snapshot = report.local_snapshot.clone().expect("local snapshot");
-        assert_eq!(report.accepted.as_ref(), Some(&snapshot));
-        let backup = report.device_backup.as_ref().expect("device backup");
-        assert_eq!(backup.published_revision, snapshot);
-        let commands = fs::read_to_string(&trace).expect("invocation trace");
-        let pushes = commands
-            .lines()
-            .filter(|line| line.contains(" push "))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            pushes.len(),
-            1,
-            "a fast-forward publish should push once: {commands}"
-        );
-        assert!(
-            pushes[0].contains(report.refs.device.as_str())
-                && pushes[0].contains(report.refs.live.as_str()),
-            "the push should carry the backup and live refs: {commands}"
-        );
-        let repository = engine.discover_repository(&writer).expect("repository");
-        let (tips, _) = engine
-            .remote_refs(
-                &repository,
-                &options.remote,
-                &[&report.refs.device, &report.refs.live],
-                None,
-            )
-            .expect("remote refs");
-        assert_eq!(tips, vec![Some(snapshot.clone()), Some(snapshot.clone())]);
-        assert_eq!(
-            engine
-                .read_ref(&repository, &report.refs.device_tracking)
-                .expect("tracking ref"),
-            Some(snapshot)
-        );
-
-        fs::write(&trace, "").expect("reset invocation trace");
-        let steady = sync_git_once(&engine, &writer, &options).expect("steady sync");
-        assert_eq!(steady.outcome, GitSyncOutcome::UpToDate);
-        let commands = fs::read_to_string(&trace).expect("steady invocation trace");
-        assert!(
-            commands.lines().all(|line| !line.contains(" push ")),
-            "the combined push must leave nothing to publish: {commands}"
-        );
-    }
-
-    #[test]
-    fn moving_upstream_branch_keeps_the_backup_before_the_pull() {
-        let (temporary, remote, writer) = setup_tracked_branch();
-        let engine = GitCliEngine::default();
-        let options = GitSyncOptions::default();
-        sync_git_once(&engine, &writer, &options).expect("bootstrap");
-        fs::write(writer.join("Local.md"), "local bytes\n").expect("local edit");
-        advance_remote_branch(&temporary, &remote, "advanced\n");
-
-        let report = sync_git_once(&engine, &writer, &options).expect("sync");
-
-        assert_eq!(branch_action(&report).0, GitBranchSyncAction::FastForwarded);
-        assert_eq!(report.outcome, GitSyncOutcome::Pushed);
-        let repository = engine.discover_repository(&writer).expect("repository");
-        let live = engine
-            .remote_ref(&repository, &options.remote, &report.refs.live)
-            .expect("remote live")
-            .expect("published live");
-        assert_eq!(
-            git_stdout(&writer, &["show", &format!("{live}:Home.md")]),
-            "advanced"
-        );
-        assert_eq!(
-            git_stdout(&writer, &["show", &format!("{live}:Local.md")]),
-            "local bytes"
-        );
-    }
-
     #[cfg(unix)]
     #[test]
     fn missing_device_tracking_ref_is_restored_without_a_push() {
-        let (temporary, _remote, writer) = setup_remote_and_writer();
+        let (temporary, _remote, writer) = setup_tracked_branch();
         let (engine, trace) = traced_engine(&temporary);
         let options = GitSyncOptions::default();
         let bootstrap = sync_git_once(&engine, &writer, &options).expect("bootstrap");
@@ -7972,70 +3213,6 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         assert!(
             commands.lines().all(|line| !line.contains(" push ")),
             "a remote head that already covers the capture must not be pushed: {commands}"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn steady_tracked_branch_sync_observes_the_remote_in_one_query() {
-        let (temporary, _remote, writer) = setup_tracked_branch();
-        let (engine, trace) = traced_engine(&temporary);
-        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap");
-
-        fs::write(&trace, "").expect("reset invocation trace");
-        let report =
-            sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("steady sync");
-        assert_eq!(report.outcome, GitSyncOutcome::UpToDate);
-        assert_eq!(branch_action(&report).0, GitBranchSyncAction::UpToDate);
-        let commands = fs::read_to_string(&trace).expect("invocation trace");
-        let remote_commands = commands
-            .lines()
-            .filter(|line| {
-                line.contains(" ls-remote ") || line.contains(" fetch ") || line.contains(" push ")
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            remote_commands.len(),
-            1,
-            "a steady tracked-branch sync should use one remote query: {commands}"
-        );
-        for reference in [
-            report.refs.device.as_str(),
-            report.refs.live.as_str(),
-            "refs/heads/main",
-        ] {
-            assert!(
-                remote_commands[0].contains(reference),
-                "the remote query should cover `{reference}`: {commands}"
-            );
-        }
-
-        fs::write(&trace, "").expect("reset invocation trace");
-        let preview = sync_git_once(
-            &engine,
-            &writer,
-            &GitSyncOptions {
-                dry_run: true,
-                ..GitSyncOptions::default()
-            },
-        )
-        .expect("preview");
-        assert_eq!(branch_action(&preview).0, GitBranchSyncAction::UpToDate);
-        assert_eq!(preview.remote_before, report.accepted);
-        let commands = fs::read_to_string(&trace).expect("preview invocation trace");
-        let queries = commands
-            .lines()
-            .filter(|line| line.contains(" ls-remote "))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            queries.len(),
-            1,
-            "a preview should query the live and upstream refs together: {commands}"
-        );
-        assert!(
-            queries[0].contains(report.refs.live.as_str())
-                && queries[0].contains("refs/heads/main"),
-            "the preview query should cover live and upstream refs: {commands}"
         );
     }
 
@@ -8069,52 +3246,6 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
             "advanced\n"
         );
         assert!(report.pause.is_none());
-    }
-
-    #[test]
-    fn devices_linking_different_branch_tips_merge_criss_crossed_live_history() {
-        // The branch moves between two devices' cycles, so each links a
-        // different branch tip into the same live snapshot. The accepted
-        // remote and the local candidate then share two best common
-        // ancestors: the shared live snapshot and the older branch tip.
-        let (temporary, remote, writer) = setup_tracked_branch();
-        let engine = GitCliEngine::default();
-        let options = GitSyncOptions::default();
-        sync_git_once(&engine, &writer, &options).expect("writer bootstrap");
-        let reader = clone_reader(&temporary, &remote, &writer);
-        run_git(&reader, &["fetch", "--quiet", "origin"]);
-        run_git(&reader, &["branch", "--quiet", "-u", "origin/main", "main"]);
-        sync_git_once(&engine, &reader, &options).expect("reader joins");
-        sync_git_once(&engine, &writer, &options).expect("writer converges");
-
-        advance_remote_branch(&temporary, &remote, "first branch edit\n");
-        fs::write(writer.join("Writer.md"), "writer\n").expect("writer note");
-        let writer_report = sync_git_once(&engine, &writer, &options).expect("writer links");
-        assert!(writer_report.pause.is_none());
-
-        advance_remote_branch(&temporary, &remote, "second branch edit\n");
-        fs::write(reader.join("Reader.md"), "reader\n").expect("reader note");
-        let report = sync_git_once(&engine, &reader, &options)
-            .expect("criss-crossed live history must merge");
-
-        assert!(report.pause.is_none(), "{report:?}");
-        assert_eq!(report.outcome, GitSyncOutcome::Merged, "{report:?}");
-        for (note, contents) in [
-            ("Home.md", "second branch edit\n"),
-            ("Writer.md", "writer\n"),
-            ("Reader.md", "reader\n"),
-        ] {
-            assert_eq!(
-                fs::read_to_string(reader.join(note)).expect("merged note"),
-                contents
-            );
-        }
-        let writer_report = sync_git_once(&engine, &writer, &options).expect("writer catches up");
-        assert!(writer_report.pause.is_none(), "{writer_report:?}");
-        assert_eq!(
-            fs::read_to_string(writer.join("Reader.md")).expect("reader note on writer"),
-            "reader\n"
-        );
     }
 
     #[test]
@@ -8185,7 +3316,7 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
             detail.is_some_and(|detail| detail.contains("pull.ff=only")),
             "pause detail should name the blocking configuration"
         );
-        assert_ne!(report.outcome, GitSyncOutcome::Paused);
+        assert_eq!(report.outcome, GitSyncOutcome::Paused);
     }
 
     #[test]
@@ -8333,91 +3464,6 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
     }
 
     #[test]
-    fn branch_lane_skips_a_deleted_upstream_branch() {
-        let (temporary, remote, writer) = setup_tracked_branch();
-        let engine = GitCliEngine::default();
-        run_git(
-            temporary.path(),
-            &[
-                "--git-dir",
-                remote.to_str().expect("remote path"),
-                "symbolic-ref",
-                "HEAD",
-                "refs/heads/unborn",
-            ],
-        );
-        run_git(&writer, &["push", "--quiet", "origin", ":refs/heads/main"]);
-        assert!(git_stdout(
-            &writer,
-            &[
-                "ls-remote",
-                remote.to_str().expect("remote"),
-                "refs/heads/main"
-            ]
-        )
-        .is_empty());
-
-        let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
-            .expect("sync with deleted upstream");
-
-        let (action, detail) = branch_action(&report);
-        assert_eq!(action, GitBranchSyncAction::Skipped);
-        assert!(
-            detail.is_some_and(|detail| detail.contains("absent")),
-            "skip detail should explain the missing upstream"
-        );
-    }
-
-    #[test]
-    fn branch_lane_records_bad_configuration_without_failing_sync() {
-        let (temporary, remote, writer) = setup_tracked_branch();
-        let engine = GitCliEngine::default();
-        advance_remote_branch(&temporary, &remote, "advanced\n");
-        run_git(&writer, &["config", "pull.ff", "bogus"]);
-
-        let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
-            .expect("sync with bad pull config reports normally");
-
-        assert_ne!(report.outcome, GitSyncOutcome::Paused);
-        let (action, detail) = branch_action(&report);
-        assert_eq!(action, GitBranchSyncAction::Failed);
-        assert!(
-            detail.is_some_and(|detail| detail.contains("pull.ff")),
-            "failure detail should name the bad value"
-        );
-    }
-
-    #[test]
-    fn branch_lane_records_unresolvable_upstream_without_failing_sync() {
-        let (_temporary, _remote, writer) = setup_tracked_branch();
-        let engine = GitCliEngine::default();
-        run_git(&writer, &["config", "branch.main.merge", "not-a-ref"]);
-
-        let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
-            .expect("sync with bad upstream config reports normally");
-
-        assert_ne!(report.outcome, GitSyncOutcome::Paused);
-        let (action, _) = branch_action(&report);
-        assert_eq!(action, GitBranchSyncAction::Failed);
-    }
-
-    #[test]
-    fn branch_lane_skips_repositories_without_an_upstream() {
-        let (_temporary, _remote, writer) = setup_remote_and_writer();
-        let engine = GitCliEngine::default();
-
-        let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
-            .expect("sync without an upstream");
-
-        let (action, detail) = branch_action(&report);
-        assert_eq!(action, GitBranchSyncAction::Skipped);
-        assert!(
-            detail.is_some_and(|detail| detail.contains("no upstream")),
-            "skip detail should explain itself"
-        );
-    }
-
-    #[test]
     fn branch_lane_previews_without_mutation() {
         let (temporary, remote, writer) = setup_tracked_branch();
         let engine = GitCliEngine::default();
@@ -8485,126 +3531,6 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
     }
 
     #[test]
-    fn live_links_the_published_branch_after_a_local_commit() {
-        let (_temporary, _remote, writer) = setup_tracked_branch();
-        let engine = GitCliEngine::default();
-        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap live");
-        fs::write(writer.join("Local.md"), "local\n").expect("local note");
-        let snapshot = sync_git_once(&engine, &writer, &GitSyncOptions::default())
-            .expect("sync the uncommitted note")
-            .accepted
-            .expect("accepted snapshot");
-        commit_all(&writer, "local");
-        let head = git_stdout(&writer, &["rev-parse", "HEAD"]);
-
-        let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
-            .expect("sync the committed note");
-
-        assert!(report.branch.as_ref().expect("branch lane").pushed);
-        let accepted = report.accepted.expect("accepted link");
-        assert_ne!(
-            accepted, snapshot,
-            "an unchanged tree still links the branch"
-        );
-        assert_eq!(
-            git_stdout(&writer, &["rev-parse", &format!("{accepted}^1")]),
-            snapshot.as_str()
-        );
-        assert_eq!(
-            git_stdout(&writer, &["rev-parse", &format!("{accepted}^2")]),
-            head
-        );
-        assert_eq!(
-            git_stdout(
-                &writer,
-                &[
-                    "log",
-                    "-1",
-                    "--format=%(trailers:key=Vulcan-Sync-Branch-Link,valueonly)",
-                    accepted.as_str()
-                ]
-            ),
-            head
-        );
-        assert_eq!(
-            git_stdout(&writer, &["rev-parse", &format!("{accepted}^{{tree}}")]),
-            git_stdout(&writer, &["rev-parse", &format!("{snapshot}^{{tree}}")])
-        );
-
-        let steady =
-            sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("steady sync");
-        assert_eq!(
-            steady.accepted,
-            Some(accepted),
-            "a linked branch needs no new link"
-        );
-    }
-
-    /// Two tracked devices where the writer's edit reached the reader
-    /// through live before the writer committed and pushed it.
-    fn reader_holding_writer_commit_through_live() -> (TempDir, PathBuf, PathBuf, String) {
-        let (temporary, remote, writer) = setup_tracked_branch();
-        let engine = GitCliEngine::default();
-        let options = GitSyncOptions::default();
-        sync_git_once(&engine, &writer, &options).expect("writer bootstrap");
-        let reader = clone_reader(&temporary, &remote, &writer);
-        sync_git_once(&engine, &reader, &options).expect("reader adoption");
-        fs::write(writer.join("Home.md"), "edited\n").expect("writer edit");
-        sync_git_once(&engine, &writer, &options).expect("writer publishes the edit");
-        sync_git_once(&engine, &reader, &options).expect("reader receives the edit");
-        assert_eq!(git_stdout(&reader, &["status", "--short"]), "M Home.md");
-        commit_all(&writer, "edit");
-        sync_git_once(&engine, &writer, &options).expect("writer publishes the commit");
-        let committed = git_stdout(&writer, &["rev-parse", "HEAD"]);
-        (temporary, writer, reader, committed)
-    }
-
-    #[test]
-    fn branch_adopts_upstream_commits_that_arrived_through_live() {
-        let (_temporary, _writer, reader, committed) = reader_holding_writer_commit_through_live();
-        let engine = GitCliEngine::default();
-
-        let report =
-            sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("reader sync");
-
-        let lane = report.branch.as_ref().expect("branch lane report");
-        assert_eq!(lane.action, GitBranchSyncAction::Adopted, "{lane:?}");
-        assert_eq!(
-            lane.after.as_ref().map(ToString::to_string),
-            Some(committed.clone())
-        );
-        assert_eq!(git_stdout(&reader, &["rev-parse", "HEAD"]), committed);
-        assert_eq!(git_stdout(&reader, &["status", "--short"]), "");
-        assert_eq!(
-            fs::read_to_string(reader.join("Home.md")).expect("note"),
-            "edited\n"
-        );
-    }
-
-    #[test]
-    fn branch_adoption_defers_on_conflicting_staged_entries() {
-        let (_temporary, _writer, reader, committed) = reader_holding_writer_commit_through_live();
-        let engine = GitCliEngine::default();
-        fs::write(reader.join("Home.md"), "staged\n").expect("staged note");
-        run_git(&reader, &["add", "Home.md"]);
-        fs::write(reader.join("Home.md"), "edited\n").expect("restore worktree");
-
-        let report =
-            sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("reader sync");
-        let (action, detail) = branch_action(&report);
-        assert_eq!(action, GitBranchSyncAction::Deferred);
-        assert!(detail.expect("detail").contains("staged changes"));
-        assert_ne!(git_stdout(&reader, &["rev-parse", "HEAD"]), committed);
-
-        run_git(&reader, &["restore", "--staged", "Home.md"]);
-        let report =
-            sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("reader retry");
-        assert_eq!(branch_action(&report).0, GitBranchSyncAction::Adopted);
-        assert_eq!(git_stdout(&reader, &["rev-parse", "HEAD"]), committed);
-        assert_eq!(git_stdout(&reader, &["status", "--short"]), "");
-    }
-
-    #[test]
     fn published_branch_tip_excludes_unpushed_commits() {
         let (_temporary, _remote, writer) = setup_tracked_branch();
         let engine = GitCliEngine::default();
@@ -8623,63 +3549,6 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         assert_eq!(
             git_published_branch_tip(&engine, &repository).expect("published tip"),
             None
-        );
-    }
-
-    #[test]
-    fn branch_push_publishes_local_commits_despite_a_file_lane_conflict() {
-        let (temporary, remote, writer) = setup_tracked_branch();
-        let engine = GitCliEngine::default();
-        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap live ref");
-        let peer = clone_reader(&temporary, &remote, &writer);
-        sync_git_once(&engine, &peer, &GitSyncOptions::default()).expect("peer baseline");
-
-        fs::write(peer.join("Home.md"), "remote file-lane edit\n").expect("peer edit");
-        sync_git_once(&engine, &peer, &GitSyncOptions::default()).expect("publish peer edit");
-        fs::write(peer.join("Home.md"), "initial\n").expect("restore branch content");
-        fs::write(peer.join("RemoteBranch.md"), "ordinary remote commit\n")
-            .expect("remote branch edit");
-        commit_all(&peer, "remote ordinary commit");
-        run_git(&peer, &["push", "--quiet", "origin", "main"]);
-
-        fs::write(writer.join("Home.md"), "local committed edit\n").expect("local edit");
-        commit_all(&writer, "local ordinary commit");
-        let local_commit =
-            GitOid::parse(git_stdout(&writer, &["rev-parse", "HEAD"])).expect("local commit oid");
-        let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
-            .expect("file conflict remains a successful preserved outcome");
-
-        assert_eq!(report.outcome, GitSyncOutcome::Conflicted);
-        let lane = report.branch.as_ref().expect("branch lane report");
-        assert_eq!(lane.action, GitBranchSyncAction::Merged);
-        assert!(
-            lane.pushed,
-            "ordinary branch should publish before conflict"
-        );
-        let published_head =
-            GitOid::parse(git_stdout(&writer, &["rev-parse", "HEAD"])).expect("published head oid");
-        let repository = engine.discover_repository(&writer).expect("repository");
-        assert!(
-            engine
-                .is_ancestor(&repository, &local_commit, &published_head)
-                .expect("local commit ancestry"),
-            "the pulled merge must retain the original local commit"
-        );
-        assert_eq!(
-            fs::read_to_string(writer.join("RemoteBranch.md")).expect("pulled branch file"),
-            "ordinary remote commit\n"
-        );
-        let remote_tip = git_stdout(
-            &writer,
-            &[
-                "ls-remote",
-                remote.to_str().expect("remote path"),
-                "refs/heads/main",
-            ],
-        );
-        assert!(
-            remote_tip.starts_with(published_head.as_str()),
-            "remote main should contain the pulled merge despite the live conflict"
         );
     }
 
@@ -8772,7 +3641,7 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
 
     #[test]
     fn unexplained_head_movement_pauses_after_capture() {
-        let (_temporary, _remote, writer) = setup_remote_and_writer();
+        let (_temporary, _remote, writer) = setup_tracked_branch();
         let engine = GitCliEngine::default();
         let repository = engine.discover_repository(&writer).expect("repository");
         let expected_head = engine
@@ -8820,10 +3689,7 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
     }
 
     fn commits_only() -> GitSyncOptions {
-        GitSyncOptions {
-            worktree: WorktreeSyncMode::None,
-            ..GitSyncOptions::default()
-        }
+        GitSyncOptions::default()
     }
 
     fn remote_ref_tip(remote: &Path, reference: &str) -> String {
@@ -8884,9 +3750,8 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         let pushed = sync_git_once(&engine, &writer, &commits_only()).expect("writer sync");
 
         assert_eq!(pushed.outcome, GitSyncOutcome::Pushed);
-        assert_eq!(pushed.worktree, WorktreeSyncMode::None);
         assert!(pushed.branch.as_ref().is_some_and(|lane| lane.pushed));
-        assert!(pushed.accepted.is_none() && pushed.remote_before.is_none());
+        assert!(remote_ref_tip(&remote, DEFAULT_REMOTE_LIVE_REF).is_empty());
         assert_eq!(
             remote_ref_tip(&remote, "refs/heads/main"),
             git_stdout(&writer, &["rev-parse", "HEAD"])
@@ -9470,7 +4335,7 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
     }
 
     #[test]
-    fn committed_history_only_requires_an_upstream() {
+    fn sync_requires_an_upstream() {
         let (_temporary, remote, writer) = setup_remote_and_writer();
         let engine = GitCliEngine::default();
 
@@ -9479,7 +4344,7 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
 
         assert!(
             matches!(&error, GitSyncError::Git(GitEngineError::UnsupportedRepository { detail })
-                if detail.contains("sync.worktree") && detail.contains("no upstream")),
+                if detail.contains("upstream") && detail.contains("no upstream")),
             "{error}"
         );
         assert!(remote_ref_tip(&remote, DEFAULT_REMOTE_LIVE_REF).is_empty());
@@ -9503,7 +4368,6 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         .expect("preview");
 
         assert_eq!(report.outcome, GitSyncOutcome::Planned);
-        assert!(report.preview.is_none() && report.remote_before.is_none());
         assert_eq!(branch_action(&report).0, GitBranchSyncAction::Planned);
     }
 
@@ -9515,243 +4379,23 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
         fs::write(writer.join("Local.md"), "local\n").expect("local note");
         commit_all(&writer, "local");
 
-        for worktree in [WorktreeSyncMode::All, WorktreeSyncMode::None] {
-            let report = sync_git_once(
-                &engine,
-                &writer,
-                &GitSyncOptions {
-                    worktree,
-                    branch_push: false,
-                    ..GitSyncOptions::default()
-                },
-            )
-            .expect("sync");
-
-            assert!(report.branch.as_ref().is_some_and(|lane| !lane.pushed));
-            assert_eq!(remote_ref_tip(&remote, "refs/heads/main"), published);
-        }
-    }
-
-    fn scoped(paths: &[&str]) -> GitSyncOptions {
-        GitSyncOptions {
-            worktree: WorktreeSyncMode::Paths,
-            scope: Some(GitWorktreeScope::new(paths).expect("scope")),
-            ..GitSyncOptions::default()
-        }
-    }
-
-    /// A pushed branch holding a scoped note and an unscoped script, and a
-    /// second clone of it.
-    fn setup_scoped_devices() -> (TempDir, PathBuf, PathBuf, PathBuf) {
-        let (temporary, remote, writer) = setup_tracked_branch();
-        fs::create_dir(writer.join("wiki")).expect("wiki directory");
-        fs::write(writer.join("wiki/Note.md"), "note v1\n").expect("note");
-        fs::write(writer.join("run.sh"), "echo v1\n").expect("script");
-        commit_all(&writer, "content");
-        run_git(&writer, &["push", "--quiet", "origin", "main"]);
-        let reader = clone_reader(&temporary, &remote, &writer);
-        (temporary, remote, writer, reader)
-    }
-
-    fn live_blob(remote: &Path, path: &str) -> String {
-        git_stdout(
-            remote,
-            &["show", &format!("{DEFAULT_REMOTE_LIVE_REF}:{path}")],
+        let report = sync_git_once(
+            &engine,
+            &writer,
+            &GitSyncOptions {
+                branch_push: false,
+                ..GitSyncOptions::default()
+            },
         )
-    }
+        .expect("sync");
 
-    #[test]
-    fn path_scoped_sync_carries_scoped_edits_but_not_unscoped_ones() {
-        let (_temporary, remote, writer, reader) = setup_scoped_devices();
-        let engine = GitCliEngine::default();
-        fs::write(writer.join("wiki/Note.md"), "note from writer\n").expect("note edit");
-        fs::write(writer.join("run.sh"), "echo half-finished\n").expect("script edit");
-
-        let written = sync_git_once(&engine, &writer, &scoped(&["wiki"])).expect("writer sync");
-
-        assert_eq!(written.outcome, GitSyncOutcome::Bootstrapped);
-        assert_eq!(
-            written.refs.namespace_version,
-            PATH_SCOPED_REF_NAMESPACE_VERSION
-        );
-        assert_eq!(live_blob(&remote, "wiki/Note.md"), "note from writer");
-        assert_eq!(live_blob(&remote, "run.sh"), "echo v1");
-        let message = git_stdout(
-            &remote,
-            &["log", "-1", "--format=%B", DEFAULT_REMOTE_LIVE_REF],
-        );
-        assert!(message.contains("Vulcan-Ref-Namespace: 4"), "{message}");
-        assert!(message.contains("Vulcan-Sync-Scope: "), "{message}");
-
-        fs::write(reader.join("run.sh"), "echo reader edit\n").expect("reader script");
-        let read = sync_git_once(&engine, &reader, &scoped(&["wiki"])).expect("reader sync");
-
-        assert_eq!(read.outcome, GitSyncOutcome::Pulled);
-        assert_eq!(
-            fs::read_to_string(reader.join("wiki/Note.md")).expect("note"),
-            "note from writer\n"
-        );
-        assert_eq!(
-            fs::read_to_string(reader.join("run.sh")).expect("script"),
-            "echo reader edit\n",
-            "unscoped uncommitted work stays local"
-        );
-    }
-
-    #[test]
-    fn path_scoped_divergence_merges_scoped_paths_only() {
-        let (_temporary, remote, writer, reader) = setup_scoped_devices();
-        let engine = GitCliEngine::default();
-        sync_git_once(&engine, &writer, &scoped(&["wiki"])).expect("bootstrap");
-        sync_git_once(&engine, &reader, &scoped(&["wiki"])).expect("reader joins");
-        fs::write(writer.join("wiki/A.md"), "from writer\n").expect("writer note");
-        fs::write(writer.join("run.sh"), "echo writer\n").expect("writer script");
-        sync_git_once(&engine, &writer, &scoped(&["wiki"])).expect("writer sync");
-        fs::write(reader.join("wiki/B.md"), "from reader\n").expect("reader note");
-        fs::write(reader.join("run.sh"), "echo reader\n").expect("reader script");
-
-        let merged = sync_git_once(&engine, &reader, &scoped(&["wiki"])).expect("reader merge");
-
-        assert_eq!(merged.outcome, GitSyncOutcome::Merged);
-        assert!(reader.join("wiki/A.md").exists() && reader.join("wiki/B.md").exists());
-        assert_eq!(
-            fs::read_to_string(reader.join("run.sh")).expect("script"),
-            "echo reader\n"
-        );
-        assert_eq!(live_blob(&remote, "run.sh"), "echo v1");
-        assert_eq!(live_blob(&remote, "wiki/A.md"), "from writer");
-        assert_eq!(live_blob(&remote, "wiki/B.md"), "from reader");
-    }
-
-    #[test]
-    fn path_scoped_branch_lane_updates_unscoped_files_and_keeps_scoped_edits() {
-        let (temporary, remote, writer, reader) = setup_scoped_devices();
-        let engine = GitCliEngine::default();
-        sync_git_once(&engine, &reader, &scoped(&["wiki"])).expect("bootstrap");
-        let other = temporary.path().join("agent");
-        run_git(
-            temporary.path(),
-            &[
-                "clone",
-                "--quiet",
-                "-b",
-                "main",
-                remote.to_str().expect("remote path"),
-                other.to_str().expect("clone path"),
-            ],
-        );
-        run_git(&other, &["config", "user.name", "Vulcan Test"]);
-        run_git(&other, &["config", "user.email", "vulcan@example.invalid"]);
-        fs::write(other.join("wiki/Note.md"), "note committed elsewhere\n").expect("note");
-        fs::write(other.join("run.sh"), "echo v2\n").expect("script");
-        commit_all(&other, "agent work");
-        run_git(&other, &["push", "--quiet", "origin", "main"]);
-        fs::write(reader.join("wiki/Note.md"), "note edited locally\n").expect("local note");
-
-        let report = sync_git_once(&engine, &reader, &scoped(&["wiki"])).expect("sync");
-
-        let (action, detail) = branch_action(&report);
-        assert_eq!(action, GitBranchSyncAction::FastForwarded);
-        assert!(detail.is_some_and(|detail| detail.contains("wiki/Note.md")));
-        assert_eq!(
-            fs::read_to_string(reader.join("run.sh")).expect("script"),
-            "echo v2\n"
-        );
-        assert_eq!(
-            fs::read_to_string(reader.join("wiki/Note.md")).expect("note"),
-            "note edited locally\n"
-        );
-        assert_eq!(live_blob(&remote, "run.sh"), "echo v2");
-        assert_eq!(live_blob(&remote, "wiki/Note.md"), "note edited locally");
-        let _ = writer;
-    }
-
-    #[test]
-    fn path_scoped_branch_lane_defers_over_dirty_unscoped_files() {
-        let (temporary, remote, _writer, reader) = setup_scoped_devices();
-        let engine = GitCliEngine::default();
-        fs::write(reader.join("run.sh"), "echo uncommitted\n").expect("dirty script");
-        let other = temporary.path().join("agent");
-        run_git(
-            temporary.path(),
-            &[
-                "clone",
-                "--quiet",
-                "-b",
-                "main",
-                remote.to_str().expect("remote path"),
-                other.to_str().expect("clone path"),
-            ],
-        );
-        run_git(&other, &["config", "user.name", "Vulcan Test"]);
-        run_git(&other, &["config", "user.email", "vulcan@example.invalid"]);
-        fs::write(other.join("run.sh"), "echo v2\n").expect("script");
-        commit_all(&other, "agent work");
-        run_git(&other, &["push", "--quiet", "origin", "main"]);
-
-        let report = sync_git_once(&engine, &reader, &scoped(&["wiki"])).expect("sync");
-
-        let (action, detail) = branch_action(&report);
-        assert_eq!(action, GitBranchSyncAction::Deferred);
-        assert!(detail.is_some_and(|detail| detail.contains("run.sh")));
-        assert_eq!(
-            fs::read_to_string(reader.join("run.sh")).expect("script"),
-            "echo uncommitted\n"
-        );
-    }
-
-    #[test]
-    fn devices_with_different_scopes_do_not_merge_each_other() {
-        let (_temporary, _remote, writer, reader) = setup_scoped_devices();
-        let engine = GitCliEngine::default();
-        fs::write(writer.join("wiki/Note.md"), "scoped edit\n").expect("writer edit");
-        sync_git_once(&engine, &writer, &scoped(&["wiki"])).expect("bootstrap");
-        fs::write(reader.join("Home.md"), "reader home\n").expect("reader edit");
-
-        let wider = sync_git_once(&engine, &reader, &scoped(&["wiki", "Home.md"]))
-            .expect_err("same branch, different scope");
-        assert!(
-            matches!(wider, GitSyncError::ScopeMismatch { .. }),
-            "{wider}"
-        );
-        assert!(classify_git_sync_error(&wider).retryable);
-
-        let unscoped = sync_git_once(&engine, &reader, &GitSyncOptions::default())
-            .expect_err("a whole-worktree device must not adopt a scoped live");
-        assert!(
-            matches!(unscoped, GitSyncError::ScopeMismatch { .. }),
-            "{unscoped}"
-        );
-    }
-
-    #[test]
-    fn a_newer_branch_may_change_the_scope() {
-        let (_temporary, remote, writer, reader) = setup_scoped_devices();
-        let engine = GitCliEngine::default();
-        fs::write(writer.join("wiki/Note.md"), "scoped edit\n").expect("writer edit");
-        sync_git_once(&engine, &writer, &scoped(&["wiki"])).expect("bootstrap");
-        fs::write(reader.join("run.sh"), "echo scope change\n").expect("config stand-in");
-        commit_all(&reader, "widen the scope");
-        run_git(&reader, &["push", "--quiet", "origin", "main"]);
-        fs::write(reader.join("Home.md"), "reader home\n").expect("newly scoped edit");
-
-        let report = sync_git_once(&engine, &reader, &scoped(&["wiki", "Home.md"]))
-            .expect("the device with the newer branch may change the scope");
-
-        assert_eq!(report.outcome, GitSyncOutcome::Merged);
-        assert_eq!(live_blob(&remote, "Home.md"), "reader home");
-        assert_eq!(live_blob(&remote, "wiki/Note.md"), "scoped edit");
-        let stale = sync_git_once(&engine, &writer, &scoped(&["wiki"]))
-            .expect_err("the old scope must not overwrite the new one");
-        assert!(
-            matches!(stale, GitSyncError::ScopeMismatch { .. }),
-            "{stale}"
-        );
+        assert!(report.branch.as_ref().is_some_and(|lane| !lane.pushed));
+        assert_eq!(remote_ref_tip(&remote, "refs/heads/main"), published);
     }
 
     #[test]
     fn switching_branches_at_the_same_commit_pauses_after_capture() {
-        let (_temporary, _remote, writer) = setup_remote_and_writer();
+        let (_temporary, _remote, writer) = setup_tracked_branch();
         let engine = GitCliEngine::default();
         let repository = engine.discover_repository(&writer).expect("repository");
         let head = engine
@@ -9794,755 +4438,5 @@ CONFLICT (directory/file): Notes/Note00088.md is a directory in one branch\n";
             pause.actual_head_ref.as_ref().map(GitRefName::as_str),
             Some("refs/heads/other")
         );
-    }
-
-    #[test]
-    fn two_worktrees_pull_and_merge_non_overlapping_changes() {
-        let (temporary, remote, writer) = setup_remote_and_writer();
-        let engine = GitCliEngine::default();
-        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap sync");
-        let reader = clone_reader(&temporary, &remote, &writer);
-
-        fs::write(writer.join("Writer.md"), "from writer\n").expect("writer edit");
-        let writer_report =
-            sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("writer push");
-        assert_eq!(writer_report.outcome, GitSyncOutcome::Pushed);
-
-        let pull_report =
-            sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("reader pull");
-        assert_eq!(pull_report.outcome, GitSyncOutcome::Pulled);
-        assert_eq!(
-            fs::read_to_string(reader.join("Writer.md")).expect("pulled note"),
-            "from writer\n"
-        );
-
-        fs::write(writer.join("Writer.md"), "writer revision\n").expect("writer revision");
-        fs::write(reader.join("Reader.md"), "from reader\n").expect("reader edit");
-        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("writer push");
-        let merge_report =
-            sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("reader merge");
-        assert_eq!(merge_report.outcome, GitSyncOutcome::Merged);
-        assert!(merge_report.actions.contains(&GitSyncAction::Pushed));
-        assert!(merge_report
-            .actions
-            .contains(&GitSyncAction::WorktreeApplied));
-        assert_eq!(
-            fs::read_to_string(reader.join("Writer.md")).expect("merged writer note"),
-            "writer revision\n"
-        );
-        assert_eq!(
-            fs::read_to_string(reader.join("Reader.md")).expect("local reader note"),
-            "from reader\n"
-        );
-
-        let convergence = sync_git_once(&engine, &writer, &GitSyncOptions::default())
-            .expect("writer convergence pull");
-        assert_eq!(convergence.outcome, GitSyncOutcome::Pulled);
-        assert_eq!(
-            fs::read_to_string(writer.join("Reader.md")).expect("converged reader note"),
-            "from reader\n"
-        );
-    }
-
-    #[test]
-    fn conflicting_edits_publish_clean_paths_without_vault_artifacts() {
-        let (temporary, remote, writer) = setup_remote_and_writer();
-        let engine = GitCliEngine::default();
-        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap sync");
-        let reader = clone_reader(&temporary, &remote, &writer);
-        sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("reader baseline");
-
-        fs::write(writer.join("Home.md"), "writer version\n").expect("writer edit");
-        fs::write(reader.join("Home.md"), "reader version\n").expect("reader edit");
-        fs::write(writer.join("Writer.md"), "clean remote addition\n").expect("writer addition");
-        fs::write(reader.join("Reader.md"), "clean local addition\n").expect("reader addition");
-        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("writer push");
-        let report =
-            sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("conflict report");
-
-        assert_eq!(report.outcome, GitSyncOutcome::Conflicted);
-        let conflict = report.conflict.as_ref().expect("conflict details");
-        assert_eq!(conflict.paths, ["Home.md"]);
-        assert_eq!(conflict.classifications.len(), 1);
-        assert_eq!(
-            conflict.classifications[0].class,
-            GitConflictClass::OverlappingText
-        );
-        assert_eq!(
-            conflict.classifications[0].configured_resolution,
-            MergeResolution::Structured
-        );
-        assert_eq!(
-            conflict.classifications[0].effective_resolution,
-            MergeResolution::RequireReview
-        );
-        assert!(conflict.base.is_some());
-        assert_eq!(conflict.id.len(), 32);
-        assert_eq!(conflict.policy_version, MergePolicy::default().version);
-        assert_published_conflict_state(&engine, reader.as_path(), &report);
-    }
-
-    #[test]
-    fn directory_rename_location_conflicts_are_not_projected_by_path() {
-        let (temporary, remote, writer) = setup_remote_and_writer();
-        let engine = GitCliEngine::default();
-        fs::create_dir_all(writer.join("Old")).expect("old directory");
-        fs::write(writer.join("Old/anchor.md"), "anchor\n").expect("anchor note");
-        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap sync");
-        let reader = clone_reader(&temporary, &remote, &writer);
-        sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("reader baseline");
-
-        fs::write(writer.join("Old/remote.md"), "remote addition\n").expect("remote addition");
-        fs::rename(reader.join("Old"), reader.join("New")).expect("local directory rename");
-        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("writer push");
-        let report =
-            sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("conflict report");
-
-        assert_eq!(report.outcome, GitSyncOutcome::Conflicted);
-        let conflict = report.conflict.as_ref().expect("conflict details");
-        assert!(conflict.paths.iter().any(|path| path == "New/remote.md"));
-        assert!(conflict.projection.is_none());
-        assert!(!report.actions.contains(&GitSyncAction::Pushed));
-        assert!(reader.join("New/anchor.md").exists());
-        assert!(!reader.join("Old/remote.md").exists());
-
-        let backup = report
-            .device_backup
-            .as_ref()
-            .expect("conflicted local snapshot is independently backed up");
-        assert!(engine
-            .is_ancestor(
-                &report.repository,
-                &backup.snapshot_revision,
-                &backup.published_revision,
-            )
-            .expect("backup ancestry"));
-        assert_eq!(
-            git_stdout(
-                &reader,
-                &["ls-remote", "origin", backup.reference.as_str(),],
-            )
-            .split_whitespace()
-            .next(),
-            Some(backup.published_revision.as_str())
-        );
-
-        let rescuer = temporary.path().join("rescuer");
-        run_git(
-            temporary.path(),
-            &[
-                "-c",
-                "core.autocrlf=false",
-                "clone",
-                "--quiet",
-                writer.to_str().expect("writer path"),
-                rescuer.to_str().expect("rescuer path"),
-            ],
-        );
-        run_git(
-            &rescuer,
-            &[
-                "remote",
-                "set-url",
-                "origin",
-                remote.to_str().expect("remote path"),
-            ],
-        );
-        run_git(
-            &rescuer,
-            &[
-                "fetch",
-                "--quiet",
-                "origin",
-                &format!("{}:refs/vulcan/recovery/test-device", backup.reference),
-            ],
-        );
-        assert_eq!(
-            git_stdout(
-                &rescuer,
-                &["show", "refs/vulcan/recovery/test-device:New/anchor.md"],
-            ),
-            "anchor"
-        );
-    }
-
-    #[test]
-    fn structured_json_conflicts_are_resolved_and_reported_deterministically() {
-        let (temporary, remote, writer) = setup_remote_and_writer();
-        let engine = GitCliEngine::default();
-        fs::write(writer.join("data.json"), "{\"base\":true}\n").expect("base JSON");
-        fs::write(writer.join("removed.md"), "removed by both sides\n").expect("shared file");
-        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap sync");
-        let reader = clone_reader(&temporary, &remote, &writer);
-        sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("reader baseline");
-
-        fs::write(writer.join("data.json"), "{\"base\":true,\"writer\":1}\n").expect("writer JSON");
-        fs::write(reader.join("data.json"), "{\"base\":true,\"reader\":2}\n").expect("reader JSON");
-        fs::remove_file(writer.join("removed.md")).expect("writer deletion");
-        fs::remove_file(reader.join("removed.md")).expect("reader deletion");
-        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("writer push");
-        let report =
-            sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("structured merge");
-
-        assert_eq!(report.outcome, GitSyncOutcome::Merged);
-        assert!(report.conflict.is_none());
-        assert_eq!(report.automatic_resolutions.len(), 1);
-        let resolution = &report.automatic_resolutions[0];
-        assert_eq!(resolution.path, "data.json");
-        assert_eq!(resolution.kind, MergeFileKind::Json);
-        assert_eq!(resolution.rule_id, "json-structured");
-        assert_eq!(
-            resolution.validation,
-            GitAutomaticResolutionValidation {
-                checks: vec![
-                    GitAutomaticValidationCheck::PathSafe,
-                    GitAutomaticValidationCheck::SyntaxValid,
-                    GitAutomaticValidationCheck::SchemaValid,
-                    GitAutomaticValidationCheck::NoFileDeletion,
-                    GitAutomaticValidationCheck::ExactTreeObject,
-                ],
-            }
-        );
-        let merged: serde_json::Value =
-            serde_json::from_slice(&fs::read(reader.join("data.json")).expect("merged JSON bytes"))
-                .expect("merged JSON");
-        assert_eq!(
-            merged,
-            serde_json::json!({"base": true, "reader": 2, "writer": 1})
-        );
-        assert!(!reader.join("removed.md").exists());
-
-        // The resolution names its registered merger and the exact blobs.
-        let blob = |content: &[u8]| {
-            let hashed = git_with_stdin(&reader, &["hash-object", "--stdin"], content);
-            GitOid::parse(hashed.trim()).expect("oid")
-        };
-        let evidence = resolution.merger.as_ref().expect("merger evidence");
-        assert_eq!(evidence.id, "vulcan.json-tree");
-        assert_eq!(evidence.version, 1);
-        assert_eq!(evidence.base, Some(blob(b"{\"base\":true}\n")));
-        assert_eq!(
-            evidence.local,
-            Some(blob(b"{\"base\":true,\"reader\":2}\n"))
-        );
-        assert_eq!(
-            evidence.remote,
-            Some(blob(b"{\"base\":true,\"writer\":1}\n"))
-        );
-        assert_eq!(
-            evidence.output,
-            Some(blob(
-                &fs::read(reader.join("data.json")).expect("merged bytes")
-            ))
-        );
-        let json = serde_json::to_value(resolution).expect("resolution JSON");
-        assert_eq!(json["merger"]["id"], "vulcan.json-tree");
-
-        // The merge commit carries the same evidence as a trailer.
-        let log = git_with_stdin(&reader, &["log", "--all", "--format=%B%x00"], b"");
-        let merge = log
-            .split('\0')
-            .find(|message| message.trim_start().starts_with("vulcan live merge"))
-            .expect("live merge commit");
-        let trailer = format!(
-            "Vulcan-Sync-Merger: vulcan.json-tree@1 base={} local={} remote={} output={} path=\"data.json\"",
-            evidence.base.as_ref().expect("base"),
-            evidence.local.as_ref().expect("local"),
-            evidence.remote.as_ref().expect("remote"),
-            evidence.output.as_ref().expect("output"),
-        );
-        assert!(merge.lines().any(|line| line == trailer), "{merge}");
-        let parsed = git_with_stdin(
-            &reader,
-            &["interpret-trailers", "--parse"],
-            merge.as_bytes(),
-        );
-        assert!(parsed.lines().any(|line| line == trailer), "{parsed}");
-        assert!(parsed.contains("Vulcan-Sync-Device: "), "{parsed}");
-    }
-
-    /// Runs `git` in `repository` with `input` on stdin and returns stdout.
-    fn git_with_stdin(repository: &Path, args: &[&str], input: &[u8]) -> String {
-        use std::io::Write;
-        let mut child = std::process::Command::new("git")
-            .arg("-C")
-            .arg(repository)
-            .args(args)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("git");
-        child
-            .stdin
-            .take()
-            .expect("stdin")
-            .write_all(input)
-            .expect("git input");
-        let output = child.wait_with_output().expect("git output");
-        assert!(output.status.success(), "git {args:?} failed");
-        String::from_utf8(output.stdout).expect("utf-8 git output")
-    }
-
-    #[test]
-    fn merger_trailers_quote_paths_mark_absent_sides_and_are_capped() {
-        let oid = |digit: char| GitOid::parse(digit.to_string().repeat(40)).expect("oid");
-        let resolution = |path: &str, base: Option<GitOid>| GitAutomaticResolution {
-            path: path.to_string(),
-            kind: MergeFileKind::Json,
-            rule_id: "json-structured".to_string(),
-            validation: GitAutomaticResolutionValidation { checks: Vec::new() },
-            merger: Some(GitMergerEvidence {
-                id: "vulcan.json-tree".to_string(),
-                version: 1,
-                base,
-                local: Some(oid('b')),
-                remote: Some(oid('c')),
-                output: Some(oid('d')),
-            }),
-        };
-        let mut untracked = resolution("ignored.json", None);
-        untracked.merger = None;
-        let trailers = merger_trailers(&[resolution("dir/a \"b\"\nc.json", None), untracked]);
-        assert_eq!(
-            trailers,
-            format!(
-                "Vulcan-Sync-Merger: vulcan.json-tree@1 base=- local={} remote={} output={} path=\"dir/a \\\"b\\\"\\nc.json\"\n",
-                oid('b'),
-                oid('c'),
-                oid('d')
-            )
-        );
-        let many = (0..40)
-            .map(|index| resolution(&format!("{index}.json"), Some(oid('a'))))
-            .collect::<Vec<_>>();
-        let trailers = merger_trailers(&many);
-        assert_eq!(trailers.lines().count(), MAX_MERGER_TRAILERS + 1);
-        assert!(trailers.ends_with("Vulcan-Sync-Merger-Omitted: 8\n"));
-        assert!(merger_trailers(&[]).is_empty());
-    }
-
-    fn carried_object(data: &str) -> GitPathObject {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        data.hash(&mut hasher);
-        GitPathObject {
-            oid: GitOid::parse(format!("{:040x}", hasher.finish())).expect("object id"),
-            mode: "100644".to_string(),
-            kind: "blob".to_string(),
-            data: Some(data.as_bytes().to_vec()),
-        }
-    }
-
-    fn carry(path: &str, base: &str, local: Option<&str>, current: &str) -> GitCarriedPath {
-        let local = local.map(carried_object);
-        merge_carried_path(
-            &GitCliEngine::default(),
-            &GitSyncOptions::default(),
-            path,
-            Some(&carried_object(base)),
-            local.as_ref(),
-            Some(&carried_object(current)),
-        )
-        .expect("carried merge")
-    }
-
-    fn carried_bytes(outcome: GitCarriedPath) -> String {
-        match outcome {
-            GitCarriedPath::Merged(resolved) => {
-                String::from_utf8(resolved.data.expect("merged bytes")).expect("utf-8")
-            }
-            other => panic!("expected a merged result, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn carried_paths_merge_like_a_sync_onto_the_current_version() {
-        // Already live, or never changed locally: nothing to carry.
-        assert_eq!(
-            carry("Note.md", "a\n", Some("l\n"), "l\n"),
-            GitCarriedPath::Unchanged
-        );
-        assert_eq!(
-            carry("Note.md", "a\n", Some("a\n"), "r\n"),
-            GitCarriedPath::Unchanged
-        );
-        // Non-overlapping line changes merge.
-        assert_eq!(
-            carried_bytes(carry(
-                "Note.md",
-                "a\nb\nc\n",
-                Some("L\nb\nc\n"),
-                "a\nb\nC\n"
-            )),
-            "L\nb\nC\n"
-        );
-        // Overlapping Markdown body edits still need review.
-        assert_eq!(
-            carry("Note.md", "a\n", Some("l\n"), "r\n"),
-            GitCarriedPath::Unresolved
-        );
-        // A local deletion is never carried silently.
-        assert_eq!(
-            carry("Note.md", "a\n", None, "r\n"),
-            GitCarriedPath::Unresolved
-        );
-        // Overlapping JSON keys use the structured merger.
-        let merged: serde_json::Value = serde_json::from_str(&carried_bytes(carry(
-            "data.json",
-            "{\"a\":1}",
-            Some("{\"a\":1,\"l\":2}"),
-            "{\"a\":1,\"r\":3}",
-        )))
-        .expect("merged JSON");
-        assert_eq!(merged, serde_json::json!({"a": 1, "l": 2, "r": 3}));
-        // The workspace layout keeps this device's copy.
-        assert_eq!(
-            carried_bytes(carry(
-                ".obsidian/workspace.json",
-                "{\"active\":\"base\"}",
-                Some("{\"active\":\"local\"}"),
-                "{\"active\":\"remote\"}",
-            )),
-            "{\"active\":\"local\"}"
-        );
-    }
-
-    #[test]
-    fn obsidian_workspace_conflicts_keep_the_local_layout_without_review() {
-        let (temporary, remote, writer) = setup_remote_and_writer();
-        let engine = GitCliEngine::default();
-        fs::create_dir_all(writer.join(".obsidian/plugins/example")).expect("obsidian dir");
-        fs::write(
-            writer.join(".obsidian/workspace.json"),
-            "{\n  \"active\": \"base\"\n}\n",
-        )
-        .expect("base workspace");
-        fs::write(
-            writer.join(".obsidian/plugins/example/data.json"),
-            "{\n  \"setting\": \"base\"\n}\n",
-        )
-        .expect("base plugin data");
-        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap sync");
-        let reader = clone_reader(&temporary, &remote, &writer);
-        sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("reader baseline");
-
-        fs::write(
-            writer.join(".obsidian/workspace.json"),
-            "{\n  \"active\": \"writer\"\n}\n",
-        )
-        .expect("writer workspace");
-        fs::write(
-            reader.join(".obsidian/workspace.json"),
-            "{\n  \"active\": \"reader\"\n}\n",
-        )
-        .expect("reader workspace");
-        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("writer push");
-        let report =
-            sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("local layout wins");
-
-        assert_eq!(report.outcome, GitSyncOutcome::Merged);
-        assert!(report.conflict.is_none());
-        assert_eq!(report.automatic_resolutions.len(), 1);
-        assert_eq!(
-            report.automatic_resolutions[0].path,
-            ".obsidian/workspace.json"
-        );
-        assert_eq!(
-            report.automatic_resolutions[0].rule_id,
-            "obsidian-workspace-local"
-        );
-        assert_eq!(
-            fs::read_to_string(reader.join(".obsidian/workspace.json")).expect("workspace"),
-            "{\n  \"active\": \"reader\"\n}\n"
-        );
-
-        // Both devices changing the same plugin setting still needs review.
-        fs::write(
-            writer.join(".obsidian/plugins/example/data.json"),
-            "{\n  \"setting\": \"writer\"\n}\n",
-        )
-        .expect("writer plugin data");
-        fs::write(
-            reader.join(".obsidian/plugins/example/data.json"),
-            "{\n  \"setting\": \"reader\"\n}\n",
-        )
-        .expect("reader plugin data");
-        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("writer plugin push");
-        let report =
-            sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("plugin conflict");
-        assert_eq!(report.outcome, GitSyncOutcome::Conflicted);
-        let conflict = report.conflict.expect("plugin data conflict");
-        assert_eq!(
-            conflict.paths,
-            vec![".obsidian/plugins/example/data.json".to_string()]
-        );
-    }
-
-    #[test]
-    fn obsidian_settings_and_enabled_plugins_merge_key_by_key() {
-        let (temporary, remote, writer) = setup_remote_and_writer();
-        let engine = GitCliEngine::default();
-        fs::create_dir_all(writer.join(".obsidian/plugins/example")).expect("obsidian dir");
-        let plugins = ".obsidian/community-plugins.json";
-        let data = ".obsidian/plugins/example/data.json";
-        fs::write(
-            writer.join(plugins),
-            "[\n  \"dataview\",\n  \"templater\"\n]",
-        )
-        .expect("base plugins");
-        fs::write(writer.join(data), "{\n  \"a\": 1,\n  \"b\": 1\n}").expect("base data");
-        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap sync");
-        let reader = clone_reader(&temporary, &remote, &writer);
-        sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("reader baseline");
-
-        // The writer disables a plugin and changes one setting; the reader
-        // enables another plugin and changes a different setting.
-        fs::write(writer.join(plugins), "[\n  \"dataview\"\n]").expect("writer plugins");
-        fs::write(writer.join(data), "{\n  \"a\": 2,\n  \"b\": 1\n}").expect("writer data");
-        fs::write(
-            reader.join(plugins),
-            "[\n  \"dataview\",\n  \"templater\",\n  \"tasks\"\n]",
-        )
-        .expect("reader plugins");
-        fs::write(reader.join(data), "{\n  \"a\": 1,\n  \"b\": 3\n}").expect("reader data");
-        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("writer push");
-        let report =
-            sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("settings merge");
-
-        assert_eq!(report.outcome, GitSyncOutcome::Merged);
-        assert!(report.conflict.is_none());
-        let mut merged = report
-            .automatic_resolutions
-            .iter()
-            .map(|resolution| {
-                (
-                    resolution.path.as_str(),
-                    resolution.kind,
-                    resolution.rule_id.as_str(),
-                )
-            })
-            .collect::<Vec<_>>();
-        merged.sort_unstable_by_key(|(path, _, _)| *path);
-        assert_eq!(
-            merged,
-            [
-                (
-                    plugins,
-                    MergeFileKind::ObsidianState,
-                    "obsidian-json-structured"
-                ),
-                (
-                    data,
-                    MergeFileKind::ObsidianState,
-                    "obsidian-json-structured"
-                ),
-            ]
-        );
-        let read = |path: &str| -> serde_json::Value {
-            serde_json::from_str(&fs::read_to_string(reader.join(path)).expect("merged file"))
-                .expect("JSON")
-        };
-        assert_eq!(read(plugins), serde_json::json!(["dataview", "tasks"]));
-        assert_eq!(read(data), serde_json::json!({"a": 2, "b": 3}));
-    }
-
-    #[test]
-    fn ignoring_a_tracked_file_untracks_it_and_keeps_every_device_copy() {
-        let (temporary, remote, writer) = setup_remote_and_writer();
-        let engine = GitCliEngine::default();
-        let workspace = ".obsidian/workspace.json";
-        fs::create_dir_all(writer.join(".obsidian")).expect("obsidian dir");
-        fs::write(writer.join(workspace), "{\"active\":\"base\"}\n").expect("base layout");
-        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap sync");
-        let reader = clone_reader(&temporary, &remote, &writer);
-        sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("reader baseline");
-        let live_paths = || {
-            git_stdout(
-                &remote,
-                &[
-                    "ls-tree",
-                    "-r",
-                    "--name-only",
-                    "refs/heads/__vulcan-sync/live",
-                ],
-            )
-        };
-        assert!(live_paths().contains(workspace));
-
-        // The writer ignores its layout while the reader keeps changing its own.
-        fs::write(writer.join(".gitignore"), "/.obsidian/workspace.json\n").expect("ignore");
-        fs::write(writer.join(workspace), "{\"active\":\"writer\"}\n").expect("writer layout");
-        fs::write(reader.join(workspace), "{\"active\":\"reader\"}\n").expect("reader layout");
-        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("untracking sync");
-        assert!(!live_paths().contains(workspace));
-        assert!(live_paths().contains(".gitignore"));
-
-        // The reader's edit meets the remote deletion: the untracking wins the
-        // merge, and the reader keeps its own layout.
-        let report =
-            sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("reader sync");
-        assert!(report.conflict.is_none(), "{:?}", report.conflict);
-        assert!(report
-            .automatic_resolutions
-            .iter()
-            .any(|resolution| resolution.path == workspace
-                && resolution.rule_id == GITIGNORE_UNTRACK_RULE_ID));
-        assert!(!live_paths().contains(workspace));
-        for (device, layout) in [(&reader, "reader"), (&writer, "writer")] {
-            sync_git_once(&engine, device, &GitSyncOptions::default()).expect("settle");
-            assert_eq!(
-                fs::read_to_string(device.join(workspace)).expect("kept layout"),
-                format!("{{\"active\":\"{layout}\"}}\n")
-            );
-        }
-        assert!(!live_paths().contains(workspace));
-    }
-
-    #[test]
-    fn structured_results_survive_an_unresolved_sibling_path() {
-        let (temporary, remote, writer) = setup_remote_and_writer();
-        let engine = GitCliEngine::default();
-        fs::write(writer.join("data.json"), "{\"base\":true}\n").expect("base JSON");
-        fs::write(writer.join("Home.md"), "base body\n").expect("base Markdown");
-        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap sync");
-        let reader = clone_reader(&temporary, &remote, &writer);
-        sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("reader baseline");
-
-        fs::write(writer.join("data.json"), "{\"base\":true,\"writer\":1}\n").expect("writer JSON");
-        fs::write(reader.join("data.json"), "{\"base\":true,\"reader\":2}\n").expect("reader JSON");
-        fs::write(writer.join("Home.md"), "writer body\n").expect("writer Markdown");
-        fs::write(reader.join("Home.md"), "reader body\n").expect("reader Markdown");
-        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("writer push");
-        let report =
-            sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("partial merge");
-
-        assert_eq!(report.outcome, GitSyncOutcome::Conflicted);
-        assert_eq!(report.automatic_resolutions.len(), 1);
-        assert_eq!(report.automatic_resolutions[0].path, "data.json");
-        let conflict = report.conflict.as_ref().expect("remaining conflict");
-        assert_eq!(conflict.paths, ["Home.md"]);
-        assert!(conflict
-            .projection
-            .as_ref()
-            .is_some_and(|projection| projection.published && projection.applied));
-        let merged: serde_json::Value =
-            serde_json::from_slice(&fs::read(reader.join("data.json")).expect("merged JSON"))
-                .expect("valid merged JSON");
-        assert_eq!(
-            merged,
-            serde_json::json!({"base": true, "reader": 2, "writer": 1})
-        );
-        assert_eq!(
-            fs::read_to_string(reader.join("Home.md")).expect("projected Markdown"),
-            "writer body\n"
-        );
-    }
-
-    #[test]
-    fn shared_policy_can_narrowly_merge_selected_obsidian_plugin_json() {
-        let (temporary, remote, writer) = setup_remote_and_writer();
-        let engine = GitCliEngine::default();
-        let relative = ".obsidian/plugins/example/data.json";
-        fs::create_dir_all(writer.join(".obsidian/plugins/example")).expect("plugin directory");
-        fs::write(writer.join(relative), "{\"base\":true}\n").expect("base plugin state");
-        let policy = MergePolicy {
-            version: crate::MERGE_POLICY_SCHEMA_VERSION,
-            rules: vec![
-                crate::MergePolicyRule {
-                    id: "selected-plugin-state".to_string(),
-                    selector: crate::MergePathSelector {
-                        glob: relative.to_string(),
-                        kinds: vec![MergeFileKind::ObsidianState],
-                    },
-                    resolution: MergeResolution::Structured,
-                },
-                crate::MergePolicyRule {
-                    id: "fallback-review".to_string(),
-                    selector: crate::MergePathSelector {
-                        glob: "**".to_string(),
-                        kinds: Vec::new(),
-                    },
-                    resolution: MergeResolution::RequireReview,
-                },
-            ],
-        };
-        let options = GitSyncOptions {
-            merge_policy: policy,
-            ..GitSyncOptions::default()
-        };
-        sync_git_once(&engine, &writer, &options).expect("bootstrap sync");
-        let reader = clone_reader(&temporary, &remote, &writer);
-        sync_git_once(&engine, &reader, &options).expect("reader baseline");
-
-        fs::write(writer.join(relative), "{\"base\":true,\"writer\":1}\n")
-            .expect("writer plugin state");
-        fs::write(reader.join(relative), "{\"base\":true,\"reader\":2}\n")
-            .expect("reader plugin state");
-        sync_git_once(&engine, &writer, &options).expect("writer push");
-        let report = sync_git_once(&engine, &reader, &options).expect("selected state merge");
-
-        assert_eq!(report.outcome, GitSyncOutcome::Merged);
-        assert_eq!(report.automatic_resolutions[0].path, relative);
-        assert_eq!(
-            report.automatic_resolutions[0].kind,
-            MergeFileKind::ObsidianState
-        );
-        assert_eq!(
-            report.automatic_resolutions[0].rule_id,
-            "selected-plugin-state"
-        );
-    }
-
-    #[test]
-    fn device_review_ceiling_preserves_otherwise_resolvable_conflicts() {
-        let (temporary, remote, writer) = setup_remote_and_writer();
-        let engine = GitCliEngine::default();
-        let policy = MergePolicy::default();
-        fs::write(writer.join("data.json"), "{\"base\":true}\n").expect("base JSON");
-        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap sync");
-        let reader = clone_reader(&temporary, &remote, &writer);
-        sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("reader baseline");
-        fs::write(writer.join("data.json"), "{\"base\":true,\"writer\":1}\n").expect("writer JSON");
-        fs::write(reader.join("data.json"), "{\"base\":true,\"reader\":2}\n").expect("reader JSON");
-        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("writer push");
-
-        let report = sync_git_once(
-            &engine,
-            &reader,
-            &GitSyncOptions {
-                merge_automation: MergeAutomation::RequireReview,
-                ..GitSyncOptions::default()
-            },
-        )
-        .expect("review conflict");
-
-        assert_eq!(report.outcome, GitSyncOutcome::Conflicted);
-        assert!(report.automatic_resolutions.is_empty());
-        assert_eq!(
-            report.conflict.expect("conflict").policy_hash,
-            policy.policy_hash().expect("policy hash")
-        );
-    }
-
-    #[test]
-    fn formatter_candidates_are_hints_and_exclude_sensitive_markdown() {
-        assert!(formatting_candidate(
-            MergeFileKind::Markdown,
-            Some(b"A paragraph with several words.\n"),
-            Some(b"A paragraph\nwith several words.\n"),
-            Some(b"A paragraph with several words.\n"),
-        ));
-        assert!(!formatting_candidate(
-            MergeFileKind::Markdown,
-            Some(b"hard break  \nnext\n"),
-            Some(b"hard break\nnext\n"),
-            Some(b"hard break  \nnext changed\n"),
-        ));
-        assert!(!formatting_candidate(
-            MergeFileKind::Markdown,
-            Some(b"```text\na b\n```\n"),
-            Some(b"```text\na   b\n```\n"),
-            Some(b"```text\na b changed\n```\n"),
-        ));
     }
 }

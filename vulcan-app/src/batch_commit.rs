@@ -3,11 +3,10 @@
 //!
 //! The daemon runs a pass on its interval; the pass itself is synchronous and
 //! daemon-independent. It never stages or commits paths someone else staged,
-//! waits out merges and rebases, and stands down when Git sync owns capture.
+//! and waits out merges and rebases.
 //! An agent may group and describe the changes but never changes their
 //! bytes; when it cannot, the batch is committed with deterministic groups.
 
-use crate::commit::{capture_owner, CaptureOwner};
 use crate::execution::MutationGate;
 use crate::sync::SyncCancellationToken;
 use crate::sync_semantic::{
@@ -54,9 +53,6 @@ pub struct BatchedCommitOptions<'a> {
     /// use it. `agent_unavailable` says why not otherwise.
     pub agent: Option<&'a dyn SemanticAgentProvider>,
     pub agent_unavailable: Option<String>,
-    /// Who owns capture, when the caller already knows (the daemon reads it
-    /// from the registration). `None` reads the device registry.
-    pub capture_owner: Option<CaptureOwner>,
     pub permission_profile: Option<&'a str>,
     /// Use these instead of reading the working tree: a trusted-commit run
     /// passes the signed `[git]` table and the profile it resolved from it.
@@ -85,8 +81,6 @@ pub enum BatchedCommitStatus {
     Blocked,
     /// The vault does not ask for batched commits.
     Disabled,
-    /// Git sync owns automatic capture for this vault.
-    OwnedBySync,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,7 +142,7 @@ pub fn run_batched_commit(
         .cloned()
         .unwrap_or_else(|| load_vault_config(paths).config.git);
     let requested = config.batch_messages;
-    if let Some(report) = batch_precondition(paths, &config, options) {
+    if let Some(report) = batch_precondition(paths, &config) {
         return Ok(report);
     }
     let profile = match options.resolved_profile {
@@ -271,30 +265,15 @@ fn announce_commits(
     }
 }
 
-/// The report for a vault whose configuration, capture owner, or repository
-/// rules out a batch, or `None` when a batch may run.
-fn batch_precondition(
-    paths: &VaultPaths,
-    config: &GitConfig,
-    options: &BatchedCommitOptions<'_>,
-) -> Option<BatchedCommitReport> {
+/// The report for a vault whose configuration or repository rules out a
+/// batch, or `None` when a batch may run.
+fn batch_precondition(paths: &VaultPaths, config: &GitConfig) -> Option<BatchedCommitReport> {
     let requested = config.batch_messages;
     if !batched_commits_enabled(config) {
         return Some(BatchedCommitReport::new(
             BatchedCommitStatus::Disabled,
             requested,
         ));
-    }
-    let owner = options
-        .capture_owner
-        .clone()
-        .unwrap_or_else(|| capture_owner(paths.vault_root()));
-    if let CaptureOwner::HiddenRefSync { wiki_id } = owner {
-        return Some(
-            BatchedCommitReport::new(BatchedCommitStatus::OwnedBySync, requested).with_detail(
-                format!("Git sync for `{wiki_id}` captures this vault's changes"),
-            ),
-        );
     }
     if !is_git_repo(paths.vault_root()) {
         return Some(
@@ -549,7 +528,6 @@ mod tests {
             &BatchedCommitOptions {
                 agent,
                 agent_unavailable: None,
-                capture_owner: Some(CaptureOwner::AutoCommit),
                 permission_profile: Some("unrestricted"),
                 git_config: None,
                 resolved_profile: None,
@@ -771,30 +749,8 @@ mod tests {
     }
 
     #[test]
-    fn git_sync_ownership_and_per_write_strategy_make_no_commit() {
+    fn per_write_strategy_makes_no_batched_commit() {
         let temp = vault("template");
-        let cancellation = SyncCancellationToken::default();
-        let owned = run_batched_commit(
-            &VaultPaths::new(temp.path()),
-            &BatchedCommitOptions {
-                agent: None,
-                agent_unavailable: None,
-                capture_owner: Some(CaptureOwner::HiddenRefSync {
-                    wiki_id: "notes".to_string(),
-                }),
-                permission_profile: Some("unrestricted"),
-                git_config: None,
-                resolved_profile: None,
-                plugins: true,
-                gate: &Ungated,
-                cancellation: &cancellation,
-                verbosity: Verbosity::Quiet,
-                dry_run: false,
-            },
-        )
-        .expect("owned report");
-        assert_eq!(owned.status, BatchedCommitStatus::OwnedBySync);
-
         fs::write(
             temp.path().join(".vulcan/config.toml"),
             "[git]\nauto_commit = true\n",
@@ -831,7 +787,6 @@ mod tests {
             &BatchedCommitOptions {
                 agent: None,
                 agent_unavailable: None,
-                capture_owner: Some(CaptureOwner::AutoCommit),
                 permission_profile: Some("unrestricted"),
                 git_config: None,
                 resolved_profile: None,

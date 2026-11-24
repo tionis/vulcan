@@ -1,6 +1,6 @@
 ---
 name: sync-workflow
-description: Synchronize one or more Vulcan wikis safely, tune how often the daemon checks remotes, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, how quickly other devices' changes arrive, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
+description: Synchronize one or more Vulcan wikis safely, tune how often the daemon checks remotes, inspect daemon or direct-mode state, diagnose Git-backed sync, inspect retained conflict records, recover detached Android layouts, or recover another device's backup. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, how quickly other devices' changes arrive, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, paused branches, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
 version: 40
 metadata:
   vulcan:
@@ -10,11 +10,10 @@ require_confirmation: false
 
 # Sync Workflow
 
-Vulcan synchronizes canonical vault files through finite, recoverable transactions. Live snapshots
-are deliberately non-semantic and never create commits on the user's checked-out branch; they link
-its already-published tip so the branch stays an ancestor of live. Use the direct CLI
-for one-shot work and the daemon for scheduling, watching, multiple wikis, or a companion client;
-both execute the same application workflow.
+Vulcan synchronizes a vault by moving committed Git history through finite, recoverable
+transactions: each cycle fetches, integrates the checked-out branch with its upstream, and pushes.
+Uncommitted edits never travel. Use the direct CLI for one-shot work and the daemon for scheduling,
+watching, multiple wikis, or a companion client; both execute the same application workflow.
 
 ## Inspect local device identity
 
@@ -51,7 +50,7 @@ both execute the same application workflow.
   Use `vulcan devices list --offline` for a guaranteed local-only inventory; its remote state is
   `not_requested`, which does not mean no remote backups exist. The same flag is available for a
   selected wiki through `vulcan sync devices list --offline`.
-  The current inventory uses the default `origin` remote and hidden live ref for Git registrations.
+  The current inventory uses the default `origin` remote for Git registrations.
   The backup list is an observed recovery inventory, not an enrollment, possession, trust, or online
   roster. Device registrations are listed separately under `registrations` in the same output.
 - Each device publishes a registration record (key-derived ID, public key, status) to the remote on
@@ -150,14 +149,13 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
 - A registered directory uses the versioned device-local `knowledge` profile by default. Choose
   `--profile files-only` on `vault add`, `vault clone`, `sync clone`, or `vault set` for a full
   working tree that should not initialize or refresh a Markdown index. This profile also disables
-  knowledge-specific validation, scripts, semantic history, and agent conflict resolution while
-  keeping the same deterministic file reconciliation. Files-only registrations use full-tree
-  materialization; selective materialization remains Roadmap 12.20 work. Profile state is local
-  registration metadata, not synchronized vault config. Existing registrations keep the knowledge
-  default and their prior JSON representation. `vault add --no-sync` registers a directory without
-  a file-tree sync backend, which is also the default for a directory that is not a Git
-  repository (for example a Syncthing folder). `vault set <id> --sync-backend git` or
-  `--no-sync` changes it later without re-registering, so tokens and remotes are kept.
+  knowledge-specific validation, scripts, and agent services while keeping the same Git sync.
+  Profile state is local registration metadata, not synchronized vault config. Existing
+  registrations keep the knowledge default and their prior JSON representation.
+  `vault add --no-sync` registers a directory without a file-tree sync backend, which is also the
+  default for a directory that is not a Git repository (for example a Syncthing folder). `vault set <id>
+  --sync-backend git` or `--no-sync` changes it later without re-registering, so tokens and remotes
+  are kept.
   Never run Git sync and Syncthing on the same tree: `vault add` warns and `sync doctor` reports
   `sync.file-synchronizer` when a `.stfolder` sits at or above the vault, since the two race
   and Syncthing copies `.git`. `vulcan doctor` lists Syncthing's leftover
@@ -168,23 +166,18 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
   (`missing`, `unindexed`, `conflicted`, `recovery_required`, `paused`, `failing`, `offline`,
   `syncing`, or `healthy`) with the conflict count and last sync attempt; it works without a
   daemon (`daemon_running` says whether one answered). Start from it before choosing
-  `vulcan sync conflicts`, `vulcan scan`, or `vulcan sync resume`, and leave resolving conflicts or
-  resuming a paused vault to the user unless asked.
+  `vulcan sync conflicts`, `vulcan scan`, or `vulcan sync resume`, and leave resuming a paused vault
+  to the user unless asked.
 
 - For an unregistered path or a daemon-independent operation, use `vulcan --vault <path> sync ...`.
   Direct commands never start a daemon implicitly. For an unregistered files-only path, choose
   `vulcan --vault <path> sync run --profile files-only` (or `sync status --profile files-only`);
   registered directories use their stored profile.
-- Files-only devices retain concurrent automatic merges for review so they do not accept
-  bytes that a knowledge device would reject. Resolve the retained conflict explicitly.
 - Files-only registrations cannot run knowledge commands. Change the stored profile back to
-  `knowledge` before using indexing, search, scripts, semantic history, or other knowledge services.
-- Unattended files-only preflight requires an attached branch, clean staging area, one worktree, no
-  active Git operation, and no nested repository or submodule. It checks the branch again before
-  applying. The Vulcan lock does not exclude external Git processes; do not switch branches or run
-  Git while a daemon job is active. Active development checkouts need a separate contract and are
-  not an unattended sync target. File replication does not provide a complete refs/history/LFS
-  backup.
+  `knowledge` before using indexing, search, scripts, or other knowledge services.
+- The Vulcan lock does not exclude external Git processes; do not switch branches or run Git while
+  a daemon job is active. Active development checkouts need a separate contract and are not an
+  unattended sync target. Sync does not provide a complete refs/history/LFS backup.
 - For registered wikis, select one ID, `--group <name>`, or `--all`. Aggregate results are independent
   per-wiki transactions, not a cross-repository atomic commit.
 - When the daemon runs, `vulcan sync run --group <name> --queue` (or one ID, `--all`, or the
@@ -222,37 +215,21 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
 
 ## Inspect before mutation
 
-1. Run `vulcan sync status [<wiki>]` to inspect layout, safety state, candidate refs, and remote live
-   state without mutation. Human output calls this a **sync preview**: “inspected” means the
-   read-only check completed, not that synchronization succeeded. The preview inspects the branch
-   lane and classifies the file lane as `up_to_date`, `local_changes`, `remote_differs`,
-   `local_and_remote_differ`, `local_missing`, `remote_missing`, or `uninitialized` by comparing
-   observed refs and the worktree with its last local snapshot. It does not fetch, merge, apply, or
-   detect whether differing trees conflict; use `--output json` for `preview.file_state`, observed
-   refs, and branch detail. Registered previews also inspect durable conflict records. An up-to-date
-   file lane can coexist with actionable retained conflicts, which remain an attention state until
-   reviewed through `vulcan sync conflicts --wiki <id>`. Deterministically mergeable sibling paths
-   may already be present in the projected tree while the record lists only paths still requiring
-   review. Later successful synchronization or a
-   replacement conflict marks an older attempt as superseded immutable history only when the
-   replacement covers every unfinished path; independent pending groups stay active. When any
-   unfinished group changed again on the live branch, a sync re-merges this device's version onto
-   the live one: clean results are published automatically, and paths that still conflict move to
-   one replacement conflict (`carried_from` names the old one) that resolves against the live
-   version. An unavailable conflict count makes the inspection incomplete instead of
-   implying zero.
+1. Run `vulcan sync status [<wiki>]` to inspect layout, safety state, the checked-out branch and
+   its upstream, and observed refs without mutation. Human output calls this a **sync preview**:
+   “inspected” means the read-only check completed, not that synchronization succeeded. It does not
+   fetch or merge; use `--output json` for observed refs and branch detail. Registered previews also
+   count retained conflict records; an unavailable conflict count makes the inspection incomplete
+   instead of implying zero.
 2. Run `vulcan sync doctor [<wiki>]` when installation, detached storage, hidden refs, filters/LFS,
    platform compatibility, locks, journals, apply markers, or cache coherence may be involved.
    A `sync.device-files` warning (or the matching `hint:` from `sync run`/`sync status`) means
    Obsidian's per-device layout files are synced; preview `vulcan sync doctor [<wiki>] --fix
    --dry-run`, then apply it with `--fix`. Sync never edits `.gitignore` on its own; setting a
    vault up with `vault add`/`vault clone`/`sync clone` adds the entries unless
-   `--keep-device-files` is passed. Adding a tracked path to a committed
-   `.gitignore` makes the next sync stop tracking it while every device keeps its copy. Do not
-   reach for `git rm --cached`: sync captures the worktree through its own index, so the normal
-   index has no effect on what it tracks.
+   `--keep-device-files` is passed.
 3. Preview a finite transaction with `vulcan sync run [<wiki>] --dry-run`; apply it by omitting
-   `--dry-run` only after the target remote/live ref and diagnostics are understood.
+   `--dry-run` only after the target remote, branch, and diagnostics are understood.
 4. Every Git and Git LFS subprocess is bounded to 300 seconds by default. For a known slower
    transport, set `--git-timeout-seconds <seconds>` on `sync run`; do not raise it merely to hide a
    stuck credential helper, filter, or remote. A timeout preserves the captured snapshot and
@@ -264,32 +241,71 @@ structured output, and redirected runs suppress progress chatter; JSON remains i
 Every Git subprocess still has the configured timeout, so a stuck phase fails with a named,
 recoverable diagnostic instead of waiting forever.
 
-Interpret `paused` as preserved work, not failure: an in-progress Git
-operation or unexplained HEAD movement was captured before reconciliation stopped. Resolve that
-ordinary Git state and rerun. Staged changes are not a pause condition: they sync as ordinary
-worktree bytes while the normal index is left untouched. `offline` likewise retains the local
-candidate. A successful sync that only failed to refresh the rebuildable cache reports a
+Interpret `paused` as preserved work, not failure: an in-progress Git operation, unexplained HEAD
+movement, or a branch that sync could not integrate on its own stopped the cycle with nothing lost.
+Resolve that ordinary Git state and rerun. `offline` likewise keeps local commits for the next
+cycle. A successful sync that only failed to refresh the rebuildable cache reports a
 `cache_refresh_error` warning instead of failing; the vault is fully synced and the next refresh
-heals the cache. Never delete journals,
-apply markers, or `refs/vulcan/**` to make a status look clean.
+heals the cache. Never delete journals, apply markers, or `refs/vulcan/**` to make a status look
+clean.
 If a retained journal includes an error, daemon and companion status project `error` even though
 the journal keeps the exact failed phase for recovery. Do not interpret a stale-looking phase name
 inside diagnostics as an operation that is still running. Daemon jobs preserve the sync engine's
 typed failure category and retryability through the application layer: network/authentication
 failures can project offline, while repository/configuration/invariant failures remain errors with
 different repair guidance rather than being flattened into retryable `unknown` failures.
-Version 1 sync journals and apply markers from older installations are read as recovery witnesses
-by current Vulcan; rerun sync to recover them rather than deleting the files.
+Sync journals and apply markers from older installations are read as recovery witnesses by current
+Vulcan; rerun sync to recover them rather than deleting the files.
+
+## What sync moves
+
+Sync moves only committed history. Each non-dry-run cycle snapshots this device's worktree into its
+local safety ref, fetches, integrates the checked-out branch with its upstream, and pushes it. The
+checked-out branch needs an upstream on the remote: a cycle without a checked-out branch or upstream
+fails as unsupported configuration, so push the branch once with `git push -u`. Uncommitted edits
+never travel; commit them (auto-commit, `vulcan git commit`, plain `git commit`, or MCP
+`git_commit`) for them to reach other devices. The daemon syncs a vault when a commit moves a
+branch, not when a file is saved. `sync.worktree` is obsolete: `"none"` is accepted as a no-op, and
+settings from the removed whole-worktree mode are ignored with a config diagnostic. Hidden live refs
+left on a remote by older versions are ignored harmlessly.
+
+- Integration follows the vault's `sync.branch_pull` (`ff-only`, `merge`, `rebase`, or
+  `guarded-rebase`) or, when that is `git` (the default), the repository's own pull configuration
+  (`pull.ff`, `pull.rebase`, `branch.<name>.rebase`) with `--no-edit` and no implicit autostash. In
+  a repository where agents commit, prefer `sync.branch_pull = "guarded-rebase"` (or the stricter
+  `"ff-only"`) in the shared config: sync replays only commits that no other branch or worktree
+  builds on and never leaves a conflict behind.
+- Watch the human output or the JSON `branch` report for `fast-forwarded`, `merged`, `rebased`,
+  `paused`, or `deferred` (an uncommitted or staged change in a file the incoming commits touch,
+  retried next cycle; dirty files the incoming commits do not touch are fine).
+- A paused cycle with reason `branch_paused` means the branch diverged under fast-forward-only
+  pulls (`sync.branch_pull = "ff-only"` or `pull.ff=only`), a conflicted pull was aborted (the
+  checkout is left as it was), or an interactive rebase was requested. The report's `branch.pause`
+  (and an alert's `branch_pause`) names which; `shared_commits` and `merge_commits` call for a merge
+  (`git pull --no-rebase`), the others for `git pull --rebase` with any conflict resolved, then push.
+  If pushes or fetches fail only for Vulcan or only for plain `git`, run `vulcan sync transport test`.
+- After a healthy pull the branch is published to its upstream (unless `sync.branch_push = false`,
+  in which case push deliberately) with the observed tracking ref as an exact lease, never
+  force-pushed. A moved remote reports for the next cycle; transport or policy failures record
+  `push_detail`, and `pushed` tells whether publication happened. A daemon job with either branch
+  failure is terminally `failed`, with status `error`, which keeps aggregate status and companion
+  failure notices truthful. Human output prints `push_detail` whenever branch publication was
+  rejected or failed.
+- Caveats: `rebase.autostash` is neutralized (automation never stashes implicitly); a
+  `commit.gpgsign` setup needs a working agent or unattended merges fail loudly; triangular push
+  remotes (`branch.<name>.pushremote`, `remote.pushdefault`) are not honored — the pull upstream
+  receives the push; long-lived staged changes keep `pull.rebase` users deferred until they commit.
 
 ## Recover another device's work
 
-Every non-dry-run cycle captures the complete worktree and publishes it to a leased per-device
-safety head before pulling, merging, rebasing, or changing canonical live. This protects local
-bytes even when later reconciliation conflicts. The moving head retains earlier device history;
-if restored checkouts accidentally reuse one device ID and diverge, Vulcan publishes a bridge
-that keeps both histories reachable and warns. A single bridge after a re-clone or Git directory
-recovery is expected; if the warning repeats, two checkouts on one device or two installations with
-a copied device key share the ID. Do not delete either history: remove the extra checkout, or run
+Every non-dry-run cycle snapshots the complete worktree, uncommitted edits included, into a local
+per-device safety ref before pulling, merging, or rebasing. It is pushed to the device's remote
+safety head only with `sync.publish_device_backup = true`. The snapshot protects local bytes; it
+does not carry them to other devices. The moving head retains earlier device history; if restored
+checkouts accidentally reuse one device ID and diverge, Vulcan publishes a bridge that keeps both
+histories reachable and warns. A single bridge after a re-clone or Git directory recovery is
+expected; if the warning repeats, two checkouts on one device or two installations with a copied
+device key share the ID. Do not delete either history: remove the extra checkout, or run
 `vulcan device replace` on the other installation. Sync JSON (`device_id`) and daemon wiki status
 name the device.
 
@@ -302,45 +318,34 @@ name the device.
   `vulcan sync devices set-name <device-id> <name>` to save a
   shared vault label, or `clear-name <device-id>` to remove it; both support `--dry-run`. Labels
   travel with the vault when `.vulcan/device-names/` is tracked by Git, while refs and recovery
-  commands always use the full device ID. These
-  refs are recovery inputs, never automatic winners and never mixed into live merely because
-  they exist.
+  commands always use the full device ID. These refs are recovery inputs, never merged
+  automatically merely because they exist.
 - Treat `identity_kind: ssh_key_v1` as the grammar of a key-shaped backup ID, not proof that the
-  listed device possesses that key, is trusted, has access, or is online. A version-3 live tip
-  requires an upgraded reconciler; recovery listing and fetch do not authorize reconciliation.
+  listed device possesses that key, is trusted, has access, or is online.
 - Run `vulcan sync devices fetch <device-id> [--wiki <id>] --dry-run`, then omit `--dry-run` to
-  anchor that device and accepted live under durable local recovery refs. Review the reported
-  paths and `git diff <live-recovery-ref>..<device-recovery-ref>`. Use the printed detached
-  `git worktree add` command to resolve a lost or inaccessible device in isolation; publish the
-  reviewed result through the normal sync/conflict workflow.
+  anchor that device's backup under a durable local recovery ref. Review the reported paths and
+  diff the recovery ref against your branch. Use the printed detached `git worktree add` command to
+  recover a lost or inaccessible device's work in isolation, and publish what you keep as an
+  ordinary commit.
 - Prune a remote safety backup only after its work is integrated. First fetch it again, then run
   `vulcan sync devices prune-backup <device-id> --dry-run`. The `remove` spelling remains a
-  compatibility alias. Pruning refuses the current device, stale recovery refs, uninitialized
-  live, and any `contains_live` or `diverged` candidate whose tree is not already accepted.
-  Applying the prune uses an exact lease and keeps the local recovery ref. It deletes only the
-  remote backup ref; device, Git, and vault access are unchanged.
-- Sync also sweeps Vulcan's refs at most once a day. It deletes remote backups of devices that are
-  no longer registered when live already contains them (same exact-lease rule), releases local
-  device recovery refs once their remote backup is gone and live contains them, adds
-  `^refs/heads/__vulcan-sync/*` to the remote's fetch refspecs so plain `git fetch`/`git pull`
-  skip Vulcan's hidden refs, and drops every `refs/remotes/<remote>/__vulcan-sync/...` copy. Do not
-  remove that refspec line, and do not read Vulcan state from `refs/remotes`. A `sync.device-backups` doctor warning lists unregistered devices whose backups hold content
-  live lacks; inspect those with `sync devices fetch` before pruning. Registered devices' backups
-  are never swept.
-- A safety-head publication failure stops canonical reconciliation. Do not delete the head or
-  bypass this gate just to make sync green; restore remote write access or select the correct
-  remote, then rerun.
+  compatibility alias. Pruning refuses the current device, stale recovery refs, and any backup the
+  remote's old shared live ref does not already contain. Applying the prune uses an exact lease and
+  keeps the local recovery ref. It deletes only the remote backup ref;
+  device, Git, and vault access are unchanged.
+- When the backup is published, a safety-head publication failure stops the cycle. Do not delete
+  the head or bypass this gate just to make sync green; restore remote write access or select the
+  correct remote, then rerun.
 
 ## Vaults nested in a larger repository
 
 A vault can be one directory of a bigger Git repository, such as the `docs/` directory of an
-MkDocs site; `vulcan status` shows `git_repository_root` and `git_vault_prefix`. Sync remains
-file-tree replication of the whole enclosing work tree: it captures uncommitted changes anywhere in
-the repository, applies remote changes anywhere in it, and runs the branch lane below for the
-checked-out branch. It reads sync configuration and takes the write lock from the vault, keys its
-journal, conflicts, and proposals on the repository root, and refreshes the vault cache after
-applying changes. Before syncing a code repository, confirm that the user wants the whole work tree
-replicated; for vault-only history, use `vulcan git commit` and ordinary Git instead.
+MkDocs site; `vulcan status` shows `git_repository_root` and `git_vault_prefix`. Sync pulls and
+pushes the enclosing repository's checked-out branch, so commits anywhere in the repository travel,
+and the safety snapshot covers the whole work tree. It reads sync configuration and takes the write
+lock from the vault, keys its journal and conflict records on the repository root, and refreshes the
+vault cache after pulling. Before syncing a code repository, confirm that the user wants its branch
+pulled and pushed automatically.
 
 Registration and cloning follow the repository's `.vulcan.toml` pointer: `vulcan vault add <id>
 <repo>` or `vulcan vault clone <url> <dir>` registers the pointed vault directory as the wiki
@@ -348,121 +353,20 @@ Registration and cloning follow the repository's `.vulcan.toml` pointer: `vulcan
 checkout. Use `vulcan init --repository-pointer` inside the vault to create the pointer and commit
 it with the repository. Never hand-edit a pointer to name a directory outside the repository.
 
-## Branch lane
+## Retained conflict records
 
-After publishing the pre-operation device safety head, every finite cycle also pulls the checked-out
-branch from its upstream before the canonical hidden live ref moves, following the vault's `sync.branch_pull` (`ff-only`, `merge`, `rebase`, or `guarded-rebase`) or, when that is
-`git` (the default), the repository's own pull configuration (`pull.ff`, `pull.rebase`,
-`branch.<name>.rebase`) with `--no-edit` and no implicit autostash. In a repository where agents
-commit, prefer `sync.branch_pull = "guarded-rebase"` (or the stricter `"ff-only"`) in the shared
-config: sync replays only commits that no other branch or worktree builds on and never leaves a
-conflict behind; after a pause, run `git pull --rebase` and push yourself. Watch the human output or
-the JSON `branch` report for `fast-forwarded`, `merged`, `rebased`, `paused` (diverged past
-fast-forward only, interactive rebase, or a merge/rebase conflict, which sync aborts so the checkout is left as it was; integrate the upstream yourself with ordinary Git),
-`adopted` (the upstream tip had already reached this worktree through live, so only the branch and
-normal index moved and no file was rewritten), `deferred` (dirty worktree or a staged entry that
-conflicts with the upstream, retried next cycle), or `skipped` (no upstream, deleted upstream,
-detached HEAD, or bare repository). A large apparent uncommitted diff after another device's
-commits arrived through live clears once the branch adopts those commits; do not commit, reset, or
-stash it manually. Live snapshots record the published branch tip (the merge base of `HEAD` and its
-upstream tracking ref) as a second parent, so unpushed commits are never published through live. After a healthy pull lane, the branch tip is published to its
-upstream with the observed tracking ref as an exact lease — never force-pushed — before hidden
-file reconciliation. Ordinary commits therefore still fetch, pull, and push when the file lane
-later preserves a conflict. A moved remote reports for the next cycle; transport or policy
-failures record `push_detail` without preventing the file lane, and `pushed` tells whether
-publication happened. A daemon job with either branch failure is nevertheless terminally
-`failed`, with status `error`; this keeps aggregate status and companion failure notices truthful.
-Human output also prints `push_detail` whenever branch publication was rejected or failed; do not
-interpret a successful file-lane summary as proof that the checked-out branch was published.
-Caveats: `rebase.autostash` is neutralized (automation never stashes implicitly); a
-`commit.gpgsign` setup needs a working agent or unattended merges fail loudly; triangular
-push remotes (`branch.<name>.pushremote`, `remote.pushdefault`) are not honored — the pull
-upstream receives the push; long-lived staged changes keep `pull.rebase` users deferred until
-they commit.
-
-## Committed-history-only repositories
-
-A shared `sync.worktree = "none"` in `.vulcan/config.toml` makes sync move only committed history:
-each cycle snapshots this device's whole worktree into a local safety ref (pushed to its private
-safety head only with `sync.publish_device_backup = true`), then fetches, fast-forwards (dirty files
-the incoming commits do not touch are fine), and pushes the checked-out branch. Live is never read
-or written, so uncommitted edits stay on this device. The daemon syncs such a vault when a commit
-moves a branch, not when a file is saved. Recognize the mode
-by `worktree: "none"` in the JSON report or the `Worktree: not synchronized` line.
-
-- Commit your own work in such a repository; nothing else carries it to other devices. Sync then
-  publishes the commits (unless `sync.branch_push = false`, in which case push deliberately).
-- A paused cycle with reason `branch_paused` means the branch diverged under fast-forward-only
-  pulls (`sync.branch_pull = "ff-only"` or `pull.ff=only`), a conflicted pull was aborted, or an
-  interactive rebase was requested. The report's `branch.pause` (and an alert's `branch_pause`)
-  names which; `shared_commits` and `merge_commits` call for a merge (`git pull --no-rebase`), the
-  others for `git pull --rebase` with any conflict resolved, then push. If pushes or fetches fail
-  only for Vulcan or only for plain `git`, run `vulcan sync transport test`. A cycle without a checked-out branch
-  or upstream fails as unsupported configuration; push the branch once with `git push -u`.
-- Conflict resolution, checkpoints, retention, and semantic history refuse in this mode, and
-  `sync doctor` reports `sync.worktree` instead of live ref checks.
-- Do not switch a repository's mode unprompted. A device may opt itself out with `worktree = "none"`
-  in `.vulcan/config.local.toml`; it cannot widen a shared `"none"`.
-
-## Path-scoped repositories
-
-`sync.worktree = "paths"` with a shared `sync.paths` list (`worktree: "paths"` in reports) syncs
-uncommitted edits only inside those paths. Everything else reaches other devices only through
-commits and is never written from live.
-
-- Commit and push changes outside `sync.paths` yourself. An uncommitted change there defers the
-  branch lane (`deferred`, naming the paths) whenever incoming commits touch the same file.
-- A `fast-forwarded` branch lane whose detail says it kept local bytes of scoped paths is expected:
-  live carries those notes, so do not commit, reset, or stash them to "fix" the status.
-- A retryable `ScopeMismatch` error means remote live was written with different `sync.paths` by a
-  device whose branch is at least as new. Let the branch lane pull (sync again); never edit
-  `sync.paths` locally to match, since `config.local.toml` values are ignored.
-- Semantic planning refuses targets that differ outside the paths; sync until live includes the
-  current branch first.
-
-## Review preserved conflicts
-
-- List actionable records with `vulcan sync conflicts`; inspect one immutable record with
-  `vulcan sync conflicts <conflict-id>`. The human output prints the exact next commands. A
-  JSON `sync run` conflict is intentionally a bounded preview: use `path_count`, completeness
-  flags, and `detail_conflict_id`, then fetch paged detail instead of treating the preview as the
-  complete path set. A superseded record is history, not something the user can or should resolve;
-  choose its listed
-  replacement or run sync again to obtain a current conflict. Keep base/local/remote refs and
-  the device-local record; the preserved side bytes live in Git through those refs. The
-  immutable refs remain the durable byte archive until the conflict has been closed for 30 days,
-  when sync moves it into `refs/vulcan/conflict-archive`. Archived conflicts are still readable
-  with `vulcan sync conflicts <id>` (listings show `archived_count`) but cannot be resolved; never
-  delete that ref or the per-conflict refs by hand. To archive sooner, preview
+- Sync no longer creates file-level conflict records; a branch it cannot integrate pauses instead.
+  `vulcan sync conflicts` lists records retained from the removed whole-worktree mode and
+  `vulcan sync conflicts <conflict-id>` shows one; page a large record with `--path-offset <n>
+  --path-limit <1-256>`, reading `path_page.total` and `path_page.next_offset`. These records stay
+  readable and archivable but can no longer be resolved: recover any bytes worth keeping from the
+  record's base/local/remote refs with ordinary Git and commit them. Never delete those refs or
+  `refs/vulcan/conflict-archive` by hand. Archived conflicts stay readable with
+  `vulcan sync conflicts <id>` (listings show `archived_count`). To archive sooner, preview
   `vulcan sync conflicts-archive --older-than-days <n> --dry-run`, then rerun without `--dry-run`.
-- Use JSON `operational_stats`, or the concise `--verbose` human line, to assess one cycle's scale:
-  automatic and conflicted paths, groups, formatting candidates, preserved input bytes, Git
-  subprocesses, and coarse timings. These are content-free observations for that cycle, not durable
-  progress for every older conflict; use `sync conflicts` for accumulated actionable state.
-- For a large record, page detail with `--path-offset <n> --path-limit <1-256>`. Read
-  `path_page.total` and `path_page.next_offset` rather than assuming the returned path array is
-  complete. Summary and detail progress counts identify pending, prepared, published, applied, and
-  rebase-required groups without reading file contents. In paged JSON, `progress.groups` is scoped
-  to the returned paths when `groups_complete` is false; the counters remain global.
-- Conflict-list `paths` is a bounded preview. Check `paths_complete` and `paths_returned`; inspect
-  or page the conflict before selecting groups when the preview is incomplete.
-- Treat `classification.formatting_candidate` only as a review-order hint. It never authorizes a
-  side or automatic merge, and sensitive Markdown shapes deliberately remain unclassified.
-- A published conflict projection keeps accepted remote bytes provisionally at the original path
-  so clean merged paths can continue synchronizing, but it does not place conflict artifacts in the
-  vault. Inspect the preserved base/local/remote inputs with `sync conflicts`, reviewed resolution
-  modes, or explicit exports rather than treating the visible remote bytes as a semantic winner.
-- Git may report synthesized destinations for directory-rename or file-location conflicts that do
-  not exist in either candidate tree. Vulcan preserves those structural conflicts without a
-  projected tree and refuses path-side selection with a specific diagnostic; do not reinterpret
-  that refusal as a missing-file deletion or edit hidden refs to force a result.
-- A sync cycle that fails with "would overwrite untracked worktree files excluded by Git ignore
-  rules" refuses to apply the accepted tree over a device-local ignored file that shares a path
-  with an incoming file. Move or remove the named ignored files, then rerun; never delete them
-  automatically.
-- Vulcan verifies the worktree before and after applying an accepted tree. If Obsidian or another
-  writer changes a file during that window, the finite cycle recaptures and retries automatically;
-  repeated activity exhausts the bounded retry limit and remains a retryable `busy` failure.
+- Use JSON `operational_stats` (`git_subprocesses`, `elapsed_ms`, `backend_cycle_ms`,
+  `cache_refresh_ms`), or the concise `--verbose` human line, to assess one cycle's cost. These are
+  content-free observations for that cycle.
 - The daemon gives an initial retryable repository-lock (`busy`) failure one durable recovery
   cycle before notifying. If that recovery is also busy, it records and delivers the failure
   normally instead of retrying forever.
@@ -474,7 +378,7 @@ commits and is never written from live.
 - The daemon checks each Git wiki's remote on an adaptive schedule; there is no forge webhook,
   notification relay, or advertisement ref to set up. After activity it checks again after
   `sync.poll_min_seconds` (default 15) and backs off to `sync.poll_max_seconds` (default 900),
-  as described under the daemon watcher notes below.
+  as described under the daemon watcher notes below. Only committed work arrives this way.
 - MCP sessions and `vulcan lsp` already ask the daemon to sync the wiki when they start. Otherwise,
   before working in a Git-synced wiki, run `vulcan sync refresh` (inside the vault, or name the
   wiki; `--all` for every registered wiki). It asks the daemon for an immediate sync unless one
@@ -524,7 +428,7 @@ commits and is never written from live.
   lines: one per completed sync job with wiki, triggers, state/outcome, watch-trigger detail,
   and branch-lane action. At the default quiet level, failed jobs
   print one secret-minimal line per wiki/category state with retryability and a direction to inspect
-  retained status; error text remains on the authenticated status surface. Conflicted and paused
+  retained status; error text remains on the authenticated status surface. Paused
   jobs emit warning records, failed jobs emit error records, and branch pull-strategy and push
   failures also keep their specific diagnostic. Attention states deduplicate per wiki until recovery,
   so installed services make persistent trouble visible without flooding their logs. To add native
@@ -636,12 +540,12 @@ commits and is never written from live.
 
 ## Non-negotiable safety properties
 
-- Current local bytes must be captured before remote application or publication.
+- Current local bytes are snapshotted to the device safety ref before the branch is pulled,
+  merged, or rebased.
 - A remote update uses an exact lease; never replace a rejected push with unconditional force.
-- The user's normal index and semantic branch are not sync scratch space; staged entries sync
-  as worktree bytes without pausing and are never staged, reset, or rewritten by sync. The only
-  index change is the fast-forward checkout transition of an `adopted` branch or a checked-out
-  semantic application, which preserves unrelated staged entries and refuses conflicting ones.
-- Scan only after the complete accepted tree has been applied and verified.
-- Treat policy, platform, link-validation, deletion-limit, stale-input, and worktree-drift failures as
-  reasons to preserve and stop. Do not bypass them to make synchronization appear seamless.
+- The user's normal index is not sync scratch space: sync never stages, resets, or rewrites staged
+  entries, and defers a pull that would touch them.
+- Uncommitted edits never leave the device through sync; do not tell a user their unsaved or
+  uncommitted work has synced.
+- Treat policy, platform, stale-input, and worktree-drift failures as reasons to preserve and stop.
+  Do not bypass them to make synchronization appear seamless.

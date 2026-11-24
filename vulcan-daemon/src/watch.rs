@@ -359,9 +359,9 @@ fn watch_branch_refs(
     }
 }
 
-/// Turns worktree hints into sync jobs, except for a vault that syncs only
-/// commits: its uncommitted edits are not synchronized, so a cycle for each
-/// edit only snapshotted them; the branch-ref watcher covers its commits.
+/// Drains worktree hints. Sync moves only commits, so an edit alone needs no
+/// cycle; the branch-ref watcher covers commits. Lost events still queue a
+/// reconciling cycle.
 fn consume_hints(
     registration: &WikiRegistration,
     supervisor: &SyncSupervisor,
@@ -384,27 +384,10 @@ fn consume_hints(
             )?;
         }
         match subscription.recv_until(None, || stop.is_cancelled()) {
-            Ok(ObservationEvent::FilesystemHint(event)) if event.barrier_only() => {}
-            Ok(ObservationEvent::FilesystemHint(_))
-                if !vulcan_app::commit::sync_captures_worktree(&registration.path) => {}
-            Ok(ObservationEvent::FilesystemHint(event)) => {
-                supervisor.enqueue_watch(
-                    registration.id.as_str(),
-                    &registration.path,
-                    SyncWatchMetadata {
-                        event_count: event.event_count,
-                        untagged_events: event.untagged_events,
-                        paths: event.paths.into_iter().collect(),
-                        self_generated_transactions: event
-                            .self_generated_transactions
-                            .into_iter()
-                            .collect(),
-                        safety_rescan: event.safety_rescan,
-                        watcher_errors: event.watcher_errors,
-                    },
-                )?;
-            }
-            Ok(ObservationEvent::PostScan(_)) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            // Worktree edits travel only once committed; the Git-ref watch
+            // enqueues those cycles.
+            Ok(ObservationEvent::FilesystemHint(_) | ObservationEvent::PostScan(_))
+            | Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 return Err(DaemonWatchError::ChannelClosed);
             }
@@ -1387,12 +1370,13 @@ mod tests {
     }
 
     #[test]
-    fn worktree_hints_do_not_enqueue_syncs_for_a_vault_that_syncs_only_commits() {
+    fn worktree_hints_never_enqueue_syncs() {
         use crate::observation::{
             ObservationConsumerId, ObservationConsumerKind, ObservationConsumerPolicy,
             ObservationFilter,
         };
-        for (worktree, expected) in [("all", 1), ("none", 0)] {
+        // Even a leftover whole-worktree setting no longer syncs uncommitted edits.
+        for (worktree, expected) in [("all", 0), ("none", 0)] {
             let temporary = tempdir().expect("temporary directory");
             let (vault, registration) = git_vault(temporary.path());
             std::fs::create_dir_all(vault.join(".vulcan")).expect("config dir");
@@ -1542,7 +1526,6 @@ mod tests {
             work_tree: Some(PathBuf::from("/side")),
             layout: vulcan_sync::GitRepositoryLayout::Colocated,
             object_format: vulcan_sync::GitObjectFormat::Sha1,
-            worktree_scope: None,
         };
         let event = |path: &str| change(PathBuf::from(path));
         for path in [

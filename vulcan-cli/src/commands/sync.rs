@@ -10,10 +10,9 @@ use std::io::{self, IsTerminal, Write};
 use std::time::Duration;
 use vulcan_app::sync::{
     doctor_git_vault_for_profile, sync_git_vault_with_profile_and_progress, GitBranchSync,
-    GitBranchSyncAction, GitDeviceBackupOutcome, GitPlatformProfile, GitRefName, GitRemote,
-    GitSyncAction, GitSyncObserver, GitSyncObserverError, GitSyncOptions, GitSyncOutcome,
-    GitSyncPhase, GitSyncPreviewFileState, GitSyncProgress, GitSyncReport, SyncContentProfile,
-    SyncDoctorReport, SyncDoctorSeverity, VaultSyncReport,
+    GitBranchSyncAction, GitDeviceBackupOutcome, GitPlatformProfile, GitRemote, GitSyncObserver,
+    GitSyncObserverError, GitSyncOptions, GitSyncOutcome, GitSyncPhase, GitSyncProgress,
+    GitSyncReport, SyncContentProfile, SyncDoctorReport, SyncDoctorSeverity, VaultSyncReport,
 };
 use vulcan_app::sync_conflicts::{
     get_sync_conflict, list_sync_conflicts, SyncConflictDetailReport, SyncConflictListReport,
@@ -81,7 +80,6 @@ pub(crate) fn handle_sync_command(
         } => (
             GitSyncOptions {
                 remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
-                live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
                 max_retries: *max_retries,
                 command_timeout: Duration::from_secs(*git_timeout_seconds),
                 dry_run: *dry_run,
@@ -97,7 +95,6 @@ pub(crate) fn handle_sync_command(
         } => (
             GitSyncOptions {
                 remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
-                live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
                 dry_run: true,
                 ..GitSyncOptions::default()
             },
@@ -1006,7 +1003,6 @@ fn run_sync_doctor(
     check_sync_permission(cli, &paths, registration_profile.as_deref())?;
     let options = GitSyncOptions {
         remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
-        live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
         dry_run: true,
         ..GitSyncOptions::default()
     };
@@ -1125,10 +1121,8 @@ fn handle_sync_devices(
     };
     let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
     check_sync_permission(cli, &paths, registration_profile.as_deref())?;
-    let options = SyncDeviceOptions {
-        remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
-        live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
-    };
+    let options =
+        SyncDeviceOptions::new(GitRemote::parse(&target.remote).map_err(CliError::operation)?);
     match command {
         SyncDeviceCommand::List { offline, .. } => {
             let report = list_sync_device_backups_with_observation(&paths, &options, !offline)
@@ -1887,9 +1881,6 @@ fn print_sync_report(
                 sync_outcome_message(report.sync.outcome, report.sync.remote.as_str())
             };
             println!("{outcome}");
-            if let Some(line) = worktree_mode_message(&report.sync) {
-                println!("{line}");
-            }
             if let Some(branch) = &report.sync.branch {
                 if let Some(line) = branch_lane_message(branch) {
                     println!("{line}");
@@ -1900,27 +1891,7 @@ fn print_sync_report(
             }
             print_device_lines(verbosity, report);
             if verbosity.is_verbose() {
-                println!("Remote ref: {}", report.sync.refs.live);
-                if let Some(accepted) = &report.sync.accepted {
-                    println!("Accepted: {accepted}");
-                }
                 print_sync_operational_stats(&report.operational_stats);
-            }
-            if report
-                .sync
-                .actions
-                .contains(&GitSyncAction::WorktreeApplied)
-            {
-                println!("Applied the accepted tree to the vault.");
-            }
-            if let Some(conflict) = &report.sync.conflict {
-                println!(
-                    "Conflict: local {} vs remote {}",
-                    conflict.local, conflict.remote
-                );
-                if !conflict.diagnostics.is_empty() {
-                    println!("{}", conflict.diagnostics);
-                }
             }
             if let Some(pause) = &report.sync.pause {
                 let detail = sync_pause_message(pause);
@@ -1956,27 +1927,6 @@ fn print_sync_report(
     }
 }
 
-fn worktree_mode_message(report: &GitSyncReport) -> Option<String> {
-    match report.worktree {
-        vulcan_app::sync::WorktreeSyncMode::All => None,
-        vulcan_app::sync::WorktreeSyncMode::None => Some(
-            "Worktree: not synchronized (sync.worktree = \"none\"); only commits travel."
-                .to_string(),
-        ),
-        vulcan_app::sync::WorktreeSyncMode::Paths => {
-            let scope = report
-                .repository
-                .worktree_scope
-                .as_ref()
-                .map(|scope| scope.entries().join(", "))
-                .unwrap_or_default();
-            Some(format!(
-                "Worktree: synchronizing {scope}; everything else travels only through commits."
-            ))
-        }
-    }
-}
-
 fn sync_pause_message(pause: &vulcan_app::sync::GitSyncPause) -> String {
     match pause.reason {
         vulcan_app::sync::GitSyncPauseReason::HeadMoved => format!(
@@ -2003,18 +1953,12 @@ fn sync_pause_message(pause: &vulcan_app::sync::GitSyncPause) -> String {
 
 fn print_sync_operational_stats(stats: &vulcan_app::sync::SyncOperationalStats) {
     println!(
-        "Operational stats: {} automatic, {} conflicted, {} groups, {} formatting candidates, {} preserved input bytes, {} Git subprocesses; {} ms total (backend {}, conflict state {}, cache {}).",
-        stats.automatic_resolution_paths,
-        stats.conflict_paths,
-        stats.conflict_groups,
-        stats.formatting_candidate_paths,
-        stats.preserved_input_bytes,
+        "Operational stats: {} Git subprocesses; {} ms total (backend {}, cache {}).",
         stats
             .git_subprocesses
             .map_or_else(|| "unavailable".to_string(), |count| count.to_string()),
         stats.elapsed_ms,
         stats.backend_cycle_ms,
-        stats.conflict_state_ms,
         stats.cache_refresh_ms,
     );
 }
@@ -2026,44 +1970,13 @@ fn sync_outcome_message(outcome: GitSyncOutcome, remote: &str) -> String {
         }
         GitSyncOutcome::Paused => format!("Sync: paused before reconciling with {remote}"),
         GitSyncOutcome::UpToDate => format!("Sync: up to date with {remote}"),
-        GitSyncOutcome::Bootstrapped => format!("Sync: initialized {remote}"),
         GitSyncOutcome::Pushed => format!("Sync: pushed to {remote}"),
         GitSyncOutcome::Pulled => format!("Sync: pulled from {remote}"),
-        GitSyncOutcome::Merged => format!("Sync: merged with {remote}"),
-        GitSyncOutcome::Conflicted => format!("Sync: conflict with {remote} requires review"),
     }
 }
 
 fn sync_preview_message(report: &GitSyncReport) -> String {
-    let branch = branch_preview_message(report.branch.as_ref());
-    if !report.worktree.syncs_live() {
-        return format!("{branch}; worktree not synchronized (committed history only)");
-    }
-    let files = report.preview.as_ref().map_or_else(
-        || "file state unavailable".to_string(),
-        |preview| match preview.file_state {
-            GitSyncPreviewFileState::UpToDate => "file lane appears up to date".to_string(),
-            GitSyncPreviewFileState::LocalChanges => {
-                "local files changed since the last sync snapshot".to_string()
-            }
-            GitSyncPreviewFileState::RemoteDiffers => {
-                "remote file lane differs; run sync to reconcile".to_string()
-            }
-            GitSyncPreviewFileState::LocalAndRemoteDiffer => {
-                "local files and remote file lane both differ; run sync to reconcile".to_string()
-            }
-            GitSyncPreviewFileState::LocalMissing => {
-                "local file snapshot is missing; run sync to initialize it".to_string()
-            }
-            GitSyncPreviewFileState::RemoteMissing => {
-                "remote file lane is missing; run sync to publish it".to_string()
-            }
-            GitSyncPreviewFileState::Uninitialized => {
-                "file lane is not initialized; run sync to initialize it".to_string()
-            }
-        },
-    );
-    format!("{branch}; {files}")
+    branch_preview_message(report.branch.as_ref())
 }
 
 fn branch_preview_message(branch: Option<&GitBranchSync>) -> String {
@@ -2208,6 +2121,7 @@ fn branch_push_message(branch: &GitBranchSync) -> Option<String> {
 #[cfg(test)]
 mod sync_report_tests {
     use super::*;
+    use vulcan_app::sync::GitRefName;
 
     #[test]
     fn refresh_lines_explain_pauses_and_running_syncs() {
@@ -2277,10 +2191,6 @@ mod sync_report_tests {
         assert_eq!(
             sync_outcome_message(GitSyncOutcome::Pushed, "backup"),
             "Sync: pushed to backup"
-        );
-        assert_eq!(
-            sync_outcome_message(GitSyncOutcome::Conflicted, "origin"),
-            "Sync: conflict with origin requires review"
         );
     }
 

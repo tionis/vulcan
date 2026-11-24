@@ -17,24 +17,7 @@ pub enum AutoCommitPolicy {
     /// `strategy = "batched"`: the daemon commits accumulated changes, so a
     /// single write does not.
     Batched,
-    /// Git sync's hidden-ref snapshots own automatic capture for this vault
-    /// on this device, so ordinary per-write commits stand down.
-    OwnedBySync {
-        wiki_id: String,
-    },
     Enabled(GitConfig),
-}
-
-/// The component that owns automatic capture of a vault's changes on this
-/// device. Exactly one may: Git sync's hidden-ref snapshots when the vault is
-/// registered with the Git sync backend and syncs its worktree, otherwise
-/// Vulcan's own auto-commit. In committed-history-only mode
-/// (`sync.worktree = "none"`) sync moves only commits, so auto-commit is what
-/// turns edits into history that sync can publish.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CaptureOwner {
-    AutoCommit,
-    HiddenRefSync { wiki_id: String },
 }
 
 #[derive(Deserialize)]
@@ -45,61 +28,9 @@ struct RegistryView {
 
 #[derive(Deserialize)]
 struct RegisteredVaultView {
-    id: String,
     path: PathBuf,
     #[serde(default)]
     sync_backend: Option<String>,
-}
-
-/// Reports who owns automatic capture for `vault_root`, from the daemon
-/// registry of this device. A missing or unreadable registry leaves capture
-/// with auto-commit, as it was before the vault was registered.
-#[must_use]
-pub fn capture_owner(vault_root: &Path) -> CaptureOwner {
-    vulcan_user_config_dir().map_or(CaptureOwner::AutoCommit, |directory| {
-        capture_owner_in_registry(&directory.join(DAEMON_REGISTRY_FILE), vault_root)
-    })
-}
-
-/// [`capture_owner`] against the registry at `registry`. A registration
-/// without a backend predates `--no-sync` and syncs with Git, as the daemon
-/// treats it.
-#[must_use]
-pub fn capture_owner_in_registry(registry: &Path, vault_root: &Path) -> CaptureOwner {
-    let Ok(source) = std::fs::read_to_string(registry) else {
-        return CaptureOwner::AutoCommit;
-    };
-    let Ok(view) = toml::from_str::<RegistryView>(&source) else {
-        return CaptureOwner::AutoCommit;
-    };
-    let Ok(root) = std::fs::canonicalize(vault_root) else {
-        return CaptureOwner::AutoCommit;
-    };
-    view.vaults
-        .into_iter()
-        .find(|vault| {
-            vault
-                .sync_backend
-                .as_deref()
-                .is_none_or(|backend| backend == "git")
-                && std::fs::canonicalize(&vault.path).is_ok_and(|path| path == root)
-        })
-        .filter(|_| sync_captures_worktree(vault_root))
-        .map_or(CaptureOwner::AutoCommit, |vault| {
-            CaptureOwner::HiddenRefSync { wiki_id: vault.id }
-        })
-}
-
-/// Whether Git sync snapshots this vault's worktree (`sync.worktree` is
-/// `all` or `paths`), so that uncommitted edits reach other devices without
-/// commits. In `none` mode only commits sync.
-#[must_use]
-pub fn sync_captures_worktree(vault_root: &Path) -> bool {
-    load_vault_config(&VaultPaths::new(vault_root))
-        .config
-        .sync
-        .worktree
-        .syncs_live()
 }
 
 /// What became of a write's changes, for reports to agents that cannot run
@@ -119,8 +50,6 @@ pub enum CommitStatus {
     Committed,
     /// Batched auto-commit commits it after the vault has been quiet.
     Batched,
-    /// Git sync snapshots uncommitted edits and carries them to other devices.
-    CapturedBySync,
     /// The change stays uncommitted until someone commits it.
     Uncommitted,
 }
@@ -177,33 +106,32 @@ pub fn commit_outcome(paths: &VaultPaths, before: Option<&str>, no_commit: bool)
             sha: None,
             detail: "batched auto-commit commits this once the vault has been quiet".to_string(),
         },
-        AutoCommitPolicy::OwnedBySync { wiki_id } => CommitOutcome {
-            status: CommitStatus::CapturedBySync,
-            sha: None,
-            detail: format!("Git sync for `{wiki_id}` carries uncommitted edits to other devices"),
-        },
         AutoCommitPolicy::NotGitRepo => {
             uncommitted("the vault is not a Git repository, so nothing is committed".to_string())
         }
         AutoCommitPolicy::Enabled(_) => uncommitted("there was nothing to commit".to_string()),
-        AutoCommitPolicy::Disabled if is_git_repo(paths.vault_root()) => uncommitted(
-            if matches!(capture_owner(paths.vault_root()), CaptureOwner::AutoCommit)
-                && registered_git_sync(paths.vault_root())
-            {
+        AutoCommitPolicy::Disabled if is_git_repo(paths.vault_root()) => {
+            uncommitted(if registered_git_sync(paths.vault_root()) {
                 "auto-commit is off and this vault syncs only commits, so the change stays on this device until it is committed; enable `[git] auto_commit` with `strategy = \"batched\"`".to_string()
             } else {
                 "auto-commit is off, so the change is not committed".to_string()
-            },
-        ),
+            })
+        }
         AutoCommitPolicy::Disabled => uncommitted("auto-commit is off".to_string()),
     }
 }
 
 /// Whether this device registers the vault with the Git sync backend.
 fn registered_git_sync(vault_root: &Path) -> bool {
-    let Some(registry) = vulcan_user_config_dir().map(|dir| dir.join(DAEMON_REGISTRY_FILE)) else {
-        return false;
-    };
+    vulcan_user_config_dir().is_some_and(|directory| {
+        registered_git_sync_in(&directory.join(DAEMON_REGISTRY_FILE), vault_root)
+    })
+}
+
+/// [`registered_git_sync`] against the registry at `registry`. A
+/// registration without a backend predates `--no-sync` and syncs with Git,
+/// as the daemon treats it.
+fn registered_git_sync_in(registry: &Path, vault_root: &Path) -> bool {
     let Ok(source) = std::fs::read_to_string(registry) else {
         return false;
     };
@@ -256,10 +184,6 @@ impl AutoCommitPolicy {
         if !is_git_repo(paths.vault_root()) {
             return Self::NotGitRepo;
         }
-        if let CaptureOwner::HiddenRefSync { wiki_id } = capture_owner(paths.vault_root()) {
-            return Self::OwnedBySync { wiki_id };
-        }
-
         Self::Enabled(config.clone())
     }
 
@@ -274,9 +198,6 @@ impl AutoCommitPolicy {
             Self::NotGitRepo => {
                 Some("auto-commit is enabled, but this vault is not a git repository".to_string())
             }
-            Self::OwnedBySync { wiki_id } => Some(format!(
-                "auto-commit is enabled, but Git sync for `{wiki_id}` captures this vault's changes; no commit was made"
-            )),
             Self::Disabled | Self::Batched | Self::Enabled(_) => None,
         }
     }
@@ -400,7 +321,7 @@ mod tests {
     }
 
     #[test]
-    fn git_sync_registrations_own_capture_and_no_sync_registrations_do_not() {
+    fn git_sync_registrations_are_recognized_and_no_sync_registrations_are_not() {
         let temporary = tempdir().expect("temporary directory");
         let synced = temporary.path().join("synced");
         let legacy = temporary.path().join("legacy");
@@ -418,43 +339,12 @@ mod tests {
         )
         .expect("registry");
 
-        assert_eq!(
-            capture_owner_in_registry(&registry, &synced.join(".")),
-            CaptureOwner::HiddenRefSync {
-                wiki_id: "synced".to_string()
-            }
-        );
-        assert_eq!(
-            capture_owner_in_registry(&registry, &legacy),
-            CaptureOwner::HiddenRefSync {
-                wiki_id: "legacy".to_string()
-            }
-        );
-        assert_eq!(
-            capture_owner_in_registry(&registry, &plain),
-            CaptureOwner::AutoCommit
-        );
-        assert_eq!(
-            capture_owner_in_registry(&registry, &unregistered),
-            CaptureOwner::AutoCommit
-        );
-        // In committed-history-only mode sync moves only commits, so
-        // auto-commit owns capture even for a Git registration.
-        fs::create_dir_all(synced.join(".vulcan")).expect("config directory");
-        fs::write(
-            synced.join(".vulcan/config.toml"),
-            "[sync]\nworktree = \"none\"\n",
-        )
-        .expect("committed-only config");
-        assert_eq!(
-            capture_owner_in_registry(&registry, &synced),
-            CaptureOwner::AutoCommit
-        );
+        assert!(registered_git_sync_in(&registry, &synced.join(".")));
+        assert!(registered_git_sync_in(&registry, &legacy));
+        assert!(!registered_git_sync_in(&registry, &plain));
+        assert!(!registered_git_sync_in(&registry, &unregistered));
         fs::write(&registry, "not = [valid").expect("broken registry");
-        assert_eq!(
-            capture_owner_in_registry(&registry, &synced),
-            CaptureOwner::AutoCommit
-        );
+        assert!(!registered_git_sync_in(&registry, &synced));
     }
 
     #[test]
@@ -475,12 +365,6 @@ mod tests {
             AutoCommitPolicy::for_scan(&paths, false),
             AutoCommitPolicy::Batched
         ));
-        let owned = AutoCommitPolicy::OwnedBySync {
-            wiki_id: "notes".to_string(),
-        };
-        assert!(owned
-            .warning()
-            .is_some_and(|warning| warning.contains("`notes`")));
     }
 
     #[test]

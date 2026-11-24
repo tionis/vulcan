@@ -10,8 +10,7 @@ use crate::mcp_protocol::{
     McpMethodError, McpSyncConflictsArgs, McpSyncDoctorArgs, McpSyncTargetArgs,
 };
 use crate::sync::{
-    doctor_git_vault_for_platform, sync_git_vault, GitPlatformProfile, GitRefName, GitRemote,
-    GitSyncOptions,
+    doctor_git_vault_for_platform, sync_git_vault, GitPlatformProfile, GitRemote, GitSyncOptions,
 };
 use crate::sync_conflicts::{get_sync_conflict, list_sync_conflicts};
 
@@ -39,7 +38,6 @@ pub fn sync_doctor(
         .map_err(|error| McpMethodError::tool(error.to_string()))?;
     let target = McpSyncTargetArgs {
         remote: args.remote.clone(),
-        live_ref: args.live_ref.clone(),
     };
     let options = git_sync_options(&target)?;
     let platform = args
@@ -161,10 +159,6 @@ fn git_sync_options(args: &McpSyncTargetArgs) -> Result<GitSyncOptions, McpMetho
         options.remote = GitRemote::parse(remote)
             .map_err(|error| McpMethodError::invalid_params(error.to_string()))?;
     }
-    if let Some(live_ref) = args.live_ref.as_deref() {
-        options.live_ref = GitRefName::parse(live_ref)
-            .map_err(|error| McpMethodError::invalid_params(error.to_string()))?;
-    }
     options.dry_run = true;
     Ok(options)
 }
@@ -224,39 +218,25 @@ mod tests {
 
     #[test]
     fn sync_options_are_dry_run_by_default_and_accept_valid_overrides() {
-        let default = git_sync_options(&McpSyncTargetArgs {
-            remote: None,
-            live_ref: None,
-        })
-        .expect("default sync options");
+        let default =
+            git_sync_options(&McpSyncTargetArgs { remote: None }).expect("default sync options");
         assert!(default.dry_run);
         let explicit = git_sync_options(&McpSyncTargetArgs {
             remote: Some("backup".to_string()),
-            live_ref: Some("refs/vulcan/live".to_string()),
         })
         .expect("explicit sync options");
         assert!(explicit.dry_run);
         assert_eq!(explicit.remote.as_str(), "backup");
-        assert_eq!(explicit.live_ref.as_str(), "refs/vulcan/live");
     }
 
     #[test]
-    fn invalid_sync_remote_and_ref_are_invalid_mcp_parameters() {
-        for args in [
-            McpSyncTargetArgs {
+    fn invalid_sync_remote_is_an_invalid_mcp_parameter() {
+        assert!(matches!(
+            git_sync_options(&McpSyncTargetArgs {
                 remote: Some("-unsafe".to_string()),
-                live_ref: None,
-            },
-            McpSyncTargetArgs {
-                remote: None,
-                live_ref: Some("not-a-ref".to_string()),
-            },
-        ] {
-            assert!(matches!(
-                git_sync_options(&args),
-                Err(McpMethodError::JsonRpc { code: -32602, .. })
-            ));
-        }
+            }),
+            Err(McpMethodError::JsonRpc { code: -32602, .. })
+        ));
     }
 
     #[test]

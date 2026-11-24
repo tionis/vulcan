@@ -228,6 +228,26 @@ fn git(dir: &Path, args: &[&str]) {
     );
 }
 
+/// Sync moves the checked-out branch, so every clone shares the remote's
+/// history: the first publishes `main`, later ones adopt it.
+fn share_remote_history(vault: &Path) {
+    let published = ProcessCommand::new("git")
+        .current_dir(vault)
+        .args(["ls-remote", "--heads", "origin", "main"])
+        .output()
+        .expect("git ls-remote");
+    if published.status.success() && !published.stdout.is_empty() {
+        git(vault, &["fetch", "--quiet", "origin"]);
+        git(vault, &["reset", "--quiet", "--hard", "origin/main"]);
+        git(
+            vault,
+            &["branch", "--quiet", "--set-upstream-to", "origin/main"],
+        );
+    } else {
+        git(vault, &["push", "--quiet", "-u", "origin", "main"]);
+    }
+}
+
 fn installation(root: &Path, name: &str, remote: &Path) -> PathBuf {
     let base = root.join(name);
     let vault = base.join("vault");
@@ -245,6 +265,7 @@ fn installation(root: &Path, name: &str, remote: &Path) -> PathBuf {
     fs::write(vault.join("Home.md"), "note\n").unwrap();
     git(&vault, &["add", "Home.md"]);
     git(&vault, &["commit", "--quiet", "-m", "initial"]);
+    share_remote_history(&vault);
     base
 }
 
@@ -414,6 +435,7 @@ fn extra_vault(base: &Path, name: &str, remote: &Path) -> PathBuf {
     fs::write(vault.join("Home.md"), "note\n").unwrap();
     git(&vault, &["add", "Home.md"]);
     git(&vault, &["commit", "--quiet", "-m", "initial"]);
+    share_remote_history(&vault);
     vault
 }
 

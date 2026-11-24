@@ -5035,195 +5035,69 @@ fn core_importer_reports_invalid_fields_without_blocking_valid_siblings() {
 }
 
 #[test]
-fn sync_policy_is_shared_while_the_automation_ceiling_is_device_local() {
+fn sync_worktree_none_is_accepted_without_a_diagnostic() {
     let temporary = TempDir::new().expect("temporary directory");
-    let vault_root = temporary.path();
-    fs::create_dir(vault_root.join(".vulcan")).expect("Vulcan directory");
+    let paths = VaultPaths::new(temporary.path());
+    fs::create_dir(paths.vulcan_dir()).expect("Vulcan directory");
     fs::write(
-        vault_root.join(".vulcan/config.toml"),
-        r#"[sync]
-merge_automation = "require_review"
-agent_auto_accept = true
-
-[sync.merge_policy]
-version = 1
-rules = [{ id = "shared-review", selector = { glob = "**", kinds = [] }, resolution = "require_review" }]
-
-[sync.tree_validation]
-max_deleted_paths = 7
-max_deleted_percent = 12
-"#,
+        paths.config_file(),
+        "[sync]\nworktree = \"none\"\nbranch_push = false\n",
     )
     .expect("shared config");
+    let loaded = load_vault_config(&paths);
+    assert!(!loaded.config.sync.branch_push);
+    assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+}
+
+#[test]
+fn removed_sync_worktree_modes_and_their_keys_are_reported_and_ignored() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let paths = VaultPaths::new(temporary.path());
+    fs::create_dir(paths.vulcan_dir()).expect("Vulcan directory");
     fs::write(
-        vault_root.join(".vulcan/config.local.toml"),
+        paths.config_file(),
         r#"[sync]
-merge_automation = "require_review"
-agent_auto_accept = true
+worktree = "all"
+paths = ["Notes/"]
+branch_push = false
 
 [sync.merge_policy]
 version = 1
-rules = [{ id = "local-ignored", selector = { glob = "**", kinds = [] }, resolution = "structured" }]
 
 [sync.tree_validation]
 max_deleted_paths = 0
-max_deleted_percent = 0
 "#,
-    )
-    .expect("local config");
-
-    let loaded = load_vault_config(&VaultPaths::new(vault_root));
-
-    assert_eq!(
-        loaded
-            .config
-            .sync
-            .merge_policy
-            .expect("shared merge policy")
-            .rules[0]
-            .id,
-        "shared-review"
-    );
-    assert_eq!(
-        loaded.config.sync.merge_automation,
-        MergeAutomation::RequireReview
-    );
-    assert_eq!(loaded.config.sync.tree_validation.max_deleted_paths, 7);
-    assert_eq!(loaded.config.sync.tree_validation.max_deleted_percent, 12);
-    assert!(loaded.config.sync.agent_auto_accept);
-    assert!(loaded.diagnostics.iter().any(|diagnostic| diagnostic
-        .message
-        .contains("ignored shared sync.merge_automation")));
-    assert!(loaded.diagnostics.iter().any(|diagnostic| diagnostic
-        .message
-        .contains("ignored shared sync.agent_auto_accept")));
-    assert!(loaded.diagnostics.iter().any(|diagnostic| diagnostic
-        .message
-        .contains("ignored local sync.merge_policy")));
-    assert!(loaded.diagnostics.iter().any(|diagnostic| diagnostic
-        .message
-        .contains("ignored local sync.tree_validation")));
-}
-
-#[test]
-fn agent_auto_accept_defaults_off_and_only_local_config_can_enable_it() {
-    let temporary = TempDir::new().expect("temporary directory");
-    let paths = VaultPaths::new(temporary.path());
-    fs::create_dir(paths.vulcan_dir()).expect("Vulcan directory");
-    assert!(!load_vault_config(&paths).config.sync.agent_auto_accept);
-
-    fs::write(paths.config_file(), "[sync]\nagent_auto_accept = true\n").expect("shared config");
-    let shared = load_vault_config(&paths);
-    assert!(!shared.config.sync.agent_auto_accept);
-
-    fs::write(
-        paths.local_config_file(),
-        "[sync]\nagent_auto_accept = true\n",
-    )
-    .expect("local config");
-    assert!(load_vault_config(&paths).config.sync.agent_auto_accept);
-}
-
-#[test]
-fn sync_worktree_mode_is_shared_and_local_config_may_only_narrow_it() {
-    let temporary = TempDir::new().expect("temporary directory");
-    let paths = VaultPaths::new(temporary.path());
-    fs::create_dir(paths.vulcan_dir()).expect("Vulcan directory");
-    let defaults = load_vault_config(&paths).config.sync;
-    assert_eq!(defaults.worktree, WorktreeSyncMode::All);
-    assert!(defaults.branch_push);
-
-    fs::write(
-        paths.local_config_file(),
-        "[sync]\nworktree = \"none\"\nbranch_push = false\n",
-    )
-    .expect("local config");
-    let narrowed = load_vault_config(&paths).config.sync;
-    assert_eq!(narrowed.worktree, WorktreeSyncMode::None);
-    assert!(!narrowed.branch_push);
-
-    fs::write(
-        paths.config_file(),
-        "[sync]\nworktree = \"none\"\nbranch_push = false\n",
     )
     .expect("shared config");
     fs::write(
         paths.local_config_file(),
-        "[sync]\nworktree = \"all\"\nbranch_push = true\n",
+        "[sync]\nworktree = \"paths\"\nmerge_automation = \"require_review\"\nagent_auto_accept = true\n",
     )
-    .expect("widening local config");
+    .expect("local config");
     let loaded = load_vault_config(&paths);
-    assert_eq!(loaded.config.sync.worktree, WorktreeSyncMode::None);
-    assert!(
-        loaded.config.sync.branch_push,
-        "branch publication is a per-device choice"
-    );
-    assert!(loaded
+    assert!(!loaded.config.sync.branch_push, "kept keys still apply");
+    let messages = loaded
         .diagnostics
         .iter()
-        .any(|diagnostic| diagnostic.message.contains("ignored local sync.worktree")));
-}
-
-#[test]
-fn sync_paths_are_shared_configuration() {
-    let temporary = TempDir::new().expect("temporary directory");
-    let paths = VaultPaths::new(temporary.path());
-    fs::create_dir(paths.vulcan_dir()).expect("Vulcan directory");
-    fs::write(
-        paths.config_file(),
-        "[sync]\nworktree = \"paths\"\npaths = [\"wiki\", \"Home.md\"]\n",
-    )
-    .expect("shared config");
-    fs::write(
-        paths.local_config_file(),
-        "[sync]\nworktree = \"paths\"\npaths = [\"elsewhere\"]\n",
-    )
-    .expect("local config");
-
-    let loaded = load_vault_config(&paths);
-
-    assert_eq!(loaded.config.sync.worktree, WorktreeSyncMode::Paths);
-    assert_eq!(loaded.config.sync.paths, ["wiki", "Home.md"]);
-    for ignored in ["ignored local sync.paths", "ignored local sync.worktree"] {
-        assert!(
-            loaded
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.message.contains(ignored)),
-            "{ignored}"
-        );
-    }
-}
-
-#[test]
-fn sync_policy_config_validation_rejects_unsupported_or_invalid_contracts() {
-    for contents in [
-        r#"[sync.merge_policy]
-version = 2
-rules = [{ id = "fallback", selector = { glob = "**", kinds = [] }, resolution = "require_review" }]
-"#,
-        r#"[sync.merge_policy]
-version = 1
-rules = [{ id = "broken", selector = { glob = "[", kinds = [] }, resolution = "structured" }]
-"#,
+        .map(|diagnostic| diagnostic.message.as_str())
+        .collect::<Vec<_>>();
+    for expected in [
+        "ignored sync.worktree = \"all\"",
+        "ignored sync.worktree = \"paths\"",
+        "ignored sync.paths",
+        "ignored sync.merge_policy",
+        "ignored sync.tree_validation",
+        "ignored sync.merge_automation",
+        "ignored sync.agent_auto_accept",
     ] {
         assert!(
-            validate_vulcan_overrides_toml(contents).is_err(),
-            "invalid merge policy should fail: {contents}"
+            messages.iter().any(|message| message.contains(expected)),
+            "missing {expected} in {messages:?}"
         );
     }
-}
-
-#[test]
-fn sync_tree_validation_defaults_and_rejects_invalid_percentages() {
-    let defaults = SyncTreeValidationConfig::default();
-    assert_eq!(defaults.max_deleted_paths, 100);
-    assert_eq!(defaults.max_deleted_percent, 25);
-    assert!(defaults.validate().is_ok());
-    assert!(validate_vulcan_overrides_toml(
-        "[sync.tree_validation]\nmax_deleted_paths = 10\nmax_deleted_percent = 101\n"
-    )
-    .is_err());
+    assert!(messages
+        .iter()
+        .any(|message| message.contains("committed history only")));
 }
 
 #[test]

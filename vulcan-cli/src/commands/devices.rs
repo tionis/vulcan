@@ -6,7 +6,7 @@ use crate::{Cli, CliError, OutputFormat};
 use serde::Serialize;
 use std::path::PathBuf;
 use vulcan_app::device_identity::{DeviceIdentityReport, DeviceIdentityStore};
-use vulcan_app::sync::{GitRefName, GitRemote};
+use vulcan_app::sync::GitRemote;
 use vulcan_app::sync_devices::{
     list_sync_device_backups_with_observation, SyncDeviceListReport, SyncDeviceOptions,
 };
@@ -204,11 +204,7 @@ fn new_vault_inventory(registration: &vulcan_daemon::registry::WikiRegistration)
 }
 
 fn default_sync_device_options() -> SyncDeviceOptions {
-    SyncDeviceOptions {
-        remote: GitRemote::parse("origin").expect("origin is a valid Git remote name"),
-        live_ref: GitRefName::parse("refs/heads/__vulcan-sync/live")
-            .expect("the default sync live ref is valid"),
-    }
+    SyncDeviceOptions::new(GitRemote::parse("origin").expect("origin is a valid Git remote name"))
 }
 
 fn sanitize_inventory_error(error: impl std::fmt::Display) -> String {

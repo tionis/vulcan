@@ -333,7 +333,7 @@ fn print_batched_commit_report(
         BatchedCommitStatus::Disabled => {
             println!("This vault does not use batched commits (`[git] strategy = \"batched\"`).");
         }
-        BatchedCommitStatus::Blocked | BatchedCommitStatus::OwnedBySync => println!(
+        BatchedCommitStatus::Blocked => println!(
             "No commit: {}",
             report.detail.as_deref().unwrap_or("the batch is blocked")
         ),

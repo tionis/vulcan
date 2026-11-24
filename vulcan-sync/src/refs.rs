@@ -1,9 +1,6 @@
 use crate::{GitEngineError, GitRefName, GitRemote};
 
 pub const VULCAN_REF_NAMESPACE_VERSION: u32 = 3;
-/// Written only by path-scoped live commits, so readers that predate path
-/// scopes refuse them instead of treating unscoped paths as worktree content.
-pub const PATH_SCOPED_REF_NAMESPACE_VERSION: u32 = 4;
 pub const DEFAULT_REMOTE_LIVE_REF: &str = "refs/heads/__vulcan-sync/live";
 pub const REMOTE_EPOCH_BRANCH_ROOT: &str = "refs/heads/__vulcan-sync/epochs";
 pub const REMOTE_DEVICE_BRANCH_ROOT: &str = "refs/heads/__vulcan-sync/devices";
@@ -42,10 +39,6 @@ pub fn local_sync_ref(profile: &str, role: &str) -> Result<GitRefName, GitEngine
     local_ref(&["sync", profile, role, "live"])
 }
 
-pub fn local_epoch_ref(profile: &str, epoch_id: &str) -> Result<GitRefName, GitEngineError> {
-    local_ref(&["epochs", "live", profile, epoch_id])
-}
-
 pub fn remote_epoch_ref(profile: &str, epoch_id: &str) -> Result<GitRefName, GitEngineError> {
     GitRefName::parse(format!("{REMOTE_EPOCH_BRANCH_ROOT}/{profile}/{epoch_id}"))
 }
@@ -81,30 +74,6 @@ pub fn remote_conflict_ref(conflict_id: &str, role: &str) -> Result<GitRefName, 
     ))
 }
 
-pub fn conflict_recovery_ref(
-    conflict_id: &str,
-    recovery_id: &str,
-) -> Result<GitRefName, GitEngineError> {
-    local_ref(&["conflicts", conflict_id, "recovery", recovery_id])
-}
-
-pub fn conflict_resolved_ref(conflict_id: &str) -> Result<GitRefName, GitEngineError> {
-    local_ref(&["conflicts", conflict_id, "resolved"])
-}
-
-pub fn conflict_proposal_resolution_ref(
-    conflict_id: &str,
-    proposal_id: &str,
-) -> Result<GitRefName, GitEngineError> {
-    local_ref(&[
-        "conflicts",
-        conflict_id,
-        "resolved",
-        "proposals",
-        proposal_id,
-    ])
-}
-
 pub fn remote_conflict_proposal_resolution_ref(
     conflict_id: &str,
     proposal_id: &str,
@@ -116,14 +85,6 @@ pub fn remote_conflict_proposal_resolution_ref(
 
 pub fn detached_recovery_ref(recovery_id: &str) -> Result<GitRefName, GitEngineError> {
     local_ref(&["recovery", "detached-git-loss", recovery_id])
-}
-
-pub fn checkpoint_ref(kind: &str, checkpoint_id: &str) -> Result<GitRefName, GitEngineError> {
-    local_ref(&["checkpoints", kind, checkpoint_id])
-}
-
-pub fn semantic_proposal_ref(plan_id: &str) -> Result<GitRefName, GitEngineError> {
-    local_ref(&["proposals", "semantic", plan_id])
 }
 
 #[must_use]

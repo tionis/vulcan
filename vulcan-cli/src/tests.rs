@@ -2530,8 +2530,6 @@ fn parses_sync_commands() {
         "run",
         "--remote",
         "backup",
-        "--live-ref",
-        "refs/heads/live",
         "--max-retries",
         "7",
         "--git-timeout-seconds",
@@ -2550,7 +2548,6 @@ fn parses_sync_commands() {
                 },
                 target: SyncTargetArgs {
                     remote: "backup".to_string(),
-                    live_ref: "refs/heads/live".to_string(),
                 },
                 profile: None,
                 max_retries: 7,
@@ -2579,7 +2576,6 @@ fn parses_sync_commands() {
         &["--max-retries", "2"],
         &["--git-timeout-seconds", "5"],
         &["--remote", "backup"],
-        &["--live-ref", "refs/heads/live"],
     ] {
         let arguments = [&["vulcan", "sync", "run", "--all", "--queue"][..], tuning].concat();
         assert!(
@@ -2601,7 +2597,6 @@ fn parses_sync_commands() {
                 },
                 target: SyncTargetArgs {
                     remote: "origin".to_string(),
-                    live_ref: "refs/heads/__vulcan-sync/live".to_string(),
                 },
                 profile: None,
             },
@@ -3242,7 +3237,6 @@ fn parses_sync_doctor_command() {
                 wiki: Some("personal".to_string()),
                 target: SyncTargetArgs {
                     remote: "backup".to_string(),
-                    live_ref: "refs/heads/__vulcan-sync/live".to_string(),
                 },
                 profile: None,
                 fix: false,

@@ -23,7 +23,6 @@ use vulcan_app::batch_commit::{
     batched_commits_enabled, effective_batch_interval_seconds, run_batched_commit,
     BatchedCommitOptions, BatchedCommitReport, BatchedCommitStatus,
 };
-use vulcan_app::commit::CaptureOwner;
 use vulcan_app::execution::{MutationGate, Ungated};
 use vulcan_app::sync::SyncCancellationToken;
 use vulcan_core::{load_vault_config, GitBatchMessages, GitConfig, VaultPaths, Verbosity};
@@ -31,19 +30,6 @@ use vulcan_core::{load_vault_config, GitBatchMessages, GitConfig, VaultPaths, Ve
 pub const AUTO_COMMIT_STATUS_VERSION: u32 = 1;
 /// How often the consumer rereads `[git]` while it waits.
 const CONFIG_REFRESH: Duration = Duration::from_secs(5);
-
-/// Whether hidden-ref sync owns automatic capture for `registration`: it
-/// syncs with Git (a registration without a backend predates `--no-sync`)
-/// and snapshots the worktree. In committed-history-only mode auto-commit
-/// owns capture, because sync only moves commits.
-#[must_use]
-pub fn sync_owns_capture(registration: &WikiRegistration) -> bool {
-    registration
-        .sync_backend
-        .as_deref()
-        .is_none_or(|backend| backend == "git")
-        && vulcan_app::commit::sync_captures_worktree(&registration.path)
-}
 
 /// What the consumer of one vault needs beyond its registration.
 #[derive(Clone, Default)]
@@ -103,19 +89,9 @@ pub struct AutoCommitStatusReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AutoCommitCaptureOwner {
-    /// Batched auto-commit, when the vault asks for it.
-    AutoCommit,
-    /// Git sync's hidden-ref snapshots; no auto-commit consumer runs.
-    GitSync,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AutoCommitVaultStatus {
     pub wiki_id: String,
     pub path: PathBuf,
-    pub capture_owner: AutoCommitCaptureOwner,
     /// The vault's `[git]` settings, as this device reads them.
     pub auto_commit: bool,
     pub strategy: vulcan_core::GitCommitStrategy,
@@ -152,11 +128,6 @@ pub fn auto_commit_status_report(
             AutoCommitVaultStatus {
                 wiki_id: registration.id.to_string(),
                 path: registration.path.clone(),
-                capture_owner: if sync_owns_capture(registration) {
-                    AutoCommitCaptureOwner::GitSync
-                } else {
-                    AutoCommitCaptureOwner::AutoCommit
-                },
                 auto_commit: git.auto_commit,
                 strategy: git.strategy,
                 batch_interval_seconds: effective_batch_interval_seconds(&git),
@@ -257,8 +228,7 @@ pub(crate) fn consume_auto_commit_observations_with_stop(
                 Some(
                     BatchedCommitStatus::Committed
                     | BatchedCommitStatus::Clean
-                    | BatchedCommitStatus::Disabled
-                    | BatchedCommitStatus::OwnedBySync,
+                    | BatchedCommitStatus::Disabled,
                 ) => clock.committed(),
                 Some(BatchedCommitStatus::Blocked | BatchedCommitStatus::Planned) | None => {
                     clock.retry(Instant::now());
@@ -375,13 +345,6 @@ fn run_pass(
             &BatchedCommitOptions {
                 agent,
                 agent_unavailable,
-                capture_owner: Some(if sync_owns_capture(registration) {
-                    CaptureOwner::HiddenRefSync {
-                        wiki_id: registration.id.to_string(),
-                    }
-                } else {
-                    CaptureOwner::AutoCommit
-                }),
                 permission_profile: Some(profile_name),
                 git_config: None,
                 resolved_profile: Some(&profile),
@@ -524,15 +487,6 @@ pub(crate) fn run_batch_with(
         &BatchedCommitOptions {
             agent: agent.as_ref().map(CompanionSemanticAgent::provider),
             agent_unavailable,
-            capture_owner: registration.map(|registration| {
-                if sync_owns_capture(registration) {
-                    CaptureOwner::HiddenRefSync {
-                        wiki_id: registration.id.to_string(),
-                    }
-                } else {
-                    CaptureOwner::AutoCommit
-                }
-            }),
             permission_profile: profile.as_deref(),
             git_config: trusted.map(|trusted| trusted.git),
             resolved_profile: trusted
@@ -628,24 +582,6 @@ mod tests {
             execution_trust: None,
             mcp_remote: None,
         }
-    }
-
-    #[test]
-    fn only_vaults_whose_worktree_git_sync_snapshots_skip_batched_auto_commits() {
-        let temporary = tempfile::tempdir().unwrap();
-        let path = temporary.path();
-        assert!(sync_owns_capture(&registration(path, "git")));
-        assert!(!sync_owns_capture(&registration(path, "none")));
-        let mut legacy = registration(path, "git");
-        legacy.sync_backend = None;
-        assert!(sync_owns_capture(&legacy));
-        std::fs::create_dir_all(path.join(".vulcan")).unwrap();
-        std::fs::write(
-            path.join(".vulcan/config.toml"),
-            "[sync]\nworktree = \"none\"\n",
-        )
-        .unwrap();
-        assert!(!sync_owns_capture(&registration(path, "git")));
     }
 
     #[test]

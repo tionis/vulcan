@@ -1563,30 +1563,14 @@ Static-site publication profiles, filters, route policies, and theme assets.
 
 ### Synchronization
 
-Shared deterministic merge and whole-tree validation policy, plus a device-local automation ceiling.
+How Git sync integrates and publishes the checked-out branch, the device backup, and daemon polling.
 
-- `sync.agent_auto_accept` — type: `boolean`; target: `local|device`; default: `false`
-  Allow an explicitly requested agent proposal to enter the normal approval transaction automatically on this device. The default is false.
-  Example: `vulcan config set sync.agent_auto_accept <value>`
 - `sync.branch_pull` — type: `enum`; target: `shared|local|device`; default: `git`; values: `git: follow each device's pull.rebase/pull.ff`, `ff-only`, `merge`, `rebase`, `guarded-rebase: rebase only commits nothing else builds on`
   How sync reconciles the checked-out branch with its upstream: `git` (default) follows each device's `pull.rebase`/`pull.ff` settings; `ff-only`, `merge`, or `rebase` fixes the strategy for every device, and `guarded-rebase` rebases only when the replayed commits are on no other branch, tag, remote-tracking ref, or worktree and include no merges, pausing otherwise. Set it in the shared config so it travels with the repository.
   Example: `vulcan config set sync.branch_pull <value>`
 - `sync.branch_push` — type: `boolean`; target: `shared|local|device`; default: `true`
   Edit `sync.branch_push` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
   Example: `vulcan config set sync.branch_push <value>`
-- `sync.merge_automation` — type: `enum`; target: `local|device`; default: `allow_policy`; values: `allow_policy`, `require_review`
-  Set the device-local ceiling to allow shared policy automation or require review for every Git conflict.
-  Example: `vulcan config set sync.merge_automation <value>`
-- `sync.merge_policy.rules` — type: `array`; target: `shared`
-  Define the versioned shared ordered path/type rules used for deterministic Git conflict handling.
-  Preferred command: `vulcan config edit`
-  Example: `vulcan config set sync.merge_policy.rules <value>`
-- `sync.merge_policy.version` — type: `integer`; target: `shared`; default: `1`
-  Define the versioned shared ordered path/type rules used for deterministic Git conflict handling.
-  Example: `vulcan config set sync.merge_policy.version <value>`
-- `sync.paths` — type: `array`; target: `shared|local|device`; default: `[2 items]`
-  Edit `sync.paths` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
-  Example: `vulcan config set sync.paths <value>`
 - `sync.poll_max_seconds` — type: `integer`; target: `shared|local|device`; default: `900`
   Longest interval, in seconds, between the daemon's remote checks of an idle wiki (default 900). Each quiet check doubles the interval up to this ceiling.
   Example: `vulcan config set sync.poll_max_seconds <value>`
@@ -1594,14 +1578,5 @@ Shared deterministic merge and whole-tree validation policy, plus a device-local
   Shortest interval, in seconds, between the daemon's remote checks of an active wiki (default 15, never below 5). Activity resets polling to this interval.
   Example: `vulcan config set sync.poll_min_seconds <value>`
 - `sync.publish_device_backup` — type: `boolean`; target: `shared|local|device`; default: `false`
-  With `worktree = "none"`, also push this device's safety snapshot of uncommitted edits to its private remote branch. Off by default, so uncommitted text never leaves the device; the worktree modes always publish it.
+  Also push this device's safety snapshot of uncommitted edits to its private remote branch. Off by default, so uncommitted text never leaves the device.
   Example: `vulcan config set sync.publish_device_backup <value>`
-- `sync.tree_validation.max_deleted_paths` — type: `integer`; target: `shared`; default: `100`
-  Define shared whole-tree safety ceilings checked before an automatically resolved Git merge is published.
-  Example: `vulcan config set sync.tree_validation.max_deleted_paths <value>`
-- `sync.tree_validation.max_deleted_percent` — type: `integer`; target: `shared`; default: `25`
-  Define shared whole-tree safety ceilings checked before an automatically resolved Git merge is published. A result is rejected only when it exceeds both the path-count and percentage ceilings.
-  Example: `vulcan config set sync.tree_validation.max_deleted_percent <value>`
-- `sync.worktree` — type: `enum`; target: `shared|local|device`; default: `all`; values: `all: snapshot the worktree`, `none: synchronize commits only`, `paths: snapshot sync.paths only`
-  Edit `sync.worktree` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
-  Example: `vulcan config set sync.worktree <value>`

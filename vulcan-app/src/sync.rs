@@ -1,32 +1,23 @@
 //! Complete direct-mode vault synchronization workflows.
 
-use crate::sync_conflicts::{conflict_groups, SyncConflictRecord, SyncConflictStore};
 use crate::sync_state::{SyncApplyMarker, SyncJournal, SyncJournalPhase, SyncStateStore};
 use crate::{scan::refresh_cache_incrementally, AppError};
 use fs2::FileExt;
-use serde::{Serialize, Serializer};
-use std::collections::{BTreeMap, BTreeSet};
+use serde::Serialize;
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-use vulcan_core::{
-    load_vault_config, parse_document, LinkResolutionProblem, ResolverDocument, ResolverIndex,
-    ResolverLink, ScanSummary, VaultConfig, VaultPaths,
-};
-use vulcan_sync::{GitAutomaticMergeValidation, GitEngine};
-
-const MAX_SYNC_REPORT_CONFLICT_RECORD_PATHS: usize = 16;
-const MAX_SYNC_REPORT_CONFLICT_RECORD_DIAGNOSTIC_CHARS: usize = 4096;
+use vulcan_core::{load_vault_config, ScanSummary, VaultConfig, VaultPaths};
+use vulcan_sync::GitEngine;
 
 pub use vulcan_sync::{
     GitBranchSync, GitBranchSyncAction, GitCloneRequest, GitDetachedRecoveryReport,
     GitDetachedRecoveryRequest, GitDeviceBackup, GitDeviceBackupOutcome, GitInstallation,
     GitObjectFormat, GitPlatformPolicy, GitPlatformPreflight, GitPlatformProfile, GitRefName,
-    GitRemote, GitRemoteObservation, GitRepository, GitRepositoryLayout, GitRepositoryRequirements,
-    GitSyncAction, GitSyncConflict, GitSyncDeviceId, GitSyncObserver, GitSyncObserverError,
-    GitSyncOptions, GitSyncOutcome, GitSyncPause, GitSyncPauseReason, GitSyncPhase,
-    GitSyncPreviewFileState, GitSyncProgress, GitSyncRefs, GitSyncReport,
-    GitUnattendedRepositoryState, SyncCancellationToken, SyncJobState, WorktreeSyncMode,
+    GitRemote, GitRepository, GitRepositoryLayout, GitRepositoryRequirements, GitSyncAction,
+    GitSyncConflict, GitSyncDeviceId, GitSyncObserver, GitSyncObserverError, GitSyncOptions,
+    GitSyncOutcome, GitSyncPause, GitSyncPauseReason, GitSyncPhase, GitSyncProgress, GitSyncRefs,
+    GitSyncReport, GitUnattendedRepositoryState, SyncCancellationToken, SyncJobState,
 };
 
 /// Controls whether a finite file synchronization cycle composes Markdown
@@ -92,9 +83,6 @@ pub struct VaultSyncReport {
     /// device's registration, or when registering failed (never fatal).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub registration: Option<crate::sync_registration::SelfRegistrationReport>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(serialize_with = "serialize_sync_report_conflict_record")]
-    pub conflict_record: Option<SyncConflictRecord>,
     pub operational_stats: SyncOperationalStats,
     pub state: VaultSyncStateReport,
     /// Per-device Obsidian files this sync still shares because no
@@ -122,90 +110,11 @@ pub fn device_backup_warning(backup: Option<&GitDeviceBackup>) -> Option<String>
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SyncOperationalStats {
     pub version: u32,
-    pub automatic_resolution_paths: usize,
-    pub conflict_paths: usize,
-    pub conflict_groups: usize,
-    pub formatting_candidate_paths: usize,
-    pub preserved_input_bytes: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git_subprocesses: Option<u64>,
     pub elapsed_ms: u64,
     pub backend_cycle_ms: u64,
-    pub conflict_state_ms: u64,
     pub cache_refresh_ms: u64,
-}
-
-#[derive(Serialize)]
-struct SyncConflictRecordReportSummary<'a> {
-    version: u32,
-    id: &'a str,
-    repository_key: &'a str,
-    scope: vulcan_sync::GitConflictScope,
-    base_revision: Option<&'a str>,
-    local_revision: &'a str,
-    remote_revision: &'a str,
-    paths: Vec<&'a str>,
-    paths_returned: usize,
-    paths_complete: bool,
-    path_count: usize,
-    group_count: usize,
-    policy_version: u32,
-    policy_hash: &'a str,
-    preserved_record_ref: Option<&'a str>,
-    provenance_revision: Option<&'a str>,
-    projection: Option<&'a crate::sync_conflicts::SyncConflictProjectionRecord>,
-    diagnostics: String,
-    diagnostics_complete: bool,
-    detail_conflict_id: &'a str,
-}
-
-#[allow(clippy::ref_option)] // serde's field serializer receives a reference to the field type.
-fn serialize_sync_report_conflict_record<S>(
-    record: &Option<SyncConflictRecord>,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    let summary = record.as_ref().map(|record| {
-        let paths_returned = record
-            .paths
-            .len()
-            .min(MAX_SYNC_REPORT_CONFLICT_RECORD_PATHS);
-        let paths = record.paths[..paths_returned]
-            .iter()
-            .map(|path| path.path.as_str())
-            .collect();
-        let mut diagnostic_chars = record.diagnostics.chars();
-        let diagnostics = diagnostic_chars
-            .by_ref()
-            .take(MAX_SYNC_REPORT_CONFLICT_RECORD_DIAGNOSTIC_CHARS)
-            .collect::<String>();
-        let diagnostics_complete = diagnostic_chars.next().is_none();
-        SyncConflictRecordReportSummary {
-            version: record.version,
-            id: &record.id,
-            repository_key: &record.repository_key,
-            scope: record.scope,
-            base_revision: record.base_revision.as_deref(),
-            local_revision: &record.local_revision,
-            remote_revision: &record.remote_revision,
-            paths,
-            paths_returned,
-            paths_complete: paths_returned == record.paths.len(),
-            path_count: record.paths.len(),
-            group_count: conflict_groups(record).len(),
-            policy_version: record.policy_version,
-            policy_hash: &record.policy_hash,
-            preserved_record_ref: record.preserved_record_ref.as_deref(),
-            provenance_revision: record.provenance_revision.as_deref(),
-            projection: record.projection.as_ref(),
-            diagnostics,
-            diagnostics_complete,
-            detail_conflict_id: &record.id,
-        }
-    });
-    summary.serialize(serializer)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -242,7 +151,6 @@ pub struct SyncDoctorReport {
     pub healthy: bool,
     pub vault: std::path::PathBuf,
     pub remote: GitRemote,
-    pub live_ref: GitRefName,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -404,7 +312,7 @@ fn doctor_git_vault_with_optional_state(
     }
     .with_command_timeout(options.command_timeout);
     let (effective_options, policy_severity, policy_detail) =
-        configured_options_for_doctor_profile(paths, options, profile);
+        configured_options_for_doctor(paths, options);
     let options = &effective_options;
     let mut report = initial_doctor_report(paths, options, platform);
     doctor_check(
@@ -416,7 +324,6 @@ fn doctor_git_vault_with_optional_state(
     doctor_device_identity(state_store, &mut report);
     doctor_transport(paths, &options.remote, &mut report);
     doctor_file_synchronizer(paths, &mut report);
-    doctor_ref_sweep(paths, state_store, &mut report);
 
     match engine.installation() {
         Ok(installation) => {
@@ -507,27 +414,6 @@ fn doctor_git_vault_with_optional_state(
         ),
     }
 
-    if options.worktree.syncs_live() {
-        doctor_refs(&engine, &repository, options, &mut report);
-        if let Some(scope) = &options.scope {
-            doctor_check(
-                &mut report,
-                "sync.worktree",
-                SyncDoctorSeverity::Info,
-                format!(
-                    "path-scoped (sync.worktree = \"paths\"): live holds {} from the worktree and everything else from the published branch",
-                    scope.entries().join(", ")
-                ),
-            );
-        }
-    } else {
-        doctor_check(
-            &mut report,
-            "sync.worktree",
-            SyncDoctorSeverity::Info,
-            "committed history only (sync.worktree = \"none\"): sync moves the checked-out branch and this device's backup; live ref checks do not apply",
-        );
-    }
     doctor_platform_tree(&engine, &repository, options, &mut report);
     doctor_device_files(&engine, &repository, paths, options, &mut report);
     doctor_repository_lock(&repository, &mut report);
@@ -539,19 +425,16 @@ fn doctor_git_vault_with_optional_state(
     finish_doctor_report(report)
 }
 
-fn configured_options_for_doctor_profile(
+fn configured_options_for_doctor(
     paths: &VaultPaths,
     options: &GitSyncOptions,
-    profile: SyncContentProfile,
 ) -> (GitSyncOptions, SyncDoctorSeverity, String) {
-    match configured_git_sync_options_for_profile(paths, options, profile) {
-        Ok(options) => {
-            let detail = format!(
-                "merge policy v{} is valid with automation ceiling {:?}",
-                options.merge_policy.version, options.merge_automation
-            );
-            (options, SyncDoctorSeverity::Pass, detail)
-        }
+    match configured_git_sync_options(paths, options) {
+        Ok(options) => (
+            options,
+            SyncDoctorSeverity::Pass,
+            "sync configuration is valid".to_string(),
+        ),
         Err(error) => (
             options.clone(),
             SyncDoctorSeverity::Error,
@@ -627,7 +510,6 @@ fn initial_doctor_report(
         healthy: true,
         vault: paths.vault_root().to_path_buf(),
         remote: options.remote.clone(),
-        live_ref: options.live_ref.clone(),
         device_id: None,
         installation: None,
         repository: None,
@@ -677,40 +559,6 @@ fn doctor_device_identity(state_store: Option<&SyncStateStore>, report: &mut Syn
             SyncDoctorSeverity::Error,
             error.to_string(),
         ),
-    }
-}
-
-/// Reports device backups the last ref sweep kept because live lacks their
-/// content. Their devices are no longer registered, so nothing else will
-/// ever integrate or remove them.
-fn doctor_ref_sweep(
-    paths: &VaultPaths,
-    state_store: Option<&SyncStateStore>,
-    report: &mut SyncDoctorReport,
-) {
-    let Some(state_store) = state_store else {
-        return;
-    };
-    let Ok(work_tree) = crate::sync_state::sync_work_tree(paths.vault_root()) else {
-        return;
-    };
-    let state = state_store
-        .root()
-        .join(crate::sync_state::repository_state_key(&work_tree))
-        .join(crate::sync_ref_sweep::REF_SWEEP_STATE_FILE);
-    let Some(sweep) = crate::sync_ref_sweep::last_sweep(&state) else {
-        return;
-    };
-    if !sweep.retained_device_backups.is_empty() {
-        doctor_check(
-            report,
-            "sync.device-backups",
-            SyncDoctorSeverity::Warning,
-            format!(
-                "remote backups of unregistered devices hold content live does not have: {}; inspect each with `vulcan sync devices fetch <device-id>`, integrate what matters, then `vulcan sync devices prune-backup <device-id>`",
-                sweep.retained_device_backups.join(", ")
-            ),
-        );
     }
 }
 
@@ -896,113 +744,6 @@ fn doctor_repository_requirements(
             severity,
             format!("required Git filters: {filters}"),
         );
-    }
-}
-
-fn doctor_refs(
-    engine: &dyn GitEngine,
-    repository: &GitRepository,
-    options: &GitSyncOptions,
-    report: &mut SyncDoctorReport,
-) {
-    let refs = match GitSyncRefs::for_options(options) {
-        Ok(refs) => refs,
-        Err(error) => {
-            doctor_check(
-                report,
-                "git.refs",
-                SyncDoctorSeverity::Error,
-                error.to_string(),
-            );
-            return;
-        }
-    };
-    let mut revisions = Vec::new();
-    for (name, reference) in [
-        ("local", &refs.local),
-        ("fetched", &refs.fetched),
-        ("pending", &refs.pending),
-    ] {
-        match engine.read_ref(repository, reference) {
-            Ok(Some(revision)) => match engine.tree_oid(repository, &revision) {
-                Ok(_) => revisions.push((name, revision)),
-                Err(error) => doctor_check(
-                    report,
-                    "git.objects",
-                    SyncDoctorSeverity::Error,
-                    format!("{name} ref points to an unreadable object: {error}"),
-                ),
-            },
-            Ok(None) => {}
-            Err(error) => doctor_check(
-                report,
-                "git.refs",
-                SyncDoctorSeverity::Error,
-                format!("cannot read {name} ref: {error}"),
-            ),
-        }
-    }
-    if revisions.is_empty() {
-        doctor_check(
-            report,
-            "git.refs",
-            SyncDoctorSeverity::Info,
-            "no local Vulcan sync refs exist yet",
-        );
-    } else if revisions.len() == 3 && revisions.windows(2).all(|pair| pair[0].1 == pair[1].1) {
-        doctor_check(
-            report,
-            "git.refs",
-            SyncDoctorSeverity::Pass,
-            format!("{} readable local sync ref(s) agree", revisions.len()),
-        );
-    } else {
-        doctor_check(
-            report,
-            "git.refs",
-            SyncDoctorSeverity::Warning,
-            "local, fetched, and pending sync refs do not yet agree",
-        );
-    }
-
-    let local_revision = revisions
-        .iter()
-        .find(|(name, _)| *name == "local")
-        .map(|(_, revision)| revision.clone());
-    match engine.remote_ref(repository, &options.remote, &refs.live) {
-        Ok(Some(revision)) => {
-            report.remote_revision = Some(revision.to_string());
-            if local_revision
-                .as_ref()
-                .is_some_and(|local| local != &revision)
-            {
-                doctor_check(
-                    report,
-                    "git.remote",
-                    SyncDoctorSeverity::Warning,
-                    format!("remote live ref {revision} differs from the local candidate"),
-                );
-            } else {
-                doctor_check(
-                    report,
-                    "git.remote",
-                    SyncDoctorSeverity::Pass,
-                    format!("remote live ref resolves to {revision}"),
-                );
-            }
-        }
-        Ok(None) => doctor_check(
-            report,
-            "git.remote",
-            SyncDoctorSeverity::Info,
-            "remote live ref does not exist yet; the first sync can bootstrap it",
-        ),
-        Err(error) => doctor_check(
-            report,
-            "git.remote",
-            SyncDoctorSeverity::Warning,
-            format!("remote could not be inspected: {error}"),
-        ),
     }
 }
 
@@ -1586,7 +1327,7 @@ pub fn sync_git_vault_with_profile_and_observer_and_engine_policy(
     profile: SyncContentProfile,
     unattended: bool,
 ) -> Result<VaultSyncReport, AppError> {
-    let (report, carried) = sync_git_vault_cycle(
+    sync_git_vault_cycle(
         engine,
         paths,
         options,
@@ -1595,27 +1336,10 @@ pub fn sync_git_vault_with_profile_and_observer_and_engine_policy(
         delegate,
         profile,
         unattended,
-    )?;
-    if !carried {
-        return Ok(report);
-    }
-    // Carrying an overtaken conflict forward wrote merged local changes into
-    // the worktree; publish them in this same synchronization.
-    let (report, _) = sync_git_vault_cycle(
-        engine,
-        paths,
-        options,
-        state_store,
-        cancellation,
-        delegate,
-        profile,
-        unattended,
-    )?;
-    Ok(report)
+    )
 }
 
-/// One finite synchronization transaction, and whether it carried a conflict
-/// forward by writing merged local changes that still need publishing.
+/// One finite synchronization transaction.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn sync_git_vault_cycle(
     engine: &dyn GitEngine,
@@ -1626,7 +1350,7 @@ fn sync_git_vault_cycle(
     delegate: &mut dyn GitSyncObserver,
     profile: SyncContentProfile,
     unattended: bool,
-) -> Result<(VaultSyncReport, bool), AppError> {
+) -> Result<VaultSyncReport, AppError> {
     let started = Instant::now();
     let subprocesses_before = engine.subprocess_count();
     check_sync_start(cancellation)?;
@@ -1637,7 +1361,7 @@ fn sync_git_vault_cycle(
     let work_tree = discovered_work_tree(engine, paths);
     let vault_paths = sync_vault_paths(paths, &work_tree);
     let paths = &vault_paths;
-    let options = configured_git_sync_options_for_profile(paths, options, profile)?;
+    let options = configured_git_sync_options(paths, options)?;
     let branch_guard = if unattended && profile == SyncContentProfile::FilesOnly {
         validate_unattended_files_only_repository(engine, paths)?
     } else {
@@ -1646,7 +1370,7 @@ fn sync_git_vault_cycle(
     let mut journal = SyncJournal::preparing(
         &work_tree,
         options.remote.to_string(),
-        options.live_ref.to_string(),
+        vulcan_sync::DEFAULT_REMOTE_LIVE_REF.to_string(),
     )?;
     let journal_path = state_store.journal_path(&journal.repository_key)?;
     let previous = state_store.load(&journal.repository_key)?;
@@ -1661,18 +1385,13 @@ fn sync_git_vault_cycle(
     if !options.dry_run {
         state_store.save(&journal)?;
     }
-    let validation_config = (profile == SyncContentProfile::Knowledge)
-        .then(|| load_validated_sync_config(paths))
-        .transpose()?;
     let mut observer = JournalSyncObserver {
         state_store,
         journal: &mut journal,
         persist: !options.dry_run,
         delegate,
-        profile,
         engine,
         branch_guard,
-        tree_validator: validation_config.map(VaultTreeValidator::new),
     };
     let backend_started = Instant::now();
     let sync_result = run_sync_backend_with_vault_lock(
@@ -1709,24 +1428,12 @@ fn sync_git_vault_cycle(
             sync.registration_tips.as_deref(),
         )
     };
-    let conflict_state_started = Instant::now();
-    let (conflict_record, carried) = persist_and_update_conflicts(
-        engine,
-        paths,
-        &effective_options,
-        &sync,
-        &mut journal,
-        state_store,
-        !options.dry_run,
-    )?;
-    let conflict_state = conflict_state_started.elapsed();
     journal.git_dir = Some(sync.repository.git_dir.clone());
     journal.local_snapshot = sync.local_snapshot.as_ref().map(ToString::to_string);
-    journal.accepted = sync.accepted.as_ref().map(ToString::to_string);
-    journal.phase = match sync.outcome {
-        GitSyncOutcome::Paused => SyncJournalPhase::Paused,
-        GitSyncOutcome::Conflicted => SyncJournalPhase::Conflicted,
-        _ => SyncJournalPhase::Verifying,
+    journal.phase = if sync.outcome == GitSyncOutcome::Paused {
+        SyncJournalPhase::Paused
+    } else {
+        SyncJournalPhase::Verifying
     };
     if !options.dry_run {
         state_store.save(&journal)?;
@@ -1747,33 +1454,28 @@ fn sync_git_vault_cycle(
     let timings = SyncOperationTimings::new(
         subprocesses_before,
         started,
-        [backend_cycle, conflict_state, cache_refresh_duration],
+        [backend_cycle, cache_refresh_duration],
     );
-    let operational_stats =
-        sync_operational_stats(engine, &timings, &sync, conflict_record.as_ref());
+    let operational_stats = sync_operational_stats(engine, &timings);
     let device_files = if profile == SyncContentProfile::Knowledge {
         unignored_device_files(engine, paths, &sync)
     } else {
         Vec::new()
     };
-    Ok((
-        VaultSyncReport {
-            sync,
-            cache_refresh,
-            cache_refresh_error,
-            registration,
-            conflict_record,
-            operational_stats,
-            state: VaultSyncStateReport {
-                repository_key,
-                journal_path,
-                recovered_from,
-                retained,
-            },
-            device_files,
+    Ok(VaultSyncReport {
+        sync,
+        cache_refresh,
+        cache_refresh_error,
+        registration,
+        operational_stats,
+        state: VaultSyncStateReport {
+            repository_key,
+            journal_path,
+            recovered_from,
+            retained,
         },
-        carried,
-    ))
+        device_files,
+    })
 }
 
 /// The per-device files this sync's capture still shares. Best effort: the
@@ -1787,14 +1489,9 @@ fn unignored_device_files(
     if !paths.vault_root().join(".obsidian").is_dir() {
         return Vec::new();
     }
-    // A preview captures nothing, so it reads what the remote shares; files
-    // the work tree already ignores leave with the next capture either way.
-    let Some(revision) = sync
-        .accepted
-        .as_ref()
-        .or(sync.local_snapshot.as_ref())
-        .or(sync.remote_before.as_ref())
-    else {
+    // A preview captures nothing, so it reads the last snapshot; files the
+    // work tree already ignores leave with the next capture either way.
+    let Some(revision) = sync.local_snapshot.as_ref().or(sync.local_before.as_ref()) else {
         return Vec::new();
     };
     crate::sync_device_files::shared_device_files(
@@ -1924,7 +1621,7 @@ fn retain_sync_journal(
     let repository_key = journal.repository_key.clone();
     let retained = if dry_run {
         previous
-    } else if matches!(outcome, GitSyncOutcome::Paused | GitSyncOutcome::Conflicted) {
+    } else if outcome == GitSyncOutcome::Paused {
         Some(journal)
     } else {
         state_store.clear(&repository_key)?;
@@ -1937,18 +1634,16 @@ struct SyncOperationTimings {
     subprocesses_before: Option<u64>,
     elapsed: Duration,
     backend_cycle: Duration,
-    conflict_state: Duration,
     cache_refresh: Duration,
 }
 
 impl SyncOperationTimings {
-    fn new(subprocesses_before: Option<u64>, started: Instant, stages: [Duration; 3]) -> Self {
+    fn new(subprocesses_before: Option<u64>, started: Instant, stages: [Duration; 2]) -> Self {
         Self {
             subprocesses_before,
             elapsed: started.elapsed(),
             backend_cycle: stages[0],
-            conflict_state: stages[1],
-            cache_refresh: stages[2],
+            cache_refresh: stages[1],
         }
     }
 }
@@ -1956,45 +1651,15 @@ impl SyncOperationTimings {
 fn sync_operational_stats(
     engine: &dyn GitEngine,
     timings: &SyncOperationTimings,
-    sync: &GitSyncReport,
-    conflict_record: Option<&SyncConflictRecord>,
 ) -> SyncOperationalStats {
-    let automatic_resolution_paths = sync.automatic_resolutions.len();
-    let conflict_paths = conflict_record.map_or(0, |record| record.paths.len());
-    let conflict_groups = conflict_record.map_or(0, |record| conflict_groups(record).len());
-    let formatting_candidate_paths = conflict_record.map_or(0, |record| {
-        record
-            .paths
-            .iter()
-            .filter(|path| {
-                path.classification
-                    .as_ref()
-                    .is_some_and(|classification| classification.formatting_candidate)
-            })
-            .count()
-    });
-    let preserved_input_bytes = conflict_record.map_or(0, |record| {
-        record.paths.iter().fold(0_u64, |total, path| {
-            [&path.base, &path.local, &path.remote]
-                .into_iter()
-                .filter_map(|side| side.bytes)
-                .fold(total, u64::saturating_add)
-        })
-    });
     SyncOperationalStats {
-        version: 1,
-        automatic_resolution_paths,
-        conflict_paths,
-        conflict_groups,
-        formatting_candidate_paths,
-        preserved_input_bytes,
+        version: 2,
         git_subprocesses: timings
             .subprocesses_before
             .zip(engine.subprocess_count())
             .map(|(before, after)| after.saturating_sub(before)),
         elapsed_ms: duration_millis(timings.elapsed),
         backend_cycle_ms: duration_millis(timings.backend_cycle),
-        conflict_state_ms: duration_millis(timings.conflict_state),
         cache_refresh_ms: duration_millis(timings.cache_refresh),
     }
 }
@@ -2008,9 +1673,8 @@ fn refresh_cache_after_sync(
     sync: &GitSyncReport,
     options: &GitSyncOptions,
 ) -> (Option<ScanSummary>, Option<String>) {
-    // Committed-history-only cycles change files only by moving the branch.
-    let files_changed = sync.actions.contains(&GitSyncAction::WorktreeApplied)
-        || (!sync.worktree.syncs_live() && sync.outcome == GitSyncOutcome::Pulled);
+    // Sync changes files only by moving the branch.
+    let files_changed = sync.outcome == GitSyncOutcome::Pulled;
     let should_refresh = !options.dry_run && files_changed && paths.cache_db().is_file();
     // The vault tree is already applied and verified; a cache refresh
     // failure must not report the successful sync as failed or retain a
@@ -2023,222 +1687,6 @@ fn refresh_cache_after_sync(
         Ok(report) => (report, None),
         Err(error) => (None, Some(error.to_string())),
     }
-}
-
-fn supersede_obsolete_conflicts(
-    engine: &dyn GitEngine,
-    paths: &VaultPaths,
-    options: &GitSyncOptions,
-    sync: &GitSyncReport,
-    current_conflict: Option<&SyncConflictRecord>,
-    state_store: &SyncStateStore,
-    journal: &SyncJournal,
-) -> Result<bool, AppError> {
-    let store = SyncConflictStore::from_state_store(state_store);
-    if let Some(record) = current_conflict {
-        let current_revision = record
-            .provenance_revision
-            .as_deref()
-            .unwrap_or(&record.remote_revision);
-        store.supersede_unresolved_except(
-            &journal.repository_key,
-            Some(&record.id),
-            current_revision,
-        )?;
-        // Older conflicts the new one does not cover may have been overtaken
-        // too. The worktree holds the frontier only once the new conflict's
-        // projection was applied; the new conflict itself is never overtaken.
-        let applied = record
-            .projection
-            .as_ref()
-            .is_some_and(|projection| projection.published && projection.applied);
-        if !applied {
-            return Ok(false);
-        }
-        let frontier = vulcan_sync::GitOid::parse(current_revision).map_err(AppError::operation)?;
-        return Ok(carry_forward_overtaken_conflicts(
-            engine, paths, options, sync, &store, journal, &frontier,
-        ));
-    }
-    // Without live there is no frontier: conflicts retained from an earlier
-    // whole-worktree period stay as they are until that mode resumes.
-    if matches!(
-        sync.outcome,
-        GitSyncOutcome::Paused | GitSyncOutcome::Planned
-    ) || !sync.worktree.syncs_live()
-    {
-        return Ok(false);
-    }
-    let current_revision = sync
-        .accepted
-        .as_ref()
-        .or(sync.remote_before.as_ref())
-        .or(sync.local_before.as_ref());
-    if let Some(current_revision) = current_revision {
-        store.supersede_unresolved_except(
-            &journal.repository_key,
-            None,
-            current_revision.as_str(),
-        )?;
-    }
-    // The accepted live frontier this cycle ended on; overtaken conflicts are
-    // judged against it, never against a merely local revision.
-    let Some(frontier) = sync.accepted.as_ref().or(sync.remote_before.as_ref()) else {
-        return Ok(false);
-    };
-    Ok(carry_forward_overtaken_conflicts(
-        engine, paths, options, sync, &store, journal, frontier,
-    ))
-}
-
-/// Carries overtaken conflicts forward, archives long-closed ones, releases
-/// detached-HEAD rescue refs live already contains, and runs the daily
-/// Vulcan ref sweep, under the vault and repository locks. Both are opportunistic: if the locks are
-/// busy or a step fails, the conflicts stay as they are and the next sync
-/// tries again.
-fn carry_forward_overtaken_conflicts(
-    engine: &dyn GitEngine,
-    paths: &VaultPaths,
-    options: &GitSyncOptions,
-    sync: &GitSyncReport,
-    store: &SyncConflictStore,
-    journal: &SyncJournal,
-    frontier: &vulcan_sync::GitOid,
-) -> bool {
-    let Ok(_vault_lock) = paths
-        .vulcan_dir()
-        .is_dir()
-        .then(|| vulcan_core::write_lock::acquire_write_lock(paths))
-        .transpose()
-    else {
-        return false;
-    };
-    let Ok(_repository_lock) = vulcan_sync::RepositoryLock::acquire(&sync.repository.git_dir)
-    else {
-        return false;
-    };
-    let carried = store
-        .carry_forward_stale_unresolved(
-            engine,
-            &sync.repository,
-            &journal.repository_key,
-            frontier,
-            options,
-        )
-        .is_ok_and(|summary| !summary.written_paths.is_empty());
-    if store.archive_due(&journal.repository_key) {
-        let _ = store.archive_closed(
-            engine,
-            &sync.repository,
-            &journal.repository_key,
-            crate::sync_conflicts::CONFLICT_ARCHIVE_AFTER,
-            Some(&options.remote),
-            false,
-        );
-    }
-    let _ = release_contained_rescue_refs(engine, &sync.repository, frontier);
-    let sweep_state = store
-        .repository_state_dir(&journal.repository_key)
-        .join(crate::sync_ref_sweep::REF_SWEEP_STATE_FILE);
-    if crate::sync_ref_sweep::sweep_due(&sweep_state) {
-        let _ = crate::sync_ref_sweep::sweep_vulcan_refs(
-            engine,
-            &sync.repository,
-            options,
-            frontier,
-            &sweep_state,
-        );
-    }
-    carried
-}
-
-fn persist_and_update_conflicts(
-    engine: &dyn GitEngine,
-    paths: &VaultPaths,
-    options: &GitSyncOptions,
-    sync: &GitSyncReport,
-    journal: &mut SyncJournal,
-    state_store: &SyncStateStore,
-    persist: bool,
-) -> Result<(Option<SyncConflictRecord>, bool), AppError> {
-    let record = persist_sync_conflict(engine, sync, journal, state_store, persist)?;
-    let carried = update_conflict_lifecycle(
-        engine,
-        paths,
-        options,
-        sync,
-        record.as_ref(),
-        state_store,
-        journal,
-        !persist,
-    )?;
-    Ok((record, carried))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn update_conflict_lifecycle(
-    engine: &dyn GitEngine,
-    paths: &VaultPaths,
-    options: &GitSyncOptions,
-    sync: &GitSyncReport,
-    current_conflict: Option<&SyncConflictRecord>,
-    state_store: &SyncStateStore,
-    journal: &mut SyncJournal,
-    dry_run: bool,
-) -> Result<bool, AppError> {
-    if dry_run {
-        return Ok(false);
-    }
-    match supersede_obsolete_conflicts(
-        engine,
-        paths,
-        options,
-        sync,
-        current_conflict,
-        state_store,
-        journal,
-    ) {
-        Ok(carried) => Ok(carried),
-        Err(error) => {
-            journal.error = Some(error.to_string());
-            state_store.save(journal)?;
-            Err(error)
-        }
-    }
-}
-
-/// Releases detached-HEAD rescue refs
-/// (`refs/vulcan/recovery/detached-git-loss/...`) whose tips the accepted
-/// `live` revision already contains. They keep commits a detached checkout
-/// would otherwise lose; once live holds their whole history they protect
-/// nothing. Device recovery refs are left to the device workflow, which
-/// releases them with their remote backup. Each delete expects the listed
-/// tip, so a ref that moved meanwhile is kept. Returns the number released.
-/// The caller holds the repository lock.
-pub(crate) fn release_contained_rescue_refs(
-    engine: &dyn vulcan_sync::GitEngine,
-    repository: &vulcan_sync::GitRepository,
-    live: &vulcan_sync::GitOid,
-) -> Result<usize, AppError> {
-    let prefix = vulcan_sync::GitRefName::parse(format!(
-        "{}/recovery/detached-git-loss",
-        vulcan_sync::LOCAL_VULCAN_REF_ROOT
-    ))
-    .map_err(AppError::operation)?;
-    let mut released = 0;
-    for reference in engine
-        .list_refs_contained_in(repository, &prefix, live)
-        .map_err(AppError::operation)?
-    {
-        if engine
-            .delete_ref(repository, &reference.name, &reference.target)
-            .map_err(AppError::operation)?
-            == vulcan_sync::GitRefDeleteResult::Deleted
-        {
-            released += 1;
-        }
-    }
-    Ok(released)
 }
 
 fn check_sync_start(cancellation: &SyncCancellationToken) -> Result<(), AppError> {
@@ -2285,78 +1733,18 @@ pub fn configured_git_sync_options(
     paths: &VaultPaths,
     options: &GitSyncOptions,
 ) -> Result<GitSyncOptions, AppError> {
-    configured_git_sync_options_for_profile(paths, options, SyncContentProfile::Knowledge)
-}
-
-pub fn configured_git_sync_options_for_profile(
-    paths: &VaultPaths,
-    options: &GitSyncOptions,
-    profile: SyncContentProfile,
-) -> Result<GitSyncOptions, AppError> {
-    let config = load_sync_config(paths, profile == SyncContentProfile::Knowledge)?;
+    let config = load_sync_config(paths)?;
     let mut effective = options.clone();
-    if let Some(policy) = config.sync.merge_policy.clone() {
-        effective.merge_policy = policy;
-    }
-    if config.sync.merge_automation == vulcan_sync::MergeAutomation::RequireReview
-        || options.merge_automation == vulcan_sync::MergeAutomation::RequireReview
-    {
-        effective.merge_automation = vulcan_sync::MergeAutomation::RequireReview;
-    }
-    // Either layer may only narrow: a caller that already asked for
-    // committed history only keeps it, and so does a configured `none`.
-    if !config.sync.worktree.syncs_live() {
-        effective.worktree = WorktreeSyncMode::None;
-    } else if effective.worktree.syncs_live() {
-        effective.worktree = config.sync.worktree;
-        effective.scope = worktree_scope_from_config(&config)?;
-    }
     effective.branch_push = options.branch_push && config.sync.branch_push;
     effective.publish_device_backup =
         options.publish_device_backup && config.sync.publish_device_backup;
     if !config.sync.branch_pull.is_git() {
         effective.branch_pull = config.sync.branch_pull;
     }
-    effective
-        .merge_policy
-        .validate()
-        .map_err(AppError::operation)?;
     Ok(effective)
 }
 
-fn worktree_scope_from_config(
-    config: &VaultConfig,
-) -> Result<Option<vulcan_sync::GitWorktreeScope>, AppError> {
-    if config.sync.worktree != WorktreeSyncMode::Paths {
-        return Ok(None);
-    }
-    vulcan_sync::GitWorktreeScope::new(&config.sync.paths)
-        .map(Some)
-        .map_err(AppError::operation)
-}
-
-/// Refuses a workflow that reads or publishes the live ref when the vault
-/// synchronizes committed history only. `workflow` names it for the message.
-pub fn require_worktree_sync(paths: &VaultPaths, workflow: &str) -> Result<(), AppError> {
-    let work_tree = crate::sync_state::sync_work_tree(paths.vault_root())?;
-    let config = load_sync_config(&sync_vault_paths(paths, &work_tree), false)?;
-    if config.sync.worktree.syncs_live() {
-        Ok(())
-    } else {
-        Err(AppError::operation(format!(
-            "{workflow} works on the live ref, but this repository synchronizes committed history only (sync.worktree = \"none\")"
-        )))
-    }
-}
-
-pub(crate) fn load_validated_sync_config(paths: &VaultPaths) -> Result<VaultConfig, AppError> {
-    load_sync_config(paths, true)
-}
-
-fn load_sync_config(
-    paths: &VaultPaths,
-    validate_tree_policy: bool,
-) -> Result<VaultConfig, AppError> {
+fn load_sync_config(paths: &VaultPaths) -> Result<VaultConfig, AppError> {
     let loaded = load_vault_config(paths);
     if let Some(diagnostic) = loaded
         .diagnostics
@@ -2369,49 +1757,7 @@ fn load_sync_config(
             diagnostic.message
         )));
     }
-    if validate_tree_policy {
-        loaded
-            .config
-            .sync
-            .tree_validation
-            .validate()
-            .map_err(AppError::operation)?;
-    }
-    if let Some(policy) = &loaded.config.sync.merge_policy {
-        policy.validate().map_err(AppError::operation)?;
-    }
     Ok(loaded.config)
-}
-
-fn persist_sync_conflict(
-    engine: &dyn GitEngine,
-    sync: &GitSyncReport,
-    journal: &mut SyncJournal,
-    state_store: &SyncStateStore,
-    persist_journal: bool,
-) -> Result<Option<SyncConflictRecord>, AppError> {
-    let result = sync
-        .conflict
-        .as_ref()
-        .map(|conflict| {
-            SyncConflictStore::from_state_store(state_store).persist(
-                engine,
-                &sync.repository,
-                &journal.repository_key,
-                conflict,
-            )
-        })
-        .transpose();
-    match result {
-        Ok(record) => Ok(record),
-        Err(error) => {
-            journal.error = Some(error.to_string());
-            if persist_journal {
-                state_store.save(journal)?;
-            }
-            Err(error)
-        }
-    }
 }
 
 struct JournalSyncObserver<'a> {
@@ -2419,10 +1765,8 @@ struct JournalSyncObserver<'a> {
     journal: &'a mut SyncJournal,
     persist: bool,
     delegate: &'a mut dyn GitSyncObserver,
-    profile: SyncContentProfile,
     engine: &'a dyn GitEngine,
     branch_guard: Option<GitRefName>,
-    tree_validator: Option<VaultTreeValidator>,
 }
 
 impl GitSyncObserver for JournalSyncObserver<'_> {
@@ -2457,7 +1801,6 @@ impl GitSyncObserver for JournalSyncObserver<'_> {
         self.journal.git_dir = Some(progress.repository.git_dir.clone());
         self.journal.local_snapshot = progress.local_snapshot.as_ref().map(ToString::to_string);
         self.journal.expected_worktree_tree = progress.local_tree.as_ref().map(ToString::to_string);
-        self.journal.accepted = progress.accepted.as_ref().map(ToString::to_string);
         self.journal.error = None;
         if self.persist {
             self.state_store
@@ -2477,743 +1820,6 @@ impl GitSyncObserver for JournalSyncObserver<'_> {
         }
         self.delegate.progress(progress)
     }
-
-    fn validate_automatic_merge(
-        &mut self,
-        engine: &dyn GitEngine,
-        request: &GitAutomaticMergeValidation<'_>,
-    ) -> Result<Vec<vulcan_sync::GitAutomaticValidationCheck>, GitSyncObserverError> {
-        if self.profile == SyncContentProfile::FilesOnly {
-            let base = engine
-                .tree_oid(request.repository, request.base)
-                .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
-            let local = engine
-                .tree_oid(request.repository, request.local_candidate)
-                .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
-            let remote = engine
-                .tree_oid(request.repository, request.accepted_remote)
-                .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
-            if (local == base && request.merged_tree == &remote)
-                || (remote == base && request.merged_tree == &local)
-            {
-                return self.delegate.validate_automatic_merge(engine, request);
-            }
-            return Err(GitSyncObserverError::new(
-                "files-only profile requires review of concurrent merges to preserve shared accepted bytes across knowledge and files-only devices",
-            ));
-        }
-        let Some(validator) = &self.tree_validator else {
-            return Ok(Vec::new());
-        };
-        validator.validate(engine, request)?;
-        let mut checks = vec![
-            vulcan_sync::GitAutomaticValidationCheck::WholeTreeLinksValid,
-            vulcan_sync::GitAutomaticValidationCheck::MassDeletionPolicy,
-        ];
-        for check in self.delegate.validate_automatic_merge(engine, request)? {
-            if !checks.contains(&check) {
-                checks.push(check);
-            }
-        }
-        Ok(checks)
-    }
-}
-
-const MAX_VALIDATED_MARKDOWN_FILES: usize = 100_000;
-const MAX_VALIDATED_MARKDOWN_BYTES: usize = 512 * 1024 * 1024;
-const MAX_VALIDATED_CANVAS_FILES: usize = 10_000;
-const MAX_VALIDATED_CANVAS_BYTES: usize = 64 * 1024 * 1024;
-
-struct VaultTreeValidator {
-    config: VaultConfig,
-}
-
-impl VaultTreeValidator {
-    fn new(config: VaultConfig) -> Self {
-        Self { config }
-    }
-
-    fn validate(
-        &self,
-        engine: &dyn GitEngine,
-        request: &GitAutomaticMergeValidation<'_>,
-    ) -> Result<(), GitSyncObserverError> {
-        self.config
-            .sync
-            .tree_validation
-            .validate()
-            .map_err(GitSyncObserverError::new)?;
-        let fingerprint = merge_validation_fingerprint(&self.config);
-        let mut cache = GitTreeAnalysisCache {
-            store: MergeValidationStore::open(request.repository, &fingerprint),
-            ..GitTreeAnalysisCache::default()
-        };
-        let local = analyze_git_tree(
-            engine,
-            request.repository,
-            request.local_candidate,
-            &self.config,
-            &mut cache,
-        )?;
-        let remote = analyze_git_tree(
-            engine,
-            request.repository,
-            request.accepted_remote,
-            &self.config,
-            &mut cache,
-        )?;
-        let merged = analyze_git_tree(
-            engine,
-            request.repository,
-            request.merged_tree,
-            &self.config,
-            &mut cache,
-        )?;
-
-        if let Some(store) = &cache.store {
-            let referenced = local
-                .blobs
-                .iter()
-                .chain(&remote.blobs)
-                .chain(&merged.blobs)
-                .collect::<BTreeSet<_>>();
-            store.prune_unless(&referenced);
-        }
-
-        let candidate_paths = local
-            .paths
-            .union(&remote.paths)
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        let deleted = candidate_paths.difference(&merged.paths).count();
-        let limits = &self.config.sync.tree_validation;
-        let exceeds_percent = (deleted as u128) * 100
-            > (candidate_paths.len() as u128) * u128::from(limits.max_deleted_percent);
-        if deleted > limits.max_deleted_paths && exceeds_percent {
-            return Err(GitSyncObserverError::new(format!(
-                "automatic merge would delete {deleted} of {} candidate paths, exceeding the shared limits of {} paths and {} percent",
-                candidate_paths.len(), limits.max_deleted_paths, limits.max_deleted_percent
-            )));
-        }
-
-        let existing_problems = local
-            .link_problems
-            .union(&remote.link_problems)
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        if let Some(problem) = merged.link_problems.difference(&existing_problems).next() {
-            return Err(GitSyncObserverError::new(format!(
-                "automatic merge introduces a new {} {} link-resolution problem in `{}` for target `{}`",
-                problem.problem, problem.kind, problem.source_path, problem.target
-            )));
-        }
-        Ok(())
-    }
-}
-
-struct GitTreeAnalysis {
-    paths: BTreeSet<String>,
-    /// Markdown and Canvas blobs the analysis read.
-    blobs: BTreeSet<vulcan_sync::GitOid>,
-    link_problems: BTreeSet<LinkProblemKey>,
-}
-
-/// Blob analyses shared by the trees of one validation, backed by the
-/// persistent [`MergeValidationStore`] when it is available.
-#[derive(Default)]
-struct GitTreeAnalysisCache {
-    markdown: BTreeMap<vulcan_sync::GitOid, CachedMarkdown>,
-    canvas: BTreeMap<vulcan_sync::GitOid, CachedCanvas>,
-    store: Option<MergeValidationStore>,
-}
-
-/// What the merge gate needs from a Markdown blob. Blobs are immutable, so an
-/// entry stays valid while the parser and the vault config are unchanged; see
-/// [`merge_validation_fingerprint`].
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct CachedMarkdown {
-    bytes: usize,
-    aliases: Vec<String>,
-    links: Vec<CachedLink>,
-}
-
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct CachedLink {
-    target: Option<String>,
-    kind: CachedLinkKind,
-}
-
-#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum CachedLinkKind {
-    Wikilink,
-    Markdown,
-    Embed,
-    External,
-}
-
-impl From<vulcan_core::LinkKind> for CachedLinkKind {
-    fn from(kind: vulcan_core::LinkKind) -> Self {
-        match kind {
-            vulcan_core::LinkKind::Wikilink => Self::Wikilink,
-            vulcan_core::LinkKind::Markdown => Self::Markdown,
-            vulcan_core::LinkKind::Embed => Self::Embed,
-            vulcan_core::LinkKind::External => Self::External,
-        }
-    }
-}
-
-impl From<CachedLinkKind> for vulcan_core::LinkKind {
-    fn from(kind: CachedLinkKind) -> Self {
-        match kind {
-            CachedLinkKind::Wikilink => Self::Wikilink,
-            CachedLinkKind::Markdown => Self::Markdown,
-            CachedLinkKind::Embed => Self::Embed,
-            CachedLinkKind::External => Self::External,
-        }
-    }
-}
-
-impl CachedMarkdown {
-    fn from_source(source: &str, config: &VaultConfig) -> Self {
-        let parsed = parse_document(source, config);
-        Self {
-            bytes: source.len(),
-            aliases: parsed.aliases,
-            links: parsed
-                .links
-                .into_iter()
-                .map(|link| CachedLink {
-                    target: link.target_path_candidate,
-                    kind: link.link_kind.into(),
-                })
-                .collect(),
-        }
-    }
-}
-
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct CachedCanvas {
-    bytes: usize,
-    references: Vec<String>,
-}
-
-const MERGE_VALIDATION_STORE_VERSION: i64 = 1;
-/// Rows beyond the blobs of the last validated trees that may accumulate
-/// before old note versions are pruned.
-const MERGE_VALIDATION_STORE_SLACK: usize = 1_024;
-const MERGE_VALIDATION_LOOKUP_CHUNK: usize = 512;
-const STORED_MARKDOWN: i64 = 0;
-const STORED_CANVAS: i64 = 1;
-
-/// Identifies everything besides blob content that shapes a stored analysis:
-/// the store format, the parser, the build, and the vault configuration.
-fn merge_validation_fingerprint(config: &VaultConfig) -> String {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(&MERGE_VALIDATION_STORE_VERSION.to_le_bytes());
-    hasher.update(&vulcan_core::PARSER_VERSION.to_le_bytes());
-    hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
-    hasher.update(&serde_json::to_vec(config).unwrap_or_default());
-    hasher.finalize().to_hex().to_string()
-}
-
-fn merge_validation_store_path(repository: &vulcan_sync::GitRepository) -> PathBuf {
-    repository
-        .git_dir
-        .join("vulcan-sync/merge-validation-cache.sqlite")
-}
-
-/// Persistent analyses of Markdown and Canvas blobs keyed by blob ID, so a
-/// merge parses only content it has not seen. Lookups are point queries for
-/// the blobs a validation needs and new analyses are appended, so neither
-/// reading nor writing scales with the size of the store. Every operation is
-/// best effort: a store that cannot be used leaves validation uncached.
-struct MergeValidationStore {
-    connection: rusqlite::Connection,
-}
-
-impl MergeValidationStore {
-    fn open(repository: &vulcan_sync::GitRepository, fingerprint: &str) -> Option<Self> {
-        let path = merge_validation_store_path(repository);
-        fs::create_dir_all(path.parent()?).ok()?;
-        Self::open_at(&path, fingerprint).or_else(|| {
-            // An unreadable or corrupt store is rebuilt from scratch once.
-            let _ = fs::remove_file(&path);
-            Self::open_at(&path, fingerprint)
-        })
-    }
-
-    fn open_at(path: &Path, fingerprint: &str) -> Option<Self> {
-        let connection = rusqlite::Connection::open(path).ok()?;
-        connection.busy_timeout(Duration::from_secs(5)).ok()?;
-        connection
-            .execute_batch(
-                "PRAGMA journal_mode = WAL;
-                 PRAGMA synchronous = NORMAL;
-                 CREATE TABLE IF NOT EXISTS meta (
-                     key TEXT PRIMARY KEY,
-                     value TEXT NOT NULL
-                 ) WITHOUT ROWID;
-                 CREATE TABLE IF NOT EXISTS blobs (
-                     oid TEXT PRIMARY KEY,
-                     kind INTEGER NOT NULL,
-                     summary BLOB NOT NULL
-                 ) WITHOUT ROWID;",
-            )
-            .ok()?;
-        let stored = connection
-            .query_row(
-                "SELECT value FROM meta WHERE key = 'fingerprint'",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .ok();
-        if stored.as_deref() != Some(fingerprint) {
-            connection.execute_batch("DELETE FROM blobs").ok()?;
-            connection
-                .execute(
-                    "INSERT OR REPLACE INTO meta (key, value) VALUES ('fingerprint', ?1)",
-                    [fingerprint],
-                )
-                .ok()?;
-        }
-        Some(Self { connection })
-    }
-
-    /// Adds every stored analysis among `oids` to `cache`.
-    fn load_into(&self, oids: &[&vulcan_sync::GitOid], cache: &mut GitTreeAnalysisCache) {
-        for chunk in oids.chunks(MERGE_VALIDATION_LOOKUP_CHUNK) {
-            let placeholders = vec!["?"; chunk.len()].join(",");
-            let Ok(mut statement) = self.connection.prepare(&format!(
-                "SELECT oid, kind, summary FROM blobs WHERE oid IN ({placeholders})"
-            )) else {
-                return;
-            };
-            let Ok(rows) = statement.query_map(
-                rusqlite::params_from_iter(chunk.iter().map(|oid| oid.as_str())),
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, Vec<u8>>(2)?,
-                    ))
-                },
-            ) else {
-                return;
-            };
-            for (oid, kind, summary) in rows.flatten() {
-                let Ok(oid) = vulcan_sync::GitOid::parse(oid) else {
-                    continue;
-                };
-                // A row that no longer decodes is treated as absent and
-                // reparsed from the blob.
-                if kind == STORED_MARKDOWN {
-                    if let Ok(markdown) = serde_json::from_slice::<CachedMarkdown>(&summary) {
-                        cache.markdown.insert(oid, markdown);
-                    }
-                } else if kind == STORED_CANVAS {
-                    if let Ok(canvas) = serde_json::from_slice::<CachedCanvas>(&summary) {
-                        cache.canvas.insert(oid, canvas);
-                    }
-                }
-            }
-        }
-    }
-
-    fn insert(&mut self, additions: &GitTreeAnalysisCache) {
-        let Ok(transaction) = self.connection.transaction() else {
-            return;
-        };
-        {
-            let Ok(mut statement) = transaction
-                .prepare("INSERT OR IGNORE INTO blobs (oid, kind, summary) VALUES (?1, ?2, ?3)")
-            else {
-                return;
-            };
-            let markdown = additions.markdown.iter().filter_map(|(oid, entry)| {
-                Some((oid, STORED_MARKDOWN, serde_json::to_vec(entry).ok()?))
-            });
-            let canvas = additions.canvas.iter().filter_map(|(oid, entry)| {
-                Some((oid, STORED_CANVAS, serde_json::to_vec(entry).ok()?))
-            });
-            for (oid, kind, summary) in markdown.chain(canvas) {
-                if statement
-                    .execute(rusqlite::params![oid.as_str(), kind, summary])
-                    .is_err()
-                {
-                    return;
-                }
-            }
-        }
-        let _ = transaction.commit();
-    }
-
-    /// Drops analyses of blobs outside `referenced` once they outnumber it, so
-    /// the store stays proportional to the vault rather than to its history.
-    fn prune_unless(&self, referenced: &BTreeSet<&vulcan_sync::GitOid>) {
-        let Ok(rows) = self
-            .connection
-            .query_row("SELECT count(*) FROM blobs", [], |row| row.get::<_, i64>(0))
-        else {
-            return;
-        };
-        let limit = referenced
-            .len()
-            .saturating_mul(2)
-            .saturating_add(MERGE_VALIDATION_STORE_SLACK);
-        if usize::try_from(rows).unwrap_or(usize::MAX) <= limit {
-            return;
-        }
-        let _ = (|| -> rusqlite::Result<()> {
-            self.connection.execute_batch(
-                "CREATE TEMP TABLE IF NOT EXISTS referenced (oid TEXT PRIMARY KEY) WITHOUT ROWID;
-                 DELETE FROM referenced;",
-            )?;
-            {
-                let mut statement = self
-                    .connection
-                    .prepare("INSERT OR IGNORE INTO referenced (oid) VALUES (?1)")?;
-                for oid in referenced {
-                    statement.execute([oid.as_str()])?;
-                }
-            }
-            self.connection.execute_batch(
-                "DELETE FROM blobs WHERE oid NOT IN (SELECT oid FROM referenced);
-                 DELETE FROM referenced;",
-            )
-        })();
-    }
-}
-
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct LinkProblemKey {
-    source_path: String,
-    target: String,
-    kind: &'static str,
-    problem: &'static str,
-}
-
-fn analyze_git_tree(
-    engine: &dyn GitEngine,
-    repository: &vulcan_sync::GitRepository,
-    revision: &vulcan_sync::GitOid,
-    config: &VaultConfig,
-    cache: &mut GitTreeAnalysisCache,
-) -> Result<GitTreeAnalysis, GitSyncObserverError> {
-    let entries = engine
-        .tree_entries(repository, revision)
-        .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
-    let paths = entries
-        .iter()
-        .map(|entry| entry.path.clone())
-        .collect::<BTreeSet<_>>();
-    let markdown_entries = entries
-        .iter()
-        .filter(|entry| markdown_path(&entry.path))
-        .collect::<Vec<_>>();
-    if markdown_entries.len() > MAX_VALIDATED_MARKDOWN_FILES {
-        return Err(GitSyncObserverError::new(format!(
-            "automatic merge tree exceeds the {MAX_VALIDATED_MARKDOWN_FILES} Markdown-file validation limit"
-        )));
-    }
-    let canvas_entries = entries
-        .iter()
-        .filter(|entry| canvas_path(&entry.path))
-        .collect::<Vec<_>>();
-    if canvas_entries.len() > MAX_VALIDATED_CANVAS_FILES {
-        return Err(GitSyncObserverError::new(format!(
-            "automatic merge tree exceeds the {MAX_VALIDATED_CANVAS_FILES} Canvas-file validation limit"
-        )));
-    }
-
-    cache_tree_content(
-        engine,
-        repository,
-        &markdown_entries,
-        &canvas_entries,
-        config,
-        cache,
-    )?;
-
-    let blobs = markdown_entries
-        .iter()
-        .chain(&canvas_entries)
-        .map(|entry| entry.oid.clone())
-        .collect::<BTreeSet<_>>();
-    let mut parsed_documents = Vec::with_capacity(markdown_entries.len());
-    let mut total_bytes = 0_usize;
-    for entry in markdown_entries {
-        let cached = cache
-            .markdown
-            .get(&entry.oid)
-            .expect("every requested Markdown blob was cached");
-        total_bytes = total_bytes.saturating_add(cached.bytes);
-        if total_bytes > MAX_VALIDATED_MARKDOWN_BYTES {
-            return Err(GitSyncObserverError::new(format!(
-                "automatic merge tree exceeds the {MAX_VALIDATED_MARKDOWN_BYTES}-byte Markdown validation limit"
-            )));
-        }
-        parsed_documents.push((entry.path.clone(), cached));
-    }
-
-    let resolver_documents = parsed_documents
-        .iter()
-        .map(|(path, parsed)| ResolverDocument {
-            id: path.clone(),
-            path: path.clone(),
-            filename: Path::new(path)
-                .file_stem()
-                .or_else(|| Path::new(path).file_name())
-                .and_then(|name| name.to_str())
-                .unwrap_or(path)
-                .to_string(),
-            aliases: parsed.aliases.clone(),
-        })
-        .collect::<Vec<_>>();
-    let resolver = ResolverIndex::build(&resolver_documents);
-    let mut link_problems = BTreeSet::new();
-    resolve_document_links(&resolver, config, &parsed_documents, &mut link_problems);
-    let mut canvas_references = Vec::new();
-    let mut canvas_bytes = 0_usize;
-    for entry in canvas_entries {
-        let cached = cache
-            .canvas
-            .get(&entry.oid)
-            .expect("every requested Canvas blob was cached");
-        canvas_bytes = canvas_bytes.saturating_add(cached.bytes);
-        if canvas_bytes > MAX_VALIDATED_CANVAS_BYTES {
-            return Err(GitSyncObserverError::new(format!(
-                "automatic merge tree exceeds the {MAX_VALIDATED_CANVAS_BYTES}-byte Canvas validation limit"
-            )));
-        }
-        canvas_references.extend(
-            cached
-                .references
-                .iter()
-                .cloned()
-                .map(|target| (entry.path.clone(), target)),
-        );
-    }
-    resolve_canvas_links(&resolver, config, &canvas_references, &mut link_problems);
-    Ok(GitTreeAnalysis {
-        paths,
-        blobs,
-        link_problems,
-    })
-}
-
-fn cache_tree_content(
-    engine: &dyn GitEngine,
-    repository: &vulcan_sync::GitRepository,
-    markdown_entries: &[&vulcan_sync::GitTreeEntry],
-    canvas_entries: &[&vulcan_sync::GitTreeEntry],
-    config: &VaultConfig,
-    cache: &mut GitTreeAnalysisCache,
-) -> Result<(), GitSyncObserverError> {
-    for entry in markdown_entries.iter().chain(canvas_entries) {
-        if entry.kind != "blob" {
-            let label = if markdown_path(&entry.path) {
-                "Markdown"
-            } else {
-                "Canvas"
-            };
-            return Err(GitSyncObserverError::new(format!(
-                "{label} path `{}` is not a regular Git blob",
-                entry.path
-            )));
-        }
-    }
-    let markdown = markdown_entries
-        .iter()
-        .filter(|entry| !cache.markdown.contains_key(&entry.oid))
-        .map(|entry| (entry.oid.clone(), *entry))
-        .collect::<BTreeMap<_, _>>();
-    let canvas = canvas_entries
-        .iter()
-        .filter(|entry| !cache.canvas.contains_key(&entry.oid))
-        .map(|entry| (entry.oid.clone(), *entry))
-        .collect::<BTreeMap<_, _>>();
-    if let Some(store) = cache.store.take() {
-        let wanted = markdown.keys().chain(canvas.keys()).collect::<Vec<_>>();
-        store.load_into(&wanted, cache);
-        cache.store = Some(store);
-    }
-    let markdown = markdown
-        .into_iter()
-        .filter(|(oid, _)| !cache.markdown.contains_key(oid))
-        .collect::<BTreeMap<_, _>>();
-    let canvas = canvas
-        .into_iter()
-        .filter(|(oid, _)| !cache.canvas.contains_key(oid))
-        .collect::<BTreeMap<_, _>>();
-    let mut missing = markdown
-        .keys()
-        .chain(canvas.keys())
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    if missing.is_empty() {
-        return Ok(());
-    }
-    let objects = missing.iter().cloned().collect::<Vec<_>>();
-    // Parsing may succeed for a prefix before the stream or Git process fails.
-    // Publish projections atomically so a retry cannot skip unvalidated input.
-    let mut additions = GitTreeAnalysisCache::default();
-    engine
-        .visit_blobs(repository, &objects, &mut |oid, data| {
-            let invalid = |detail| vulcan_sync::GitEngineError::InvalidOutput {
-                operation: "validate Git tree content",
-                detail,
-            };
-            if !missing.remove(oid) {
-                return Err(invalid(format!("unexpected or duplicate blob `{oid}`")));
-            }
-            if let Some(entry) = markdown.get(oid) {
-                let source = std::str::from_utf8(&data).map_err(|_| {
-                    invalid(format!("Markdown path `{}` is not valid UTF-8", entry.path))
-                })?;
-                additions
-                    .markdown
-                    .insert(oid.clone(), CachedMarkdown::from_source(source, config));
-            }
-            if let Some(entry) = canvas.get(oid) {
-                additions.canvas.insert(
-                    oid.clone(),
-                    CachedCanvas {
-                        bytes: data.len(),
-                        references: parse_canvas_file_references(&entry.path, &data)
-                            .map_err(|error| invalid(error.to_string()))?,
-                    },
-                );
-            }
-            Ok(())
-        })
-        .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
-    if let Some(oid) = missing.first() {
-        return Err(GitSyncObserverError::new(format!(
-            "blob `{oid}` has no data"
-        )));
-    }
-    if let Some(store) = cache.store.as_mut() {
-        store.insert(&additions);
-    }
-    cache.markdown.extend(additions.markdown);
-    cache.canvas.extend(additions.canvas);
-    Ok(())
-}
-
-fn resolve_document_links(
-    resolver: &ResolverIndex,
-    config: &VaultConfig,
-    parsed_documents: &[(String, &CachedMarkdown)],
-    link_problems: &mut BTreeSet<LinkProblemKey>,
-) {
-    for (path, parsed) in parsed_documents {
-        for link in &parsed.links {
-            let link_kind = vulcan_core::LinkKind::from(link.kind);
-            let resolution = resolver.resolve(
-                &ResolverLink {
-                    source_document_id: path.clone(),
-                    source_path: path.clone(),
-                    target_path_candidate: link.target.clone(),
-                    link_kind,
-                },
-                config.link_resolution,
-            );
-            let Some(problem) = resolution.problem else {
-                continue;
-            };
-            link_problems.insert(LinkProblemKey {
-                source_path: path.clone(),
-                target: link.target.clone().unwrap_or_default(),
-                kind: match link_kind {
-                    vulcan_core::LinkKind::Wikilink => "wikilink",
-                    vulcan_core::LinkKind::Markdown => "markdown",
-                    vulcan_core::LinkKind::Embed => "embed",
-                    vulcan_core::LinkKind::External => "external",
-                },
-                problem: match problem {
-                    LinkResolutionProblem::Unresolved => "unresolved",
-                    LinkResolutionProblem::Ambiguous(_) => "ambiguous",
-                    LinkResolutionProblem::OutsideVault => "outside_vault",
-                },
-            });
-        }
-    }
-}
-
-fn resolve_canvas_links(
-    resolver: &ResolverIndex,
-    config: &VaultConfig,
-    references: &[(String, String)],
-    link_problems: &mut BTreeSet<LinkProblemKey>,
-) {
-    for (path, target) in references {
-        let resolution = resolver.resolve(
-            &ResolverLink {
-                source_document_id: path.clone(),
-                source_path: path.clone(),
-                target_path_candidate: Some(target.clone()),
-                link_kind: vulcan_core::LinkKind::Wikilink,
-            },
-            config.link_resolution,
-        );
-        let Some(problem) = resolution.problem else {
-            continue;
-        };
-        link_problems.insert(LinkProblemKey {
-            source_path: path.clone(),
-            target: target.clone(),
-            kind: "canvas",
-            problem: match problem {
-                LinkResolutionProblem::Unresolved => "unresolved",
-                LinkResolutionProblem::Ambiguous(_) => "ambiguous",
-                LinkResolutionProblem::OutsideVault => "outside_vault",
-            },
-        });
-    }
-}
-
-fn markdown_path(path: &str) -> bool {
-    Path::new(path)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            matches!(extension.to_ascii_lowercase().as_str(), "md" | "markdown")
-        })
-}
-
-fn canvas_path(path: &str) -> bool {
-    Path::new(path)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("canvas"))
-}
-
-/// Collects `file` references from Canvas node objects so whole-tree link
-/// validation covers embedded note references alongside Markdown links.
-fn parse_canvas_file_references(
-    path: &str,
-    data: &[u8],
-) -> Result<Vec<String>, GitSyncObserverError> {
-    let mut references = Vec::new();
-    let source = std::str::from_utf8(data).map_err(|_| {
-        GitSyncObserverError::new(format!("Canvas path `{path}` is not valid UTF-8"))
-    })?;
-    let canvas: serde_json::Value = serde_json::from_str(source).map_err(|error| {
-        GitSyncObserverError::new(format!("Canvas path `{path}` is not valid JSON: {error}"))
-    })?;
-    let nodes = canvas
-        .get("nodes")
-        .and_then(|nodes| nodes.as_array())
-        .ok_or_else(|| {
-            GitSyncObserverError::new(format!("Canvas path `{path}` has no nodes array"))
-        })?;
-    for node in nodes {
-        if let Some(file) = node.get("file").and_then(|file| file.as_str()) {
-            references.push(file.to_string());
-        }
-    }
-    Ok(references)
 }
 
 #[cfg(test)]
@@ -3259,7 +1865,6 @@ mod tests {
     use std::process::{Command, Stdio};
     use tempfile::tempdir;
     use vulcan_core::{initialize_vulcan_dir, properties::load_note_index, scan_vault, ScanMode};
-    use vulcan_sync::{GitConflictScope, MergeAutomation, MergeResolution};
 
     struct StructuredSyncFixture {
         _temporary: tempfile::TempDir,
@@ -3281,79 +1886,6 @@ mod tests {
         SyncJournalPhase::Verifying,
         SyncJournalPhase::Error,
     ];
-
-    #[test]
-    fn serialized_vault_sync_conflict_records_are_bounded_summaries() {
-        #[derive(Serialize)]
-        struct Wrapper {
-            #[serde(serialize_with = "serialize_sync_report_conflict_record")]
-            conflict_record: Option<SyncConflictRecord>,
-        }
-
-        let absent_side = || crate::sync_conflicts::SyncConflictSideRecord {
-            revision: "revision".to_string(),
-            object_id: None,
-            mode: None,
-            kind: None,
-            artifact: None,
-            content_hash: None,
-            bytes: None,
-        };
-        let paths = (0..10_000)
-            .map(|index| crate::sync_conflicts::SyncConflictPathRecord {
-                path: format!("notes/{index:05}.md"),
-                group_id: format!("group-{index:05}"),
-                group_kind: crate::sync_conflicts::SyncConflictGroupKind::Path,
-                classification: None,
-                base: absent_side(),
-                local: absent_side(),
-                remote: absent_side(),
-            })
-            .collect();
-        let record = SyncConflictRecord {
-            version: crate::sync_conflicts::SYNC_CONFLICT_RECORD_VERSION,
-            id: "conflict-1".to_string(),
-            repository_key: "repository".to_string(),
-            work_tree: Path::new("/vault").to_path_buf(),
-            base_revision: Some("base".to_string()),
-            local_revision: "local".to_string(),
-            remote_revision: "remote".to_string(),
-            scope: GitConflictScope::Paths,
-            policy_version: 1,
-            policy_hash: "policy".to_string(),
-            preserved_base_ref: None,
-            preserved_local_ref: "refs/local".to_string(),
-            preserved_remote_ref: "refs/remote".to_string(),
-            preserved_record_ref: Some("refs/record".to_string()),
-            provenance_revision: Some("provenance".to_string()),
-            projection: None,
-            paths,
-            diagnostics: "d".repeat(10_000),
-            carried_from: None,
-        };
-
-        let encoded = serde_json::to_vec(&Wrapper {
-            conflict_record: Some(record),
-        })
-        .expect("serialize summary");
-        let value: serde_json::Value = serde_json::from_slice(&encoded).expect("JSON");
-        let summary = &value["conflict_record"];
-        assert_eq!(summary["path_count"], 10_000);
-        assert_eq!(summary["group_count"], 10_000);
-        assert_eq!(summary["paths"].as_array().expect("paths").len(), 16);
-        assert_eq!(summary["paths_complete"], false);
-        assert_eq!(
-            summary["diagnostics"].as_str().expect("diagnostics").len(),
-            4096
-        );
-        assert_eq!(summary["diagnostics_complete"], false);
-        assert_eq!(summary["detail_conflict_id"], "conflict-1");
-        assert!(
-            encoded.len() < 16 * 1024,
-            "summary was {} bytes",
-            encoded.len()
-        );
-    }
 
     fn git(path: &Path, arguments: &[&str]) {
         let status = Command::new("git")
@@ -3518,6 +2050,7 @@ mod tests {
         }
         git(&writer, &["add", "--all", "--", "."]);
         git(&writer, &["commit", "--quiet", "-m", "base"]);
+        git(&writer, &["push", "--quiet", "-u", "origin", "main"]);
         let store = SyncStateStore::at(temporary.path().join("state"));
         sync_git_vault_with_state_store(
             &VaultPaths::new(&writer),
@@ -3603,6 +2136,10 @@ mod tests {
             "fn main() { todo!() }\n",
         )
         .expect("remote code edit");
+        git(
+            &fixture.writer,
+            &["commit", "--quiet", "-am", "remote edits"],
+        );
         sync_git_vault_with_state_store(
             &VaultPaths::new(&fixture.writer),
             &GitSyncOptions::default(),
@@ -3636,7 +2173,7 @@ mod tests {
         assert_eq!(
             fs::read_to_string(fixture.reader.join("src/main.rs")).expect("code"),
             "fn main() { todo!() }\n",
-            "sync replicates the whole repository work tree"
+            "sync carries commits to the whole repository work tree"
         );
         let refreshed = report.cache_refresh.expect("nested vault cache refresh");
         assert_eq!(refreshed.updated, 1);
@@ -3666,164 +2203,20 @@ mod tests {
         drop(fixture);
     }
 
-    fn assert_conflict_read_workflows(
-        paths: &VaultPaths,
-        store: &SyncStateStore,
-        record: &SyncConflictRecord,
-    ) {
-        let listed = crate::sync_conflicts::list_sync_conflicts_with_state_store(paths, store)
-            .expect("list workflow");
-        assert_eq!(listed.count, 1);
-        assert_eq!(listed.conflicts[0].id, record.id);
-        let detail =
-            crate::sync_conflicts::get_sync_conflict_with_state_store(paths, &record.id, store)
-                .expect("detail workflow");
-        assert_eq!(&detail.record, record);
-        let records = SyncConflictStore::from_state_store(store)
-            .list(&record.repository_key)
-            .expect("list conflict records");
-        assert_eq!(records.len(), 1);
-        assert_eq!(&records[0], record);
-    }
-
-    fn assert_overlapping_text_classification(record: &SyncConflictRecord) {
-        let classification = record.paths[0]
-            .classification
-            .as_ref()
-            .expect("structured conflict classification");
-        assert_eq!(
-            classification.class,
-            vulcan_sync::GitConflictClass::OverlappingText
-        );
-        assert_eq!(
-            classification.diagnostic_code,
-            "sync.conflict.overlapping-text"
-        );
-        assert_eq!(
-            classification.effective_resolution,
-            vulcan_sync::MergeResolution::RequireReview
-        );
-    }
-
-    fn assert_projection_candidate(record: &SyncConflictRecord) {
-        let projection = record.projection.as_ref().expect("projection candidate");
-        assert!(projection.published);
-        assert!(projection.applied);
-    }
-
-    fn assert_projected_worktree(reader: &Path) {
-        assert_eq!(
-            fs::read_to_string(reader.join("Home.md")).expect("accepted remote bytes"),
-            "writer\n"
-        );
-        assert!(!reader.join(".sync-conflicts").exists());
-    }
-
-    fn assert_conflict_artifacts(store: &SyncStateStore, record: &SyncConflictRecord) {
-        // The sides live in Git, not as copies beside the record.
-        let directory = store
-            .root()
-            .join(&record.repository_key)
-            .join("conflicts")
-            .join(&record.id);
-        assert!(!directory.join("artifacts").exists());
-        let read = |side: &crate::sync_conflicts::SyncConflictSideRecord| {
-            assert!(side.artifact.is_none());
-            let output = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&record.work_tree)
-                .args(["cat-file", "blob"])
-                .arg(side.object_id.as_ref().expect("side object"))
-                .output()
-                .expect("git cat-file");
-            assert_eq!(side.bytes, Some(output.stdout.len() as u64));
-            output.stdout
-        };
-        assert_eq!(read(&record.paths[0].base), b"base\n");
-        assert_eq!(read(&record.paths[0].local), b"reader\n");
-        assert_eq!(read(&record.paths[0].remote), b"writer\n");
-    }
-
-    fn assert_conflict_operational_stats(report: &VaultSyncReport) {
-        assert_eq!(report.operational_stats.version, 1);
-        assert_eq!(report.operational_stats.automatic_resolution_paths, 0);
-        assert_eq!(report.operational_stats.conflict_paths, 1);
-        assert_eq!(report.operational_stats.conflict_groups, 1);
-        assert_eq!(report.operational_stats.formatting_candidate_paths, 0);
-        assert_eq!(report.operational_stats.preserved_input_bytes, 19);
-        assert!(report
-            .operational_stats
-            .git_subprocesses
-            .is_some_and(|count| count > 0));
-        assert_eq!(report.operational_stats.cache_refresh_ms, 0);
-        let serialized = serde_json::to_string(&report.operational_stats).expect("serialize stats");
-        for private_value in ["Home.md", "writer", "reader"] {
-            assert!(!serialized.contains(private_value));
-        }
-    }
-
     #[test]
-    fn configured_sync_options_load_policy_and_only_reduce_automation() {
-        let temporary = tempdir().expect("temporary directory");
-        fs::create_dir(temporary.path().join(".vulcan")).expect("Vulcan directory");
-        fs::write(
-            temporary.path().join(".vulcan/config.toml"),
-            r#"[sync.merge_policy]
-version = 1
-rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution = "require_review" }]
-"#,
-        )
-        .expect("shared policy");
-        fs::write(
-            temporary.path().join(".vulcan/config.local.toml"),
-            "[sync]\nmerge_automation = \"require_review\"\n",
-        )
-        .expect("local ceiling");
-        let paths = VaultPaths::new(temporary.path());
-
-        let configured = configured_git_sync_options(&paths, &GitSyncOptions::default())
-            .expect("configured options");
-
-        assert_eq!(configured.merge_policy.rules[0].id, "review-all");
-        assert_eq!(
-            configured.merge_policy.rules[0].resolution,
-            MergeResolution::RequireReview
-        );
-        assert_eq!(configured.merge_automation, MergeAutomation::RequireReview);
-
-        fs::write(
-            temporary.path().join(".vulcan/config.local.toml"),
-            "[sync]\nmerge_automation = \"allow_policy\"\n",
-        )
-        .expect("permissive local ceiling");
-        let configured = configured_git_sync_options(
-            &paths,
-            &GitSyncOptions {
-                merge_automation: MergeAutomation::RequireReview,
-                ..GitSyncOptions::default()
-            },
-        )
-        .expect("caller ceiling");
-        assert_eq!(configured.merge_automation, MergeAutomation::RequireReview);
-    }
-
-    #[test]
-    fn configured_sync_mode_and_branch_push_only_narrow_caller_options() {
+    fn configured_branch_policy_only_narrows_caller_options() {
         let temporary = tempdir().expect("temporary directory");
         fs::create_dir(temporary.path().join(".vulcan")).expect("Vulcan directory");
         let paths = VaultPaths::new(temporary.path());
         let defaults = configured_git_sync_options(&paths, &GitSyncOptions::default())
             .expect("default options");
-        assert_eq!(defaults.worktree, WorktreeSyncMode::All);
         assert!(defaults.branch_push);
 
         let caller = GitSyncOptions {
-            worktree: WorktreeSyncMode::None,
             branch_push: false,
             ..GitSyncOptions::default()
         };
         let kept = configured_git_sync_options(&paths, &caller).expect("caller options");
-        assert_eq!(kept.worktree, WorktreeSyncMode::None);
         assert!(!kept.branch_push);
 
         fs::write(
@@ -3833,7 +2226,6 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         .expect("shared config");
         let configured = configured_git_sync_options(&paths, &GitSyncOptions::default())
             .expect("configured options");
-        assert_eq!(configured.worktree, WorktreeSyncMode::None);
         assert!(!configured.branch_push);
         assert_eq!(
             configured.branch_pull,
@@ -3860,7 +2252,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         fs::create_dir(temporary.path().join(".vulcan")).expect("Vulcan directory");
         fs::write(
             temporary.path().join(".vulcan/config.toml"),
-            "[sync.merge_policy\nversion = 1\n",
+            "[sync\nbranch_push = false\n",
         )
         .expect("malformed config");
 
@@ -3878,7 +2270,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             .expect("valid shared config");
         fs::write(
             temporary.path().join(".vulcan/config.local.toml"),
-            "[sync\nmerge_automation = \"require_review\"\n",
+            "[sync\nbranch_pull = \"merge\"\n",
         )
         .expect("malformed local config");
         assert!(configured_git_sync_options(
@@ -3889,16 +2281,6 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
 
         fs::remove_file(temporary.path().join(".vulcan/config.local.toml"))
             .expect("remove malformed local config");
-        fs::write(
-            temporary.path().join(".vulcan/config.toml"),
-            "[sync.tree_validation]\nmax_deleted_percent = 101\n",
-        )
-        .expect("invalid validation config");
-        assert!(configured_git_sync_options(
-            &VaultPaths::new(temporary.path()),
-            &GitSyncOptions::default()
-        )
-        .is_err());
 
         // Unrelated device-state parse failures must not block sync.
         fs::write(temporary.path().join(".vulcan/config.toml"), "[sync]\n")
@@ -3911,1067 +2293,6 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             &GitSyncOptions::default()
         )
         .is_ok());
-    }
-
-    #[test]
-    fn automatic_merge_with_new_link_ambiguity_is_preserved_as_a_conflict() {
-        let fixture = structured_sync_fixture(&[
-            ("Home.md", "[[Target]]\n"),
-            ("data.json", "{\"base\":true}\n"),
-        ]);
-        fs::create_dir(fixture.writer.join("Writer")).expect("writer folder");
-        fs::write(fixture.writer.join("Writer/Target.md"), "writer target\n")
-            .expect("writer target");
-        fs::write(
-            fixture.writer.join("data.json"),
-            "{\"base\":true,\"writer\":1}\n",
-        )
-        .expect("writer JSON");
-        fs::create_dir(fixture.reader.join("Reader")).expect("reader folder");
-        fs::write(fixture.reader.join("Reader/Target.md"), "reader target\n")
-            .expect("reader target");
-        fs::write(
-            fixture.reader.join("data.json"),
-            "{\"base\":true,\"reader\":2}\n",
-        )
-        .expect("reader JSON");
-        sync_git_vault_with_state_store(
-            &VaultPaths::new(&fixture.writer),
-            &GitSyncOptions::default(),
-            &fixture.store,
-        )
-        .expect("writer push");
-
-        let report = sync_git_vault_with_state_store(
-            &VaultPaths::new(&fixture.reader),
-            &GitSyncOptions::default(),
-            &fixture.store,
-        )
-        .expect("validation conflict");
-
-        assert_eq!(report.sync.outcome, GitSyncOutcome::Conflicted);
-        assert!(report.sync.automatic_resolutions.is_empty());
-        assert!(report
-            .sync
-            .conflict
-            .as_ref()
-            .expect("conflict")
-            .diagnostics
-            .contains("introduces a new ambiguous wikilink link-resolution problem"));
-        assert!(fixture.reader.join("Writer/Target.md").exists());
-        assert!(fixture.reader.join("Reader/Target.md").exists());
-        let projection = report
-            .conflict_record
-            .as_ref()
-            .and_then(|record| record.projection.as_ref())
-            .expect("safe projection");
-        assert!(projection.published);
-        assert!(projection.applied);
-    }
-
-    /// Writer and reader edit `Home.md` from `base`, the reader syncs into a
-    /// conflict, then the writer replaces its version with `writer_later`
-    /// and the reader syncs again. Returns the first conflict and the report.
-    fn overtaken_conflict(
-        base: &str,
-        writer_first: &str,
-        reader: &str,
-        writer_later: &str,
-    ) -> (StructuredSyncFixture, SyncConflictRecord, VaultSyncReport) {
-        let fixture = structured_sync_fixture(&[("Home.md", base)]);
-        fs::write(fixture.writer.join("Home.md"), writer_first).expect("writer edit");
-        fs::write(fixture.reader.join("Home.md"), reader).expect("reader edit");
-        sync_git_vault_with_state_store(
-            &VaultPaths::new(&fixture.writer),
-            &GitSyncOptions::default(),
-            &fixture.store,
-        )
-        .expect("writer push");
-        let first = sync_git_vault_with_state_store(
-            &VaultPaths::new(&fixture.reader),
-            &GitSyncOptions::default(),
-            &fixture.store,
-        )
-        .expect("first conflict")
-        .conflict_record
-        .expect("first conflict record");
-        sync_git_vault_with_state_store(
-            &VaultPaths::new(&fixture.writer),
-            &GitSyncOptions::default(),
-            &fixture.store,
-        )
-        .expect("writer observes the projection");
-        fs::write(fixture.writer.join("Home.md"), writer_later).expect("writer advances");
-        sync_git_vault_with_state_store(
-            &VaultPaths::new(&fixture.writer),
-            &GitSyncOptions::default(),
-            &fixture.store,
-        )
-        .expect("writer advances live ref");
-        let later = sync_git_vault_with_state_store(
-            &VaultPaths::new(&fixture.reader),
-            &GitSyncOptions::default(),
-            &fixture.store,
-        )
-        .expect("later successful sync");
-        assert_ne!(later.sync.outcome, GitSyncOutcome::Conflicted);
-        (fixture, first, later)
-    }
-
-    fn conflict_listing(
-        fixture: &StructuredSyncFixture,
-    ) -> crate::sync_conflicts::SyncConflictListReport {
-        crate::sync_conflicts::list_sync_conflicts_with_state_store(
-            &VaultPaths::new(&fixture.reader),
-            &fixture.store,
-        )
-        .expect("conflicts")
-    }
-
-    fn historical_conflict(
-        fixture: &StructuredSyncFixture,
-        id: &str,
-    ) -> crate::sync_conflicts::SyncConflictDetailReport {
-        crate::sync_conflicts::get_sync_conflict_with_state_store(
-            &VaultPaths::new(&fixture.reader),
-            id,
-            &fixture.store,
-        )
-        .expect("conflict evidence is retained")
-    }
-
-    #[test]
-    fn repeatedly_overtaken_conflict_keeps_one_current_replacement() {
-        let (fixture, first, _) =
-            overtaken_conflict("base\n", "writer one\n", "reader\n", "writer two\n");
-        let conflicts_dir = fixture
-            .store
-            .root()
-            .join(&first.repository_key)
-            .join("conflicts");
-        let reader_refs = || {
-            let output = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&fixture.reader)
-                .args([
-                    "-c",
-                    "user.name=Vulcan Test",
-                    "-c",
-                    "user.email=vulcan@example.invalid",
-                ])
-                .args([
-                    "for-each-ref",
-                    "--format=%(refname)",
-                    "refs/vulcan/conflicts",
-                ])
-                .output()
-                .expect("list conflict refs");
-            String::from_utf8(output.stdout)
-                .expect("utf-8")
-                .lines()
-                .map(|line| line.split('/').nth(3).expect("conflict id").to_string())
-                .collect::<std::collections::BTreeSet<_>>()
-        };
-        let mut previous = None;
-        for round in ["writer three\n", "writer four\n", "writer five\n"] {
-            sync_git_vault_with_state_store(
-                &VaultPaths::new(&fixture.writer),
-                &GitSyncOptions::default(),
-                &fixture.store,
-            )
-            .expect("writer catches up");
-            fs::write(fixture.writer.join("Home.md"), round).expect("writer edits again");
-            sync_git_vault_with_state_store(
-                &VaultPaths::new(&fixture.writer),
-                &GitSyncOptions::default(),
-                &fixture.store,
-            )
-            .expect("writer advances live ref");
-            sync_git_vault_with_state_store(
-                &VaultPaths::new(&fixture.reader),
-                &GitSyncOptions::default(),
-                &fixture.store,
-            )
-            .expect("reader carries the conflict forward");
-
-            let current = historical_conflict(&fixture, &first.id)
-                .supersession
-                .and_then(|supersession| supersession.replacement_conflict_id)
-                .expect("the original names the current replacement");
-            assert_ne!(Some(&current), previous.as_ref());
-            let replacement = historical_conflict(&fixture, &current);
-            assert_eq!(
-                replacement.record.carried_from.as_deref(),
-                Some(first.id.as_str())
-            );
-            assert_eq!(
-                replacement.record.paths[0].remote.bytes,
-                Some(round.len() as u64)
-            );
-            // Only the original and the current replacement remain, on disk
-            // and as preserved refs.
-            let ids = fs::read_dir(&conflicts_dir)
-                .expect("conflicts")
-                .map(|entry| {
-                    entry
-                        .expect("entry")
-                        .file_name()
-                        .to_string_lossy()
-                        .to_string()
-                })
-                .collect::<std::collections::BTreeSet<_>>();
-            let expected = [first.id.clone(), current.clone()]
-                .into_iter()
-                .collect::<std::collections::BTreeSet<_>>();
-            assert_eq!(ids, expected);
-            assert_eq!(reader_refs(), expected);
-            assert_eq!(conflict_listing(&fixture).count, 1);
-            previous = Some(current);
-        }
-    }
-
-    #[test]
-    fn sync_releases_rescue_refs_that_live_already_contains() {
-        let fixture = structured_sync_fixture(&[("Home.md", "base\n")]);
-        let git = |args: &[&str]| {
-            let output = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&fixture.reader)
-                .args([
-                    "-c",
-                    "user.name=Vulcan Test",
-                    "-c",
-                    "user.email=vulcan@example.invalid",
-                ])
-                .args(args)
-                .output()
-                .expect("git");
-            assert!(output.status.success(), "{args:?}");
-            String::from_utf8(output.stdout)
-                .expect("utf-8")
-                .trim()
-                .to_string()
-        };
-        let live = git(&[
-            "for-each-ref",
-            "--format=%(refname) %(objectname)",
-            "refs/vulcan/sync/",
-        ])
-        .lines()
-        .find_map(|line| {
-            let (name, oid) = line.split_once(' ')?;
-            name.ends_with("/remotes/live").then(|| oid.to_string())
-        })
-        .expect("fetched live ref");
-        let unique = git(&["commit-tree", "HEAD^{tree}", "-m", "only here"]);
-        let contained = "refs/vulcan/recovery/detached-git-loss/01arz3ndektsv4rrffq69g5fa1";
-        let rescued = "refs/vulcan/recovery/detached-git-loss/01arz3ndektsv4rrffq69g5fa2";
-        // A device review anchor is the device workflow's to release.
-        let device = "refs/vulcan/recovery/devices/profile/live";
-        git(&["update-ref", contained, &live]);
-        git(&["update-ref", rescued, &unique]);
-        git(&["update-ref", device, &live]);
-
-        sync_git_vault_with_state_store(
-            &VaultPaths::new(&fixture.reader),
-            &GitSyncOptions::default(),
-            &fixture.store,
-        )
-        .expect("sync");
-        let remaining = git(&[
-            "for-each-ref",
-            "--format=%(refname)",
-            "refs/vulcan/recovery",
-        ]);
-        // Live holds the first rescue's whole history; the second is the
-        // only copy of its commit and stays.
-        assert_eq!(remaining.lines().collect::<Vec<_>>(), [rescued, device]);
-    }
-
-    #[test]
-    fn ref_sweep_prunes_only_backups_and_refs_that_protect_nothing() {
-        let fixture = structured_sync_fixture(&[("Home.md", "base\n")]);
-        let git = |args: &[&str]| {
-            let output = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&fixture.reader)
-                .args([
-                    "-c",
-                    "user.name=Vulcan Test",
-                    "-c",
-                    "user.email=vulcan@example.invalid",
-                ])
-                .args(args)
-                .output()
-                .expect("git");
-            assert!(output.status.success(), "{args:?}");
-            String::from_utf8(output.stdout)
-                .expect("utf-8")
-                .trim()
-                .to_string()
-        };
-        let options = GitSyncOptions::default();
-        let profile = vulcan_sync::sync_profile_key(&options.remote, &options.live_ref);
-        let live = git(&["ls-remote", "origin", "refs/heads/__vulcan-sync/live"])
-            .split_whitespace()
-            .next()
-            .expect("live")
-            .to_string();
-        // A backup whose tree live lacks: a note that only that device has.
-        let unique_tree = {
-            let mut child = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&fixture.reader)
-                .args([
-                    "-c",
-                    "user.name=Vulcan Test",
-                    "-c",
-                    "user.email=vulcan@example.invalid",
-                ])
-                .args(["mktree"])
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("mktree");
-            let blob = git(&["hash-object", "-w", "Home.md"]);
-            std::io::Write::write_all(
-                child.stdin.as_mut().expect("stdin"),
-                format!("100644 blob {blob}\tOnly.md\n").as_bytes(),
-            )
-            .expect("tree entry");
-            let output = child.wait_with_output().expect("mktree output");
-            String::from_utf8(output.stdout)
-                .expect("utf-8")
-                .trim()
-                .to_string()
-        };
-        let unique = git(&["commit-tree", &unique_tree, "-m", "only on that device"]);
-        let device = |id: &str| format!("refs/heads/__vulcan-sync/devices/{profile}/{id}");
-        for (target, reference) in [
-            (&live, device("01oldcontained")),
-            (&unique, device("01oldunique")),
-            (&live, device("vdev1registered")),
-            (
-                &live,
-                "refs/heads/__vulcan-sync/registrations/vdev1registered".to_string(),
-            ),
-        ] {
-            git(&["push", "-q", "origin", &format!("{target}:{reference}")]);
-        }
-        let recovery = format!("refs/vulcan/recovery/devices/{profile}");
-        git(&["update-ref", &format!("{recovery}/01oldcontained"), &live]);
-        git(&["update-ref", &format!("{recovery}/live"), &live]);
-        let stale_tracking = "refs/remotes/origin/__vulcan-sync/conflicts/gone/record";
-        git(&["update-ref", stale_tracking, &live]);
-        // The pushes above left tracking copies of refs the remote still has.
-        assert!(!git(&["for-each-ref", "refs/remotes/origin/__vulcan-sync/devices"]).is_empty());
-
-        let engine = vulcan_sync::GitCliEngine::default();
-        let repository = engine
-            .discover_repository(&fixture.reader)
-            .expect("repository");
-        let state = fixture.reader.join("sweep-state");
-        assert!(crate::sync_ref_sweep::sweep_due(&state));
-        let report = crate::sync_ref_sweep::sweep_vulcan_refs(
-            &engine,
-            &repository,
-            &options,
-            &vulcan_sync::GitOid::parse(&live).expect("live"),
-            &state,
-        )
-        .expect("sweep");
-
-        assert_eq!(report.pruned_device_backups, ["01oldcontained"]);
-        assert_eq!(report.retained_device_backups, ["01oldunique"]);
-        assert_eq!(report.released_recovery_refs, 2);
-        let remote = git(&["ls-remote", "origin", "refs/heads/__vulcan-sync/devices/*"]);
-        assert!(!remote.contains("01oldcontained"));
-        assert!(remote.contains("01oldunique") && remote.contains("vdev1registered"));
-        assert!(git(&["for-each-ref", &recovery]).is_empty());
-        // Tracking copies are all dropped, also those of refs the remote
-        // still has, and plain fetches no longer bring them back.
-        let tracking = || {
-            git(&[
-                "for-each-ref",
-                "--format=%(refname)",
-                "refs/remotes/origin/__vulcan-sync",
-            ])
-        };
-        assert!(tracking().is_empty());
-        git(&["fetch", "-q", "origin"]);
-        assert!(tracking().is_empty());
-        assert_eq!(
-            git(&["config", "--get-all", "remote.origin.fetch"])
-                .lines()
-                .filter(|line| *line == "^refs/heads/__vulcan-sync/*")
-                .count(),
-            1
-        );
-        assert!(git(&["for-each-ref", "refs/vulcan/sweep"]).is_empty());
-        // Recorded for diagnostics, and not due again for a day.
-        assert_eq!(
-            crate::sync_ref_sweep::last_sweep(&state)
-                .expect("recorded")
-                .retained_device_backups,
-            ["01oldunique"]
-        );
-        assert!(!crate::sync_ref_sweep::sweep_due(&state));
-
-        // An ordinary sync runs the sweep once it is due; the fixture's own
-        // first syncs already swept, so make it due again.
-        let key = sync_git_vault_with_state_store(
-            &VaultPaths::new(&fixture.reader),
-            &GitSyncOptions::default(),
-            &fixture.store,
-        )
-        .expect("sync")
-        .state
-        .repository_key;
-        let stored = fixture
-            .store
-            .root()
-            .join(&key)
-            .join(crate::sync_ref_sweep::REF_SWEEP_STATE_FILE);
-        assert!(stored.is_file());
-        fs::remove_file(&stored).expect("make the sweep due");
-        let report = sync_git_vault_with_state_store(
-            &VaultPaths::new(&fixture.reader),
-            &GitSyncOptions::default(),
-            &fixture.store,
-        )
-        .expect("sync");
-        assert!(fixture
-            .store
-            .root()
-            .join(&report.state.repository_key)
-            .join(crate::sync_ref_sweep::REF_SWEEP_STATE_FILE)
-            .is_file());
-        // The backup with content live lacks is reported by sync doctor.
-        let doctor = doctor_git_vault_with_profile_and_state_store(
-            &VaultPaths::new(&fixture.reader),
-            &GitSyncOptions::default(),
-            vulcan_sync::GitPlatformProfile::native(),
-            &fixture.store,
-            SyncContentProfile::Knowledge,
-            false,
-        );
-        assert!(doctor
-            .checks
-            .iter()
-            .any(|check| check.code == "sync.device-backups"
-                && check.message.contains("01oldunique")));
-    }
-
-    #[test]
-    fn overtaken_conflict_that_now_merges_cleanly_is_published_automatically() {
-        let (fixture, first, later) = overtaken_conflict(
-            "a\nb\nc\n",
-            "writer\nb\nc\n",
-            "reader\nb\nc\n",
-            "a\nb\nwriter later\n",
-        );
-
-        assert!(later.sync.accepted.is_some());
-        let listed = conflict_listing(&fixture);
-        assert_eq!(listed.count, 0);
-        assert_eq!(listed.superseded_count, 1);
-        let supersession = historical_conflict(&fixture, &first.id)
-            .supersession
-            .expect("supersession metadata");
-        assert_eq!(supersession.replacement_conflict_id, None);
-        // The reader's change is merged and published in the same sync.
-        let merged = "reader\nb\nwriter later\n";
-        assert_eq!(
-            fs::read_to_string(fixture.reader.join("Home.md")).expect("merged locally"),
-            merged
-        );
-        sync_git_vault_with_state_store(
-            &VaultPaths::new(&fixture.writer),
-            &GitSyncOptions::default(),
-            &fixture.store,
-        )
-        .expect("writer receives the merge");
-        assert_eq!(
-            fs::read_to_string(fixture.writer.join("Home.md")).expect("published"),
-            merged
-        );
-    }
-
-    #[test]
-    fn overtaken_conflict_is_carried_forward_by_a_sync_that_conflicts_elsewhere() {
-        let fixture = structured_sync_fixture(&[("A.md", "base a\n"), ("B.md", "base b\n")]);
-        let sync = |root: &std::path::Path| {
-            sync_git_vault_with_state_store(
-                &VaultPaths::new(root),
-                &GitSyncOptions::default(),
-                &fixture.store,
-            )
-            .expect("sync")
-        };
-        fs::write(fixture.writer.join("A.md"), "remote a\n").expect("remote A");
-        fs::write(fixture.reader.join("A.md"), "local a\n").expect("local A");
-        sync(&fixture.writer);
-        let first = sync(&fixture.reader)
-            .conflict_record
-            .expect("conflict on A");
-
-        // The writer changes A again and, in the same push, B; the reader also
-        // changed B, so its next sync records a new conflict on B only.
-        sync(&fixture.writer);
-        fs::write(fixture.writer.join("A.md"), "remote a two\n").expect("writer advances A");
-        fs::write(fixture.writer.join("B.md"), "remote b\n").expect("remote B");
-        fs::write(fixture.reader.join("B.md"), "local b\n").expect("local B");
-        sync(&fixture.writer);
-        let later = sync(&fixture.reader);
-        assert_eq!(later.sync.outcome, GitSyncOutcome::Conflicted);
-        let second = later.conflict_record.expect("conflict on B");
-        assert_eq!(
-            second
-                .paths
-                .iter()
-                .map(|path| path.path.as_str())
-                .collect::<Vec<_>>(),
-            ["B.md"]
-        );
-
-        let replacement_id = historical_conflict(&fixture, &first.id)
-            .supersession
-            .and_then(|supersession| supersession.replacement_conflict_id)
-            .expect("the overtaken A conflict was carried forward");
-        assert_ne!(replacement_id, second.id);
-        let replacement = historical_conflict(&fixture, &replacement_id);
-        assert_eq!(replacement.record.paths[0].path, "A.md");
-        assert_eq!(
-            replacement.record.paths[0].remote.bytes,
-            Some("remote a two\n".len() as u64)
-        );
-        assert_eq!(conflict_listing(&fixture).count, 2);
-    }
-
-    #[test]
-    fn overtaken_conflict_already_matching_the_live_version_is_retired() {
-        let (fixture, first, _) =
-            overtaken_conflict("base\n", "writer one\n", "reader\n", "reader\n");
-
-        let listed = conflict_listing(&fixture);
-        assert_eq!(listed.count, 0);
-        assert_eq!(listed.superseded_count, 1);
-        let supersession = historical_conflict(&fixture, &first.id)
-            .supersession
-            .expect("supersession metadata");
-        assert_eq!(supersession.replacement_conflict_id, None);
-        assert_eq!(
-            fs::read_to_string(fixture.reader.join("Home.md")).expect("live version"),
-            "reader\n"
-        );
-    }
-
-    #[test]
-    fn successful_automatic_merge_reports_whole_tree_validation_evidence() {
-        let fixture = structured_sync_fixture(&[("data.json", "{\"base\":true}\n")]);
-        fs::write(
-            fixture.writer.join("data.json"),
-            "{\"base\":true,\"writer\":1}\n",
-        )
-        .expect("writer JSON");
-        fs::write(
-            fixture.reader.join("data.json"),
-            "{\"base\":true,\"reader\":2}\n",
-        )
-        .expect("reader JSON");
-        sync_git_vault_with_state_store(
-            &VaultPaths::new(&fixture.writer),
-            &GitSyncOptions::default(),
-            &fixture.store,
-        )
-        .expect("writer push");
-
-        let report = sync_git_vault_with_state_store(
-            &VaultPaths::new(&fixture.reader),
-            &GitSyncOptions::default(),
-            &fixture.store,
-        )
-        .expect("structured merge");
-
-        assert_eq!(report.sync.outcome, GitSyncOutcome::Merged);
-        let checks = &report.sync.automatic_resolutions[0].validation.checks;
-        assert!(checks.contains(&vulcan_sync::GitAutomaticValidationCheck::WholeTreeLinksValid));
-        assert!(checks.contains(&vulcan_sync::GitAutomaticValidationCheck::MassDeletionPolicy));
-    }
-
-    #[test]
-    fn whole_tree_validator_rejects_a_tree_over_the_shared_deletion_ceiling() {
-        let temporary = tempdir().expect("temporary directory");
-        git(
-            temporary.path(),
-            &["-c", "init.defaultBranch=main", "init", "--quiet"],
-        );
-        git(temporary.path(), &["config", "user.name", "Vulcan Test"]);
-        git(
-            temporary.path(),
-            &["config", "user.email", "vulcan@example.invalid"],
-        );
-        fs::write(temporary.path().join("Keep.md"), "keep\n").expect("kept note");
-        fs::write(temporary.path().join("Cleanup.md"), "remove\n").expect("removed note");
-        git(temporary.path(), &["add", "--all", "--", "."]);
-        git(temporary.path(), &["commit", "--quiet", "-m", "candidate"]);
-        let candidate =
-            vulcan_sync::GitOid::parse(git_stdout(temporary.path(), &["rev-parse", "HEAD"]))
-                .expect("candidate oid");
-        fs::remove_file(temporary.path().join("Cleanup.md")).expect("remove note");
-        git(temporary.path(), &["add", "--all", "--", "."]);
-        git(temporary.path(), &["commit", "--quiet", "-m", "merged"]);
-        let merged_commit =
-            vulcan_sync::GitOid::parse(git_stdout(temporary.path(), &["rev-parse", "HEAD"]))
-                .expect("merged commit oid");
-        let engine = vulcan_sync::GitCliEngine::default();
-        let repository = engine
-            .discover_repository(temporary.path())
-            .expect("repository");
-        let merged_tree = engine
-            .tree_oid(&repository, &merged_commit)
-            .expect("merged tree");
-        let mut config = VaultConfig::default();
-        config.sync.tree_validation.max_deleted_paths = 0;
-        config.sync.tree_validation.max_deleted_percent = 0;
-
-        let error = VaultTreeValidator::new(config)
-            .validate(
-                &engine,
-                &GitAutomaticMergeValidation {
-                    repository: &repository,
-                    base: &candidate,
-                    local_candidate: &candidate,
-                    accepted_remote: &candidate,
-                    merged_tree: &merged_tree,
-                    resolved_paths: &[],
-                },
-            )
-            .expect_err("deletion ceiling must reject the tree");
-
-        assert!(error
-            .to_string()
-            .contains("exceeding the shared limits of 0 paths and 0 percent"));
-    }
-
-    /// Writes an executable test script and waits until it can be executed.
-    /// Another test thread that forks while the script is open for writing
-    /// briefly holds that descriptor, and executing the script then fails with
-    /// ETXTBSY until the forked child execs. One successful run proves no such
-    /// descriptor remains, so later executions are reliable.
-    #[cfg(unix)]
-    fn write_test_script(path: &Path, content: &str) {
-        use std::os::unix::fs::PermissionsExt;
-
-        fs::write(path, content).expect("write test script");
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755))
-            .expect("make test script executable");
-        for _ in 0..500 {
-            match std::process::Command::new(path)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-            {
-                Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) => {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                _ => return,
-            }
-        }
-        panic!("test script {} stayed busy", path.display());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn whole_tree_validation_batches_git_work_independent_of_note_count() {
-        let temporary = tempdir().expect("temporary directory");
-        git(
-            temporary.path(),
-            &["-c", "init.defaultBranch=main", "init", "--quiet"],
-        );
-        git(temporary.path(), &["config", "user.name", "Vulcan Test"]);
-        git(
-            temporary.path(),
-            &["config", "user.email", "vulcan@example.invalid"],
-        );
-        for index in 0..200 {
-            fs::write(
-                temporary.path().join(format!("Note-{index}.md")),
-                format!("# Note {index}\n\n[[Note-{}]]\n", (index + 1) % 200),
-            )
-            .expect("note");
-        }
-        git(temporary.path(), &["add", "--all", "--", "."]);
-        git(temporary.path(), &["commit", "--quiet", "-m", "notes"]);
-
-        let trace = temporary.path().join("git-trace");
-        let wrapper = temporary.path().join("git-wrapper");
-        write_test_script(
-            &wrapper,
-            &format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec git \"$@\"\n",
-                trace.display()
-            ),
-        );
-        let engine = vulcan_sync::GitCliEngine::new(&wrapper);
-        let repository = engine
-            .discover_repository(temporary.path())
-            .expect("repository");
-        let commit =
-            vulcan_sync::GitOid::parse(git_stdout(temporary.path(), &["rev-parse", "HEAD"]))
-                .expect("commit");
-        let tree = engine.tree_oid(&repository, &commit).expect("tree");
-        fs::write(&trace, "").expect("reset trace");
-
-        VaultTreeValidator::new(VaultConfig::default())
-            .validate(
-                &engine,
-                &GitAutomaticMergeValidation {
-                    repository: &repository,
-                    base: &commit,
-                    local_candidate: &commit,
-                    accepted_remote: &commit,
-                    merged_tree: &tree,
-                    resolved_paths: &[],
-                },
-            )
-            .expect("validation");
-
-        let commands = fs::read_to_string(&trace).expect("trace");
-        assert_eq!(commands.lines().count(), 4, "commands:\n{commands}");
-        assert_eq!(
-            commands
-                .lines()
-                .filter(|command| command.contains("cat-file --batch"))
-                .count(),
-            1,
-            "commands:\n{commands}"
-        );
-
-        fs::write(&trace, "").expect("reset trace");
-        VaultTreeValidator::new(VaultConfig::default())
-            .validate(
-                &engine,
-                &GitAutomaticMergeValidation {
-                    repository: &repository,
-                    base: &commit,
-                    local_candidate: &commit,
-                    accepted_remote: &commit,
-                    merged_tree: &tree,
-                    resolved_paths: &[],
-                },
-            )
-            .expect("cached validation");
-        let commands = fs::read_to_string(&trace).expect("trace");
-        assert!(
-            commands
-                .lines()
-                .all(|command| !command.contains("cat-file --batch")),
-            "a repeated validation must reuse parsed blobs:\n{commands}"
-        );
-    }
-
-    #[test]
-    fn cached_whole_tree_validation_still_rejects_a_new_broken_link() {
-        let temporary = tempdir().expect("temporary directory");
-        git(
-            temporary.path(),
-            &["-c", "init.defaultBranch=main", "init", "--quiet"],
-        );
-        git(temporary.path(), &["config", "user.name", "Vulcan Test"]);
-        git(
-            temporary.path(),
-            &["config", "user.email", "vulcan@example.invalid"],
-        );
-        fs::write(temporary.path().join("Source.md"), "[[Target]]\n").expect("source");
-        fs::write(temporary.path().join("Target.md"), "target\n").expect("target");
-        git(temporary.path(), &["add", "--all", "--", "."]);
-        git(temporary.path(), &["commit", "--quiet", "-m", "linked"]);
-        let commit =
-            vulcan_sync::GitOid::parse(git_stdout(temporary.path(), &["rev-parse", "HEAD"]))
-                .expect("commit");
-        fs::remove_file(temporary.path().join("Target.md")).expect("remove target");
-        git(temporary.path(), &["add", "--all", "--", "."]);
-        git(temporary.path(), &["commit", "--quiet", "-m", "broken"]);
-        let broken =
-            vulcan_sync::GitOid::parse(git_stdout(temporary.path(), &["rev-parse", "HEAD"]))
-                .expect("broken commit");
-        let engine = vulcan_sync::GitCliEngine::default();
-        let repository = engine
-            .discover_repository(temporary.path())
-            .expect("repository");
-        let tree = engine.tree_oid(&repository, &commit).expect("tree");
-        let broken_tree = engine.tree_oid(&repository, &broken).expect("broken tree");
-        let mut config = VaultConfig::default();
-        config.sync.tree_validation.max_deleted_paths = 10;
-        let request = |merged_tree| GitAutomaticMergeValidation {
-            repository: &repository,
-            base: &commit,
-            local_candidate: &commit,
-            accepted_remote: &commit,
-            merged_tree,
-            resolved_paths: &[],
-        };
-
-        VaultTreeValidator::new(config.clone())
-            .validate(&engine, &request(&tree))
-            .expect("warm the cache with a valid tree");
-        assert!(merge_validation_store_path(&repository).is_file());
-        let error = VaultTreeValidator::new(config)
-            .validate(&engine, &request(&broken_tree))
-            .expect_err("a cached analysis must still catch the new broken link");
-
-        assert!(error.to_string().contains("introduces a new"), "{error}");
-    }
-
-    #[test]
-    fn merge_validation_store_is_scoped_to_its_configuration_and_recovers() {
-        let temporary = tempdir().expect("temporary directory");
-        git(temporary.path(), &["init", "--quiet"]);
-        let engine = vulcan_sync::GitCliEngine::default();
-        let repository = engine
-            .discover_repository(temporary.path())
-            .expect("repository");
-        let oid = engine
-            .write_blob(&repository, b"[[Target]]\n")
-            .expect("blob");
-        let config = VaultConfig::default();
-        let fingerprint = merge_validation_fingerprint(&config);
-        let stored = |fingerprint: &str| {
-            let mut cache = GitTreeAnalysisCache::default();
-            MergeValidationStore::open(&repository, fingerprint)
-                .expect("store")
-                .load_into(&[&oid], &mut cache);
-            cache.markdown.contains_key(&oid)
-        };
-        let mut additions = GitTreeAnalysisCache::default();
-        additions.markdown.insert(
-            oid.clone(),
-            CachedMarkdown::from_source("[[Target]]\n", &config),
-        );
-        MergeValidationStore::open(&repository, &fingerprint)
-            .expect("store")
-            .insert(&additions);
-
-        assert!(stored(&fingerprint));
-        let mut other = VaultConfig::default();
-        other.sync.tree_validation.max_deleted_paths += 1;
-        assert!(!stored(&merge_validation_fingerprint(&other)));
-        assert!(
-            !stored(&fingerprint),
-            "a new configuration clears the store"
-        );
-
-        let path = merge_validation_store_path(&repository);
-        let _ = fs::remove_file(path.with_extension("sqlite-wal"));
-        let _ = fs::remove_file(path.with_extension("sqlite-shm"));
-        fs::write(&path, b"not a database").expect("corrupt the store");
-        assert!(!stored(&fingerprint), "a corrupt store is rebuilt empty");
-    }
-
-    #[test]
-    fn merge_validation_store_prunes_once_old_versions_outnumber_the_trees() {
-        let temporary = tempdir().expect("temporary directory");
-        git(temporary.path(), &["init", "--quiet"]);
-        let engine = vulcan_sync::GitCliEngine::default();
-        let repository = engine
-            .discover_repository(temporary.path())
-            .expect("repository");
-        let config = VaultConfig::default();
-        let fingerprint = merge_validation_fingerprint(&config);
-        let mut store = MergeValidationStore::open(&repository, &fingerprint).expect("store");
-        let mut additions = GitTreeAnalysisCache::default();
-        let oids = (0..MERGE_VALIDATION_STORE_SLACK + 64)
-            .map(|index| {
-                vulcan_sync::GitOid::parse(format!("{index:040x}")).expect("synthetic oid")
-            })
-            .collect::<Vec<_>>();
-        for oid in &oids {
-            additions
-                .markdown
-                .insert(oid.clone(), CachedMarkdown::from_source("note\n", &config));
-        }
-        store.insert(&additions);
-        let count = |store: &MergeValidationStore| {
-            store
-                .connection
-                .query_row("SELECT count(*) FROM blobs", [], |row| row.get::<_, i64>(0))
-                .expect("count")
-        };
-
-        let referenced = oids.iter().take(4).collect::<BTreeSet<_>>();
-        store.prune_unless(&referenced);
-        assert_eq!(count(&store), 4);
-        store.prune_unless(&referenced);
-        assert_eq!(count(&store), 4, "a small store is left alone");
-    }
-
-    #[test]
-    fn whole_tree_blob_cache_shares_oids_across_paths_types_and_passes() {
-        let temporary = tempdir().unwrap();
-        git(temporary.path(), &["init", "--quiet"]);
-        let engine = vulcan_sync::GitCliEngine::default();
-        let repository = engine.discover_repository(temporary.path()).unwrap();
-        let oid = engine
-            .write_blob(&repository, br#"{"nodes":[],"edges":[]}"#)
-            .unwrap();
-        let entry = |path: &str| vulcan_sync::GitTreeEntry {
-            path: path.to_string(),
-            oid: oid.clone(),
-            mode: "100644".to_string(),
-            kind: "blob".to_string(),
-        };
-        let first = entry("first.md");
-        let second = entry("second.md");
-        let canvas = entry("board.canvas");
-        let config = VaultConfig::default();
-        let mut cache = GitTreeAnalysisCache::default();
-        let before = engine.subprocess_count().unwrap();
-        for _ in 0..3 {
-            cache_tree_content(
-                &engine,
-                &repository,
-                &[&first, &second],
-                &[&canvas],
-                &config,
-                &mut cache,
-            )
-            .unwrap();
-        }
-        assert_eq!(cache.markdown.len(), 1);
-        assert_eq!(cache.canvas.len(), 1);
-        assert_eq!(engine.subprocess_count().unwrap() - before, 1);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn whole_tree_blob_cache_publishes_nothing_after_late_stream_or_process_failure() {
-        let temporary = tempdir().unwrap();
-        git(temporary.path(), &["init", "--quiet"]);
-        let real_engine = vulcan_sync::GitCliEngine::default();
-        let repository = real_engine.discover_repository(temporary.path()).unwrap();
-        let entry = |path: &str, digit: char| vulcan_sync::GitTreeEntry {
-            path: path.to_string(),
-            oid: vulcan_sync::GitOid::parse(digit.to_string().repeat(40)).unwrap(),
-            mode: "100644".to_string(),
-            kind: "blob".to_string(),
-        };
-        let existing = entry("existing.md", '0');
-        let markdown = entry("new.md", '1');
-        let canvas = entry("new.canvas", '2');
-        let last = entry("last.md", '3');
-        let wrapper = temporary.path().join("git-wrapper");
-        let engine = vulcan_sync::GitCliEngine::new(&wrapper);
-        let config = VaultConfig::default();
-        let mut cache = GitTreeAnalysisCache::default();
-        cache.markdown.insert(
-            existing.oid.clone(),
-            CachedMarkdown::from_source("keep", &config),
-        );
-        let prefix = format!(
-            "{} blob 2\\nhi\\n{} blob 12\\n{{\"nodes\":[]}}\\n",
-            markdown.oid, canvas.oid
-        );
-        for suffix in [
-            format!("printf '{} blob 4\\nab'; exit 0", last.oid),
-            format!("printf '{} blob 4\\nlast\\n'; exit 7", last.oid),
-        ] {
-            write_test_script(
-                &wrapper,
-                &format!("#!/bin/sh\ncat >/dev/null\nprintf '{prefix}'\n{suffix}\n"),
-            );
-            let error = cache_tree_content(
-                &engine,
-                &repository,
-                &[&existing, &markdown, &last],
-                &[&canvas],
-                &config,
-                &mut cache,
-            )
-            .expect_err("late failure");
-            assert!(
-                error.to_string().contains("blob content") || error.to_string().contains('7'),
-                "{error}"
-            );
-            assert_eq!(
-                cache.markdown.keys().collect::<Vec<_>>(),
-                vec![&existing.oid]
-            );
-            assert_eq!(cache.markdown[&existing.oid].bytes, 4);
-            assert!(cache.canvas.is_empty());
-        }
-        write_test_script(
-            &wrapper,
-            &format!(
-                "#!/bin/sh\ncat >/dev/null\nprintf '{prefix}{} blob 4\\nlast\\n'\n",
-                last.oid
-            ),
-        );
-        cache_tree_content(
-            &engine,
-            &repository,
-            &[&existing, &markdown, &last],
-            &[&canvas],
-            &config,
-            &mut cache,
-        )
-        .unwrap();
-        assert_eq!(cache.markdown.len(), 3);
-        assert_eq!(cache.canvas.len(), 1);
-        assert_eq!(engine.subprocess_count(), Some(3));
-    }
-
-    #[test]
-    fn whole_tree_blob_cache_rejects_invalid_content_and_missing_objects() {
-        let temporary = tempdir().unwrap();
-        git(temporary.path(), &["init", "--quiet"]);
-        let engine = vulcan_sync::GitCliEngine::default();
-        let repository = engine.discover_repository(temporary.path()).unwrap();
-        for (path, data, message) in [
-            ("bad.md", b"\xff".as_slice(), "not valid UTF-8"),
-            ("bad.canvas", b"\xff".as_slice(), "not valid UTF-8"),
-            ("bad.canvas", b"{".as_slice(), "not valid JSON"),
-            ("bad.canvas", b"{}".as_slice(), "no nodes array"),
-        ] {
-            let entry = vulcan_sync::GitTreeEntry {
-                path: path.to_string(),
-                oid: engine.write_blob(&repository, data).unwrap(),
-                mode: "100644".to_string(),
-                kind: "blob".to_string(),
-            };
-            let entries = [&entry];
-            let (markdown, canvas) = if markdown_path(path) {
-                (entries.as_slice(), &[][..])
-            } else {
-                (&[][..], entries.as_slice())
-            };
-            let error = cache_tree_content(
-                &engine,
-                &repository,
-                markdown,
-                canvas,
-                &VaultConfig::default(),
-                &mut GitTreeAnalysisCache::default(),
-            )
-            .expect_err("invalid content");
-            assert!(error.to_string().contains(message), "{error}");
-        }
-        let missing = vulcan_sync::GitTreeEntry {
-            path: "missing.md".to_string(),
-            oid: vulcan_sync::GitOid::parse("1111111111111111111111111111111111111111").unwrap(),
-            mode: "100644".to_string(),
-            kind: "blob".to_string(),
-        };
-        assert!(cache_tree_content(
-            &engine,
-            &repository,
-            &[&missing],
-            &[],
-            &VaultConfig::default(),
-            &mut GitTreeAnalysisCache::default()
-        )
-        .is_err());
     }
 
     #[test]
@@ -4997,6 +2318,10 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         fs::write(vault.join("Home.md"), "initial\n").expect("note");
         git(&vault, &["add", "Home.md"]);
         git(&vault, &["commit", "--quiet", "-m", "initial"]);
+        // An upstream as if the branch had been pushed before.
+        git(&vault, &["config", "branch.main.remote", "origin"]);
+        git(&vault, &["config", "branch.main.merge", "refs/heads/main"]);
+        git(&vault, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
         let paths = VaultPaths::new(&vault);
         let state_store = SyncStateStore::at(temporary.path().join("state/sync/repositories"));
         state_store
@@ -5080,6 +2405,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         fs::write(vault.join("Home.md"), "initial\n").expect("note");
         git(&vault, &["add", "Home.md"]);
         git(&vault, &["commit", "--quiet", "-m", "initial"]);
+        git(&vault, &["push", "--quiet", "-u", "origin", "HEAD"]);
         let paths = VaultPaths::new(&vault);
         let state_store = SyncStateStore::at(temporary.path().join("state/sync/repositories"));
 
@@ -5137,17 +2463,12 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             !vault.join(".vulcan").exists(),
             "no device-local state in the work tree"
         );
-        let live = git_stdout(
+        let published = git_stdout(
             &remote,
-            &[
-                "ls-tree",
-                "-r",
-                "--name-only",
-                "refs/heads/__vulcan-sync/live",
-            ],
+            &["ls-tree", "-r", "--name-only", "refs/heads/main"],
         );
         assert_eq!(
-            live.trim(),
+            published.trim(),
             "Home.md",
             "the registration never reaches the synced tree"
         );
@@ -5188,8 +2509,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         git(&writer, &["commit", "--quiet", "-m", "initial"]);
         let writer_paths = VaultPaths::new(&writer);
         let state_store = SyncStateStore::at(temporary.path().join("state"));
-        sync_git_vault_with_state_store(&writer_paths, &GitSyncOptions::default(), &state_store)
-            .expect("bootstrap sync");
+        git(&writer, &["push", "--quiet", "-u", "origin", "main"]);
 
         let reader = temporary.path().join("reader");
         git(
@@ -5215,6 +2535,8 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         scan_vault(&reader_paths, ScanMode::Full).expect("initial reader scan");
 
         fs::write(writer.join("Remote.md"), "remote note\n").expect("remote note");
+        git(&writer, &["add", "Remote.md"]);
+        git(&writer, &["commit", "--quiet", "-m", "remote note"]);
         sync_git_vault_with_state_store(&writer_paths, &GitSyncOptions::default(), &state_store)
             .expect("writer push");
         let report = sync_git_vault_with_state_store(
@@ -5224,20 +2546,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         )
         .expect("reader synchronization");
 
-        assert!(matches!(
-            report.sync.outcome,
-            GitSyncOutcome::Pulled | GitSyncOutcome::Merged
-        ));
-        let application = report
-            .sync
-            .application
-            .as_ref()
-            .expect("accepted tree application plan");
-        assert_eq!(application.additions, 1, "{:?}", application.paths);
-        assert_eq!(application.updates, 0);
-        assert_eq!(application.deletions, 0);
-        assert_eq!(application.type_changes, 0);
-        assert_eq!(application.paths[0].path, "Remote.md");
+        assert_eq!(report.sync.outcome, GitSyncOutcome::Pulled);
         assert_eq!(
             state_store
                 .load_apply_marker(&report.sync.repository.git_dir)
@@ -5281,8 +2590,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         git(&writer, &["commit", "--quiet", "-m", "initial"]);
         let state_store = SyncStateStore::at(temporary.path().join("state"));
         let writer_paths = VaultPaths::new(&writer);
-        sync_git_vault_with_state_store(&writer_paths, &GitSyncOptions::default(), &state_store)
-            .expect("bootstrap sync");
+        git(&writer, &["push", "--quiet", "-u", "origin", "main"]);
 
         let reader = temporary.path().join("reader");
         git(
@@ -5314,6 +2622,8 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         .expect("establish reader sync baseline");
 
         fs::write(writer.join("Remote.md"), "remote note\n").expect("remote note");
+        git(&writer, &["add", "Remote.md"]);
+        git(&writer, &["commit", "--quiet", "-m", "remote note"]);
         sync_git_vault_with_state_store(&writer_paths, &GitSyncOptions::default(), &state_store)
             .expect("writer push");
         let report = sync_git_vault_with_profile_and_state_store(
@@ -5326,93 +2636,12 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
 
         assert!(
             reader.join("Remote.md").is_file(),
-            "outcome {:?}, conflict {:?}",
-            report.sync.outcome,
-            report.sync.conflict
+            "outcome {:?}",
+            report.sync.outcome
         );
         assert!(report.cache_refresh.is_none());
         assert!(report.cache_refresh_error.is_none());
         assert!(!reader_paths.cache_db().exists());
-    }
-
-    #[test]
-    fn files_only_profile_keeps_concurrent_merge_for_review_without_markdown_validation() {
-        let fixture = structured_sync_fixture(&[("Home.md", "[[Widget]]\n")]);
-        let reader_paths = VaultPaths::new(&fixture.reader);
-        assert!(!reader_paths.cache_db().exists());
-        fs::create_dir(fixture.writer.join("Writer")).expect("writer folder");
-        fs::write(fixture.writer.join("Writer/Widget.md"), "writer widget\n")
-            .expect("writer widget");
-        fs::create_dir(fixture.reader.join("Reader")).expect("reader folder");
-        fs::write(fixture.reader.join("Reader/Widget.md"), "reader widget\n")
-            .expect("reader widget");
-        sync_git_vault_with_state_store(
-            &VaultPaths::new(&fixture.writer),
-            &GitSyncOptions::default(),
-            &fixture.store,
-        )
-        .expect("writer push");
-
-        let report = sync_git_vault_with_profile_and_state_store(
-            &VaultPaths::new(&fixture.reader),
-            &GitSyncOptions::default(),
-            SyncContentProfile::FilesOnly,
-            &fixture.store,
-        )
-        .expect("files-only synchronization");
-
-        assert_eq!(report.sync.outcome, GitSyncOutcome::Conflicted);
-        assert!(report
-            .sync
-            .conflict
-            .as_ref()
-            .expect("review conflict")
-            .diagnostics
-            .contains("files-only profile requires review"));
-        assert!(!fixture.reader.join("Writer/Widget.md").exists());
-        assert!(fixture.reader.join("Reader/Widget.md").is_file());
-        assert!(!reader_paths.cache_db().exists());
-    }
-
-    #[test]
-    fn clean_merge_with_new_canvas_ambiguity_is_preserved_as_a_conflict() {
-        // The canvas references Widget.md while each side holds exactly one
-        // same-name note; the clean merge leaves two, so the embedded
-        // reference is newly ambiguous and must block the automatic merge.
-        let fixture = structured_sync_fixture(&[("Board.canvas", "{\"nodes\":[],\"edges\":[]}")]);
-        fs::write(
-            fixture.writer.join("Board.canvas"),
-            "{\"nodes\":[{\"id\":\"n1\",\"type\":\"file\",\"file\":\"Widget.md\"}],\"edges\":[]}",
-        )
-        .expect("writer canvas");
-        fs::create_dir(fixture.writer.join("Writer")).expect("writer folder");
-        fs::write(fixture.writer.join("Writer/Widget.md"), "writer widget\n")
-            .expect("writer widget");
-        fs::create_dir(fixture.reader.join("Reader")).expect("reader folder");
-        fs::write(fixture.reader.join("Reader/Widget.md"), "reader widget\n")
-            .expect("reader widget");
-        sync_git_vault_with_state_store(
-            &VaultPaths::new(&fixture.writer),
-            &GitSyncOptions::default(),
-            &fixture.store,
-        )
-        .expect("writer push");
-
-        let report = sync_git_vault_with_state_store(
-            &VaultPaths::new(&fixture.reader),
-            &GitSyncOptions::default(),
-            &fixture.store,
-        )
-        .expect("validation conflict");
-
-        assert_eq!(report.sync.outcome, GitSyncOutcome::Conflicted);
-        assert!(report
-            .sync
-            .conflict
-            .as_ref()
-            .expect("conflict")
-            .diagnostics
-            .contains("introduces a new ambiguous canvas link-resolution problem"));
     }
 
     #[test]
@@ -5451,8 +2680,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         git(&writer, &["commit", "--quiet", "-m", "initial"]);
         let writer_paths = VaultPaths::new(&writer);
         let state_store = SyncStateStore::at(temporary.path().join("state"));
-        sync_git_vault_with_state_store(&writer_paths, &GitSyncOptions::default(), &state_store)
-            .expect("bootstrap sync");
+        git(&writer, &["push", "--quiet", "-u", "origin", "main"]);
 
         let reader = temporary.path().join("reader");
         git(
@@ -5483,6 +2711,8 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         fs::write(reader_paths.cache_db(), b"not a sqlite database").expect("corrupt cache");
 
         fs::write(writer.join("Remote.md"), "remote note\n").expect("remote note");
+        git(&writer, &["add", "Remote.md"]);
+        git(&writer, &["commit", "--quiet", "-m", "remote note"]);
         sync_git_vault_with_state_store(&writer_paths, &GitSyncOptions::default(), &state_store)
             .expect("writer push");
         let report = sync_git_vault_with_state_store(
@@ -5492,10 +2722,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         )
         .expect("reader synchronization succeeds despite the cache failure");
 
-        assert!(matches!(
-            report.sync.outcome,
-            GitSyncOutcome::Pulled | GitSyncOutcome::Merged
-        ));
+        assert_eq!(report.sync.outcome, GitSyncOutcome::Pulled);
         assert!(report.cache_refresh.is_none());
         assert!(report.cache_refresh_error.is_some());
         assert_eq!(
@@ -5537,6 +2764,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             fs::write(writer.join("Home.md"), "initial\n").expect("initial note");
             git(&writer, &["add", "Home.md"]);
             git(&writer, &["commit", "--quiet", "-m", "initial"]);
+            git(&writer, &["push", "--quiet", "-u", "origin", "HEAD"]);
             (temporary, remote, writer)
         };
         let paths = VaultPaths::new(&writer);
@@ -5642,78 +2870,6 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         assert!(journal.error.is_some());
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn platform_preflight_failure_retains_the_captured_recovery_journal() {
-        let temporary = tempdir().expect("temporary directory");
-        let remote = temporary.path().join("remote.git");
-        git(
-            temporary.path(),
-            &[
-                "init",
-                "--quiet",
-                "--bare",
-                remote.to_str().expect("remote path"),
-            ],
-        );
-        let vault = temporary.path().join("vault");
-        fs::create_dir(&vault).expect("vault directory");
-        git(
-            &vault,
-            &["-c", "init.defaultBranch=main", "init", "--quiet"],
-        );
-        git(&vault, &["config", "user.name", "Vulcan Test"]);
-        git(&vault, &["config", "user.email", "vulcan@example.invalid"]);
-        git(
-            &vault,
-            &[
-                "remote",
-                "add",
-                "origin",
-                remote.to_str().expect("remote path"),
-            ],
-        );
-        fs::write(vault.join("Home.md"), "home\n").expect("home note");
-        git(&vault, &["add", "Home.md"]);
-        git(&vault, &["commit", "--quiet", "-m", "initial"]);
-        fs::write(vault.join("CON.txt"), "preserve me\n").expect("reserved note");
-        let paths = VaultPaths::new(&vault);
-        let store = SyncStateStore::at(temporary.path().join("state"));
-        let options = GitSyncOptions {
-            platform: GitPlatformProfile::AndroidShared,
-            ..GitSyncOptions::default()
-        };
-
-        assert!(sync_git_vault_with_state_store(&paths, &options, &store).is_err());
-
-        let key = crate::sync_state::repository_state_key(
-            &fs::canonicalize(&vault).expect("canonical vault"),
-        );
-        let journal = store
-            .load(&key)
-            .expect("load journal")
-            .expect("retained platform journal");
-        assert_eq!(journal.phase, SyncJournalPhase::BackingUp);
-        assert!(journal.local_snapshot.is_some());
-        assert!(journal.expected_worktree_tree.is_some());
-        assert!(journal
-            .error
-            .as_deref()
-            .is_some_and(|error| error.contains("platform `android_shared`")));
-        assert_eq!(
-            fs::read_to_string(vault.join("CON.txt")).expect("preserved bytes"),
-            "preserve me\n"
-        );
-        assert!(
-            !git_stdout(
-                &vault,
-                &["ls-remote", "origin", "refs/heads/__vulcan-sync/devices/*",],
-            )
-            .is_empty(),
-            "platform-incompatible bytes must still reach the remote device safety namespace"
-        );
-    }
-
     #[test]
     fn staged_sync_proceeds_without_touching_the_normal_index() {
         let temporary = tempdir().expect("temporary directory");
@@ -5747,6 +2903,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         fs::write(vault.join("Home.md"), "initial\n").expect("initial note");
         git(&vault, &["add", "Home.md"]);
         git(&vault, &["commit", "--quiet", "-m", "initial"]);
+        git(&vault, &["push", "--quiet", "-u", "origin", "HEAD"]);
         fs::write(vault.join("Home.md"), "staged\n").expect("staged note");
         git(&vault, &["add", "Home.md"]);
         let paths = VaultPaths::new(&vault);
@@ -5790,12 +2947,25 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         fs::write(vault.join("Home.md"), "initial\n").expect("initial note");
         git(&vault, &["add", "Home.md"]);
         git(&vault, &["commit", "--quiet", "-m", "initial"]);
+        // The device backup publishes only when the vault opts in.
+        fs::create_dir_all(vault.join(".vulcan")).expect("Vulcan directory");
+        fs::write(
+            vault.join(".vulcan/config.toml"),
+            "[sync]\npublish_device_backup = true\n",
+        )
+        .expect("opt in to the device backup");
         let paths = VaultPaths::new(&vault);
         let store = SyncStateStore::at(temporary.path().join("state"));
 
-        assert!(
-            sync_git_vault_with_state_store(&paths, &GitSyncOptions::default(), &store).is_err()
-        );
+        assert!(sync_git_vault_with_state_store(
+            &paths,
+            &GitSyncOptions {
+                publish_device_backup: true,
+                ..GitSyncOptions::default()
+            },
+            &store
+        )
+        .is_err());
 
         let key = crate::sync_state::repository_state_key(
             &fs::canonicalize(&vault).expect("canonical vault"),
@@ -5860,10 +3030,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             .requirements
             .as_ref()
             .is_some_and(|requirements| { requirements.ignored_internal_paths.len() == 3 }));
-        assert!(report
-            .checks
-            .iter()
-            .any(|check| check.code == "git.remote" && check.severity == SyncDoctorSeverity::Info));
+        assert!(!report.checks.iter().any(|check| check.code == "git.remote"));
         assert!(report.checks.iter().any(|check| {
             check.code == "sync.device-identity" && check.severity == SyncDoctorSeverity::Info
         }));
@@ -5895,7 +3062,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
     }
 
     #[test]
-    fn configured_committed_history_only_sync_never_publishes_live() {
+    fn configured_worktree_none_is_a_no_op_and_sync_never_publishes_live() {
         let temporary = tempdir().expect("temporary directory");
         let remote = temporary.path().join("remote.git");
         git(
@@ -5945,7 +3112,6 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             .expect("committed-history sync");
 
         assert_eq!(report.sync.outcome, GitSyncOutcome::Pushed);
-        assert_eq!(report.sync.worktree, WorktreeSyncMode::None);
         assert!(report.state.retained.is_none());
         assert_eq!(
             git_stdout(&remote, &["rev-parse", "refs/heads/main"]),
@@ -5962,9 +3128,10 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         .is_empty());
 
         let doctor = doctor_git_vault_with_state_store(&paths, &GitSyncOptions::default(), &store);
-        assert!(doctor.checks.iter().any(|check| {
-            check.code == "sync.worktree" && check.severity == SyncDoctorSeverity::Info
-        }));
+        assert!(!doctor
+            .checks
+            .iter()
+            .any(|check| check.code == "sync.worktree"));
         assert!(!doctor.checks.iter().any(|check| check.code == "git.remote"));
     }
 
@@ -6120,6 +3287,16 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         assert!(!fixture.writer.join(".gitignore").exists());
 
         crate::sync_device_files::ignore_device_files(&paths, false).expect("ignore");
+        // Sync carries only commits, so the untracking travels as one.
+        git(
+            &fixture.writer,
+            &["rm", "--cached", "--quiet", ".obsidian/workspace.json"],
+        );
+        git(&fixture.writer, &["add", ".gitignore"]);
+        git(
+            &fixture.writer,
+            &["commit", "--quiet", "-m", "ignore device files"],
+        );
         assert!(sync().device_files.is_empty());
         assert!(fixture.writer.join(".obsidian/workspace.json").is_file());
         let reader = VaultPaths::new(&fixture.reader);
@@ -6242,53 +3419,6 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
     }
 
     #[test]
-    fn sync_doctor_reports_missing_objects_behind_sync_refs() {
-        let temporary = tempdir().expect("temporary directory");
-        let vault = temporary.path().join("vault");
-        fs::create_dir(&vault).expect("vault directory");
-        git(
-            &vault,
-            &["-c", "init.defaultBranch=main", "init", "--quiet"],
-        );
-        git(&vault, &["config", "user.name", "Vulcan Test"]);
-        git(&vault, &["config", "user.email", "vulcan@example.invalid"]);
-        fs::write(vault.join(".gitignore"), ".vulcan/cache.db*\n").expect("ignore file");
-        fs::write(vault.join("Home.md"), "home\n").expect("home note");
-        git(&vault, &["add", ".gitignore", "Home.md"]);
-        git(&vault, &["commit", "--quiet", "-m", "initial"]);
-
-        let options = GitSyncOptions::default();
-        let refs = GitSyncRefs::for_options(&options).expect("sync refs");
-        let local_ref = refs
-            .local
-            .as_str()
-            .strip_prefix("refs/")
-            .expect("local ref path");
-        let local_ref_path = vault.join(".git").join("refs").join(local_ref);
-        fs::create_dir_all(local_ref_path.parent().expect("ref parent")).expect("ref parent");
-        fs::write(
-            &local_ref_path,
-            "1111111111111111111111111111111111111111\n",
-        )
-        .expect("dangling sync ref");
-
-        let report = doctor_git_vault_with_state_store(
-            &VaultPaths::new(&vault),
-            &options,
-            &SyncStateStore::at(temporary.path().join("state")),
-        );
-
-        assert!(!report.healthy);
-        assert!(report.checks.iter().any(|check| {
-            check.code == "git.refs"
-                && check.severity == SyncDoctorSeverity::Error
-                && check
-                    .message
-                    .contains("does not resolve to a readable commit object")
-        }));
-    }
-
-    #[test]
     fn sync_doctor_reports_unavailable_round_trip_filter_drivers() {
         let temporary = tempdir().expect("temporary directory");
         let remote = temporary.path().join("remote.git");
@@ -6340,103 +3470,5 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         assert!(report.checks.iter().any(|check| {
             check.code == "git.filters" && check.severity == SyncDoctorSeverity::Error
         }));
-    }
-
-    #[test]
-    fn conflicted_sync_persists_immutable_records_and_all_file_sides() {
-        let temporary = tempdir().expect("temporary directory");
-        let remote = temporary.path().join("remote.git");
-        git(
-            temporary.path(),
-            &[
-                "init",
-                "--quiet",
-                "--bare",
-                remote.to_str().expect("remote path"),
-            ],
-        );
-        let writer = temporary.path().join("writer");
-        fs::create_dir(&writer).expect("writer directory");
-        git(
-            &writer,
-            &["-c", "init.defaultBranch=main", "init", "--quiet"],
-        );
-        git(&writer, &["config", "user.name", "Vulcan Test"]);
-        git(&writer, &["config", "user.email", "vulcan@example.invalid"]);
-        git(&writer, &["config", "core.autocrlf", "false"]);
-        git(
-            &writer,
-            &[
-                "remote",
-                "add",
-                "origin",
-                remote.to_str().expect("remote path"),
-            ],
-        );
-        fs::write(writer.join("Home.md"), "base\n").expect("base note");
-        git(&writer, &["add", "Home.md"]);
-        git(&writer, &["commit", "--quiet", "-m", "base"]);
-        let store = SyncStateStore::at(temporary.path().join("state"));
-        sync_git_vault_with_state_store(
-            &VaultPaths::new(&writer),
-            &GitSyncOptions::default(),
-            &store,
-        )
-        .expect("bootstrap");
-
-        let reader = temporary.path().join("reader");
-        git(
-            temporary.path(),
-            &[
-                "-c",
-                "core.autocrlf=false",
-                "clone",
-                "--quiet",
-                writer.to_str().expect("writer path"),
-                reader.to_str().expect("reader path"),
-            ],
-        );
-        git(
-            &reader,
-            &[
-                "remote",
-                "set-url",
-                "origin",
-                remote.to_str().expect("remote path"),
-            ],
-        );
-        git(&reader, &["config", "core.autocrlf", "false"]);
-        sync_git_vault_with_state_store(
-            &VaultPaths::new(&reader),
-            &GitSyncOptions::default(),
-            &store,
-        )
-        .expect("reader baseline");
-        fs::write(writer.join("Home.md"), "writer\n").expect("writer edit");
-        fs::write(reader.join("Home.md"), "reader\n").expect("reader edit");
-        sync_git_vault_with_state_store(
-            &VaultPaths::new(&writer),
-            &GitSyncOptions::default(),
-            &store,
-        )
-        .expect("writer sync");
-
-        let report = sync_git_vault_with_state_store(
-            &VaultPaths::new(&reader),
-            &GitSyncOptions::default(),
-            &store,
-        )
-        .expect("conflict report");
-        assert_conflict_operational_stats(&report);
-        let record = report.conflict_record.expect("durable conflict record");
-        assert_eq!(record.paths.len(), 1);
-        assert_eq!(record.paths[0].path, "Home.md");
-        assert!(record.preserved_record_ref.is_some());
-        assert!(record.provenance_revision.is_some());
-        assert_projection_candidate(&record);
-        assert_overlapping_text_classification(&record);
-        assert_conflict_artifacts(&store, &record);
-        assert_conflict_read_workflows(&VaultPaths::new(&reader), &store, &record);
-        assert_projected_worktree(&reader);
     }
 }

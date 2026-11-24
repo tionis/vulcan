@@ -16,9 +16,7 @@ use vulcan_app::obsidian_companion::{
 };
 use vulcan_core::verbosity::{Verbosity, VERBOSITY_ENV};
 use vulcan_daemon::alert_delivery::{alert_delivery_status, AlertDeliveryStatus};
-use vulcan_daemon::auto_commit_worker::{
-    auto_commit_status_report, AutoCommitCaptureOwner, AutoCommitStatusReport,
-};
+use vulcan_daemon::auto_commit_worker::{auto_commit_status_report, AutoCommitStatusReport};
 use vulcan_daemon::conflict_worker::{load_conflict_worker_status, ConflictWorkerStatus};
 use vulcan_daemon::credentials::CompanionCredentialStore;
 use vulcan_daemon::daemon_host::DAEMON_READINESS_TIMEOUT;
@@ -389,11 +387,10 @@ fn print_auto_commit_status(
         return print_json(status);
     }
     for vault in &status.vaults {
-        let mode = match (&vault.capture_owner, vault.auto_commit, vault.strategy) {
-            (AutoCommitCaptureOwner::GitSync, _, _) => "Git sync captures changes".to_string(),
-            (_, false, _) => "auto-commit off".to_string(),
-            (_, true, vulcan_core::GitCommitStrategy::PerWrite) => "per-write commits".to_string(),
-            (_, true, vulcan_core::GitCommitStrategy::Batched) => format!(
+        let mode = match (vault.auto_commit, vault.strategy) {
+            (false, _) => "auto-commit off".to_string(),
+            (true, vulcan_core::GitCommitStrategy::PerWrite) => "per-write commits".to_string(),
+            (true, vulcan_core::GitCommitStrategy::Batched) => format!(
                 "batched every {} s, {:?} messages{}",
                 vault.batch_interval_seconds,
                 vault.batch_messages,

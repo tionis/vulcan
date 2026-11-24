@@ -113,7 +113,6 @@ pub mod sync_device_files;
 pub mod sync_devices;
 pub mod sync_forge;
 pub mod sync_proposals;
-pub mod sync_ref_sweep;
 pub mod sync_registration;
 pub mod sync_semantic;
 pub mod sync_state;

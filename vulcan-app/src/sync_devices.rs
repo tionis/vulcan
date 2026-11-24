@@ -30,15 +30,26 @@ struct DeviceNameRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncDeviceOptions {
     pub remote: GitRemote,
+    /// The ref device backups are compared against. Sync no longer writes
+    /// it; device backups recorded before live mode was removed are judged
+    /// against what it still holds.
     pub live_ref: GitRefName,
+}
+
+impl SyncDeviceOptions {
+    #[must_use]
+    pub fn new(remote: GitRemote) -> Self {
+        Self {
+            remote,
+            live_ref: GitRefName::parse(vulcan_sync::DEFAULT_REMOTE_LIVE_REF)
+                .expect("the default live ref is valid"),
+        }
+    }
 }
 
 impl From<&GitSyncOptions> for SyncDeviceOptions {
     fn from(options: &GitSyncOptions) -> Self {
-        Self {
-            remote: options.remote.clone(),
-            live_ref: options.live_ref.clone(),
-        }
+        Self::new(options.remote.clone())
     }
 }
 

@@ -78,6 +78,7 @@ fn obsidian_vault(root: &Path, name: &str) -> std::path::PathBuf {
     fs::write(vault.join("Home.md"), "home\n").expect("note");
     git(&vault, &["add", "--all"]);
     git(&vault, &["commit", "--quiet", "-m", "initial"]);
+    git(&vault, &["push", "--quiet", "-u", "origin", "main"]);
     vault
 }
 

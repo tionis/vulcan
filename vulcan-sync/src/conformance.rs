@@ -5,9 +5,8 @@
 //! ordinary Git. The engine under test owns every operation after cloning.
 
 use crate::{
-    GitCaptureRequest, GitEngine, GitEngineError, GitEngineKind, GitOid, GitPushResult,
-    GitRefCreateResult, GitRefDeleteResult, GitRefName, GitRefUpdateResult, GitRemote,
-    GitTreeApplyAction,
+    GitCaptureRequest, GitEngine, GitEngineKind, GitOid, GitPushResult, GitRefCreateResult,
+    GitRefDeleteResult, GitRefName, GitRefUpdateResult, GitRemote,
 };
 use serde::Serialize;
 use std::error::Error;
@@ -266,9 +265,8 @@ pub fn run_git_engine_conformance(
             },
         )
         .map_err(|error| GitEngineConformanceError::engine("capture remote candidate", error))?;
-    engine
-        .apply_tree(&repository, &remote_candidate.commit, &candidate.commit)
-        .map_err(|error| GitEngineConformanceError::engine("restore merge base", error))?;
+    fs::write(worktree.join("Conflict.md"), "base\n")
+        .map_err(|error| GitEngineConformanceError::new("restore merge base", error.to_string()))?;
     fs::write(worktree.join("Conflict.md"), "local\n").map_err(|error| {
         GitEngineConformanceError::new("prepare local candidate", error.to_string())
     })?;
@@ -302,62 +300,6 @@ pub fn run_git_engine_conformance(
         format!("unexpected conflict paths: {:?}", merge.conflict_paths),
     )?;
 
-    let plan = engine
-        .plan_tree_application(
-            &repository,
-            &local_candidate.commit,
-            &remote_candidate.commit,
-        )
-        .map_err(|error| GitEngineConformanceError::engine("plan non-empty apply", error))?;
-    require(
-        plan.paths
-            .iter()
-            .any(|path| path.path == "Conflict.md" && path.action == GitTreeApplyAction::Update),
-        "plan non-empty apply",
-        "application plan omitted the tracked update",
-    )?;
-    engine
-        .apply_tree(
-            &repository,
-            &local_candidate.commit,
-            &remote_candidate.commit,
-        )
-        .map_err(|error| GitEngineConformanceError::engine("apply non-empty tree", error))?;
-    require(
-        engine
-            .worktree_matches_tree(&repository, &remote_candidate.commit)
-            .map_err(|error| GitEngineConformanceError::engine("verify applied tree", error))?,
-        "verify applied tree",
-        "applied worktree does not match the target tree",
-    )?;
-    require(
-        reference_git_stdout(&worktree, &["write-tree"])? == normal_index,
-        "apply non-empty tree",
-        "application mutated the normal index",
-    )?;
-    fs::write(worktree.join("Conflict.md"), "drift\n").map_err(|error| {
-        GitEngineConformanceError::new("prepare apply drift", error.to_string())
-    })?;
-    require(
-        matches!(
-            engine.apply_tree(
-                &repository,
-                &remote_candidate.commit,
-                &local_candidate.commit
-            ),
-            Err(GitEngineError::WorktreeChanged)
-        ),
-        "reject apply drift",
-        "application overwrote a worktree that no longer matched its precondition",
-    )?;
-    require(
-        fs::read_to_string(worktree.join("Conflict.md")).map_err(|error| {
-            GitEngineConformanceError::new("verify apply drift", error.to_string())
-        })? == "drift\n",
-        "verify apply drift",
-        "failed application changed the drifted file",
-    )?;
-
     require(
         engine
             .delete_ref(&repository, &cas_ref, &candidate.commit)
@@ -388,7 +330,6 @@ pub fn run_git_engine_conformance(
             "live_ref_transport",
             "custom_ref_transport",
             "divergent_merge_conflict",
-            "safe_non_empty_apply",
             "ordinary_git_interoperability",
         ],
         capture_tree: candidate.tree,

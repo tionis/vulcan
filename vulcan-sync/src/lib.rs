@@ -18,9 +18,7 @@ mod platform;
 pub mod process;
 mod racy_index;
 mod refs;
-mod scope;
-mod structured_merge;
-pub use structured_merge::{artifact_merger_for, ArtifactMerger, ARTIFACT_MERGERS};
+
 mod sync;
 mod tree_ignore;
 
@@ -33,20 +31,16 @@ pub use contracts::{
 
 pub use git::{
     vault_path_prefix, BranchAdvanceOutcome, BranchPullConfig, BranchReplayConflict,
-    BranchReplayOutcome, BranchReplayResolver, CommitSigning, FastForwardOutcome,
-    GitBranchUpstream, GitCapture, GitCaptureRequest, GitCaseRenamePolicy, GitChange,
-    GitChangeKind, GitCliEngine, GitCloneRequest, GitCommitMetadata, GitConflictSide,
-    GitContentMergeResolutionRequest, GitDetachedRecoveryReport, GitDetachedRecoveryRequest,
-    GitEngine, GitEngineError, GitEngineKind, GitExecutableBitsPolicy, GitFilterRequirement,
-    GitInstallation, GitMerge, GitMergeResolutionRequest, GitObjectFormat, GitOid,
-    GitPathLengthPolicy, GitPathObject, GitPlatformPolicy, GitPlatformProfile, GitPushResult,
-    GitRefCreateResult, GitRefDeleteResult, GitRefMirror, GitRefName, GitRefPush,
+    BranchReplayOutcome, BranchReplayResolver, FastForwardOutcome, GitBranchUpstream, GitCapture,
+    GitCaptureRequest, GitCaseRenamePolicy, GitCliEngine, GitCloneRequest,
+    GitDetachedRecoveryReport, GitDetachedRecoveryRequest, GitEngine, GitEngineError,
+    GitEngineKind, GitExecutableBitsPolicy, GitFilterRequirement, GitInstallation, GitMerge,
+    GitObjectFormat, GitOid, GitPathLengthPolicy, GitPathObject, GitPlatformPolicy,
+    GitPlatformProfile, GitPushResult, GitRefCreateResult, GitRefDeleteResult, GitRefName,
     GitRefUpdateResult, GitReference, GitRemote, GitRemoteRefs, GitRepository, GitRepositoryLayout,
-    GitRepositoryRequirements, GitReservedNamesPolicy, GitResolvedPath, GitSafetyState,
-    GitSymlinkPolicy, GitTimestampPolicy, GitTreeApplyAction, GitTreeApplyPath, GitTreeApplyPlan,
-    GitTreeEntry, GitUnattendedRepositoryState, GitVersion, MergeBranchOutcome,
+    GitRepositoryRequirements, GitReservedNamesPolicy, GitSafetyState, GitSymlinkPolicy,
+    GitTimestampPolicy, GitTreeEntry, GitUnattendedRepositoryState, GitVersion, MergeBranchOutcome,
     PreparedBranchReplay, PullFastForward, PullRebase, RebaseHazard, RebaseOutcome,
-    ScopedBranchAdvance,
 };
 pub use lock::{RepositoryLock, RepositoryLockError};
 pub use merge_policy::{
@@ -58,29 +52,23 @@ pub use platform::{
     GitPlatformPreflight, GIT_PLATFORM_PREFLIGHT_VERSION,
 };
 pub use refs::{
-    checkpoint_ref, conflict_archive_ref, conflict_proposal_resolution_ref, conflict_recovery_ref,
-    conflict_ref, conflict_resolved_ref, detached_recovery_ref, device_recovery_live_ref,
-    device_recovery_ref, local_epoch_ref, local_recovery_ref_namespaces, local_sync_ref,
+    conflict_archive_ref, conflict_ref, detached_recovery_ref, device_recovery_live_ref,
+    device_recovery_ref, local_recovery_ref_namespaces, local_sync_ref,
     remote_conflict_proposal_resolution_ref, remote_conflict_ref, remote_device_ref,
-    remote_epoch_ref, remote_registration_ref, semantic_proposal_ref, sync_profile_key,
-    DEFAULT_REMOTE_LIVE_REF, LOCAL_FORGE_DESCRIPTOR_MIRROR_REF, LOCAL_RECOVERY_REF_NAMESPACES,
-    LOCAL_REGISTRATION_MIRROR_ROOT, LOCAL_VULCAN_REF_ROOT, PATH_SCOPED_REF_NAMESPACE_VERSION,
-    REMOTE_CONFLICT_BRANCH_ROOT, REMOTE_DEVICE_BRANCH_ROOT, REMOTE_EPOCH_BRANCH_ROOT,
-    REMOTE_FORGE_DESCRIPTOR_REF, REMOTE_REGISTRATION_BRANCH_ROOT, VULCAN_REF_NAMESPACE_VERSION,
+    remote_epoch_ref, remote_registration_ref, sync_profile_key, DEFAULT_REMOTE_LIVE_REF,
+    LOCAL_FORGE_DESCRIPTOR_MIRROR_REF, LOCAL_RECOVERY_REF_NAMESPACES,
+    LOCAL_REGISTRATION_MIRROR_ROOT, LOCAL_VULCAN_REF_ROOT, REMOTE_CONFLICT_BRANCH_ROOT,
+    REMOTE_DEVICE_BRANCH_ROOT, REMOTE_EPOCH_BRANCH_ROOT, REMOTE_FORGE_DESCRIPTOR_REF,
+    REMOTE_REGISTRATION_BRANCH_ROOT, VULCAN_REF_NAMESPACE_VERSION,
 };
-pub use scope::{GitWorktreeScope, GitWorktreeScopeError};
+
 pub use sync::{
-    classify_git_sync_error, find_git_live_epoch, git_live_epoch_id, git_published_branch_tip,
-    git_ref_namespace_version, git_scope_trailers, git_scope_trailers_for, merge_carried_path,
-    sync_conflict_id, sync_git_once, sync_git_once_with_control, BranchPullPolicy,
-    GitAutomaticMergeValidation, GitAutomaticResolution, GitAutomaticResolutionValidation,
-    GitAutomaticValidationCheck, GitBranchPause, GitBranchSync, GitBranchSyncAction,
-    GitCarriedPath, GitConflictClass, GitConflictClassification, GitConflictProjection,
-    GitConflictRefs, GitConflictScope, GitDeviceBackup, GitDeviceBackupOutcome, GitLiveEpoch,
-    GitMergerEvidence, GitRemoteObservation, GitSyncAction, GitSyncBackend, GitSyncConflict,
+    classify_git_sync_error, git_published_branch_tip, sync_git_once, sync_git_once_with_control,
+    BranchPullPolicy, GitBranchPause, GitBranchSync, GitBranchSyncAction, GitConflictClass,
+    GitConflictClassification, GitConflictProjection, GitConflictRefs, GitConflictScope,
+    GitDeviceBackup, GitDeviceBackupOutcome, GitSyncAction, GitSyncBackend, GitSyncConflict,
     GitSyncDeviceId, GitSyncDeviceIdKind, GitSyncError, GitSyncObserver, GitSyncObserverError,
-    GitSyncOptions, GitSyncOutcome, GitSyncPause, GitSyncPauseReason, GitSyncPhase, GitSyncPreview,
-    GitSyncPreviewFileState, GitSyncProgress, GitSyncRefs, GitSyncReport, IgnoreGitSyncProgress,
-    SyncCancellationToken, WorktreeSyncMode,
+    GitSyncOptions, GitSyncOutcome, GitSyncPause, GitSyncPauseReason, GitSyncPhase,
+    GitSyncProgress, GitSyncRefs, GitSyncReport, IgnoreGitSyncProgress, SyncCancellationToken,
 };
 pub use tree_ignore::{tree_ignores, worktree_ignores, OBSIDIAN_DEVICE_FILES};

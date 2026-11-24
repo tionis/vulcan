@@ -1,9 +1,7 @@
 //! Registry-driven lifecycle and periodic trigger coordination.
 
 use crate::adaptive_poll::{AdaptivePolling, PollBounds};
-use crate::auto_commit_worker::{
-    consume_auto_commit_observations_with_stop, sync_owns_capture, AutoCommitContext,
-};
+use crate::auto_commit_worker::{consume_auto_commit_observations_with_stop, AutoCommitContext};
 use crate::observation::{
     ObservationConsumerId, ObservationConsumerKind, ObservationConsumerPolicy, ObservationError,
     ObservationFilter, VaultObservationHub,
@@ -518,11 +516,7 @@ fn publish_task_health(
         "sync",
         wanted(sync_consumer_enabled(registration), task.sync.is_some()),
     );
-    health.observe(
-        id,
-        "auto-commit",
-        wanted(!sync_owns_capture(registration), task.auto_commit.is_some()),
-    );
+    health.observe(id, "auto-commit", wanted(true, task.auto_commit.is_some()));
 }
 
 /// Starts the consumers `registration` wants that are not running, unless
@@ -568,18 +562,12 @@ fn ensure_consumers(
         }
         task.sync_restart = ConsumerRestart::default();
     }
-    let should_auto_commit = !sync_owns_capture(registration);
-    if should_auto_commit && task.auto_commit.is_none() && task.auto_commit_restart.ready(now) {
+    if task.auto_commit.is_none() && task.auto_commit_restart.ready(now) {
         task.auto_commit = Some(spawn_auto_commit_consumer(
             registration.clone(),
             &task.hub,
             consumers,
         )?);
-    } else if !should_auto_commit {
-        if let Some(auto_commit) = task.auto_commit.take() {
-            stop_sync_consumer(auto_commit);
-        }
-        task.auto_commit_restart = ConsumerRestart::default();
     }
     Ok(())
 }
@@ -713,9 +701,11 @@ fn spawn_watcher(
     let sync = sync_consumer_enabled(&registration)
         .then(|| spawn_sync_consumer(registration.clone(), &hub, supervisor, state_store, options))
         .transpose()?;
-    let auto_commit = (!sync_owns_capture(&registration))
-        .then(|| spawn_auto_commit_consumer(registration.clone(), &hub, consumers))
-        .transpose()?;
+    let auto_commit = Some(spawn_auto_commit_consumer(
+        registration.clone(),
+        &hub,
+        consumers,
+    )?);
     let task = WatcherTask {
         registration,
         hub,
@@ -1270,7 +1260,7 @@ mod tests {
             .is_some_and(|error| error.contains("sync observation consumer")));
         assert!(health.components["observer"].running);
         assert!(health.components["index"].running);
-        assert!(!health.components.contains_key("auto-commit"));
+        assert!(health.components["auto-commit"].running);
         stop_all_watchers(&mut watchers);
     }
 
@@ -1352,9 +1342,8 @@ mod tests {
         assert_eq!(watchers.len(), 2);
         assert!(watchers["git-notes"].sync.is_none());
         assert!(watchers["plain"].sync.is_none());
-        // Git sync owns capture for the Git-backed vault, even while paused;
-        // the vault without sync gets the batched auto-commit consumer.
-        assert!(watchers["git-notes"].auto_commit.is_none());
+        // Sync moves only commits, so every vault gets the auto-commit consumer.
+        assert!(watchers["git-notes"].auto_commit.is_some());
         assert!(watchers["plain"].auto_commit.is_some());
         let initial = watchers["git-notes"]
             .index

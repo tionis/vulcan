@@ -535,9 +535,10 @@ Notes:
   `sync clone` automatically selects a detached Android-shared layout in Termux.
   `sync termux-install` creates an Android job; `sync schedule show/set` inspects or changes its saved settings.
   Run/status/doctor work directly against the selected vault path and do not require a daemon or wiki registration.
-  The default remote is `origin`; the default live ref is `refs/heads/__vulcan-sync/live`.
-  Non-dry-run cycles publish local bytes to a per-device safety ref before pull or reconciliation.
-  Staged changes are captured; in-progress Git operations pause worktree synchronization.
+  Sync moves committed history: it pulls and pushes the checked-out branch of remote `origin` by default.
+  Uncommitted edits stay on the device; non-dry-run cycles snapshot them locally first, and push that
+  snapshot to a per-device backup ref only with `sync.publish_device_backup = true`.
+  In-progress Git operations pause synchronization.
   Pause/resume updates device-local automatic behavior only; manual run and status remain available.
 
 Examples:
@@ -4316,7 +4317,7 @@ pub enum GitCommand {
     },
     #[command(
         about = "Commit the vault's accumulated changes as one configured batch",
-        long_about = "Commit the vault's accumulated changes once, as `[git] strategy = \"batched\"` configures and as the daemon would. Use it from cron or a timer when no daemon runs. Paths you staged yourself are left alone, and nothing is committed during a merge, rebase, or detached HEAD. Agent messages need this device's `vulcan daemon config set-auto-commit-agent` consent; otherwise the batch falls back to deterministic groups. A vault registered with Git sync is captured by sync instead and is not committed."
+        long_about = "Commit the vault's accumulated changes once, as `[git] strategy = \"batched\"` configures and as the daemon would. Use it from cron or a timer when no daemon runs. Paths you staged yourself are left alone, and nothing is committed during a merge, rebase, or detached HEAD. Agent messages need this device's `vulcan daemon config set-auto-commit-agent` consent; otherwise the batch falls back to deterministic groups."
     )]
     BatchCommit {
         #[arg(
@@ -4388,15 +4389,9 @@ pub struct SyncTargetArgs {
     #[arg(
         long,
         default_value = "origin",
-        help = "Git remote carrying the live ref"
+        help = "Git remote to synchronize with"
     )]
     pub(crate) remote: String,
-    #[arg(
-        long,
-        default_value = "refs/heads/__vulcan-sync/live",
-        help = "Fully qualified remote live ref"
-    )]
-    pub(crate) live_ref: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
@@ -5199,7 +5194,7 @@ pub enum SyncCommand {
         dry_run: bool,
         #[arg(
             long,
-            conflicts_with_all = ["dry_run", "profile", "max_retries", "git_timeout_seconds", "remote", "live_ref"],
+            conflicts_with_all = ["dry_run", "profile", "max_retries", "git_timeout_seconds", "remote"],
             help = "Ask the running daemon to queue one retained sync job per selected registered wiki and return without waiting; never runs here",
             long_help = "Ask the running daemon to queue one retained sync job per selected registered wiki (the named wiki, `--group`, `--all`, or the registered vault at the selected path), grouped under one aggregate job, and return without waiting for them. The jobs run in the daemon with each registration's stored permission profile and sync settings, so `--permissions` and the run-tuning flags are refused. Nothing runs in this process: without a running daemon the command fails instead of syncing directly. `vulcan daemon status` shows the jobs' progress."
         )]
@@ -5325,7 +5320,7 @@ pub enum SyncCommand {
     },
     #[command(
         about = "Stop syncing Obsidian's per-device layout files",
-        long_about = "Add `.gitignore` entries for files Obsidian keeps per device (`.obsidian/workspace.json`, `.obsidian/workspace-mobile.json`) unless a shared `.gitignore` already ignores them. The next sync publishes the change and stops tracking the files; every device keeps its own copy, including devices that sync later. `vulcan sync doctor` warns while such files are synced."
+        long_about = "Add `.gitignore` entries for files Obsidian keeps per device (`.obsidian/workspace.json`, `.obsidian/workspace-mobile.json`) unless a shared `.gitignore` already ignores them. Sync carries only commits: commit the `.gitignore` and untrack the files (`git rm --cached`) so other devices stop sharing them; every device keeps its own copy. `vulcan sync doctor` warns while such files are synced."
     )]
     IgnoreDeviceFiles {
         #[arg(long, help = "Optional registered wiki ID")]
@@ -5333,7 +5328,6 @@ pub enum SyncCommand {
         #[arg(long, help = "Report the entries that would be added without writing")]
         dry_run: bool,
     },
-    #[command(about = "Create a review-only conflict proposal with an LLM provider")]
     #[command(about = "Diagnose Git synchronization without changing it")]
     Doctor {
         #[arg(help = "Optional registered wiki ID; omit to use the selected vault path")]
@@ -8478,7 +8472,7 @@ pub enum Command {
         command: GitCommand,
     },
     #[command(
-        about = "Synchronize a vault through a hidden Git live ref",
+        about = "Synchronize a vault's committed Git history across devices",
         after_help = SYNC_COMMAND_AFTER_HELP
     )]
     Sync {

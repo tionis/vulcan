@@ -67,18 +67,10 @@ pub fn generic_report_output_schema() -> Value {
 }
 
 fn sync_target_properties() -> Vec<(&'static str, Value)> {
-    vec![
-        (
-            "remote",
-            schema_string("Configured Git remote name; defaults to `origin`."),
-        ),
-        (
-            "live_ref",
-            schema_string(
-                "Exact canonical remote live ref; defaults to `refs/heads/__vulcan-sync/live`.",
-            ),
-        ),
-    ]
+    vec![(
+        "remote",
+        schema_string("Configured Git remote name; defaults to `origin`."),
+    )]
 }
 
 pub fn sync_status_input_schema() -> Value {

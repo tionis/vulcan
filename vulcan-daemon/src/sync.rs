@@ -22,7 +22,7 @@ use vulcan_core::{
 };
 use vulcan_sync::{
     GitBranchSync, GitBranchSyncAction, GitCliEngine, GitSyncObserver, SyncError,
-    SyncErrorCategory, SyncJobState, SyncState, SyncStatus, WorktreeSyncMode,
+    SyncErrorCategory, SyncJobState, SyncState, SyncStatus,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -344,21 +344,13 @@ fn execute_claimed_job(
         unattended,
     ) {
         Ok(report) => {
-            let error = if matches!(
-                report.sync.outcome,
-                GitSyncOutcome::Conflicted | GitSyncOutcome::Paused
-            ) {
+            let error = if report.sync.outcome == GitSyncOutcome::Paused {
                 None
             } else {
-                report
-                    .sync
-                    .branch
-                    .as_ref()
-                    .and_then(|branch| branch_lane_error(branch, report.sync.worktree))
+                report.sync.branch.as_ref().and_then(branch_lane_error)
             };
             let status = job_status_from_report(&report, error.as_ref());
             let state = match report.sync.outcome {
-                GitSyncOutcome::Conflicted => SyncJobState::Conflicted,
                 GitSyncOutcome::Paused => SyncJobState::Paused,
                 _ if error.is_some() => SyncJobState::Failed,
                 _ => SyncJobState::Succeeded,
@@ -521,7 +513,7 @@ impl GitSyncObserver for SupervisorProgressObserver<'_> {
                     vault: self.vault.to_path_buf(),
                     local_revision: progress.local_snapshot.as_ref().map(ToString::to_string),
                     remote_revision: None,
-                    accepted_revision: progress.accepted.as_ref().map(ToString::to_string),
+                    accepted_revision: None,
                     unresolved_conflicts: usize::from(progress.phase == GitSyncPhase::Conflicted),
                     detail: None,
                 },
@@ -531,13 +523,7 @@ impl GitSyncObserver for SupervisorProgressObserver<'_> {
     }
 }
 
-fn branch_lane_error(branch: &GitBranchSync, worktree: WorktreeSyncMode) -> Option<SyncError> {
-    // Committed-history-only cycles have no file lane to report on.
-    let converged = if worktree.syncs_live() {
-        "file synchronization converged, but "
-    } else {
-        ""
-    };
+fn branch_lane_error(branch: &GitBranchSync) -> Option<SyncError> {
     let name = branch
         .branch
         .as_str()
@@ -545,19 +531,18 @@ fn branch_lane_error(branch: &GitBranchSync, worktree: WorktreeSyncMode) -> Opti
         .unwrap_or(branch.branch.as_str());
     let detail = if branch.action == GitBranchSyncAction::Failed {
         format!(
-            "{converged}branch `{name}` failed: {}",
+            "branch `{name}` failed: {}",
             branch.detail.as_deref().unwrap_or("unknown reason")
         )
     } else {
         let detail = branch.push_detail.as_deref()?;
-        format!("{converged}branch `{name}` push failed: {detail}")
+        format!("branch `{name}` push failed: {detail}")
     };
     Some(SyncError::new(SyncErrorCategory::Repository, detail, true))
 }
 
 fn job_status_from_report(report: &VaultSyncReport, error: Option<&SyncError>) -> SyncStatus {
     let state = match report.sync.outcome {
-        GitSyncOutcome::Conflicted => SyncState::Conflicted,
         GitSyncOutcome::Paused => SyncState::Paused,
         _ if error.is_some() => SyncState::Error,
         _ => SyncState::Clean,
@@ -572,14 +557,9 @@ fn job_status_from_report(report: &VaultSyncReport, error: Option<&SyncError>) -
             .clone()
             .unwrap_or_else(|| report.sync.repository.git_dir.clone()),
         local_revision: report.sync.local_snapshot.as_ref().map(ToString::to_string),
-        remote_revision: report
-            .sync
-            .accepted
-            .as_ref()
-            .or(report.sync.remote_before.as_ref())
-            .map(ToString::to_string),
-        accepted_revision: report.sync.accepted.as_ref().map(ToString::to_string),
-        unresolved_conflicts: usize::from(report.sync.conflict.is_some()),
+        remote_revision: None,
+        accepted_revision: None,
+        unresolved_conflicts: 0,
         detail: error.map(|error| error.message.clone()).or_else(|| {
             report
                 .sync
@@ -701,12 +681,7 @@ pub fn sync_registered_wikis(
     }
     let conflicted = items
         .iter()
-        .filter(|item| {
-            item.report
-                .as_ref()
-                .is_some_and(|report| report.sync.outcome == GitSyncOutcome::Conflicted)
-                || item.retained_conflicts.is_some_and(|count| count > 0)
-        })
+        .filter(|item| item.retained_conflicts.is_some_and(|count| count > 0))
         .count();
     let incomplete = items
         .iter()
@@ -720,10 +695,6 @@ pub fn sync_registered_wikis(
             item.error.is_none()
                 && item.retained_conflicts_error.is_none()
                 && item.retained_conflicts.is_none_or(|count| count == 0)
-                && item
-                    .report
-                    .as_ref()
-                    .is_none_or(|report| report.sync.outcome != GitSyncOutcome::Conflicted)
         })
         .count();
     Ok(RegisteredSyncReport {
@@ -888,11 +859,9 @@ mod tests {
                 work_tree: Some(temporary.path().to_path_buf()),
                 layout: vulcan_sync::GitRepositoryLayout::Colocated,
                 object_format: vulcan_sync::GitObjectFormat::Sha1,
-                worktree_scope: None,
             },
             local_snapshot: None,
             local_tree: None,
-            accepted: None,
         };
         observer.progress(&progress).unwrap();
         let mut changes = supervisor.subscribe_changes();
@@ -1100,55 +1069,48 @@ mod tests {
 
     #[test]
     fn branch_lane_failures_become_retryable_terminal_job_errors() {
-        let pull = branch_lane_error(
-            &branch_lane_for_test(
-                GitBranchSyncAction::Failed,
-                Some("unsupported pull.ff value `bogus`"),
-                false,
-                None,
-            ),
-            WorktreeSyncMode::All,
-        )
+        let pull = branch_lane_error(&branch_lane_for_test(
+            GitBranchSyncAction::Failed,
+            Some("unsupported pull.ff value `bogus`"),
+            false,
+            None,
+        ))
         .expect("pull error");
         assert_eq!(pull.category, SyncErrorCategory::Repository);
         assert!(pull.retryable);
         assert_eq!(
             pull.message,
-            "file synchronization converged, but branch `main` failed: unsupported pull.ff value `bogus`"
+            "branch `main` failed: unsupported pull.ff value `bogus`"
         );
 
-        let push = branch_lane_error(
-            &branch_lane_for_test(
-                GitBranchSyncAction::Merged,
-                None,
-                false,
-                Some("remote advanced first"),
-            ),
-            WorktreeSyncMode::All,
-        )
+        let push = branch_lane_error(&branch_lane_for_test(
+            GitBranchSyncAction::Merged,
+            None,
+            false,
+            Some("remote advanced first"),
+        ))
         .expect("push error");
         assert_eq!(
             push.message,
-            "file synchronization converged, but branch `main` push failed: remote advanced first"
+            "branch `main` push failed: remote advanced first"
         );
-        let commits_only = branch_lane_error(
-            &branch_lane_for_test(
-                GitBranchSyncAction::Failed,
-                Some("could not read from remote"),
-                false,
-                None,
-            ),
-            WorktreeSyncMode::None,
-        )
+        let commits_only = branch_lane_error(&branch_lane_for_test(
+            GitBranchSyncAction::Failed,
+            Some("could not read from remote"),
+            false,
+            None,
+        ))
         .expect("commits-only error");
         assert_eq!(
             commits_only.message,
             "branch `main` failed: could not read from remote"
         );
-        assert!(branch_lane_error(
-            &branch_lane_for_test(GitBranchSyncAction::UpToDate, None, false, None,),
-            WorktreeSyncMode::All
-        )
+        assert!(branch_lane_error(&branch_lane_for_test(
+            GitBranchSyncAction::UpToDate,
+            None,
+            false,
+            None,
+        ),)
         .is_none());
     }
 
@@ -1365,6 +1327,7 @@ mod tests {
         fs::write(vault.join("Home.md"), "home\n").expect("note");
         git(&vault, &["add", "Home.md"]);
         git(&vault, &["commit", "--quiet", "-m", "initial"]);
+        git(&vault, &["push", "--quiet", "-u", "origin", "HEAD"]);
         let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
         registry
             .add(
@@ -1404,7 +1367,7 @@ mod tests {
         assert_eq!(execution.job.job.state, SyncJobState::Succeeded);
         assert_eq!(
             execution.report.as_ref().expect("report").sync.outcome,
-            GitSyncOutcome::Bootstrapped
+            GitSyncOutcome::UpToDate
         );
         assert_eq!(
             execution.job.job.status.as_ref().expect("status").state,
@@ -1421,91 +1384,6 @@ mod tests {
                 .state,
             SyncJobState::Succeeded
         );
-    }
-
-    #[test]
-    fn daemon_job_fails_when_only_the_checked_out_branch_lane_fails() {
-        let temporary = tempdir().expect("temporary directory");
-        let remote = temporary.path().join("remote.git");
-        git(
-            temporary.path(),
-            &[
-                "init",
-                "--quiet",
-                "--bare",
-                remote.to_str().expect("remote path"),
-            ],
-        );
-        let vault = temporary.path().join("vault");
-        fs::create_dir(&vault).expect("vault");
-        git(
-            &vault,
-            &["-c", "init.defaultBranch=main", "init", "--quiet"],
-        );
-        git(&vault, &["config", "user.name", "Vulcan Test"]);
-        git(&vault, &["config", "user.email", "vulcan@example.invalid"]);
-        git(
-            &vault,
-            &[
-                "remote",
-                "add",
-                "origin",
-                remote.to_str().expect("remote path"),
-            ],
-        );
-        fs::write(vault.join("Home.md"), "home\n").expect("note");
-        git(&vault, &["add", "Home.md"]);
-        git(&vault, &["commit", "--quiet", "-m", "initial"]);
-        git(&vault, &["config", "branch.main.remote", "missing"]);
-        git(&vault, &["config", "branch.main.merge", "refs/heads/main"]);
-
-        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
-        registry
-            .add(
-                &AddWikiRequest {
-                    source: None,
-                    id: WikiId::parse("alpha").expect("ID"),
-                    path: vault.clone(),
-                    groups: Vec::new(),
-                    git_dir: None,
-                    permissions_profile: None,
-                    sync_backend: Some("git".to_string()),
-                    platform_profile: None,
-                    profile: None,
-                },
-                false,
-            )
-            .expect("registration");
-        let supervisor =
-            SyncSupervisor::at(temporary.path().join("jobs.json")).expect("supervisor");
-        supervisor
-            .enqueue("alpha", &vault, SyncJobTrigger::Manual)
-            .expect("enqueue");
-
-        let execution = execute_next_sync_job_with_state_store_and_engine(
-            &supervisor,
-            &registry,
-            &GitSyncOptions::default(),
-            &SyncStateStore::at(temporary.path().join("sync-state")),
-            &GitCliEngine::default(),
-        )
-        .expect("execute")
-        .expect("job");
-
-        assert_eq!(
-            execution.report.as_ref().expect("report").sync.outcome,
-            GitSyncOutcome::Bootstrapped,
-            "the hidden file lane should remain safely converged"
-        );
-        assert_eq!(execution.job.job.state, SyncJobState::Failed);
-        assert_eq!(
-            execution.job.job.status.as_ref().expect("status").state,
-            SyncState::Error
-        );
-        let error = execution.job.job.error.as_ref().expect("branch error");
-        assert_eq!(error.category, SyncErrorCategory::Repository);
-        assert!(error.message.contains("file synchronization converged"));
-        assert!(error.message.contains("branch `main` failed"));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use crate::{detached_recovery_ref, local_recovery_ref_namespaces, GitWorktreeScope};
+use crate::{detached_recovery_ref, local_recovery_ref_namespaces};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -116,35 +116,12 @@ pub trait GitEngine: Send + Sync {
         reference: &GitRefName,
     ) -> Result<Option<GitOid>, GitEngineError>;
 
-    fn read_refs(
-        &self,
-        repository: &GitRepository,
-        references: &[&GitRefName],
-    ) -> Result<BTreeMap<GitRefName, GitOid>, GitEngineError> {
-        let mut targets = BTreeMap::new();
-        for reference in references {
-            if let Some(target) = self.read_ref(repository, reference)? {
-                targets.insert((*reference).clone(), target);
-            }
-        }
-        Ok(targets)
-    }
-
     /// Lists direct refs beneath one validated namespace without resolving or
     /// following symbolic refs.
     fn list_refs(
         &self,
         repository: &GitRepository,
         prefix: &GitRefName,
-    ) -> Result<Vec<GitReference>, GitEngineError>;
-
-    /// Lists the refs beneath `prefix` whose tips are reachable from
-    /// `target`, that is, whose history `target` already contains.
-    fn list_refs_contained_in(
-        &self,
-        repository: &GitRepository,
-        prefix: &GitRefName,
-        target: &GitOid,
     ) -> Result<Vec<GitReference>, GitEngineError>;
 
     fn head_commit(&self, repository: &GitRepository) -> Result<Option<GitOid>, GitEngineError>;
@@ -154,48 +131,12 @@ pub trait GitEngine: Send + Sync {
         repository: &GitRepository,
     ) -> Result<Option<GitRefName>, GitEngineError>;
 
-    fn resolve_revision(
-        &self,
-        repository: &GitRepository,
-        revision: &str,
-    ) -> Result<GitOid, GitEngineError>;
-
-    /// Returns a bounded newest-first first-parent history from one immutable
-    /// commit, used by retention planning without traversing unrelated refs.
-    fn first_parent_history(
-        &self,
-        repository: &GitRepository,
-        tip: &GitOid,
-        limit: usize,
-    ) -> Result<Vec<GitOid>, GitEngineError>;
-
-    /// Lists first-parent history from `tip`, newest first, stopping before
-    /// any ancestor of `exclude`. At most `limit` commits are returned.
-    fn first_parent_range(
-        &self,
-        repository: &GitRepository,
-        tip: &GitOid,
-        exclude: &GitOid,
-        limit: usize,
-    ) -> Result<Vec<GitOid>, GitEngineError>;
-
     fn update_ref(
         &self,
         repository: &GitRepository,
         reference: &GitRefName,
         target: &GitOid,
     ) -> Result<(), GitEngineError>;
-
-    fn update_refs(
-        &self,
-        repository: &GitRepository,
-        updates: &[(&GitRefName, &GitOid)],
-    ) -> Result<(), GitEngineError> {
-        for (reference, target) in updates {
-            self.update_ref(repository, reference, target)?;
-        }
-        Ok(())
-    }
 
     fn create_ref(
         &self,
@@ -225,42 +166,12 @@ pub trait GitEngine: Send + Sync {
         commit: &GitOid,
     ) -> Result<GitOid, GitEngineError>;
 
-    fn commit_metadata(
-        &self,
-        repository: &GitRepository,
-        commit: &GitOid,
-    ) -> Result<GitCommitMetadata, GitEngineError>;
-
-    /// Reads several commits in one process, in the order given.
-    fn commit_metadata_batch(
-        &self,
-        repository: &GitRepository,
-        commits: &[GitOid],
-    ) -> Result<Vec<GitCommitMetadata>, GitEngineError>;
-
     fn path_object(
         &self,
         repository: &GitRepository,
         commit: &GitOid,
         path: &str,
     ) -> Result<Option<GitPathObject>, GitEngineError>;
-
-    /// Reads metadata and contents for selected paths with work bounded by
-    /// repository-wide tree and object batches rather than by path count.
-    fn path_objects(
-        &self,
-        repository: &GitRepository,
-        revision: &GitOid,
-        paths: &[String],
-    ) -> Result<BTreeMap<String, GitPathObject>, GitEngineError> {
-        self.path_objects_bounded(
-            repository,
-            revision,
-            paths,
-            MAX_CONFLICT_BLOB_BYTES,
-            MAX_CONFLICT_BLOB_BATCH_BYTES,
-        )
-    }
 
     /// Reads selected path objects while enforcing both unique-object reads
     /// and logical per-path aggregate bytes before cloning shared blob data.
@@ -325,23 +236,6 @@ pub trait GitEngine: Send + Sync {
         objects: &[GitOid],
     ) -> Result<BTreeMap<GitOid, Vec<u8>>, GitEngineError>;
 
-    /// Visits each unique blob once. The CLI engine retains only one raw payload
-    /// at a time, with the same individual/aggregate limits as `read_blobs`.
-    /// Visitors must not publish results until this method succeeds: later input
-    /// or process failures can invalidate an otherwise successful prefix.
-    /// The compatibility default for alternate engines still collects a map.
-    fn visit_blobs(
-        &self,
-        repository: &GitRepository,
-        objects: &[GitOid],
-        visitor: &mut GitBlobVisitor<'_>,
-    ) -> Result<(), GitEngineError> {
-        for (oid, data) in self.read_blobs(repository, objects)? {
-            visitor(&oid, data)?;
-        }
-        Ok(())
-    }
-
     /// Reads known blobs while enforcing individual and aggregate byte limits.
     /// Engines should reject declared oversize objects before materializing
     /// their contents; the default preserves compatibility for other engines.
@@ -376,21 +270,6 @@ pub trait GitEngine: Send + Sync {
         repository: &GitRepository,
         from: &GitOid,
         to: &GitOid,
-    ) -> Result<Vec<String>, GitEngineError>;
-
-    /// Returns typed tree changes, including rename pairs detected by Git.
-    fn changed_entries(
-        &self,
-        repository: &GitRepository,
-        from: &GitOid,
-        to: &GitOid,
-    ) -> Result<Vec<GitChange>, GitEngineError>;
-
-    /// Lists every path in a commit or tree without loading object contents.
-    fn tree_paths(
-        &self,
-        repository: &GitRepository,
-        revision: &GitOid,
     ) -> Result<Vec<String>, GitEngineError>;
 
     /// Lists every leaf entry in a commit or tree without loading object contents.
@@ -461,22 +340,6 @@ pub trait GitEngine: Send + Sync {
             .collect())
     }
 
-    fn tree_with_paths(
-        &self,
-        repository: &GitRepository,
-        base: &GitOid,
-        target: &GitOid,
-        paths: &[String],
-    ) -> Result<GitOid, GitEngineError>;
-
-    fn diff_patch(
-        &self,
-        repository: &GitRepository,
-        from: &GitOid,
-        to: &GitOid,
-        paths: &[String],
-    ) -> Result<String, GitEngineError>;
-
     /// Validates a unified patch against one immutable revision without writing Git objects.
     fn check_patch(
         &self,
@@ -485,30 +348,11 @@ pub trait GitEngine: Send + Sync {
         patch: &[u8],
     ) -> Result<Vec<String>, GitEngineError>;
 
-    /// Applies a validated unified patch to an isolated index based on one revision.
-    fn apply_patch_to_tree(
-        &self,
-        repository: &GitRepository,
-        base: &GitOid,
-        patch: &[u8],
-    ) -> Result<GitOid, GitEngineError>;
-
     fn capture_worktree(
         &self,
         repository: &GitRepository,
         request: &GitCaptureRequest,
     ) -> Result<GitCapture, GitEngineError>;
-
-    /// Builds a tree holding `outside`'s entries outside `scope` and
-    /// `scoped`'s entries inside it. Both are trees or commits. Uses a scratch
-    /// index, so no index or worktree state is touched.
-    fn overlay_scoped_tree(
-        &self,
-        repository: &GitRepository,
-        scope: &GitWorktreeScope,
-        outside: &GitOid,
-        scoped: &GitOid,
-    ) -> Result<GitOid, GitEngineError>;
 
     /// Hashes a stable worktree snapshot into a tree without creating a commit or ref.
     /// With a worktree scope, only scoped paths come from the worktree and the
@@ -545,19 +389,6 @@ pub trait GitEngine: Send + Sync {
         prefix: &GitRefName,
     ) -> Result<Vec<GitReference>, GitEngineError>;
 
-    /// Observes `reference` and every ref beneath `prefix` in one remote trip.
-    ///
-    /// The exact ref is strict, like [`GitEngine::remote_ref`]. The prefixed
-    /// refs are best effort: when they cannot be listed or parsed the second
-    /// value is `None`, so this namespace can never fail an ordinary sync.
-    fn remote_ref_with_prefix(
-        &self,
-        repository: &GitRepository,
-        remote: &GitRemote,
-        reference: &GitRefName,
-        prefix: &GitRefName,
-    ) -> Result<(Option<GitOid>, Option<Vec<GitReference>>), GitEngineError>;
-
     /// Observes several exact refs and, optionally, every ref beneath `prefix`
     /// in one remote trip. The returned tips follow the order of `references`.
     ///
@@ -571,20 +402,6 @@ pub trait GitEngine: Send + Sync {
         prefix: Option<&GitRefName>,
     ) -> Result<GitRemoteRefs, GitEngineError>;
 
-    /// Fetches `source` into `destination` and, in the same trip, mirrors every
-    /// remote ref beneath `remote_prefix` into `local_prefix`, pruning mirrors
-    /// whose remote ref vanished. Returns the fetched tip and the mirrored refs
-    /// under their remote names. If the combined fetch fails, it retries the
-    /// plain fetch and reports no mirror (`None`), so mirroring is best effort.
-    fn fetch_ref_with_mirror(
-        &self,
-        repository: &GitRepository,
-        remote: &GitRemote,
-        source: &GitRefName,
-        destination: &GitRefName,
-        mirror: &GitRefMirror<'_>,
-    ) -> Result<(GitOid, Option<Vec<GitReference>>), GitEngineError>;
-
     fn fetch_ref(
         &self,
         repository: &GitRepository,
@@ -592,30 +409,6 @@ pub trait GitEngine: Send + Sync {
         source: &GitRefName,
         destination: &GitRefName,
     ) -> Result<GitOid, GitEngineError>;
-
-    /// Fetches several remote refs into local refs; the CLI engine does it in
-    /// one transfer.
-    fn fetch_refs(
-        &self,
-        repository: &GitRepository,
-        remote: &GitRemote,
-        mappings: &[(GitRefName, GitRefName)],
-    ) -> Result<(), GitEngineError> {
-        for (source, destination) in mappings {
-            self.fetch_ref(repository, remote, source, destination)?;
-        }
-        Ok(())
-    }
-
-    /// Adds `^<prefix>/*` to `remote.<remote>.fetch` so plain `git fetch`
-    /// and `git pull` skip the refs beneath `prefix`. Leaves a remote without
-    /// configured fetch refspecs alone. Returns whether it added the line.
-    fn exclude_from_default_fetch(
-        &self,
-        repository: &GitRepository,
-        remote: &GitRemote,
-        prefix: &GitRefName,
-    ) -> Result<bool, GitEngineError>;
 
     fn is_ancestor(
         &self,
@@ -638,18 +431,6 @@ pub trait GitEngine: Send + Sync {
         local_candidate: &GitOid,
     ) -> Result<GitMerge, GitEngineError>;
 
-    fn resolve_merge_tree(
-        &self,
-        repository: &GitRepository,
-        request: &GitMergeResolutionRequest,
-    ) -> Result<GitOid, GitEngineError>;
-
-    fn resolve_merge_tree_with_paths(
-        &self,
-        repository: &GitRepository,
-        request: &GitContentMergeResolutionRequest,
-    ) -> Result<GitOid, GitEngineError>;
-
     fn create_commit(
         &self,
         repository: &GitRepository,
@@ -666,33 +447,10 @@ pub trait GitEngine: Send + Sync {
         message: &str,
     ) -> Result<GitOid, GitEngineError>;
 
-    /// Creates a commit attributing the publisher's Git identity: repository
-    /// configuration falling back to global and system configuration, exactly
-    /// as ordinary Git resolves it. Used for human-administered commits such
-    /// as notification advertisements, where authorship is the audit trail.
-    /// Pass signing to GPG/SSH-sign with the publisher's own configuration.
-    fn create_commit_with_user_identity(
-        &self,
-        repository: &GitRepository,
-        tree: &GitOid,
-        parents: &[GitOid],
-        message: &str,
-        signing: Option<&CommitSigning>,
-    ) -> Result<GitOid, GitEngineError>;
-
     /// Writes blob bytes directly to the object store without touching the
     /// worktree, the user's index, or any temporary files.
     fn write_blob(&self, repository: &GitRepository, data: &[u8])
         -> Result<GitOid, GitEngineError>;
-
-    /// Three-way merges file contents line by line, as Git merges a text
-    /// file, without any repository state. Returns `None` when they conflict.
-    fn merge_file(
-        &self,
-        base: &[u8],
-        local: &[u8],
-        remote: &[u8],
-    ) -> Result<Option<Vec<u8>>, GitEngineError>;
 
     /// Writes multiple blobs while preserving input order. Engines may
     /// override this to use one bounded process transaction.
@@ -723,16 +481,6 @@ pub trait GitEngine: Send + Sync {
         destination: &GitRefName,
         expected: Option<&GitOid>,
     ) -> Result<GitPushResult, GitEngineError>;
-
-    /// Pushes several leased ref updates in one remote trip. The push is not
-    /// atomic: each ref is accepted or rejected on its own, and the results
-    /// follow the order of `updates`.
-    fn push_refs(
-        &self,
-        repository: &GitRepository,
-        remote: &GitRemote,
-        updates: &[GitRefPush<'_>],
-    ) -> Result<Vec<GitPushResult>, GitEngineError>;
 
     /// Deletes several remote refs, each only while it still names its
     /// expected commit. The CLI engine sends one push; the outcomes follow
@@ -881,33 +629,6 @@ pub trait GitEngine: Send + Sync {
         expected: &GitOid,
         target: &GitOid,
     ) -> Result<BranchAdvanceOutcome, GitEngineError>;
-
-    /// Fast-forwards the checked-out branch from `expected` to `target`,
-    /// writing each changed path whose worktree bytes still equal
-    /// `expected`'s. A changed unscoped path with other uncommitted bytes
-    /// blocks the advance; a changed scoped path keeps its local bytes.
-    fn advance_branch_scoped(
-        &self,
-        repository: &GitRepository,
-        scope: &GitWorktreeScope,
-        branch: &GitRefName,
-        expected: &GitOid,
-        target: &GitOid,
-    ) -> Result<ScopedBranchAdvance, GitEngineError>;
-
-    fn plan_tree_application(
-        &self,
-        repository: &GitRepository,
-        expected_worktree: &GitOid,
-        target: &GitOid,
-    ) -> Result<GitTreeApplyPlan, GitEngineError>;
-
-    fn apply_tree(
-        &self,
-        repository: &GitRepository,
-        expected_worktree: &GitOid,
-        target: &GitOid,
-    ) -> Result<GitTreeApplyPlan, GitEngineError>;
 
     fn safety_state(&self, repository: &GitRepository) -> Result<GitSafetyState, GitEngineError>;
 
@@ -1250,20 +971,9 @@ pub struct GitRepository {
     pub work_tree: Option<PathBuf>,
     pub layout: GitRepositoryLayout,
     pub object_format: GitObjectFormat,
-    /// Path-scoped synchronization reads and writes the worktree only inside
-    /// this scope; `None` covers the whole worktree. Discovery never sets it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub worktree_scope: Option<GitWorktreeScope>,
 }
 
 impl GitRepository {
-    /// Restricts worktree capture, comparison, and application to `scope`.
-    #[must_use]
-    pub fn with_worktree_scope(mut self, scope: Option<GitWorktreeScope>) -> Self {
-        self.worktree_scope = scope;
-        self
-    }
-
     fn require_work_tree(&self) -> Result<&Path, GitEngineError> {
         self.work_tree
             .as_deref()
@@ -1365,13 +1075,6 @@ impl Display for GitRefName {
 pub struct GitReference {
     pub name: GitRefName,
     pub target: GitOid,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct GitCommitMetadata {
-    pub tree: GitOid,
-    pub parents: Vec<GitOid>,
-    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1550,24 +1253,6 @@ pub enum BranchAdvanceOutcome {
     Stale,
 }
 
-/// The outcome of fast-forwarding the checked-out branch in path-scoped
-/// synchronization, where scoped paths may legitimately hold uncommitted
-/// bytes that arrived through live.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ScopedBranchAdvance {
-    /// The branch moved. Paths whose worktree still held the old commit's
-    /// bytes now hold the new ones; `kept` lists scoped paths whose
-    /// uncommitted local bytes were left in place.
-    Advanced {
-        kept: Vec<String>,
-    },
-    /// Uncommitted unscoped files the advance would overwrite; empty when
-    /// Git refused because a file changed after the paths were classified.
-    BlockedDirty(Vec<String>),
-    BlockedStaged,
-    Stale,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitCaptureRequest {
     pub base: Option<GitOid>,
@@ -1610,57 +1295,6 @@ pub struct GitTreeEntry {
     pub kind: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GitChangeKind {
-    Added,
-    Modified,
-    Deleted,
-    TypeChanged,
-    Renamed,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct GitChange {
-    pub kind: GitChangeKind,
-    /// The destination path, or the sole path for non-rename changes.
-    pub path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub similarity: Option<u8>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GitTreeApplyAction {
-    Add,
-    Update,
-    Delete,
-    TypeChange,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct GitTreeApplyPath {
-    pub path: String,
-    pub action: GitTreeApplyAction,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expected: Option<GitPathObject>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub target: Option<GitPathObject>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct GitTreeApplyPlan {
-    pub expected_revision: GitOid,
-    pub target_revision: GitOid,
-    pub additions: usize,
-    pub updates: usize,
-    pub deletions: usize,
-    pub type_changes: usize,
-    pub paths: Vec<GitTreeApplyPath>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GitMerge {
     pub clean: bool,
@@ -1672,50 +1306,9 @@ pub struct GitMerge {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum GitConflictSide {
-    Base,
-    Local,
-    Remote,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GitMergeResolutionRequest {
-    pub base: GitOid,
-    pub accepted_remote: GitOid,
-    pub local_candidate: GitOid,
-    pub paths: Vec<String>,
-    pub side: GitConflictSide,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GitResolvedPath {
-    pub path: String,
-    pub mode: Option<String>,
-    pub data: Option<Vec<u8>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GitContentMergeResolutionRequest {
-    pub base: GitOid,
-    pub accepted_remote: GitOid,
-    pub local_candidate: GitOid,
-    pub paths: Vec<GitResolvedPath>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
 pub enum GitPushResult {
     Updated,
     Rejected,
-}
-
-/// One leased ref update within a multi-ref push.
-#[derive(Debug, Clone, Copy)]
-pub struct GitRefPush<'a> {
-    pub source: &'a GitOid,
-    pub destination: &'a GitRefName,
-    /// The remote value the update requires; `None` requires the ref absent.
-    pub expected: Option<&'a GitOid>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1913,32 +1506,6 @@ impl From<std::io::Error> for GitEngineError {
     fn from(error: std::io::Error) -> Self {
         Self::Io(error)
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CommitIdentity {
-    /// Fixed Vulcan Sync author/committer for device-owned sync state.
-    Vulcan { reproducible: bool },
-    /// Inherit Git's default identity resolution for human-attributed commits.
-    User,
-}
-
-/// How to sign a human-attributed commit. Signing reuses the publisher's own
-/// Git signing configuration (`user.signingkey`, `gpg.format`); Vulcan never
-/// manages keys.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CommitSigning {
-    /// Sign with the default key from the user's Git configuration.
-    DefaultKey,
-    /// Sign with an explicit key id.
-    Key(String),
-}
-
-/// A remote namespace mirrored into a local one by [`GitEngine::fetch_ref_with_mirror`].
-#[derive(Debug, Clone, Copy)]
-pub struct GitRefMirror<'a> {
-    pub remote_prefix: &'a GitRefName,
-    pub local_prefix: &'a GitRefName,
 }
 
 /// Text to replace in Git's stderr, and the label replacing it.
@@ -2523,248 +2090,15 @@ impl GitCliEngine {
     ) -> Result<(), GitEngineError> {
         // Add the worktree without device-local state, then remove any that a
         // commit tracked from the alternate index below.
-        if let Some(scope) = &repository.worktree_scope {
-            let pathspecs = self.present_scope_pathspecs(repository, index_path, scope)?;
-            if !pathspecs.is_empty() {
-                let mut command = self.index_command(repository, index_path)?;
-                command.args(["add", "-A", "--"]);
-                command.args(pathspecs);
-                ensure_success(operation, self.execute(command)?)?;
-            }
-        } else {
-            let mut command = self.index_command(repository, index_path)?;
-            command.args(["add", "-A", "--", "."]);
-            command.args(DEVICE_LOCAL_CAPTURE_EXCLUDES);
-            ensure_success(operation, self.execute(command)?)?;
-        }
+        let mut command = self.index_command(repository, index_path)?;
+        command.args(["add", "-A", "--", "."]);
+        command.args(DEVICE_LOCAL_CAPTURE_EXCLUDES);
+        ensure_success(operation, self.execute(command)?)?;
         let mut command = self.index_command(repository, index_path)?;
         command.args(["update-index", "--force-remove", "--"]);
         command.args(DEVICE_LOCAL_VULCAN_PATHS);
         ensure_success(operation, self.execute(command)?)?;
         Ok(())
-    }
-
-    /// `target` with each kept path restored to its old entry (`None` when
-    /// the old commit lacked it), so a checkout to it leaves those paths alone.
-    fn tree_with_kept_entries(
-        &self,
-        repository: &GitRepository,
-        target: &GitOid,
-        kept: &[(String, Option<GitPathObject>)],
-    ) -> Result<GitOid, GitEngineError> {
-        if kept.is_empty() {
-            return self.tree_oid(repository, target);
-        }
-        let zero = match repository.object_format {
-            GitObjectFormat::Sha256 => "0".repeat(64),
-            _ => "0".repeat(40),
-        };
-        let mut input = Vec::new();
-        for (path, old) in kept {
-            let line = match old {
-                Some(object) => format!("{} {}\t", object.mode, object.oid.as_str()),
-                None => format!("0 {zero}\t"),
-            };
-            input.extend_from_slice(line.as_bytes());
-            input.extend_from_slice(path.as_bytes());
-            input.push(0);
-        }
-        let scratch = tempfile::tempdir_in(&repository.git_dir)?;
-        let index_path = scratch.path().join("index");
-        self.index_output(
-            repository,
-            &index_path,
-            "seed a branch checkout tree",
-            ["read-tree", target.as_str()],
-        )?;
-        let mut command = self.index_command(repository, &index_path)?;
-        command.args(["update-index", "-z", "--index-info"]);
-        ensure_success(
-            "keep local scoped paths",
-            self.execute_with_input(command, "keep local scoped paths", &input)?,
-        )?;
-        GitOid::parse(
-            self.index_capture(
-                repository,
-                &index_path,
-                "write a branch checkout tree",
-                ["write-tree"],
-            )?
-            .trim(),
-        )
-    }
-
-    /// Blob IDs of the worktree's bytes at `paths` through Git's clean
-    /// filters; `None` for a missing path. Symbolic links hash their target.
-    fn worktree_blob_oids(
-        &self,
-        repository: &GitRepository,
-        work_tree: &Path,
-        paths: &[String],
-    ) -> Result<BTreeMap<String, Option<GitOid>>, GitEngineError> {
-        let mut oids = BTreeMap::new();
-        let mut files = Vec::new();
-        for path in paths {
-            match std::fs::symlink_metadata(work_tree.join(path)) {
-                Ok(metadata) if metadata.file_type().is_symlink() => {
-                    let target = std::fs::read_link(work_tree.join(path))?;
-                    let target = target.to_string_lossy().into_owned();
-                    let mut command = self.repository_command(repository);
-                    command.args(["hash-object", "--stdin"]);
-                    let output = ensure_success(
-                        "hash a symbolic link",
-                        self.execute_with_input(
-                            command,
-                            "hash a symbolic link",
-                            target.as_bytes(),
-                        )?,
-                    )?;
-                    let oid = decode_stdout("hash a symbolic link", output.stdout)?;
-                    oids.insert(path.clone(), Some(GitOid::parse(oid.trim())?));
-                }
-                Ok(metadata) if metadata.is_file() && !path.contains('\n') => {
-                    files.push(path.clone());
-                }
-                // Directories, unreadable entries, and unhashable names never
-                // equal a blob, so they count as local changes.
-                Ok(_) => {
-                    oids.insert(path.clone(), Some(GitOid(String::new())));
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    oids.insert(path.clone(), None);
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
-        if !files.is_empty() {
-            let mut input = files.join("\n").into_bytes();
-            input.push(b'\n');
-            let mut command = self.repository_command(repository);
-            command.args(["hash-object", "--stdin-paths"]);
-            let output = ensure_success(
-                "hash worktree files",
-                self.execute_with_input(command, "hash worktree files", &input)?,
-            )?;
-            let stdout = decode_stdout("hash worktree files", output.stdout)?;
-            for (path, oid) in files.iter().zip(stdout.lines()) {
-                oids.insert(path.clone(), Some(GitOid::parse(oid.trim())?));
-            }
-        }
-        Ok(oids)
-    }
-
-    /// Stage-zero blob IDs of the normal index at `paths`.
-    fn index_blob_oids(
-        &self,
-        repository: &GitRepository,
-        paths: &[String],
-    ) -> Result<BTreeMap<String, Option<GitOid>>, GitEngineError> {
-        let mut oids = paths
-            .iter()
-            .map(|path| (path.clone(), None))
-            .collect::<BTreeMap<_, _>>();
-        if paths.is_empty() {
-            return Ok(oids);
-        }
-        let mut command = self.repository_command(repository);
-        command.args(["ls-files", "-s", "-z", "--"]);
-        command.args(paths.iter().map(|path| format!(":(literal){path}")));
-        let output = ensure_success("read index entries", self.execute(command)?)?;
-        for record in nul_fields("read index entries", &output.stdout)? {
-            let Some((metadata, path)) = record.split_once('\t') else {
-                continue;
-            };
-            let mut fields = metadata.split(' ');
-            let (_mode, oid, stage) = (fields.next(), fields.next(), fields.next());
-            if stage == Some("0") {
-                if let (Some(slot), Some(oid)) = (oids.get_mut(path), oid) {
-                    *slot = Some(GitOid::parse(oid)?);
-                }
-            }
-        }
-        Ok(oids)
-    }
-
-    /// The scope's capture pathspecs, without entries that match nothing in
-    /// the worktree or the index: `git add` rejects such a pathspec.
-    fn present_scope_pathspecs(
-        &self,
-        repository: &GitRepository,
-        index_path: &Path,
-        scope: &GitWorktreeScope,
-    ) -> Result<Vec<String>, GitEngineError> {
-        let work_tree = repository.require_work_tree()?;
-        let mut command = self.index_command(repository, index_path)?;
-        command.args(["ls-files", "-z", "--"]);
-        command.args(scope.pathspecs());
-        let indexed = ensure_success("list scoped index entries", self.execute(command)?)?;
-        let indexed = nul_fields("list scoped index entries", &indexed.stdout)?;
-        let mut pathspecs = scope
-            .entries()
-            .iter()
-            .filter(|entry| {
-                std::fs::symlink_metadata(work_tree.join(entry.as_str())).is_ok()
-                    || indexed.iter().any(|path| {
-                        path == *entry
-                            || path
-                                .strip_prefix(entry.as_str())
-                                .is_some_and(|rest| rest.starts_with('/'))
-                    })
-            })
-            .map(|entry| format!(":(literal){entry}"))
-            .collect::<Vec<_>>();
-        if !pathspecs.is_empty() {
-            pathspecs.extend(
-                scope
-                    .capture_pathspecs()
-                    .into_iter()
-                    .filter(|pathspec| pathspec.starts_with(":(exclude")),
-            );
-        }
-        Ok(pathspecs)
-    }
-
-    /// The published tip of the checked-out branch, whose tree supplies
-    /// everything outside the scope of a path-scoped capture.
-    fn scoped_capture_outside(&self, repository: &GitRepository) -> Result<GitOid, GitEngineError> {
-        let unsupported = |detail: &str| {
-            GitEngineError::UnsupportedRepository {
-            detail: format!(
-                "path-scoped sync takes everything outside sync.paths from the checked-out branch's published commits, but {detail}"
-            ),
-        }
-        };
-        let branch = self
-            .head_reference(repository)?
-            .ok_or_else(|| unsupported("HEAD is detached"))?;
-        let upstream = self
-            .branch_upstream(repository, &branch)?
-            .ok_or_else(|| unsupported("the branch has no upstream"))?;
-        let head = self
-            .head_commit(repository)?
-            .ok_or_else(|| unsupported("the branch has no commits"))?;
-        let tracking = self
-            .read_ref(repository, &upstream.tracking_ref)?
-            .ok_or_else(|| unsupported("the branch was never pushed; run `git push -u` once"))?;
-        if head == tracking {
-            return Ok(tracking);
-        }
-        self.merge_base(repository, &head, &tracking)?
-            .ok_or_else(|| unsupported("the branch shares no history with its upstream"))
-    }
-
-    /// The tree a scoped application materializes: `target` inside the
-    /// scope and `expected` everywhere else. Unscoped `target`.
-    fn scoped_application_target(
-        &self,
-        repository: &GitRepository,
-        expected: &GitOid,
-        target: &GitOid,
-    ) -> Result<GitOid, GitEngineError> {
-        match &repository.worktree_scope {
-            Some(scope) => self.overlay_scoped_tree(repository, scope, expected, target),
-            None => Ok(target.clone()),
-        }
     }
 
     /// Tracked paths of the captured `tree` that a `.gitignore` changed since
@@ -2970,30 +2304,6 @@ impl GitCliEngine {
         }))
     }
 
-    fn tree_application_paths(
-        &self,
-        repository: &GitRepository,
-        expected_worktree: &GitOid,
-        target: &GitOid,
-    ) -> Result<Vec<GitTreeApplyPath>, GitEngineError> {
-        let mut command = self.repository_command(repository);
-        command.args([
-            "diff-tree",
-            "--no-commit-id",
-            "--raw",
-            "--no-abbrev",
-            "--no-renames",
-            "-r",
-            "-z",
-            expected_worktree.as_str(),
-            target.as_str(),
-            "--",
-        ]);
-        let output = self.execute(command)?;
-        let output = ensure_success("plan worktree application", output)?;
-        parse_tree_application_paths(&output.stdout)
-    }
-
     fn commit_tree(
         &self,
         repository: &GitRepository,
@@ -3065,15 +2375,10 @@ impl GitCliEngine {
         index_path: &Path,
     ) -> Result<bool, GitEngineError> {
         self.heal_racy_sync_index(repository, index_path)?;
-        let pathspecs = repository.worktree_scope.as_ref().map_or_else(
-            || {
-                WORKTREE_CAPTURE_PATHS
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-            },
-            GitWorktreeScope::capture_pathspecs,
-        );
+        let pathspecs = WORKTREE_CAPTURE_PATHS
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
         let mut command = self.index_command(repository, index_path)?;
         command.args(["diff-files", "--quiet", "--"]);
         command.args(&pathspecs);
@@ -3205,50 +2510,21 @@ impl GitCliEngine {
         message: &str,
         reproducible: bool,
     ) -> Result<GitOid, GitEngineError> {
-        self.commit_tree_with_identity(
-            repository,
-            tree,
-            parents,
-            message,
-            CommitIdentity::Vulcan { reproducible },
-            None,
-        )
-    }
-
-    fn commit_tree_with_identity(
-        &self,
-        repository: &GitRepository,
-        tree: &GitOid,
-        parents: &[GitOid],
-        message: &str,
-        identity: CommitIdentity,
-        signing: Option<&CommitSigning>,
-    ) -> Result<GitOid, GitEngineError> {
+        // A fixed Vulcan Sync author/committer for device-owned sync state.
         let mut command = self.repository_command(repository);
         command.arg("commit-tree").arg(tree.as_str());
         for parent in parents {
             command.arg("-p").arg(parent.as_str());
         }
-        if let CommitIdentity::Vulcan { reproducible } = identity {
+        command
+            .env("GIT_AUTHOR_NAME", "Vulcan Sync")
+            .env("GIT_AUTHOR_EMAIL", "sync@vulcan.invalid")
+            .env("GIT_COMMITTER_NAME", "Vulcan Sync")
+            .env("GIT_COMMITTER_EMAIL", "sync@vulcan.invalid");
+        if reproducible {
             command
-                .env("GIT_AUTHOR_NAME", "Vulcan Sync")
-                .env("GIT_AUTHOR_EMAIL", "sync@vulcan.invalid")
-                .env("GIT_COMMITTER_NAME", "Vulcan Sync")
-                .env("GIT_COMMITTER_EMAIL", "sync@vulcan.invalid");
-            if reproducible {
-                command
-                    .env("GIT_AUTHOR_DATE", "@0 +0000")
-                    .env("GIT_COMMITTER_DATE", "@0 +0000");
-            }
-        }
-        match signing {
-            None => {}
-            Some(CommitSigning::DefaultKey) => {
-                command.arg("--gpg-sign");
-            }
-            Some(CommitSigning::Key(key_id)) => {
-                command.arg(format!("--gpg-sign={key_id}"));
-            }
+                .env("GIT_AUTHOR_DATE", "@0 +0000")
+                .env("GIT_COMMITTER_DATE", "@0 +0000");
         }
         let output = self.execute_with_input(command, "create a commit", message.as_bytes())?;
         let output = ensure_success("create a commit", output)?;
@@ -3425,7 +2701,6 @@ impl GitEngine for GitCliEngine {
             work_tree,
             layout,
             object_format,
-            worktree_scope: None,
         })
     }
 
@@ -3525,30 +2800,6 @@ impl GitEngine for GitCliEngine {
         Err(command_failed("read a Git ref", &output))
     }
 
-    fn read_refs(
-        &self,
-        repository: &GitRepository,
-        references: &[&GitRefName],
-    ) -> Result<BTreeMap<GitRefName, GitOid>, GitEngineError> {
-        if references.is_empty() {
-            return Ok(BTreeMap::new());
-        }
-        let requested = references
-            .iter()
-            .map(|reference| reference.as_str())
-            .collect::<BTreeSet<_>>();
-        let mut command = self.repository_command(repository);
-        command.args([
-            "for-each-ref",
-            "--format=%(refname)%00%(objecttype)%00%(objectname)%00%(*objecttype)%00%(*objectname)%00",
-        ]);
-        for reference in references {
-            command.arg(reference.as_str());
-        }
-        let output = ensure_success("read Git refs", self.execute(command)?)?;
-        parse_ref_targets(&output.stdout, &requested)
-    }
-
     fn list_refs(
         &self,
         repository: &GitRepository,
@@ -3559,21 +2810,6 @@ impl GitEngine for GitCliEngine {
             .args(["for-each-ref", "--format=%(refname)%00%(objectname)%00"])
             .arg(prefix.as_str());
         let output = ensure_success("list Git refs", self.execute(command)?)?;
-        parse_reference_list(&output.stdout)
-    }
-
-    fn list_refs_contained_in(
-        &self,
-        repository: &GitRepository,
-        prefix: &GitRefName,
-        target: &GitOid,
-    ) -> Result<Vec<GitReference>, GitEngineError> {
-        let mut command = self.repository_command(repository);
-        command
-            .args(["for-each-ref", "--format=%(refname)%00%(objectname)%00"])
-            .arg(format!("--merged={}", target.as_str()))
-            .arg(prefix.as_str());
-        let output = ensure_success("list contained Git refs", self.execute(command)?)?;
         parse_reference_list(&output.stdout)
     }
 
@@ -3607,71 +2843,6 @@ impl GitEngine for GitCliEngine {
         Err(command_failed("read the HEAD ref", &output))
     }
 
-    fn resolve_revision(
-        &self,
-        repository: &GitRepository,
-        revision: &str,
-    ) -> Result<GitOid, GitEngineError> {
-        validate_revision(revision)?;
-        let mut command = self.repository_command(repository);
-        command.args(["rev-parse", "--verify", "--end-of-options"]);
-        command.arg(format!("{revision}^{{commit}}"));
-        let output = self.execute(command)?;
-        let output = ensure_success("resolve a Git revision", output)?;
-        GitOid::parse(decode_stdout("resolve a Git revision", output.stdout)?.trim())
-    }
-
-    fn first_parent_history(
-        &self,
-        repository: &GitRepository,
-        tip: &GitOid,
-        limit: usize,
-    ) -> Result<Vec<GitOid>, GitEngineError> {
-        if limit == 0 || limit > 1_000_000 {
-            return Err(GitEngineError::UnsupportedRepository {
-                detail: "first-parent history limit must be between 1 and 1000000".to_string(),
-            });
-        }
-        let mut command = self.repository_command(repository);
-        command
-            .args(["rev-list", "--first-parent"])
-            .arg(format!("--max-count={limit}"))
-            .arg(tip.as_str());
-        let output = ensure_success("list first-parent history", self.execute(command)?)?;
-        decode_stdout("list first-parent history", output.stdout)?
-            .lines()
-            .filter(|line| !line.is_empty())
-            .map(GitOid::parse)
-            .collect()
-    }
-
-    fn first_parent_range(
-        &self,
-        repository: &GitRepository,
-        tip: &GitOid,
-        exclude: &GitOid,
-        limit: usize,
-    ) -> Result<Vec<GitOid>, GitEngineError> {
-        if limit == 0 || limit > 1_000_000 {
-            return Err(GitEngineError::UnsupportedRepository {
-                detail: "first-parent history limit must be between 1 and 1000000".to_string(),
-            });
-        }
-        let mut command = self.repository_command(repository);
-        command
-            .args(["rev-list", "--first-parent"])
-            .arg(format!("--max-count={limit}"))
-            .arg(tip.as_str())
-            .arg(format!("^{}", exclude.as_str()))
-            .arg("--");
-        let output = ensure_success("list first-parent history", self.execute(command)?)?;
-        decode_stdout("list first-parent history", output.stdout)?
-            .lines()
-            .filter(|line| !line.is_empty())
-            .map(GitOid::parse)
-            .collect()
-    }
-
     fn update_ref(
         &self,
         repository: &GitRepository,
@@ -3682,28 +2853,6 @@ impl GitEngine for GitCliEngine {
             repository,
             "update a local Git ref",
             ["update-ref", reference.as_str(), target.as_str()],
-        )?;
-        Ok(())
-    }
-
-    fn update_refs(
-        &self,
-        repository: &GitRepository,
-        updates: &[(&GitRefName, &GitOid)],
-    ) -> Result<(), GitEngineError> {
-        // An explicit transaction keeps the batch atomic even if a future
-        // Git version changes non-transactional stdin semantics.
-        let mut input = String::from("start\n");
-        for (reference, target) in updates {
-            writeln!(input, "update {reference} {target}")
-                .expect("writing validated refs and object IDs to a String cannot fail");
-        }
-        input.push_str("prepare\ncommit\n");
-        let mut command = self.repository_command(repository);
-        command.args(["update-ref", "--stdin"]);
-        ensure_success(
-            "update Git refs",
-            self.execute_with_input(command, "update Git refs", input.as_bytes())?,
         )?;
         Ok(())
     }
@@ -3797,50 +2946,6 @@ impl GitEngine for GitCliEngine {
         GitOid::parse(stdout.trim())
     }
 
-    fn commit_metadata(
-        &self,
-        repository: &GitRepository,
-        commit: &GitOid,
-    ) -> Result<GitCommitMetadata, GitEngineError> {
-        let output = self.repository_output(
-            repository,
-            "read Git commit metadata",
-            ["cat-file", "commit", commit.as_str()],
-        )?;
-        parse_commit_metadata(&output.stdout)
-    }
-
-    fn commit_metadata_batch(
-        &self,
-        repository: &GitRepository,
-        commits: &[GitOid],
-    ) -> Result<Vec<GitCommitMetadata>, GitEngineError> {
-        const MAX_COMMIT_BYTES: usize = 16 * 1024 * 1024;
-        const MAX_BATCH_BYTES: usize = 256 * 1024 * 1024;
-        if commits.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut input = String::new();
-        for commit in commits {
-            writeln!(input, "{commit}").expect("writing to a String cannot fail");
-        }
-        let mut command = self.repository_command(repository);
-        command.args(["cat-file", "--batch"]);
-        let mut metadata = Vec::with_capacity(commits.len());
-        self.visit_batch_objects_with_limits(
-            command,
-            input.as_bytes(),
-            commits,
-            "commit",
-            (MAX_COMMIT_BYTES, MAX_BATCH_BYTES),
-            &mut |_, data| {
-                metadata.push(parse_commit_metadata(&data)?);
-                Ok(())
-            },
-        )?;
-        Ok(metadata)
-    }
-
     fn path_object(
         &self,
         repository: &GitRepository,
@@ -3909,31 +3014,6 @@ impl GitEngine for GitCliEngine {
         )
     }
 
-    fn visit_blobs(
-        &self,
-        repository: &GitRepository,
-        objects: &[GitOid],
-        visitor: &mut GitBlobVisitor<'_>,
-    ) -> Result<(), GitEngineError> {
-        let objects = objects.iter().cloned().collect::<BTreeSet<_>>();
-        if objects.is_empty() {
-            return Ok(());
-        }
-        let mut input = String::new();
-        for object in &objects {
-            writeln!(input, "{object}").expect("writing to a String cannot fail");
-        }
-        let mut command = self.repository_command(repository);
-        command.args(["cat-file", "--batch"]);
-        self.visit_batch_blobs_with_limits(
-            command,
-            input.as_bytes(),
-            &objects.into_iter().collect::<Vec<_>>(),
-            (MAX_CONFLICT_BLOB_BYTES, MAX_CONFLICT_BLOB_BATCH_BYTES),
-            visitor,
-        )
-    }
-
     fn changed_paths(
         &self,
         repository: &GitRepository,
@@ -3955,42 +3035,6 @@ impl GitEngine for GitCliEngine {
         let output = self.execute(command)?;
         let output = ensure_success("list changed Git paths", output)?;
         parse_nul_paths("list changed Git paths", &output.stdout)
-    }
-
-    fn changed_entries(
-        &self,
-        repository: &GitRepository,
-        from: &GitOid,
-        to: &GitOid,
-    ) -> Result<Vec<GitChange>, GitEngineError> {
-        let mut command = self.repository_command(repository);
-        command.args([
-            "diff-tree",
-            "--no-commit-id",
-            "--name-status",
-            "--find-renames=50%",
-            "-r",
-            "-z",
-            from.as_str(),
-            to.as_str(),
-            "--",
-        ]);
-        let output = self.execute(command)?;
-        let output = ensure_success("list typed Git changes", output)?;
-        parse_git_changes(&output.stdout)
-    }
-
-    fn tree_paths(
-        &self,
-        repository: &GitRepository,
-        revision: &GitOid,
-    ) -> Result<Vec<String>, GitEngineError> {
-        let output = self.repository_output(
-            repository,
-            "list Git tree paths",
-            ["ls-tree", "-r", "-z", "--name-only", revision.as_str()],
-        )?;
-        parse_nul_paths("list Git tree paths", &output.stdout)
     }
 
     fn tree_entries(
@@ -4201,104 +3245,6 @@ impl GitEngine for GitCliEngine {
         Ok(entries)
     }
 
-    fn tree_with_paths(
-        &self,
-        repository: &GitRepository,
-        base: &GitOid,
-        target: &GitOid,
-        paths: &[String],
-    ) -> Result<GitOid, GitEngineError> {
-        repository.require_work_tree()?;
-        // Build in a scratch index. The shared sync index caches worktree stat
-        // data; a tree written here has none, and a proposed tree equal to the
-        // worktree's would make a later comparison report it as modified.
-        let scratch = tempfile::tempdir_in(&repository.git_dir)?;
-        let index_path = scratch.path().join("index");
-        self.index_output(
-            repository,
-            &index_path,
-            "seed a proposed tree",
-            ["read-tree", base.as_str()],
-        )?;
-        if !paths.is_empty() {
-            for path in paths {
-                validate_repository_path(path)?;
-            }
-            let targets = self
-                .tree_entries_for_paths(repository, target, paths)?
-                .into_iter()
-                .map(|entry| (entry.path.clone(), entry))
-                .collect::<BTreeMap<_, _>>();
-            // One NUL-separated --index-info batch: mode 0 removes a path.
-            let missing = "0".repeat(base.as_str().len());
-            let mut input = Vec::new();
-            for path in paths {
-                match targets.get(path) {
-                    Some(entry) => {
-                        input.extend_from_slice(
-                            format!("{} {}\t", entry.mode, entry.oid.as_str()).as_bytes(),
-                        );
-                    }
-                    None => input.extend_from_slice(format!("0 {missing}\t").as_bytes()),
-                }
-                input.extend_from_slice(path.as_bytes());
-                input.push(0);
-            }
-            let mut command = self.index_command(repository, &index_path)?;
-            command.args(["update-index", "-z", "--index-info"]);
-            ensure_success(
-                "update paths in a proposed tree",
-                self.execute_with_input(command, "update paths in a proposed tree", &input)?,
-            )?;
-        }
-        GitOid::parse(
-            self.index_capture(
-                repository,
-                &index_path,
-                "write a proposed tree",
-                ["write-tree"],
-            )?
-            .trim(),
-        )
-    }
-
-    fn diff_patch(
-        &self,
-        repository: &GitRepository,
-        from: &GitOid,
-        to: &GitOid,
-        paths: &[String],
-    ) -> Result<String, GitEngineError> {
-        for path in paths {
-            validate_repository_path(path)?;
-        }
-        let mut command = self.repository_command(repository);
-        // Patch paths name exact files; git pathspecs glob by default, which
-        // would silently widen the patch for names containing metacharacters.
-        command.arg("--literal-pathspecs").args([
-            "diff",
-            "--binary",
-            "--no-ext-diff",
-            "--no-textconv",
-            from.as_str(),
-            to.as_str(),
-            "--",
-        ]);
-        command.args(paths);
-        let output = self.execute(command)?;
-        let output = ensure_success("render a proposed Git patch", output)?;
-        if output.stdout.len() > MAX_DIAGNOSTIC_PATH_BYTES {
-            return Err(GitEngineError::InvalidOutput {
-                operation: "render a proposed Git patch",
-                detail: format!("patch exceeds the {MAX_DIAGNOSTIC_PATH_BYTES} byte report limit"),
-            });
-        }
-        String::from_utf8(output.stdout).map_err(|error| GitEngineError::InvalidOutput {
-            operation: "render a proposed Git patch",
-            detail: error.to_string(),
-        })
-    }
-
     fn check_patch(
         &self,
         repository: &GitRepository,
@@ -4337,61 +3283,14 @@ impl GitEngine for GitCliEngine {
         parse_patch_paths(&output.stdout)
     }
 
-    fn apply_patch_to_tree(
-        &self,
-        repository: &GitRepository,
-        base: &GitOid,
-        patch: &[u8],
-    ) -> Result<GitOid, GitEngineError> {
-        let expected_paths = self.check_patch(repository, base, patch)?;
-        let temporary = TempDir::new()?;
-        let index = temporary.path().join("index");
-        self.index_output(
-            repository,
-            &index,
-            "seed a supplied patch index",
-            ["read-tree", base.as_str()],
-        )?;
-        self.patch_command(
-            repository,
-            &index,
-            "apply a supplied Git patch",
-            &["apply", "--cached", "--whitespace=nowarn", "-"],
-            patch,
-        )?;
-        let tree = GitOid::parse(
-            self.index_capture(
-                repository,
-                &index,
-                "write a supplied patch tree",
-                ["write-tree"],
-            )?
-            .trim(),
-        )?;
-        let actual_paths = self.changed_paths(repository, base, &tree)?;
-        if actual_paths != expected_paths {
-            return Err(GitEngineError::InvalidOutput {
-                operation: "apply a supplied Git patch",
-                detail: "applied tree paths differ from the inspected patch paths".to_string(),
-            });
-        }
-        Ok(tree)
-    }
-
     fn capture_worktree(
         &self,
         repository: &GitRepository,
         request: &GitCaptureRequest,
     ) -> Result<GitCapture, GitEngineError> {
         let reuse_clean_base = request.base.is_some() && request.base == request.target_before;
-        let mut tree_capture =
+        let tree_capture =
             self.capture_worktree_tree_inner(repository, request.base.as_ref(), reuse_clean_base)?;
-        if let Some(scope) = &repository.worktree_scope {
-            let outside = self.scoped_capture_outside(repository)?;
-            let tree = self.overlay_scoped_tree(repository, scope, &outside, &tree_capture.tree)?;
-            tree_capture.reused_base &= tree == tree_capture.tree;
-            tree_capture.tree = tree;
-        }
         let tree = tree_capture.tree;
 
         if let Some(base) = request.base.as_ref().filter(|_| request.link.is_none()) {
@@ -4422,62 +3321,6 @@ impl GitEngine for GitCliEngine {
         })
     }
 
-    fn overlay_scoped_tree(
-        &self,
-        repository: &GitRepository,
-        scope: &GitWorktreeScope,
-        outside: &GitOid,
-        scoped: &GitOid,
-    ) -> Result<GitOid, GitEngineError> {
-        let zero = match repository.object_format {
-            GitObjectFormat::Sha256 => "0".repeat(64),
-            _ => "0".repeat(40),
-        };
-        let mut input = Vec::new();
-        for entry in self.tree_entries(repository, outside)? {
-            if scope.contains(&entry.path) {
-                input.extend_from_slice(format!("0 {zero}\t").as_bytes());
-                input.extend_from_slice(entry.path.as_bytes());
-                input.push(0);
-            }
-        }
-        for entry in self.tree_entries(repository, scoped)? {
-            if scope.contains(&entry.path) {
-                input.extend_from_slice(
-                    format!("{} {}\t", entry.mode, entry.oid.as_str()).as_bytes(),
-                );
-                input.extend_from_slice(entry.path.as_bytes());
-                input.push(0);
-            }
-        }
-        if input.is_empty() {
-            return self.tree_oid(repository, outside);
-        }
-        let scratch = tempfile::tempdir_in(&repository.git_dir)?;
-        let index_path = scratch.path().join("index");
-        self.index_output(
-            repository,
-            &index_path,
-            "seed a scoped tree",
-            ["read-tree", outside.as_str()],
-        )?;
-        let mut command = self.index_command(repository, &index_path)?;
-        command.args(["update-index", "-z", "--index-info"]);
-        ensure_success(
-            "overlay scoped entries",
-            self.execute_with_input(command, "overlay scoped entries", &input)?,
-        )?;
-        GitOid::parse(
-            self.index_capture(
-                repository,
-                &index_path,
-                "write a scoped tree",
-                ["write-tree"],
-            )?
-            .trim(),
-        )
-    }
-
     fn snapshot_worktree_tree(
         &self,
         repository: &GitRepository,
@@ -4492,12 +3335,6 @@ impl GitEngine for GitCliEngine {
         expected: &GitOid,
     ) -> Result<bool, GitEngineError> {
         repository.require_work_tree()?;
-        if repository.worktree_scope.is_some() {
-            // Refreshing would hash every unscoped file; capturing the scope
-            // over `expected` compares exactly the scoped paths.
-            let tree = self.snapshot_worktree_tree_inner(repository, Some(expected))?;
-            return Ok(tree == self.tree_oid(repository, expected)?);
-        }
         let index_path = repository.sync_index();
         let reused = self.prepare_sync_index(
             repository,
@@ -4582,18 +3419,6 @@ impl GitEngine for GitCliEngine {
         parse_remote_reference_list(&output.stdout, prefix)
     }
 
-    fn remote_ref_with_prefix(
-        &self,
-        repository: &GitRepository,
-        remote: &GitRemote,
-        reference: &GitRefName,
-        prefix: &GitRefName,
-    ) -> Result<(Option<GitOid>, Option<Vec<GitReference>>), GitEngineError> {
-        let (mut tips, listed) =
-            self.remote_refs(repository, remote, &[reference], Some(prefix))?;
-        Ok((tips.pop().flatten(), listed))
-    }
-
     fn remote_refs(
         &self,
         repository: &GitRepository,
@@ -4660,62 +3485,6 @@ impl GitEngine for GitCliEngine {
         Ok((tips, listed))
     }
 
-    fn fetch_ref_with_mirror(
-        &self,
-        repository: &GitRepository,
-        remote: &GitRemote,
-        source: &GitRefName,
-        destination: &GitRefName,
-        mirror: &GitRefMirror<'_>,
-    ) -> Result<(GitOid, Option<Vec<GitReference>>), GitEngineError> {
-        let remote_prefix = mirror.remote_prefix.as_str().trim_end_matches('/');
-        let local_prefix = mirror.local_prefix.as_str().trim_end_matches('/');
-        let mut command = self.repository_command(repository);
-        command
-            .args([
-                "fetch",
-                "--no-tags",
-                "--force",
-                "--prune",
-                "--refmap=",
-                "--",
-            ])
-            .arg(remote.as_str())
-            .arg(format!("+{}:{}", source.as_str(), destination.as_str()))
-            .arg(format!("+{remote_prefix}/*:{local_prefix}/*"));
-        let output = self.execute(command)?;
-        if !output.status.success() {
-            // The mirror is only a convenience: retry the plain fetch so a
-            // problem in that namespace never fails the sync.
-            let tip = self.fetch_ref(repository, remote, source, destination)?;
-            return Ok((tip, None));
-        }
-        let tip = self.read_ref(repository, destination)?.ok_or_else(|| {
-            GitEngineError::InvalidOutput {
-                operation: "fetch the live sync ref",
-                detail: format!("Git did not update `{destination}`"),
-            }
-        })?;
-        let mirrored = self
-            .list_refs(repository, mirror.local_prefix)
-            .ok()
-            .and_then(|refs| {
-                refs.into_iter()
-                    .map(|reference| {
-                        let name = reference
-                            .name
-                            .as_str()
-                            .strip_prefix(&format!("{local_prefix}/"))?;
-                        Some(GitReference {
-                            name: GitRefName::parse(format!("{remote_prefix}/{name}")).ok()?,
-                            target: reference.target,
-                        })
-                    })
-                    .collect::<Option<Vec<_>>>()
-            });
-        Ok((tip, mirrored))
-    }
-
     fn fetch_ref(
         &self,
         repository: &GitRepository,
@@ -4750,61 +3519,6 @@ impl GitEngine for GitCliEngine {
                 operation: "fetch the live sync ref",
                 detail: format!("Git did not update `{destination}`"),
             })
-    }
-
-    fn fetch_refs(
-        &self,
-        repository: &GitRepository,
-        remote: &GitRemote,
-        mappings: &[(GitRefName, GitRefName)],
-    ) -> Result<(), GitEngineError> {
-        if mappings.is_empty() {
-            return Ok(());
-        }
-        let mut command = self.repository_command(repository);
-        command.args([
-            "fetch",
-            "--no-tags",
-            "--force",
-            "--refmap=",
-            "--",
-            remote.as_str(),
-        ]);
-        for (source, destination) in mappings {
-            command.arg(format!("+{}:{}", source.as_str(), destination.as_str()));
-        }
-        ensure_success("fetch refs", self.execute(command)?).map(drop)
-    }
-
-    fn exclude_from_default_fetch(
-        &self,
-        repository: &GitRepository,
-        remote: &GitRemote,
-        prefix: &GitRefName,
-    ) -> Result<bool, GitEngineError> {
-        let key = format!("remote.{remote}.fetch");
-        let mut command = self.repository_command(repository);
-        command.args(["config", "--get-all", &key]);
-        let output = self.execute(command)?;
-        // Exit status 1: the key is unset, e.g. the remote is a URL.
-        if output.status.code() == Some(1) {
-            return Ok(false);
-        }
-        let output = ensure_success("read the remote's fetch refspecs", output)?;
-        let configured = decode_stdout("read the remote's fetch refspecs", output.stdout)?;
-        let exclusion = format!("^{prefix}/*");
-        if configured.lines().any(|line| line.trim() == exclusion)
-            || !configured.lines().any(|line| !line.trim().starts_with('^'))
-        {
-            return Ok(false);
-        }
-        let mut command = self.repository_command(repository);
-        command.args(["config", "--add", &key, &exclusion]);
-        ensure_success(
-            "exclude Vulcan refs from the default fetch",
-            self.execute(command)?,
-        )?;
-        Ok(true)
     }
 
     fn is_ancestor(
@@ -4877,181 +3591,6 @@ impl GitEngine for GitCliEngine {
         })
     }
 
-    fn resolve_merge_tree(
-        &self,
-        repository: &GitRepository,
-        request: &GitMergeResolutionRequest,
-    ) -> Result<GitOid, GitEngineError> {
-        repository.require_work_tree()?;
-        if request.paths.is_empty() {
-            return Err(GitEngineError::UnsupportedRepository {
-                detail: "a merge resolution must name at least one conflicted path".to_string(),
-            });
-        }
-        // Build in a scratch index. The shared sync index caches worktree stat
-        // data; a tree written here has none, and a later comparison that
-        // reused it would report an unchanged worktree as modified.
-        let scratch = tempfile::tempdir_in(&repository.git_dir)?;
-        let index_path = scratch.path().join("index");
-        let merge = self.merge_commits(
-            repository,
-            &request.accepted_remote,
-            &request.local_candidate,
-        )?;
-        let supplied = request
-            .paths
-            .iter()
-            .map(String::as_str)
-            .collect::<BTreeSet<_>>();
-        if merge.base.as_ref() != Some(&request.base)
-            || merge
-                .conflict_paths
-                .iter()
-                .any(|path| !supplied.contains(path.as_str()))
-        {
-            return Err(GitEngineError::UnsupportedRepository {
-                detail: "merge resolution inputs do not cover the current conflicted merge"
-                    .to_string(),
-            });
-        }
-        let merge_tree =
-            merge
-                .tree
-                .as_ref()
-                .ok_or_else(|| GitEngineError::UnsupportedRepository {
-                    detail: "merge resolution did not produce a candidate tree".to_string(),
-                })?;
-        self.index_output(
-            repository,
-            &index_path,
-            "prepare a conflicted merge resolution",
-            ["read-tree", merge_tree.as_str()],
-        )?;
-        let selected = match request.side {
-            GitConflictSide::Base => &request.base,
-            GitConflictSide::Local => &request.local_candidate,
-            GitConflictSide::Remote => &request.accepted_remote,
-        };
-        for path in &request.paths {
-            validate_repository_path(path)?;
-            if let Some(object) = self.path_object(repository, selected, path)? {
-                let mut command = self.index_command(repository, &index_path)?;
-                command
-                    .args(["update-index", "--add", "--cacheinfo"])
-                    .arg(&object.mode)
-                    .arg(object.oid.as_str())
-                    .arg(path);
-                let output = self.execute(command)?;
-                ensure_success("select a preserved conflict side", output)?;
-            } else {
-                let mut command = self.index_command(repository, &index_path)?;
-                command
-                    .args(["update-index", "--force-remove", "--"])
-                    .arg(path);
-                let output = self.execute(command)?;
-                ensure_success("select a preserved conflict deletion", output)?;
-            }
-        }
-        GitOid::parse(
-            self.index_capture(
-                repository,
-                &index_path,
-                "write the resolved merge tree",
-                ["write-tree"],
-            )?
-            .trim(),
-        )
-    }
-
-    fn merge_file(
-        &self,
-        base: &[u8],
-        local: &[u8],
-        remote: &[u8],
-    ) -> Result<Option<Vec<u8>>, GitEngineError> {
-        let directory = tempfile::tempdir()?;
-        let mut paths = Vec::with_capacity(3);
-        for (name, data) in [("local", local), ("base", base), ("remote", remote)] {
-            let path = directory.path().join(name);
-            std::fs::write(&path, data)?;
-            paths.push(path);
-        }
-        let mut command = self.command();
-        command
-            .args(["merge-file", "-p", "--quiet", "--"])
-            .args(&paths);
-        let output = self.execute(command)?;
-        match output.status.code() {
-            Some(0) => Ok(Some(output.stdout)),
-            // The exit status counts conflicts, saturating at 127.
-            Some(1..=127) => Ok(None),
-            _ => Err(command_failed("merge file contents", &output)),
-        }
-    }
-
-    fn resolve_merge_tree_with_paths(
-        &self,
-        repository: &GitRepository,
-        request: &GitContentMergeResolutionRequest,
-    ) -> Result<GitOid, GitEngineError> {
-        repository.require_work_tree()?;
-        if request.paths.is_empty() {
-            return Err(GitEngineError::UnsupportedRepository {
-                detail: "a content merge resolution must name at least one conflicted path"
-                    .to_string(),
-            });
-        }
-        // Build in a scratch index. The shared sync index caches worktree stat
-        // data; a tree written here has none, and a later comparison that
-        // reused it would report an unchanged worktree as modified.
-        let scratch = tempfile::tempdir_in(&repository.git_dir)?;
-        let index_path = scratch.path().join("index");
-        let merge = self.merge_commits(
-            repository,
-            &request.accepted_remote,
-            &request.local_candidate,
-        )?;
-        let supplied = request
-            .paths
-            .iter()
-            .map(|path| path.path.as_str())
-            .collect::<BTreeSet<_>>();
-        if merge.base.as_ref() != Some(&request.base)
-            || merge
-                .conflict_paths
-                .iter()
-                .any(|path| !supplied.contains(path.as_str()))
-        {
-            return Err(GitEngineError::UnsupportedRepository {
-                detail: "structured merge inputs do not cover the current conflicted merge"
-                    .to_string(),
-            });
-        }
-        let merge_tree =
-            merge
-                .tree
-                .as_ref()
-                .ok_or_else(|| GitEngineError::UnsupportedRepository {
-                    detail: "structured merge did not produce a candidate tree".to_string(),
-                })?;
-        self.index_output(
-            repository,
-            &index_path,
-            "prepare a structured merge resolution",
-            ["read-tree", merge_tree.as_str()],
-        )?;
-        install_content_merge_paths(self, repository, &index_path, request)?;
-        GitOid::parse(
-            self.index_capture(
-                repository,
-                &index_path,
-                "write the structured merge tree",
-                ["write-tree"],
-            )?
-            .trim(),
-        )
-    }
-
     fn create_commit(
         &self,
         repository: &GitRepository,
@@ -5070,24 +3609,6 @@ impl GitEngine for GitCliEngine {
         message: &str,
     ) -> Result<GitOid, GitEngineError> {
         self.commit_tree_with_reproducible_identity(repository, tree, parents, message, true)
-    }
-
-    fn create_commit_with_user_identity(
-        &self,
-        repository: &GitRepository,
-        tree: &GitOid,
-        parents: &[GitOid],
-        message: &str,
-        signing: Option<&CommitSigning>,
-    ) -> Result<GitOid, GitEngineError> {
-        self.commit_tree_with_identity(
-            repository,
-            tree,
-            parents,
-            message,
-            CommitIdentity::User,
-            signing,
-        )
     }
 
     fn write_blob(
@@ -5192,57 +3713,6 @@ impl GitEngine for GitCliEngine {
             return Ok(GitPushResult::Rejected);
         }
         Err(command_failed("push a sync ref", &output))
-    }
-
-    fn push_refs(
-        &self,
-        repository: &GitRepository,
-        remote: &GitRemote,
-        updates: &[GitRefPush<'_>],
-    ) -> Result<Vec<GitPushResult>, GitEngineError> {
-        let mut command = self.repository_command(repository);
-        command.args(["push", "--porcelain"]);
-        for update in updates {
-            command.arg(format!(
-                "--force-with-lease={}:{}",
-                update.destination.as_str(),
-                update.expected.map_or("", GitOid::as_str)
-            ));
-        }
-        command.arg("--").arg(remote.as_str());
-        for update in updates {
-            command.arg(format!(
-                "{}:{}",
-                update.source.as_str(),
-                update.destination.as_str()
-            ));
-        }
-        let output = self.execute(command)?;
-        if output.status.success() {
-            return Ok(vec![GitPushResult::Updated; updates.len()]);
-        }
-        // Some refs were refused. Classify each by the remote's current value
-        // instead of parsing Git's porcelain report.
-        let destinations = updates
-            .iter()
-            .map(|update| update.destination)
-            .collect::<Vec<_>>();
-        let Ok((tips, _)) = self.remote_refs(repository, remote, &destinations, None) else {
-            return Err(command_failed("push sync refs", &output));
-        };
-        updates
-            .iter()
-            .zip(tips)
-            .map(|(update, tip)| {
-                if tip.as_ref() == Some(update.source) {
-                    Ok(GitPushResult::Updated)
-                } else if tip.as_ref() != update.expected {
-                    Ok(GitPushResult::Rejected)
-                } else {
-                    Err(command_failed("push sync refs", &output))
-                }
-            })
-            .collect()
     }
 
     fn delete_remote_refs(
@@ -5852,215 +4322,6 @@ impl GitEngine for GitCliEngine {
         Ok(BranchAdvanceOutcome::Advanced)
     }
 
-    fn advance_branch_scoped(
-        &self,
-        repository: &GitRepository,
-        scope: &GitWorktreeScope,
-        branch: &GitRefName,
-        expected: &GitOid,
-        target: &GitOid,
-    ) -> Result<ScopedBranchAdvance, GitEngineError> {
-        let work_tree = repository.require_work_tree()?.to_path_buf();
-        if self.head_reference(repository)?.as_ref() != Some(branch)
-            || self.read_ref(repository, branch)?.as_ref() != Some(expected)
-        {
-            return Ok(ScopedBranchAdvance::Stale);
-        }
-        let changes = self.tree_application_paths(repository, expected, target)?;
-        let paths = changes
-            .iter()
-            .map(|change| change.path.clone())
-            .collect::<Vec<_>>();
-        let local_bytes = self.worktree_blob_oids(repository, &work_tree, &paths)?;
-        let index = self.index_blob_oids(repository, &paths)?;
-        let (mut kept, mut kept_entries, mut blocked) = (Vec::new(), Vec::new(), Vec::new());
-        for change in &changes {
-            let old = change.expected.as_ref().map(|object| &object.oid);
-            let new = change.target.as_ref().map(|object| &object.oid);
-            let current = local_bytes.get(&change.path).cloned().flatten();
-            if current.as_ref() == new {
-                continue;
-            }
-            if current.as_ref() == old {
-                if index.get(&change.path).cloned().flatten().as_ref() != old {
-                    return Ok(ScopedBranchAdvance::BlockedStaged);
-                }
-            } else if scope.contains(&change.path) {
-                kept.push(change.path.clone());
-                kept_entries.push((change.path.clone(), change.expected.clone()));
-            } else {
-                blocked.push(change.path.clone());
-            }
-        }
-        if !blocked.is_empty() {
-            return Ok(ScopedBranchAdvance::BlockedDirty(blocked));
-        }
-        // Git writes the worktree itself: a two-way merge to a tree in which
-        // kept paths still hold the old commit's entries refuses, inside one
-        // process, any file that changed since the classification above.
-        let checkout = self.tree_with_kept_entries(repository, target, &kept_entries)?;
-        let mut refresh = self.repository_command(repository);
-        refresh.args(["update-index", "-q", "--refresh"]);
-        let _ = self.execute(refresh)?;
-        let mut command = self.repository_command(repository);
-        command.args([
-            "read-tree",
-            "-m",
-            "-u",
-            expected.as_str(),
-            checkout.as_str(),
-        ]);
-        let output = self.execute(command)?;
-        if !output.status.success() {
-            let stderr = bounded_lossy(&output.stderr);
-            if stderr.contains("not uptodate")
-                || stderr.contains("would be overwritten")
-                || stderr.contains("would be removed")
-            {
-                return Ok(ScopedBranchAdvance::BlockedDirty(Vec::new()));
-            }
-            return Err(command_failed("update branch files", &output));
-        }
-        Ok(
-            match self.advance_checked_out_branch(repository, branch, expected, target)? {
-                BranchAdvanceOutcome::Advanced => ScopedBranchAdvance::Advanced { kept },
-                BranchAdvanceOutcome::BlockedStaged => ScopedBranchAdvance::BlockedStaged,
-                BranchAdvanceOutcome::Stale => ScopedBranchAdvance::Stale,
-            },
-        )
-    }
-
-    fn plan_tree_application(
-        &self,
-        repository: &GitRepository,
-        expected_worktree: &GitOid,
-        target: &GitOid,
-    ) -> Result<GitTreeApplyPlan, GitEngineError> {
-        repository.require_work_tree()?;
-        let scoped_target =
-            self.scoped_application_target(repository, expected_worktree, target)?;
-        let paths = self.tree_application_paths(repository, expected_worktree, &scoped_target)?;
-        let mut additions = 0;
-        let mut updates = 0;
-        let mut deletions = 0;
-        let mut type_changes = 0;
-        for path in &paths {
-            match path.action {
-                GitTreeApplyAction::Add => additions += 1,
-                GitTreeApplyAction::Update => updates += 1,
-                GitTreeApplyAction::Delete => deletions += 1,
-                GitTreeApplyAction::TypeChange => type_changes += 1,
-            }
-        }
-        Ok(GitTreeApplyPlan {
-            expected_revision: expected_worktree.clone(),
-            target_revision: target.clone(),
-            additions,
-            updates,
-            deletions,
-            type_changes,
-            paths,
-        })
-    }
-
-    fn apply_tree(
-        &self,
-        repository: &GitRepository,
-        expected_worktree: &GitOid,
-        target: &GitOid,
-    ) -> Result<GitTreeApplyPlan, GitEngineError> {
-        repository.require_work_tree()?;
-        let plan = self.plan_tree_application(repository, expected_worktree, target)?;
-        // Path-scoped application leaves every unscoped path as it was.
-        let target = &self.scoped_application_target(repository, expected_worktree, target)?;
-        let index_path = repository.sync_index();
-        self.prepare_sync_index(
-            repository,
-            &index_path,
-            Some(expected_worktree),
-            "seed the worktree application index",
-        )?;
-        self.add_worktree_to_index(
-            repository,
-            &index_path,
-            "verify the worktree before applying sync",
-        )?;
-        let actual_tree = GitOid::parse(
-            self.index_capture(
-                repository,
-                &index_path,
-                "verify the worktree before applying sync",
-                ["write-tree"],
-            )?
-            .trim(),
-        )?;
-        if self.tree_oid(repository, expected_worktree)? != actual_tree {
-            return Err(GitEngineError::WorktreeChanged);
-        }
-        self.reject_ignored_collisions(repository, &index_path, &plan)?;
-        // A deletion the target's `.gitignore` explains is an untracking:
-        // dropping the path from the index first leaves this device's copy.
-        let deleted = plan
-            .paths
-            .iter()
-            .filter(|path| path.action == GitTreeApplyAction::Delete)
-            .map(|path| path.path.clone())
-            .collect::<Vec<_>>();
-        let kept = crate::tree_ignore::newly_ignored(
-            self,
-            repository,
-            expected_worktree,
-            target,
-            &deleted,
-        )?;
-        if !kept.is_empty() {
-            let mut command = self.index_command(repository, &index_path)?;
-            command.args(["update-index", "--force-remove", "--"]);
-            command.args(&kept);
-            ensure_success("keep untracked files", self.execute(command)?)?;
-        }
-        // The verified index already holds `expected_worktree` with fresh stat
-        // data. Keeping it lets `read-tree -u` touch only the changed paths;
-        // rebuilding it from the tree would rewrite every file in the vault.
-        if repository.worktree_scope.is_some() {
-            // Unscoped entries came from `expected` without stat data; a
-            // two-way merge leaves every path `expected` and `target` share
-            // untouched, where `--reset` would rewrite them from the index.
-            let expected_tree = self.tree_oid(repository, expected_worktree)?;
-            self.index_output(
-                repository,
-                &index_path,
-                "apply the accepted sync tree",
-                [
-                    "read-tree",
-                    "-m",
-                    "-u",
-                    expected_tree.as_str(),
-                    target.as_str(),
-                ],
-            )?;
-        } else {
-            self.index_output(
-                repository,
-                &index_path,
-                "apply the accepted sync tree",
-                ["read-tree", "--reset", "-u", target.as_str()],
-            )?;
-        }
-        self.add_worktree_to_index(repository, &index_path, "verify the applied sync tree")?;
-        let applied_tree = GitOid::parse(
-            self.index_capture(
-                repository,
-                &index_path,
-                "verify the applied sync tree",
-                ["write-tree"],
-            )?
-            .trim(),
-        )?;
-        verify_materialized_tree(&self.tree_oid(repository, target)?, &applied_tree)?;
-        Ok(plan)
-    }
-
     fn safety_state(&self, repository: &GitRepository) -> Result<GitSafetyState, GitEngineError> {
         repository.require_work_tree()?;
         let mut command = self.repository_command(repository);
@@ -6272,17 +4533,6 @@ fn find_nested_git_metadata(root: &Path) -> Result<Vec<String>, GitEngineError> 
     let mut found = Vec::new();
     visit(root, root, &mut found, &mut 0)?;
     Ok(found)
-}
-
-fn verify_materialized_tree(expected: &GitOid, actual: &GitOid) -> Result<(), GitEngineError> {
-    if expected == actual {
-        return Ok(());
-    }
-    // Git just populated the worktree from `expected`, so a different
-    // capture means another process wrote during materialization. Report the
-    // same retryable condition as pre-apply drift instead of misclassifying
-    // ordinary editor activity as invalid Git output.
-    Err(GitEngineError::WorktreeChanged)
 }
 
 impl GitCliEngine {
@@ -6619,50 +4869,6 @@ impl GitCliEngine {
         command.args(["config", "--type=bool", "--get", key]);
         let output = self.execute(command)?;
         Ok(output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true")
-    }
-
-    /// Rejects tree applications that would silently overwrite ignored
-    /// worktree files. After the fully staged verification inside
-    /// `apply_tree`, every remaining `--others` entry is an ignored file;
-    /// `read-tree --reset -u` offers no untracked-file protection, so the
-    /// check must be explicit.
-    fn reject_ignored_collisions(
-        &self,
-        repository: &GitRepository,
-        index_path: &Path,
-        plan: &GitTreeApplyPlan,
-    ) -> Result<(), GitEngineError> {
-        let written = plan
-            .paths
-            .iter()
-            .filter(|path| {
-                matches!(
-                    path.action,
-                    GitTreeApplyAction::Add | GitTreeApplyAction::TypeChange
-                )
-            })
-            .map(|path| path.path.as_str())
-            .collect::<Vec<_>>();
-        let mut collisions = Vec::new();
-        for chunk in written.chunks(128) {
-            let mut command = self.index_command(repository, index_path)?;
-            command
-                .arg("--literal-pathspecs")
-                .args(["ls-files", "--others", "-z", "--"])
-                .args(chunk);
-            let output =
-                ensure_success("list ignored worktree collisions", self.execute(command)?)?;
-            collisions.extend(
-                nul_fields("list ignored worktree collisions", &output.stdout)?
-                    .into_iter()
-                    .map(ToString::to_string),
-            );
-        }
-        if collisions.is_empty() {
-            Ok(())
-        } else {
-            Err(GitEngineError::ApplyWouldOverwrite { paths: collisions })
-        }
     }
 
     fn inspect_path_filters(
@@ -7266,105 +5472,6 @@ fn parse_remote_reference_list(
     Ok(references)
 }
 
-fn parse_ref_targets(
-    stdout: &[u8],
-    requested: &BTreeSet<&str>,
-) -> Result<BTreeMap<GitRefName, GitOid>, GitEngineError> {
-    const OPERATION: &str = "read Git refs";
-    let mut targets = BTreeMap::new();
-    for line in stdout.split(|byte| *byte == b'\n') {
-        if line.is_empty() {
-            continue;
-        }
-        let fields = line.split(|byte| *byte == 0).collect::<Vec<_>>();
-        if fields.len() != 6 || !fields[5].is_empty() {
-            return Err(GitEngineError::InvalidOutput {
-                operation: OPERATION,
-                detail: "expected ref, object, and peeled object as NUL-delimited fields"
-                    .to_string(),
-            });
-        }
-        let decode = |field: &[u8]| {
-            std::str::from_utf8(field)
-                .map(str::to_string)
-                .map_err(|error| GitEngineError::InvalidOutput {
-                    operation: OPERATION,
-                    detail: error.to_string(),
-                })
-        };
-        let name = decode(fields[0])?;
-        if !requested.contains(name.as_str()) {
-            continue;
-        }
-        let object_type = decode(fields[1])?;
-        let object = decode(fields[2])?;
-        let peeled_type = decode(fields[3])?;
-        let peeled = decode(fields[4])?;
-        let target = match (object_type.as_str(), peeled_type.as_str()) {
-            ("commit", "") => GitOid::parse(object)?,
-            ("tag", "commit") => GitOid::parse(peeled)?,
-            _ => {
-                return Err(GitEngineError::InvalidOutput {
-                    operation: OPERATION,
-                    detail: format!("{name} does not resolve to a readable commit object"),
-                });
-            }
-        };
-        let name = GitRefName::parse(name)?;
-        if targets.insert(name, target).is_some() {
-            return Err(GitEngineError::InvalidOutput {
-                operation: OPERATION,
-                detail: "Git returned a requested ref more than once".to_string(),
-            });
-        }
-    }
-    Ok(targets)
-}
-
-fn parse_commit_metadata(source: &[u8]) -> Result<GitCommitMetadata, GitEngineError> {
-    let separator = source
-        .windows(2)
-        .position(|window| window == b"\n\n")
-        .ok_or_else(|| GitEngineError::InvalidOutput {
-            operation: "read Git commit metadata",
-            detail: "commit object has no header/message separator".to_string(),
-        })?;
-    let headers = std::str::from_utf8(&source[..separator]).map_err(|error| {
-        GitEngineError::InvalidOutput {
-            operation: "read Git commit metadata",
-            detail: error.to_string(),
-        }
-    })?;
-    let message = String::from_utf8(source[separator + 2..].to_vec()).map_err(|error| {
-        GitEngineError::InvalidOutput {
-            operation: "read Git commit metadata",
-            detail: error.to_string(),
-        }
-    })?;
-    let mut tree = None;
-    let mut parents = Vec::new();
-    for header in headers.lines() {
-        if let Some(value) = header.strip_prefix("tree ") {
-            if tree.replace(GitOid::parse(value)?).is_some() {
-                return Err(GitEngineError::InvalidOutput {
-                    operation: "read Git commit metadata",
-                    detail: "commit object contains more than one tree header".to_string(),
-                });
-            }
-        } else if let Some(value) = header.strip_prefix("parent ") {
-            parents.push(GitOid::parse(value)?);
-        }
-    }
-    Ok(GitCommitMetadata {
-        tree: tree.ok_or_else(|| GitEngineError::InvalidOutput {
-            operation: "read Git commit metadata",
-            detail: "commit object has no tree header".to_string(),
-        })?,
-        parents,
-        message,
-    })
-}
-
 fn replace_bytes(haystack: &[u8], needle: &[u8], replacement: &[u8]) -> Vec<u8> {
     if needle.is_empty() || haystack.len() < needle.len() {
         return haystack.to_vec();
@@ -7555,18 +5662,6 @@ fn remove_file_if_present(path: &Path) -> Result<(), GitEngineError> {
     }
 }
 
-fn validate_revision(revision: &str) -> Result<(), GitEngineError> {
-    if revision.is_empty()
-        || revision.starts_with('-')
-        || revision.bytes().any(|byte| byte.is_ascii_control())
-    {
-        return Err(GitEngineError::UnsupportedRepository {
-            detail: "a Git revision must be non-empty, must not start with `-`, and must not contain control characters".to_string(),
-        });
-    }
-    Ok(())
-}
-
 fn parse_nul_paths(operation: &'static str, bytes: &[u8]) -> Result<Vec<String>, GitEngineError> {
     if bytes.len() > MAX_DIAGNOSTIC_PATH_BYTES {
         return Err(GitEngineError::InvalidOutput {
@@ -7584,101 +5679,6 @@ fn parse_nul_paths(operation: &'static str, bytes: &[u8]) -> Result<Vec<String>,
             })
         })
         .collect()
-}
-
-fn parse_git_changes(bytes: &[u8]) -> Result<Vec<GitChange>, GitEngineError> {
-    const OPERATION: &str = "list typed Git changes";
-    if bytes.len() > MAX_DIAGNOSTIC_PATH_BYTES {
-        return Err(GitEngineError::InvalidOutput {
-            operation: OPERATION,
-            detail: format!("change output exceeds the {MAX_DIAGNOSTIC_PATH_BYTES} byte limit"),
-        });
-    }
-    if bytes.is_empty() {
-        return Ok(Vec::new());
-    }
-    if !bytes.ends_with(&[0]) {
-        return Err(GitEngineError::InvalidOutput {
-            operation: OPERATION,
-            detail: "change output is not NUL terminated".to_string(),
-        });
-    }
-
-    let records = bytes[..bytes.len() - 1]
-        .split(|byte| *byte == 0)
-        .collect::<Vec<_>>();
-    let mut changes = Vec::new();
-    let mut index = 0;
-    while index < records.len() {
-        let status =
-            std::str::from_utf8(records[index]).map_err(|error| GitEngineError::InvalidOutput {
-                operation: OPERATION,
-                detail: error.to_string(),
-            })?;
-        index += 1;
-        let (kind, similarity, path_count) = match status.as_bytes().first().copied() {
-            Some(b'A') if status.len() == 1 => (GitChangeKind::Added, None, 1),
-            Some(b'M') if status.len() == 1 => (GitChangeKind::Modified, None, 1),
-            Some(b'D') if status.len() == 1 => (GitChangeKind::Deleted, None, 1),
-            Some(b'T') if status.len() == 1 => (GitChangeKind::TypeChanged, None, 1),
-            Some(b'R') => {
-                let similarity = status[1..].parse::<u8>().ok().filter(|value| *value <= 100);
-                let Some(similarity) = similarity else {
-                    return Err(GitEngineError::InvalidOutput {
-                        operation: OPERATION,
-                        detail: format!("invalid rename status `{status}`"),
-                    });
-                };
-                (GitChangeKind::Renamed, Some(similarity), 2)
-            }
-            _ => {
-                return Err(GitEngineError::InvalidOutput {
-                    operation: OPERATION,
-                    detail: format!("unsupported change status `{status}`"),
-                });
-            }
-        };
-        if index + path_count > records.len() {
-            return Err(GitEngineError::InvalidOutput {
-                operation: OPERATION,
-                detail: format!("status `{status}` is missing path fields"),
-            });
-        }
-        let parse_path = |path: &[u8]| {
-            String::from_utf8(path.to_vec()).map_err(|error| GitEngineError::InvalidOutput {
-                operation: OPERATION,
-                detail: error.to_string(),
-            })
-        };
-        let first = parse_path(records[index])?;
-        index += 1;
-        if first.is_empty() {
-            return Err(GitEngineError::InvalidOutput {
-                operation: OPERATION,
-                detail: format!("status `{status}` contains an empty path"),
-            });
-        }
-        let (source_path, path) = if kind == GitChangeKind::Renamed {
-            let destination = parse_path(records[index])?;
-            index += 1;
-            if destination.is_empty() {
-                return Err(GitEngineError::InvalidOutput {
-                    operation: OPERATION,
-                    detail: format!("status `{status}` contains an empty destination path"),
-                });
-            }
-            (Some(first), destination)
-        } else {
-            (None, first)
-        };
-        changes.push(GitChange {
-            kind,
-            path,
-            source_path,
-            similarity,
-        });
-    }
-    Ok(changes)
 }
 
 fn parse_tree_entries(bytes: &[u8]) -> Result<Vec<GitTreeEntry>, GitEngineError> {
@@ -7874,104 +5874,6 @@ fn blob_batch_limit_error(limit: usize) -> GitEngineError {
     }
 }
 
-fn parse_tree_application_paths(bytes: &[u8]) -> Result<Vec<GitTreeApplyPath>, GitEngineError> {
-    const OPERATION: &str = "plan worktree application";
-    if bytes.len() > MAX_DIAGNOSTIC_PATH_BYTES {
-        return Err(GitEngineError::InvalidOutput {
-            operation: OPERATION,
-            detail: format!("path output exceeds the {MAX_DIAGNOSTIC_PATH_BYTES} byte limit"),
-        });
-    }
-    let fields = nul_fields(OPERATION, bytes)?;
-    let (chunks, remainder) = fields.as_chunks::<2>();
-    let mut paths = Vec::with_capacity(chunks.len());
-    for chunk in chunks {
-        let header = chunk[0]
-            .strip_prefix(':')
-            .ok_or_else(|| GitEngineError::InvalidOutput {
-                operation: OPERATION,
-                detail: "raw diff metadata does not start with `:`".to_string(),
-            })?;
-        let metadata = header.split_whitespace().collect::<Vec<_>>();
-        if metadata.len() != 5 {
-            return Err(GitEngineError::InvalidOutput {
-                operation: OPERATION,
-                detail: "expected `<old-mode> <new-mode> <old-oid> <new-oid> <status>`".to_string(),
-            });
-        }
-        let path = chunk[1].to_string();
-        validate_repository_path(&path)?;
-        let expected = raw_diff_object(metadata[0], metadata[2])?;
-        let target = raw_diff_object(metadata[1], metadata[3])?;
-        let action = match (&expected, &target) {
-            (None, Some(_)) if metadata[4] == "A" => GitTreeApplyAction::Add,
-            (Some(_), None) if metadata[4] == "D" => GitTreeApplyAction::Delete,
-            (Some(expected), Some(target)) if matches!(metadata[4], "M" | "T") => {
-                if expected.mode != target.mode || expected.kind != target.kind {
-                    GitTreeApplyAction::TypeChange
-                } else {
-                    GitTreeApplyAction::Update
-                }
-            }
-            _ => {
-                return Err(GitEngineError::InvalidOutput {
-                    operation: OPERATION,
-                    detail: format!(
-                        "unsupported raw diff status `{}` for path `{path}`",
-                        metadata[4]
-                    ),
-                });
-            }
-        };
-        paths.push(GitTreeApplyPath {
-            path,
-            action,
-            expected,
-            target,
-        });
-    }
-    if !remainder.is_empty() {
-        return Err(GitEngineError::InvalidOutput {
-            operation: OPERATION,
-            detail: "raw diff metadata is missing its path".to_string(),
-        });
-    }
-    Ok(paths)
-}
-
-fn raw_diff_object(mode: &str, oid: &str) -> Result<Option<GitPathObject>, GitEngineError> {
-    const OPERATION: &str = "plan worktree application";
-    let valid_mode = mode.len() == 6 && mode.bytes().all(|byte| matches!(byte, b'0'..=b'7'));
-    if !valid_mode {
-        return Err(GitEngineError::InvalidOutput {
-            operation: OPERATION,
-            detail: format!("invalid raw diff mode `{mode}`"),
-        });
-    }
-    let missing_mode = mode == "000000";
-    let missing_oid = !oid.is_empty() && oid.bytes().all(|byte| byte == b'0');
-    if missing_mode != missing_oid {
-        return Err(GitEngineError::InvalidOutput {
-            operation: OPERATION,
-            detail: "raw diff mode and object absence disagree".to_string(),
-        });
-    }
-    if missing_mode {
-        return Ok(None);
-    }
-    let kind = match mode {
-        "040000" => "tree",
-        "160000" => "commit",
-        _ => "blob",
-    };
-    Ok(Some(GitPathObject {
-        oid: GitOid::parse(oid)?,
-        mode: mode.to_string(),
-        kind: kind.to_string(),
-        data: None,
-    }))
-}
-
 fn parse_rebase_value(value: &str, operation: &'static str) -> Result<PullRebase, GitEngineError> {
     match value {
         "false" | "no" | "off" | "0" => Ok(PullRebase::Never),
@@ -7998,84 +5900,6 @@ fn validate_repository_path(path: &str) -> Result<(), GitEngineError> {
     } else {
         Ok(())
     }
-}
-
-fn install_content_merge_paths(
-    engine: &GitCliEngine,
-    repository: &GitRepository,
-    index_path: &Path,
-    request: &GitContentMergeResolutionRequest,
-) -> Result<(), GitEngineError> {
-    let mut blob_inputs = Vec::new();
-    for resolved in &request.paths {
-        validate_repository_path(&resolved.path)?;
-        match (&resolved.mode, &resolved.data) {
-            (Some(mode), Some(data)) => {
-                validate_resolved_blob(mode, data)?;
-                blob_inputs.push(data.as_slice());
-            }
-            (None, None) => {}
-            _ => {
-                return Err(GitEngineError::UnsupportedRepository {
-                    detail: format!(
-                        "structured merge path `{}` must provide both mode and data or neither",
-                        resolved.path
-                    ),
-                });
-            }
-        }
-    }
-    let mut blob_oids = engine.write_blobs(repository, &blob_inputs)?.into_iter();
-    let null_oid = "0".repeat(request.base.as_str().len());
-    let mut index_input = Vec::new();
-    for resolved in &request.paths {
-        match (&resolved.mode, &resolved.data) {
-            (Some(mode), Some(_)) => {
-                let oid = blob_oids
-                    .next()
-                    .ok_or_else(|| GitEngineError::InvalidOutput {
-                        operation: "install structured merge results",
-                        detail: "batch blob writer returned too few object IDs".to_string(),
-                    })?;
-                write!(index_input, "{mode} {oid}\t{}\0", resolved.path)
-                    .expect("writing to a Vec cannot fail");
-            }
-            (None, None) => {
-                write!(index_input, "0 {null_oid}\t{}\0", resolved.path)
-                    .expect("writing to a Vec cannot fail");
-            }
-            _ => unreachable!("resolved path shape was validated above"),
-        }
-    }
-    if blob_oids.next().is_some() {
-        return Err(GitEngineError::InvalidOutput {
-            operation: "install structured merge results",
-            detail: "batch blob writer returned too many object IDs".to_string(),
-        });
-    }
-    let mut command = engine.index_command(repository, index_path)?;
-    command.args(["update-index", "-z", "--index-info"]);
-    ensure_success(
-        "install structured merge results",
-        engine.execute_with_input(command, "install structured merge results", &index_input)?,
-    )?;
-    Ok(())
-}
-
-fn validate_resolved_blob(mode: &str, data: &[u8]) -> Result<(), GitEngineError> {
-    if !matches!(mode, "100644" | "100755" | "120000") {
-        return Err(GitEngineError::UnsupportedRepository {
-            detail: format!("unsupported structured merge blob mode `{mode}`"),
-        });
-    }
-    if data.len() > MAX_CONFLICT_BLOB_BYTES {
-        return Err(GitEngineError::UnsupportedRepository {
-            detail: format!(
-                "structured merge blob exceeds the {MAX_CONFLICT_BLOB_BYTES} byte limit"
-            ),
-        });
-    }
-    Ok(())
 }
 
 fn parse_version_component(
@@ -8289,292 +6113,14 @@ mod tests {
         (temporary, remote, writer)
     }
 
-    /// A pushed checkout with a scoped note and an unscoped script, opened
-    /// through a repository scoped to `wiki`.
-    fn scoped_fixture() -> (
-        tempfile::TempDir,
-        PathBuf,
-        GitCliEngine,
-        GitRepository,
-        GitOid,
-    ) {
-        let (temporary, _remote, writer) = init_branch_remote();
-        fs::create_dir(writer.join("wiki")).expect("wiki directory");
-        fs::write(writer.join("wiki/Note.md"), "note v1\n").expect("note");
-        fs::write(writer.join("run.sh"), "echo v1\n").expect("script");
-        let head = commit_all(&writer, "content");
-        run_git(&writer, &["push", "--quiet", "origin", "main"]);
-        let engine = GitCliEngine::default();
-        let repository = engine
-            .discover_repository(&writer)
-            .expect("repository")
-            .with_worktree_scope(Some(GitWorktreeScope::new(["wiki"]).expect("scope")));
-        (temporary, writer, engine, repository, head)
-    }
-
-    fn blob_at(writer: &Path, revision: &GitOid, path: &str) -> String {
-        run_git_capture(writer, &["show", &format!("{}:{path}", revision.as_str())])
-    }
-
-    #[test]
-    fn scoped_capture_takes_unscoped_paths_from_the_published_branch() {
-        let (_temporary, writer, engine, repository, head) = scoped_fixture();
-        fs::write(writer.join("wiki/Note.md"), "note local\n").expect("note edit");
-        fs::write(writer.join("wiki/New.md"), "new\n").expect("new note");
-        fs::write(writer.join("run.sh"), "echo half-finished\n").expect("script edit");
-        fs::write(writer.join("Scratch.md"), "untracked\n").expect("unscoped file");
-        let local_ref = GitRefName::parse("refs/vulcan/sync/test/local").expect("ref");
-
-        let capture = engine
-            .capture_worktree(
-                &repository,
-                &GitCaptureRequest {
-                    base: Some(head.clone()),
-                    target_ref: local_ref,
-                    target_before: None,
-                    message: "vulcan sync snapshot\n".to_string(),
-                    link: None,
-                },
-            )
-            .expect("scoped capture");
-
-        assert!(capture.created);
-        assert_eq!(
-            blob_at(&writer, &capture.commit, "wiki/Note.md"),
-            "note local"
-        );
-        assert_eq!(blob_at(&writer, &capture.commit, "wiki/New.md"), "new");
-        assert_eq!(blob_at(&writer, &capture.commit, "run.sh"), "echo v1");
-        let paths = engine
-            .tree_entries(&repository, &capture.commit)
-            .expect("entries")
-            .into_iter()
-            .map(|entry| entry.path)
-            .collect::<Vec<_>>();
-        assert!(!paths.contains(&"Scratch.md".to_string()));
-        assert!(engine
-            .worktree_matches_tree(&repository, &capture.commit)
-            .expect("compare"));
-
-        fs::write(writer.join("run.sh"), "echo another edit\n").expect("script edit");
-        assert!(
-            engine
-                .worktree_matches_tree(&repository, &capture.commit)
-                .expect("compare"),
-            "unscoped edits are outside the comparison"
-        );
-        fs::write(writer.join("wiki/Note.md"), "note again\n").expect("note edit");
-        assert!(!engine
-            .worktree_matches_tree(&repository, &capture.commit)
-            .expect("compare"));
-    }
-
-    #[test]
-    fn scoped_application_writes_only_scoped_paths() {
-        let (_temporary, writer, engine, repository, head) = scoped_fixture();
-        fs::write(writer.join("run.sh"), "echo uncommitted\n").expect("script edit");
-        let expected = engine
-            .snapshot_worktree_tree(&repository, Some(&head))
-            .expect("snapshot");
-        let expected = engine
-            .create_commit(
-                &repository,
-                &expected,
-                std::slice::from_ref(&head),
-                "expected\n",
-            )
-            .expect("expected commit");
-        let note = engine
-            .write_blob(&repository, b"note remote\n")
-            .expect("note blob");
-        let script = engine
-            .write_blob(&repository, b"echo committed elsewhere\n")
-            .expect("script blob");
-        let entry = |path: &str, oid: &GitOid| GitTreeEntry {
-            path: path.to_string(),
-            oid: oid.clone(),
-            mode: "100644".to_string(),
-            kind: "blob".to_string(),
-        };
-        let target_tree = engine
-            .tree_with_entries(
-                &repository,
-                Some(&head),
-                &[entry("wiki/Note.md", &note), entry("run.sh", &script)],
-            )
-            .expect("target tree");
-        let target = engine
-            .create_commit(
-                &repository,
-                &target_tree,
-                std::slice::from_ref(&expected),
-                "target\n",
-            )
-            .expect("target commit");
-
-        let plan = engine
-            .apply_tree(&repository, &expected, &target)
-            .expect("scoped application");
-
-        assert_eq!(plan.updates, 1);
-        assert_eq!(plan.paths[0].path, "wiki/Note.md");
-        assert_eq!(
-            fs::read_to_string(writer.join("wiki/Note.md")).expect("note"),
-            "note remote\n"
-        );
-        assert_eq!(
-            fs::read_to_string(writer.join("run.sh")).expect("script"),
-            "echo uncommitted\n",
-            "unscoped uncommitted work survives application"
-        );
-        assert!(engine
-            .worktree_matches_tree(&repository, &target)
-            .expect("compare"));
-    }
-
-    #[test]
-    fn scoped_branch_advance_writes_through_git_and_keeps_local_scoped_bytes() {
-        let (_temporary, writer, engine, repository, _) = scoped_fixture();
-        fs::write(writer.join("old.sh"), "echo old\n").expect("old script");
-        let head = commit_all(&writer, "old script");
-        fs::write(writer.join("wiki/Note.md"), "note v2\n").expect("note");
-        fs::write(writer.join("wiki/Added.md"), "added upstream\n").expect("added note");
-        fs::write(writer.join("run.sh"), "echo v2\n").expect("script");
-        fs::remove_file(writer.join("old.sh")).expect("remove old script");
-        let target = commit_all(&writer, "upstream work");
-        run_git(&writer, &["reset", "--quiet", "--hard", head.as_str()]);
-        fs::write(writer.join("wiki/Note.md"), "note local\n").expect("local note");
-        fs::write(writer.join("wiki/Added.md"), "added locally\n").expect("local file");
-        let branch = GitRefName::parse("refs/heads/main").expect("branch");
-        let scope = repository.worktree_scope.clone().expect("scope");
-
-        let outcome = engine
-            .advance_branch_scoped(&repository, &scope, &branch, &head, &target)
-            .expect("scoped advance");
-
-        assert_eq!(
-            outcome,
-            ScopedBranchAdvance::Advanced {
-                kept: vec!["wiki/Added.md".to_string(), "wiki/Note.md".to_string()]
-            }
-        );
-        assert_eq!(engine.head_commit(&repository).expect("head"), Some(target));
-        assert_eq!(
-            fs::read_to_string(writer.join("run.sh")).expect("script"),
-            "echo v2\n"
-        );
-        assert!(!writer.join("old.sh").exists());
-        assert_eq!(
-            fs::read_to_string(writer.join("wiki/Note.md")).expect("note"),
-            "note local\n"
-        );
-        assert_eq!(
-            fs::read_to_string(writer.join("wiki/Added.md")).expect("added"),
-            "added locally\n"
-        );
-        assert_eq!(
-            run_git_capture(&writer, &["status", "--porcelain"]),
-            "M wiki/Added.md\n M wiki/Note.md",
-            "kept paths are local modifications of the new commit; nothing is staged"
-        );
-    }
-
-    #[test]
-    fn scoped_branch_advance_defers_over_dirty_unscoped_files() {
-        let (_temporary, writer, engine, repository, head) = scoped_fixture();
-        fs::write(writer.join("run.sh"), "echo v2\n").expect("script");
-        let target = commit_all(&writer, "upstream work");
-        run_git(&writer, &["reset", "--quiet", "--hard", head.as_str()]);
-        fs::write(writer.join("run.sh"), "echo uncommitted\n").expect("dirty script");
-        let branch = GitRefName::parse("refs/heads/main").expect("branch");
-        let scope = repository.worktree_scope.clone().expect("scope");
-
-        let outcome = engine
-            .advance_branch_scoped(&repository, &scope, &branch, &head, &target)
-            .expect("scoped advance");
-
-        assert_eq!(
-            outcome,
-            ScopedBranchAdvance::BlockedDirty(vec!["run.sh".to_string()])
-        );
-        assert_eq!(engine.head_commit(&repository).expect("head"), Some(head));
-        assert_eq!(
-            fs::read_to_string(writer.join("run.sh")).expect("script"),
-            "echo uncommitted\n"
-        );
-    }
-
-    #[test]
-    fn scoped_capture_needs_a_published_branch() {
-        let (_temporary, writer, engine, repository, head) = scoped_fixture();
-        run_git(&writer, &["checkout", "--quiet", "--detach"]);
-
-        let error = engine
-            .capture_worktree(
-                &repository,
-                &GitCaptureRequest {
-                    base: Some(head),
-                    target_ref: GitRefName::parse("refs/vulcan/sync/test/local").expect("ref"),
-                    target_before: None,
-                    message: "vulcan sync snapshot\n".to_string(),
-                    link: None,
-                },
-            )
-            .expect_err("no published branch");
-
-        assert!(error.to_string().contains("detached"), "{error}");
-    }
-
     const OBSERVED_LIVE: &str = "refs/heads/__vulcan-sync/live";
     const OBSERVED_REGISTRATIONS: &str = "refs/heads/__vulcan-sync/registrations";
-    const OBSERVED_MIRROR: &str = "refs/vulcan/registrations";
 
     fn registration_names(references: &[GitReference]) -> Vec<String> {
         references
             .iter()
             .map(|reference| reference.name.as_str().to_owned())
             .collect()
-    }
-
-    #[test]
-    fn one_listing_returns_the_live_tip_and_only_registration_refs() {
-        let (_temporary, _remote, writer) = init_branch_remote();
-        let engine = GitCliEngine::default();
-        let repository = engine.discover_repository(&writer).expect("repository");
-        let origin = GitRemote::parse("origin").expect("remote");
-        let live = GitRefName::parse(OBSERVED_LIVE).expect("live ref");
-        let prefix = GitRefName::parse(OBSERVED_REGISTRATIONS).expect("prefix");
-
-        let (tip, registrations) = engine
-            .remote_ref_with_prefix(&repository, &origin, &live, &prefix)
-            .expect("empty observation");
-        assert_eq!(tip, None);
-        assert_eq!(registrations, Some(Vec::new()));
-
-        run_git(
-            &writer,
-            &[
-                "push",
-                "--quiet",
-                "origin",
-                &format!("HEAD:{OBSERVED_LIVE}"),
-                &format!("HEAD:{OBSERVED_REGISTRATIONS}/b"),
-                &format!("HEAD:{OBSERVED_REGISTRATIONS}/a"),
-                "HEAD:refs/heads/__vulcan-sync/other/c",
-            ],
-        );
-        let head = GitOid::parse(run_git_capture(&writer, &["rev-parse", "HEAD"])).expect("head");
-        let (tip, registrations) = engine
-            .remote_ref_with_prefix(&repository, &origin, &live, &prefix)
-            .expect("observation");
-        assert_eq!(tip, Some(head));
-        assert_eq!(
-            registration_names(&registrations.expect("registrations observed")),
-            [
-                format!("{OBSERVED_REGISTRATIONS}/a"),
-                format!("{OBSERVED_REGISTRATIONS}/b")
-            ]
-        );
     }
 
     #[test]
@@ -8619,212 +6165,6 @@ mod tests {
             .expect("observation without a namespace");
         assert_eq!(tips, vec![Some(head)]);
         assert_eq!(registrations, None);
-    }
-
-    #[test]
-    fn multi_ref_push_reports_each_lease_separately() {
-        let (_temporary, _remote, writer) = init_branch_remote();
-        let engine = GitCliEngine::default();
-        let repository = engine.discover_repository(&writer).expect("repository");
-        let origin = GitRemote::parse("origin").expect("remote");
-        let accepted = GitRefName::parse("refs/heads/__vulcan-sync/devices/p/d").expect("ref");
-        let refused = GitRefName::parse(OBSERVED_LIVE).expect("live ref");
-        run_git(
-            &writer,
-            &[
-                "push",
-                "--quiet",
-                "origin",
-                &format!("HEAD:{OBSERVED_LIVE}"),
-            ],
-        );
-        run_git(
-            &writer,
-            &["commit", "--quiet", "--allow-empty", "-m", "newer"],
-        );
-        let head = GitOid::parse(run_git_capture(&writer, &["rev-parse", "HEAD"])).expect("head");
-        let stale = GitOid::parse("1".repeat(40)).expect("stale oid");
-
-        let results = engine
-            .push_refs(
-                &repository,
-                &origin,
-                &[
-                    GitRefPush {
-                        source: &head,
-                        destination: &accepted,
-                        expected: None,
-                    },
-                    GitRefPush {
-                        source: &head,
-                        destination: &refused,
-                        expected: Some(&stale),
-                    },
-                ],
-            )
-            .expect("non-atomic push");
-
-        assert_eq!(
-            results,
-            vec![GitPushResult::Updated, GitPushResult::Rejected]
-        );
-        assert_eq!(
-            engine
-                .remote_ref(&repository, &origin, &accepted)
-                .expect("accepted ref"),
-            Some(head)
-        );
-    }
-
-    #[test]
-    fn mirror_fetch_updates_prunes_and_reports_remote_names() {
-        let (_temporary, _remote, writer) = init_branch_remote();
-        let engine = GitCliEngine::default();
-        let repository = engine.discover_repository(&writer).expect("repository");
-        let origin = GitRemote::parse("origin").expect("remote");
-        let live = GitRefName::parse(OBSERVED_LIVE).expect("live ref");
-        let fetched = GitRefName::parse("refs/vulcan/test/fetched").expect("fetched ref");
-        let remote_prefix = GitRefName::parse(OBSERVED_REGISTRATIONS).expect("prefix");
-        let local_prefix = GitRefName::parse(OBSERVED_MIRROR).expect("mirror");
-        let mirror = GitRefMirror {
-            remote_prefix: &remote_prefix,
-            local_prefix: &local_prefix,
-        };
-        run_git(
-            &writer,
-            &[
-                "push",
-                "--quiet",
-                "origin",
-                &format!("HEAD:{OBSERVED_LIVE}"),
-                &format!("HEAD:{OBSERVED_REGISTRATIONS}/a"),
-                &format!("HEAD:{OBSERVED_REGISTRATIONS}/b"),
-            ],
-        );
-
-        let (tip, mirrored) = engine
-            .fetch_ref_with_mirror(&repository, &origin, &live, &fetched, &mirror)
-            .expect("combined fetch");
-        assert_eq!(
-            engine.read_ref(&repository, &fetched).expect("fetched"),
-            Some(tip)
-        );
-        assert_eq!(
-            registration_names(&mirrored.expect("mirror observed")),
-            [
-                format!("{OBSERVED_REGISTRATIONS}/a"),
-                format!("{OBSERVED_REGISTRATIONS}/b")
-            ]
-        );
-        assert!(
-            run_git_capture(&writer, &["rev-parse", &format!("{OBSERVED_MIRROR}/a")]).len() >= 40
-        );
-
-        run_git(
-            &writer,
-            &[
-                "push",
-                "--quiet",
-                "origin",
-                &format!(":{OBSERVED_REGISTRATIONS}/b"),
-            ],
-        );
-        let (_, mirrored) = engine
-            .fetch_ref_with_mirror(&repository, &origin, &live, &fetched, &mirror)
-            .expect("second combined fetch");
-        assert_eq!(
-            registration_names(&mirrored.expect("mirror observed")),
-            [format!("{OBSERVED_REGISTRATIONS}/a")]
-        );
-        assert_eq!(
-            engine
-                .read_ref(
-                    &repository,
-                    &GitRefName::parse(format!("{OBSERVED_MIRROR}/b")).expect("ref")
-                )
-                .expect("read pruned mirror"),
-            None,
-            "a vanished remote registration is pruned locally"
-        );
-    }
-
-    #[test]
-    fn a_broken_mirror_namespace_never_fails_the_live_fetch() {
-        let (_temporary, _remote, writer) = init_branch_remote();
-        let engine = GitCliEngine::default();
-        let repository = engine.discover_repository(&writer).expect("repository");
-        let origin = GitRemote::parse("origin").expect("remote");
-        let live = GitRefName::parse(OBSERVED_LIVE).expect("live ref");
-        let fetched = GitRefName::parse("refs/vulcan/test/fetched").expect("fetched ref");
-        let remote_prefix = GitRefName::parse(OBSERVED_REGISTRATIONS).expect("prefix");
-        let local_prefix = GitRefName::parse(OBSERVED_MIRROR).expect("mirror");
-        run_git(
-            &writer,
-            &[
-                "push",
-                "--quiet",
-                "origin",
-                &format!("HEAD:{OBSERVED_LIVE}"),
-                &format!("HEAD:{OBSERVED_REGISTRATIONS}/a"),
-            ],
-        );
-        // A ref named exactly like the mirror root blocks every mirrored ref
-        // beneath it (directory/file conflict), failing the combined fetch.
-        run_git(&writer, &["update-ref", OBSERVED_MIRROR, "HEAD"]);
-
-        let (tip, mirrored) = engine
-            .fetch_ref_with_mirror(
-                &repository,
-                &origin,
-                &live,
-                &fetched,
-                &GitRefMirror {
-                    remote_prefix: &remote_prefix,
-                    local_prefix: &local_prefix,
-                },
-            )
-            .expect("the plain live fetch still succeeds");
-        assert_eq!(mirrored, None, "the mirror is reported unobserved");
-        assert_eq!(
-            engine.read_ref(&repository, &fetched).expect("fetched"),
-            Some(tip)
-        );
-    }
-
-    #[test]
-    fn a_missing_live_ref_is_still_reported_by_the_mirror_fetch() {
-        let (_temporary, _remote, writer) = init_branch_remote();
-        let engine = GitCliEngine::default();
-        let repository = engine.discover_repository(&writer).expect("repository");
-        let origin = GitRemote::parse("origin").expect("remote");
-        let live = GitRefName::parse(OBSERVED_LIVE).expect("live ref");
-        let remote_prefix = GitRefName::parse(OBSERVED_REGISTRATIONS).expect("prefix");
-        let local_prefix = GitRefName::parse(OBSERVED_MIRROR).expect("mirror");
-        run_git(
-            &writer,
-            &[
-                "push",
-                "--quiet",
-                "origin",
-                &format!("HEAD:{OBSERVED_REGISTRATIONS}/a"),
-            ],
-        );
-        let error = engine
-            .fetch_ref_with_mirror(
-                &repository,
-                &origin,
-                &live,
-                &GitRefName::parse("refs/vulcan/test/fetched").expect("fetched ref"),
-                &GitRefMirror {
-                    remote_prefix: &remote_prefix,
-                    local_prefix: &local_prefix,
-                },
-            )
-            .expect_err("no live ref");
-        assert!(
-            matches!(error, GitEngineError::RemoteRefMissing { .. }),
-            "{error:?}"
-        );
     }
 
     fn advance_remote(temporary: &tempfile::TempDir, remote: &Path, name: &str, contents: &str) {
@@ -9685,83 +7025,6 @@ mod tests {
     }
 
     #[test]
-    fn detached_recovery_captures_materialized_bytes_before_fetching() {
-        let temporary = TempDir::new().expect("temporary directory");
-        let source = temporary.path().join("source");
-        fs::create_dir(&source).expect("source directory");
-        init_repo(&source);
-        fs::write(source.join("Home.md"), "remote\n").expect("source note");
-        let source_head = commit_all(&source, "initial");
-        let work_tree = temporary.path().join("wiki");
-        let git_dir = temporary.path().join("private/wiki.git");
-        fs::create_dir(git_dir.parent().expect("Git parent")).expect("Git parent");
-        let engine = GitCliEngine::default();
-        engine
-            .clone_repository(&GitCloneRequest {
-                source: source.display().to_string(),
-                work_tree: work_tree.clone(),
-                git_dir: Some(git_dir.clone()),
-                platform: GitPlatformProfile::AndroidShared,
-            })
-            .expect("detached clone");
-        fs::write(work_tree.join("Home.md"), "device-only edit\n").expect("local edit");
-        fs::write(work_tree.join("Unpushed.md"), "only on device\n").expect("local note");
-        fs::remove_dir_all(&git_dir).expect("simulate lost private Git directory");
-
-        let report = engine
-            .recover_detached_repository(&GitDetachedRecoveryRequest {
-                source: source.display().to_string(),
-                work_tree: work_tree.clone(),
-                git_dir: git_dir.clone(),
-                platform: GitPlatformProfile::AndroidShared,
-            })
-            .expect("detached recovery");
-
-        assert_eq!(report.repository.layout, GitRepositoryLayout::Detached);
-        assert!(report
-            .recovery_ref
-            .as_str()
-            .starts_with("refs/vulcan/recovery/detached-git-loss/"));
-        assert_eq!(
-            engine
-                .path_object(&report.repository, &report.recovery_commit, "Home.md")
-                .expect("recovery Home")
-                .and_then(|object| object.data),
-            Some(b"device-only edit\n".to_vec())
-        );
-        assert_eq!(
-            engine
-                .path_object(&report.repository, &report.recovery_commit, "Unpushed.md")
-                .expect("recovery note")
-                .and_then(|object| object.data),
-            Some(b"only on device\n".to_vec())
-        );
-        assert_eq!(
-            fs::read_to_string(work_tree.join("Home.md")).unwrap(),
-            "device-only edit\n"
-        );
-        assert_eq!(
-            engine
-                .resolve_revision(&report.repository, "refs/remotes/origin/main")
-                .expect("fetched main"),
-            source_head
-        );
-        assert!(report
-            .possibly_lost_hidden_ref_namespaces
-            .contains(&"refs/vulcan/conflicts/".to_string()));
-        assert!(report
-            .possibly_lost_hidden_ref_namespaces
-            .contains(&"refs/vulcan/sync/".to_string()));
-        assert!(report
-            .possibly_lost_hidden_ref_namespaces
-            .contains(&"refs/vulcan/epochs/".to_string()));
-        assert_eq!(
-            run_git_capture(&work_tree, &["config", "--bool", "core.fileMode"]),
-            "false"
-        );
-    }
-
-    #[test]
     fn detached_recovery_refuses_a_mismatched_pointer_without_mutation() {
         let temporary = TempDir::new().expect("temporary directory");
         let work_tree = temporary.path().join("wiki");
@@ -9892,7 +7155,6 @@ mod tests {
             work_tree: Some(PathBuf::from("/storage/wiki")),
             layout: GitRepositoryLayout::Detached,
             object_format: GitObjectFormat::Sha1,
-            worktree_scope: None,
         };
 
         assert_eq!(
@@ -10478,371 +7740,6 @@ mod tests {
     }
 
     #[test]
-    fn proposed_trees_keep_the_worktree_comparison_index_valid() {
-        let temporary = TempDir::new().expect("temporary directory");
-        init_repo(temporary.path());
-        fs::write(temporary.path().join("a.md"), "a\n").expect("a");
-        fs::write(temporary.path().join("b.md"), "b\n").expect("b");
-        let base = commit_all(temporary.path(), "base");
-        fs::write(temporary.path().join("a.md"), "a two\n").expect("a two");
-        fs::remove_file(temporary.path().join("b.md")).expect("remove b");
-        let target = commit_all(temporary.path(), "target");
-        let engine = GitCliEngine::default();
-        let repository = engine
-            .discover_repository(temporary.path())
-            .expect("repository");
-        assert!(engine
-            .worktree_matches_tree(&repository, &target)
-            .expect("initial comparison"));
-
-        // A semantic plan's last step reproduces the worktree's own tree.
-        let before = engine.subprocess_count().unwrap_or_default();
-        let tree = engine
-            .tree_with_paths(
-                &repository,
-                &base,
-                &target,
-                &["a.md".to_string(), "b.md".to_string()],
-            )
-            .expect("proposed tree");
-        // Seed, one scoped listing, one batched update, and the write.
-        assert_eq!(engine.subprocess_count().unwrap_or_default() - before, 4);
-        assert_eq!(
-            tree,
-            engine.tree_oid(&repository, &target).expect("target tree")
-        );
-        assert!(engine
-            .worktree_matches_tree(&repository, &target)
-            .expect("comparison after the proposed tree"));
-    }
-
-    #[test]
-    fn merge_resolution_keeps_the_worktree_comparison_index_valid() {
-        let temporary = TempDir::new().expect("temporary directory");
-        init_repo(temporary.path());
-        fs::write(temporary.path().join("data.json"), "{\"value\":0}\n").expect("base");
-        let base = commit_all(temporary.path(), "base");
-        run_git(temporary.path(), &["checkout", "--quiet", "-b", "remote"]);
-        fs::write(temporary.path().join("data.json"), "{\"value\":1}\n").expect("remote");
-        let remote = commit_all(temporary.path(), "remote");
-        run_git(
-            temporary.path(),
-            &["checkout", "--quiet", "-b", "local", base.as_str()],
-        );
-        fs::write(temporary.path().join("data.json"), "{\"value\":2}\n").expect("local");
-        let local = commit_all(temporary.path(), "local");
-        let engine = GitCliEngine::default();
-        let repository = engine
-            .discover_repository(temporary.path())
-            .expect("repository");
-        assert!(engine
-            .worktree_matches_tree(&repository, &local)
-            .expect("initial comparison"));
-
-        // A resolution that keeps the local bytes produces the local tree;
-        // the following comparison must still see the untouched worktree.
-        let tree = engine
-            .resolve_merge_tree_with_paths(
-                &repository,
-                &GitContentMergeResolutionRequest {
-                    base,
-                    accepted_remote: remote,
-                    local_candidate: local.clone(),
-                    paths: vec![GitResolvedPath {
-                        path: "data.json".to_string(),
-                        mode: Some("100644".to_string()),
-                        data: Some(b"{\"value\":2}\n".to_vec()),
-                    }],
-                },
-            )
-            .expect("resolution tree");
-        assert_eq!(
-            tree,
-            engine.tree_oid(&repository, &local).expect("local tree")
-        );
-        assert!(engine
-            .worktree_matches_tree(&repository, &local)
-            .expect("comparison after resolution"));
-    }
-
-    #[test]
-    fn criss_crossed_live_history_merges_against_a_reproducible_virtual_base() {
-        // Two devices each linked the branch into the live chain, so the
-        // accepted remote and the local candidate share two best common
-        // ancestors: the old live snapshot and the branch commit.
-        let temporary = TempDir::new().expect("temporary directory");
-        let path = temporary.path();
-        init_repo(path);
-        fs::write(path.join("Home.md"), "base\n").expect("base note");
-        commit_all(path, "base");
-        run_git(path, &["checkout", "--quiet", "-b", "live"]);
-        fs::write(path.join("Live.md"), "live\n").expect("live note");
-        let live = commit_all(path, "live snapshot");
-        run_git(path, &["checkout", "--quiet", "main"]);
-        fs::write(path.join("Recipe.md"), "recipe\n").expect("branch note");
-        let branch = commit_all(path, "branch");
-        run_git(
-            path,
-            &["checkout", "--quiet", "-b", "remote", live.as_str()],
-        );
-        run_git(path, &["merge", "--quiet", "--no-edit", branch.as_str()]);
-        fs::write(path.join("Home.md"), "remote\n").expect("remote edit");
-        let remote = commit_all(path, "remote live snapshot");
-        run_git(path, &["checkout", "--quiet", "main"]);
-        fs::write(path.join("Later.md"), "later\n").expect("later branch note");
-        let later = commit_all(path, "later branch");
-        run_git(path, &["checkout", "--quiet", "-b", "local", live.as_str()]);
-        fs::write(path.join("Home.md"), "local\n").expect("local edit");
-        commit_all(path, "local live snapshot");
-        run_git(path, &["merge", "--quiet", "--no-edit", later.as_str()]);
-        let local = GitOid::parse(run_git_capture(path, &["rev-parse", "HEAD"])).expect("local");
-        let all_bases = run_git_capture(
-            path,
-            &["merge-base", "--all", remote.as_str(), local.as_str()],
-        );
-        assert_eq!(all_bases.lines().count(), 2, "fixture must criss-cross");
-
-        let engine = GitCliEngine::default();
-        let repository = engine.discover_repository(path).expect("repository");
-        let shared = engine
-            .merge_base(&repository, &remote, &local)
-            .expect("shared ancestry")
-            .expect("a common ancestor");
-        assert!(all_bases.lines().any(|line| line == shared.as_str()));
-
-        let merge = engine
-            .merge_commits(&repository, &remote, &local)
-            .expect("criss-crossed merge");
-        assert!(!merge.clean);
-        assert_eq!(merge.conflict_paths, vec!["Home.md".to_string()]);
-        let base = merge.base.clone().expect("virtual base");
-        let mut parents = run_git_capture(path, &["rev-list", "--parents", "-n1", base.as_str()])
-            .split_whitespace()
-            .skip(1)
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-        parents.sort();
-        let mut expected = all_bases.lines().map(str::to_string).collect::<Vec<_>>();
-        expected.sort();
-        assert_eq!(parents, expected);
-        assert_eq!(
-            engine
-                .path_object(&repository, &base, "Recipe.md")
-                .expect("virtual base path")
-                .expect("branch note in the virtual base")
-                .data,
-            Some(b"recipe\n".to_vec())
-        );
-        let reversed = engine
-            .merge_commits(&repository, &local, &remote)
-            .expect("reversed merge");
-        assert_eq!(
-            reversed.base,
-            Some(base.clone()),
-            "base must not depend on roles"
-        );
-
-        let tree = engine
-            .resolve_merge_tree(
-                &repository,
-                &GitMergeResolutionRequest {
-                    base,
-                    accepted_remote: remote,
-                    local_candidate: local,
-                    paths: vec!["Home.md".to_string()],
-                    side: GitConflictSide::Local,
-                },
-            )
-            .expect("resolution against the virtual base");
-        let resolved = engine
-            .create_commit(&repository, &tree, &[], "resolved\n")
-            .expect("resolved commit");
-        for (note, data) in [
-            ("Home.md", "local\n"),
-            ("Recipe.md", "recipe\n"),
-            ("Later.md", "later\n"),
-        ] {
-            assert_eq!(
-                engine
-                    .path_object(&repository, &resolved, note)
-                    .expect("resolved path")
-                    .expect("resolved note")
-                    .data,
-                Some(data.as_bytes().to_vec())
-            );
-        }
-    }
-
-    #[test]
-    fn structured_merge_plumbing_writes_exact_blobs_without_touching_the_normal_index() {
-        let temporary = TempDir::new().expect("temporary directory");
-        init_repo(temporary.path());
-        fs::write(temporary.path().join("data.json"), "{\"value\":0}\n").expect("base");
-        fs::write(
-            temporary.path().join("removed.md"),
-            "removed by both sides\n",
-        )
-        .expect("deleted on both sides");
-        fs::write(temporary.path().join("clean.md"), "alpha\nmiddle\nomega\n")
-            .expect("clean merge base");
-        let base = commit_all(temporary.path(), "base");
-        run_git(temporary.path(), &["checkout", "--quiet", "-b", "remote"]);
-        fs::write(temporary.path().join("data.json"), "{\"value\":1}\n").expect("remote");
-        fs::write(
-            temporary.path().join("clean.md"),
-            "remote alpha\nmiddle\nomega\n",
-        )
-        .expect("remote clean edit");
-        fs::remove_file(temporary.path().join("removed.md")).expect("remote deletion");
-        let remote = commit_all(temporary.path(), "remote");
-        run_git(
-            temporary.path(),
-            &["checkout", "--quiet", "-b", "local", base.as_str()],
-        );
-        fs::write(temporary.path().join("data.json"), "{\"value\":2}\n").expect("local");
-        fs::write(
-            temporary.path().join("clean.md"),
-            "alpha\nmiddle\nlocal omega\n",
-        )
-        .expect("local clean edit");
-        fs::remove_file(temporary.path().join("removed.md")).expect("local deletion");
-        let local = commit_all(temporary.path(), "local");
-        let normal_index = run_git_capture(temporary.path(), &["write-tree"]);
-        let engine = GitCliEngine::default();
-        let repository = engine
-            .discover_repository(temporary.path())
-            .expect("repository");
-        let merge = engine
-            .merge_commits(&repository, &remote, &local)
-            .expect("conflicted merge");
-        assert!(!merge.clean);
-
-        let tree = engine
-            .resolve_merge_tree_with_paths(
-                &repository,
-                &GitContentMergeResolutionRequest {
-                    base,
-                    accepted_remote: remote.clone(),
-                    local_candidate: local.clone(),
-                    paths: vec![GitResolvedPath {
-                        path: "data.json".to_string(),
-                        mode: Some("100644".to_string()),
-                        data: Some(b"{\"local\":2,\"remote\":1}\n".to_vec()),
-                    }],
-                },
-            )
-            .expect("structured tree");
-        let commit = engine
-            .create_commit(&repository, &tree, &[remote, local], "structured\n")
-            .expect("structured commit");
-        assert_eq!(
-            engine
-                .path_object(&repository, &commit, "data.json")
-                .expect("path")
-                .expect("object")
-                .data,
-            Some(b"{\"local\":2,\"remote\":1}\n".to_vec())
-        );
-        assert!(engine
-            .path_object(&repository, &commit, "removed.md")
-            .expect("deleted path query")
-            .is_none());
-        assert_eq!(
-            engine
-                .path_object(&repository, &commit, "clean.md")
-                .expect("clean path query")
-                .expect("clean path")
-                .data,
-            Some(b"remote alpha\nmiddle\nlocal omega\n".to_vec())
-        );
-        assert_eq!(
-            run_git_capture(temporary.path(), &["write-tree"]),
-            normal_index
-        );
-    }
-
-    #[test]
-    fn preserved_side_resolution_keeps_shared_deletions_resolved() {
-        let temporary = TempDir::new().expect("temporary directory");
-        init_repo(temporary.path());
-        fs::write(temporary.path().join("Home.md"), "base\n").expect("base note");
-        fs::write(
-            temporary.path().join("removed.md"),
-            "removed by both sides\n",
-        )
-        .expect("shared file");
-        fs::write(temporary.path().join("clean.md"), "alpha\nmiddle\nomega\n")
-            .expect("clean merge base");
-        let base = commit_all(temporary.path(), "base");
-
-        run_git(temporary.path(), &["checkout", "--quiet", "-b", "remote"]);
-        fs::write(temporary.path().join("Home.md"), "remote\n").expect("remote note");
-        fs::write(
-            temporary.path().join("clean.md"),
-            "remote alpha\nmiddle\nomega\n",
-        )
-        .expect("remote clean edit");
-        fs::remove_file(temporary.path().join("removed.md")).expect("remote deletion");
-        let remote = commit_all(temporary.path(), "remote");
-
-        run_git(
-            temporary.path(),
-            &["checkout", "--quiet", "-b", "local", base.as_str()],
-        );
-        fs::write(temporary.path().join("Home.md"), "local\n").expect("local note");
-        fs::write(
-            temporary.path().join("clean.md"),
-            "alpha\nmiddle\nlocal omega\n",
-        )
-        .expect("local clean edit");
-        fs::remove_file(temporary.path().join("removed.md")).expect("local deletion");
-        let local = commit_all(temporary.path(), "local");
-        let normal_index = run_git_capture(temporary.path(), &["write-tree"]);
-
-        let engine = GitCliEngine::default();
-        let repository = engine
-            .discover_repository(temporary.path())
-            .expect("repository");
-        let tree = engine
-            .resolve_merge_tree(
-                &repository,
-                &GitMergeResolutionRequest {
-                    base,
-                    accepted_remote: remote,
-                    local_candidate: local,
-                    paths: vec!["Home.md".to_string()],
-                    side: GitConflictSide::Local,
-                },
-            )
-            .expect("preserved-side tree");
-
-        assert_eq!(
-            engine
-                .path_object(&repository, &tree, "Home.md")
-                .expect("resolved note query")
-                .expect("resolved note")
-                .data,
-            Some(b"local\n".to_vec())
-        );
-        assert!(engine
-            .path_object(&repository, &tree, "removed.md")
-            .expect("deleted path query")
-            .is_none());
-        assert_eq!(
-            engine
-                .path_object(&repository, &tree, "clean.md")
-                .expect("clean path query")
-                .expect("clean path")
-                .data,
-            Some(b"remote alpha\nmiddle\nlocal omega\n".to_vec())
-        );
-        assert_eq!(
-            run_git_capture(temporary.path(), &["write-tree"]),
-            normal_index
-        );
-    }
-
-    #[test]
     fn batched_remote_deletion_honors_each_lease_in_one_push() {
         let temporary = TempDir::new().expect("temporary directory");
         let remote_path = temporary.path().join("remote.git");
@@ -11015,104 +7912,6 @@ mod tests {
     }
 
     #[test]
-    fn hidden_refs_stay_out_of_remote_tracking_refs() {
-        let temporary = TempDir::new().expect("temporary directory");
-        let remote_path = temporary.path().join("remote.git");
-        let remote_path = remote_path.to_str().expect("remote path");
-        run_git(
-            temporary.path(),
-            &["init", "--quiet", "--bare", remote_path],
-        );
-        let worktree = temporary.path().join("wiki");
-        fs::create_dir(&worktree).expect("worktree");
-        init_repo(&worktree);
-        fs::write(worktree.join("Home.md"), "home\n").expect("note");
-        commit_all(&worktree, "initial");
-        // Push before naming the remote: Git updates a configured remote's
-        // tracking refs when a push's URL matches it, which on Windows and
-        // macOS left exactly the refs this test asserts are absent.
-        run_git(
-            &worktree,
-            &[
-                "push",
-                "--quiet",
-                remote_path,
-                "HEAD:refs/heads/main",
-                "HEAD:refs/heads/__vulcan-sync/live",
-                "HEAD:refs/heads/__vulcan-sync/devices/p/d",
-            ],
-        );
-        run_git(&worktree, &["remote", "add", "origin", remote_path]);
-        let engine = GitCliEngine::default();
-        let repository = engine.discover_repository(&worktree).expect("repository");
-        let remote = GitRemote::parse("origin").expect("remote");
-        let tracking = |worktree: &Path| {
-            run_git_capture(
-                worktree,
-                &["for-each-ref", "--format=%(refname)", "refs/remotes"],
-            )
-        };
-
-        // Vulcan's own fetches never leave remote-tracking copies.
-        let live = GitRefName::parse("refs/heads/__vulcan-sync/live").expect("live");
-        let device = GitRefName::parse("refs/heads/__vulcan-sync/devices/p/d").expect("device");
-        engine
-            .fetch_ref(
-                &repository,
-                &remote,
-                &live,
-                &GitRefName::parse("refs/vulcan/test/live").expect("ref"),
-            )
-            .expect("fetch");
-        engine
-            .fetch_refs(
-                &repository,
-                &remote,
-                &[(
-                    device,
-                    GitRefName::parse("refs/vulcan/test/device").expect("ref"),
-                )],
-            )
-            .expect("fetch refs");
-        let unexpected = tracking(&worktree);
-        // Flaky on Windows and macOS CI only; the reflogs name the command
-        // that wrote any remote-tracking ref.
-        let writers = unexpected
-            .lines()
-            .map(|reference| {
-                run_git_capture(&worktree, &["reflog", "show", "--date=iso", reference])
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(unexpected, "", "written by: {writers:?}");
-
-        let root = GitRefName::parse("refs/heads/__vulcan-sync").expect("root");
-        assert!(engine
-            .exclude_from_default_fetch(&repository, &remote, &root)
-            .expect("exclude"));
-        assert!(!engine
-            .exclude_from_default_fetch(&repository, &remote, &root)
-            .expect("already excluded"));
-        let configured =
-            run_git_capture(&worktree, &["config", "--get-all", "remote.origin.fetch"]);
-        assert_eq!(
-            configured
-                .lines()
-                .filter(|line| *line == "^refs/heads/__vulcan-sync/*")
-                .count(),
-            1
-        );
-        // A plain fetch now brings only the user's branches.
-        run_git(&worktree, &["fetch", "--quiet", "origin"]);
-        assert_eq!(tracking(&worktree), "refs/remotes/origin/main");
-
-        // A URL remote has no configured refspecs to extend.
-        let url = GitRemote::parse(remote_path).expect("url remote");
-        assert!(!engine
-            .exclude_from_default_fetch(&repository, &url, &root)
-            .expect("url remote"));
-    }
-
-    #[test]
     fn push_and_fetch_custom_ref_use_compare_and_swap_with_git_transport() {
         let temporary = TempDir::new().expect("temporary directory");
         let remote_path = temporary.path().join("remote.git");
@@ -11210,73 +8009,6 @@ mod tests {
     }
 
     #[test]
-    fn batch_ref_updates_are_atomic() {
-        let temporary = TempDir::new().expect("temporary directory");
-        init_repo(temporary.path());
-        fs::write(temporary.path().join("Home.md"), "initial\n").expect("initial note");
-        let initial = commit_all(temporary.path(), "initial");
-        fs::write(temporary.path().join("Home.md"), "changed\n").expect("changed note");
-        let changed = commit_all(temporary.path(), "changed");
-        let engine = GitCliEngine::default();
-        let repository = engine
-            .discover_repository(temporary.path())
-            .expect("repository");
-        let first = GitRefName::parse("refs/vulcan/sync/test/first").expect("first ref");
-        let second = GitRefName::parse("refs/vulcan/sync/test/second").expect("second ref");
-
-        engine
-            .update_refs(&repository, &[(&first, &initial), (&second, &initial)])
-            .expect("batch update");
-        assert_eq!(
-            engine.read_ref(&repository, &first).expect("first ref"),
-            Some(initial.clone())
-        );
-        assert_eq!(
-            engine.read_ref(&repository, &second).expect("second ref"),
-            Some(initial.clone())
-        );
-
-        let missing = GitOid::parse("1111111111111111111111111111111111111111")
-            .expect("syntactically valid missing object");
-        assert!(engine
-            .update_refs(&repository, &[(&first, &changed), (&second, &missing)])
-            .is_err());
-        assert_eq!(
-            engine.read_ref(&repository, &first).expect("first ref"),
-            Some(initial.clone())
-        );
-        assert_eq!(
-            engine.read_ref(&repository, &second).expect("second ref"),
-            Some(initial.clone())
-        );
-
-        // Lock contention on a later ref must abort the batch without
-        // applying earlier refs (verified against the Git CLI).
-        let lock = temporary
-            .path()
-            .join(".git")
-            .join(second.as_str().replace('/', std::path::MAIN_SEPARATOR_STR));
-        let lock = lock.with_file_name(format!(
-            "{}.lock",
-            lock.file_name().expect("ref file").to_string_lossy()
-        ));
-        fs::create_dir_all(lock.parent().expect("lock parent")).expect("lock directory");
-        fs::write(&lock, b"").expect("stale ref lock");
-        assert!(engine
-            .update_refs(&repository, &[(&first, &changed), (&second, &changed)])
-            .is_err());
-        fs::remove_file(&lock).expect("clear stale lock");
-        assert_eq!(
-            engine.read_ref(&repository, &first).expect("first ref"),
-            Some(initial.clone())
-        );
-        assert_eq!(
-            engine.read_ref(&repository, &second).expect("second ref"),
-            Some(initial)
-        );
-    }
-
-    #[test]
     fn lists_validated_hidden_refs_in_stable_name_order() {
         let temporary = TempDir::new().expect("temporary directory");
         init_repo(temporary.path());
@@ -11321,90 +8053,6 @@ mod tests {
         assert!(references
             .iter()
             .all(|reference| reference.target == commit));
-    }
-
-    #[test]
-    fn batch_ref_reads_preserve_missing_and_peeled_commit_semantics() {
-        let temporary = TempDir::new().expect("temporary directory");
-        init_repo(temporary.path());
-        fs::write(temporary.path().join("Home.md"), "initial\n").expect("note");
-        let commit = commit_all(temporary.path(), "initial");
-        run_git(
-            temporary.path(),
-            &["tag", "-a", "batch-ref-tag", "-m", "annotated tag"],
-        );
-        let engine = GitCliEngine::default();
-        let repository = engine
-            .discover_repository(temporary.path())
-            .expect("repository");
-        let direct = GitRefName::parse("refs/vulcan/test/direct").expect("direct ref");
-        let annotated = GitRefName::parse("refs/vulcan/test/annotated").expect("annotated ref");
-        let missing = GitRefName::parse("refs/vulcan/test/missing").expect("missing ref");
-        run_git(
-            temporary.path(),
-            &["update-ref", direct.as_str(), commit.as_str()],
-        );
-        run_git(
-            temporary.path(),
-            &["update-ref", annotated.as_str(), "refs/tags/batch-ref-tag"],
-        );
-
-        let targets = engine
-            .read_refs(&repository, &[&missing, &annotated, &direct])
-            .expect("batch refs");
-
-        assert_eq!(targets.len(), 2);
-        assert_eq!(targets.get(&direct), Some(&commit));
-        assert_eq!(targets.get(&annotated), Some(&commit));
-        assert!(!targets.contains_key(&missing));
-    }
-
-    #[test]
-    fn batch_blob_reads_preserve_binary_contents_and_collapse_duplicates() {
-        let temporary = TempDir::new().expect("temporary directory");
-        init_repo(temporary.path());
-        let engine = GitCliEngine::default();
-        let repository = engine
-            .discover_repository(temporary.path())
-            .expect("repository");
-        let first = engine
-            .write_blob(&repository, b"first\0blob\n")
-            .expect("first blob");
-        let second = engine
-            .write_blob(&repository, b"second blob")
-            .expect("second blob");
-
-        let blobs = engine
-            .read_blobs(&repository, &[second.clone(), first.clone(), first.clone()])
-            .expect("batch blobs");
-
-        assert_eq!(blobs.len(), 2);
-        assert_eq!(
-            blobs.get(&first).map(Vec::as_slice),
-            Some(b"first\0blob\n".as_slice())
-        );
-        assert_eq!(
-            blobs.get(&second).map(Vec::as_slice),
-            Some(b"second blob".as_slice())
-        );
-        let before = engine.subprocess_count().unwrap();
-        let mut visited = BTreeMap::new();
-        engine
-            .visit_blobs(
-                &repository,
-                &[first.clone(), second, first],
-                &mut |oid, data| {
-                    assert!(visited.insert(oid.clone(), data).is_none());
-                    Ok(())
-                },
-            )
-            .expect("visit blobs");
-        assert_eq!(visited, blobs);
-        assert_eq!(engine.subprocess_count().unwrap() - before, 1);
-        engine
-            .visit_blobs(&repository, &[], &mut |_, _| panic!("empty batch"))
-            .expect("empty batch");
-        assert_eq!(engine.subprocess_count().unwrap() - before, 1);
     }
 
     #[test]
@@ -11454,50 +8102,6 @@ mod tests {
         assert_eq!(delivered, 1);
     }
 
-    #[test]
-    fn batch_blob_visitor_handles_large_and_many_small_blobs_and_early_rejection() {
-        let temporary = TempDir::new().unwrap();
-        init_repo(temporary.path());
-        let engine = GitCliEngine::default();
-        let repository = engine.discover_repository(temporary.path()).unwrap();
-        let large = vec![42; 8 * 1024 * 1024];
-        let mut objects = vec![engine.write_blob(&repository, &large).unwrap()];
-        drop(large);
-        for index in 0..128 {
-            objects.push(
-                engine
-                    .write_blob(&repository, format!("small {index}").as_bytes())
-                    .unwrap(),
-            );
-        }
-        let before = engine.subprocess_count().unwrap();
-        let mut count = 0;
-        let mut maximum = 0;
-        engine
-            .visit_blobs(&repository, &objects, &mut |_, data| {
-                maximum = maximum.max(data.len());
-                count += 1;
-                Ok(())
-            })
-            .unwrap();
-        assert_eq!(maximum, 8 * 1024 * 1024);
-        assert_eq!(count, 129);
-        assert_eq!(engine.subprocess_count().unwrap() - before, 1);
-        let mut rejected = 0;
-        let error = engine
-            .visit_blobs(&repository, &objects, &mut |_, _| {
-                rejected += 1;
-                Err(GitEngineError::InvalidOutput {
-                    operation: "test visitor",
-                    detail: "consumer rejected blob".to_string(),
-                })
-            })
-            .unwrap_err();
-        assert_eq!(rejected, 1);
-        assert!(error.to_string().contains("consumer rejected blob"));
-        assert_eq!(engine.subprocess_count().unwrap() - before, 2);
-    }
-
     #[cfg(unix)]
     #[test]
     fn batch_blob_visitor_drains_stderr_and_times_out_process_groups() {
@@ -11535,45 +8139,6 @@ mod tests {
             }
             other => panic!("unexpected error: {other}"),
         }
-    }
-
-    #[test]
-    #[ignore = "manual RSS comparison: run separately with VULCAN_BLOB_BASELINE=1 and without"]
-    fn batch_blob_memory_measurement() {
-        let temporary = TempDir::new().unwrap();
-        init_repo(temporary.path());
-        let engine = GitCliEngine::default();
-        let repository = engine.discover_repository(temporary.path()).unwrap();
-        let mut objects = Vec::new();
-        for index in 0..48 {
-            let mut data = vec![b'a'; 2 * 1024 * 1024];
-            data[0] = index;
-            objects.push(engine.write_blob(&repository, &data).unwrap());
-        }
-        let before = engine.subprocess_count().unwrap();
-        let mut bytes = 0;
-        let mut maximum_payload = 0;
-        let mut count = 0;
-        if std::env::var_os("VULCAN_BLOB_BASELINE").is_some() {
-            let blobs = engine.read_blobs(&repository, &objects).unwrap();
-            bytes = blobs.values().map(Vec::len).sum();
-            maximum_payload = bytes;
-            count = blobs.len();
-        } else {
-            engine
-                .visit_blobs(&repository, &objects, &mut |_, data| {
-                    bytes += data.len();
-                    maximum_payload = maximum_payload.max(data.len());
-                    count += 1;
-                    Ok(())
-                })
-                .unwrap();
-            assert_eq!(maximum_payload, 2 * 1024 * 1024);
-        }
-        assert_eq!(bytes, 96 * 1024 * 1024);
-        assert_eq!(count, 48);
-        assert_eq!(engine.subprocess_count().unwrap() - before, 1);
-        eprintln!("blobs={count} bytes={bytes} peak_retained_raw={maximum_payload} subprocesses=1");
     }
 
     #[test]
@@ -11625,119 +8190,6 @@ mod tests {
         let fresh = engine.clone().with_fresh_metrics();
         assert_eq!(fresh.subprocess_count(), Some(0));
         assert!(engine.subprocess_count().is_some_and(|count| count > 0));
-    }
-
-    #[test]
-    fn selected_path_objects_reuse_identical_blob_contents() {
-        let temporary = TempDir::new().expect("temporary directory");
-        init_repo(temporary.path());
-        std::fs::write(temporary.path().join("first.md"), "same contents\n")
-            .expect("first fixture note");
-        std::fs::write(temporary.path().join("second.md"), "same contents\n")
-            .expect("second fixture note");
-        run_git(temporary.path(), &["add", "."]);
-        run_git(temporary.path(), &["commit", "-m", "identical blobs"]);
-        let revision = GitOid::parse(run_git_capture(temporary.path(), &["rev-parse", "HEAD"]))
-            .expect("revision");
-        let engine = GitCliEngine::default();
-        let repository = engine
-            .discover_repository(temporary.path())
-            .expect("repository");
-
-        let objects = engine
-            .path_objects(
-                &repository,
-                &revision,
-                &["first.md".to_string(), "second.md".to_string()],
-            )
-            .expect("selected objects sharing one blob");
-
-        assert_eq!(objects.len(), 2);
-        assert_eq!(objects["first.md"].oid, objects["second.md"].oid);
-        assert_eq!(objects["first.md"].data, objects["second.md"].data);
-        let error = engine
-            .path_objects_bounded(
-                &repository,
-                &revision,
-                &["first.md".to_string(), "second.md".to_string()],
-                32,
-                20,
-            )
-            .expect_err("logical duplicate bytes exceed the aggregate limit");
-        assert!(error
-            .to_string()
-            .contains("aggregate blob contents exceed the 20 byte read limit"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn selected_path_objects_and_blob_writes_use_bounded_git_processes() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let temporary = TempDir::new().expect("temporary directory");
-        init_repo(temporary.path());
-        for index in 0..200 {
-            std::fs::write(
-                temporary.path().join(format!("note-{index:03}.md")),
-                format!("note {index}\n"),
-            )
-            .expect("fixture note");
-        }
-        run_git(temporary.path(), &["add", "."]);
-        run_git(temporary.path(), &["commit", "-m", "fixture"]);
-        let revision = GitOid::parse(run_git_capture(temporary.path(), &["rev-parse", "HEAD"]))
-            .expect("revision");
-        let trace = temporary.path().join("git-invocations.log");
-        let wrapper = temporary.path().join("git-wrapper");
-        std::fs::write(
-            &wrapper,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec git \"$@\"\n",
-                trace.display()
-            ),
-        )
-        .expect("Git wrapper");
-        let mut permissions = std::fs::metadata(&wrapper)
-            .expect("wrapper metadata")
-            .permissions();
-        permissions.set_mode(0o700);
-        std::fs::set_permissions(&wrapper, permissions).expect("executable wrapper");
-        let engine = GitCliEngine::new(&wrapper);
-        let repository = engine
-            .discover_repository(temporary.path())
-            .expect("repository");
-        std::fs::write(&trace, "").expect("reset trace");
-        let paths = (0..200)
-            .map(|index| format!("note-{index:03}.md"))
-            .collect::<Vec<_>>();
-
-        let objects = engine
-            .path_objects(&repository, &revision, &paths)
-            .expect("selected objects");
-        assert_eq!(objects.len(), paths.len());
-        assert_eq!(
-            std::fs::read_to_string(&trace)
-                .expect("read trace")
-                .lines()
-                .count(),
-            2,
-            "one tree inventory and one batch blob read"
-        );
-
-        std::fs::write(&trace, "").expect("reset trace");
-        let inputs = paths.iter().map(String::as_bytes).collect::<Vec<_>>();
-        let written = engine
-            .write_blobs(&repository, &inputs)
-            .expect("batch blob write");
-        assert_eq!(written.len(), inputs.len());
-        assert_eq!(
-            std::fs::read_to_string(&trace)
-                .expect("read trace")
-                .lines()
-                .count(),
-            1,
-            "all blobs are written by one Git process"
-        );
     }
 
     #[test]
@@ -11817,373 +8269,6 @@ mod tests {
     }
 
     #[test]
-    fn semantic_plumbing_builds_exact_grouped_trees_and_updates_refs_with_cas() {
-        let temporary = TempDir::new().expect("temporary directory");
-        init_repo(temporary.path());
-        fs::create_dir(temporary.path().join("Area")).expect("area directory");
-        fs::write(temporary.path().join("Area/One.md"), "one\n").expect("area note");
-        fs::write(temporary.path().join("Root.md"), "root\n").expect("root note");
-        fs::write(temporary.path().join("Old.md"), "old\n").expect("old note");
-        let from = commit_all(temporary.path(), "initial");
-
-        fs::write(temporary.path().join("Area/One.md"), "one changed\n").expect("area change");
-        fs::write(temporary.path().join("Area/Two.md"), "two\n").expect("new area note");
-        fs::write(temporary.path().join("Root.md"), "root changed\n").expect("root change");
-        fs::remove_file(temporary.path().join("Old.md")).expect("old note removal");
-        let to = commit_all(temporary.path(), "target");
-
-        let engine = GitCliEngine::default();
-        let repository = engine
-            .discover_repository(temporary.path())
-            .expect("repository");
-        assert_eq!(
-            engine
-                .resolve_revision(&repository, "HEAD~1")
-                .expect("resolved revision"),
-            from
-        );
-        let changed = engine
-            .changed_paths(&repository, &from, &to)
-            .expect("changed paths");
-        assert_eq!(
-            changed,
-            vec!["Area/One.md", "Area/Two.md", "Old.md", "Root.md"]
-        );
-        assert_eq!(
-            engine.tree_paths(&repository, &to).expect("tree paths"),
-            vec!["Area/One.md", "Area/Two.md", "Root.md"]
-        );
-
-        let area_paths = changed[..2].to_vec();
-        let area_tree = engine
-            .tree_with_paths(&repository, &from, &to, &area_paths)
-            .expect("area tree");
-        let area_commit = engine
-            .create_commit(
-                &repository,
-                &area_tree,
-                std::slice::from_ref(&from),
-                "Update Area\n",
-            )
-            .expect("area commit");
-        let root_tree = engine
-            .tree_with_paths(&repository, &area_commit, &to, &changed[2..])
-            .expect("root tree");
-        assert_eq!(
-            root_tree,
-            engine.tree_oid(&repository, &to).expect("target tree")
-        );
-        let patch = engine
-            .diff_patch(&repository, &from, &area_commit, &area_paths)
-            .expect("area patch");
-        assert!(patch.contains("Area/One.md"));
-        assert!(patch.contains("Area/Two.md"));
-        assert!(!patch.contains("Root.md"));
-
-        let proposal = GitRefName::parse("refs/vulcan/proposals/semantic/test").expect("ref");
-        assert_eq!(
-            engine
-                .compare_and_swap_ref(&repository, &proposal, &area_commit, None)
-                .expect("create proposal"),
-            GitRefUpdateResult::Updated
-        );
-        assert_eq!(
-            engine
-                .compare_and_swap_ref(&repository, &proposal, &to, None)
-                .expect("stale create"),
-            GitRefUpdateResult::Stale
-        );
-        assert_eq!(
-            engine
-                .compare_and_swap_ref(&repository, &proposal, &to, Some(&area_commit))
-                .expect("advance proposal"),
-            GitRefUpdateResult::Updated
-        );
-    }
-
-    #[test]
-    fn typed_changes_preserve_rename_pairs() {
-        let temporary = TempDir::new().expect("temporary directory");
-        init_repo(temporary.path());
-        fs::write(temporary.path().join("Old.md"), "unchanged content\n").expect("old note");
-        let from = commit_all(temporary.path(), "initial");
-        run_git(temporary.path(), &["mv", "Old.md", "New.md"]);
-        let to = commit_all(temporary.path(), "rename");
-
-        let engine = GitCliEngine::default();
-        let repository = engine
-            .discover_repository(temporary.path())
-            .expect("repository");
-        assert_eq!(
-            engine
-                .changed_entries(&repository, &from, &to)
-                .expect("typed changes"),
-            vec![GitChange {
-                kind: GitChangeKind::Renamed,
-                path: "New.md".to_string(),
-                source_path: Some("Old.md".to_string()),
-                similarity: Some(100),
-            }]
-        );
-        assert_eq!(
-            engine
-                .changed_paths(&repository, &from, &to)
-                .expect("validation paths"),
-            vec!["New.md", "Old.md"]
-        );
-        let rename_tree = engine
-            .tree_with_paths(
-                &repository,
-                &from,
-                &to,
-                &["New.md".to_string(), "Old.md".to_string()],
-            )
-            .expect("atomic rename tree");
-        assert_eq!(
-            rename_tree,
-            engine.tree_oid(&repository, &to).expect("target tree")
-        );
-    }
-
-    #[test]
-    fn typed_change_parser_fails_closed_on_malformed_records() {
-        assert!(parse_git_changes(b"R100\0Old.md\0").is_err());
-        assert!(parse_git_changes(b"R101\0Old.md\0New.md\0").is_err());
-        assert!(parse_git_changes(b"C100\0Old.md\0New.md\0").is_err());
-        assert!(parse_git_changes(b"M\0Note.md").is_err());
-    }
-
-    #[test]
-    fn diff_patch_treats_paths_as_literal_file_names() {
-        let temporary = TempDir::new().expect("temporary directory");
-        init_repo(temporary.path());
-        let engine = GitCliEngine::default();
-        let repository = engine
-            .discover_repository(temporary.path())
-            .expect("repository");
-        let create_tree = |star: &[u8], cousin: &[u8]| {
-            let star = engine.write_blob(&repository, star).expect("star blob");
-            let cousin = engine.write_blob(&repository, cousin).expect("cousin blob");
-            let input = format!(
-                "100644 blob {}\ta*b.md\0100644 blob {}\taxb.md\0",
-                star.as_str(),
-                cousin.as_str()
-            );
-            let mut command = engine.repository_command(&repository);
-            command.args(["mktree", "-z"]);
-            let output = engine
-                .execute_with_input(command, "create literal-path test tree", input.as_bytes())
-                .expect("Git should create the test tree");
-            let output = ensure_success("create literal-path test tree", output)
-                .expect("valid test tree entries");
-            GitOid::parse(
-                decode_stdout("create literal-path test tree", output.stdout)
-                    .expect("tree object ID should be UTF-8")
-                    .trim(),
-            )
-            .expect("tree object ID")
-        };
-        let base_tree = create_tree(b"star before\n", b"cousin before\n");
-        let base = engine
-            .create_reproducible_commit(&repository, &base_tree, &[], "initial\n")
-            .expect("base commit");
-        let target_tree = create_tree(b"star after\n", b"cousin after\n");
-        let target = engine
-            .create_reproducible_commit(
-                &repository,
-                &target_tree,
-                std::slice::from_ref(&base),
-                "target\n",
-            )
-            .expect("target commit");
-
-        let patch = engine
-            .diff_patch(&repository, &base, &target, &["a*b.md".to_string()])
-            .expect("literal patch");
-
-        assert!(patch.contains("a*b.md"));
-        assert!(!patch.contains("axb.md"));
-        assert!(patch.contains("star after"));
-        assert!(!patch.contains("cousin after"));
-    }
-
-    #[test]
-    fn supplied_patch_uses_an_isolated_index_and_reports_exact_paths() {
-        let temporary = TempDir::new().expect("temporary directory");
-        init_repo(temporary.path());
-        fs::write(temporary.path().join("Home.md"), "before\n").expect("home note");
-        fs::write(temporary.path().join("Other.md"), "unchanged\n").expect("other note");
-        let base = commit_all(temporary.path(), "initial");
-        fs::write(temporary.path().join("Home.md"), "after\n").expect("home update");
-        let target = commit_all(temporary.path(), "target");
-        run_git(temporary.path(), &["reset", "--hard", base.as_str()]);
-
-        let engine = GitCliEngine::default();
-        let repository = engine
-            .discover_repository(temporary.path())
-            .expect("repository");
-        let patch = engine
-            .diff_patch(&repository, &base, &target, &["Home.md".to_string()])
-            .expect("patch");
-        let index_before = engine
-            .safety_state(&repository)
-            .expect("safety before patch");
-        assert_eq!(
-            engine
-                .check_patch(&repository, &base, patch.as_bytes())
-                .expect("check patch"),
-            ["Home.md"]
-        );
-        let tree = engine
-            .apply_patch_to_tree(&repository, &base, patch.as_bytes())
-            .expect("apply patch");
-        assert_eq!(
-            engine
-                .path_object(&repository, &tree, "Home.md")
-                .expect("patched object")
-                .and_then(|object| object.data),
-            Some(b"after\n".to_vec())
-        );
-        assert_eq!(
-            engine
-                .safety_state(&repository)
-                .expect("safety after patch"),
-            index_before
-        );
-        assert_eq!(
-            fs::read_to_string(temporary.path().join("Home.md")).expect("worktree note"),
-            "before\n"
-        );
-        let deletion = b"diff --git a/Home.md b/Home.md\ndeleted file mode 100644\n--- a/Home.md\n+++ /dev/null\n@@ -1 +0,0 @@\n-before\n";
-        let error = engine
-            .check_patch(&repository, &base, deletion)
-            .expect_err("deletion patch must fail");
-        assert!(error.to_string().contains("may not delete files"));
-    }
-
-    #[test]
-    fn applying_a_tree_updates_files_without_touching_the_normal_index() {
-        let temporary = TempDir::new().expect("temporary directory");
-        init_repo(temporary.path());
-        fs::write(temporary.path().join("Home.md"), "initial\n").expect("initial note");
-        fs::write(temporary.path().join("Removed.md"), "remove me\n").expect("removed note");
-        let head = commit_all(temporary.path(), "initial");
-        let normal_index = run_git_capture(temporary.path(), &["write-tree"]);
-        fs::write(temporary.path().join("Home.md"), "accepted\n").expect("accepted note");
-        fs::write(temporary.path().join("New.md"), "new\n").expect("new note");
-        fs::remove_file(temporary.path().join("Removed.md")).expect("delete removed note");
-        let engine = GitCliEngine::default();
-        let repository = engine
-            .discover_repository(temporary.path())
-            .expect("repository");
-        let local_ref = GitRefName::parse("refs/vulcan/sync/local/live").expect("ref");
-        let accepted = engine
-            .capture_worktree(
-                &repository,
-                &GitCaptureRequest {
-                    base: Some(head.clone()),
-                    target_ref: local_ref,
-                    target_before: None,
-                    message: "accepted\n".to_string(),
-                    link: None,
-                },
-            )
-            .expect("capture");
-        fs::write(temporary.path().join("Home.md"), "initial\n").expect("restore note");
-        fs::remove_file(temporary.path().join("New.md")).expect("remove new note");
-        fs::write(temporary.path().join("Removed.md"), "remove me\n")
-            .expect("restore removed note");
-
-        let plan = engine
-            .apply_tree(&repository, &head, &accepted.commit)
-            .expect("tree should apply");
-
-        assert_eq!(plan.additions, 1);
-        assert_eq!(plan.updates, 1);
-        assert_eq!(plan.deletions, 1);
-        assert_eq!(plan.type_changes, 0);
-        assert_eq!(
-            plan.paths
-                .iter()
-                .map(|path| (path.path.as_str(), path.action))
-                .collect::<Vec<_>>(),
-            vec![
-                ("Home.md", GitTreeApplyAction::Update),
-                ("New.md", GitTreeApplyAction::Add),
-                ("Removed.md", GitTreeApplyAction::Delete),
-            ]
-        );
-
-        assert_eq!(
-            fs::read_to_string(temporary.path().join("Home.md")).expect("home"),
-            "accepted\n"
-        );
-        assert_eq!(
-            fs::read_to_string(temporary.path().join("New.md")).expect("new"),
-            "new\n"
-        );
-        assert!(!temporary.path().join("Removed.md").exists());
-        assert_eq!(
-            run_git_capture(temporary.path(), &["write-tree"]),
-            normal_index
-        );
-    }
-
-    #[test]
-    fn materialized_tree_mismatch_is_retryable_worktree_drift() {
-        let expected = GitOid::parse("1".repeat(40)).expect("expected tree");
-        let actual = GitOid::parse("2".repeat(40)).expect("actual tree");
-
-        assert!(matches!(
-            verify_materialized_tree(&expected, &actual),
-            Err(GitEngineError::WorktreeChanged)
-        ));
-        assert!(verify_materialized_tree(&expected, &expected).is_ok());
-    }
-
-    #[test]
-    fn applying_a_tree_rejects_drift_before_overwrites_and_deletes() {
-        let temporary = TempDir::new().expect("temporary directory");
-        init_repo(temporary.path());
-        fs::write(temporary.path().join("Home.md"), "initial\n").expect("initial note");
-        fs::write(temporary.path().join("Removed.md"), "remove me\n").expect("removed note");
-        let head = commit_all(temporary.path(), "initial");
-        let engine = GitCliEngine::default();
-        let repository = engine
-            .discover_repository(temporary.path())
-            .expect("repository");
-        fs::write(temporary.path().join("Home.md"), "accepted\n").expect("accepted note");
-        fs::remove_file(temporary.path().join("Removed.md")).expect("delete removed note");
-        let accepted = engine
-            .capture_worktree(
-                &repository,
-                &GitCaptureRequest {
-                    base: Some(head.clone()),
-                    target_ref: GitRefName::parse("refs/vulcan/sync/local/live").expect("ref"),
-                    target_before: None,
-                    message: "accepted\n".to_string(),
-                    link: None,
-                },
-            )
-            .expect("capture");
-        fs::write(temporary.path().join("Home.md"), "concurrent edit\n").expect("drift note");
-        fs::write(temporary.path().join("Removed.md"), "remove me\n").expect("restore note");
-
-        assert!(matches!(
-            engine.apply_tree(&repository, &head, &accepted.commit),
-            Err(GitEngineError::WorktreeChanged)
-        ));
-        assert_eq!(
-            fs::read_to_string(temporary.path().join("Home.md")).expect("home"),
-            "concurrent edit\n"
-        );
-        assert_eq!(
-            fs::read_to_string(temporary.path().join("Removed.md")).expect("removed"),
-            "remove me\n"
-        );
-    }
-
-    #[test]
     fn newly_ignored_paths_leave_the_capture_but_force_added_ones_stay() {
         let temporary = TempDir::new().expect("temporary directory");
         let root = temporary.path();
@@ -12226,129 +8311,6 @@ mod tests {
         assert!(paths.contains(&".obsidian/.gitignore".to_string()));
         assert!(paths.contains(&"forced.md".to_string()));
         assert!(root.join(".obsidian/workspace.json").is_file());
-    }
-
-    #[test]
-    fn applying_an_untracking_keeps_the_file_but_a_plain_deletion_removes_it() {
-        let temporary = TempDir::new().expect("temporary directory");
-        let root = temporary.path();
-        init_repo(root);
-        fs::write(root.join(".gitignore"), "forced.md\n").expect("ignore file");
-        fs::write(root.join("device.json"), "{}\n").expect("device file");
-        fs::write(root.join("forced.md"), "forced\n").expect("forced file");
-        run_git(root, &["add", "--all", "--force", "--", "."]);
-        run_git(root, &["commit", "--quiet", "-m", "base"]);
-        let base = GitOid::parse(run_git_capture(root, &["rev-parse", "HEAD"])).expect("base");
-        // The accepted tree untracks `device.json` and deletes `forced.md`,
-        // which was ignored all along.
-        fs::write(root.join(".gitignore"), "forced.md\ndevice.json\n").expect("ignore");
-        run_git(root, &["rm", "--cached", "--quiet", "device.json"]);
-        run_git(root, &["rm", "--quiet", "forced.md"]);
-        run_git(root, &["commit", "--quiet", "--all", "-m", "untrack"]);
-        let target = GitOid::parse(run_git_capture(root, &["rev-parse", "HEAD"])).expect("target");
-        run_git(root, &["reset", "--quiet", "--hard", base.as_str()]);
-        let engine = GitCliEngine::default();
-        let repository = engine.discover_repository(root).expect("repository");
-
-        engine
-            .apply_tree(&repository, &base, &target)
-            .expect("apply");
-        assert_eq!(
-            fs::read_to_string(root.join("device.json")).expect("kept copy"),
-            "{}\n"
-        );
-        assert!(!root.join("forced.md").exists());
-        assert!(engine
-            .worktree_matches_tree(&repository, &target)
-            .expect("compare"));
-    }
-
-    #[test]
-    fn applying_a_tree_rejects_ignored_files_at_written_paths() {
-        let temporary = TempDir::new().expect("temporary directory");
-        init_repo(temporary.path());
-        fs::write(temporary.path().join(".gitignore"), "private.md\n").expect("ignore file");
-        fs::write(temporary.path().join("Home.md"), "initial\n").expect("initial note");
-        let head = commit_all(temporary.path(), "initial");
-        // An accepted tree that adds a file at a path the local worktree
-        // keeps as an ignored untracked file.
-        fs::write(temporary.path().join("private.md"), "remote\n").expect("remote file");
-        run_git(temporary.path(), &["add", "--force", "private.md"]);
-        run_git(temporary.path(), &["commit", "--quiet", "-m", "accepted"]);
-        let accepted = GitOid::parse(run_git_capture(temporary.path(), &["rev-parse", "HEAD"]))
-            .expect("accepted commit");
-        run_git(temporary.path(), &["reset", "--soft", "HEAD~1"]);
-        run_git(
-            temporary.path(),
-            &["rm", "--cached", "--quiet", "private.md"],
-        );
-        fs::write(temporary.path().join("private.md"), "local\n").expect("local private file");
-        let engine = GitCliEngine::default();
-        let repository = engine
-            .discover_repository(temporary.path())
-            .expect("repository");
-
-        let error = engine
-            .apply_tree(&repository, &head, &accepted)
-            .expect_err("ignored collision must reject the apply");
-        match &error {
-            GitEngineError::ApplyWouldOverwrite { paths } => {
-                assert_eq!(paths, &vec!["private.md".to_string()]);
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
-        assert!(error.to_string().contains("private.md"));
-        assert_eq!(
-            fs::read_to_string(temporary.path().join("private.md")).expect("preserved file"),
-            "local\n"
-        );
-
-        fs::remove_file(temporary.path().join("private.md")).expect("clear collision");
-        engine
-            .apply_tree(&repository, &head, &accepted)
-            .expect("apply succeeds without the collision");
-        assert_eq!(
-            fs::read_to_string(temporary.path().join("private.md")).expect("applied file"),
-            "remote\n"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn tree_application_plan_classifies_mode_changes() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let temporary = TempDir::new().expect("temporary directory");
-        init_repo(temporary.path());
-        let script = temporary.path().join("script.sh");
-        fs::write(&script, "#!/bin/sh\n").expect("script");
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o644)).expect("initial mode");
-        let head = commit_all(temporary.path(), "initial");
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("executable mode");
-        let target = commit_all(temporary.path(), "executable");
-        let engine = GitCliEngine::default();
-        let repository = engine
-            .discover_repository(temporary.path())
-            .expect("repository");
-
-        let plan = engine
-            .plan_tree_application(&repository, &head, &target)
-            .expect("application plan");
-
-        assert_eq!(plan.type_changes, 1);
-        assert_eq!(plan.paths[0].action, GitTreeApplyAction::TypeChange);
-        assert_eq!(
-            plan.paths[0]
-                .expected
-                .as_ref()
-                .expect("expected object")
-                .mode,
-            "100644"
-        );
-        assert_eq!(
-            plan.paths[0].target.as_ref().expect("target object").mode,
-            "100755"
-        );
     }
 
     #[test]
@@ -12600,28 +8562,5 @@ mod tests {
             .find(|filter| filter.name == "missing")
             .expect("missing filter");
         assert!(!missing.ready());
-    }
-
-    #[test]
-    fn commit_metadata_preserves_tree_parents_and_message() {
-        let tree = "1111111111111111111111111111111111111111";
-        let first_parent = "2222222222222222222222222222222222222222";
-        let second_parent = "3333333333333333333333333333333333333333";
-        let source = format!(
-            "tree {tree}\nparent {first_parent}\nparent {second_parent}\nauthor Vulcan <vulcan@example.invalid> 0 +0000\ncommitter Vulcan <vulcan@example.invalid> 0 +0000\n\nsubject\n\nVulcan-Sync-Epoch: abcdef\n"
-        );
-
-        let metadata = parse_commit_metadata(source.as_bytes()).expect("valid commit metadata");
-
-        assert_eq!(metadata.tree.as_str(), tree);
-        assert_eq!(
-            metadata
-                .parents
-                .iter()
-                .map(GitOid::as_str)
-                .collect::<Vec<_>>(),
-            [first_parent, second_parent]
-        );
-        assert_eq!(metadata.message, "subject\n\nVulcan-Sync-Epoch: abcdef\n");
     }
 }
