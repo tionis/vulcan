@@ -33,7 +33,7 @@ A vault can be one directory of a larger Git repository, such as the `docs/` dir
 
 ## Recommended Flow
 
-- Over MCP, enable the `git` tool pack: `git_status`, `git_diff`, `git_log`, `git_blame`, and `git_commit` mirror the CLI commands below. Commit your own work in a vault whose sync does not capture the worktree (`sync.worktree = "none"`), since nothing else will. `git_commit` commits only the files your session's writes changed (including every file a `note_move` rewrote), so other writers' edits stay out of your commit; its result lists anything of yours still uncommitted as `session_uncommitted`. Use `scope: "all"` only after `git_status` shows every change is meant to go in, or `paths` to name files changed outside MCP writes. The commit records your client in `Vulcan-MCP-*` trailers.
+- Over MCP, enable the `git` tool pack: `git_status`, `git_diff`, `git_log`, `git_blame`, and `git_commit` mirror the CLI commands below. Commit your own work in a vault whose sync does not capture the worktree (`sync.worktree = "none"`), since nothing else will. `git_commit` commits only the files your session's writes changed (including every file a `note_move` rewrote), so other writers' edits stay out of your commit; its result lists anything of yours still uncommitted as `session_uncommitted`. Use `scope: "all"` only after `git_status` shows every change is meant to go in, or `paths` to name files changed outside MCP writes. The commit records your client in `Vulcan-MCP-*` trailers, and so does a batched auto-commit that takes writes you left uncommitted.
 
 - For a larger or multi-step change that should not be half-visible (a restructure, many linked
   edits), start a changeset with `changeset_begin`. Your session's tools then work in a separate

@@ -134,6 +134,7 @@ pub mod vault_layout;
 #[cfg(feature = "web")]
 pub mod web;
 pub mod wiki_package;
+pub mod write_attribution;
 
 pub use error::AppError;
 

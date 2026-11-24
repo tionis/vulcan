@@ -138,6 +138,7 @@ impl BatchedCommitReport {
 }
 
 /// Commits the vault's accumulated changes once, as `[git]` configures.
+#[allow(clippy::too_many_lines)]
 pub fn run_batched_commit(
     paths: &VaultPaths,
     options: &BatchedCommitOptions<'_>,
@@ -174,6 +175,8 @@ pub fn run_batched_commit(
         if candidates.paths.is_empty() {
             return Ok(report);
         }
+        plan.groups =
+            crate::write_attribution::attribute_groups(paths, &candidates.paths, &plan.groups);
         if options.dry_run {
             report.status = BatchedCommitStatus::Planned;
             report.used_messages = Some(plan.used);
@@ -203,6 +206,7 @@ pub fn run_batched_commit(
         };
         match outcome {
             BatchCommitOutcome::Committed { commits } => {
+                crate::write_attribution::forget(paths, &candidates.paths);
                 if options.plugins {
                     announce_commits(paths, options, &commits);
                 }
@@ -618,6 +622,52 @@ mod tests {
         assert_eq!(log(temp.path()), ["vault batch: 3 files", "Initial"]);
         assert!(git(temp.path(), &["status", "--porcelain"]).is_empty());
         assert_eq!(run(temp.path(), None).status, BatchedCommitStatus::Clean);
+    }
+
+    #[test]
+    fn batched_commits_name_the_mcp_clients_whose_writes_they_take() {
+        let temp = vault("deterministic");
+        let root = temp.path();
+        let paths = VaultPaths::new(root);
+        let agent = vec![
+            (
+                "Vulcan-MCP-Client".to_string(),
+                "Claude Code 2.1".to_string(),
+            ),
+            ("Vulcan-MCP-Profile".to_string(), "agent".to_string()),
+        ];
+        crate::write_attribution::record_batched_writes(
+            &paths,
+            &std::collections::BTreeSet::from(["Projects/Plan.md".to_string()]),
+            &agent,
+        );
+
+        let report = run(root, None);
+        assert_eq!(report.status, BatchedCommitStatus::Committed);
+        let bodies = git(root, &["log", "--format=%B%x00"]);
+        let projects = bodies
+            .split('\0')
+            .find(|body| body.contains("Projects"))
+            .expect("the Projects commit");
+        assert!(
+            projects.contains("Vulcan-MCP-Client: Claude Code 2.1\nVulcan-MCP-Profile: agent"),
+            "{projects}"
+        );
+        let others = bodies
+            .split('\0')
+            .map(str::trim)
+            .filter(|body| !body.is_empty() && !body.contains("Projects"))
+            .collect::<Vec<_>>();
+        assert!(others.len() >= 2, "{bodies}");
+        assert!(
+            others.iter().all(|body| !body.contains("Vulcan-MCP")),
+            "{bodies}"
+        );
+        // The ledger forgot what the batch took.
+        assert!(
+            crate::write_attribution::writers_for(&paths, &["Projects/Plan.md".to_string()])
+                .is_empty()
+        );
     }
 
     #[test]

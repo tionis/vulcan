@@ -431,6 +431,11 @@ impl McpToolExecution<'_> {
             }
         });
         let structured = structured?;
+        crate::write_attribution::record_batched_writes(
+            self.paths,
+            &written,
+            &self.client.trailers(self.profile_name),
+        );
         self.written_paths.extend(written);
         let mut structured = wrap_structured(structured);
         if let (Some((before, no_commit)), Some(object)) =

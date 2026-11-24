@@ -61,7 +61,8 @@ Because sync moves only commits, capture belongs to whoever commits:
 - The MCP `git` pack offers `git_commit` to clients that may commit directly. It commits only the
   files that session's writes changed, so one agent never commits another's half-finished edits,
   and names the client in `Vulcan-MCP-*` trailers. Auto-commit picks up whatever no agent
-  committed.
+  committed; a batched commit carries the same trailers for every MCP client whose writes it
+  takes (recorded per path in `.vulcan/write-attribution.json`, device state that prunes itself).
 - An MCP session may stage work in a changeset: a `vulcan/changeset/<id>` branch checked out in a
   worktree under the user state directory. Sync never sees the branch or the worktree; landing
   fast-forwards the vault's branch under the vault write lock (rebasing first if it moved), and
