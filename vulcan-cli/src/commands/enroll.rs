@@ -135,6 +135,7 @@ pub(crate) fn handle_vault_enroll(
         all_wikis,
         login,
         no_device_key,
+        switch_to_ssh,
         remote,
         dry_run,
     } = command
@@ -148,6 +149,7 @@ pub(crate) fn handle_vault_enroll(
         remote: remote.clone(),
         no_device_key: *no_device_key,
         login: policy,
+        switch_to_ssh: *switch_to_ssh,
         dry_run: *dry_run,
     };
 

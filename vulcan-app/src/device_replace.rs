@@ -110,6 +110,7 @@ fn request_for(vault: &ReplaceVault, request: ReplaceRequest) -> EnrollRequest {
         remote: vault.remote.clone(),
         no_device_key: false,
         login: request.login,
+        switch_to_ssh: false,
         dry_run: request.dry_run,
     }
 }

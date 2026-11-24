@@ -38,7 +38,11 @@ If something is missing, the command still succeeds and says exactly what to do 
 For an SSH remote, `vault clone`, `sync clone`, and `vault add` enroll the key:
 
 1. **Policy.** The transport policy is `device-key` by default. HTTPS remotes, local paths, and
-   `ambient` hosts skip enrollment and behave exactly as before.
+   `ambient` hosts skip enrollment and behave exactly as before. To move an HTTPS remote on a forge
+   to the device key, run `vulcan vault enroll <id> --switch-to-ssh`: it authorizes the key, proves
+   it against the forge's SSH address (`git@host:owner/repo`), and only then switches the remote and
+   binds it. Git LFS follows the remote: over SSH it fetches a short-lived HTTPS token with
+   `git-lfs-authenticate`, so pushes need no browser login.
 2. **Identity.** The device key is created if this is the first time.
 3. **Probe.** One `git ls-remote` with the device key alone asks the remote whether it accepts it.
 4. **Authorize, if needed.** If the remote refuses the key and this machine can act on the forge

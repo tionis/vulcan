@@ -209,6 +209,7 @@ fn request(fx: &Fixture, dry_run: bool) -> EnrollRequest {
         remote: GitRemote::parse("origin").unwrap(),
         no_device_key: false,
         login: LoginPolicy::Never,
+        switch_to_ssh: false,
         dry_run,
     }
 }
@@ -362,11 +363,116 @@ fn an_ambient_policy_or_a_non_ssh_remote_does_nothing() {
         "https://forge.example.com/eric/mimir.git",
     );
     assert_eq!(report.state, EnrollState::Skipped);
-    assert!(report.steps.iter().any(|step| step
-        .detail
-        .as_deref()
-        .is_some_and(|d| d.contains("not an SSH URL"))));
+    assert!(report
+        .steps
+        .iter()
+        .any(|step| step.detail.as_deref().is_some_and(
+            |d| d.contains("not an SSH URL") && d.contains("git@forge.example.com:eric/mimir")
+        )));
+    assert_eq!(
+        report.next_steps,
+        ["vulcan vault enroll mimir --switch-to-ssh"]
+    );
     assert_eq!(probe.calls.get(), 0);
+}
+
+const HTTPS_URL: &str = "https://forge.example.com/eric/mimir.git";
+const SWITCHED_URL: &str = "git@forge.example.com:eric/mimir";
+
+fn origin_url(fx: &Fixture) -> String {
+    git_stdout(fx.root(), &["remote", "get-url", "origin"])
+}
+
+/// Enrolls with `--switch-to-ssh` against an HTTPS remote, recording every
+/// probe target.
+fn run_switch(
+    fx: &Fixture,
+    config: &DeviceConfig,
+    outcomes: Vec<ProbeOutcome>,
+    authority: &FakeAuthority,
+    dry_run: bool,
+) -> (EnrollReport, Vec<String>) {
+    let probe = ScriptedProbe::new(fx, outcomes);
+    let targets = RefCell::new(Vec::new());
+    let probe_fn = |target: &str, _: Option<&Path>| {
+        targets.borrow_mut().push(target.to_owned());
+        probe.probe()
+    };
+    let sleep_fn = |_: Duration| {};
+    let env = EnrollEnvironment {
+        device_config: config,
+        identity: &fx.identity,
+        state: &fx.state,
+        executable: &fx.exe,
+        probe: &probe_fn,
+        authority,
+        sleep: &sleep_fn,
+        remote_url_override: Some(HTTPS_URL),
+    };
+    let mut req = request(fx, dry_run);
+    req.switch_to_ssh = true;
+    let report = enroll_vault(&fx.paths, &env, &req).unwrap();
+    (report, targets.into_inner())
+}
+
+#[test]
+fn switch_to_ssh_authorizes_proves_the_ssh_address_then_switches_and_binds() {
+    let fx = Fixture::new(true);
+    let before = origin_url(&fx);
+    let denied = ProbeOutcome::Denied("not authorized".to_owned());
+    let authority = FakeAuthority::returning(Ok(AuthorizeAction::Added));
+    let (report, targets) = run_switch(
+        &fx,
+        &config_with_forge(),
+        vec![denied, ProbeOutcome::Accepted],
+        &authority,
+        false,
+    );
+
+    assert_eq!(report.state, EnrollState::Bound, "{:?}", report.steps);
+    assert_eq!(authority.calls.borrow()[0].0, "eric/mimir");
+    // Every probe went to the SSH address, never to the HTTPS remote.
+    assert!(!targets.is_empty() && targets.iter().all(|t| t == SWITCHED_URL));
+    assert_eq!(status(&report, "switch"), StepStatus::Done);
+    assert_ne!(before, SWITCHED_URL);
+    assert_eq!(origin_url(&fx), SWITCHED_URL);
+    assert!(fx.bound() && !fx.ssh_command().is_empty());
+}
+
+#[test]
+fn switch_to_ssh_leaves_the_remote_alone_until_the_key_works() {
+    let fx = Fixture::new(true);
+    let before = origin_url(&fx);
+    let denied = ProbeOutcome::Denied("Permission denied (publickey).".to_owned());
+    let (report, _) = run_switch(
+        &fx,
+        &DeviceConfig::default(),
+        vec![denied],
+        &FakeAuthority::default(),
+        false,
+    );
+    assert_eq!(report.state, EnrollState::Pending);
+    assert!(!has_step(&report, "switch"));
+    assert_eq!(origin_url(&fx), before);
+    assert!(!fx.bound() && fx.ssh_command().is_empty());
+    assert!(report
+        .next_steps
+        .iter()
+        .any(|step| step == "vulcan vault enroll mimir --switch-to-ssh"));
+
+    // A dry run with a working key plans the switch and changes nothing.
+    let fx = Fixture::new(true);
+    let before = origin_url(&fx);
+    let (report, _) = run_switch(
+        &fx,
+        &DeviceConfig::default(),
+        vec![ProbeOutcome::Accepted],
+        &FakeAuthority::default(),
+        true,
+    );
+    assert_eq!(status(&report, "switch"), StepStatus::Planned);
+    assert_eq!(origin_url(&fx), before);
+    assert!(!fx.bound());
 }
 
 fn run_with_url(

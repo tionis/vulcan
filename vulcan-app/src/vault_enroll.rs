@@ -79,6 +79,9 @@ pub struct EnrollRequest {
     /// Treat the policy as `ambient` for this run only.
     pub no_device_key: bool,
     pub login: LoginPolicy,
+    /// Switch an HTTPS remote on a known forge to its SSH address once the
+    /// device key is proven to work there.
+    pub switch_to_ssh: bool,
     pub dry_run: bool,
 }
 
@@ -177,6 +180,24 @@ impl EnrollReport {
     }
 }
 
+/// The remote enrollment works with.
+struct EligibleRemote {
+    /// The SSH URL the device key authenticates.
+    url: String,
+    derived: Option<ForgeTarget>,
+    /// The HTTPS URL the remote uses today, when enrollment switches it to
+    /// `url` once the device key works there.
+    switch_from: Option<String>,
+}
+
+/// The SSH address of an HTTPS remote on a forge: `git@host:owner/name`,
+/// the form Forgejo, Gitea, GitHub and GitLab use by default.
+fn ssh_url_for_https(url: &str, target: &ForgeTarget) -> Option<String> {
+    url.get(..8)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"))
+        .then(|| format!("git@{}:{}", target.host, target.repo))
+}
+
 /// Resolves the remote URL and transport policy. `None` means enrollment does
 /// not apply (no such remote, an ambient policy, or a non-SSH remote) and the
 /// report already says why.
@@ -185,7 +206,7 @@ fn eligible_remote(
     env: &EnrollEnvironment<'_>,
     request: &EnrollRequest,
     report: &mut EnrollReport,
-) -> Option<(String, Option<ForgeTarget>)> {
+) -> Option<EligibleRemote> {
     let url = match env.remote_url_override {
         Some(url) => Ok(url.to_owned()),
         None => remote_url(paths.vault_root(), request.remote.as_str()),
@@ -214,15 +235,44 @@ fn eligible_remote(
         return None;
     }
     if !is_ssh_url(&url) {
-        report.step(
-            "remote",
-            StepStatus::Skipped,
-            "the remote is not an SSH URL, so the device key cannot authenticate it",
-        );
-        return None;
+        let Some(ssh) = derived
+            .as_ref()
+            .and_then(|target| ssh_url_for_https(&url, target))
+        else {
+            report.step(
+                "remote",
+                StepStatus::Skipped,
+                "the remote is not an SSH URL, so the device key cannot authenticate it",
+            );
+            return None;
+        };
+        if !request.switch_to_ssh {
+            report.step(
+                "remote",
+                StepStatus::Skipped,
+                format!(
+                    "the remote is not an SSH URL, so the device key cannot authenticate it; --switch-to-ssh switches it to {ssh} once the key works there"
+                ),
+            );
+            report.next_steps.push(format!(
+                "vulcan vault enroll {} --switch-to-ssh",
+                request.wiki
+            ));
+            return None;
+        }
+        report.step("policy", StepStatus::Done, "device-key");
+        return Some(EligibleRemote {
+            url: ssh,
+            derived,
+            switch_from: Some(url),
+        });
     }
     report.step("policy", StepStatus::Done, "device-key");
-    Some((url, derived))
+    Some(EligibleRemote {
+        url,
+        derived,
+        switch_from: None,
+    })
 }
 
 /// Enrolls one vault.
@@ -263,20 +313,29 @@ fn enroll_vault_inner(
         next_steps: Vec::new(),
     };
 
-    let Some((url, derived)) = eligible_remote(paths, env, request, &mut report) else {
+    let Some(EligibleRemote {
+        url,
+        derived,
+        switch_from,
+    }) = eligible_remote(paths, env, request, &mut report)
+    else {
         return Ok(report);
+    };
+    // Until the remote is switched, probe the SSH address itself.
+    let probe_target = if switch_from.is_some() {
+        url.as_str()
+    } else {
+        request.remote.as_str()
     };
 
     let Some((device_id, public_key)) = ensure_identity(env, request, &mut report)? else {
         report.state = EnrollState::Pending;
-        report
-            .next_steps
-            .push(format!("vulcan vault enroll {}", request.wiki));
+        report.next_steps.push(rerun_command(request));
         return Ok(report);
     };
     report.device_id = Some(device_id.clone());
 
-    let mut outcome = (env.probe)(request.remote.as_str(), Some(paths.vault_root()))?;
+    let mut outcome = (env.probe)(probe_target, Some(paths.vault_root()))?;
     if outcome == ProbeOutcome::Accepted {
         report.step(
             "probe",
@@ -293,7 +352,7 @@ fn enroll_vault_inner(
                 dry_run: request.dry_run,
                 device_id: &device_id,
                 public_key: &public_key,
-                probe_target: request.remote.as_str(),
+                probe_target,
                 probe_dir: Some(paths.vault_root()),
             };
             outcome = authorize_and_reprobe(
@@ -311,6 +370,9 @@ fn enroll_vault_inner(
     }
 
     if outcome == ProbeOutcome::Accepted {
+        if let Some(from) = &switch_from {
+            switch_step(paths, request, from, &url, &mut report)?;
+        }
         if bind {
             bind_step(paths, env, request, &url, &device_id, &mut report)?;
         } else {
@@ -334,11 +396,19 @@ fn enroll_vault_inner(
         if report.next_steps.is_empty() {
             report.next_steps = unauthorized_next_steps(request);
         }
-        report
-            .next_steps
-            .push(format!("vulcan vault enroll {}", request.wiki));
+        report.next_steps.push(rerun_command(request));
     }
     Ok(report)
+}
+
+/// The command that repeats this enrollment.
+fn rerun_command(request: &EnrollRequest) -> String {
+    let flag = if request.switch_to_ssh {
+        " --switch-to-ssh"
+    } else {
+        ""
+    };
+    format!("vulcan vault enroll {}{flag}", request.wiki)
 }
 
 fn probe_detail(outcome: &ProbeOutcome) -> String {
@@ -779,6 +849,44 @@ fn bind_step(
     };
     report.push("bind", status, detail);
     debug_assert_eq!(bound.device_id, device_id);
+    Ok(())
+}
+
+/// Points the remote at its SSH address, which the device key was just
+/// proven to work with.
+fn switch_step(
+    paths: &VaultPaths,
+    request: &EnrollRequest,
+    from: &str,
+    to: &str,
+    report: &mut EnrollReport,
+) -> Result<(), AppError> {
+    if request.dry_run {
+        report.step(
+            "switch",
+            StepStatus::Planned,
+            format!("would switch `{}` from {from} to {to}", request.remote),
+        );
+        return Ok(());
+    }
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(paths.vault_root())
+        .args(["remote", "set-url", "--", request.remote.as_str(), to])
+        .output()
+        .map_err(AppError::operation)?;
+    if !output.status.success() {
+        return Err(AppError::operation(format!(
+            "could not switch `{}` to {to}: {}",
+            request.remote,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    report.step(
+        "switch",
+        StepStatus::Done,
+        format!("switched `{}` from {from} to {to}", request.remote),
+    );
     Ok(())
 }
 

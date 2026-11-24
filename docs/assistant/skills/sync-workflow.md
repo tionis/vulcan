@@ -74,7 +74,10 @@ watching, multiple wikis, or a companion client; both execute the same applicati
   forge setup, replacing and revoking keys, troubleshooting); point users to it rather than
   re-deriving the steps.
 - `vulcan vault enroll <wiki>` takes one vault to "bound to this device's key", or says exactly what is
-  missing. It checks the transport policy (the default is the device key; `device config set-transport
+  missing. An HTTPS remote is skipped unless `--switch-to-ssh` is given, which switches it to the
+  forge's SSH address only after the key is proven there (preview with `--dry-run`). For a directory
+  of arbitrary files, such as a media library in Git LFS, register it with
+  `vulcan vault add <id> <path> --profile files-only` (Git sync without a Markdown index) first. It checks the transport policy (the default is the device key; `device config set-transport
   ambient` or `--no-device-key` skips it), ensures the device identity, probes whether the remote
   accepts the device key, authorizes it through the forge when this machine has the authority (an OAuth
   login or the token variable), then binds the transport (including `core.sshCommand`) and publishes

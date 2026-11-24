@@ -733,6 +733,7 @@ fn handle_add(cli: &Cli, registry: &WikiRegistry, command: &VaultCommand) -> Res
                     .map_err(CliError::operation)?,
                 no_device_key: false,
                 login: crate::commands::enroll::login_policy(*login),
+                switch_to_ssh: false,
                 dry_run: false,
             },
         ) {
@@ -890,6 +891,7 @@ pub(crate) fn clone_wiki(
                         .map_err(CliError::operation)?,
                     no_device_key: false,
                     login,
+                    switch_to_ssh: false,
                     dry_run: false,
                 },
             ) {
@@ -1322,6 +1324,7 @@ pub(crate) fn clone_declared_wiki(
             remote: vulcan_app::sync::GitRemote::parse("origin").map_err(CliError::operation)?,
             no_device_key: false,
             login,
+            switch_to_ssh: false,
             dry_run: false,
         },
     ) {

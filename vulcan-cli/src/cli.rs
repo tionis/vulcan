@@ -5983,6 +5983,12 @@ pub enum VaultCommand {
         no_device_key: bool,
         #[arg(
             long,
+            conflicts_with = "no_device_key",
+            help = "Switch an HTTPS remote on a forge to its SSH address (git@host:owner/repo) once the device key works there"
+        )]
+        switch_to_ssh: bool,
+        #[arg(
+            long,
             default_value = "origin",
             help = "Git remote the vault syncs with"
         )]

@@ -81,7 +81,11 @@ One idempotent command, safe to re-run, each step reporting `done`, `already`, `
 or `failed`:
 
 1. **Policy.** Resolve the policy. `ambient` or a non-SSH remote ends here as `skipped` (an HTTPS
-   remote cannot use SSH key authentication; Vulcan does not rewrite the user's remote).
+   remote cannot use SSH key authentication). Vulcan rewrites a remote only on request: with
+   `--switch-to-ssh`, an HTTPS remote whose forge can be derived is enrolled against its SSH address
+   (`git@host:owner/name`). Steps 3 to 5 probe that address directly, and only once the device key
+   is accepted there does a `switch` step point the remote at it, before binding. A dry run plans the
+   switch; without the flag the `skipped` result names the flag and the address.
 2. **Identity.** Ensure the device identity exists (initializing it is what a first sync already does).
 3. **Probe.** If the device key already authenticates, skip to step 6.
 4. **Authority.** Resolve forge settings (the vault's own, else the device-level entry for the host
@@ -172,7 +176,8 @@ retires the lost one.
 
 ## Non-goals
 
-- Rewriting HTTPS remotes to SSH, or managing a user's own SSH keys.
+- Rewriting HTTPS remotes to SSH without being asked (`--switch-to-ssh` asks), or managing a
+  user's own SSH keys.
 - Enrolling vaults on forges without an adapter, or on forges that forbid shared deploy keys.
 - Automatically adopting a remote's published settings (deferred, see below).
 - Interactive prompts of any kind.

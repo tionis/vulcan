@@ -14553,6 +14553,20 @@
                 ]
               },
               {
+                "help": "Switch an HTTPS remote on a forge to its SSH address (git@host:owner/repo) once the device key works there",
+                "id": "switch_to_ssh",
+                "long": "switch-to-ssh",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SWITCH_TO_SSH"
+                ]
+              },
+              {
                 "help": "Git remote the vault syncs with",
                 "id": "remote",
                 "long": "remote",
