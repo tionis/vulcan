@@ -331,7 +331,7 @@ name the device.
 - Prune a remote safety backup only after its work is integrated. First fetch it again, then run
   `vulcan sync devices prune-backup <device-id> --dry-run`. The `remove` spelling remains a
   compatibility alias. Pruning refuses the current device, stale recovery refs, and any backup the
-  remote's old shared live ref does not already contain. Applying the prune uses an exact lease and
+  published branch (or a legacy live ref, where one remains) does not already contain. Applying the prune uses an exact lease and
   keeps the local recovery ref. It deletes only the remote backup ref;
   device, Git, and vault access are unchanged.
 - When the backup is published, a safety-head publication failure stops the cycle. Do not delete

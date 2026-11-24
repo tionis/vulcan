@@ -127,11 +127,8 @@ pub enum SyncOutcome {
     Planned,
     Paused,
     UpToDate,
-    Bootstrapped,
     Pushed,
     Pulled,
-    Merged,
-    Conflicted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

@@ -600,15 +600,16 @@ pub fn fetch_sync_device_backup(
         .remote_ref(&repository, &options.remote, &remote_device_ref)
         .map_err(AppError::operation)?
         .ok_or_else(|| AppError::operation("the remote device backup does not exist"))?;
+    let compare_ref = integration_ref(&engine, &repository, options)?;
     let mut live_revision = engine
-        .remote_ref(&repository, &options.remote, &options.live_ref)
+        .remote_ref(&repository, &options.remote, &compare_ref)
         .map_err(AppError::operation)?;
     if dry_run {
         return Ok(SyncDeviceFetchReport {
             version: SYNC_DEVICE_REPORT_VERSION,
             vault,
             remote: options.remote.clone(),
-            live_ref: options.live_ref.clone(),
+            live_ref: compare_ref,
             device_id: device_id.as_str().to_string(),
             remote_device_ref,
             local_device_ref,
@@ -636,12 +637,7 @@ pub fn fetch_sync_device_backup(
         })?;
     let (relation, local_live_ref, changed_paths) = if live_revision.is_some() {
         let fetched_live = engine
-            .fetch_ref(
-                &repository,
-                &options.remote,
-                &options.live_ref,
-                &local_live_ref,
-            )
+            .fetch_ref(&repository, &options.remote, &compare_ref, &local_live_ref)
             .map_err(AppError::operation)?;
         live_revision = Some(fetched_live.clone());
         let relation = classify_relation(&engine, &repository, &revision, &fetched_live)?;
@@ -656,7 +652,7 @@ pub fn fetch_sync_device_backup(
         version: SYNC_DEVICE_REPORT_VERSION,
         vault,
         remote: options.remote.clone(),
-        live_ref: options.live_ref.clone(),
+        live_ref: compare_ref,
         device_id: device_id.as_str().to_string(),
         remote_device_ref,
         local_device_ref,
@@ -669,6 +665,7 @@ pub fn fetch_sync_device_backup(
     })
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn remove_sync_device_backup(
     paths: &VaultPaths,
     options: &SyncDeviceOptions,
@@ -697,11 +694,15 @@ pub fn remove_sync_device_backup(
         .remote_ref(&repository, &options.remote, &remote_device_ref)
         .map_err(AppError::operation)?
         .ok_or_else(|| AppError::operation("the remote device backup does not exist"))?;
+    let compare_ref = integration_ref(&engine, &repository, options)?;
     let live = engine
-        .remote_ref(&repository, &options.remote, &options.live_ref)
+        .remote_ref(&repository, &options.remote, &compare_ref)
         .map_err(AppError::operation)?
         .ok_or_else(|| {
-            AppError::operation("remote live is uninitialized; the backup cannot be safely removed")
+            AppError::operation(format!(
+                "`{}` does not exist on the remote; the backup cannot be safely removed",
+                compare_ref.as_str()
+            ))
         })?;
     if engine
         .read_ref(&repository, &local_device_ref)
@@ -728,8 +729,9 @@ pub fn remove_sync_device_backup(
             .map_err(AppError::operation)?;
     if !relation.safe_to_remove() && !same_tree {
         return Err(AppError::operation(format!(
-            "device backup `{}` is {relation:?} from live and still contains unintegrated information; refusing removal",
-            device_id.as_str()
+            "device backup `{}` is {relation:?} from `{}` and still contains unintegrated information; refusing removal",
+            device_id.as_str(),
+            compare_ref.as_str()
         )));
     }
     let removed = if dry_run {
@@ -740,11 +742,11 @@ pub fn remove_sync_device_backup(
             .remote_ref(&repository, &options.remote, &remote_device_ref)
             .map_err(AppError::operation)?;
         let current_live = engine
-            .remote_ref(&repository, &options.remote, &options.live_ref)
+            .remote_ref(&repository, &options.remote, &compare_ref)
             .map_err(AppError::operation)?;
         if current_candidate.as_ref() != Some(&candidate) || current_live.as_ref() != Some(&live) {
             return Err(AppError::operation(
-                "device backup or accepted live changed during removal; fetch again before retrying",
+                "device backup or the branch it is compared with changed during removal; fetch again before retrying",
             ));
         }
         match engine
@@ -773,6 +775,39 @@ pub fn remove_sync_device_backup(
         local_recovery_retained: local_device_ref,
         access_unchanged: true,
     })
+}
+
+/// What a device backup must be integrated into before it may go: the
+/// remote's legacy live ref where whole-worktree sync left one, otherwise
+/// the remote branch the checked-out branch publishes to.
+fn integration_ref(
+    engine: &dyn GitEngine,
+    repository: &vulcan_sync::GitRepository,
+    options: &SyncDeviceOptions,
+) -> Result<GitRefName, AppError> {
+    if engine
+        .remote_ref(repository, &options.remote, &options.live_ref)
+        .map_err(AppError::operation)?
+        .is_some()
+    {
+        return Ok(options.live_ref.clone());
+    }
+    let branch = engine
+        .head_reference(repository)
+        .map_err(AppError::operation)?
+        .ok_or_else(|| {
+            AppError::operation("no branch is checked out to compare the backup with")
+        })?;
+    engine
+        .branch_upstream(repository, &branch)
+        .map_err(AppError::operation)?
+        .map(|upstream| upstream.merge_ref)
+        .ok_or_else(|| {
+            AppError::operation(format!(
+                "branch `{}` has no upstream to compare the backup with",
+                branch.as_str()
+            ))
+        })
 }
 
 fn classify_relation(
@@ -1055,6 +1090,79 @@ mod tests {
             .expect("fetch divergent backup");
         assert_eq!(fetched.relation, Some(SyncDeviceRelation::Diverged));
         let error = remove_sync_device_backup(&paths, &options, DEVICE_B, true)
+            .expect_err("unintegrated backup must be retained");
+        assert!(error.to_string().contains("unintegrated information"));
+    }
+
+    #[test]
+    fn without_a_live_ref_backups_are_compared_with_the_published_branch() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let remote = temporary.path().join("remote.git");
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&remote).expect("remote directory");
+        fs::create_dir(&vault).expect("vault directory");
+        git(&remote, &["init", "--bare", "--quiet"]);
+        git(&vault, &["init", "--quiet", "-b", "main"]);
+        git(&vault, &["config", "user.name", "Vulcan Test"]);
+        git(&vault, &["config", "user.email", "vulcan@example.invalid"]);
+        fs::write(vault.join("note.md"), "base\n").expect("base note");
+        git(&vault, &["add", "note.md"]);
+        git(&vault, &["commit", "--quiet", "-m", "base"]);
+        let base = git(&vault, &["rev-parse", "HEAD"]);
+        fs::write(vault.join("note.md"), "published\n").expect("note");
+        git(&vault, &["commit", "--quiet", "-am", "published"]);
+        let remote_path = remote.to_string_lossy();
+        git(&vault, &["remote", "add", "origin", &remote_path]);
+        git(&vault, &["push", "--quiet", "-u", "origin", "main"]);
+
+        let options = SyncDeviceOptions {
+            remote: GitRemote::parse("origin").expect("remote"),
+            live_ref: GitRefName::parse(DEFAULT_REMOTE_LIVE_REF).expect("live ref"),
+        };
+        let profile = vulcan_sync::sync_profile_key(&options.remote, &options.live_ref);
+        let integrated_ref = format!("refs/heads/__vulcan-sync/devices/{profile}/{DEVICE_A}");
+        git(
+            &vault,
+            &[
+                "push",
+                "--quiet",
+                "origin",
+                &format!("{base}:{integrated_ref}"),
+            ],
+        );
+        let paths = VaultPaths::new(&vault);
+
+        let fetched = fetch_sync_device_backup(&paths, &options, DEVICE_A, false)
+            .expect("fetch integrated backup");
+        assert_eq!(fetched.live_ref.as_str(), "refs/heads/main");
+        assert_eq!(fetched.relation, Some(SyncDeviceRelation::Integrated));
+        assert!(
+            remove_sync_device_backup(&paths, &options, DEVICE_A, false)
+                .expect("an integrated backup can go")
+                .removed
+        );
+
+        // A backup holding work the branch lacks stays.
+        git(&vault, &["checkout", "--quiet", "--detach", &base]);
+        fs::write(vault.join("device-only.md"), "preserve me\n").expect("device note");
+        git(&vault, &["add", "device-only.md"]);
+        git(&vault, &["commit", "--quiet", "-m", "device-only"]);
+        let divergent = git(&vault, &["rev-parse", "HEAD"]);
+        git(&vault, &["checkout", "--quiet", "main"]);
+        let divergent_ref = format!("refs/heads/__vulcan-sync/devices/{profile}/{DEVICE_B}");
+        git(
+            &vault,
+            &[
+                "push",
+                "--quiet",
+                "origin",
+                &format!("{divergent}:{divergent_ref}"),
+            ],
+        );
+        let fetched = fetch_sync_device_backup(&paths, &options, DEVICE_B, false)
+            .expect("fetch divergent backup");
+        assert_eq!(fetched.relation, Some(SyncDeviceRelation::Diverged));
+        let error = remove_sync_device_backup(&paths, &options, DEVICE_B, false)
             .expect_err("unintegrated backup must be retained");
         assert!(error.to_string().contains("unintegrated information"));
     }

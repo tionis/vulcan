@@ -66,12 +66,13 @@ contract.
   transition of a fast-forward checkout.
 - Remote device safety heads are operator-visible recovery state, not merge inputs. `vulcan sync
   devices list` enumerates exact heads; `devices fetch <id>` anchors a selected head under a local
-  recovery ref and, while the remote still holds a live ref left by the removed whole-worktree mode,
-  compares the head with it (`same`, `integrated`, `contains_live`, or `diverged`, plus changed
-  paths). `devices prune-backup <id>` (with `remove` retained as a compatibility alias) cannot prune
+  recovery ref and compares the head (`same`, `integrated`, `contains_live`, or `diverged`, plus
+  changed paths) with the remote's live ref where the removed whole-worktree mode left one, and
+  otherwise with the remote branch the checked-out branch publishes to; reports name that ref in
+  `live_ref`. `devices prune-backup <id>` (with `remove` retained as a compatibility alias) cannot prune
   the current device backup, requires the exact fetched recovery refs, rechecks the remote objects,
-  and deletes with an exact lease only when the candidate is an ancestor of that legacy live ref or
-  has the same tree; without one it refuses. Pruning a backup does not revoke device, Git transport,
+  and deletes with an exact lease only when the candidate is an ancestor of that ref or has the same
+  tree. Pruning a backup does not revoke device, Git transport,
   or vault access, and remote deletion deliberately retains the local recovery ref. Nothing sweeps
   device backups or legacy live and conflict refs automatically.
 - `sync status` is a read-only preview (a dry-run cycle), not a retained daemon-job status. It
