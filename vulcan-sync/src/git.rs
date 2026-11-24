@@ -2212,6 +2212,18 @@ impl GitCliEngine {
             }
         }
 
+        // Reset a surviving index to the base instead of rebuilding it: a
+        // single-tree `read-tree --reset` keeps the cached stat data of
+        // entries that match, so the capture's `git add -A` re-reads only
+        // files that changed. Rebuilding would run every file through the
+        // clean filters (Git LFS) again on each cycle with uncommitted edits.
+        if let Some(base) = base.filter(|_| regular_index) {
+            let mut command = self.index_command(repository, index_path)?;
+            command.args(["read-tree", "--reset"]).arg(base.as_str());
+            if self.execute(command)?.status.success() {
+                return Ok(false);
+            }
+        }
         remove_file_if_present(index_path)?;
         let arguments = match base {
             Some(base) => vec![OsString::from("read-tree"), OsString::from(base.as_str())],
@@ -7354,6 +7366,61 @@ mod tests {
         // must still enter the capture.
         assert_eq!(root_object.data.as_deref(), Some(b"updated\n".as_slice()));
         assert_eq!(nested_object.data.as_deref(), Some(b"updated\n".as_slice()));
+    }
+
+    #[test]
+    fn captures_with_uncommitted_edits_do_not_rehash_unchanged_files() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let root = temporary.path();
+        init_repo(root);
+        // A clean filter that counts its runs stands in for Git LFS.
+        let counter = root.join(".git").join("clean-runs");
+        run_git(
+            root,
+            &[
+                "config",
+                "filter.count.clean",
+                &format!("sh -c 'echo x >> \"{}\"; cat'", counter.display()),
+            ],
+        );
+        run_git(root, &["config", "filter.count.smudge", "cat"]);
+        fs::write(root.join(".gitattributes"), "*.bin filter=count\n").expect("attributes");
+        for name in ["a.bin", "b.bin", "c.bin"] {
+            fs::write(root.join(name), name).expect("media file");
+        }
+        let head = commit_all(root, "initial");
+        // Uncommitted edits keep the sync index from matching the base.
+        fs::write(root.join("Notes.md"), "draft\n").expect("draft");
+        // Old timestamps keep Git's racy-entry check out of the count.
+        run_git(root, &["status", "--short"]);
+        Command::new("touch")
+            .args(["-d", "2 hours ago", "a.bin", "b.bin", "c.bin", "Notes.md"])
+            .current_dir(root)
+            .status()
+            .expect("touch");
+        let engine = GitCliEngine::default();
+        let repository = engine.discover_repository(root).expect("repository");
+        let runs = || fs::read_to_string(&counter).map_or(0, |text| text.lines().count());
+        let first = engine
+            .snapshot_worktree_tree(&repository, Some(&head))
+            .expect("first capture");
+        let after_first = runs();
+        let second = engine
+            .snapshot_worktree_tree(&repository, Some(&head))
+            .expect("second capture");
+        assert_eq!(first, second);
+        assert_eq!(
+            runs(),
+            after_first,
+            "the second capture re-ran the clean filter on unchanged files"
+        );
+        // A changed file is still read again.
+        fs::write(root.join("b.bin"), "changed").expect("change");
+        let third = engine
+            .snapshot_worktree_tree(&repository, Some(&head))
+            .expect("third capture");
+        assert_ne!(third, second);
+        assert!(runs() > after_first);
     }
 
     #[test]
