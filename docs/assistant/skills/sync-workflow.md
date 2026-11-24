@@ -161,7 +161,9 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
   are kept.
   Never run Git sync and Syncthing on the same tree: `vault add` warns and `sync doctor` reports
   `sync.file-synchronizer` when a `.stfolder` sits at or above the vault, since the two race
-  and Syncthing copies `.git`. `vulcan doctor` lists Syncthing's leftover
+  and Syncthing copies `.git`. The exception is a folder whose `.stignore` ignores `.git` with one
+  committing device running Git sync (the others use `--no-sync`); that is reported only as a note.
+  `vulcan doctor` lists Syncthing's leftover
   `*.sync-conflict-*` copies under `sync_conflict_copies`: merge each into its original, then
   delete the copy; until then it is indexed and searched like any note.
 - Use `vulcan vault show <id>` or `vulcan vault list` to inspect registration. Human output calls

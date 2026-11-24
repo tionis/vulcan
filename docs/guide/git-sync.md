@@ -170,7 +170,11 @@ Do not place the detached Git directory in shared storage. Uninstalling Termux c
 Use one synchronizer per tree. Git sync and Syncthing on the same directory race each other, and
 Syncthing also copies the `.git` directory, which corrupts repositories that change on two
 devices at once. `vulcan vault add` warns, and `vulcan sync doctor` reports
-`sync.file-synchronizer`, when a `.stfolder` marker sits at or above the vault. A folder that
+`sync.file-synchronizer`, when a `.stfolder` marker sits at or above the vault. The one supported
+combination is a folder whose `.stignore` (or a file it `#include`s) ignores `.git`, with exactly
+one device running Git sync for it: Syncthing then carries the working files to the other devices,
+which register the folder with `--no-sync`, and Git sync carries the history from that one device.
+For such a folder the warning becomes a note (`info`). A folder that
 only Syncthing replicates can still be a Vulcan vault: register it with `--no-sync` (the default
 for a directory that is not a Git repository). `vulcan doctor` lists Syncthing's
 `*.sync-conflict-*` copies under `sync_conflict_copies`; merge each into its original and delete

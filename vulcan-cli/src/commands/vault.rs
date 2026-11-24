@@ -638,6 +638,25 @@ fn relocate(
     Ok(())
 }
 
+/// Warns when Git sync would cover a Syncthing folder, or only notes it when
+/// the folder keeps `.git` out of Syncthing.
+fn report_syncthing_overlap(path: &Path) {
+    let Some(folder) = vulcan_app::sync::syncthing_folder_root(path) else {
+        return;
+    };
+    if vulcan_app::sync::syncthing_ignores_git(&folder, path) {
+        eprintln!(
+            "note: {}",
+            vulcan_app::sync::syncthing_git_ignored_note(&folder)
+        );
+    } else {
+        eprintln!(
+            "warning: {}",
+            vulcan_app::sync::syncthing_overlap_warning(&folder)
+        );
+    }
+}
+
 fn handle_add(cli: &Cli, registry: &WikiRegistry, command: &VaultCommand) -> Result<(), CliError> {
     let VaultCommand::Add {
         id,
@@ -708,12 +727,7 @@ fn handle_add(cli: &Cli, registry: &WikiRegistry, command: &VaultCommand) -> Res
         .map_err(CliError::operation)?;
     let git_sync = wiki.sync_backend.as_deref() == Some("git");
     if git_sync {
-        if let Some(folder) = vulcan_app::sync::syncthing_folder_root(path) {
-            eprintln!(
-                "warning: {}",
-                vulcan_app::sync::syncthing_overlap_warning(&folder)
-            );
-        }
+        report_syncthing_overlap(path);
     }
     setup.not_a_git_repository = git_sync
         && !setup

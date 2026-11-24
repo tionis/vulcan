@@ -1114,8 +1114,91 @@ pub fn syncthing_overlap_warning(folder: &Path) -> String {
     )
 }
 
+/// How deep `#include` lines in `.stignore` are followed.
+const STIGNORE_INCLUDE_DEPTH: usize = 4;
+
+/// Whether the Syncthing folder at `folder` ignores the Git directory of the
+/// repository holding `vault`, judged from its `.stignore` and the files it
+/// `#include`s. Only plain patterns are recognized (`.git`, `**/.git`, and
+/// the directory's path anchored at the folder root); anything else counts
+/// as not ignored, so the overlap warning stays.
+#[must_use]
+pub fn syncthing_ignores_git(folder: &Path, vault: &Path) -> bool {
+    let folder = folder
+        .canonicalize()
+        .unwrap_or_else(|_| folder.to_path_buf());
+    let vault = vault.canonicalize().unwrap_or_else(|_| vault.to_path_buf());
+    let Some(git_dir) = vault
+        .ancestors()
+        .take_while(|directory| directory.starts_with(&folder))
+        .map(|directory| directory.join(".git"))
+        .find(|candidate| candidate.exists())
+    else {
+        return false;
+    };
+    let Ok(relative) = git_dir.strip_prefix(&folder) else {
+        return false;
+    };
+    let anchored = format!("/{}", relative.to_string_lossy().replace('\\', "/"));
+    let mut patterns = Vec::new();
+    collect_stignore_patterns(&folder, &folder.join(".stignore"), 0, &mut patterns);
+    patterns.iter().any(|pattern| {
+        let pattern = pattern.trim_end_matches('/');
+        pattern == ".git" || pattern == "**/.git" || pattern == anchored
+    })
+}
+
+fn collect_stignore_patterns(folder: &Path, file: &Path, depth: usize, out: &mut Vec<String>) {
+    let Ok(contents) = std::fs::read_to_string(file) else {
+        return;
+    };
+    for line in contents.lines() {
+        let line = line.trim();
+        if let Some(include) = line.strip_prefix("#include ") {
+            // Canonical, so `..` and symlinks cannot leave the folder.
+            let target = folder.join(include.trim()).canonicalize().ok();
+            if let Some(target) = target.filter(|target| target.starts_with(folder)) {
+                if depth < STIGNORE_INCLUDE_DEPTH {
+                    collect_stignore_patterns(folder, &target, depth + 1, out);
+                }
+            }
+            continue;
+        }
+        if line.is_empty() || line.starts_with("//") || line.starts_with('!') {
+            continue;
+        }
+        let mut pattern = line;
+        while let Some(rest) = pattern
+            .strip_prefix("(?d)")
+            .or_else(|| pattern.strip_prefix("(?i)"))
+        {
+            pattern = rest;
+        }
+        out.push(pattern.to_owned());
+    }
+}
+
+/// The note for a Syncthing folder that keeps the Git directory to itself:
+/// the working files are replicated, so only one device may run Git sync.
+#[must_use]
+pub fn syncthing_git_ignored_note(folder: &Path) -> String {
+    format!(
+        "`{}` is a Syncthing folder that ignores .git: Syncthing replicates the working files and Git sync carries the history, which is safe while only this device runs Git sync for it; register it with --no-sync on the other devices",
+        folder.display()
+    )
+}
+
 fn doctor_file_synchronizer(paths: &VaultPaths, report: &mut SyncDoctorReport) {
     if let Some(folder) = syncthing_folder_root(paths.vault_root()) {
+        if syncthing_ignores_git(&folder, paths.vault_root()) {
+            doctor_check(
+                report,
+                "sync.file-synchronizer",
+                SyncDoctorSeverity::Info,
+                syncthing_git_ignored_note(&folder),
+            );
+            return;
+        }
         doctor_check(
             report,
             "sync.file-synchronizer",
@@ -1876,6 +1959,40 @@ mod tests {
                 && check.severity == SyncDoctorSeverity::Warning
                 && check.message.contains(".stfolder")
         }));
+    }
+
+    #[test]
+    fn a_syncthing_folder_that_ignores_git_is_only_noted() {
+        let temporary = tempdir().expect("temporary directory");
+        let folder = temporary.path().join("Comics");
+        fs::create_dir_all(folder.join(".stfolder")).unwrap();
+        fs::create_dir_all(folder.join(".git")).unwrap();
+        assert!(!syncthing_ignores_git(&folder, &folder), "no .stignore");
+
+        // Through an include, with comments, flags and a negation around it.
+        fs::write(
+            folder.join(".stignore"),
+            "#include .stglobalignore\n// local\n!/keep\n",
+        )
+        .unwrap();
+        fs::write(folder.join(".stglobalignore"), "// set: vcs\n(?d).git\n").unwrap();
+        assert!(syncthing_ignores_git(&folder, &folder));
+        // A vault in a subdirectory shares the repository's .git.
+        fs::create_dir_all(folder.join("docs")).unwrap();
+        assert!(syncthing_ignores_git(&folder, &folder.join("docs")));
+
+        // Anchored patterns must name the directory itself.
+        fs::write(folder.join(".stglobalignore"), "/other/.git\n").unwrap();
+        assert!(!syncthing_ignores_git(&folder, &folder));
+        fs::write(folder.join(".stglobalignore"), "/.git/\n").unwrap();
+        assert!(syncthing_ignores_git(&folder, &folder));
+        // A negated pattern does not ignore it.
+        fs::write(folder.join(".stglobalignore"), "!.git\n").unwrap();
+        assert!(!syncthing_ignores_git(&folder, &folder));
+        // Includes cannot escape the folder.
+        fs::write(temporary.path().join("outside"), ".git\n").unwrap();
+        fs::write(folder.join(".stignore"), "#include ../outside\n").unwrap();
+        assert!(!syncthing_ignores_git(&folder, &folder));
     }
     use std::fs;
     use std::io::Write;
