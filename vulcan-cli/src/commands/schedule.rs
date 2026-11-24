@@ -99,8 +99,7 @@ fn find_job(
         .diagnostics
         .iter()
         .find(|diagnostic| diagnostic.job.as_deref() == Some(id) || diagnostic.job.is_none())
-        .map(|diagnostic| format!(": {}", diagnostic.message))
-        .unwrap_or_default();
+        .map_or_default(|diagnostic| format!(": {}", diagnostic.message));
     Err(CliError::operation(format!(
         "no runnable scheduled job `{id}`{reason}"
     )))
@@ -226,16 +225,13 @@ fn history(cli: &Cli, context: &ScheduleContext, id: &str, limit: usize) -> Resu
     }
     for run in history {
         let scheduled = chrono::DateTime::from_timestamp_millis(run.scheduled_ms)
-            .map(|instant| instant.to_rfc3339())
-            .unwrap_or_default();
+            .map_or_default(|instant| instant.to_rfc3339());
         println!(
             "{scheduled} {:?}{} attempt {}{}",
             run.state,
             if run.manual { " (manual)" } else { "" },
             run.attempt,
-            run.outcome
-                .map(|outcome| format!(": {outcome}"))
-                .unwrap_or_default()
+            run.outcome.map_or_default(|outcome| format!(": {outcome}"))
         );
     }
     Ok(())
@@ -609,8 +605,7 @@ fn print_job(job: &JobStatus) {
     }
     if let Some(last) = &job.last_success {
         let at = chrono::DateTime::from_timestamp_millis(last.started_ms)
-            .map(|instant| instant.to_rfc3339())
-            .unwrap_or_default();
+            .map_or_default(|instant| instant.to_rfc3339());
         println!("  last success: {at}");
     }
     if let Some(last) = &job.last_failure {

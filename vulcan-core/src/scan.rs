@@ -840,8 +840,7 @@ fn watched_inventory(
         let extension = path
             .extension()
             .and_then(|value| value.to_str())
-            .map(str::to_ascii_lowercase)
-            .unwrap_or_default();
+            .map_or_default(str::to_ascii_lowercase);
         let Some(filename) = path.file_stem().and_then(|value| value.to_str()) else {
             return Ok(None);
         };
@@ -1385,8 +1384,7 @@ fn match_renamed_documents(
     let extension_of = |path: &str| {
         Path::new(path)
             .extension()
-            .map(|extension| extension.to_string_lossy().to_ascii_lowercase())
-            .unwrap_or_default()
+            .map_or_default(|extension| extension.to_string_lossy().to_ascii_lowercase())
     };
     let is_new_file = |index: usize| work_items[index].cached.is_none() && hashes[index].is_some();
 
@@ -1636,8 +1634,7 @@ fn discover_files(vault_root: &Path) -> Result<Vec<DiscoveredFile>, ScanError> {
             let extension = path
                 .extension()
                 .and_then(|value| value.to_str())
-                .map(str::to_ascii_lowercase)
-                .unwrap_or_default();
+                .map_or_default(str::to_ascii_lowercase);
 
             let Ok(file_size) = i64::try_from(metadata.len()) else {
                 return ignore::WalkState::Continue;

@@ -73,8 +73,7 @@ fn problem_line(diagnostic: &MdbaseDiagnostic) -> String {
         .as_deref()
         .map(|field| field.trim_start_matches('/'))
         .filter(|field| !field.is_empty())
-        .map(|field| format!(" ({field})"))
-        .unwrap_or_default();
+        .map_or_default(|field| format!(" ({field})"));
     match diagnostic.path.as_deref().filter(|path| !path.is_empty()) {
         Some(path) => format!("{path}{field}: {}", diagnostic.message),
         None => format!("{}{field}", diagnostic.message),

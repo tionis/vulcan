@@ -430,8 +430,7 @@ fn print_plan(plan: &DevicePlan, prune: bool) {
     let owner = plan
         .managed_by
         .as_ref()
-        .map(|owner| format!(" (managed by {owner})"))
-        .unwrap_or_default();
+        .map_or_default(|owner| format!(" (managed by {owner})"));
     println!("Plan for {}{owner}", plan.file.display());
     let mut unchanged = 0;
     for item in &plan.items {
@@ -447,8 +446,7 @@ fn print_plan(plan: &DevicePlan, prune: bool) {
         let reason = item
             .reason
             .as_ref()
-            .map(|reason| format!("  {reason}"))
-            .unwrap_or_default();
+            .map_or_default(|reason| format!("  {reason}"));
         println!(
             "  {action:<7} {:<12} {}{reason}",
             kind_label(item.kind),
@@ -480,8 +478,7 @@ fn print_apply(report: &ApplyReport, prune: bool) {
         let detail = step
             .detail
             .as_ref()
-            .map(|detail| format!(": {detail}"))
-            .unwrap_or_default();
+            .map_or_default(|detail| format!(": {detail}"));
         println!(
             "{status:<7} {} {} {}{detail}",
             action_label(step.action),

@@ -276,7 +276,7 @@ fn handle_daily_calendar_command(
 /// `YYYY-MM` selects the first of that month; anything else goes through the
 /// shared date resolver.
 fn resolve_calendar_initial_date(date: Option<&str>, today: &str) -> Result<String, CliError> {
-    let trimmed = date.map(str::trim).unwrap_or_default();
+    let trimmed = date.map_or_default(str::trim);
     let is_month = trimmed.len() == 7
         && trimmed.as_bytes()[4] == b'-'
         && trimmed

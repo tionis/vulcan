@@ -1646,8 +1646,7 @@ fn print_tasks_blocked_report(
                     let gap = blocker
                         .gap
                         .as_deref()
-                        .map(|value| format!(", gap {value}"))
-                        .unwrap_or_default();
+                        .map_or_default(|value| format!(", gap {value}"));
                     if blocker.resolved {
                         println!(
                             "  blocked by {} ({}, line {}) [{relation}{gap}; {}]",
@@ -1690,8 +1689,7 @@ fn print_tasks_graph_report(
                 let gap = edge
                     .gap
                     .as_deref()
-                    .map(|value| format!(", gap {value}"))
-                    .unwrap_or_default();
+                    .map_or_default(|value| format!(", gap {value}"));
                 if edge.resolved {
                     println!(
                         "- {} -> {} ({}, line {}) [{relation}{gap}]",

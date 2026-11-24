@@ -32,7 +32,7 @@ pub fn stat_fingerprint(metadata: &fs::Metadata) -> Option<StatFingerprint> {
             nanoseconds(metadata.mtime(), metadata.mtime_nsec()).to_be_bytes(),
             nanoseconds(metadata.ctime(), metadata.ctime_nsec()).to_be_bytes(),
         ];
-        for (chunk, field) in fingerprint.chunks_exact_mut(8).zip(fields) {
+        for (chunk, field) in fingerprint.as_chunks_mut::<8>().0.iter_mut().zip(fields) {
             chunk.copy_from_slice(&field);
         }
         fingerprint

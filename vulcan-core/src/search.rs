@@ -444,9 +444,8 @@ fn load_static_search_index_entries(
     connection: &Connection,
     filter: Option<&PermissionFilter>,
 ) -> Result<Vec<StaticSearchIndexEntry>, SearchError> {
-    let permission_sql = filter
-        .map(|filter| filter.document_scope_sql("_static_search_permission"))
-        .unwrap_or_default();
+    let permission_sql =
+        filter.map_or_default(|filter| filter.document_scope_sql("_static_search_permission"));
     let mut sql = permission_sql.cte;
     sql.push_str(
         "
@@ -537,9 +536,8 @@ fn keyword_search_hits(
     } else {
         limit
     };
-    let permission_sql = filter
-        .map(|filter| filter.document_scope_sql("_permission_documents"))
-        .unwrap_or_default();
+    let permission_sql =
+        filter.map_or_default(|filter| filter.document_scope_sql("_permission_documents"));
     let use_fts = !full_scan_for_regex && !candidate_query.trim().is_empty();
     let mut sql = permission_sql.cte.clone();
     if use_fts {
@@ -736,6 +734,8 @@ thread_local! {
     };
 }
 
+// The early return exists only in test builds, so the `if` cannot be folded.
+#[allow(clippy::needless_bool)]
 fn top_ranked_enabled() -> bool {
     #[cfg(test)]
     if TOP_RANKED_TEST.with(|test| test.disabled.get()) {

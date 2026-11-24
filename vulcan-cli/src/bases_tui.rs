@@ -328,8 +328,7 @@ fn draw_diagnostics(frame: &mut Frame<'_>, state: &BasesTuiState, area: Rect) {
                     diagnostic
                         .path
                         .as_deref()
-                        .map(|path| format!("{path}: "))
-                        .unwrap_or_default(),
+                        .map_or_default(|path| format!("{path}: ")),
                     diagnostic.message
                 ))
             })

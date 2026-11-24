@@ -119,13 +119,12 @@ fn list_item_object(
         });
     let children = children_by_parent
         .get(item.id.as_str())
-        .map(|children| {
+        .map_or_default(|children| {
             children
                 .iter()
                 .map(|child| list_item_object(child, note, by_id, children_by_parent))
                 .collect()
-        })
-        .unwrap_or_default();
+        });
 
     let mut object = Map::new();
     object.insert("text".to_string(), Value::String(item.text.clone()));
@@ -274,13 +273,12 @@ fn task_object(
 
     let children = task_children
         .get(task.id.as_str())
-        .map(|children| {
+        .map_or_default(|children| {
             children
                 .iter()
                 .map(|child| task_object(child, note, list_by_id, task_by_id, task_children))
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     object.insert("children".to_string(), Value::Array(children));
 
     for (key, value) in &task.properties {

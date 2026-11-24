@@ -1111,9 +1111,8 @@ pub fn daemon_status(
     let runtime = read_runtime_record(&context.runtime_path())?;
     let registered_wikis = context.registry.list(None)?;
     let state_store = context.sync_state_store();
-    let services = load_host_status(&context.host_status_path())?
-        .map(|report| report.services)
-        .unwrap_or_default();
+    let services =
+        load_host_status(&context.host_status_path())?.map_or_default(|report| report.services);
     let (running, capability_probe_error) = runtime.as_ref().map_or((false, None), |record| {
         match authenticated_request(context, record, "GET", "/capabilities") {
             Ok(_) => (true, None),

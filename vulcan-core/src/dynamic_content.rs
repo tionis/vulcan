@@ -1371,8 +1371,7 @@ fn push_task_markdown(rendered: &mut String, task: &Value, depth: usize) {
         .unwrap_or(" ");
     let text = task
         .get("text")
-        .map(|text| fields_as_markdown(&inline_value(text)))
-        .unwrap_or_default();
+        .map_or_default(|text| fields_as_markdown(&inline_value(text)));
     let _ = writeln!(rendered, "{}- [{status}] {text}", "  ".repeat(depth));
     if let Some(children) = task.get("children").and_then(Value::as_array) {
         for child in children {
@@ -1402,7 +1401,7 @@ enum JsMarkdownPiece {
 
 fn dataview_js_markdown(result: &DataviewJsResult, options: DataviewMarkdownOptions) -> String {
     if result.outputs.is_empty() {
-        return result.value.as_ref().map(inline_value).unwrap_or_default();
+        return result.value.as_ref().map_or_default(inline_value);
     }
     let pieces = result.outputs.iter().map(|output| match output {
         DataviewJsOutput::Query { result } => JsMarkdownPiece::Block(dql_markdown(result, options)),
@@ -1528,8 +1527,7 @@ fn tasks_markdown(result: &TasksQueryResult) -> String {
                 let status = task.get("status").and_then(Value::as_str).unwrap_or(" ");
                 let text = task
                     .get("text")
-                    .map(|text| fields_as_markdown(&inline_value(text)))
-                    .unwrap_or_default();
+                    .map_or_default(|text| fields_as_markdown(&inline_value(text)));
                 match task.get("path").and_then(Value::as_str) {
                     Some(path) if !path.is_empty() => format!("- [{status}] {text} ({path})\n"),
                     _ => format!("- [{status}] {text}\n"),

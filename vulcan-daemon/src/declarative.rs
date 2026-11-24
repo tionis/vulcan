@@ -520,10 +520,9 @@ fn vault_remote_notes(
                 .mcp_remotes
                 .iter()
                 .find(|remote| remote.id.as_str() == id)
-                .map(|remote| match &remote.authentication {
+                .map_or_default(|remote| match &remote.authentication {
                     McpRemoteAuthentication::IndieAuth { identity } => identity.clone(),
-                })
-                .unwrap_or_default();
+                });
             if let Some(asked) = &status.pending_identity {
                 problems.push(format!(
                     "the vault now asks for IndieAuth identity {asked}, but this device accepted {identity}; the remote keeps {identity} until you run `vulcan daemon apply --accept-remote {id}`"
@@ -946,8 +945,7 @@ fn revoke_undeclared_grants(
     let store = McpAuthorizationStore::at(&context.state_root);
     let now = std::time::SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs())
-        .unwrap_or_default();
+        .map_or_default(|elapsed| elapsed.as_secs());
     grants
         .iter()
         .map(|grant| {

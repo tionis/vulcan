@@ -94,7 +94,7 @@ impl McpLocalTokenEndpoint<'_> {
                     now: unix_timestamp(),
                 }) {
                     Ok(token) => Some(format!("{}.{}", token.family_id, token.secret.expose())),
-                    Err(error) => return json_error(400, "invalid_grant", error.to_string()),
+                    Err(error) => return json_error(400, "invalid_grant", error.clone()),
                 }
             }
             _ => None,

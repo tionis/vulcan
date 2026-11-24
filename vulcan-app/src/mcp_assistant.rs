@@ -140,7 +140,8 @@ pub fn read_custom_tool_resource(
                             ))
                         }
                     })
-            } else if let Some(name) = uri.strip_prefix("vulcan://assistant/tools/") {
+            } else {
+                let name = uri.strip_prefix("vulcan://assistant/tools/")?;
                 if selected_pack_names.contains("custom") {
                     tools::show_custom_tool(
                         paths,
@@ -170,8 +171,6 @@ pub fn read_custom_tool_resource(
                         active_permission_profile,
                     ))
                 }
-            } else {
-                return None;
             }
         }
     };

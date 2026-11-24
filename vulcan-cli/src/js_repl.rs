@@ -544,8 +544,7 @@ fn print_outputs_human(outputs: &[DataviewJsOutput]) {
                     let status = task.get("status").and_then(Value::as_str).unwrap_or(" ");
                     let text = task
                         .get("text")
-                        .map(render_dataview_inline_value)
-                        .unwrap_or_default();
+                        .map_or_default(render_dataview_inline_value);
                     println!("- [{status}] {text}");
                 }
             }

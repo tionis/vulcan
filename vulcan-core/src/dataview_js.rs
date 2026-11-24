@@ -5165,7 +5165,7 @@ globalThis.this = dv.current();
         transaction: &JsTransactionState,
     ) -> Result<(), DataviewJsError> {
         let mut originals = transaction.originals.iter().collect::<Vec<_>>();
-        originals.sort_by(|(left, _), (right, _)| left.cmp(right));
+        originals.sort_by_key(|(left, _)| *left);
         for (path, original) in originals {
             let absolute = state.paths.vault_root().join(path);
             match original {

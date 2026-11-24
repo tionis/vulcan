@@ -2502,7 +2502,7 @@ fn parse_formulas(formulas: &BTreeMap<String, String>) -> ParsedFormulas {
         .map(|(name, expression)| {
             (
                 name.clone(),
-                parse_expression(expression).map_err(|error| error.to_string()),
+                parse_expression(expression).map_err(|error| error.clone()),
             )
         })
         .collect()

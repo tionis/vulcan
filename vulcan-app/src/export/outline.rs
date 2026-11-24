@@ -435,8 +435,7 @@ fn rewrite_planned_documents(
                 &document,
                 links_by_source
                     .get(&document.source_path)
-                    .map(Vec::as_slice)
-                    .unwrap_or_default(),
+                    .map_or_default(Vec::as_slice),
                 &document_target_paths,
                 &attachment_target_paths,
                 block_reference_policy,

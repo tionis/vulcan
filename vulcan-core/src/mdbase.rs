@@ -1622,12 +1622,8 @@ pub fn is_mdbase_record_path(
     }
     let excludes = compile_excludes(&collection.config.settings.exclude)
         .expect("exclusion globs are validated while loading mdbase.yaml");
-    if is_excluded(&excludes, &path, false)
-        || ancestor_is_excluded_or_nested(collection, relative, &excludes)?
-    {
-        return Ok(false);
-    }
-    Ok(true)
+    Ok(!(is_excluded(&excludes, &path, false)
+        || ancestor_is_excluded_or_nested(collection, relative, &excludes)?))
 }
 
 fn ancestor_is_excluded_or_nested(

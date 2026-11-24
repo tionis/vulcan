@@ -547,8 +547,7 @@ pub fn install(dir: &Path, force: bool, dry_run: bool) -> Result<HelixReport, Ap
         version: VERSION.to_string(),
         entries: previous
             .as_ref()
-            .map(|marker| marker.entries.clone())
-            .unwrap_or_default(),
+            .map_or_default(|marker| marker.entries.clone()),
         created_markdown: previous
             .as_ref()
             .is_some_and(|marker| marker.created_markdown),

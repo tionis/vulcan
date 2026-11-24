@@ -218,7 +218,7 @@ mod tests {
         ] {
             assert_eq!(error.state(), state);
             assert!(!error.to_string().contains('/'));
-            assert!(!error.to_string().is_empty());
+            assert_ne!(error.to_string(), "");
             assert!(serde_json::to_value(state).unwrap().is_string());
         }
     }

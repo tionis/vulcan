@@ -1131,8 +1131,7 @@ fn extension_suffix(path: &str) -> String {
         .extension()
         .and_then(|extension| extension.to_str())
         .filter(|extension| !extension.is_empty())
-        .map(|extension| format!(".{}", extension.to_ascii_lowercase()))
-        .unwrap_or_default()
+        .map_or_default(|extension| format!(".{}", extension.to_ascii_lowercase()))
 }
 
 fn epub_media_type(path: &str) -> &'static str {

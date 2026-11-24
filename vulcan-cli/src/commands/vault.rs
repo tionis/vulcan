@@ -482,8 +482,7 @@ fn list_tokens(
                 .token
                 .label
                 .as_deref()
-                .map(|label| format!(" ({label})"))
-                .unwrap_or_default(),
+                .map_or_default(|label| format!(" ({label})")),
             if listing.orphaned {
                 " [registration removed]"
             } else {

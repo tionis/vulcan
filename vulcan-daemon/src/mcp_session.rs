@@ -21,7 +21,7 @@ use crate::registry::WikiId;
 
 pub const MAX_MCP_SSE_PENDING_EVENTS: usize = 32;
 pub const MAX_MCP_HTTP_SESSIONS: usize = 256;
-pub const MCP_HTTP_SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+pub const MCP_HTTP_SESSION_IDLE_TIMEOUT: Duration = Duration::from_mins(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpCancellationError {

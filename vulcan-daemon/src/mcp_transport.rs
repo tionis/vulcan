@@ -90,7 +90,7 @@ impl McpHttpListener {
                 Ok((mut stream, _)) => {
                     let active = Arc::clone(&self.active_connections);
                     if active
-                        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                        .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                             (count < self.max_connections).then_some(count + 1)
                         })
                         .is_err()

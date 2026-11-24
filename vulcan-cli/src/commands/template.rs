@@ -385,13 +385,11 @@ pub(crate) fn run_template_show_command(
                     let label = input
                         .label
                         .as_deref()
-                        .map(|label| format!(" {label:?}"))
-                        .unwrap_or_default();
+                        .map_or_default(|label| format!(" {label:?}"));
                     let default = input
                         .default
                         .as_deref()
-                        .map(|default| format!(" (default {default:?})"))
-                        .unwrap_or_default();
+                        .map_or_default(|default| format!(" (default {default:?})"));
                     println!("  {} ← {}{label}{default}", input.var_key, input.function);
                 }
             }

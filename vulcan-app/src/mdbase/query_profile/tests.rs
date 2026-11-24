@@ -731,7 +731,7 @@ fn benchmark_writes(
         println!(
             "{}",
             json!({"measurement": "benchmark_write", "plan_seconds": planned.as_secs_f64(),
-                "apply_seconds": (start.elapsed() - planned).as_secs_f64(), "apply_stages": stages})
+                "apply_seconds": start.elapsed().checked_sub(planned).unwrap().as_secs_f64(), "apply_stages": stages})
         );
         start.elapsed()
     };

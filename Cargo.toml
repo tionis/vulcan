@@ -6,7 +6,7 @@ resolver = "2"
 [workspace.package]
 version = "0.4.0"
 edition = "2021"
-rust-version = "1.90"
+rust-version = "1.100"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
@@ -77,5 +77,8 @@ zip = { version = "9.0.4", default-features = false, features = ["deflate-flate2
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 module_name_repetitions = "allow"
+# `assert!(x.is_empty())` reads better than its `assert_eq!(x, [] as [T; 0])` rewrite.
+assert_is_empty = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
+

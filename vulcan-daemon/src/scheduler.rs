@@ -211,8 +211,7 @@ pub fn run_job(job: &ScheduleJob, context: &RunContext<'_>) -> Result<String, St
                 report.commits.len(),
                 report
                     .detail
-                    .map(|detail| format!(" ({detail})"))
-                    .unwrap_or_default()
+                    .map_or_default(|detail| format!(" ({detail})"))
             ))
         }
     }

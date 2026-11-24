@@ -120,22 +120,20 @@ pub(crate) fn collect_complete_candidates(
             if !scripts_dir.is_dir() {
                 return Vec::new();
             }
-            fs::read_dir(&scripts_dir)
-                .map(|entries| {
-                    entries
-                        .flatten()
-                        .filter_map(|entry| {
-                            let name = entry.file_name();
-                            let candidate = name.to_string_lossy();
-                            if candidate.ends_with(".js") {
-                                Some(candidate.trim_end_matches(".js").to_string())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
+            fs::read_dir(&scripts_dir).map_or_default(|entries| {
+                entries
+                    .flatten()
+                    .filter_map(|entry| {
+                        let name = entry.file_name();
+                        let candidate = name.to_string_lossy();
+                        if candidate.ends_with(".js") {
+                            Some(candidate.trim_end_matches(".js").to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
         }
         _ => vulcan_app::browse::collect_complete_candidates(paths, context).unwrap_or_default(),
     };

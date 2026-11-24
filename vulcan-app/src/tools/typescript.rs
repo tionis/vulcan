@@ -152,13 +152,12 @@ fn json_object_schema_to_typescript(schema: &Value, indent: usize) -> String {
     let required = schema
         .get("required")
         .and_then(Value::as_array)
-        .map(|values| {
+        .map_or_default(|values| {
             values
                 .iter()
                 .filter_map(Value::as_str)
                 .collect::<BTreeSet<_>>()
-        })
-        .unwrap_or_default();
+        });
     let pad = " ".repeat(indent);
     let child_pad = " ".repeat(indent + 2);
     let mut lines = vec!["{".to_string()];

@@ -1519,8 +1519,7 @@ fn unignored_device_files(
         paths.vault_root(),
         revision,
     )
-    .map(|shared| shared.unignored)
-    .unwrap_or_default()
+    .map_or_default(|shared| shared.unignored)
 }
 
 fn run_sync_backend_with_vault_lock(

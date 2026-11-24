@@ -1533,12 +1533,7 @@ impl WikiRegistry {
         dry_run: bool,
     ) -> Result<DaemonConfig, RegistryError> {
         self.mutate(dry_run, |config| {
-            let users = config
-                .bot
-                .telegram
-                .take()
-                .map(|bot| bot.users)
-                .unwrap_or_default();
+            let users = config.bot.telegram.take().map_or_default(|bot| bot.users);
             let bot = DaemonTelegramBotConfig {
                 token_env,
                 api_base,

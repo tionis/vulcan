@@ -259,8 +259,7 @@ pub(crate) fn served_vault(
     let registered = state
         .registry
         .poll()
-        .map(|config| config.vaults.iter().any(|wiki| wiki.id.as_str() == id))
-        .unwrap_or(false);
+        .is_ok_and(|config| config.vaults.iter().any(|wiki| wiki.id.as_str() == id));
     if registered {
         Err(RestError::new(
             StatusCode::SERVICE_UNAVAILABLE,

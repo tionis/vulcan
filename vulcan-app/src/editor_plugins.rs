@@ -333,9 +333,7 @@ fn uninstall_plugin(
         return Ok(report);
     }
     let marker = read_marker(dir)?.filter(|marker| marker.plugin == plugin.name);
-    let mut paths = marker
-        .map(|marker| marker.files.into_keys().collect::<Vec<_>>())
-        .unwrap_or_default();
+    let mut paths = marker.map_or_default(|marker| marker.files.into_keys().collect::<Vec<_>>());
     paths.push(MARKER_FILE.to_string());
     report.removed = paths
         .into_iter()

@@ -2186,9 +2186,7 @@ fn print_outline_mutation_plan(
         OutputFormat::Human | OutputFormat::Markdown => {
             println!(
                 "Would {action} Outline collection{}.",
-                collection_id
-                    .map(|id| format!(" `{id}`"))
-                    .unwrap_or_default()
+                collection_id.map_or_default(|id| format!(" `{id}`"))
             );
             Ok(())
         }
@@ -7274,13 +7272,11 @@ fn print_saved_report_list(
                     let description = report
                         .description
                         .as_deref()
-                        .map(|description| format!(": {description}"))
-                        .unwrap_or_default();
+                        .map_or_default(|description| format!(": {description}"));
                     let export = report
                         .export
                         .as_ref()
-                        .map(|export| format!(" -> {}", export.path))
-                        .unwrap_or_default();
+                        .map_or_default(|export| format!(" -> {}", export.path));
                     println!(
                         "- {} [{:?}]{}{}",
                         report.name, report.kind, description, export
@@ -7488,7 +7484,7 @@ fn query_detail_rows(
 fn load_note_preview_lines(paths: &VaultPaths, document_path: &str, limit: usize) -> Vec<String> {
     fs::read_to_string(paths.vault_root().join(document_path))
         .ok()
-        .map(|content| {
+        .map_or_default(|content| {
             content
                 .lines()
                 .map(str::trim_end)
@@ -7497,7 +7493,6 @@ fn load_note_preview_lines(paths: &VaultPaths, document_path: &str, limit: usize
                 .map(ToOwned::to_owned)
                 .collect()
         })
-        .unwrap_or_default()
 }
 
 fn print_query_detail_human(paths: &VaultPaths, notes: &[&NoteRecord]) {

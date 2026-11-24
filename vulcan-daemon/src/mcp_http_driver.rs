@@ -347,7 +347,7 @@ pub fn create_mcp_http_core<C: McpRequestCore>(
         .protocol_config(authority)
         .map_err(|error| mcp_http_json_error_response(error.status, error.message, Value::Null))?;
     (context.core_factory)(config)
-        .map_err(|error| mcp_http_json_error_response(500, error.to_string(), Value::Null))
+        .map_err(|error| mcp_http_json_error_response(500, error.clone(), Value::Null))
 }
 
 #[must_use]
@@ -585,8 +585,7 @@ mod tests {
             path: "/mcp".into(),
             query: String::new(),
             headers: session
-                .map(|id| BTreeMap::from([("mcp-session-id".into(), id.into())]))
-                .unwrap_or_default(),
+                .map_or_default(|id| BTreeMap::from([("mcp-session-id".into(), id.into())])),
             body: Vec::new(),
         }
     }

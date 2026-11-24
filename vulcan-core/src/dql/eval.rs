@@ -627,7 +627,6 @@ fn notes_outside_scope_removed(
 }
 
 #[allow(clippy::too_many_lines)]
-#[allow(clippy::too_many_lines)]
 pub(crate) fn evaluate_parsed_dql_with_note_index_and_config(
     paths: &VaultPaths,
     query: &DqlQuery,

@@ -263,7 +263,7 @@ mod tests {
                 position = read.position;
                 assert!(!read.reconcile);
             }
-            read.map(|read| read.changes).unwrap_or_default()
+            read.map_or_default(|read| read.changes)
         };
         let entry = |path: &str, status| (path.to_string(), status);
         assert_eq!(

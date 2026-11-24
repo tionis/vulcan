@@ -248,8 +248,7 @@ fn held_back(
     }
     let policy = registry
         .load()
-        .map(|config| config.automatic_sync)
-        .unwrap_or_default();
+        .map_or_default(|config| config.automatic_sync);
     automatic_sync_deferral(&policy, triggers, probe).map(|reason| {
         format!(
             "{HELD_BACK_DETAIL} deferred by this device's background policy: {}",

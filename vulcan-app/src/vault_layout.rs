@@ -56,10 +56,9 @@ pub fn inspect_vault_layout(paths: &VaultPaths) -> VaultLayoutReport {
     });
     let mut hints = mkdocs
         .as_ref()
-        .map(|(project, vault_is_docs_dir)| {
+        .map_or_default(|(project, vault_is_docs_dir)| {
             mkdocs_hints(paths.vault_root(), &vault_root, project, *vault_is_docs_dir)
-        })
-        .unwrap_or_default();
+        });
     let repository_pointer = inspect_repository_pointer(&vault_root, &mut hints);
     VaultLayoutReport {
         repository_pointer,

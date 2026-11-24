@@ -279,8 +279,7 @@ fn print_inventory(
                         backup
                             .name
                             .as_deref()
-                            .map(|name| format!("{name} — "))
-                            .unwrap_or_default(),
+                            .map_or_default(|name| format!("{name} — ")),
                         backup.device_id,
                         backup.identity_kind.as_str()
                     );
@@ -306,8 +305,7 @@ fn print_inventory(
                         recovery
                             .name
                             .as_deref()
-                            .map(|name| format!("{name} — "))
-                            .unwrap_or_default(),
+                            .map_or_default(|name| format!("{name} — ")),
                         recovery.device_id,
                         recovery.identity_kind.as_str()
                     );

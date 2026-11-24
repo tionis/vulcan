@@ -205,8 +205,7 @@ fn render_expiry_control(clock: &GrantClock) -> String {
     for preset in EXPIRY_PRESETS {
         let until = clock
             .preset_end(preset)
-            .map(|end| clock.describe(end))
-            .unwrap_or_default();
+            .map_or_default(|end| clock.describe(end));
         let checked = if preset.value == DEFAULT_EXPIRY {
             " checked"
         } else {

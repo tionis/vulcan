@@ -180,7 +180,7 @@ mod append_ledger {
     use std::time::{Duration, Instant};
 
     const CAPACITY: usize = 1024;
-    const MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+    const MAX_AGE: Duration = Duration::from_hours(24);
 
     struct Entry {
         vault: PathBuf,

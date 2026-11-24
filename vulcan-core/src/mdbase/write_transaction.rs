@@ -1053,15 +1053,15 @@ where
 /// Committed outbox events are kept for this long (and at most
 /// [`OUTBOX_MAX_EVENTS`]) for a future delivery consumer; no production
 /// consumer reads them yet, so the directory must not grow with history.
-const OUTBOX_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+const OUTBOX_RETENTION: Duration = Duration::from_hours(168);
 const OUTBOX_MAX_EVENTS: usize = 1_000;
 /// Idempotent replay window. Replaying a committed apply after its receipt
 /// expires cannot write twice: its accepted revisions no longer match and
 /// planning reports `stale_state`.
-const RECEIPT_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+const RECEIPT_RETENTION: Duration = Duration::from_hours(720);
 const RECEIPT_MAX: usize = 10_000;
 /// Receipt pruning stats every receipt, so it runs at most this often.
-const RECEIPT_PRUNE_INTERVAL: Duration = Duration::from_secs(60 * 60);
+const RECEIPT_PRUNE_INTERVAL: Duration = Duration::from_hours(1);
 
 /// Bound post-commit operational state. Runs under the write lock after a
 /// transaction is fully committed. Housekeeping failures never fail a
@@ -1104,7 +1104,7 @@ fn prune_outbox(directory: &Path, keep_transaction: &str, now: SystemTime) -> st
             events.push((ulid, entry.path()));
         }
     }
-    events.sort_by(|left, right| right.0.cmp(&left.0));
+    events.sort_by_key(|event| std::cmp::Reverse(event.0));
     let mut removed = false;
     for (index, (ulid, path)) in events.iter().enumerate() {
         if index + 1 >= OUTBOX_MAX_EVENTS || ulid.timestamp_ms() < cutoff_ms {
@@ -1136,7 +1136,7 @@ fn prune_receipts(directory: &Path, now: SystemTime) -> std::io::Result<()> {
             receipts.push((metadata.modified()?, entry.path()));
         }
     }
-    receipts.sort_by(|left, right| right.0.cmp(&left.0));
+    receipts.sort_by_key(|receipt| std::cmp::Reverse(receipt.0));
     let mut removed = false;
     for (index, (modified, path)) in receipts.iter().enumerate() {
         if index >= RECEIPT_MAX || cutoff.is_some_and(|cutoff| *modified < cutoff) {
@@ -2166,7 +2166,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let directory = temp.path();
         let now = SystemTime::now();
-        let old = now - Duration::from_secs(8 * 24 * 60 * 60);
+        let old = now - Duration::from_hours(192);
         let current = ulid_at(old);
         let expired = ulid_at(old - Duration::from_secs(60));
         fs::write(directory.join(format!("{current}.json")), "{}").unwrap();
@@ -2226,9 +2226,9 @@ mod tests {
 
         // Within the interval, receipt pruning is skipped.
         let stale = write_receipt("stale-again", 40);
-        prune_operational_state(&paths, "", now + Duration::from_secs(10 * 60));
+        prune_operational_state(&paths, "", now + Duration::from_mins(10));
         assert!(stale.exists());
-        prune_operational_state(&paths, "", now + Duration::from_secs(2 * 60 * 60));
+        prune_operational_state(&paths, "", now + Duration::from_hours(2));
         assert!(!stale.exists());
         assert!(fresh.exists());
     }
@@ -2638,7 +2638,7 @@ mod tests {
         ensure_state_layout(&paths).unwrap();
         let expired = state_root(&paths).join("outbox").join(format!(
             "{}.json",
-            ulid_at(SystemTime::now() - Duration::from_secs(10 * 24 * 60 * 60))
+            ulid_at(SystemTime::now() - Duration::from_hours(240))
         ));
         fs::write(&expired, "{}").unwrap();
         let mut reconciliations = 0;

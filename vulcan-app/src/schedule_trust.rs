@@ -567,14 +567,12 @@ fn job_states(
         .iter()
         .map(|signed| {
             git.config_at(&signed.commit)
-                .map(|config| definition_digests(&config))
-                .unwrap_or_default()
+                .map_or_default(|config| definition_digests(&config))
         })
         .collect::<Vec<_>>();
     let working = std::fs::read_to_string(VaultPaths::new(&repository.vault).config_file())
         .ok()
-        .map(|source| definition_digests(&CommitConfig::parse(Some(source))))
-        .unwrap_or_default();
+        .map_or_default(|source| definition_digests(&CommitConfig::parse(Some(source))));
     let mut jobs = Vec::new();
     for (id, digest) in &tip_digests {
         let pending = working.get(id) != Some(digest);

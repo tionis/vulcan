@@ -180,16 +180,13 @@ impl EditorSession {
         plan: &mut EditorEditPlan,
         rewrite: &dyn Fn(&RawLink, &str, &str) -> Option<String>,
     ) -> Result<Vec<String>, AppError> {
-        let mut linking = self
-            .backlinks_report(path)?
-            .map(|report| {
-                report
-                    .backlinks
-                    .into_iter()
-                    .map(|backlink| backlink.source_path)
-                    .collect::<BTreeSet<_>>()
-            })
-            .unwrap_or_default();
+        let mut linking = self.backlinks_report(path)?.map_or_default(|report| {
+            report
+                .backlinks
+                .into_iter()
+                .map(|backlink| backlink.source_path)
+                .collect::<BTreeSet<_>>()
+        });
         linking.extend(self.open_paths().map(ToString::to_string));
         linking.remove(path);
         let mut rewritten_paths = Vec::new();

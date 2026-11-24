@@ -187,7 +187,7 @@ impl<'a> QueueAdmission<'a> {
     fn new(scheduler: &'a MutationScheduler) -> Result<Self, MutationScheduleError> {
         scheduler
             .queued
-            .fetch_update(
+            .try_update(
                 std::sync::atomic::Ordering::AcqRel,
                 std::sync::atomic::Ordering::Acquire,
                 |queued| (queued < scheduler.config.max_queued).then_some(queued + 1),

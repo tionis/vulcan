@@ -254,8 +254,7 @@ fn execute_embedding_request(
         let retryable = status.as_u16() == 429 || status.is_server_error();
         let body = response
             .bytes()
-            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-            .unwrap_or_default();
+            .map_or_default(|bytes| String::from_utf8_lossy(&bytes).into_owned());
         let error_message = if body.trim().is_empty() {
             format!("embeddings request failed with HTTP {}", status.as_u16())
         } else {

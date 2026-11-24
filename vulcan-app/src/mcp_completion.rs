@@ -220,20 +220,18 @@ fn script_candidates(paths: &VaultPaths) -> Vec<String> {
     if !scripts_dir.is_dir() {
         return Vec::new();
     }
-    fs::read_dir(&scripts_dir)
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter_map(|entry| {
-                    let name = entry.file_name();
-                    let candidate = name.to_string_lossy();
-                    candidate
-                        .ends_with(".js")
-                        .then(|| candidate.trim_end_matches(".js").to_string())
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    fs::read_dir(&scripts_dir).map_or_default(|entries| {
+        entries
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name();
+                let candidate = name.to_string_lossy();
+                candidate
+                    .ends_with(".js")
+                    .then(|| candidate.trim_end_matches(".js").to_string())
+            })
+            .collect()
+    })
 }
 
 fn vault_path_candidates(paths: &VaultPaths, prefix: &str) -> Vec<String> {

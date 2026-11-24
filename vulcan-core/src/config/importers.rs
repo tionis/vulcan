@@ -2501,8 +2501,7 @@ pub(super) fn tasknotes_migrate_view_files(
     let explicit_commands = raw
         .get("commandFileMapping")
         .and_then(Value::as_object)
-        .map(|mapping| mapping.keys().cloned().collect::<BTreeSet<_>>())
-        .unwrap_or_default();
+        .map_or_default(|mapping| mapping.keys().cloned().collect::<BTreeSet<_>>());
 
     for (command, source_path) in tasknotes_command_file_mappings(raw) {
         let Some(target_path) = tasknotes_view_target_path(&command) else {

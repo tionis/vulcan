@@ -149,8 +149,7 @@ fn print_changeset_line(changeset: &vulcan_app::changesets::ChangesetInfo) {
         changeset
             .title
             .as_deref()
-            .map(|title| format!("  {title}"))
-            .unwrap_or_default()
+            .map_or_default(|title| format!("  {title}"))
     );
 }
 

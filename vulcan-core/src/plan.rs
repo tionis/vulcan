@@ -870,16 +870,13 @@ fn sql_candidates(
     let permission_sql = filter.map(|filter| {
         filter.note_query_scope_sql("_permission_documents", "note_query.document_id")
     });
-    let mut params = permission_sql
-        .as_ref()
-        .map(|sql| {
-            sql.params
-                .iter()
-                .cloned()
-                .map(SqlValue::from)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let mut params = permission_sql.as_ref().map_or_default(|sql| {
+        sql.params
+            .iter()
+            .cloned()
+            .map(SqlValue::from)
+            .collect::<Vec<_>>()
+    });
     let mut sql = permission_sql
         .as_ref()
         .map_or_else(String::new, |sql| sql.cte.clone());

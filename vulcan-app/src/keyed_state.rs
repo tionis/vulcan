@@ -596,8 +596,10 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    // Passed where the map's key type `&String` is expected, so not `&str`.
+    #[allow(clippy::ptr_arg)]
     fn claims(value: &String) -> Vec<String> {
-        vec![value.to_string()]
+        vec![value.clone()]
     }
 
     #[test]

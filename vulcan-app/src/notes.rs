@@ -368,14 +368,13 @@ pub fn build_note_info_report(
         .frontmatter
         .as_ref()
         .and_then(|frontmatter| frontmatter.as_mapping())
-        .map(|mapping| {
+        .map_or_default(|mapping| {
             mapping
                 .keys()
                 .filter_map(|value| value.as_str())
                 .map(ToOwned::to_owned)
                 .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+        });
     frontmatter_keys.sort();
 
     let modified_at_ms = metadata

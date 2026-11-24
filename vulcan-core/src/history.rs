@@ -818,18 +818,13 @@ fn insert_incremental_scan(
                     path: path.clone(),
                     document_kind: kind.into(),
                     content_hash,
-                    link_hash: old
-                        .as_ref()
-                        .map(|state| state.link_hash.clone())
-                        .unwrap_or_default(),
+                    link_hash: old.as_ref().map_or_default(|state| state.link_hash.clone()),
                     property_hash: old
                         .as_ref()
-                        .map(|state| state.property_hash.clone())
-                        .unwrap_or_default(),
+                        .map_or_default(|state| state.property_hash.clone()),
                     embedding_hash: old
                         .as_ref()
-                        .map(|state| state.embedding_hash.clone())
-                        .unwrap_or_default(),
+                        .map_or_default(|state| state.embedding_hash.clone()),
                     orphan,
                     stale: kind == "note"
                         && mtime > 0

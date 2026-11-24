@@ -274,8 +274,7 @@ fn build_tasks_query_result(
     }
 
     let groups = group_field
-        .map(|(field, reverse)| build_groups(&rows, &field, reverse, limit_groups))
-        .unwrap_or_default();
+        .map_or_default(|(field, reverse)| build_groups(&rows, &field, reverse, limit_groups));
     let tasks = rows.into_iter().map(TaskRow::value).collect::<Vec<_>>();
 
     TasksQueryResult {

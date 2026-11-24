@@ -486,8 +486,7 @@ fn verify_signatures(
             })?;
             let verified = BASE64
                 .decode(&signature_record.signature)
-                .ok()
-                .is_some_and(|bytes| {
+                .is_ok_and(|bytes| {
                     if algorithm == ED25519_ALGORITHM {
                         Signature::from_slice(&bytes).is_ok_and(|signature| {
                             verifying_key.verify_strict(payload, &signature).is_ok()

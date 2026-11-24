@@ -866,7 +866,7 @@ fn detail_matches(detail: Option<&Value>, path_by_id: &HashMap<String, String>) 
     let mut matches = detail
         .and_then(|value| value.get("matches"))
         .and_then(Value::as_array)
-        .map(|values| {
+        .map_or_default(|values| {
             values
                 .iter()
                 .filter_map(Value::as_str)
@@ -877,8 +877,7 @@ fn detail_matches(detail: Option<&Value>, path_by_id: &HashMap<String, String>) 
                         .unwrap_or_else(|| value.to_string())
                 })
                 .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+        });
     matches.sort();
     matches
 }

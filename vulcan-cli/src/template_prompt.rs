@@ -122,8 +122,7 @@ fn read_line(input: &mut impl BufRead) -> Result<Option<String>, String> {
 fn default_hint(default: Option<&str>) -> String {
     default
         .filter(|default| !default.is_empty())
-        .map(|default| format!(" [{default}]"))
-        .unwrap_or_default()
+        .map_or_default(|default| format!(" [{default}]"))
 }
 
 fn apply_default(answer: String, default: Option<&str>) -> String {

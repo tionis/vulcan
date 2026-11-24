@@ -69,8 +69,7 @@ impl McpProtocolCore {
             Ok(guard) => guard,
             Err(message) => {
                 return request_id(&request)
-                    .map(|id| vec![jsonrpc_error(id, -32603, message, None)])
-                    .unwrap_or_default();
+                    .map_or_default(|id| vec![jsonrpc_error(id, -32603, message, None)]);
             }
         };
         process_stdio_request(self, request)

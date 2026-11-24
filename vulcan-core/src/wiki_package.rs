@@ -332,8 +332,7 @@ impl WikiPackage {
     pub fn content_members(&self) -> Vec<WikiContentMember> {
         self.manifest
             .as_ref()
-            .map(WikiPackageManifest::content_members)
-            .unwrap_or_default()
+            .map_or_default(WikiPackageManifest::content_members)
     }
 }
 

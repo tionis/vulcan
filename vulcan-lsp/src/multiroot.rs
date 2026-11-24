@@ -478,8 +478,7 @@ impl Mux<'_> {
                 let id = serde_json::from_value::<RequestId>(params["id"].clone()).ok();
                 let vaults = id
                     .and_then(|id| self.pending.get(&id))
-                    .map(|pending| pending.vaults.clone())
-                    .unwrap_or_default();
+                    .map_or_default(|pending| pending.vaults.clone());
                 for index in vaults {
                     self.notify(index, &notification.method, params.clone());
                 }

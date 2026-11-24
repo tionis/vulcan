@@ -174,15 +174,13 @@ pub fn execute_conflict_worker_pass(
         }
     };
     let active = supervisor.list().unwrap_or_default();
-    let previous = previous
-        .map(|status| {
-            status
-                .entries
-                .iter()
-                .map(|entry| (entry.wiki_id.as_str(), entry))
-                .collect::<BTreeMap<_, _>>()
-        })
-        .unwrap_or_default();
+    let previous = previous.map_or_default(|status| {
+        status
+            .entries
+            .iter()
+            .map(|entry| (entry.wiki_id.as_str(), entry))
+            .collect::<BTreeMap<_, _>>()
+    });
     let entries = config
         .wikis
         .iter()

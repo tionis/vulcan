@@ -1086,11 +1086,7 @@ impl ConfigTuiState {
             );
             return;
         }
-        let mut value = entry
-            .default_value
-            .as_ref()
-            .map(toml_literal)
-            .unwrap_or_default();
+        let mut value = entry.default_value.as_ref().map_or_default(toml_literal);
         if value.is_empty() {
             value = match entry.kind {
                 crate::app_config::ConfigValueKind::Object => "{}".to_string(),
@@ -2237,30 +2233,32 @@ fn editor_buffer(editor: &ValueEditorMode, current: Option<&TomlValue>) -> Strin
                     .map(ToOwned::to_owned)
             })
             .unwrap_or_default(),
-        ValueEditorMode::StringList => current
-            .and_then(|value| value.as_array())
-            .map(|values| {
-                values
-                    .iter()
-                    .map(|value| {
-                        value
-                            .as_str()
-                            .map_or_else(|| toml_literal(value), ToOwned::to_owned)
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            })
-            .unwrap_or_default(),
-        ValueEditorMode::ScalarMap => current
-            .and_then(|value| value.as_table())
-            .map(|table| {
-                table
-                    .iter()
-                    .map(|(key, value)| format!("{key}={}", toml_literal(value)))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            })
-            .unwrap_or_default(),
+        ValueEditorMode::StringList => {
+            current
+                .and_then(|value| value.as_array())
+                .map_or_default(|values| {
+                    values
+                        .iter()
+                        .map(|value| {
+                            value
+                                .as_str()
+                                .map_or_else(|| toml_literal(value), ToOwned::to_owned)
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+        }
+        ValueEditorMode::ScalarMap => {
+            current
+                .and_then(|value| value.as_table())
+                .map_or_default(|table| {
+                    table
+                        .iter()
+                        .map(|(key, value)| format!("{key}={}", toml_literal(value)))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+        }
         ValueEditorMode::TemplateRules(_) => String::new(),
     }
 }

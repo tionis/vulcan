@@ -357,6 +357,8 @@ fn with_basic_challenge(mut response: Response) -> Response {
 /// The principal a request's credential proves: the companion credential
 /// acts for the device, an API token for its registration, and a feed token
 /// for its registration's calendar feed.
+// The error is the axum response sent to the client as is.
+#[allow(clippy::result_large_err)]
 async fn resolve_principal(
     state: &CompanionHttpState,
     presented: Option<PresentedCredential>,

@@ -71,7 +71,7 @@ pub const FOREIGN_BRIDGE_ALERT: u32 = 3;
 
 /// How long the branch lane may defer to uncommitted edits before the
 /// wiki needs someone.
-pub const BRANCH_DEFERRAL_ALERT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+pub const BRANCH_DEFERRAL_ALERT: std::time::Duration = std::time::Duration::from_mins(30);
 
 impl SyncAlert {
     #[must_use]

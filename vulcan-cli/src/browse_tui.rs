@@ -1229,7 +1229,7 @@ impl BrowseState {
                 Verbosity::Normal,
             )
             .map(|_| ())
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.clone())
     }
 
     #[allow(clippy::too_many_lines)]
@@ -2271,8 +2271,7 @@ impl BrowseState {
             .path
             .as_deref()
             .and_then(|path| Path::new(path).parent())
-            .map(Path::to_path_buf)
-            .unwrap_or_default();
+            .map_or_default(Path::to_path_buf);
         let candidates = [
             note_dir.join(&source),
             PathBuf::from(&source),
@@ -2341,14 +2340,13 @@ impl BrowseState {
             .layout
             .borrow()
             .as_ref()
-            .map(|layout| {
+            .map_or_default(|layout| {
                 layout
                     .links
                     .iter()
                     .map(|link| (link.segments[0].0, link.target.clone()))
                     .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+            });
         if link_lines.is_empty() {
             self.set_status("No links in this preview.");
             return;

@@ -31,8 +31,7 @@ fn pin_profiles(vault_root: &Path) {
     let local_path = vault_root.join(".vulcan/config.local.toml");
     let mut local: toml::Table = fs::read_to_string(&local_path)
         .ok()
-        .map(|text| toml::from_str(&text).expect("local config parses"))
-        .unwrap_or_default();
+        .map_or_default(|text| toml::from_str(&text).expect("local config parses"));
     match shared.get("permissions") {
         Some(permissions) => {
             local.insert("permissions".to_string(), permissions.clone());
@@ -885,8 +884,7 @@ fn write_skill_command_tool(
     let scripts_dir = skill_dir.join("scripts");
     fs::create_dir_all(&scripts_dir).expect("skill scripts dir should be created");
     let permission_profile = permission_profile
-        .map(|profile| format!("        permission_profile: {profile}\n"))
-        .unwrap_or_default();
+        .map_or_default(|profile| format!("        permission_profile: {profile}\n"));
     fs::write(
         skill_dir.join("SKILL.md"),
         format!(
@@ -39562,7 +39560,7 @@ fn schedule_commands_list_preview_run_and_toggle_vault_jobs() {
         .unwrap()
         .clone();
     assert_eq!(rescan["placement"], "disabled");
-    assert!(json(&["enable", "rescan", "--dry-run"])["dry_run"] == true);
+    assert_eq!(json(&["enable", "rescan", "--dry-run"])["dry_run"], true);
 
     cargo_vulcan_with_xdg_config(&config_home)
         .arg("--vault")

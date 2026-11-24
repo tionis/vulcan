@@ -257,7 +257,7 @@ fn print_bot_status(output: OutputFormat, report: &TelegramBotReport) -> Result<
             transcription
                 .api_key_env
                 .as_deref()
-                .map(|name| format!(
+                .map_or_default(|name| format!(
                     ", key {name} {}",
                     if transcription.api_key_set {
                         "set"
@@ -265,7 +265,6 @@ fn print_bot_status(output: OutputFormat, report: &TelegramBotReport) -> Result<
                         "NOT set"
                     }
                 ))
-                .unwrap_or_default()
         );
     }
     if report.users.is_empty() {
@@ -280,14 +279,12 @@ fn print_bot_status(output: OutputFormat, report: &TelegramBotReport) -> Result<
                 user.profile,
                 user.default_vault
                     .as_deref()
-                    .map(|vault| format!(", default {vault}"))
-                    .unwrap_or_default(),
+                    .map_or_default(|vault| format!(", default {vault}")),
                 if user.reminders { ", reminders" } else { "" },
                 if user.alerts { ", alerts" } else { "" },
                 user.digest
                     .as_deref()
-                    .map(|time| format!(", digest {time}"))
-                    .unwrap_or_default(),
+                    .map_or_default(|time| format!(", digest {time}")),
             );
         }
     }
@@ -302,8 +299,7 @@ fn print_bot_status(output: OutputFormat, report: &TelegramBotReport) -> Result<
         status
             .bot_username
             .as_deref()
-            .map(|name| format!(" as @{name}"))
-            .unwrap_or_default()
+            .map_or_default(|name| format!(" as @{name}"))
     );
     if let Some(at) = status.last_poll_ms {
         println!(
@@ -411,8 +407,7 @@ fn print_auto_commit_status(
                     report
                         .fallback
                         .as_deref()
-                        .map(|reason| format!("; fell back: {reason}"))
-                        .unwrap_or_default()
+                        .map_or_default(|reason| format!("; fell back: {reason}"))
                 );
             } else if let Some(error) = &latest.error {
                 println!("  last batch failed: {error}");

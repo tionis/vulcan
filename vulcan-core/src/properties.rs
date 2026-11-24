@@ -267,8 +267,7 @@ pub fn extract_indexed_properties(
     let mut merged_properties = parsed
         .frontmatter
         .as_ref()
-        .map(yaml_to_json_object)
-        .unwrap_or_default();
+        .map_or_default(yaml_to_json_object);
     let mut inline_json_values: BTreeMap<String, Vec<Value>> = BTreeMap::new();
 
     if let Some(mapping) = parsed
@@ -1333,9 +1332,7 @@ pub(crate) fn scoped_identity_rows(
     filter: Option<&PermissionFilter>,
     since: Option<i64>,
 ) -> Result<Vec<crate::note_lookup::IndexedIdentity>, PropertyError> {
-    let permission_sql = filter
-        .map(PermissionFilter::note_query_scope_condition)
-        .unwrap_or_default();
+    let permission_sql = filter.map_or_default(PermissionFilter::note_query_scope_condition);
     let mut sql = String::from(
         "SELECT note_query.path, note_query.filename, note_query.aliases, \
          note_query.row_version, note_query.document_id FROM note_query WHERE 1 = 1",
@@ -1375,9 +1372,7 @@ pub(crate) fn count_scoped_identities(
     database: &CacheDatabase,
     filter: Option<&PermissionFilter>,
 ) -> Result<usize, PropertyError> {
-    let permission_sql = filter
-        .map(PermissionFilter::note_query_scope_condition)
-        .unwrap_or_default();
+    let permission_sql = filter.map_or_default(PermissionFilter::note_query_scope_condition);
     let sql = format!(
         "SELECT count(*) FROM note_query WHERE 1 = 1{}",
         permission_sql.clause
@@ -1698,9 +1693,8 @@ fn load_note_index_with_read_scope(
     let bookmarked_paths = load_bookmarked_paths(paths.vault_root());
     let vault_root = paths.vault_root().to_path_buf();
     let config = crate::load_vault_config(paths).config;
-    let permission_sql = filter
-        .map(|filter| filter.document_scope_sql("_note_index_permission"))
-        .unwrap_or_default();
+    let permission_sql =
+        filter.map_or_default(|filter| filter.document_scope_sql("_note_index_permission"));
     let mut sql = permission_sql.cte;
     let _ = write!(
         sql,
@@ -1947,10 +1941,9 @@ fn hydrate_note_records(
     // scopes them over the narrow table.
     let permission_sql = filter
         .filter(|_| readable_sources.is_none())
-        .map(|filter| {
+        .map_or_default(|filter| {
             filter.note_query_scope_sql("_inlink_source_permission", "note_query.document_id")
-        })
-        .unwrap_or_default();
+        });
     let inlink_sql = inlink_sql(&permission_sql.cte, &permission_sql.clause);
     let inlink_params = permission_sql
         .params

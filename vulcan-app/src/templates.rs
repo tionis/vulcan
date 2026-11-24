@@ -109,16 +109,12 @@ fn write_template_result_with_staged_creates(
         )
         .collect::<Vec<_>>();
     let mut renames = BTreeMap::new();
-    let refactor_paths = staged
-        .moved
-        .as_ref()
-        .map(|plan| {
-            plan.changes
-                .iter()
-                .map(|change| change.path.clone())
-                .collect::<BTreeSet<_>>()
-        })
-        .unwrap_or_default();
+    let refactor_paths = staged.moved.as_ref().map_or_default(|plan| {
+        plan.changes
+            .iter()
+            .map(|change| change.path.clone())
+            .collect::<BTreeSet<_>>()
+    });
     if let Some(mut moved) = staged.moved {
         if moved.summary.destination_path != path {
             return Err(AppError::operation(
@@ -2596,8 +2592,7 @@ impl<'a> TemplateSession<'a> {
     fn relative_folder(&self) -> String {
         Path::new(&self.target_path)
             .parent()
-            .map(|parent| parent.to_string_lossy().replace('\\', "/"))
-            .unwrap_or_default()
+            .map_or_default(|parent| parent.to_string_lossy().replace('\\', "/"))
     }
 
     fn current_tags(&self) -> Vec<String> {
@@ -3808,8 +3803,7 @@ fn templater_file_path(paths: &VaultPaths, target_path: &str, relative: bool) ->
 fn templater_file_folder(target_path: &str, absolute: bool) -> String {
     let folder = Path::new(target_path)
         .parent()
-        .map(|parent| parent.to_string_lossy().replace('\\', "/"))
-        .unwrap_or_default();
+        .map_or_default(|parent| parent.to_string_lossy().replace('\\', "/"));
     if absolute {
         folder
     } else {
@@ -4015,8 +4009,7 @@ fn js_file_rename(state: &mut JsTemplateState, args: &[JsonValue]) -> Result<(),
     }
     let folder = Path::new(&state.target_path)
         .parent()
-        .map(|parent| parent.to_string_lossy().replace('\\', "/"))
-        .unwrap_or_default();
+        .map_or_default(|parent| parent.to_string_lossy().replace('\\', "/"));
     let target = if folder.is_empty() {
         format!("{name}.md")
     } else {
@@ -4028,10 +4021,7 @@ fn js_file_rename(state: &mut JsTemplateState, args: &[JsonValue]) -> Result<(),
 #[cfg(feature = "js_runtime")]
 fn js_system_prompt(state: &mut JsTemplateState, args: &[JsonValue]) -> Result<JsonValue, String> {
     state.prompt_count += 1;
-    let message = args
-        .first()
-        .map(json_value_to_js_string)
-        .unwrap_or_default();
+    let message = args.first().map_or_default(json_value_to_js_string);
     let default = args
         .get(1)
         .filter(|value| !value.is_null())
@@ -4062,12 +4052,11 @@ fn js_system_suggester(
     let strings = |index: usize| -> Vec<String> {
         args.get(index)
             .and_then(JsonValue::as_array)
-            .map(|values| values.iter().map(json_value_to_js_string).collect())
-            .unwrap_or_default()
+            .map_or_default(|values| values.iter().map(json_value_to_js_string).collect())
     };
     let options = strings(0);
     let item_keys = strings(1);
-    let placeholder = args.get(3).map(json_value_to_js_string).unwrap_or_default();
+    let placeholder = args.get(3).map_or_default(json_value_to_js_string);
     let call = prompt::SuggestCall {
         options: &options,
         item_keys: &item_keys,
@@ -4158,11 +4147,11 @@ fn js_app_call(
             if js_app_resolve(state, &normalized).is_some() {
                 return Err(format!("File already exists: {normalized}"));
             }
-            let content = args.get(1).map(json_value_to_js_string).unwrap_or_default();
+            let content = args.get(1).map_or_default(json_value_to_js_string);
             js_write_new_note(state, &normalized, content)
         }
         "app.modify" => {
-            let content = args.get(1).map(json_value_to_js_string).unwrap_or_default();
+            let content = args.get(1).map_or_default(json_value_to_js_string);
             js_app_require_target_in_hooks(state, path_arg(), "app.vault.modify()")?;
             state.target_contents = content;
             Ok(JsonValue::Null)
@@ -5698,8 +5687,7 @@ fn file_object_json(path: &str) -> JsonMap<String, JsonValue> {
         .to_string();
     let folder = Path::new(&relative)
         .parent()
-        .map(|parent| parent.to_string_lossy().replace('\\', "/"))
-        .unwrap_or_default();
+        .map_or_default(|parent| parent.to_string_lossy().replace('\\', "/"));
     let name = Path::new(&relative)
         .file_name()
         .and_then(|name| name.to_str())

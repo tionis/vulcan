@@ -132,23 +132,21 @@ pub fn telegram_bot_report(
         configured: telegram.is_some(),
         token_env: telegram.map(|telegram| telegram.token_env.clone()),
         token_set: telegram.and_then(telegram_bot_token).is_some(),
-        users: telegram
-            .map(|telegram| {
-                telegram
-                    .users
-                    .iter()
-                    .map(|user| TelegramBotUserSummary {
-                        telegram_id: user.telegram_id,
-                        vaults: user.vaults.iter().map(ToString::to_string).collect(),
-                        default_vault: user.default_vault.as_ref().map(ToString::to_string),
-                        profile: user.profile.clone(),
-                        reminders: user.reminders,
-                        alerts: user.alerts,
-                        digest: user.digest.clone(),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
+        users: telegram.map_or_default(|telegram| {
+            telegram
+                .users
+                .iter()
+                .map(|user| TelegramBotUserSummary {
+                    telegram_id: user.telegram_id,
+                    vaults: user.vaults.iter().map(ToString::to_string).collect(),
+                    default_vault: user.default_vault.as_ref().map(ToString::to_string),
+                    profile: user.profile.clone(),
+                    reminders: user.reminders,
+                    alerts: user.alerts,
+                    digest: user.digest.clone(),
+                })
+                .collect()
+        }),
         status: read_telegram_bot_status(state_root)?,
         reminders: if ChatStateStore::path(state_root).is_file() {
             ChatStateStore::open(state_root)
@@ -895,8 +893,7 @@ impl Bot<'_> {
     ) -> ChatReply {
         let current = self
             .active_vault(user, chat_id)
-            .map(|(_, id)| id)
-            .unwrap_or_default();
+            .map_or_default(|(_, id)| id);
         let Some(name) = name else {
             let vaults = user
                 .vaults

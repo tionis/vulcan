@@ -1391,7 +1391,7 @@ mod tests {
             report.identity.device_id.as_deref() == Some(id)
                 && report.identity.status == DeviceIdentityStatus::Ready
         }));
-        assert!(reports.iter().filter(|report| report.created).count() == 1);
+        assert_eq!(reports.iter().filter(|report| report.created).count(), 1);
         let before = fs::read(store.directory.join(PRIVATE_KEY_FILE)).expect("key before");
         let repeated = store.initialize(false).expect("repeated init");
         let after = fs::read(store.directory.join(PRIVATE_KEY_FILE)).expect("key after");

@@ -1062,7 +1062,7 @@ mod tests {
         assert!(!review.recoverable);
         assert_eq!(review.changes[0].state, "after");
         assert_eq!(review.changes[1].state, "diverged");
-        assert!(!review.review_token.is_empty());
+        assert_ne!(review.review_token, "");
         assert!(
             accept_current_ordinary_write_batch(
                 &paths,

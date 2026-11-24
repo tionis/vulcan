@@ -42,8 +42,7 @@ const OPEN_CONFLICTS_DIR: &str = "open-conflicts";
 const CLOSED_CONFLICTS_DIR: &str = "closed-conflicts";
 /// Closed conflicts move to the archive this long after they were found
 /// resolved or superseded.
-pub const CONFLICT_ARCHIVE_AFTER: std::time::Duration =
-    std::time::Duration::from_secs(30 * 24 * 60 * 60);
+pub const CONFLICT_ARCHIVE_AFTER: std::time::Duration = std::time::Duration::from_hours(720);
 /// At most this many conflicts move per archive run, bounding each run.
 const MAX_ARCHIVED_PER_RUN: usize = 256;
 /// Device-local mirror of the archive's conflict count, so listings report

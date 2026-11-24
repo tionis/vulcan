@@ -156,8 +156,7 @@ fn template_note_path(
         .folder
         .folders
         .first()
-        .map(|folder| folder.to_string_lossy().trim_matches('/').to_string())
-        .unwrap_or_default();
+        .map_or_default(|folder| folder.to_string_lossy().trim_matches('/').to_string());
     note_path(&if folder.is_empty() {
         name
     } else {

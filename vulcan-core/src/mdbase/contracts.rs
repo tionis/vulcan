@@ -105,8 +105,7 @@ impl MdbaseContractRegistry {
                 id: id.to_string(),
                 version: version.to_string(),
             })
-            .map(Vec::as_slice)
-            .unwrap_or_default()
+            .map_or_default(Vec::as_slice)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &MdbaseContractDefinition> {

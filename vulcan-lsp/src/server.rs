@@ -351,7 +351,7 @@ impl From<&lsp::ClientCapabilities> for ClientFeatures {
             refresh: capabilities
                 .workspace
                 .as_ref()
-                .map(|workspace| RefreshSupport {
+                .map_or_default(|workspace| RefreshSupport {
                     code_lens: workspace
                         .code_lens
                         .as_ref()
@@ -373,8 +373,7 @@ impl From<&lsp::ClientCapabilities> for ClientFeatures {
                         .and_then(|diagnostic| diagnostic.refresh_support)
                         .unwrap_or(false),
                     workspace_diagnostics_pulled: false,
-                })
-                .unwrap_or_default(),
+                }),
         }
     }
 }

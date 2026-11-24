@@ -258,8 +258,7 @@ fn request_tokens(
     if let Some(error) = parsed.error {
         let detail = parsed
             .error_description
-            .map(|description| format!(": {}", sanitize(&description)))
-            .unwrap_or_default();
+            .map_or_default(|description| format!(": {}", sanitize(&description)));
         return Err(AppError::operation(format!(
             "the forge refused the token request ({}){detail}",
             sanitize(&error)
@@ -345,8 +344,7 @@ fn wait_for_callback(
                 "Login was not approved. You can close this tab.",
             );
             let detail = value("error_description")
-                .map(|description| format!(": {}", sanitize(description)))
-                .unwrap_or_default();
+                .map_or_default(|description| format!(": {}", sanitize(description)));
             return Err(AppError::operation(format!(
                 "the forge reported an error ({}){detail}",
                 sanitize(error)

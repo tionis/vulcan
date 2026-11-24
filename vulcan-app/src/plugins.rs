@@ -383,9 +383,7 @@ fn resolve_plugin_descriptor(
         exists: absolute_path.is_file(),
         registered: registration.is_some(),
         enabled: registration.is_some_and(|plugin| plugin.enabled),
-        events: registration
-            .map(|plugin| plugin.events.clone())
-            .unwrap_or_default(),
+        events: registration.map_or_default(|plugin| plugin.events.clone()),
         sandbox: registration.and_then(|plugin| plugin.sandbox),
         permission_profile: registration.and_then(|plugin| plugin.permission_profile.clone()),
         description: registration.and_then(|plugin| plugin.description.clone()),

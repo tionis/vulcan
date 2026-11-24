@@ -438,8 +438,7 @@ fn publish_followed(
     let generation = tracker.mark_dirty()?;
     let paths = report
         .filter(|report| !report.startup)
-        .map(|report| report.paths.iter().cloned().collect())
-        .unwrap_or_default();
+        .map_or_default(|report| report.paths.iter().cloned().collect());
     let event =
         PostScanEvent::new(generation, paths, Vec::new()).map_err(|error| error.to_string())?;
     tracker.complete(&ScanCompletion {
@@ -546,8 +545,7 @@ fn run_incremental_scan(
     let errors = result
         .as_ref()
         .err()
-        .map(|error| vec![bounded_error(error)])
-        .unwrap_or_default();
+        .map_or_default(|error| vec![bounded_error(error)]);
     let event = PostScanEvent::new(generation, changed_paths, errors.clone())
         .map_err(|error| error.to_string())?;
     let completion = ScanCompletion {

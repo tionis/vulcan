@@ -2146,14 +2146,13 @@ fn collect_tag_and_folder_dependents(
     for source_path in direct_changed {
         let previous_tags = cached_by_path
             .get(source_path.as_str())
-            .map(|note| {
+            .map_or_default(|note| {
                 note.rendered
                     .tags
                     .iter()
                     .map(|tag| normalize_tag(tag))
                     .collect::<HashSet<_>>()
-            })
-            .unwrap_or_default();
+            });
         let previous_folder = cached_by_path
             .get(source_path.as_str())
             .map(|note| folder_for_note(&note.source_path));
@@ -3196,16 +3195,13 @@ fn render_document_shell(
         String::new()
     };
     let canonical = canonical_url
-        .map(|url| format!("<link rel=\"canonical\" href=\"{}\" />", escape_html(url)))
-        .unwrap_or_default();
-    let og_url = canonical_url
-        .map(|url| {
-            format!(
-                "<meta property=\"og:url\" content=\"{}\" />",
-                escape_html(url)
-            )
-        })
-        .unwrap_or_default();
+        .map_or_default(|url| format!("<link rel=\"canonical\" href=\"{}\" />", escape_html(url)));
+    let og_url = canonical_url.map_or_default(|url| {
+        format!(
+            "<meta property=\"og:url\" content=\"{}\" />",
+            escape_html(url)
+        )
+    });
     let summary_image = summary_image_url.map_or_else(
         || "<meta name=\"twitter:card\" content=\"summary\" />".to_string(),
         |url| {

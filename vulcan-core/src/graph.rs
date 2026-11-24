@@ -2214,9 +2214,8 @@ fn load_resolution_candidates(
         (scope.cte.clone(), scope.clause.clone())
     });
     let sql = resolution_candidate_sql(&cte, &clause);
-    let mut values: Vec<Option<String>> = scope
-        .map(|scope| scope.params.iter().cloned().map(Some).collect())
-        .unwrap_or_default();
+    let mut values: Vec<Option<String>> =
+        scope.map_or_default(|scope| scope.params.iter().cloned().map(Some).collect());
     values.extend([
         Some(lower.clone()),
         Some(with_extension),

@@ -369,7 +369,7 @@ fn answers_allowlisted_users_and_ignores_everyone_else() {
     assert_eq!(status.bot_username.as_deref(), Some("VaultBot"));
     assert_eq!(status.rejected_users.get(&STRANGER), Some(&2));
     assert_eq!(status.handled_updates, 8);
-    assert!(fake.calls("setMyCommands").len() == 1);
+    assert_eq!(fake.calls("setMyCommands").len(), 1);
 
     // The offset survives a restart, so nothing is handled twice.
     let state = ChatStateStore::open(&fixture.state).unwrap();

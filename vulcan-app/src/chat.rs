@@ -628,8 +628,7 @@ fn sanitize_file_name(name: &str) -> String {
     if clean.chars().count() > 100 {
         let extension = clean
             .rsplit_once('.')
-            .map(|(_, extension)| extension.chars().take(10).collect::<String>())
-            .unwrap_or_default();
+            .map_or_default(|(_, extension)| extension.chars().take(10).collect::<String>());
         let stem = clean.chars().take(88).collect::<String>();
         clean = if extension.is_empty() {
             stem
