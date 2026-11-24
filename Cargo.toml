@@ -82,3 +82,12 @@ assert_is_empty = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 
+# Debug builds keep line tables (backtraces and panics still show file:line)
+# but no full debug info, and dependencies none at all. Full debug info made
+# every test binary about 840 MiB; set `debug = true` locally to step through
+# code in a debugger.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
