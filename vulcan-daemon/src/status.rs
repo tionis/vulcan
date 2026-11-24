@@ -152,6 +152,20 @@ fn reconstruct_sync_status(
     {
         return Ok(report_from_active_job(registration, job));
     }
+    if registration.sync_backend.as_deref() == Some("none") {
+        // Vulcan does not sync this wiki, so sync state left behind from an
+        // earlier registration (a recovery journal, conflict records) says
+        // nothing about it.
+        let mut report = base_report(
+            registration,
+            DaemonSyncStatusSource::Registration,
+            SyncState::Clean,
+            0,
+            Some("not synchronized by Vulcan (registered with --no-sync)".to_string()),
+        );
+        report.status.backend = "none".to_string();
+        return Ok(report);
+    }
 
     let repository_key = repository_state_key(&registration.path);
     let journal = state_store
@@ -736,6 +750,26 @@ mod tests {
             report.transaction_id,
             Some(journal.transaction_id.to_string().to_ascii_lowercase())
         );
+    }
+
+    #[test]
+    fn a_wiki_registered_without_sync_ignores_leftover_sync_state() {
+        let (_temporary, registry, _supervisor, state_store, id) = setup();
+        let mut registration = registry.show(&id).expect("registration").registration;
+        let mut journal = SyncJournal::preparing(&registration.path, "origin", "refs/heads/live")
+            .expect("journal");
+        journal.phase = SyncJournalPhase::Error;
+        journal.error = Some("not a git repository".to_string());
+        state_store.save(&journal).expect("save journal");
+        registration.sync_backend = Some("none".to_string());
+
+        let report = SyncStatusInputs::new(&[])
+            .status(&registration, &state_store)
+            .expect("sync status");
+        assert_eq!(report.status.state, SyncState::Clean);
+        assert_eq!(report.source, DaemonSyncStatusSource::Registration);
+        assert_eq!(report.status.backend, "none");
+        assert!(!report.recovery_required);
     }
 
     #[test]
