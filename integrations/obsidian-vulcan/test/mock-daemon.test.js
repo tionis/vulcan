@@ -28,9 +28,6 @@ test("client completes status, sync, conflict review, preview, and apply against
       response.end(JSON.stringify({ count: 1, conflicts: [{ id: "conflict-1", paths: ["Note.md"] }] }));
     } else if (request.url === "/wiki/sync/conflicts/conflict-1") {
       response.end(JSON.stringify({ record: { id: "conflict-1", paths: [{ path: "Note.md" }] }, resolution: "unresolved" }));
-    } else if (request.url === "/wiki/sync/conflicts/conflict-1/resolve") {
-      const input = JSON.parse(body);
-      response.end(JSON.stringify({ conflict_id: "conflict-1", side: input.side, dry_run: input.dry_run }));
     } else {
       response.statusCode = 404;
       response.end(JSON.stringify({ version: 1, kind: "not_found", detail: "missing" }));
@@ -59,18 +56,10 @@ test("client completes status, sync, conflict review, preview, and apply against
   assert.equal((await client.sync("wiki")).job.id, "job-1");
   assert.equal((await client.conflicts("wiki")).count, 1);
   assert.equal((await client.conflict("wiki", "conflict-1")).record.id, "conflict-1");
-  assert.equal((await client.resolveConflict("wiki", "conflict-1", "local", true)).dry_run, true);
-  assert.equal((await client.resolveConflict("wiki", "conflict-1", "local", false)).dry_run, false);
+  assert.equal(client.resolveConflict, undefined);
 
   assert.equal(requests[0].headers["vulcan-protocol-version"], "1");
   assert.equal(requests[1].headers["idempotency-key"], "obsidian-mock-job");
-  assert.deepEqual(
-    requests.slice(-2).map((request) => JSON.parse(request.body)),
-    [
-      { side: "local", dry_run: true },
-      { side: "local", dry_run: false },
-    ],
-  );
 });
 
 function readBody(request) {

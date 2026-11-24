@@ -103,17 +103,6 @@ class VulcanCompanionClient {
     );
   }
 
-  resolveConflict(wiki, conflict, side, dryRun) {
-    if (!["base", "local", "remote"].includes(side)) {
-      throw new Error("conflict side must be base, local, or remote");
-    }
-    return this.request(
-      "POST",
-      `/${segment(wiki)}/sync/conflicts/${segment(conflict)}/resolve`,
-      { side, dry_run: Boolean(dryRun) },
-    );
-  }
-
   connectEvents({ onSnapshot, onError, onClose }) {
     if (typeof this.WebSocketCtor !== "function") {
       throw new Error("WebSocket event transport is unavailable");

@@ -58,22 +58,6 @@ test("manual sync carries authentication, protocol, and idempotency contracts", 
   }]);
 });
 
-test("conflict resolution always uses an explicit side and dry-run value", async () => {
-  const calls = [];
-  const client = new VulcanCompanionClient({
-    baseUrl: "http://localhost:3210",
-    token: TOKEN,
-    request: async (request) => {
-      calls.push(request);
-      return { status: 200, json: { dry_run: true } };
-    },
-  });
-  await client.resolveConflict("wiki", "conflict/id", "local", true);
-  assert.equal(calls[0].url, "http://localhost:3210/wiki/sync/conflicts/conflict%2Fid/resolve");
-  assert.equal(calls[0].body, JSON.stringify({ side: "local", dry_run: true }));
-  assert.throws(() => client.resolveConflict("wiki", "id", "winner", false), /base, local, or remote/);
-});
-
 test("versioned daemon errors remain typed and do not expose response bodies", async () => {
   const client = new VulcanCompanionClient({
     baseUrl: "http://127.0.0.1:3210",

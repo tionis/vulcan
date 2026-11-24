@@ -99,16 +99,6 @@ var require_protocol = __commonJS({
           `/${segment(wiki)}/sync/conflicts/${segment(conflict)}`
         );
       }
-      resolveConflict(wiki, conflict, side, dryRun) {
-        if (!["base", "local", "remote"].includes(side)) {
-          throw new Error("conflict side must be base, local, or remote");
-        }
-        return this.request(
-          "POST",
-          `/${segment(wiki)}/sync/conflicts/${segment(conflict)}/resolve`,
-          { side, dry_run: Boolean(dryRun) }
-        );
-      }
       connectEvents({ onSnapshot, onError, onClose }) {
         if (typeof this.WebSocketCtor !== "function") {
           throw new Error("WebSocket event transport is unavailable");
@@ -800,63 +790,9 @@ var ConflictDetailModal = class extends Modal {
       list.createEl("li", { text: typeof entry === "string" ? entry : entry.path });
     }
     this.contentEl.createEl("p", {
-      text: "Choosing a preserved side is potentially lossy. Preview is mandatory; applying requires a second explicit action.",
+      text: "This record was kept from Vulcan's removed whole-worktree sync and can no longer be resolved. Its preserved sides stay readable with `vulcan sync conflicts " + record.id + "`; restore anything you need with Git, then archive the record with `vulcan sync conflicts-archive --include-open`.",
       cls: "mod-warning"
     });
-    for (const side of ["base", "local", "remote"]) {
-      new Setting(this.contentEl).setName(`Use ${side} side`).addButton((button) => button.setButtonText("Preview").onClick(() => void this.preview(side)));
-    }
-  }
-  async preview(side) {
-    try {
-      const record = this.report.record || this.report.conflict || this.report;
-      const preview = await this.client.resolveConflict(
-        this.plugin.settings.wikiId,
-        record.id,
-        side,
-        true
-      );
-      new ResolutionPreviewModal(this.app, this.plugin, this.client, record.id, side, preview).open();
-    } catch (error) {
-      this.plugin.handleError(error, true);
-    }
-  }
-  onClose() {
-    this.contentEl.empty();
-  }
-};
-var ResolutionPreviewModal = class extends Modal {
-  constructor(app, plugin, client, conflictId, side, preview) {
-    super(app);
-    this.plugin = plugin;
-    this.client = client;
-    this.conflictId = conflictId;
-    this.side = side;
-    this.preview = preview;
-  }
-  onOpen() {
-    this.contentEl.createEl("h2", { text: `Resolution preview: ${this.side}` });
-    this.contentEl.createEl("pre", {
-      text: JSON.stringify(this.preview, null, 2),
-      cls: "vulcan-companion-preview"
-    });
-    new Setting(this.contentEl).setName("Apply this exact reviewed side").setDesc("Vulcan will rerun stale-input, lease, recovery, whole-tree, and worktree checks.").addButton((button) => button.setButtonText("Apply resolution").setWarning().onClick(async () => {
-      button.setDisabled(true);
-      try {
-        await this.client.resolveConflict(
-          this.plugin.settings.wikiId,
-          this.conflictId,
-          this.side,
-          false
-        );
-        new Notice("Vulcan conflict resolution applied");
-        this.close();
-        await this.plugin.refreshStatus(false);
-      } catch (error) {
-        button.setDisabled(false);
-        this.plugin.handleError(error, true);
-      }
-    }));
   }
   onClose() {
     this.contentEl.empty();

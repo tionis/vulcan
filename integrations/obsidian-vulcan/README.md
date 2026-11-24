@@ -2,8 +2,8 @@
 
 This is a thin client for Vulcan's authenticated loopback companion protocol. It displays the
 selected wiki's synchronization state, requests finite sync jobs, can debounce completed Obsidian
-vault writes into sync triggers, and provides a dry-run-first UI for choosing a preserved conflict
-side. It never invokes Git, moves Vulcan refs, or implements its own synchronization state machine.
+vault writes into sync triggers, and lists conflict records kept from Vulcan's removed
+whole-worktree sync. It never invokes Git, moves Vulcan refs, or implements its own synchronization state machine.
 
 ## Installation
 
@@ -30,8 +30,8 @@ and mobile; Android still needs a reachable Vulcan daemon running in Termux or a
 bridge. One-shot `vulcan sync run` remains available without this plugin or the daemon.
 
 The companion follows the registered directory profile. For `files-only`, it supports sync status,
-sync requests, and review of preserved file conflicts. The profile disables indexing, scripts,
-semantic history, and agent conflict resolution. Full-tree materialization is the current sync
+sync requests, and listing of retained conflict records. The profile disables indexing, scripts,
+and agent services. Full-tree materialization is the current sync
 contract; selecting files-only does not enable sparse checkout or partial clone. Unattended
 files-only sync applies conservative Git repository checks, but Vulcan cannot lock out external
 Git processes, so branch switches and Git operations must stay clear while a job runs.
@@ -66,11 +66,11 @@ failure. Disable **Notify on failed synchronization** to suppress every failure 
 
 ## Conflict review
 
-Run **Vulcan Companion: Review synchronization conflicts**, select a preserved conflict, and choose
-which side to preview. The first request is always `dry_run: true`. The preview modal exposes a
-separate warning-styled apply button, and Vulcan reruns its ordinary stale-input, recovery, lease,
-whole-tree, and worktree checks before accepting anything. The plugin never selects a side by
-default and does not expose an arbitrary Git command.
+Sync no longer records conflicts: a branch it cannot reconcile pauses with an alert. **Vulcan
+Companion: Review synchronization conflicts** lists records kept from the removed whole-worktree
+mode and shows their paths. They can no longer be resolved; read one with `vulcan sync conflicts
+<id>`, restore anything you need with Git, and archive them with `vulcan sync conflicts-archive
+--include-open`.
 
 ## Tests
 
