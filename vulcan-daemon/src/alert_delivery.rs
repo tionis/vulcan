@@ -14,6 +14,27 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::io::Write;
+
+/// The event JSON webhooks and command adapters receive: the alert plus the
+/// readable title and body that desktop and ntfy alerts show, so a receiver
+/// can forward it without knowing every reason code.
+#[derive(Serialize)]
+struct RemoteAlertPayload<'a> {
+    #[serde(flatten)]
+    alert: &'a SyncAlert,
+    title: &'static str,
+    body: String,
+}
+
+impl<'a> RemoteAlertPayload<'a> {
+    fn new(alert: &'a SyncAlert) -> Self {
+        Self {
+            alert,
+            title: alert.desktop_title(),
+            body: alert.desktop_body(),
+        }
+    }
+}
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
@@ -637,7 +658,7 @@ fn deliver_webhook(
         request = request.bearer_auth(token);
     }
     request = match config.format {
-        DaemonWebhookFormat::Json => request.json(alert),
+        DaemonWebhookFormat::Json => request.json(&RemoteAlertPayload::new(alert)),
         DaemonWebhookFormat::Ntfy => request
             .header("Title", alert.desktop_title())
             .header("X-Sequence-ID", format!("vulcan-{}", alert.job_id))
@@ -664,7 +685,8 @@ fn deliver_command(
     config: &DaemonCommandNotificationConfig,
     alert: &SyncAlert,
 ) -> Result<(), &'static str> {
-    let payload = serde_json::to_vec(alert).map_err(|_| "serialization_error")?;
+    let payload =
+        serde_json::to_vec(&RemoteAlertPayload::new(alert)).map_err(|_| "serialization_error")?;
     let mut child = Command::new(&config.program)
         .args(&config.args)
         .stdin(Stdio::piped())
@@ -1504,6 +1526,11 @@ mod tests {
             .to_ascii_lowercase()
             .contains("idempotency-key: vulcan-sync-alert-job-1"));
         assert!(request.contains("\"job_id\":\"job-1\""));
+        assert!(
+            request.contains("\"title\":\"Vulcan sync failed\""),
+            "{request}"
+        );
+        assert!(request.contains("\"body\":\"Wiki `"), "{request}");
         assert!(!request.contains("message"));
     }
 

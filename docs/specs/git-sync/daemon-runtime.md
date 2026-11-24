@@ -49,7 +49,8 @@ Part of the [Git synchronization and daemon architecture](../git-sync-architectu
   and job, while full error text stays on authenticated status. It runs on a bounded background
   queue, invokes the platform helper without a shell, times the helper out, and reports delivery
   failure without delaying or rewriting synchronization results. Remote JSON webhooks, ntfy
-  publishing, and local command adapters consume the same versioned event through a bounded
+  publishing, and local command adapters consume the same versioned event (JSON receivers also get
+  the notice's `title` and `body`, the text desktop and ntfy alerts show) through a bounded
   device-state ledger: the daemon persists intended targets before dispatch, reconciles retained
   terminal jobs at startup, uses stable job identities for receiver idempotency, retries with
   bounded exponential backoff, and retains completed records to suppress replay. HTTP follows no

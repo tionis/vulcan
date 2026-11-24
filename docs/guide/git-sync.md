@@ -331,7 +331,8 @@ vulcan daemon config set-notification-webhook phone \
   --dry-run
 ```
 
-The default `json` format POSTs the versioned event to a generic webhook, which can route to an
+The default `json` format POSTs the versioned event to a generic webhook, with a readable `title`
+and `body` (the same text desktop and ntfy alerts show) beside the codes, which can route to an
 email service or another notification system. URLs must use HTTPS (or loopback HTTP), may not embed
 credentials/query/fragment data, and redirects are not followed. The affected wiki's permission
 profile must allow network access to the endpoint.
