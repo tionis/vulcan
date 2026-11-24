@@ -1,9 +1,10 @@
 //! Recommended `.gitignore` entries for files Obsidian keeps per device.
 //!
-//! Sync stops tracking a path once a shared `.gitignore` starts ignoring it
-//! and keeps every device's copy, so adding these entries is all it takes:
-//! the next sync publishes the `.gitignore` change and drops the files from
-//! live history without deleting them anywhere.
+//! Sync carries only commits, so a `.gitignore` entry alone does not stop
+//! sharing a file that is already tracked. The repair adds the entries and
+//! removes the files from the index while keeping them on disk; committing
+//! that change stops sharing them. Devices that pull the commit lose their
+//! copy, which Obsidian recreates.
 
 use crate::AppError;
 use serde::Serialize;
@@ -24,13 +25,18 @@ pub struct IgnoreDeviceFilesReport {
     pub added: Vec<String>,
     /// Device files the shared `.gitignore` files already ignore.
     pub already_ignored: Vec<String>,
+    /// Device files removed from the index (kept on disk), or that a dry run
+    /// would remove, relative to the vault. Committing the removal stops
+    /// sharing them.
+    pub untracked: Vec<String>,
     pub dry_run: bool,
 }
 
 /// Adds `.gitignore` entries for the per-device files that the vault's
-/// shared `.gitignore` files do not ignore yet. Device-local excludes
+/// shared `.gitignore` files do not ignore yet, and removes tracked device
+/// files from the index while keeping them on disk. Device-local excludes
 /// (`info/exclude`, `core.excludesFile`) do not count: they never reach the
-/// other devices.
+/// other devices. Nothing is committed.
 pub fn ignore_device_files(
     paths: &VaultPaths,
     dry_run: bool,
@@ -84,12 +90,66 @@ pub fn ignore_device_files(
         )
         .map_err(AppError::operation)?;
     }
+    let indexed = indexed_paths(work_tree, &candidates)?;
+    let untracked = OBSIDIAN_DEVICE_FILES
+        .iter()
+        .zip(&candidates)
+        .filter(|(_, candidate)| indexed.contains(*candidate))
+        .map(|(file, _)| (*file).to_string())
+        .collect::<Vec<_>>();
+    if !dry_run && !untracked.is_empty() {
+        let paths_to_untrack = candidates
+            .iter()
+            .filter(|candidate| indexed.contains(*candidate));
+        let output = std::process::Command::new("git")
+            .current_dir(work_tree)
+            .args(["rm", "--cached", "--quiet", "--ignore-unmatch", "--"])
+            .args(paths_to_untrack)
+            .output()
+            .map_err(AppError::operation)?;
+        if !output.status.success() {
+            return Err(AppError::operation(format!(
+                "git rm --cached failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+    }
     Ok(IgnoreDeviceFilesReport {
         gitignore: ".gitignore".to_string(),
         added,
         already_ignored,
+        untracked,
         dry_run,
     })
+}
+
+/// The `candidates` (repository-relative) that the index tracks.
+fn indexed_paths(
+    work_tree: &std::path::Path,
+    candidates: &[String],
+) -> Result<std::collections::BTreeSet<String>, AppError> {
+    let output = std::process::Command::new("git")
+        .current_dir(work_tree)
+        .args(["ls-files", "--full-name", "-z", "--"])
+        .args(
+            candidates
+                .iter()
+                .map(|candidate| format!(":(top,literal){candidate}")),
+        )
+        .output()
+        .map_err(AppError::operation)?;
+    if !output.status.success() {
+        return Err(AppError::operation(format!(
+            "git ls-files failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| String::from_utf8_lossy(path).into_owned())
+        .collect())
 }
 
 /// The setup step for a vault that is about to sync: adds the entries only
@@ -111,7 +171,8 @@ pub fn ignore_device_files_at_setup(
 pub(crate) struct SharedDeviceFiles {
     /// Nothing ignores these yet; `vulcan sync doctor --fix` would.
     pub(crate) unignored: Vec<String>,
-    /// The work tree already ignores these, so the next sync stops sharing them.
+    /// The work tree already ignores these, but the revision still tracks
+    /// them until their removal from the index is committed.
     pub(crate) pending: Vec<String>,
 }
 

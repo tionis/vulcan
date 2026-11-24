@@ -122,7 +122,18 @@ fn sync_hints_and_doctor_fix_ignores_per_device_files() {
         .expect("gitignore")
         .contains(&format!("/{LAYOUT}")));
 
-    // Fixed but not yet synced: no more hint, and the doctor only notes it.
+    assert!(doctor["fixes"][0]["message"]
+        .as_str()
+        .unwrap()
+        .contains(&format!("removed {LAYOUT} from the index")));
+    let tracked = ProcessCommand::new("git")
+        .current_dir(&vault)
+        .args(["ls-files", LAYOUT])
+        .output()
+        .expect("git ls-files");
+    assert!(tracked.stdout.is_empty(), "the fix stages the untracking");
+
+    // Fixed but not yet committed: no more hint, and the doctor only notes it.
     let (_, stderr) = succeeded(&vulcan(root, &["--vault", path, "sync", "status"]));
     assert!(!stderr.contains("hint:"), "{stderr}");
     let (stdout, _) = succeeded(&vulcan(root, &["--vault", path, "sync", "doctor"]));

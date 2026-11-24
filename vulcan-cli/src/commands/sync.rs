@@ -1514,18 +1514,27 @@ fn run_sync_ignore_device_files(
     for file in &report.already_ignored {
         println!("Already ignored: {file}");
     }
-    if report.added.is_empty() {
-        println!("Per-device files are already ignored; nothing to change.");
+    if report.added.is_empty() && report.untracked.is_empty() {
+        println!("Per-device files are already ignored and untracked; nothing to change.");
         return Ok(());
     }
-    let verb = if dry_run { "Would add" } else { "Added" };
-    println!("{verb} to {}:", report.gitignore);
-    for entry in &report.added {
-        println!("  {entry}");
+    if !report.added.is_empty() {
+        let verb = if dry_run { "Would add" } else { "Added" };
+        println!("{verb} to {}:", report.gitignore);
+        for entry in &report.added {
+            println!("  {entry}");
+        }
     }
-    if !dry_run {
-        println!("The next sync stops tracking these files; every device keeps its own copy.");
+    if !report.untracked.is_empty() {
+        let verb = if dry_run { "Would remove" } else { "Removed" };
+        println!("{verb} from the index (this device keeps its copy):");
+        for file in &report.untracked {
+            println!("  {file}");
+        }
     }
+    println!(
+        "Commit the change to stop sharing these files; devices that pull it lose their copy, which Obsidian recreates."
+    );
     Ok(())
 }
 

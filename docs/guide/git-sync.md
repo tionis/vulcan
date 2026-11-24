@@ -195,11 +195,10 @@ vulcan sync doctor --fix
 ```
 
 `vulcan sync ignore-device-files [--dry-run]` does the same as a single step. Either adds entries
-only for the files no shared `.gitignore` covers yet, and running it on one device is enough: the
-`.gitignore` reaches the others once it is committed. Files that are already tracked stay tracked
-until you remove them from the index (`git rm --cached .obsidian/workspace.json
-.obsidian/workspace-mobile.json`) and commit; devices that pull that commit may lose their copy,
-which Obsidian recreates. Only rules in committed `.gitignore` files count, not `info/exclude` or a
+only for the files no shared `.gitignore` covers yet, and removes files that are already tracked
+from the index while keeping them on disk (as `git rm --cached` does). Nothing is committed: commit
+the change yourself, or let auto-commit do it, since sync carries only commits. Running it on one
+device is enough; devices that pull the commit lose their copy, which Obsidian recreates. Only rules in committed `.gitignore` files count, not `info/exclude` or a
 global excludes file.
 
 ## How a cycle works

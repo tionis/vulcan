@@ -226,7 +226,9 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
    platform compatibility, locks, journals, apply markers, or cache coherence may be involved.
    A `sync.device-files` warning (or the matching `hint:` from `sync run`/`sync status`) means
    Obsidian's per-device layout files are synced; preview `vulcan sync doctor [<wiki>] --fix
-   --dry-run`, then apply it with `--fix`. Sync never edits `.gitignore` on its own; setting a
+   --dry-run`, then apply it with `--fix`. The fix adds `.gitignore` entries and removes the files
+   from the index (keeping them on disk); commit that change, since sync carries only commits.
+   Devices that pull it lose their copy, which Obsidian recreates. Sync never edits `.gitignore` on its own; setting a
    vault up with `vault add`/`vault clone`/`sync clone` adds the entries unless
    `--keep-device-files` is passed.
 3. Preview a finite transaction with `vulcan sync run [<wiki>] --dry-run`; apply it by omitting

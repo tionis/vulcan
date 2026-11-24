@@ -184,6 +184,9 @@ pub struct SyncDoctorFix {
 
 /// The code of the check that `apply_sync_doctor_fixes` can repair.
 pub const SYNC_DOCTOR_DEVICE_FILES: &str = "sync.device-files";
+/// How the `sync.device-files` note starts while ignored device files are
+/// still tracked, which `--fix` can untrack.
+const DEVICE_FILES_PENDING: &str = "the .gitignore ignores";
 
 /// Applies the deterministic repairs for the warnings in `report` and records
 /// them in `report.fixes`. Today that is one: ignoring per-device Obsidian
@@ -195,19 +198,35 @@ pub fn apply_sync_doctor_fixes(
     dry_run: bool,
 ) -> Result<(), AppError> {
     let needs_device_files = report.checks.iter().any(|check| {
-        check.code == SYNC_DOCTOR_DEVICE_FILES && check.severity == SyncDoctorSeverity::Warning
+        check.code == SYNC_DOCTOR_DEVICE_FILES
+            && (check.severity == SyncDoctorSeverity::Warning
+                || check.message.starts_with(DEVICE_FILES_PENDING))
     });
     if needs_device_files {
         let ignored = crate::sync_device_files::ignore_device_files(paths, dry_run)?;
+        let mut steps = Vec::new();
         if !ignored.added.is_empty() {
-            let verb = if dry_run { "would add" } else { "added" };
+            steps.push(format!(
+                "{} {} to {}",
+                if dry_run { "would add" } else { "added" },
+                ignored.added.join(", "),
+                ignored.gitignore
+            ));
+        }
+        if !ignored.untracked.is_empty() {
+            steps.push(format!(
+                "{} {} from the index, keeping this device's copy",
+                if dry_run { "would remove" } else { "removed" },
+                ignored.untracked.join(", ")
+            ));
+        }
+        if !steps.is_empty() {
             report.fixes.push(SyncDoctorFix {
                 code: SYNC_DOCTOR_DEVICE_FILES.to_string(),
                 dry_run,
                 message: format!(
-                    "{verb} {} to {}; the next sync stops sharing these files and every device keeps its own copy",
-                    ignored.added.join(", "),
-                    ignored.gitignore
+                    "{}; commit the change to stop sharing them (devices that pull it lose their copy, which Obsidian recreates)",
+                    steps.join(" and ")
                 ),
             });
         }
@@ -784,7 +803,7 @@ fn doctor_device_files(
             SYNC_DOCTOR_DEVICE_FILES,
             SyncDoctorSeverity::Info,
             format!(
-                "the .gitignore now ignores {}; the next sync stops sharing them",
+                "{DEVICE_FILES_PENDING} {} but the last commit still shares them; commit their removal from the index (`vulcan sync doctor --fix` stages it)",
                 shared.pending.join(", ")
             ),
         ),
@@ -3249,28 +3268,67 @@ mod tests {
             .contains("/.obsidian/workspace.json"));
         assert!(!vault.join(".gitignore").exists());
 
+        assert!(report.fixes[0].message.contains("would remove"));
+
         apply_sync_doctor_fixes(&paths, &mut report, false).expect("fix");
         assert!(fs::read_to_string(vault.join(".gitignore"))
             .expect("gitignore")
             .contains("/.obsidian/workspace.json"));
-        // Until the next sync the file is still shared, and the doctor says
-        // so without asking for the repair again.
+        // The fix stages the untracking but keeps the file on disk.
+        assert!(vault.join(".obsidian/workspace.json").is_file());
+        assert_eq!(
+            git_stdout(&repository, &["ls-files", "docs/.obsidian/workspace.json"]),
+            ""
+        );
+        // Until it is committed the file is still shared, and the doctor
+        // says so; repeating the fix finds nothing left to change.
         let pending = device_files().expect("pending note");
         assert_eq!(pending.severity, SyncDoctorSeverity::Info);
-        assert!(pending.message.contains("next sync"));
+        assert!(pending.message.contains("commit their removal"));
         let mut again =
             doctor_git_vault_with_state_store(&paths, &GitSyncOptions::default(), &store);
         apply_sync_doctor_fixes(&paths, &mut again, false).expect("nothing to fix");
         assert!(again.fixes.is_empty());
 
         git(&repository, &["add", "--all"]);
-        git(&repository, &["commit", "--quiet", "-m", "ignore"]);
         git(
             &repository,
-            &["rm", "--cached", "--quiet", "docs/.obsidian/workspace.json"],
+            &["commit", "--quiet", "-m", "ignore and untrack"],
         );
-        git(&repository, &["commit", "--quiet", "-m", "untrack"]);
         assert_eq!(device_files(), None);
+        assert!(vault.join(".obsidian/workspace.json").is_file());
+    }
+
+    #[test]
+    fn sync_doctor_fix_untracks_device_files_a_gitignore_already_ignores() {
+        let temporary = tempdir().expect("temporary directory");
+        let vault = temporary.path().join("vault");
+        fs::create_dir_all(vault.join(".obsidian")).expect("obsidian directory");
+        git(
+            &vault,
+            &["-c", "init.defaultBranch=main", "init", "--quiet"],
+        );
+        git(&vault, &["config", "user.name", "Vulcan Test"]);
+        git(&vault, &["config", "user.email", "vulcan@example.invalid"]);
+        fs::write(vault.join(".obsidian/workspace.json"), "{}\n").expect("layout");
+        git(&vault, &["add", "--all"]);
+        git(&vault, &["commit", "--quiet", "-m", "initial"]);
+        // Someone added the entry by hand but never untracked the file.
+        fs::write(vault.join(".gitignore"), "/.obsidian/workspace.json\n").expect("gitignore");
+        let store = SyncStateStore::at(temporary.path().join("state"));
+        let paths = VaultPaths::new(&vault);
+        let mut report =
+            doctor_git_vault_with_state_store(&paths, &GitSyncOptions::default(), &store);
+        apply_sync_doctor_fixes(&paths, &mut report, false).expect("fix");
+        assert_eq!(report.fixes.len(), 1, "{:?}", report.checks);
+        assert!(report.fixes[0]
+            .message
+            .contains("removed .obsidian/workspace.json from the index"));
+        assert_eq!(
+            git_stdout(&vault, &["ls-files", ".obsidian/workspace.json"]),
+            ""
+        );
+        assert!(vault.join(".obsidian/workspace.json").is_file());
     }
 
     #[test]
@@ -3286,12 +3344,9 @@ mod tests {
         // Sync only reports the files; it never edits the `.gitignore` itself.
         assert!(!fixture.writer.join(".gitignore").exists());
 
-        crate::sync_device_files::ignore_device_files(&paths, false).expect("ignore");
-        // Sync carries only commits, so the untracking travels as one.
-        git(
-            &fixture.writer,
-            &["rm", "--cached", "--quiet", ".obsidian/workspace.json"],
-        );
+        let ignored = crate::sync_device_files::ignore_device_files(&paths, false).expect("ignore");
+        assert_eq!(ignored.untracked, [".obsidian/workspace.json"]);
+        // Sync carries only commits, so the staged untracking travels as one.
         git(&fixture.writer, &["add", ".gitignore"]);
         git(
             &fixture.writer,

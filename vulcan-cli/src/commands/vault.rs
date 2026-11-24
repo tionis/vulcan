@@ -171,6 +171,26 @@ impl SetupSteps {
                 report.gitignore
             );
         }
+        if let Some(report) = self
+            .device_files
+            .as_ref()
+            .filter(|r| !r.untracked.is_empty())
+        {
+            println!(
+                "{} {} from the index; commit the change to stop sharing {}.",
+                if report.dry_run {
+                    "Would remove"
+                } else {
+                    "Removed"
+                },
+                report.untracked.join(", "),
+                if report.untracked.len() == 1 {
+                    "it"
+                } else {
+                    "them"
+                }
+            );
+        }
         if let Some(error) = &self.device_files_error {
             println!("Could not ignore per-device Obsidian files: {error}");
             println!("Run `vulcan sync doctor {wiki} --fix` to retry.");

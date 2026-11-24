@@ -107,9 +107,10 @@ contract.
   carry it as `local_platform_preflight`.
 - `vulcan sync ignore-device-files [--dry-run]` appends anchored entries for Obsidian's per-device
   layout files (`.obsidian/workspace.json`, `.obsidian/workspace-mobile.json`) to the vault's
-  `.gitignore` when no shared `.gitignore` already ignores them, and `sync doctor` reports
-  `sync.device-files` as a warning while such a file is tracked; `sync doctor --fix` applies the
-  same entries. Registering a vault with a `.obsidian` directory for Git sync (`vault add`, `vault
+  `.gitignore` when no shared `.gitignore` already ignores them and removes tracked copies from the
+  index (kept on disk, nothing committed), and `sync doctor` reports
+  `sync.device-files` as a warning while such a file is tracked and unignored, and as a note while
+  an ignored one is still committed; `sync doctor --fix` applies the same repair for either. Registering a vault with a `.obsidian` directory for Git sync (`vault add`, `vault
   clone`, `sync clone`) adds them as part of setup unless `--keep-device-files` is given.
 - A rejected compare-and-swap or leased push does not fail at once: the finite cycle retries up to
   the configured bound with deterministic exponential waits from 25 ms through a 400 ms cap,
