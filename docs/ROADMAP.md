@@ -8126,6 +8126,8 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 
 ## Phase 9.23: Adaptive MCP tool packs and dynamic discovery
 
+**Superseded by 9.43 (2026-11-25):** tool packs are removed; the permission profile alone decides which tools are listed.
+
 **Goal:** Replace the current fixed MCP exposure ladder (`core`, `extended`, `admin`) with composable named tool packs and an optional adaptive mode where a client can request more packs during an MCP session without falling back to a generic "run arbitrary CLI commands" escape hatch.
 
 **Why this phase exists:** The current MCP surface is intentionally small, but its pack model is too rigid. Real clients often want combinations such as "read + search + web" or "notes + tasks, but no config/index". A single monotonic ladder makes those combinations awkward, and it forces the initial tool set to either be too broad for context efficiency or too narrow for serious use. Generic MCP clients also differ in how much they can preload from prompts/resources, so Vulcan needs a protocol-native way to keep the initial set small while still expanding the typed registry on demand.
@@ -8775,6 +8777,70 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 - [x] `[numerals]` config (off by default) and settings import; `docs/guide/live-documents.md`, skills, tests.
 - [x] Engine cost: build-time QuickJS bytecode for mathjs and the prelude, a checked typed-function sort patch, and per-thread engine reuse that discards engines an expression changed (`createUnit`, `config`, `import`).
 - [x] `numerals eval` and `metabind list` route to a resident daemon (`--route daemon|auto`), whose warm engines answer in about 50 ms instead of 0.6 to 0.8 s.
+
+## Phase 9.43: MCP redesign
+
+**Goal:** Rebuild the MCP server in the shape the 2026 protocol and clients call for: a stateless core serving 2025 clients through `initialize` and 2026-07-28 clients statelessly, one stable tool list decided by the permission profile alone, bounded typed results, skills and tasks as extensions, an axum transport, and three auth modes.
+
+**Contract:** `docs/specs/mcp.md`. Evidence: `docs/investigations/2026-11-25-mcp-server-evaluation.md`. Decided with Eric 2026-11-25: clean break (no aliases); tool packs removed in favor of permission profiles plus a new `destructive` permission; auth modes reduced to loopback, static bearer and named remotes; dual-era protocol.
+
+**Supersedes:** 9.23 (tool packs), the tool and transport parts of 9.19.15 and 10.10.
+
+### 9.43.1 `destructive` permission
+
+- [ ] `destructive` profile setting (default deny; allow in `writer`, `maintainer`, `unrestricted`), guard method, profile docs, permissions tests.
+
+### 9.43.2 Remove tool packs
+
+- [ ] Catalog, CLI flags, `describe` exports, named-remote definitions, consent page and grant storage without packs; visibility by profile requirement only.
+- [ ] Grant migration: full-pack grants keep working; narrowed grants are revoked with a visible reason.
+
+### 9.43.3 Catalog redesign
+
+- [ ] Target tool set (spec §6): merges, splits (`link_suggestions`/`link_suggestion_resolve`), renames, removal of `capabilities`, `daily_show`, `daily_list`, `task_list`, `sync_plan`, `changeset_switch`.
+- [ ] Argument conventions (`note`/`path`, `dry_run`, `expected_hash`, `idempotency_key`, `limit`/`cursor`, `detail`, `sort`/`order`), annotations, typed output schemas, `alwaysLoad`.
+- [ ] Results: always `structuredContent`, compact text, no spill store; tool errors with stable codes and parameter names; input validation as tool errors.
+- [ ] Generated instructions (tool-family map).
+
+### 9.43.4 Resources, prompts and help
+
+- [ ] `vulcan://note/{path}`, `vulcan://file/{path}`, MCP-terms help as `text/markdown`, `vulcan://agents`; remove `vulcan://assistant/*` and `vulcan://tool-results/*`; standard prompt arguments.
+
+### 9.43.5 MCP-aware bundled skills
+
+- [ ] `<!-- vulcan:cli -->`/`<!-- vulcan:mcp -->` target blocks, rendering for `agent install` and the server, all bundled skills rewritten for the new catalog, `skill://` resources for legacy clients, visibility by the skill's `tools:`.
+
+### 9.43.6 Stateless core
+
+- [ ] `handle(request, ctx)` core without session state; `changeset` argument; `git_commit` by changeset, paths or all; per-request client attribution; legacy adapter for `initialize`; server-level change watcher for `list_changed`.
+
+### 9.43.7 Operations, timeouts and stdio
+
+- [ ] Operation ledger for every long or mutating call on every transport; timeouts become `indeterminate` with an operation id; `operation_get`; concurrent stdio with working cancellation.
+
+### 9.43.8 axum HTTP transport
+
+- [ ] MCP endpoint on axum for resident and foreground hosts; legacy GET/DELETE; streamed responses; Origin and Host policy with the public URL; remove the hand-written codec, transport and SSE poller.
+
+### 9.43.9 Authorization
+
+- [ ] Remove direct local OAuth and external resource-server mode and `X-Vulcan-Token`; single `mcp` scope; PRM `resource_name`; challenges with `scope`; RFC 9207 `iss`; constant-time comparisons; CIMD streaming cap, cache and address normalization.
+
+### 9.43.10 Protocol 2026-07-28
+
+- [ ] Per-request `_meta`, `server/discover`, `resultType`, `ttlMs`/`cacheScope`, headers, version errors, `subscriptions/listen`, -32602 not found; dual-era scenario suite.
+
+### 9.43.11 Skills extension
+
+- [ ] `skills/list`, `skills/get`, `resources/directory/read`, digests over rendered bytes.
+
+### 9.43.12 Tasks, input requests and progress
+
+- [ ] Tasks extension over the operation ledger; `input_required` for ambiguous notes (and destructive confirmation when configured); progress for scan, sync and land.
+
+### 9.43.13 Documentation and acceptance
+
+- [ ] MCP guides, ChatGPT guide, AGENTS template, `mcp-setup` skill; live acceptance with Claude Code, claude.ai and ChatGPT.
 
 ---
 
