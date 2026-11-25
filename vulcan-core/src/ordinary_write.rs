@@ -297,6 +297,16 @@ pub fn inspect_ordinary_write_batch(
     inspect_journal(paths, &journal).map(Some)
 }
 
+/// Whether an interrupted ordinary write batch might need recovery, checked
+/// without the vault lock. `false` means no journal existed when checked, so
+/// startup can skip [`recover_ordinary_write_batch`] and its lock; a writer
+/// publishing a journal afterwards is live and recovers its own batch. Errors
+/// count as possibly pending so the caller falls back to the locked path.
+#[must_use]
+pub fn ordinary_write_batch_may_be_pending(paths: &VaultPaths) -> bool {
+    ensure_no_pending_ordinary_write_batch(paths).is_err()
+}
+
 /// Refuse a read while an ordinary multi-file transaction is pending.
 /// Callers needing a stable read hold the shared vault lock across this check
 /// and the read itself, so a cooperating writer cannot publish a journal mid-read.
@@ -862,6 +872,31 @@ mod tests {
                 Some(original_id.as_str())
             );
         }
+    }
+
+    #[test]
+    fn pending_check_needs_no_lock_and_sees_an_interrupted_batch() {
+        let temporary = tempdir().expect("vault");
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).expect("initialize");
+        fs::write(temporary.path().join("Task.md"), "active task\n").expect("source");
+        crate::scan::scan_vault(&paths, crate::scan::ScanMode::Full).expect("scan");
+        {
+            // A sync holding the write lock must not block the check.
+            let _held = acquire_write_lock(&paths).expect("lock");
+            assert!(!ordinary_write_batch_may_be_pending(&paths));
+        }
+        apply_with_renames_hook_and_preflight(
+            &paths,
+            &archive_changes(),
+            &BTreeMap::new(),
+            || Ok(()),
+            |_| Err(OrdinaryWriteError::new("test_interruption", "stop", None)),
+        )
+        .expect_err("interrupt publication");
+        assert!(ordinary_write_batch_may_be_pending(&paths));
+        recover_ordinary_write_batch(&paths).expect("recover");
+        assert!(!ordinary_write_batch_may_be_pending(&paths));
     }
 
     #[test]

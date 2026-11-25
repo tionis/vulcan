@@ -385,7 +385,12 @@ fn run_named_mcp_remote_with_endpoints(
         )));
     }
     for vault in vaults.values() {
+        // Check for an interrupted batch before taking the vault write lock: a
+        // sync blocked on an unreachable remote can hold that lock for minutes,
+        // and waiting for it here would miss the listener's readiness deadline
+        // and take the whole daemon down with it.
         if vault.paths.vulcan_dir().exists()
+            && vulcan_core::ordinary_write::ordinary_write_batch_may_be_pending(&vault.paths)
             && vulcan_core::ordinary_write::recover_ordinary_write_batch(&vault.paths)
                 .map_err(CliError::operation)?
                 .is_some()
