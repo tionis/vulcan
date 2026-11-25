@@ -70,6 +70,7 @@ Examples:
       move             Move config.local.toml into this vault's entry in daemon.toml
     import           Import compatible Obsidian plugin settings
       core             Import Obsidian core settings
+      customjs         Import Obsidian CustomJS plugin settings
       dataview         Import Obsidian Dataview plugin settings
       folder-notes     Import Obsidian Folder Notes plugin settings
       templater        Import Obsidian Templater plugin settings
@@ -1129,6 +1130,23 @@ Where a chat bot's captures and tasks go in this vault.
 - `bot.task_target` — type: `enum`; target: `shared|local|device`; default: `tasknotes`; values: `tasknotes`, `inline`
   What the chat bot's `/task` creates: a TaskNotes task (with natural-language dates) or an inline task in the inbox note.
   Example: `vulcan config set bot.task_target <value>`
+
+### CustomJS
+
+CustomJS-compatible vault classes for DataviewJS and the Vulcan-only DQL function bridge.
+
+- `customjs.invocable_scripts` — type: `array`; target: `shared|local|device`; default: `[0 items]`
+  Classes registered as invocable scripts, listed by `vulcan plugin customjs list` and run with `vulcan plugin customjs invoke`.
+  Example: `vulcan config set customjs.invocable_scripts <value>`
+- `customjs.js_files` — type: `array`; target: `shared|local|device`; default: `[0 items]`
+  Class files to load as `customJS.<ClassName>`, as vault paths; each file holds one class expression, as in the CustomJS plugin.
+  Example: `vulcan config set customjs.js_files <value>`
+- `customjs.js_folder` — type: `string`; target: `shared|local|device`; default: ``
+  Load every vault `.js` file whose path starts with this prefix (a plain prefix, so it is recursive). Files load in file-name order.
+  Example: `vulcan config set customjs.js_folder <value>`
+- `customjs.startup_scripts` — type: `array`; target: `shared|local|device`; default: `[0 items]`
+  Classes whose `invoke()` method `vulcan plugin customjs startup` runs, in order.
+  Example: `vulcan config set customjs.startup_scripts <value>`
 
 ### Editor
 

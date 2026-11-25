@@ -3259,6 +3259,8 @@ pub struct ExportTransformArgs {
 pub enum ConfigImportCommand {
     #[command(about = "Import Obsidian core settings")]
     Core,
+    #[command(about = "Import Obsidian CustomJS plugin settings")]
+    Customjs,
     #[command(about = "Import Obsidian Dataview plugin settings")]
     Dataview,
     #[command(about = "Import Obsidian Folder Notes plugin settings")]
@@ -3689,6 +3691,32 @@ pub enum PluginCommand {
     Run {
         #[arg(help = "Plugin name to execute")]
         name: String,
+    },
+    #[command(
+        about = "List CustomJS classes and run their invoke() scripts",
+        long_about = "CustomJS-compatible vault classes ([customjs] in .vulcan/config.toml, importable with `vulcan config import customjs`). Each configured .js file holds one class; DataviewJS reaches an instance as customJS.<ClassName>. `invoke` and `startup` run invoke() methods like plugins do: they need a trusted vault and may write."
+    )]
+    Customjs {
+        #[command(subcommand)]
+        command: CustomJsCommand,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum CustomJsCommand {
+    #[command(about = "List configured class files, loaded classes, and load errors")]
+    List,
+    #[command(about = "Run one class's invoke() method")]
+    Invoke {
+        #[arg(help = "Class name, as in customJS.<ClassName>")]
+        class: String,
+        #[arg(long, help = "Run with every vault write refused")]
+        dry_run: bool,
+    },
+    #[command(about = "Run the invoke() method of each customjs.startup_scripts class, in order")]
+    Startup {
+        #[arg(long, help = "Run with every vault write refused")]
+        dry_run: bool,
     },
 }
 

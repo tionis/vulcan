@@ -1880,6 +1880,7 @@ fn bot_category_descriptor() -> CategoryDescriptor {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn category_descriptor(display_segments: &[String]) -> CategoryDescriptor {
     match display_segments.first().map(String::as_str) {
         Some("link_resolution" | "link_style" | "attachment_folder" | "strict_line_breaks") => {
@@ -1930,6 +1931,11 @@ fn category_descriptor(display_segments: &[String]) -> CategoryDescriptor {
             key: "dataview",
             title: "Dataview",
             description: "Dataview compatibility flags, rendering behavior, and JS limits.",
+        },
+        Some("customjs") => CategoryDescriptor {
+            key: "customjs",
+            title: "CustomJS",
+            description: "CustomJS-compatible vault classes for DataviewJS and the Vulcan-only DQL function bridge.",
         },
         Some("js_runtime") => CategoryDescriptor {
             key: "js_runtime",
@@ -2028,6 +2034,11 @@ fn config_path_description(path: &str) -> String {
         "editor.inlay_hints" => "Show editor inlay hints, such as how far off an open task's due date is.".to_string(),
         "editor.semantic_tokens" => "Provide editor semantic tokens for links, embeds, tags, inline fields, and block ids (unresolved links are marked).".to_string(),
         "dataview.render_dataview_js" => "DataviewJS policy for `render`, `note get`, `daily show`, browse previews, editors, MCP `note_get`, and evaluated exports when no explicit `--dataviewjs` is given: `off` leaves a notice, `static` runs blocks in the strict sandbox (deterministic, without wall-clock time, only for static sites and evaluated exports), `on` uses the configured sandbox tier but only in a vault trusted with `vulcan trust` (else `static`). Unset: `on` in trusted vaults, `static` elsewhere. Rendering never writes.".to_string(),
+        "customjs.js_files" => "Class files to load as `customJS.<ClassName>`, as vault paths; each file holds one class expression, as in the CustomJS plugin.".to_string(),
+        "customjs.js_folder" => "Load every vault `.js` file whose path starts with this prefix (a plain prefix, so it is recursive). Files load in file-name order.".to_string(),
+        "customjs.startup_scripts" => "Classes whose `invoke()` method `vulcan plugin customjs startup` runs, in order.".to_string(),
+        "customjs.invocable_scripts" => "Classes registered as invocable scripts, listed by `vulcan plugin customjs list` and run with `vulcan plugin customjs invoke`.".to_string(),
+        "customjs.dql_functions" => "DQL function name to the `Class.method` that implements it, for example `fmt = \"Util.fmt\"`. Vulcan-only; calls run in a separate engine that sees only their arguments, and must return a value synchronously.".to_string(),
         "folder_notes.placement" => "Choose whether a folder note lives inside its folder or beside it in the parent folder.".to_string(),
         "folder_notes.name" => "Set the exact folder-note stem/template; `{{folder_name}}` expands to the folder's basename.".to_string(),
         _ if path.starts_with("periodic.") => {

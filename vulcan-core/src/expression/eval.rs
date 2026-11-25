@@ -33,7 +33,22 @@ pub struct EvalContext<'a> {
     /// to the current row.  This is the correct behavior for DQL queries run from the CLI where
     /// there is no source note — `file.name != this.file.name` should be vacuously true.
     pub this_null_when_missing: bool,
+    /// Functions defined outside the built-in library, such as the `CustomJS`
+    /// DQL bridge. Built-in names always win.
+    pub external_functions: Option<&'a dyn ExternalFunctions>,
     pub(crate) budget: Rc<EvaluationBudget>,
+}
+
+/// A source of extra expression functions, consulted for names the built-in
+/// library does not define.
+pub trait ExternalFunctions {
+    fn has_function(&self, name: &str) -> bool;
+    /// Call `name` with already evaluated arguments.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error message the expression should fail with.
+    fn call_function(&self, name: &str, args: Vec<Value>) -> Result<Value, String>;
 }
 
 impl<'a> EvalContext<'a> {
@@ -48,6 +63,7 @@ impl<'a> EvalContext<'a> {
             note_lookup: None,
             this_note: None,
             this_null_when_missing: false,
+            external_functions: None,
             budget: Rc::new(EvaluationBudget::default()),
         }
     }
@@ -68,6 +84,12 @@ impl<'a> EvalContext<'a> {
     #[must_use]
     pub fn with_this_note(mut self, this_note: &'a NoteRecord) -> Self {
         self.this_note = Some(this_note);
+        self
+    }
+
+    #[must_use]
+    pub fn with_external_functions(mut self, functions: Option<&'a dyn ExternalFunctions>) -> Self {
+        self.external_functions = functions;
         self
     }
 

@@ -2,7 +2,7 @@ use crate::output::print_json;
 use crate::{
     app_config, config_changed_files, config_target, plugins, print_dataview_js_result,
     selected_permission_guard, warn_auto_commit_if_needed, AutoCommitPolicy, Cli, CliError,
-    OutputFormat, PluginCommand, PluginEventArg, PluginSandboxArg,
+    CustomJsCommand, OutputFormat, PluginCommand, PluginEventArg, PluginSandboxArg,
 };
 use serde::Serialize;
 use std::path::PathBuf;
@@ -161,6 +161,9 @@ pub(crate) fn handle_plugin_command(
                 .map_err(CliError::operation)?;
             let result = plugins::run_plugin(paths, cli.permissions.as_deref(), name)?;
             print_dataview_js_result(cli.output, &result, false, stdout_is_tty, use_stdout_color)
+        }
+        PluginCommand::Customjs { command } => {
+            handle_customjs_command(cli, paths, command, stdout_is_tty, use_stdout_color)
         }
     }
 }
@@ -573,5 +576,107 @@ fn print_plugin_config_write_report(
             }
             Ok(())
         }
+    }
+}
+
+fn handle_customjs_command(
+    cli: &Cli,
+    paths: &VaultPaths,
+    command: &CustomJsCommand,
+    stdout_is_tty: bool,
+    use_stdout_color: bool,
+) -> Result<(), CliError> {
+    let profile = cli.permissions.as_deref();
+    match command {
+        CustomJsCommand::List => {
+            let report = vulcan_app::customjs::build_customjs_report(paths, profile)?;
+            match cli.output {
+                OutputFormat::Json => print_json(&report),
+                OutputFormat::Human | OutputFormat::Markdown => {
+                    print_customjs_report(&report);
+                    Ok(())
+                }
+            }
+        }
+        CustomJsCommand::Invoke { class, dry_run } => {
+            selected_permission_guard(cli, paths)?
+                .check_execute()
+                .map_err(CliError::operation)?;
+            let invocation =
+                vulcan_app::customjs::invoke_customjs(paths, profile, class, *dry_run)?;
+            match cli.output {
+                OutputFormat::Json => print_json(&invocation),
+                OutputFormat::Human | OutputFormat::Markdown => print_dataview_js_result(
+                    cli.output,
+                    &invocation.result,
+                    false,
+                    stdout_is_tty,
+                    use_stdout_color,
+                ),
+            }
+        }
+        CustomJsCommand::Startup { dry_run } => {
+            selected_permission_guard(cli, paths)?
+                .check_execute()
+                .map_err(CliError::operation)?;
+            let invocations = vulcan_app::customjs::run_customjs_startup(paths, profile, *dry_run)?;
+            match cli.output {
+                OutputFormat::Json => print_json(&invocations),
+                OutputFormat::Human | OutputFormat::Markdown => {
+                    if invocations.is_empty() {
+                        println!("No CustomJS startup scripts configured");
+                    }
+                    for invocation in &invocations {
+                        println!("## {}", invocation.class);
+                        print_dataview_js_result(
+                            cli.output,
+                            &invocation.result,
+                            false,
+                            stdout_is_tty,
+                            use_stdout_color,
+                        )?;
+                    }
+                    Ok(())
+                }
+            }
+        }
+    }
+}
+
+fn print_customjs_report(report: &vulcan_app::customjs::CustomJsReport) {
+    if report.files.is_empty() && report.skipped.is_empty() {
+        println!("No CustomJS class files configured ([customjs] js_files or js_folder)");
+        return;
+    }
+    println!("Class files (load order):");
+    for file in &report.files {
+        println!("- {file}");
+    }
+    for skipped in &report.skipped {
+        println!("- {} (skipped: {})", skipped.path, skipped.reason);
+    }
+    println!("Classes:");
+    for class in &report.classes {
+        let mut notes = Vec::new();
+        if class.invocable {
+            notes.push("invocable");
+        }
+        if class.registered {
+            notes.push("registered");
+        }
+        if class.startup {
+            notes.push("startup");
+        }
+        if notes.is_empty() {
+            println!("- customJS.{}", class.name);
+        } else {
+            println!("- customJS.{} ({})", class.name, notes.join(", "));
+        }
+    }
+    for error in &report.errors {
+        println!("error: {error}");
+    }
+    for (name, target) in &report.dql_functions {
+        println!("DQL function {name}() -> customJS.{target}");
     }
 }

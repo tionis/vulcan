@@ -17,7 +17,8 @@ use crate::parser::{LinkKind, ParsedDocument};
 use crate::paths::VaultPaths;
 use crate::permissions::PermissionGuard;
 use crate::properties::{
-    evaluate_note_inline_expressions, load_note_index, load_note_index_with_guard, NoteRecord,
+    evaluate_note_inline_expressions_with_functions, load_note_index, load_note_index_with_guard,
+    NoteRecord,
 };
 use crate::resolver::{resolve_link, ResolverDocument, ResolverLink};
 use crate::tasks::{evaluate_tasks_query_with_note_index, TasksQueryResult};
@@ -165,7 +166,17 @@ pub(crate) fn evaluate_dynamic_regions(
     });
     // Results are keyed by expression text rather than position so a
     // partial selection of the note still pairs each expression correctly.
-    let inline_results = note.map(|(note, index)| evaluate_note_inline_expressions(note, index));
+    // Class files the reader cannot read are not loaded for them.
+    let read_filter = ctx
+        .guard
+        .map(|guard| crate::permissions::PermissionFilter::new(guard.grant().read.clone()));
+    let bridge = crate::customjs::DqlBridge::new(ctx.paths, ctx.config, read_filter.as_ref());
+    let functions = bridge
+        .as_ref()
+        .map(|bridge| bridge as &dyn crate::expression::eval::ExternalFunctions);
+    let inline_results = note.map(|(note, index)| {
+        evaluate_note_inline_expressions_with_functions(note, index, functions)
+    });
     let results_by_expression = inline_results
         .iter()
         .flatten()
@@ -2338,6 +2349,30 @@ mod tests {
         .expect("config should write");
         assert!(render(DataviewJsRenderPolicy::On).contains("JS: draft"));
         assert!(render(DataviewJsRenderPolicy::Off).contains("JS: *(DataviewJS disabled)*"));
+    }
+
+    #[cfg(feature = "js_runtime")]
+    #[test]
+    fn blocks_that_await_run_as_async_functions() {
+        let (_temp_dir, paths, _) = build_vault();
+        let source = concat!(
+            "```dataviewjs\nconst value = await Promise.resolve(5);\nshared = value;\ndv.paragraph(value)\n```\n\n",
+            "```dataviewjs\ndv.paragraph(shared + 1)\n```\n\n",
+            "```dataviewjs\nawait Promise.resolve();\nthrow new Error('async boom');\n```\n",
+        );
+        let markdown = render_evaluated_markdown(
+            &paths,
+            source,
+            &EvaluatedMarkdownOptions {
+                source_path: Some("Home.md"),
+                dataview_js: DataviewJsRenderPolicy::On,
+                ..EvaluatedMarkdownOptions::default()
+            },
+        )
+        .markdown;
+        assert!(markdown.starts_with("5\n"), "{markdown}");
+        assert!(markdown.contains("\n6\n"), "{markdown}");
+        assert!(markdown.contains("async boom"), "{markdown}");
     }
 
     #[cfg(feature = "js_runtime")]

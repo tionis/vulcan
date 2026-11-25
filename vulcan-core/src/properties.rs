@@ -2389,6 +2389,17 @@ pub fn evaluate_note_inline_expressions(
     note: &NoteRecord,
     note_lookup: &dyn crate::note_lookup::NoteLookup,
 ) -> Vec<EvaluatedInlineExpression> {
+    evaluate_note_inline_expressions_with_functions(note, note_lookup, None)
+}
+
+/// [`evaluate_note_inline_expressions`] with extra functions, such as the
+/// `CustomJS` DQL bridge.
+#[must_use]
+pub fn evaluate_note_inline_expressions_with_functions(
+    note: &NoteRecord,
+    note_lookup: &dyn crate::note_lookup::NoteLookup,
+    functions: Option<&dyn crate::expression::eval::ExternalFunctions>,
+) -> Vec<EvaluatedInlineExpression> {
     let formulas = BTreeMap::new();
     note.raw_inline_expressions
         .iter()
@@ -2396,7 +2407,9 @@ pub fn evaluate_note_inline_expressions(
             let (value, error) = match Parser::new(expression) {
                 Ok(parser) => match parser.parse() {
                     Ok(expr) => {
-                        let ctx = EvalContext::new(note, &formulas).with_note_lookup(note_lookup);
+                        let ctx = EvalContext::new(note, &formulas)
+                            .with_note_lookup(note_lookup)
+                            .with_external_functions(functions);
                         match evaluate(&expr, &ctx) {
                             Ok(value) => (value, None),
                             Err(error) => (Value::Null, Some(error)),

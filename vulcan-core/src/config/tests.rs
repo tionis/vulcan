@@ -4812,6 +4812,7 @@ fn importer_registry_dispatches_existing_importers_in_priority_order() {
         importer_names,
         [
             "core",
+            "customjs",
             "dataview",
             "folder-notes",
             "kanban",
@@ -5495,4 +5496,84 @@ fn sync_poll_bounds_default_override_locally_and_clamp() {
         (SYNC_POLL_FLOOR_SECONDS, SYNC_POLL_FLOOR_SECONDS),
         "the floor stops a typo from turning polling into a busy loop"
     );
+}
+
+#[test]
+fn customjs_config_defaults_and_layered_overrides() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path();
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+    let defaults = load_vault_config(&VaultPaths::new(vault_root))
+        .config
+        .customjs;
+    assert_eq!(defaults, CustomJsConfig::default());
+    assert!(!defaults.is_configured());
+
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        concat!(
+            "[customjs]\njs_folder = \"scripts\"\nstartup_scripts = [\"Boot\"]\n",
+            "[customjs.dql_functions]\nmoney = \"Format.money\"\n",
+        ),
+    )
+    .expect("shared config should be written");
+    fs::write(
+        vault_root.join(".vulcan/config.local.toml"),
+        "[customjs]\njs_files = [\"Local.js\"]\n[customjs.dql_functions]\nlocal = \"Local.run\"\n",
+    )
+    .expect("local config should be written");
+    let customjs = load_vault_config(&VaultPaths::new(vault_root))
+        .config
+        .customjs;
+    assert_eq!(customjs.js_folder, "scripts");
+    assert_eq!(customjs.js_files, vec!["Local.js".to_string()]);
+    assert_eq!(customjs.startup_scripts, vec!["Boot".to_string()]);
+    assert_eq!(
+        customjs.dql_functions.keys().collect::<Vec<_>>(),
+        vec!["local", "money"],
+        "local functions add to shared ones"
+    );
+    assert!(customjs.is_configured());
+}
+
+#[test]
+fn customjs_import_splits_files_and_reports_unsupported_settings() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path();
+    fs::create_dir_all(vault_root.join(".obsidian/plugins/customjs"))
+        .expect("plugin dir should exist");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+    fs::write(
+        vault_root.join(".obsidian/plugins/customjs/data.json"),
+        r#"{
+          "jsFiles": "lib/b.js, lib/a.js,, notes.md",
+          "jsFolder": "scripts",
+          "startupScriptNames": ["Boot"],
+          "registeredInvocableScriptNames": ["Job"],
+          "rerunStartupScriptsOnFileChange": true
+        }"#,
+    )
+    .expect("plugin config should be written");
+    let paths = VaultPaths::new(vault_root);
+
+    let report = CustomJsImporter
+        .import(&paths, ImportTarget::Shared)
+        .expect("import should succeed");
+    assert_eq!(report.plugin, "customjs");
+    assert!(report
+        .skipped
+        .iter()
+        .any(|skipped| skipped.source == "rerunStartupScriptsOnFileChange"));
+
+    let customjs = load_vault_config(&paths).config.customjs;
+    assert_eq!(
+        customjs.js_files,
+        vec!["lib/a.js".to_string(), "lib/b.js".to_string()]
+    );
+    assert_eq!(customjs.js_folder, "scripts");
+    assert_eq!(customjs.startup_scripts, vec!["Boot".to_string()]);
+    assert_eq!(customjs.invocable_scripts, vec!["Job".to_string()]);
+    assert!(all_importers()
+        .iter()
+        .any(|importer| importer.name() == "customjs"));
 }

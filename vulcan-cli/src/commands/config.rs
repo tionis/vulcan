@@ -20,9 +20,9 @@ use vulcan_core::config::QuickAddImporter;
 use vulcan_core::Verbosity;
 use vulcan_core::{
     all_importers, annotate_import_conflicts, load_permission_profiles, ConfigImportReport,
-    CoreImporter, DataviewImporter, FolderNotesImporter, ImportTarget, KanbanImporter,
-    PeriodicNotesImporter, PermissionGuard, PermissionProfile, PluginImporter, TaskNotesImporter,
-    TasksImporter, TemplaterImporter, VaultPaths,
+    CoreImporter, CustomJsImporter, DataviewImporter, FolderNotesImporter, ImportTarget,
+    KanbanImporter, PeriodicNotesImporter, PermissionGuard, PermissionProfile, PluginImporter,
+    TaskNotesImporter, TasksImporter, TemplaterImporter, VaultPaths,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -247,6 +247,7 @@ fn config_import_target(target: ConfigTargetArg) -> Result<ImportTarget, CliErro
 fn importer_for_command(command: &ConfigImportCommand) -> Box<dyn PluginImporter> {
     match command {
         ConfigImportCommand::Core => Box::new(CoreImporter),
+        ConfigImportCommand::Customjs => Box::new(CustomJsImporter),
         ConfigImportCommand::Dataview => Box::new(DataviewImporter),
         ConfigImportCommand::FolderNotes => Box::new(FolderNotesImporter),
         ConfigImportCommand::Templater => Box::new(TemplaterImporter),

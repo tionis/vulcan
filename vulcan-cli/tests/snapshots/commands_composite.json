@@ -8731,6 +8731,12 @@
                 "subcommands": []
               },
               {
+                "about": "Import Obsidian CustomJS plugin settings",
+                "name": "customjs",
+                "options": [],
+                "subcommands": []
+              },
+              {
                 "about": "Import Obsidian Dataview plugin settings",
                 "name": "dataview",
                 "options": [],
@@ -20778,6 +20784,72 @@
               }
             ],
             "subcommands": []
+          },
+          {
+            "about": "List CustomJS classes and run their invoke() scripts",
+            "name": "customjs",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "List configured class files, loaded classes, and load errors",
+                "name": "list",
+                "options": [],
+                "subcommands": []
+              },
+              {
+                "about": "Run one class's invoke() method",
+                "name": "invoke",
+                "options": [
+                  {
+                    "help": "Class name, as in customJS.<ClassName>",
+                    "id": "class",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "CLASS"
+                    ]
+                  },
+                  {
+                    "help": "Run with every vault write refused",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Run the invoke() method of each customjs.startup_scripts class, in order",
+                "name": "startup",
+                "options": [
+                  {
+                    "help": "Run with every vault write refused",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              }
+            ]
           }
         ]
       },

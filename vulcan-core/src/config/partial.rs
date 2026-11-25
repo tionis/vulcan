@@ -18,6 +18,7 @@ pub(super) struct PartialVulcanConfig {
     pub(super) tasknotes: Option<PartialTaskNotesConfig>,
     pub(super) kanban: Option<PartialKanbanConfig>,
     pub(super) dataview: Option<PartialDataviewConfig>,
+    pub(super) customjs: Option<PartialCustomJsConfig>,
     pub(super) js_runtime: Option<PartialJsRuntimeConfig>,
     pub(super) templates: Option<PartialTemplatesConfig>,
     pub(super) quickadd: Option<PartialQuickAddConfig>,
@@ -163,6 +164,15 @@ pub(super) struct PartialSyncConfig {
     pub(super) poll_min_seconds: Option<u64>,
     pub(super) poll_max_seconds: Option<u64>,
     pub(super) mirrors: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct PartialCustomJsConfig {
+    pub(super) js_files: Option<Vec<String>>,
+    pub(super) js_folder: Option<String>,
+    pub(super) startup_scripts: Option<Vec<String>>,
+    pub(super) invocable_scripts: Option<Vec<String>>,
+    pub(super) dql_functions: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize, Default)]

@@ -534,6 +534,7 @@ pub(crate) fn evaluate_callback(
         note_lookup: ctx.note_lookup,
         this_note: ctx.this_note,
         this_null_when_missing: ctx.this_null_when_missing,
+        external_functions: ctx.external_functions,
         budget: ctx.budget.clone(),
     };
 

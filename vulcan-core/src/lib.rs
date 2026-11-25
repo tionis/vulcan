@@ -55,6 +55,7 @@ pub mod cache;
 pub mod chunking;
 pub mod config;
 pub mod content_transforms;
+pub mod customjs;
 pub mod dataview_js;
 pub mod decomposition;
 pub mod doctor;
@@ -152,25 +153,26 @@ pub use config::{
     validate_vulcan_overrides_toml, AssistantConfig, AttachmentExtractionConfig, AutoScanMode,
     ChunkingConfig, ChunkingStrategy, ConfigDiagnostic, ConfigDiagnosticKind, ConfigImportError,
     ConfigImportMapping, ConfigImportReport, ConfigLoadResult, ConfigPermissionMode,
-    ContentTransformConfig, ContentTransformRuleConfig, CoreImporter, DataviewConfig,
-    DataviewImporter, EmbeddingProviderConfig, FolderNotesImporter, GitBatchMessages,
-    GitCommitStrategy, GitConfig, GitScope, GitTrigger, ImportConflict, ImportMigratedFile,
-    ImportMigratedFileAction, ImportSkippedSetting, ImportTarget, InboxConfig, JsRuntimeConfig,
-    JsRuntimeSandbox, KanbanConfig, KanbanImporter, LinkResolutionMode, LinkStylePreference,
-    NetworkPermissionConfig, PathPermissionConfig, PathPermissionKeyword, PathPermissionRules,
-    PeriodicCadenceUnit, PeriodicConfig, PeriodicNoteConfig, PeriodicNotesImporter,
-    PeriodicStartOfWeek, PermissionLimit, PermissionLimitKeyword, PermissionMode,
-    PermissionProfile, PermissionProfilesLoadResult, PermissionsConfig, PluginEvent,
-    PluginImporter, PluginRegistration, ScanConfig, SearchBackendKind, SyncConfig, TaskNotesConfig,
-    TaskNotesDateDefault, TaskNotesFieldMapping, TaskNotesFilenameFormat,
-    TaskNotesIdentificationMethod, TaskNotesImporter, TaskNotesNlpTriggerConfig,
-    TaskNotesPriorityConfig, TaskNotesRecurrenceDefault, TaskNotesSavedViewCondition,
-    TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue, TaskNotesSavedViewGroup,
-    TaskNotesSavedViewNode, TaskNotesSavedViewOptionValue, TaskNotesSavedViewQuery,
-    TaskNotesStatusConfig, TaskNotesTaskCreationDefaults, TaskNotesUserFieldConfig,
-    TaskNotesUserFieldType, TasksImporter, TemplaterCommandPairConfig, TemplaterFileCreationMode,
-    TemplaterFileTemplateConfig, TemplaterFolderTemplateConfig, TemplaterIgnoredFolderConfig,
-    TemplaterImporter, TemplatesConfig, VaultConfig, DEFAULT_GIT_BATCH_INTERVAL_SECONDS,
+    ContentTransformConfig, ContentTransformRuleConfig, CoreImporter, CustomJsConfig,
+    CustomJsImporter, DataviewConfig, DataviewImporter, EmbeddingProviderConfig,
+    FolderNotesImporter, GitBatchMessages, GitCommitStrategy, GitConfig, GitScope, GitTrigger,
+    ImportConflict, ImportMigratedFile, ImportMigratedFileAction, ImportSkippedSetting,
+    ImportTarget, InboxConfig, JsRuntimeConfig, JsRuntimeSandbox, KanbanConfig, KanbanImporter,
+    LinkResolutionMode, LinkStylePreference, NetworkPermissionConfig, PathPermissionConfig,
+    PathPermissionKeyword, PathPermissionRules, PeriodicCadenceUnit, PeriodicConfig,
+    PeriodicNoteConfig, PeriodicNotesImporter, PeriodicStartOfWeek, PermissionLimit,
+    PermissionLimitKeyword, PermissionMode, PermissionProfile, PermissionProfilesLoadResult,
+    PermissionsConfig, PluginEvent, PluginImporter, PluginRegistration, ScanConfig,
+    SearchBackendKind, SyncConfig, TaskNotesConfig, TaskNotesDateDefault, TaskNotesFieldMapping,
+    TaskNotesFilenameFormat, TaskNotesIdentificationMethod, TaskNotesImporter,
+    TaskNotesNlpTriggerConfig, TaskNotesPriorityConfig, TaskNotesRecurrenceDefault,
+    TaskNotesSavedViewCondition, TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue,
+    TaskNotesSavedViewGroup, TaskNotesSavedViewNode, TaskNotesSavedViewOptionValue,
+    TaskNotesSavedViewQuery, TaskNotesStatusConfig, TaskNotesTaskCreationDefaults,
+    TaskNotesUserFieldConfig, TaskNotesUserFieldType, TasksImporter, TemplaterCommandPairConfig,
+    TemplaterFileCreationMode, TemplaterFileTemplateConfig, TemplaterFolderTemplateConfig,
+    TemplaterIgnoredFolderConfig, TemplaterImporter, TemplatesConfig, VaultConfig,
+    DEFAULT_GIT_BATCH_INTERVAL_SECONDS,
 };
 pub use content_transforms::apply_content_transforms;
 pub use dataview_js::{
@@ -296,11 +298,12 @@ pub use permissions::{
     ProfilePermissionGuard, ResolvedPermissionProfile, ResourceLimits, ResourceSpecifier,
 };
 pub use properties::{
-    evaluate_note_inline_expressions, extract_indexed_properties, list_properties,
-    list_properties_with_filter, list_query_fields, load_note_index_with_filter, query_notes,
-    query_notes_with_filter, EvaluatedInlineExpression, IndexedProperties, IndexedPropertyListItem,
-    IndexedPropertyValue, NotePage, NoteQuery, NoteRecord, NotesReport, PropertyCatalogEntry,
-    PropertyError, PropertyTypeDiagnostic, QueryFieldCatalogEntry,
+    evaluate_note_inline_expressions, evaluate_note_inline_expressions_with_functions,
+    extract_indexed_properties, list_properties, list_properties_with_filter, list_query_fields,
+    load_note_index_with_filter, query_notes, query_notes_with_filter, EvaluatedInlineExpression,
+    IndexedProperties, IndexedPropertyListItem, IndexedPropertyValue, NotePage, NoteQuery,
+    NoteRecord, NotesReport, PropertyCatalogEntry, PropertyError, PropertyTypeDiagnostic,
+    QueryFieldCatalogEntry,
 };
 pub use query::{
     execute_query, execute_query_dsl, execute_query_json, execute_query_report,

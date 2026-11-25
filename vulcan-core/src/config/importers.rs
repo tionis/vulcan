@@ -198,6 +198,9 @@ struct ImportSetting {
 pub struct CoreImporter;
 
 #[derive(Debug, Clone, Copy, Default)]
+pub struct CustomJsImporter;
+
+#[derive(Debug, Clone, Copy, Default)]
 pub struct DataviewImporter;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -225,6 +228,7 @@ pub struct TemplaterImporter;
 pub fn all_importers() -> Vec<Box<dyn PluginImporter>> {
     vec![
         Box::new(CoreImporter),
+        Box::new(CustomJsImporter),
         Box::new(DataviewImporter),
         Box::new(FolderNotesImporter),
         Box::new(KanbanImporter),
@@ -1134,6 +1138,113 @@ impl PluginImporter for DataviewImporter {
         report.skipped = skipped;
         Ok(report)
     }
+}
+
+impl PluginImporter for CustomJsImporter {
+    fn name(&self) -> &'static str {
+        "customjs"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Obsidian CustomJS plugin"
+    }
+
+    fn source_paths(&self, paths: &VaultPaths) -> Vec<PathBuf> {
+        vec![importer_source_path(
+            paths,
+            ".obsidian/plugins/customjs/data.json",
+        )]
+    }
+
+    fn import_with_mode(
+        &self,
+        paths: &VaultPaths,
+        target: ImportTarget,
+        dry_run: bool,
+    ) -> Result<ConfigImportReport, ConfigImportError> {
+        let source_path = self
+            .source_paths(paths)
+            .into_iter()
+            .next()
+            .expect("source path");
+        if !source_path.exists() {
+            return Err(ConfigImportError::MissingSource(source_path));
+        }
+
+        let raw = serde_json::from_str::<Value>(&fs::read_to_string(&source_path)?)?;
+        let schema_mappings = customjs_config_import_mappings(&ObsidianCustomJsConfig {
+            js_files: Some(String::new()),
+            js_folder: Some(String::new()),
+            startup_script_names: Some(Vec::new()),
+            registered_invocable_script_names: Some(Vec::new()),
+        })?;
+        let (obsidian, accepted, mut skipped) =
+            tolerant_plugin_config::<ObsidianCustomJsConfig>(&raw, &schema_mappings)?;
+        let mut mappings = customjs_config_import_mappings(&obsidian)?;
+        retain_present_mappings(&accepted, &mut mappings);
+        if raw.get("rerunStartupScriptsOnFileChange").is_some() {
+            skipped.push(ImportSkippedSetting {
+                source: "rerunStartupScriptsOnFileChange".to_string(),
+                reason: "Vulcan runs startup scripts only on `vulcan plugin customjs startup`"
+                    .to_string(),
+            });
+        }
+        let settings = import_settings_from_mappings(mappings);
+        let mut report = apply_import_settings(
+            paths,
+            self.name(),
+            source_path.clone(),
+            vec![source_path],
+            &settings,
+            target,
+            dry_run,
+        )?;
+        report.skipped = skipped;
+        Ok(report)
+    }
+}
+
+/// `CustomJS` stores `jsFiles` as one comma-separated string; Vulcan keeps a
+/// list of the `.js` entries, trimmed and sorted as `CustomJS` loads them.
+fn customjs_config_import_mappings(
+    obsidian: &ObsidianCustomJsConfig,
+) -> Result<Vec<ConfigImportMapping>, ConfigImportError> {
+    let mut mappings = Vec::new();
+    if let Some(files) = &obsidian.js_files {
+        let mut files = files
+            .split(',')
+            .map(str::trim)
+            // CustomJS compares extensions case-sensitively.
+            .filter(|file| {
+                #[allow(clippy::case_sensitive_file_extension_comparisons)]
+                let is_js = file.ends_with(".js");
+                !file.is_empty() && is_js
+            })
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        files.sort();
+        push_config_import_mapping(&mut mappings, "jsFiles", "customjs.js_files", &files)?;
+    }
+    if let Some(folder) = &obsidian.js_folder {
+        push_config_import_mapping(&mut mappings, "jsFolder", "customjs.js_folder", folder)?;
+    }
+    if let Some(names) = &obsidian.startup_script_names {
+        push_config_import_mapping(
+            &mut mappings,
+            "startupScriptNames",
+            "customjs.startup_scripts",
+            names,
+        )?;
+    }
+    if let Some(names) = &obsidian.registered_invocable_script_names {
+        push_config_import_mapping(
+            &mut mappings,
+            "registeredInvocableScriptNames",
+            "customjs.invocable_scripts",
+            names,
+        )?;
+    }
+    Ok(mappings)
 }
 
 impl PluginImporter for FolderNotesImporter {

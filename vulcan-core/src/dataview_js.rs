@@ -3767,7 +3767,7 @@ globalThis.this = dv.current();
     }
 
     impl DataviewJsSession {
-        #[allow(clippy::needless_pass_by_value)]
+        #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
         pub fn new(
             paths: &VaultPaths,
             current_file: Option<&str>,
@@ -3865,6 +3865,14 @@ globalThis.this = dv.current();
                 ctx.eval::<(), _>(DATAVIEW_JS_PRELUDE)
                     .catch(&ctx)
                     .map_err(|error| map_caught_runtime_error(&error, &timeout_description))?;
+                if loaded_config.customjs.is_configured() {
+                    install_customjs(
+                        &ctx,
+                        &state,
+                        loaded_config.customjs.clone(),
+                        &timeout_description,
+                    )?;
+                }
                 Ok(())
             })?;
 
@@ -3891,9 +3899,30 @@ globalThis.this = dv.current();
         /// its `const`, `let`, and `class` declarations stay local, as in
         /// Dataview, where each block is a separate function, while plain
         /// assignments (`fmt = (x) => …`) reach the session's shared scope.
+        ///
+        /// A block that uses `await` runs as an async function, as Dataview
+        /// runs every block, so `await cJS()` and `await dv.io.load()` work;
+        /// a rejection is rethrown once the session has drained its jobs.
         pub fn evaluate_block(&self, source: &str) -> Result<DataviewJsResult, DataviewJsError> {
-            // `{` shares the first line so error line numbers still match.
-            self.evaluate_with_mode(&format!("{{{source}\n}}"), false)
+            // The opening shares the first line so error line numbers match.
+            if !uses_await(source) {
+                return self.evaluate_with_mode(&format!("{{{source}\n}}"), false);
+            }
+            let mut result = self.evaluate_with_mode(
+                &format!(
+                    "globalThis.__vulcanBlockError = undefined; (async () => {{{source}\n}})()\
+                     .catch((error) => {{ globalThis.__vulcanBlockError = error; }}); undefined"
+                ),
+                false,
+            )?;
+            let settled = self.evaluate_with_mode(
+                "if (globalThis.__vulcanBlockError !== undefined) { \
+                 const error = globalThis.__vulcanBlockError; \
+                 globalThis.__vulcanBlockError = undefined; throw error; }",
+                false,
+            )?;
+            result.outputs.extend(settled.outputs);
+            Ok(result)
         }
 
         fn evaluate_with_mode(
@@ -3935,6 +3964,52 @@ globalThis.this = dv.current();
                 value,
             })
         }
+    }
+
+    /// Define `customJS`, `cJS()`, and `forceLoadCustomJS()`. The class
+    /// files are read, through the session's read permissions, only when a
+    /// script first uses them.
+    fn install_customjs(
+        ctx: &Ctx<'_>,
+        state: &Arc<JsEvalState>,
+        config: crate::config::CustomJsConfig,
+        timeout_description: &str,
+    ) -> Result<(), DataviewJsError> {
+        let sources_state = Arc::clone(state);
+        ctx.globals()
+            .set(
+                "__vulcan_customjs_sources",
+                Func::from(move |ctx: Ctx<'_>| {
+                    let guard = sources_state
+                        .permissions
+                        .as_ref()
+                        .map(|guard| guard as &dyn crate::permissions::PermissionGuard);
+                    let sources = crate::customjs::load_customjs_sources(
+                        &sources_state.paths,
+                        &config,
+                        guard,
+                    );
+                    to_json_string(&ctx, sources)
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        ctx.eval::<(), _>(CUSTOMJS_PRELUDE)
+            .catch(ctx)
+            .map_err(|error| map_caught_runtime_error(&error, timeout_description))
+    }
+
+    use crate::customjs::CUSTOMJS_PRELUDE;
+
+    /// Whether `source` contains `await` as a word, so its block needs an
+    /// async function. A mention in a string or comment only costs the
+    /// block its completion value, which blocks with output never show.
+    fn uses_await(source: &str) -> bool {
+        source.match_indices("await").any(|(index, _)| {
+            let word_char = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+            let before = source[..index].chars().next_back();
+            let after = source[index + "await".len()..].chars().next();
+            !before.is_some_and(word_char) && !after.is_some_and(word_char)
+        })
     }
 
     #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]

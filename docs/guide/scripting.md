@@ -124,6 +124,38 @@ execution and hooks such as `on_note_write`, `on_scan_complete`, or `on_pre_comm
 execution requires a trusted vault and remains constrained by the effective sandbox and permission
 profile. See `vulcan help js.plugins`.
 
+### Shared scope and CustomJS classes
+
+A note's inline DataviewJS (`` `$= …` ``) and `dataviewjs` blocks share one scope, run top to
+bottom: `` `$= rate = 150` `` early in a note makes `rate` available to every later expression and
+block, and a block can define helpers with a plain assignment (`hours = (minutes) => minutes / 60`).
+Block-level `const` and `let` stay inside their block.
+
+Helpers shared across notes belong in CustomJS classes, as the Obsidian CustomJS plugin defines
+them: one class per `.js` file, configured in `[customjs]` (or imported with
+`vulcan config import customjs`):
+
+```toml
+[customjs]
+js_folder = "scripts/customjs"
+
+[customjs.dql_functions]
+money = "Format.money"   # Vulcan-only: `= money(this.price)` in DQL
+```
+
+```js
+// scripts/customjs/Format.js
+class Format {
+  money(value) { return `${Number(value).toFixed(2)} EUR`; }
+}
+```
+
+DataviewJS reaches the instance as `customJS.Format` or `await cJS("Format")`.
+`vulcan plugin customjs list` lists the classes and load errors, and
+`vulcan plugin customjs invoke <Class>` runs a class's `invoke()` in a trusted vault. DQL bridge
+functions run in a separate engine that holds only the classes: they see their arguments, nothing
+else from the vault, and must return a value synchronously.
+
 DataviewJS and Templater-compatible JavaScript share the runtime foundation but provide
 surface-specific objects and behavior. Do not assume that an ad hoc `vulcan run` script has the
 same context object or lifecycle when copied into a DataviewJS block, template, plugin, or skill

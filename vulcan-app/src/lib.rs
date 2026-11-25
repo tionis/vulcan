@@ -48,6 +48,7 @@ pub mod chat;
 pub mod checkbox;
 pub mod commit;
 pub mod config;
+pub mod customjs;
 pub mod daemon_config_file;
 pub mod decomposition;
 pub mod device_config;

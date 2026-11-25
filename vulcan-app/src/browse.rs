@@ -275,7 +275,17 @@ pub fn build_dataview_inline_report(
         .values()
         .find(|note| note.document_path == resolved.path)
         .ok_or_else(|| AppError::operation(format!("note is not indexed: {}", resolved.path)))?;
-    let results = core_evaluate_note_inline_expressions(note, &note_index);
+    let config = load_vault_config(paths).config;
+    let read_filter =
+        permissions.map(|guard| vulcan_core::PermissionFilter::new(guard.grant().read.clone()));
+    let bridge = vulcan_core::customjs::DqlBridge::new(paths, &config, read_filter.as_ref());
+    let results = vulcan_core::evaluate_note_inline_expressions_with_functions(
+        note,
+        &note_index,
+        bridge
+            .as_ref()
+            .map(|bridge| bridge as &dyn vulcan_core::expression::eval::ExternalFunctions),
+    );
     let js_results =
         evaluate_inline_js_report(paths, &resolved.path, permission_profile, permissions)?;
 

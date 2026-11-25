@@ -1,7 +1,7 @@
 # Live documents: shared scope, vault functions, bound inputs, and calculator blocks
 
-**Status:** Design contract for Roadmap Phase 9.42. 9.42.1 (shared scope) is implemented; the rest
-is planned.
+**Status:** Design contract for Roadmap Phase 9.42. 9.42.1 (shared scope) and 9.42.2 (CustomJS)
+are implemented; the rest is planned.
 
 SilverBullet's Space Lua and Ink & Switch's Potluck make a note a small live program: values
 defined in one place, computed inline elsewhere, edited in place, with helpers defined in the
@@ -15,6 +15,11 @@ Numerals 1.10.2 with mathjs 15.2.0. Clone them into `references/` (gitignored) t
 `saml-dev/obsidian-custom-js`, `mProjectsCode/obsidian-meta-bind-plugin`,
 `gtg922r/obsidian-numerals`.
 
+Licensing: Meta Bind is GPL-3.0 and Vulcan is MIT OR Apache-2.0, so Vulcan's Meta Bind support is a
+clean reimplementation of the syntax and behavior described here; no Meta Bind source may be
+copied. CustomJS and Numerals are MIT (ports keep attribution in the code). The bundled mathjs is
+Apache-2.0 and ships with its `LICENSE`, `NOTICE`, and bundled-dependency notices.
+
 ## Principles
 
 1. **Obsidian syntax, not new syntax.** Every construct here is one an Obsidian plugin already
@@ -26,7 +31,8 @@ Numerals 1.10.2 with mathjs 15.2.0. Clone them into `references/` (gitignored) t
 3. **Same trust model as DataviewJS.** Vault JavaScript (blocks, inline expressions, CustomJS
    classes) runs under the render's `DataviewJS` policy: the strict `static` sandbox in an
    untrusted vault, the configured tier only in a vault trusted with `vulcan trust`. Pure
-   computation (mathjs, DQL calls into CustomJS functions) always runs in the strict sandbox.
+   computation (mathjs, DQL calls into CustomJS functions) runs in an engine with no vault access
+   at all, so it is safe in any vault.
 4. **Everything is a diagnostic or a value.** Unsupported syntax (Meta Bind buttons that need
    Obsidian commands, `memory^` targets that cannot persist) renders a visible notice and a
    diagnostic, never silently nothing.
@@ -50,7 +56,7 @@ top to bottom, as non-strict global code:
 Obsidian difference: Dataview runs the same code by leaking globals, and its render order is not
 guaranteed, so a note that must render identically there should assign before use.
 
-## 9.42.2 CustomJS classes and the DQL bridge
+## 9.42.2 CustomJS classes and the DQL bridge (implemented)
 
 ### CustomJS compatibility
 
@@ -61,8 +67,8 @@ Settings come from `[customjs]` in `.vulcan/config.toml`, importable with
 | --- | --- | --- | --- |
 | `jsFiles` | `js_files` (list) | `[]` | Explicit files; CustomJS stores a comma-separated string, trimmed, `.js` only |
 | `jsFolder` | `js_folder` | `""` | Every vault `.js` file whose path starts with this string (a raw prefix, so recursive) |
-| `startupScriptNames` | `startup_scripts` | `[]` | Classes whose `invoke()` runs on `vulcan customjs startup` |
-| `registeredInvocableScriptNames` | `invocable_scripts` | `[]` | Classes listed by `vulcan customjs list` |
+| `startupScriptNames` | `startup_scripts` | `[]` | Classes whose `invoke()` runs on `vulcan plugin customjs startup` |
+| `registeredInvocableScriptNames` | `invocable_scripts` | `[]` | Classes listed by `vulcan plugin customjs list` |
 
 Loading follows CustomJS exactly:
 
@@ -77,11 +83,19 @@ Loading follows CustomJS exactly:
   that class, a function is called with `customJS`, no argument returns `customJS`), and
   `forceLoadCustomJS()`. `obsidian` and `app` are absent; scripts that need them fail with a clear
   error.
-- Classes load into the note's shared DataviewJS session (9.42.1) before its first script, and into
-  `dataview query-js`, `dataview eval`, and `vulcan run` sessions.
-- `invoke()` convention: `vulcan customjs invoke <Class>` runs `await instance.invoke()` at the
-  configured sandbox tier (it may write, like `dataview eval`), with `--dry-run` through the
-  existing mutation committer. `deconstructor()` is not called; sessions are short-lived.
+- Classes load lazily, the first time a session reads `customJS` or calls `cJS()`, in every
+  DataviewJS session: rendered notes (sharing the note's scope, 9.42.1), `dataview query-js`,
+  `dataview eval`, `vulcan run`, plugins, and skill commands. Class files are read through the
+  session's read permissions. Sessions that never touch them pay nothing.
+- A `dataviewjs` block that uses `await` runs as an async function, as Dataview runs every block,
+  so `const { Util } = await cJS()` works; its rejection renders as the block's error.
+- `invoke()` convention: `vulcan plugin customjs invoke <Class>` runs `instance.invoke()` (awaited)
+  at the configured sandbox tier, like `vulcan plugin run`: it needs a trusted vault and the
+  `execute` permission, and may write. `--dry-run` runs it with every write refused.
+  `vulcan plugin customjs startup` runs the `startup_scripts` in order in one session.
+  `deconstructor()` is not called; sessions are short-lived.
+- `vulcan plugin customjs list` loads the classes in the strict sandbox, read-only (no trust
+  needed), and reports files in load order, classes, invocability, registration, and load errors.
 
 ### DQL bridge (Vulcan-only)
 
@@ -92,13 +106,15 @@ Loading follows CustomJS exactly:
 fmt = "Util.fmt"        # = fmt(this.price) calls customJS.Util.fmt(price)
 ```
 
-- Names must not shadow built-in DQL functions (config error).
-- Arguments are converted DQL value → JSON → JS; the return value converts back (dates become
-  strings, links stay link objects where the JSON form has one).
-- Calls run in a dedicated strict-sandbox session per evaluation (cache-backed reads only, no
-  writes, deterministic in deterministic renders), regardless of trust: the functions are meant to
-  be pure. Without `js_runtime` or with an unknown name, the call is a DQL error, as an unknown
-  function is today.
+- Built-in DQL functions take precedence; a mapping with a built-in name is never called.
+- Arguments are converted DQL value → JSON → JS; the return value converts back (`undefined`
+  becomes `null`).
+- Calls run in a separate QuickJS engine per evaluation that holds only the CustomJS classes: no
+  `dv`, no vault reads, no network, under the vault's `js_runtime` memory, stack, and timeout
+  limits. A function sees only its arguments, so it is safe in any vault and cannot read past a
+  permission-scoped query; class files the reader cannot read are not loaded. Methods must return
+  synchronously: a Promise is an error. Without `js_runtime`, or for a class or method that does
+  not exist, the call is a DQL error.
 - The bridge applies to DQL (queries, inline `` `= …` ``, `dataview` blocks), not to Bases
   formulas, whose function set follows Obsidian.
 

@@ -107,7 +107,16 @@ pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Val
             Ok(Value::String(value_to_display(&val)))
         }
         "duration" | "dur" => func_duration(args, ctx),
-        _ => Err(format!("unknown function `{name}`")),
+        _ => match ctx.external_functions {
+            Some(functions) if functions.has_function(name) => {
+                let values = args
+                    .iter()
+                    .map(|arg| evaluate(arg, ctx))
+                    .collect::<Result<Vec<_>, _>>()?;
+                functions.call_function(name, values)
+            }
+            _ => Err(format!("unknown function `{name}`")),
+        },
     }
 }
 

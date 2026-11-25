@@ -47,10 +47,11 @@ pub use importers::{
     import_dataview_plugin_config, import_folder_notes_plugin_config, import_kanban_plugin_config,
     import_periodic_notes_plugin_config, import_quickadd_plugin_config,
     import_tasknotes_plugin_config, import_tasks_plugin_config, import_templater_plugin_config,
-    ConfigImportError, ConfigImportMapping, ConfigImportReport, CoreImporter, DataviewImporter,
-    FolderNotesImporter, ImportConflict, ImportMigratedFile, ImportMigratedFileAction,
-    ImportSkippedSetting, ImportTarget, KanbanImporter, PeriodicNotesImporter, PluginImporter,
-    QuickAddImporter, TaskNotesImporter, TasksImporter, TemplaterImporter,
+    ConfigImportError, ConfigImportMapping, ConfigImportReport, CoreImporter, CustomJsImporter,
+    DataviewImporter, FolderNotesImporter, ImportConflict, ImportMigratedFile,
+    ImportMigratedFileAction, ImportSkippedSetting, ImportTarget, KanbanImporter,
+    PeriodicNotesImporter, PluginImporter, QuickAddImporter, TaskNotesImporter, TasksImporter,
+    TemplaterImporter,
 };
 mod obsidian;
 
@@ -73,11 +74,11 @@ use partial::{
 };
 
 use obsidian::{
-    ObsidianAppConfig, ObsidianDailyNotesConfig, ObsidianDataviewConfig, ObsidianKanbanConfig,
-    ObsidianPeriodicCalendarSet, ObsidianPeriodicNoteSettings, ObsidianPeriodicNotesConfig,
-    ObsidianQuickAddAiConfig, ObsidianQuickAddAiProviderConfig, ObsidianQuickAddChoice,
-    ObsidianQuickAddConfig, ObsidianQuickAddFormatConfig, ObsidianTaskNotesConfig,
-    ObsidianTaskNotesCreationDefaults, ObsidianTaskNotesDefaultReminder,
+    ObsidianAppConfig, ObsidianCustomJsConfig, ObsidianDailyNotesConfig, ObsidianDataviewConfig,
+    ObsidianKanbanConfig, ObsidianPeriodicCalendarSet, ObsidianPeriodicNoteSettings,
+    ObsidianPeriodicNotesConfig, ObsidianQuickAddAiConfig, ObsidianQuickAddAiProviderConfig,
+    ObsidianQuickAddChoice, ObsidianQuickAddConfig, ObsidianQuickAddFormatConfig,
+    ObsidianTaskNotesConfig, ObsidianTaskNotesCreationDefaults, ObsidianTaskNotesDefaultReminder,
     ObsidianTaskNotesFieldMapping, ObsidianTasksConfig, ObsidianTemplaterConfig,
     ObsidianTemplaterFolderTemplateConfig, ObsidianTemplaterHotkey, ObsidianTemplatesConfig,
 };
@@ -390,6 +391,27 @@ impl Default for GitConfig {
             batch_messages: GitBatchMessages::Template,
         }
     }
+}
+
+/// `CustomJS`-compatible vault classes (`[customjs]`), as the Obsidian
+/// `CustomJS` plugin configures them. See `docs/specs/live-documents.md`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomJsConfig {
+    /// Class files to load, as vault paths.
+    #[serde(default)]
+    pub js_files: Vec<String>,
+    /// Load every vault `.js` file whose path starts with this prefix.
+    #[serde(default)]
+    pub js_folder: String,
+    /// Classes whose `invoke()` `vulcan plugin customjs startup` runs, in order.
+    #[serde(default)]
+    pub startup_scripts: Vec<String>,
+    /// Classes registered as invocable scripts.
+    #[serde(default)]
+    pub invocable_scripts: Vec<String>,
+    /// DQL function name to the `Class.method` that implements it.
+    #[serde(default)]
+    pub dql_functions: BTreeMap<String, String>,
 }
 
 /// Defaults for editors connected through `vulcan lsp`.
@@ -2768,6 +2790,8 @@ pub struct VaultConfig {
     pub tasknotes: TaskNotesConfig,
     pub kanban: KanbanConfig,
     pub dataview: DataviewConfig,
+    #[serde(default)]
+    pub customjs: CustomJsConfig,
     pub js_runtime: JsRuntimeConfig,
     pub templates: TemplatesConfig,
     pub quickadd: QuickAddConfig,
@@ -2981,6 +3005,7 @@ impl Default for VaultConfig {
             tasknotes: TaskNotesConfig::default(),
             kanban: KanbanConfig::default(),
             dataview: DataviewConfig::default(),
+            customjs: CustomJsConfig::default(),
             js_runtime: JsRuntimeConfig::default(),
             templates: TemplatesConfig::default(),
             quickadd: QuickAddConfig::default(),
@@ -4890,6 +4915,23 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
         if let Some(mirrors) = sync.mirrors {
             config.sync.mirrors = mirrors;
+        }
+    }
+    if let Some(customjs) = overrides.customjs {
+        if let Some(value) = customjs.js_files {
+            config.customjs.js_files = value;
+        }
+        if let Some(value) = customjs.js_folder {
+            config.customjs.js_folder = value;
+        }
+        if let Some(value) = customjs.startup_scripts {
+            config.customjs.startup_scripts = value;
+        }
+        if let Some(value) = customjs.invocable_scripts {
+            config.customjs.invocable_scripts = value;
+        }
+        if let Some(value) = customjs.dql_functions {
+            config.customjs.dql_functions.extend(value);
         }
     }
     if let Some(editor) = overrides.editor {

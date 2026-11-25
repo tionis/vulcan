@@ -572,6 +572,17 @@ pub(super) struct ObsidianTaskNotesDefaultReminder {
     pub(super) description: Option<String>,
 }
 
+/// `.obsidian/plugins/customjs/data.json`.
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ObsidianCustomJsConfig {
+    /// Comma-separated vault paths.
+    pub(super) js_files: Option<String>,
+    pub(super) js_folder: Option<String>,
+    pub(super) startup_script_names: Option<Vec<String>>,
+    pub(super) registered_invocable_script_names: Option<Vec<String>>,
+}
+
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct ObsidianKanbanConfig {
     #[serde(rename = "date-trigger")]

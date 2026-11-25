@@ -8739,11 +8739,11 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 
 ### 9.42.2 CustomJS classes and the DQL bridge
 
-- [ ] `[customjs]` config (`js_files`, `js_folder`, `startup_scripts`, `invocable_scripts`) and settings import from `.obsidian/plugins/customjs/data.json`.
-- [ ] Load classes exactly as CustomJS does (basename order, `(class …)` evaluation, `customJS`, `cJS()`, `create<Name>Instance`) into note sessions, `dataview query-js`, `dataview eval`, and `vulcan run`; load failures are diagnostics.
-- [ ] `vulcan customjs list|invoke|startup` for `invoke()` scripts, with `--dry-run`.
-- [ ] `[customjs.dql_functions]` DQL bridge in a strict, read-only session; names may not shadow built-ins.
-- [ ] Scripting guide, `dataview-and-bases` skill, tests (fixture vault with CustomJS classes).
+- [x] `[customjs]` config (`js_files`, `js_folder`, `startup_scripts`, `invocable_scripts`) and settings import from `.obsidian/plugins/customjs/data.json` (`vulcan config import customjs`).
+- [x] Load classes exactly as CustomJS does (basename order, `(class …)` evaluation, `customJS`, `cJS()`, `create<Name>Instance`), lazily, into every DataviewJS session; load failures are reported by `plugin customjs list`. `dataviewjs` blocks that use `await` run as async functions, as in Dataview.
+- [x] `vulcan plugin customjs list|invoke|startup` for `invoke()` scripts (trusted vault, `execute`), with `--dry-run` refusing writes.
+- [x] `[customjs.dql_functions]` DQL bridge in a separate engine with no vault access (arguments only); built-ins take precedence.
+- [x] Scripting guide, `dataview-and-bases` and `plugin-authoring` skills, config reference, tests.
 
 ### 9.42.3 Meta Bind inputs and views
 

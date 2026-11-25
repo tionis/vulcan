@@ -27,6 +27,11 @@ human or LLM explicitly invoked a request/response command.
 - Use `vulcan plugin run <name>` to test a plugin manually.
 - Keep plugin code in `.vulcan/plugins/` unless the config points elsewhere.
 - Use `help js.plugins`, `help js.host`, and `help sandbox` for runtime boundaries.
+- For a vault that uses the Obsidian CustomJS plugin, `vulcan plugin customjs list` shows its
+  classes, `vulcan plugin customjs invoke <Class>` runs a class's `invoke()` (trusted vault,
+  may write; `--dry-run` refuses writes), and `vulcan plugin customjs startup` runs the
+  configured startup scripts. Shared helpers for DataviewJS belong in CustomJS classes rather than
+  in plugins.
 
 ## Guardrails
 

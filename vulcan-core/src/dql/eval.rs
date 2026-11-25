@@ -293,7 +293,15 @@ fn select_candidate_rows(
         |record: &Arc<NoteRecord>| {
             let row = ExecutionRow::page(record);
             let value = row
-                .evaluate_with_source(&sort_keys?[0].expr, lookup, time_zone?, None)
+                .evaluate_with_source(
+                    &sort_keys?[0].expr,
+                    lookup,
+                    DqlEnv {
+                        time_zone: time_zone?,
+                        functions: None,
+                    },
+                    None,
+                )
                 .ok()?;
             let class = sort_key_class(&value)?;
             Some((value, class))
@@ -626,6 +634,14 @@ fn notes_outside_scope_removed(
     })
 }
 
+/// What expression evaluation needs besides the row: the Dataview time
+/// zone and the `CustomJS` DQL bridge, when the vault maps functions.
+#[derive(Clone, Copy)]
+pub(crate) struct DqlEnv<'a> {
+    time_zone: DataviewTimeZone,
+    functions: Option<&'a dyn crate::expression::eval::ExternalFunctions>,
+}
+
 #[allow(clippy::too_many_lines)]
 pub(crate) fn evaluate_parsed_dql_with_note_index_and_config(
     paths: &VaultPaths,
@@ -635,7 +651,13 @@ pub(crate) fn evaluate_parsed_dql_with_note_index_and_config(
     config: &VaultConfig,
     notes: &DqlNotes<'_>,
 ) -> Result<DqlQueryResult, DqlEvalError> {
-    let time_zone = DataviewTimeZone::parse(config.dataview.timezone.as_deref());
+    let bridge = crate::customjs::DqlBridge::new(paths, config, filter);
+    let env = DqlEnv {
+        time_zone: DataviewTimeZone::parse(config.dataview.timezone.as_deref()),
+        functions: bridge
+            .as_ref()
+            .map(|bridge| bridge as &dyn crate::expression::eval::ExternalFunctions),
+    };
     let compiled = compile_dql(query);
     let mut diagnostics = DqlDiagnosticCollector::default();
     let filtered_note_lookup = match notes {
@@ -727,7 +749,7 @@ pub(crate) fn evaluate_parsed_dql_with_note_index_and_config(
                     query,
                     lookup,
                     source_note,
-                    time_zone,
+                    env,
                     &mut diagnostics,
                 )?;
             }
@@ -739,7 +761,7 @@ pub(crate) fn evaluate_parsed_dql_with_note_index_and_config(
                         let value = match row.evaluate_with_source(
                             &key.expr,
                             lookup,
-                            time_zone,
+                            env,
                             source_note,
                         ) {
                             Ok(value) => value,
@@ -774,11 +796,11 @@ pub(crate) fn evaluate_parsed_dql_with_note_index_and_config(
             }
             CompiledDqlCommand::Limit(limit) => rows.truncate(*limit),
             CompiledDqlCommand::GroupBy(named_expr) => {
-                rows = apply_group_by(rows, named_expr, lookup, time_zone, &mut diagnostics)?;
+                rows = apply_group_by(rows, named_expr, lookup, env, &mut diagnostics)?;
                 page_rows_are_pristine = false;
             }
             CompiledDqlCommand::Flatten(named_expr) => {
-                rows = apply_flatten(rows, named_expr, lookup, time_zone, &mut diagnostics)?;
+                rows = apply_flatten(rows, named_expr, lookup, env, &mut diagnostics)?;
                 page_rows_are_pristine = false;
             }
         }
@@ -790,7 +812,7 @@ pub(crate) fn evaluate_parsed_dql_with_note_index_and_config(
         &config.dataview.group_column_name,
         rows,
         lookup,
-        time_zone,
+        env,
         &mut diagnostics,
     )?;
     result.diagnostics = diagnostics.into_vec();
@@ -936,16 +958,16 @@ impl ExecutionRow {
         &self,
         expr: &crate::expression::ast::Expr,
         note_lookup: &dyn NoteLookup,
-        time_zone: DataviewTimeZone,
+        env: DqlEnv<'_>,
     ) -> Result<Value, String> {
-        self.evaluate_with_source(expr, note_lookup, time_zone, None)
+        self.evaluate_with_source(expr, note_lookup, env, None)
     }
 
     fn evaluate_with_source(
         &self,
         expr: &crate::expression::ast::Expr,
         note_lookup: &dyn NoteLookup,
-        time_zone: DataviewTimeZone,
+        env: DqlEnv<'_>,
         source_note: Option<&NoteRecord>,
     ) -> Result<Value, String> {
         // Expressions read the row's fields as the note's properties.
@@ -961,7 +983,8 @@ impl ExecutionRow {
         let formulas = BTreeMap::new();
         let mut ctx = EvalContext::new(note, &formulas)
             .with_note_lookup(note_lookup)
-            .with_time_zone(time_zone);
+            .with_time_zone(env.time_zone)
+            .with_external_functions(env.functions);
         if let Some(sn) = source_note {
             ctx = ctx.with_this_note(sn);
         } else {
@@ -1059,7 +1082,7 @@ fn apply_where_expression(
     query: &DqlQuery,
     note_lookup: &dyn NoteLookup,
     source_note: Option<&NoteRecord>,
-    time_zone: DataviewTimeZone,
+    env: DqlEnv<'_>,
     diagnostics: &mut DqlDiagnosticCollector,
 ) -> Result<Vec<ExecutionRow>, DqlEvalError> {
     let mut decorated = Vec::with_capacity(rows.len());
@@ -1083,7 +1106,7 @@ fn apply_where_expression(
             decorated.push((decision == Decision::Match, row));
             continue;
         }
-        let value = match row.evaluate_with_source(expr, note_lookup, time_zone, source_note) {
+        let value = match row.evaluate_with_source(expr, note_lookup, env, source_note) {
             Ok(value) => value,
             Err(error) => recover_unsupported_feature(
                 diagnostics,
@@ -1318,7 +1341,7 @@ fn apply_group_by(
     rows: Vec<ExecutionRow>,
     named_expr: &DqlNamedExpr,
     note_lookup: &dyn NoteLookup,
-    time_zone: DataviewTimeZone,
+    env: DqlEnv<'_>,
     diagnostics: &mut DqlDiagnosticCollector,
 ) -> Result<Vec<ExecutionRow>, DqlEvalError> {
     let group_name = named_expr
@@ -1328,7 +1351,7 @@ fn apply_group_by(
     let mut decorated = Vec::with_capacity(rows.len());
 
     for row in rows {
-        let key = match row.evaluate(&named_expr.expr, note_lookup, time_zone) {
+        let key = match row.evaluate(&named_expr.expr, note_lookup, env) {
             Ok(value) => value,
             Err(error) => recover_unsupported_feature(
                 diagnostics,
@@ -1388,7 +1411,7 @@ fn apply_flatten(
     rows: Vec<ExecutionRow>,
     named_expr: &DqlNamedExpr,
     note_lookup: &dyn NoteLookup,
-    time_zone: DataviewTimeZone,
+    env: DqlEnv<'_>,
     diagnostics: &mut DqlDiagnosticCollector,
 ) -> Result<Vec<ExecutionRow>, DqlEvalError> {
     let field_name = named_expr
@@ -1398,7 +1421,7 @@ fn apply_flatten(
     let mut flattened_rows = Vec::new();
 
     for row in rows {
-        let value = match row.evaluate(&named_expr.expr, note_lookup, time_zone) {
+        let value = match row.evaluate(&named_expr.expr, note_lookup, env) {
             Ok(value) => value,
             Err(error) => recover_unsupported_feature(
                 diagnostics,
@@ -1469,7 +1492,7 @@ fn render_result(
     group_column_name: &str,
     rows: Vec<ExecutionRow>,
     note_lookup: &dyn NoteLookup,
-    time_zone: DataviewTimeZone,
+    env: DqlEnv<'_>,
     diagnostics: &mut DqlDiagnosticCollector,
 ) -> Result<DqlQueryResult, DqlEvalError> {
     let first_column_name = result_first_column_name(query, primary_column_name, group_column_name);
@@ -1479,7 +1502,7 @@ fn render_result(
             first_column_name,
             rows,
             note_lookup,
-            time_zone,
+            env,
             diagnostics,
         ),
         super::DqlQueryType::List => render_list_result(
@@ -1487,7 +1510,7 @@ fn render_result(
             first_column_name,
             rows,
             note_lookup,
-            time_zone,
+            env,
             diagnostics,
         ),
         super::DqlQueryType::Task => Ok(render_task_result(query, first_column_name, rows)),
@@ -1496,7 +1519,7 @@ fn render_result(
             first_column_name,
             rows,
             note_lookup,
-            time_zone,
+            env,
             diagnostics,
         ),
     }
@@ -1526,7 +1549,7 @@ fn render_table_result(
     primary_column_name: &str,
     rows: Vec<ExecutionRow>,
     note_lookup: &dyn NoteLookup,
-    time_zone: DataviewTimeZone,
+    env: DqlEnv<'_>,
     diagnostics: &mut DqlDiagnosticCollector,
 ) -> Result<DqlQueryResult, DqlEvalError> {
     let mut columns = Vec::new();
@@ -1543,7 +1566,7 @@ fn render_table_result(
                 query,
                 primary_column_name,
                 note_lookup,
-                time_zone,
+                env,
                 diagnostics,
             )
         })
@@ -1564,7 +1587,7 @@ fn render_table_row(
     query: &DqlQuery,
     primary_column_name: &str,
     note_lookup: &dyn NoteLookup,
-    time_zone: DataviewTimeZone,
+    env: DqlEnv<'_>,
     diagnostics: &mut DqlDiagnosticCollector,
 ) -> Result<Value, DqlEvalError> {
     let mut object = Map::new();
@@ -1574,7 +1597,7 @@ fn render_table_row(
 
     for projection in &query.table_columns {
         let label = projection_label(projection);
-        let value = match row.evaluate(&projection.expr, note_lookup, time_zone) {
+        let value = match row.evaluate(&projection.expr, note_lookup, env) {
             Ok(value) => value,
             Err(error) => recover_unsupported_feature(
                 diagnostics,
@@ -1605,7 +1628,7 @@ fn render_list_result(
     primary_column_name: &str,
     rows: Vec<ExecutionRow>,
     note_lookup: &dyn NoteLookup,
-    time_zone: DataviewTimeZone,
+    env: DqlEnv<'_>,
     diagnostics: &mut DqlDiagnosticCollector,
 ) -> Result<DqlQueryResult, DqlEvalError> {
     let mut columns = Vec::new();
@@ -1624,7 +1647,7 @@ fn render_list_result(
                 object.insert(primary_column_name.to_string(), row.primary_value());
             }
             if let Some(expr) = &query.list_expression {
-                let value = match row.evaluate(expr, note_lookup, time_zone) {
+                let value = match row.evaluate(expr, note_lookup, env) {
                     Ok(value) => value,
                     Err(error) => recover_unsupported_feature(
                         diagnostics,
@@ -1708,7 +1731,7 @@ fn render_calendar_result(
     primary_column_name: &str,
     rows: Vec<ExecutionRow>,
     note_lookup: &dyn NoteLookup,
-    time_zone: DataviewTimeZone,
+    env: DqlEnv<'_>,
     diagnostics: &mut DqlDiagnosticCollector,
 ) -> Result<DqlQueryResult, DqlEvalError> {
     let expr = query.calendar_expression.as_ref().ok_or_else(|| {
@@ -1717,7 +1740,7 @@ fn render_calendar_result(
     let mut rendered_rows = Vec::new();
 
     for row in rows {
-        let value = match row.evaluate(expr, note_lookup, time_zone) {
+        let value = match row.evaluate(expr, note_lookup, env) {
             Ok(value) => value,
             Err(error) => recover_unsupported_feature(
                 diagnostics,

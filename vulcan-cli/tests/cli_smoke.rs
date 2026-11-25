@@ -2461,6 +2461,54 @@ metadata:
         .stderr(predicate::str::contains("requires --sandbox none"));
 }
 
+#[cfg(feature = "js_runtime")]
+#[test]
+fn customjs_settings_import_and_class_listing() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".obsidian/plugins/customjs"))
+        .expect("plugin dir should be created");
+    fs::create_dir_all(vault_root.join("scripts")).expect("scripts dir should be created");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan should be created");
+    fs::write(
+        vault_root.join(".obsidian/plugins/customjs/data.json"),
+        r#"{"jsFiles": "", "jsFolder": "scripts", "registeredInvocableScriptNames": ["Job"]}"#,
+    )
+    .expect("plugin settings should write");
+    fs::write(
+        vault_root.join("scripts/Job.js"),
+        "class Job { async invoke() {} }",
+    )
+    .expect("class should write");
+    fs::write(vault_root.join("Home.md"), "# Home\n").expect("note should write");
+    let vault = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--vault", &vault, "config", "import", "customjs", "--apply"])
+        .assert()
+        .success();
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault", &vault, "--output", "json", "plugin", "customjs", "list",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    assert_eq!(json["files"], serde_json::json!(["scripts/Job.js"]));
+    assert_eq!(
+        json["classes"],
+        serde_json::json!([
+            { "name": "Job", "invocable": true, "registered": true, "startup": false }
+        ])
+    );
+}
+
 #[test]
 fn plugin_set_and_delete_manage_full_registration_surface() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
@@ -12093,6 +12141,10 @@ fn bases_evaluation_applies_read_and_policy_scope() {
     assert!(bases_skill.contains("--permissions"));
     assert!(bases_skill.contains("write access to the derived note path"));
     assert!(bases_skill.contains("`dataview inline` use the same scope"));
+    // Live-document workflows (9.42): the shared scope and CustomJS classes.
+    assert!(bases_skill.contains("share one scope, run top to bottom"));
+    assert!(bases_skill.contains("vulcan plugin customjs list"));
+    assert!(bases_skill.contains("[customjs.dql_functions]"));
     assert!(bases_skill.contains("full evaluation (the configured sandbox tier, still read-only) in a vault trusted with `vulcan trust`"));
     let task_skill =
         fs::read_to_string(root.join(".agents/skills/task-management/SKILL.md")).unwrap();
