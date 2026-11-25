@@ -1349,6 +1349,11 @@ pub struct GitUnattendedRepositoryState {
     pub staged_changes: bool,
     pub worktree_count: usize,
     pub operation: Option<String>,
+    /// Gitlinks in the index: committed submodules, which Git's own merge
+    /// and rebase leave at their checked-out commits.
+    pub submodules: Vec<String>,
+    /// Repositories inside the work tree that the index does not bind as
+    /// gitlinks, so their files are in no history.
     pub nested_repositories: Vec<String>,
 }
 
@@ -2023,7 +2028,12 @@ impl GitCliEngine {
             // scopes capture and verification to a subdirectory.
             command.current_dir(work_tree);
         }
+        // Submodules are the user's to update: never fetch or check them out
+        // implicitly, whatever submodule.recurse or fetch.recurseSubmodules
+        // the user configured.
         command
+            .args(["-c", "submodule.recurse=false"])
+            .args(["-c", "fetch.recurseSubmodules=false"])
             .arg("--git-dir")
             .arg(git_cli_path(&repository.git_dir));
         if let Some(work_tree) = &repository.work_tree {
@@ -4389,7 +4399,7 @@ impl GitEngine for GitCliEngine {
         let mut index = self.repository_command(repository);
         index.args(["ls-files", "--stage", "-z"]);
         let index = ensure_success("inspect nested Git repositories", self.execute(index)?)?;
-        let mut nested_repositories: Vec<String> = index
+        let mut submodules: Vec<String> = index
             .stdout
             .split(|byte| *byte == 0)
             .filter_map(|entry| {
@@ -4400,7 +4410,26 @@ impl GitEngine for GitCliEngine {
                     .then(|| String::from_utf8_lossy(&path[1..]).into_owned())
             })
             .collect();
-        nested_repositories.extend(find_nested_git_metadata(repository.require_work_tree()?)?);
+        submodules.sort();
+        submodules.dedup();
+        // A repository at or below a gitlink belongs to that submodule.
+        let mut nested_repositories: Vec<String> =
+            find_nested_git_metadata(repository.require_work_tree()?)?
+                .into_iter()
+                .map(|metadata| {
+                    metadata
+                        .strip_suffix("/.git")
+                        .map_or(metadata.clone(), str::to_string)
+                })
+                .filter(|directory| {
+                    !submodules.iter().any(|submodule| {
+                        directory == submodule
+                            || directory
+                                .strip_prefix(submodule.as_str())
+                                .is_some_and(|rest| rest.starts_with('/'))
+                    })
+                })
+                .collect();
         nested_repositories.sort();
         nested_repositories.dedup();
 
@@ -4410,6 +4439,7 @@ impl GitEngine for GitCliEngine {
             staged_changes: safety.staged_changes,
             worktree_count,
             operation: safety.operation,
+            submodules,
             nested_repositories,
         })
     }
@@ -6398,6 +6428,79 @@ mod tests {
                 .fast_forward_branch(&repository, &branch, &fetched)
                 .expect("repeat fast-forward"),
             FastForwardOutcome::UpToDate
+        );
+    }
+
+    #[test]
+    fn fetching_leaves_submodules_to_their_own_remotes() {
+        let (temporary, remote, writer) = init_branch_remote();
+        let source = temporary.path().join("submodule-source");
+        fs::create_dir(&source).expect("submodule source directory");
+        init_repo(&source);
+        fs::write(source.join("a.md"), "a\n").expect("submodule file");
+        commit_all(&source, "a");
+        let source_url = source.to_str().expect("source path");
+        run_git(
+            &writer,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "--quiet",
+                "add",
+                source_url,
+                "sub",
+            ],
+        );
+        commit_all(&writer, "add submodule");
+        run_git(&writer, &["push", "--quiet", "origin", "main"]);
+        // Another device moves the gitlink to a commit only the submodule's
+        // own remote has.
+        fs::write(source.join("b.md"), "b\n").expect("new submodule file");
+        let moved = commit_all(&source, "b");
+        let other = temporary.path().join("other");
+        run_git(
+            temporary.path(),
+            &[
+                "clone",
+                "--quiet",
+                "-b",
+                "main",
+                remote.to_str().expect("remote"),
+                other.to_str().expect("other"),
+            ],
+        );
+        run_git(&other, &["config", "user.name", "Vulcan Test"]);
+        run_git(&other, &["config", "user.email", "vulcan@example.invalid"]);
+        let cacheinfo = format!("160000,{},sub", moved.as_str());
+        run_git(&other, &["update-index", "--cacheinfo", &cacheinfo]);
+        run_git(&other, &["commit", "--quiet", "-m", "move the submodule"]);
+        run_git(&other, &["push", "--quiet", "origin", "main"]);
+        run_git(&writer, &["config", "submodule.recurse", "true"]);
+        run_git(&writer, &["config", "protocol.file.allow", "always"]);
+
+        let (engine, repository, remote_name, branch) = branch_fixture(&writer);
+        let upstream = engine
+            .branch_upstream(&repository, &branch)
+            .expect("upstream")
+            .expect("tracking upstream");
+        engine
+            .fetch_ref(
+                &repository,
+                &remote_name,
+                &upstream.merge_ref,
+                &upstream.tracking_ref,
+            )
+            .expect("fetch branch");
+
+        let probe = Command::new("git")
+            .current_dir(writer.join("sub"))
+            .args(["cat-file", "-e", moved.as_str()])
+            .status()
+            .expect("probe the submodule");
+        assert!(
+            !probe.success(),
+            "the fetch must not recurse into the submodule"
         );
     }
 

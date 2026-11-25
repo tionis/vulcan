@@ -486,10 +486,15 @@ fn doctor_unattended_files_only_state(
                 unsafe_conditions.push(format!("a Git {operation} operation is in progress"));
             }
             if !state.nested_repositories.is_empty() {
-                unsafe_conditions.push(format!(
-                    "nested repositories or submodules are present: {}",
-                    state.nested_repositories.join(", ")
-                ));
+                unsafe_conditions.push(untracked_nested_condition(&state.nested_repositories));
+            }
+            if !state.submodules.is_empty() {
+                doctor_check(
+                    report,
+                    "git.submodules",
+                    SyncDoctorSeverity::Info,
+                    submodules_note(&state.submodules),
+                );
             }
             if unsafe_conditions.is_empty() {
                 doctor_check(
@@ -1671,10 +1676,7 @@ fn validate_unattended_files_only_repository(
         unsafe_conditions.push(format!("a Git {operation} operation is in progress"));
     }
     if !state.nested_repositories.is_empty() {
-        unsafe_conditions.push(format!(
-            "nested repositories or submodules are present: {}",
-            state.nested_repositories.join(", ")
-        ));
+        unsafe_conditions.push(untracked_nested_condition(&state.nested_repositories));
     }
     if unsafe_conditions.is_empty() {
         Ok(state.head_reference)
@@ -1684,6 +1686,24 @@ fn validate_unattended_files_only_repository(
             unsafe_conditions.join("; ")
         ), false))
     }
+}
+
+/// Why a repository that the index does not bind pauses unattended sync:
+/// its files are in no history, and the snapshot would hold only a gitlink.
+fn untracked_nested_condition(directories: &[String]) -> String {
+    format!(
+        "repositories that are not committed as submodules are present, so their files are in no history: {}; add them as submodules, move them out, or ignore them",
+        directories.join(", ")
+    )
+}
+
+/// Committed submodules synchronize as gitlinks; their own files are the
+/// submodule repositories' to synchronize.
+fn submodules_note(submodules: &[String]) -> String {
+    format!(
+        "submodules synchronize as commit pointers and stay at their checked-out commits; Vulcan neither fetches nor updates them: {}",
+        submodules.join(", ")
+    )
 }
 
 fn unattended_files_only_error(message: String, retryable: bool) -> AppError {
@@ -2104,8 +2124,33 @@ mod tests {
         fs::create_dir(&nested).expect("nested repository directory");
         git(&nested, &["init", "--quiet"]);
         let error = validate_unattended_files_only_repository(&engine, &paths)
-            .expect_err("nested repository must pause unattended sync");
-        assert!(error.to_string().contains("nested/.git"));
+            .expect_err("an untracked nested repository must pause unattended sync");
+        assert!(error.to_string().contains("not committed as submodules"));
+        assert!(error.to_string().contains(": nested;"));
+
+        // Committed as a gitlink, it is a submodule that Git's own merge and
+        // rebase leave alone, so unattended sync proceeds.
+        git(&nested, &["config", "user.name", "Vulcan Test"]);
+        git(&nested, &["config", "user.email", "vulcan@example.invalid"]);
+        fs::write(nested.join("inner.md"), "inner\n").expect("inner file");
+        git(&nested, &["add", "inner.md"]);
+        git(&nested, &["commit", "--quiet", "-m", "inner"]);
+        git(&repository_path, &["add", "nested"]);
+        git(
+            &repository_path,
+            &["commit", "--quiet", "-m", "bind nested"],
+        );
+        validate_unattended_files_only_repository(&engine, &paths)
+            .expect("a committed submodule does not pause unattended sync");
+        let state = engine
+            .unattended_repository_state(
+                &engine
+                    .discover_repository(&repository_path)
+                    .expect("repository"),
+            )
+            .expect("state");
+        assert_eq!(state.submodules, ["nested"]);
+        assert!(state.nested_repositories.is_empty());
     }
 
     fn assert_dry_run_recovers_journal_phase(
