@@ -7,12 +7,10 @@ use std::fmt::Write as _;
 use std::fmt::{Display, Formatter};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
-#[cfg(all(test, unix))]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tempfile::{NamedTempFile, TempDir};
 use ulid::Ulid;
 use wait_timeout::ChildExt;
@@ -1422,6 +1420,9 @@ pub enum GitEngineError {
     CommandTimedOut {
         operation: &'static str,
         timeout: Duration,
+        /// Whether Git went silent for `timeout`, rather than running past
+        /// the overall ceiling while still active.
+        stalled: bool,
     },
     RemoteRefMissing {
         remote: GitRemote,
@@ -1466,7 +1467,20 @@ impl Display for GitEngineError {
                 }
                 Ok(())
             }
-            Self::CommandTimedOut { operation, timeout } => write!(
+            Self::CommandTimedOut {
+                operation,
+                timeout,
+                stalled: true,
+            } => write!(
+                formatter,
+                "Git timed out while trying to {operation}: no progress for {:.3} seconds",
+                timeout.as_secs_f64()
+            ),
+            Self::CommandTimedOut {
+                operation,
+                timeout,
+                stalled: false,
+            } => write!(
                 formatter,
                 "Git timed out while trying to {operation} after {:.3} seconds",
                 timeout.as_secs_f64()
@@ -1525,6 +1539,84 @@ impl From<std::io::Error> for GitEngineError {
     fn from(error: std::io::Error) -> Self {
         Self::Io(error)
     }
+}
+
+/// The longest any Git command may run, however steadily it reports
+/// progress; the command timeout bounds silence, not duration.
+const MAX_COMMAND_DURATION: Duration = Duration::from_hours(24);
+
+/// Why a Git command was stopped.
+#[derive(Debug, Clone, Copy)]
+enum Stall {
+    /// No output or transfer progress for the command timeout.
+    Silent,
+    /// Still active at [`MAX_COMMAND_DURATION`].
+    Ceiling,
+}
+
+impl Stall {
+    fn limit(self, idle: Duration) -> Duration {
+        match self {
+            Self::Silent => idle,
+            Self::Ceiling => MAX_COMMAND_DURATION.max(idle),
+        }
+    }
+}
+
+fn mark_activity(started: Instant, activity: &AtomicU64) {
+    let now = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    activity.fetch_max(now, Ordering::Relaxed);
+}
+
+/// Reads a stream to its end, recording each chunk as activity.
+fn read_marking_activity(
+    stream: &mut impl Read,
+    started: Instant,
+    activity: &AtomicU64,
+) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => return Ok(bytes),
+            Ok(read) => {
+                bytes.extend_from_slice(&buffer[..read]);
+                mark_activity(started, activity);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Drops the progress meters `--progress` adds to stderr (carriage-return
+/// updates and their final lines), so error messages keep only what Git
+/// said about the failure.
+fn strip_progress(stderr: &[u8]) -> Vec<u8> {
+    const METERS: [&[u8]; 8] = [
+        b"Enumerating objects:",
+        b"Counting objects:",
+        b"Compressing objects:",
+        b"Writing objects:",
+        b"Receiving objects:",
+        b"Resolving deltas:",
+        b"Unpacking objects:",
+        b"Total ",
+    ];
+    let mut out = Vec::with_capacity(stderr.len());
+    for line in stderr.split_inclusive(|byte| *byte == b'\n') {
+        // A meter rewrites itself with `\r`; keep what follows the last one.
+        let last = line.rsplit(|byte| *byte == b'\r').next().unwrap_or(line);
+        let text = last.strip_prefix(b"remote: ").unwrap_or(last);
+        if last.iter().all(u8::is_ascii_whitespace) && line.contains(&b'\r') {
+            continue;
+        }
+        if METERS.iter().any(|meter| text.starts_with(meter)) {
+            continue;
+        }
+        out.extend_from_slice(last);
+    }
+    out
 }
 
 /// How long the capture's `git add` may hash the working tree, however
@@ -1703,7 +1795,7 @@ impl GitCliEngine {
             ));
         }
         let mut command = self.repository_command(&repository);
-        command.args(["fetch", "--prune", remote.as_str()]);
+        command.args(["fetch", "--progress", "--prune", remote.as_str()]);
         let output = self.execute(command)?;
         if !output.status.success() {
             return Err(redact_clone_source(
@@ -1819,6 +1911,15 @@ impl GitCliEngine {
             })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // Git LFS reports transfer progress only to a terminal or to this
+        // file; its growth counts as activity.
+        let progress = tempfile::Builder::new()
+            .prefix("vulcan-lfs-progress-")
+            .tempfile()
+            .ok();
+        if let Some(file) = progress.as_ref() {
+            command.env("GIT_LFS_PROGRESS", file.path());
+        }
         configure_git_process(command);
         let mut child = crate::process::spawn_retrying_busy(command).map_err(|source| {
             if source.kind() == std::io::ErrorKind::NotFound {
@@ -1851,25 +1952,22 @@ impl GitCliEngine {
             })
             .transpose()?;
 
+        let started = Instant::now();
+        let activity = AtomicU64::new(0);
         std::thread::scope(|scope| {
-            let stdout_reader = scope.spawn(move || {
-                let mut bytes = Vec::new();
-                stdout.read_to_end(&mut bytes).map(|_| bytes)
-            });
-            let stderr_reader = scope.spawn(move || {
-                let mut bytes = Vec::new();
-                stderr.read_to_end(&mut bytes).map(|_| bytes)
-            });
+            let stdout_reader =
+                scope.spawn(|| read_marking_activity(&mut stdout, started, &activity));
+            let stderr_reader =
+                scope.spawn(|| read_marking_activity(&mut stderr, started, &activity));
             let stdin_writer = input
                 .zip(stdin)
                 .map(|(input, mut stdin)| scope.spawn(move || stdin.write_all(input)));
-            let (status, timed_out) =
-                if let Some(status) = child.wait_timeout(self.command_timeout)? {
-                    (status, false)
-                } else {
-                    terminate_process_group(&mut child);
-                    (child.wait()?, true)
-                };
+            let (status, timed_out) = self.wait_while_active(
+                &mut child,
+                started,
+                &activity,
+                progress.as_ref().map(tempfile::NamedTempFile::path),
+            )?;
             let stdout = join_reader(stdout_reader, operation, "stdout")?;
             let stderr = join_reader(stderr_reader, operation, "stderr")?;
             if let Some(writer) = stdin_writer {
@@ -1881,18 +1979,62 @@ impl GitCliEngine {
                     write_result?;
                 }
             }
-            if timed_out {
+            if let Some(stall) = timed_out {
                 return Err(GitEngineError::CommandTimedOut {
                     operation,
-                    timeout: self.command_timeout,
+                    timeout: stall.limit(self.command_timeout),
+                    stalled: matches!(stall, Stall::Silent),
                 });
             }
             Ok(Output {
                 status,
                 stdout,
-                stderr: self.redact_stderr(stderr),
+                stderr: self.redact_stderr(strip_progress(&stderr)),
             })
         })
+    }
+
+    /// Waits for `child` while it shows signs of life: output on stdout or
+    /// stderr, or a growing Git LFS progress file. It is stopped after the
+    /// command timeout of silence, or after [`MAX_COMMAND_DURATION`] however
+    /// active, so a large transfer is limited by progress, not by size.
+    fn wait_while_active(
+        &self,
+        child: &mut Child,
+        started: Instant,
+        activity: &AtomicU64,
+        progress: Option<&Path>,
+    ) -> Result<(ExitStatus, Option<Stall>), GitEngineError> {
+        let idle_limit = self.command_timeout;
+        let poll = (idle_limit / 4).clamp(Duration::from_millis(1), Duration::from_secs(1));
+        let mut progress_len = 0;
+        loop {
+            if let Some(status) = child.wait_timeout(poll)? {
+                return Ok((status, None));
+            }
+            if let Some(len) = progress
+                .and_then(|path| std::fs::metadata(path).ok())
+                .map(|meta| meta.len())
+            {
+                if len != progress_len {
+                    progress_len = len;
+                    mark_activity(started, activity);
+                }
+            }
+            let elapsed = started.elapsed();
+            let last = Duration::from_millis(activity.load(Ordering::Relaxed));
+            let stall = if elapsed >= MAX_COMMAND_DURATION.max(idle_limit) {
+                Some(Stall::Ceiling)
+            } else if elapsed.saturating_sub(last) >= idle_limit {
+                Some(Stall::Silent)
+            } else {
+                None
+            };
+            if let Some(stall) = stall {
+                terminate_process_group(child);
+                return Ok((child.wait()?, Some(stall)));
+            }
+        }
     }
 
     fn read_batch_blobs_with_limits(
@@ -2011,6 +2153,7 @@ impl GitCliEngine {
                 return Err(GitEngineError::CommandTimedOut {
                     operation: OPERATION,
                     timeout: self.command_timeout,
+                    stalled: false,
                 });
             }
             blobs?;
@@ -3541,6 +3684,7 @@ impl GitEngine for GitCliEngine {
         let refspec = format!("+{}:{}", source.as_str(), destination.as_str());
         let arguments = vec![
             OsString::from("fetch"),
+            OsString::from("--progress"),
             OsString::from("--no-tags"),
             OsString::from("--force"),
             OsString::from("--refmap="),
@@ -3743,7 +3887,7 @@ impl GitEngine for GitCliEngine {
         let refspec = format!("{}:{}", source.as_str(), destination.as_str());
         let mut command = self.repository_command(repository);
         command
-            .args(["push", "--porcelain"])
+            .args(["push", "--progress", "--porcelain"])
             .arg(lease)
             .arg("--")
             .arg(remote.as_str())
@@ -3771,7 +3915,7 @@ impl GitEngine for GitCliEngine {
         let refspec = format!("{}:{}", source.as_str(), destination.as_str());
         let mut command = self.repository_command(repository);
         command
-            .args(["push", "--porcelain", "--"])
+            .args(["push", "--progress", "--porcelain", "--"])
             .arg(remote.as_str())
             .arg(refspec);
         let output = self.execute(command)?;
@@ -3800,7 +3944,7 @@ impl GitEngine for GitCliEngine {
             return Ok(Vec::new());
         }
         let mut command = self.repository_command(repository);
-        command.args(["push", "--porcelain"]);
+        command.args(["push", "--progress", "--porcelain"]);
         for (reference, expected) in deletions {
             command.arg(format!(
                 "--force-with-lease={}:{}",
@@ -3868,7 +4012,7 @@ impl GitEngine for GitCliEngine {
         let refspec = format!(":{}", reference.as_str());
         let mut command = self.repository_command(repository);
         command
-            .args(["push", "--porcelain"])
+            .args(["push", "--progress", "--porcelain"])
             .arg(lease)
             .arg("--")
             .arg(remote.as_str())
@@ -7381,9 +7525,57 @@ mod tests {
             GitEngineError::CommandTimedOut {
                 operation: "run a Git command",
                 timeout: observed,
+                stalled: true,
             } if observed == timeout
         ));
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn active_commands_outlast_the_command_timeout() {
+        let engine = GitCliEngine::default().with_command_timeout(Duration::from_millis(400));
+        // Steady output keeps a command alive past the silence limit.
+        let mut chatty = Command::new("sh");
+        chatty.args([
+            "-c",
+            "for i in 1 2 3 4 5 6 7 8 9 10; do echo $i >&2; sleep 0.15; done",
+        ]);
+        let output = engine
+            .execute(chatty)
+            .expect("an active command is not stopped");
+        assert!(output.status.success());
+        // So does a growing Git LFS progress file, with no output at all.
+        let mut transfer = Command::new("sh");
+        transfer.args([
+            "-c",
+            "for i in 1 2 3 4 5 6 7 8 9 10; do echo \"upload $i/10\" >> \"$GIT_LFS_PROGRESS\"; sleep 0.15; done",
+        ]);
+        let output = engine
+            .execute(transfer)
+            .expect("a transferring command is not stopped");
+        assert!(output.status.success());
+        // A command that stops reporting is stopped after the silence limit.
+        let mut stalls = Command::new("sh");
+        stalls.args(["-c", "echo start >&2; sleep 10"]);
+        let started = Instant::now();
+        let error = engine
+            .execute(stalls)
+            .expect_err("a stalled command is stopped");
+        assert!(matches!(
+            error,
+            GitEngineError::CommandTimedOut { stalled: true, .. }
+        ));
+        assert!(error.to_string().contains("no progress for"));
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn progress_meters_are_dropped_from_stderr() {
+        let stderr = b"Enumerating objects: 8, done.\nCounting objects:  12% (1/8)\rCounting objects: 100% (8/8), done.\nremote: Resolving deltas: 100% (2/2)\nTotal 8 (delta 0), reused 0 (delta 0)\nTo example.invalid:repo\n ! [rejected]        main -> main (non-fast-forward)\nerror: failed to push some refs\n";
+        assert_eq!(
+            String::from_utf8(strip_progress(stderr)).expect("utf-8"),
+            "To example.invalid:repo\n ! [rejected]        main -> main (non-fast-forward)\nerror: failed to push some refs\n"
+        );
     }
 
     #[test]

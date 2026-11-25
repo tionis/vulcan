@@ -12,7 +12,7 @@ A Git-sync registration needs a Git repository. `vulcan vault add` on a plain fo
 
 To find vaults you have not registered yet, `vulcan vault discover <dir>` looks at the immediate subdirectories of `<dir>` and reports the ones holding `.obsidian/`, `.vulcan/`, or a `.vulcan.toml` pointer, each with a free suggested ID and the `vulcan vault add` command to run. Already registered vaults are listed with their ID. Remember a parent folder with `vulcan vault scan-dir add <dir>` (stored as `scan_dirs` in `~/.config/vulcan/daemon.toml`) so that a bare `vulcan vault discover` scans it; `vault scan-dir list` and `vault scan-dir remove` manage the list. Discovery never registers anything itself.
 
-The `files-only` profile allows arbitrary files to be managed without initializing or refreshing a Markdown index. It disables knowledge services, scripts, and agent workers for that registered path. Knowledge commands are rejected while the path is registered as files-only; switch back with `vulcan vault set <id> --profile knowledge` when it should act as a knowledge base again. Both profiles currently use full-tree materialization. Each cycle snapshots the working tree locally; the first snapshot of a large tree hashes every file (through Git LFS's clean filter where it applies) and may take a long time, while later ones re-read only files that changed. Capability reports expose the versioned profile and materialization policy; files-only doctoring skips cache checks and reports repository safety. Registration JSON for existing knowledge profiles keeps its previous shape.
+The `files-only` profile allows arbitrary files to be managed without initializing or refreshing a Markdown index. It disables knowledge services, scripts, and agent workers for that registered path. Knowledge commands are rejected while the path is registered as files-only; switch back with `vulcan vault set <id> --profile knowledge` when it should act as a knowledge base again. Both profiles currently use full-tree materialization. Each cycle snapshots the working tree locally; the first snapshot of a large tree hashes every file (through Git LFS's clean filter where it applies) and may take a long time, while later ones re-read only files that changed. Git commands are stopped when they stop making progress, not after a fixed time: a fetch or push that keeps reporting progress, including Git LFS uploads and downloads, may run as long as it needs (up to 24 hours), while one that is silent for five minutes is stopped and retried on a later cycle. Capability reports expose the versioned profile and materialization policy; files-only doctoring skips cache checks and reports repository safety. Registration JSON for existing knowledge profiles keeps its previous shape.
 
 The daemon's unattended files-only preflight rejects detached HEAD, staged changes, multiple linked worktrees, in-progress Git operations, and nested repositories that are not committed as submodules, since their files are in no history. Committed submodules are fine: they synchronize as commit pointers, and Vulcan never fetches, checks out, or updates them (it runs Git with `submodule.recurse` and `fetch.recurseSubmodules` off), so update them yourself with `git submodule update`. `vulcan sync doctor` lists them. It also checks the branch again before applying synchronized files. Vulcan's repository lock does not exclude external Git processes, so do not switch branches or run Git operations while an unattended sync job is active. Active development checkouts are not a supported unattended-management workflow; use explicit manual synchronization only after reviewing repository state.
 
@@ -276,15 +276,14 @@ since remote names belong to each clone:
 
 ```sh
 git remote add backup git@backup.example:me/wiki.git
-git push backup main          # seed it by hand, especially a large Git LFS repository
+git push backup main          # optional: watch a large first copy yourself
 vulcan config set sync.mirrors '["backup"]' --target local
 ```
 
 After each healthy cycle, sync pushes to every mirror the branch tip the primary remote has: the
 commits it just pushed, or else the upstream as fetched. Commits the primary has not received never
 reach a mirror, and a mirror is never force-pushed: one with commits of its own reports `rejected`.
-Pushes run Git's hooks, so Git LFS uploads its objects, and they keep the normal Git command
-timeout, which is why a large repository's first copy belongs to a manual `git push`. Sync records
+Pushes run Git's hooks, so Git LFS uploads its objects. Sync records
 what it last sent in `refs/remotes/<mirror>/<branch>`, so an unchanged cycle costs no round trip to
 the mirror. A mirror failure does not fail the cycle: `vulcan sync run` prints each mirror's
 outcome, and the daemon alerts (`sync_mirror_behind`) once a mirror has missed the branch for 30
