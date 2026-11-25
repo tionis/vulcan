@@ -7,10 +7,10 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use vulcan_core::{
-    assistant_config_summary, assistant_prompts_root, assistant_skills_root,
-    list_assistant_prompts, list_assistant_skills, load_assistant_prompt, load_assistant_skill,
-    load_vault_config, read_vault_agents_file, render_assistant_prompt, AssistantPromptSummary,
-    AssistantSkillSummary, PermissionGuard, PermissionProfile, ProfilePermissionGuard, VaultPaths,
+    assistant_prompts_root, assistant_skills_root, list_assistant_prompts, list_assistant_skills,
+    load_assistant_prompt, load_assistant_skill, load_vault_config, read_vault_agents_file,
+    render_assistant_prompt, AssistantPromptSummary, AssistantSkillSummary, PermissionGuard,
+    PermissionProfile, ProfilePermissionGuard, VaultPaths,
 };
 
 use crate::mcp_catalog::visible_tool_catalog;
@@ -47,84 +47,6 @@ pub fn tool_catalog_fingerprint(
         );
     }
     parts.join("\n")
-}
-
-/// Handle projected skill-command resource reads using the same visibility rule as tools/list.
-pub fn read_custom_tool_resource(
-    paths: &VaultPaths,
-    active_permission_profile: Option<&str>,
-    uri: &str,
-) -> Option<Result<Value, McpMethodError>> {
-    let result = match uri {
-        "vulcan://assistant/skill-commands/index" => {
-            visible_custom_tools(paths, active_permission_profile).and_then(|tools| {
-                let commands = tools
-                    .into_iter()
-                    .filter(|tool| tool.summary.name.starts_with("skill_"))
-                    .collect::<Vec<_>>();
-                if commands.is_empty() {
-                    Err(resource_not_found_error(
-                        uri,
-                        "Resource not found".to_string(),
-                    ))
-                } else {
-                    json_resource(uri, &commands)
-                }
-            })
-        }
-        "vulcan://assistant/tools/index" => visible_custom_tools(paths, active_permission_profile)
-            .and_then(|tools| {
-                if tools.is_empty() {
-                    Err(resource_not_found_error(
-                        uri,
-                        "Resource not found".to_string(),
-                    ))
-                } else {
-                    json_resource(uri, &tools)
-                }
-            }),
-        _ => {
-            if let Some(name) = uri.strip_prefix("vulcan://assistant/skill-commands/") {
-                tools::show_custom_tool(paths, active_permission_profile, name)
-                    .map_err(|error| resource_not_found_error(uri, error.to_string()))
-                    .and_then(|report| {
-                        if report.callable && report.tool.summary.name.starts_with("skill_") {
-                            json_resource(uri, &report)
-                        } else {
-                            Err(custom_resource_permission_error(
-                                uri,
-                                active_permission_profile,
-                            ))
-                        }
-                    })
-            } else {
-                let name = uri.strip_prefix("vulcan://assistant/tools/")?;
-                tools::show_custom_tool(paths, active_permission_profile, name)
-                    .map_err(|error| resource_not_found_error(uri, error.to_string()))
-                    .and_then(|report| {
-                        if report.callable {
-                            json_resource(uri, &report)
-                        } else {
-                            Err(custom_resource_permission_error(
-                                uri,
-                                active_permission_profile,
-                            ))
-                        }
-                    })
-            }
-        }
-    };
-    Some(result)
-}
-
-fn custom_resource_permission_error(uri: &str, profile: Option<&str>) -> McpMethodError {
-    resource_not_found_error(
-        uri,
-        format!(
-            "permission denied: resource `{uri}` is not available under profile `{}`",
-            profile.unwrap_or("unrestricted")
-        ),
-    )
 }
 
 pub fn visible_prompts(
@@ -285,29 +207,30 @@ pub fn visible_skills(
         .collect())
 }
 
-/// List stable MCP resources for one effective authority. Custom tool names must already be
-/// filtered by the caller's permission profile.
+/// List stable MCP resources for one effective authority: the help index,
+/// the MCP tool reference, the vault's AGENTS.md, and the skill index.
 pub fn visible_resources(
     paths: &VaultPaths,
     guard: &ProfilePermissionGuard,
-    custom_tool_names: &[String],
 ) -> Result<Vec<Value>, McpMethodError> {
-    let mut resources = vec![serde_json::json!({
-        "uri": "vulcan://help/overview",
-        "name": "Help Overview",
-        "title": "Vulcan Help Overview",
-        "description": "Integrated overview of the Vulcan command surface and built-in help topics.",
-        "mimeType": "application/json",
-    })];
+    let mut resources = vec![
+        serde_json::json!({
+            "uri": "vulcan://help/overview",
+            "name": "Help Overview",
+            "title": "Vulcan Help Overview",
+            "description": "Overview of Vulcan and its help topics.",
+            "mimeType": "text/markdown",
+        }),
+        serde_json::json!({
+            "uri": "vulcan://help/tools",
+            "name": "Tool Reference",
+            "title": "Vulcan MCP Tool Reference",
+            "description": "Every tool this connection may call, with its arguments.",
+            "mimeType": "text/markdown",
+        }),
+    ];
 
     if !guard.selection().profile.read.is_none() {
-        resources.push(serde_json::json!({
-            "uri": "vulcan://assistant/prompts/index",
-            "name": "Assistant Prompt Index",
-            "title": "Vault Prompt Index",
-            "description": "Visible prompts loaded from the configured assistant prompts folder.",
-            "mimeType": "application/json",
-        }));
         resources.push(serde_json::json!({
             "uri": "vulcan://assistant/skills/index",
             "name": "Assistant Skill Index",
@@ -315,34 +238,13 @@ pub fn visible_resources(
             "description": "Visible skills loaded from the configured assistant skills folder.",
             "mimeType": "application/json",
         }));
-        if custom_tool_names
-            .iter()
-            .any(|name| name.starts_with("skill_"))
-        {
-            resources.push(serde_json::json!({
-                "uri": "vulcan://assistant/skill-commands/index",
-                "name": "Assistant Skill Command Index",
-                "title": "Vault Skill Command Index",
-                "description": "Visible Agent Skills-compatible command tools projected into the shared tool registry.",
-                "mimeType": "application/json",
-            }));
-        }
-        if !custom_tool_names.is_empty() {
-            resources.push(serde_json::json!({
-                "uri": "vulcan://assistant/tools/index",
-                "name": "Assistant Tool Index",
-                "title": "Vault Custom Tool Index",
-                "description": "Visible callable skill command tools projected into the shared tool registry.",
-                "mimeType": "application/json",
-            }));
-        }
         if read_vault_agents_file(paths)
             .map_err(|error| McpMethodError::internal(error.to_string()))?
             .is_some()
             && can_read_relative_path(guard, "AGENTS.md")
         {
             resources.push(serde_json::json!({
-                "uri": "vulcan://assistant/agents",
+                "uri": "vulcan://agents",
                 "name": "AGENTS.md",
                 "title": "Vault Agent Instructions",
                 "description": "The vault's root AGENTS.md instructions.",
@@ -350,29 +252,16 @@ pub fn visible_resources(
             }));
         }
     }
-
-    if guard.check_config_read().is_ok() {
-        resources.push(serde_json::json!({
-            "uri": "vulcan://assistant/config",
-            "name": "Assistant Config Summary",
-            "title": "Assistant Config Summary",
-            "description": "Configured assistant prompt and skill folders for this vault.",
-            "mimeType": "application/json",
-        }));
-    }
     Ok(resources)
 }
 
-pub fn visible_resource_templates(
-    guard: &ProfilePermissionGuard,
-    has_custom_tools: bool,
-) -> Vec<Value> {
+pub fn visible_resource_templates(guard: &ProfilePermissionGuard) -> Vec<Value> {
     let mut templates = vec![serde_json::json!({
         "uriTemplate": "vulcan://help/{topic}",
         "name": "Help Topics",
         "title": "Help Topic Resource",
-        "description": "Read one built-in or command help topic as structured JSON.",
-        "mimeType": "application/json",
+        "description": "One help topic as Markdown, such as `query-dsl` or `note/get`.",
+        "mimeType": "text/markdown",
     })];
 
     if !guard.selection().profile.read.is_none() {
@@ -396,22 +285,6 @@ pub fn visible_resource_templates(
             "description": "Read one visible assistant skill as structured JSON.",
             "mimeType": "application/json",
         }));
-        templates.push(serde_json::json!({
-            "uriTemplate": "vulcan://assistant/skill-commands/{name}",
-            "name": "Assistant Skill Commands",
-            "title": "Assistant Skill Command Resource",
-            "description": "Read one visible projected skill command as structured JSON.",
-            "mimeType": "application/json",
-        }));
-        if has_custom_tools {
-            templates.push(serde_json::json!({
-                "uriTemplate": "vulcan://assistant/tools/{name}",
-                "name": "Assistant Tools",
-                "title": "Assistant Tool Resource",
-                "description": "Read one visible callable skill command tool as structured JSON.",
-                "mimeType": "application/json",
-            }));
-        }
     }
     templates
 }
@@ -499,20 +372,10 @@ pub fn read_resource(
     uri: &str,
 ) -> Option<Result<Value, McpMethodError>> {
     let result = match uri {
-        "vulcan://assistant/prompts/index" => {
-            visible_prompts(paths, guard).and_then(|prompts| json_resource(uri, &prompts))
-        }
         "vulcan://assistant/skills/index" => {
             visible_skills(paths, guard).and_then(|skills| json_resource(uri, &skills))
         }
-        "vulcan://assistant/config" => {
-            if let Err(error) = guard.check_config_read() {
-                Err(McpMethodError::tool(error.to_string()))
-            } else {
-                json_resource(uri, &assistant_config_summary(paths))
-            }
-        }
-        "vulcan://assistant/agents" => {
+        "vulcan://agents" => {
             if can_read_relative_path(guard, "AGENTS.md") {
                 match read_vault_agents_file(paths) {
                     Ok(Some(contents)) => Ok(serde_json::json!({
@@ -775,101 +638,53 @@ mod tests {
             resolve_permission_profile(&paths, Some("blind")).unwrap(),
         );
 
-        let agents = read_resource(&paths, &readable, "vulcan://assistant/agents")
+        let agents = read_resource(&paths, &readable, "vulcan://agents")
             .unwrap()
             .unwrap();
         assert_eq!(agents["contents"][0]["mimeType"], "text/markdown");
         assert_eq!(agents["contents"][0]["text"], "# Vault instructions\n");
-        let denied = read_resource(&paths, &blind, "vulcan://assistant/agents")
-            .unwrap()
-            .unwrap_err();
         assert!(matches!(
-            denied,
+            read_resource(&paths, &blind, "vulcan://agents")
+                .unwrap()
+                .unwrap_err(),
             McpMethodError::JsonRpc {
                 code: MCP_RESOURCE_NOT_FOUND,
                 ..
             }
         ));
+        for removed in [
+            "vulcan://assistant/agents",
+            "vulcan://assistant/prompts/index",
+            "vulcan://assistant/config",
+        ] {
+            assert!(
+                read_resource(&paths, &readable, removed).is_none(),
+                "{removed}"
+            );
+        }
 
-        let prompts = read_resource(&paths, &blind, "vulcan://assistant/prompts/index")
-            .unwrap()
-            .unwrap();
-        assert_eq!(prompts["contents"][0]["mimeType"], "application/json");
-        assert_eq!(prompts["contents"][0]["text"], "[]");
-        assert!(read_resource(&paths, &readable, "vulcan://help/overview").is_none());
-    }
-
-    #[test]
-    fn resource_discovery_preserves_authority_and_custom_tool_visibility() {
-        let temporary = tempfile::tempdir().unwrap();
-        let paths = VaultPaths::new(temporary.path());
-        fs::create_dir_all(temporary.path().join(".vulcan")).unwrap();
-        fs::write(
-            temporary.path().join(".vulcan/config.toml"),
-            "[permissions.profiles.blind]\nread = \"none\"\n",
-        )
-        .unwrap();
-        fs::write(temporary.path().join("AGENTS.md"), "# Instructions\n").unwrap();
-        let readable = ProfilePermissionGuard::new(
-            &paths,
-            resolve_permission_profile(&paths, Some("readonly")).unwrap(),
+        let uris = |guard| {
+            visible_resources(&paths, guard)
+                .unwrap()
+                .into_iter()
+                .filter_map(|resource| resource["uri"].as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        };
+        let visible = uris(&readable);
+        assert!(visible.contains(&"vulcan://agents".to_string()));
+        assert!(visible.contains(&"vulcan://help/tools".to_string()));
+        assert_eq!(
+            uris(&blind),
+            ["vulcan://help/overview", "vulcan://help/tools"]
         );
-        let blind = ProfilePermissionGuard::new(
-            &paths,
-            resolve_permission_profile(&paths, Some("blind")).unwrap(),
-        );
-        let names = vec!["skill_summarize".to_string(), "other_tool".to_string()];
-
-        let visible = visible_resources(&paths, &readable, &names).unwrap();
-        let uris = visible
-            .iter()
-            .filter_map(|resource| resource["uri"].as_str())
+        let templates = visible_resource_templates(&readable)
+            .into_iter()
+            .filter_map(|template| template["uriTemplate"].as_str().map(str::to_string))
             .collect::<Vec<_>>();
-        assert!(uris.contains(&"vulcan://assistant/agents"));
-        assert!(uris.contains(&"vulcan://assistant/skill-commands/index"));
-        assert!(uris.contains(&"vulcan://assistant/tools/index"));
-        let without_custom = visible_resources(&paths, &readable, &[]).unwrap();
-        assert!(!without_custom
+        assert!(templates.contains(&"vulcan://note/{path}".to_string()));
+        assert!(!templates
             .iter()
-            .any(|resource| resource["uri"] == "vulcan://assistant/tools/index"));
-
-        let hidden = visible_resources(&paths, &blind, &names).unwrap();
-        assert_eq!(hidden.len(), 1);
-        assert_eq!(hidden[0]["uri"], "vulcan://help/overview");
-
-        let templates = visible_resource_templates(&readable, true);
-        assert!(templates
-            .iter()
-            .any(|template| template["uriTemplate"] == "vulcan://assistant/tools/{name}"));
-        let no_custom = visible_resource_templates(&readable, false);
-        assert!(!no_custom
-            .iter()
-            .any(|template| template["uriTemplate"] == "vulcan://assistant/tools/{name}"));
-        let blind_templates = visible_resource_templates(&blind, true);
-        assert_eq!(blind_templates.len(), 1);
-        assert_eq!(blind_templates[0]["uriTemplate"], "vulcan://help/{topic}");
-    }
-
-    #[test]
-    fn unknown_custom_tool_resources_are_not_found_even_for_guessed_uris() {
-        let temporary = tempfile::tempdir().unwrap();
-        let paths = VaultPaths::new(temporary.path());
-        let uri = "vulcan://assistant/tools/skill_example_run";
-        assert!(visible_custom_tools(&paths, Some("readonly"))
-            .unwrap()
-            .is_empty());
-        let denied = read_custom_tool_resource(&paths, Some("readonly"), uri)
-            .unwrap()
-            .unwrap_err();
-        assert!(matches!(
-            denied,
-            McpMethodError::JsonRpc {
-                code: MCP_RESOURCE_NOT_FOUND,
-                ..
-            }
-        ));
-        assert!(
-            read_custom_tool_resource(&paths, Some("readonly"), "vulcan://help/overview").is_none()
-        );
+            .any(|uri| uri.contains("skill-commands") || uri.contains("assistant/tools")));
+        assert_eq!(visible_resource_templates(&blind).len(), 1);
     }
 }

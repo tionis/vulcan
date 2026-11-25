@@ -360,14 +360,11 @@ Projected skill commands are exposed as first-class MCP tools, not only through 
 
 Required behavior:
 
-- projected commands live in the same live registry as built-ins
-- the default pack membership is `custom`
+- projected commands live in the same live registry as built-ins, listed whenever the vault is
+  trusted and the profile allows them (tool packs were removed in 9.43)
 - changes under `.agents/skills` trigger `notifications/tools/list_changed`
-- add resources:
-  - `vulcan://assistant/skills/index`
-  - `vulcan://assistant/skills/{name}`
-  - `vulcan://assistant/skill-commands/index`
-  - `vulcan://assistant/skill-commands/{name}`
+- `vulcan://help/tools` describes them with the built-in tools; skills themselves are served
+  as skill resources (`docs/specs/mcp.md` §9)
 
 The generic meta-tools remain useful:
 

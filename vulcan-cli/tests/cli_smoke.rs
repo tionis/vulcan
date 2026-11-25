@@ -33192,29 +33192,18 @@ fn mcp_server_exposes_custom_tools_and_tool_resources_of_trusted_vaults() {
         .expect("resources/list should return resources");
     assert!(resources
         .iter()
-        .any(|resource| resource["uri"] == "vulcan://assistant/tools/index"));
+        .any(|resource| resource["uri"] == "vulcan://help/tools"));
 
-    let index = session.send(serde_json::json!({
+    let reference = session.send(serde_json::json!({
         "jsonrpc": "2.0",
         "id": 4,
         "method": "resources/read",
-        "params": { "uri": "vulcan://assistant/tools/index" }
+        "params": { "uri": "vulcan://help/tools" }
     }));
-    assert!(index
+    assert!(reference
         .last()
         .and_then(|response| response["result"]["contents"][0]["text"].as_str())
-        .is_some_and(|text| text.contains(&summarize_tool)));
-
-    let detail = session.send(serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 5,
-        "method": "resources/read",
-        "params": { "uri": format!("vulcan://assistant/tools/{summarize_tool}") }
-    }));
-    assert!(detail
-        .last()
-        .and_then(|response| response["result"]["contents"][0]["text"].as_str())
-        .is_some_and(|text| text.contains("Summarize tool documentation.")));
+        .is_some_and(|text| text.contains(&format!("`{summarize_tool}`"))));
 
     let result = session.send(serde_json::json!({
         "jsonrpc": "2.0",
@@ -33254,16 +33243,16 @@ fn mcp_server_exposes_custom_tools_and_tool_resources_of_trusted_vaults() {
         "method": "initialize",
         "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
     }));
-    let guessed = default_session.send(serde_json::json!({
+    let listed = default_session.send(serde_json::json!({
         "jsonrpc": "2.0",
         "id": 2,
-        "method": "resources/read",
-        "params": { "uri": format!("vulcan://assistant/tools/{summarize_tool}") }
+        "method": "tools/list"
     }));
-    // No pack has to be selected: the trusted vault's tools are visible.
+    // No pack has to be selected: the trusted vault's tools are listed.
     assert!(
-        guessed.last().expect("guessed resource response")["result"]["contents"].is_array(),
-        "{guessed:?}"
+        listed.last().expect("tools/list response")["result"]["tools"]
+            .as_array()
+            .is_some_and(|tools| tools.iter().any(|tool| tool["name"] == summarize_tool))
     );
     assert!(default_session.finish().is_empty());
 }
@@ -33370,31 +33359,20 @@ Skill command documentation.
         .last()
         .and_then(|response| response["result"]["resources"].as_array())
         .expect("resources/list should return resources");
-    assert!(resources
-        .iter()
-        .any(|resource| resource["uri"] == "vulcan://assistant/skill-commands/index"));
+    assert!(!resources.iter().any(|resource| resource["uri"]
+        .as_str()
+        .is_some_and(|uri| uri.starts_with("vulcan://assistant/skill-commands"))));
 
-    let index = session.send(serde_json::json!({
+    let reference = session.send(serde_json::json!({
         "jsonrpc": "2.0",
         "id": 5,
         "method": "resources/read",
-        "params": { "uri": "vulcan://assistant/skill-commands/index" }
+        "params": { "uri": "vulcan://help/tools" }
     }));
-    assert!(index
+    assert!(reference
         .last()
         .and_then(|response| response["result"]["contents"][0]["text"].as_str())
-        .is_some_and(|text| text.contains("skill_summarize_note_summarize")));
-
-    let detail = session.send(serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 6,
-        "method": "resources/read",
-        "params": { "uri": "vulcan://assistant/skill-commands/skill_summarize_note_summarize" }
-    }));
-    assert!(detail
-        .last()
-        .and_then(|response| response["result"]["contents"][0]["text"].as_str())
-        .is_some_and(|text| text.contains("Skill command documentation.")));
+        .is_some_and(|text| text.contains("`skill_summarize_note_summarize`")));
 
     assert!(session.finish().is_empty());
 }
@@ -33475,20 +33453,16 @@ shell = "allow"
         "custom pack should hide tools whose declared profile is broader than the active profile"
     );
 
-    let resources = session.send(serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 3,
-        "method": "resources/list"
+    let reference = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 3, "method": "resources/read",
+        "params": { "uri": "vulcan://help/tools" }
     }));
-    let resources = resources
-        .last()
-        .and_then(|response| response["result"]["resources"].as_array())
-        .expect("resources/list should return resources");
     assert!(
-        !resources
-            .iter()
-            .any(|resource| resource["uri"] == "vulcan://assistant/tools/index"),
-        "hidden skill command tools should not expose the tool index resource"
+        !reference.last().expect("tool reference")["result"]["contents"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("`skill_"),
+        "hidden skill command tools stay out of the tool reference"
     );
 
     let result = session.send(serde_json::json!({
@@ -34751,10 +34725,9 @@ Use this skill to review the day.
         .collect::<Vec<_>>();
     for uri in [
         "vulcan://help/overview",
-        "vulcan://assistant/prompts/index",
+        "vulcan://help/tools",
         "vulcan://assistant/skills/index",
-        "vulcan://assistant/agents",
-        "vulcan://assistant/config",
+        "vulcan://agents",
     ] {
         assert!(
             resource_uris.contains(&uri),
@@ -34787,9 +34760,8 @@ Use this skill to review the day.
     let help_text = help
         .last()
         .and_then(|response| response["result"]["contents"][0]["text"].as_str())
-        .expect("resources/read should return help JSON text");
-    let help_json: Value = serde_json::from_str(help_text).expect("help resource should be JSON");
-    assert_eq!(help_json["name"].as_str(), Some("help"));
+        .expect("resources/read should return help Markdown");
+    assert!(help_text.starts_with("# help"), "{help_text}");
 
     for (id, uri, topic) in [
         (60, "vulcan://help/query-dsl", vec!["query-dsl"]),
@@ -34804,14 +34776,14 @@ Use this skill to review the day.
         let resource_text = resource
             .last()
             .and_then(|response| response["result"]["contents"][0]["text"].as_str())
-            .expect("help resource should contain JSON text");
-        let resource_report: Value = serde_json::from_str(resource_text).expect("valid help JSON");
+            .expect("help resource should contain Markdown");
         let mut command = Command::cargo_bin("vulcan").expect("binary should build");
         command.args(["--output", "json", "help"]).args(topic);
         let cli_report = parse_stdout_json(&command.assert().success());
-        assert_eq!(
-            resource_report, cli_report,
-            "help resource {uri} should match CLI"
+        // The resource renders the same topic the CLI reports.
+        assert!(
+            resource_text.contains(cli_report["summary"].as_str().unwrap_or_default()),
+            "help resource {uri} should carry the CLI topic"
         );
     }
 
@@ -34967,12 +34939,7 @@ Summarize {{note}}.
         .filter_map(|resource| resource["uri"].as_str())
         .collect::<Vec<_>>();
     assert!(resource_uris.contains(&"vulcan://help/overview"));
-    for hidden in [
-        "vulcan://assistant/agents",
-        "vulcan://assistant/prompts/index",
-        "vulcan://assistant/skills/index",
-        "vulcan://assistant/config",
-    ] {
+    for hidden in ["vulcan://agents", "vulcan://assistant/skills/index"] {
         assert!(
             !resource_uris.contains(&hidden),
             "blind profile should hide `{hidden}`"
@@ -35020,7 +34987,7 @@ Summarize {{note}}.
         "jsonrpc": "2.0",
         "id": 7,
         "method": "resources/read",
-        "params": { "uri": "vulcan://assistant/agents" }
+        "params": { "uri": "vulcan://agents" }
     }));
     let agents = agents.last().expect("agents response");
     assert_eq!(agents["error"]["code"].as_i64(), Some(-32002));

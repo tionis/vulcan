@@ -8804,7 +8804,7 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 
 ### 9.43.4 Resources, prompts and help
 
-- [ ] `vulcan://note/{path}` and `vulcan://file/{path}` (done, with path completion; `vulcan://tool-results/*` removed), MCP-terms help as `text/markdown`, `vulcan://agents`; remove `vulcan://assistant/*`; standard prompt arguments.
+- [x] `vulcan://note/{path}` and `vulcan://file/{path}` with path completion; `vulcan://tool-results/*` removed; help as `text/markdown`, with `vulcan://help/tools` describing the caller's tools and arguments in MCP terms; `vulcan://agents`; `vulcan://assistant/*` removed except the skill resources, which 9.43.5 replaces; standard prompt arguments.
 
 ### 9.43.5 MCP-aware bundled skills
 

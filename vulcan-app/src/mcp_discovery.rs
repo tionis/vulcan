@@ -66,6 +66,28 @@ impl McpDiscovery<'_> {
         Ok(tools)
     }
 
+    /// The tools this connection may call, in MCP terms, as Markdown.
+    fn tool_reference_markdown(&self) -> Result<String, McpMethodError> {
+        use std::fmt::Write as _;
+
+        let mut text = String::from(
+            "# Vulcan MCP tools\n\nThe tools this connection's permission profile allows, with their arguments.\n",
+        );
+        for item in self.visible_tool_items()? {
+            let name = item["name"].as_str().unwrap_or_default();
+            let title = item["title"].as_str().unwrap_or(name);
+            let description = item["description"].as_str().unwrap_or_default();
+            let _ = write!(text, "\n## `{name}`: {title}\n\n{description}\n");
+            let lines = argument_lines(&item["inputSchema"]);
+            if !lines.is_empty() {
+                text.push('\n');
+                text.push_str(&lines.join("\n"));
+                text.push('\n');
+            }
+        }
+        Ok(text)
+    }
+
     pub fn visible_prompt_items(&self) -> Result<Vec<Value>, McpMethodError> {
         let prompts = mcp_assistant::visible_prompts(self.paths, self.guard)?;
         Ok(prompts.iter().map(prompt_list_item).collect())
@@ -80,24 +102,12 @@ impl McpDiscovery<'_> {
     }
 
     pub fn visible_resources(&self) -> Result<Vec<Value>, McpMethodError> {
-        let custom_names = if self.profile.read.is_none() {
-            Vec::new()
-        } else {
-            self.visible_custom_tools()?
-                .into_iter()
-                .map(|tool| tool.summary.name)
-                .collect()
-        };
-        mcp_assistant::visible_resources(self.paths, self.guard, &custom_names)
+        mcp_assistant::visible_resources(self.paths, self.guard)
     }
 
     #[must_use]
     pub fn visible_resource_templates(&self) -> Vec<Value> {
-        let has_custom_tools = !self.profile.read.is_none()
-            && self
-                .visible_custom_tools()
-                .is_ok_and(|tools| !tools.is_empty());
-        mcp_assistant::visible_resource_templates(self.guard, has_custom_tools)
+        mcp_assistant::visible_resource_templates(self.guard)
     }
 
     pub fn read_resource(
@@ -111,10 +121,14 @@ impl McpDiscovery<'_> {
         if let Some(result) = mcp_assistant::read_resource(self.paths, self.guard, uri) {
             return result;
         }
-        if let Some(result) =
-            mcp_assistant::read_custom_tool_resource(self.paths, Some(self.profile_name), uri)
-        {
-            return result;
+        if uri == "vulcan://help/tools" {
+            return Ok(json!({
+                "contents": [{
+                    "uri": uri,
+                    "mimeType": "text/markdown",
+                    "text": self.tool_reference_markdown()?,
+                }]
+            }));
         }
         if let Some(result) = mcp_help::read_help_resource(uri, resolve_command_help) {
             return result;
@@ -136,12 +150,57 @@ impl McpDiscovery<'_> {
 }
 
 fn prompt_list_item(prompt: &AssistantPromptSummary) -> Value {
+    // The MCP prompt argument shape: name, description, required.
+    let arguments = prompt
+        .arguments
+        .iter()
+        .map(|argument| {
+            let mut item = json!({ "name": argument.name, "required": argument.required });
+            if let Some(description) = &argument.description {
+                item["description"] = Value::String(description.clone());
+            }
+            item
+        })
+        .collect::<Vec<_>>();
     json!({
         "name": prompt.name,
         "title": prompt.title,
         "description": prompt.description,
-        "arguments": prompt.arguments,
+        "arguments": arguments,
     })
+}
+
+/// One line per argument of a tool's input schema, required ones first.
+fn argument_lines(schema: &Value) -> Vec<String> {
+    let required = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map_or_else(Vec::new, |names| {
+            names.iter().filter_map(Value::as_str).collect::<Vec<_>>()
+        });
+    let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let mut lines = properties
+        .iter()
+        .map(|(name, property)| {
+            let description = property
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let marker = if required.contains(&name.as_str()) {
+                " (required)"
+            } else {
+                ""
+            };
+            (
+                required.contains(&name.as_str()),
+                format!("- `{name}`{marker}: {description}"),
+            )
+        })
+        .collect::<Vec<_>>();
+    lines.sort_by_key(|(is_required, _)| !*is_required);
+    lines.into_iter().map(|(_, line)| line).collect()
 }
 
 #[cfg(test)]
@@ -169,6 +228,13 @@ mod tests {
         assert_eq!(note_get["annotations"]["readOnlyHint"], true);
         assert!(note_get["inputSchema"].is_object());
         assert!(!tools.iter().any(|tool| tool["name"] == "note_create"));
+        let reference = discovery
+            .read_resource("vulcan://help/tools", |_| Err("unused".to_string()))
+            .unwrap();
+        let reference = reference["contents"][0]["text"].as_str().unwrap();
+        assert!(reference.contains("## `note_get`"));
+        assert!(reference.contains("- `note` (required):"));
+        assert!(!reference.contains("`note_create`"));
         assert!(discovery.visible_prompt_items().unwrap().is_empty());
         assert!(matches!(
             discovery.read_resource("vulcan://missing", |_| Err("missing".to_string())),

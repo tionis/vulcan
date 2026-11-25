@@ -669,17 +669,37 @@ pub fn read_help_resource(
     } else {
         resolve_command(&topic_path).map_err(|message| help_resource_not_found(uri, message))
     };
-    Some(report.and_then(|report| {
-        let text = serde_json::to_string_pretty(&report)
-            .map_err(|error| McpMethodError::internal(error.to_string()))?;
-        Ok(serde_json::json!({
+    Some(report.map(|report| {
+        serde_json::json!({
             "contents": [{
                 "uri": uri,
-                "mimeType": "application/json",
-                "text": text,
+                "mimeType": "text/markdown",
+                "text": help_markdown(&report),
             }]
-        }))
+        })
     }))
+}
+
+/// A help topic as Markdown. Command topics describe the `vulcan` command
+/// line; the note says where the MCP equivalent is described.
+fn help_markdown(report: &HelpTopicReport) -> String {
+    use std::fmt::Write as _;
+
+    let mut text = format!("# {}\n\n{}\n", report.name, report.summary);
+    if matches!(report.kind, HelpTopicKind::Command) {
+        text.push_str(
+            "\nThis topic documents the `vulcan` command line. Over MCP, use the matching tool; `vulcan://help/tools` lists them with their arguments.\n",
+        );
+    }
+    if !report.body.is_empty() {
+        text.push('\n');
+        text.push_str(&report.body);
+        text.push('\n');
+    }
+    if !report.related.is_empty() {
+        let _ = write!(text, "\nRelated: {}\n", report.related.join(", "));
+    }
+    text
 }
 
 fn help_resource_not_found(uri: &str, message: String) -> McpMethodError {
@@ -737,12 +757,11 @@ mod tests {
         })
         .unwrap()
         .unwrap();
-        let report: serde_json::Value =
-            serde_json::from_str(resource["contents"][0]["text"].as_str().unwrap()).unwrap();
-        assert_eq!(
-            report["body"].as_str().unwrap(),
-            include_str!("../../docs/guide/mcp-remotes.md").trim()
-        );
+        assert_eq!(resource["contents"][0]["mimeType"], "text/markdown");
+        assert!(resource["contents"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains(include_str!("../../docs/guide/mcp-remotes.md").trim()));
     }
 
     #[test]
@@ -817,9 +836,11 @@ mod tests {
         })
         .unwrap()
         .unwrap();
-        let overview_text = overview["contents"][0]["text"].as_str().unwrap();
-        let overview_report: serde_json::Value = serde_json::from_str(overview_text).unwrap();
-        assert_eq!(overview_report["kind"], "overview");
+        assert_eq!(overview["contents"][0]["mimeType"], "text/markdown");
+        assert!(overview["contents"][0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("# "));
         let query = read_help_resource("vulcan://help/query-dsl", |_| {
             panic!("built-in topic should not ask the host")
         })
@@ -843,10 +864,9 @@ mod tests {
         })
         .unwrap()
         .unwrap();
-        assert!(command["contents"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("note get"));
+        let command_text = command["contents"][0]["text"].as_str().unwrap();
+        assert!(command_text.contains("note get"));
+        assert!(command_text.contains("`vulcan://help/tools`"));
         let missing = read_help_resource("vulcan://help/no-such-topic", |_| {
             Err("unknown help topic".to_string())
         })

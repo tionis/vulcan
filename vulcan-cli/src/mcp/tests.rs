@@ -862,7 +862,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         &token,
         &foreground_session,
         "resources/read",
-        Some(serde_json::json!({"uri": "vulcan://assistant/prompts/index"})),
+        Some(serde_json::json!({"uri": "vulcan://help/tools"})),
     );
     let resource_json: serde_json::Value = serde_json::from_str(
         foreground_resource
@@ -874,7 +874,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
     assert!(resource_json["result"]["contents"][0]["text"]
         .as_str()
         .expect("resource text")
-        .contains("\"summary\""));
+        .contains("# Vulcan MCP tools"));
     assert_named_listener_large_notes_link_their_resource(address, &token);
     let denied_foreground = named_listener_create_note(
         address,
@@ -1379,7 +1379,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         ),
         (
             "resources/read",
-            serde_json::json!({"uri": "vulcan://assistant/prompts/index"}),
+            serde_json::json!({"uri": "vulcan://help/tools"}),
             &foreground_resource,
         ),
     ] {
