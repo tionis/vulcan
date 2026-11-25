@@ -343,6 +343,7 @@ fn doctor_git_vault_with_optional_state(
     );
     doctor_device_identity(state_store, &mut report);
     doctor_transport(paths, &options.remote, &mut report);
+    doctor_mirrors(paths, options, &mut report);
     doctor_file_synchronizer(paths, &mut report);
 
     match engine.installation() {
@@ -443,6 +444,57 @@ fn doctor_git_vault_with_optional_state(
         doctor_cache(paths, &mut report);
     }
     finish_doctor_report(report)
+}
+
+/// Checks that every `sync.mirrors` name is a remote of the clone and not
+/// the primary remote; reachability shows in the next cycle's report.
+fn doctor_mirrors(paths: &VaultPaths, options: &GitSyncOptions, report: &mut SyncDoctorReport) {
+    if options.mirrors.is_empty() {
+        return;
+    }
+    let mut missing = Vec::new();
+    let mut primary = false;
+    for mirror in &options.mirrors {
+        if mirror == &options.remote {
+            primary = true;
+        } else if crate::sync_transport::remote_url(paths.vault_root(), mirror.as_str()).is_err() {
+            missing.push(mirror.as_str());
+        }
+    }
+    let names = options
+        .mirrors
+        .iter()
+        .map(GitRemote::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    if missing.is_empty() && !primary {
+        doctor_check(
+            report,
+            "git.mirrors",
+            SyncDoctorSeverity::Pass,
+            format!("mirror remotes are configured: {names}"),
+        );
+        return;
+    }
+    let mut problems = Vec::new();
+    if !missing.is_empty() {
+        problems.push(format!(
+            "sync.mirrors names {} that the clone has no remote for; add it with `git remote add <name> <url>` or remove it from sync.mirrors",
+            missing.join(", ")
+        ));
+    }
+    if primary {
+        problems.push(format!(
+            "sync.mirrors names the primary remote `{}`, which is never mirrored",
+            options.remote
+        ));
+    }
+    doctor_check(
+        report,
+        "git.mirrors",
+        SyncDoctorSeverity::Error,
+        problems.join("; "),
+    );
 }
 
 fn configured_options_for_doctor(
@@ -2395,6 +2447,52 @@ mod tests {
         )
         .expect("subdirectory sync");
         assert_eq!(report.state.repository_key, expected_key);
+        drop(fixture);
+    }
+
+    #[test]
+    fn doctor_names_mirrors_without_a_remote() {
+        let fixture = structured_sync_fixture(&[("Home.md", "base\n")]);
+        let paths = VaultPaths::new(&fixture.writer);
+        let mirrors = |names: &[&str]| GitSyncOptions {
+            mirrors: names
+                .iter()
+                .map(|name| GitRemote::parse(*name).expect("remote"))
+                .collect(),
+            ..GitSyncOptions::default()
+        };
+        let check = |options: &GitSyncOptions| {
+            let mut report = initial_doctor_report(&paths, options, GitPlatformProfile::native());
+            doctor_mirrors(&paths, options, &mut report);
+            report
+                .checks
+                .into_iter()
+                .find(|check| check.code == "git.mirrors")
+        };
+        assert!(check(&GitSyncOptions::default()).is_none());
+
+        let missing = check(&mirrors(&["backup"])).expect("mirror check");
+        assert_eq!(missing.severity, SyncDoctorSeverity::Error);
+        assert!(
+            missing.message.contains("no remote for"),
+            "{}",
+            missing.message
+        );
+
+        git(
+            &fixture.writer,
+            &["remote", "add", "backup", "/srv/backup.git"],
+        );
+        let present = check(&mirrors(&["backup"])).expect("mirror check");
+        assert_eq!(present.severity, SyncDoctorSeverity::Pass);
+
+        let primary = check(&mirrors(&["origin"])).expect("mirror check");
+        assert_eq!(primary.severity, SyncDoctorSeverity::Error);
+        assert!(
+            primary.message.contains("primary remote"),
+            "{}",
+            primary.message
+        );
         drop(fixture);
     }
 

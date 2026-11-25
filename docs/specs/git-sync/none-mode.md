@@ -39,8 +39,10 @@ rely on.
    mirror already at the tip costs no round trip. Each mirror reports `pushed`, `up_to_date`,
    `rejected` (it has commits the primary lacks), or `failed` in `branch.mirrors`; none of them fails
    the cycle, and the daemon alerts `sync_mirror_behind` once some mirror has not been current for
-   30 minutes. Naming the upstream's own remote is reported as a failed mirror. Dry runs do not
-   contact mirrors.
+   30 minutes. Naming the upstream's own remote is reported as a failed mirror. Dry runs (and so
+   `sync status`) contact no mirror: they report `planned` when the mirror's recorded tip differs
+   from the upstream tracking ref and `up_to_date` otherwise. `sync doctor` reports `git.mirrors`,
+   an error when a listed name is not a remote of the clone or is the primary remote.
 
 Device-registration refs are observed in the same remote query as the device backup and upstream
 tips, so an unchanged cycle costs one remote round trip.

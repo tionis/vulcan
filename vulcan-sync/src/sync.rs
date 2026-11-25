@@ -558,6 +558,8 @@ pub enum GitMirrorOutcome {
     Rejected,
     /// The push failed, for example on transport or authentication.
     Failed,
+    /// A dry run: the mirror would receive the tip, judging by local refs.
+    Planned,
 }
 
 impl GitMirrorOutcome {
@@ -1031,6 +1033,7 @@ pub fn sync_git_once_with_control(
             upstream_tip,
             options.branch_pull,
         )?;
+        preview_mirrors(engine, options, &mut report)?;
         emit_progress(observer, GitSyncPhase::Completed, 0, &report, None)?;
         return Ok(report);
     }
@@ -1999,6 +2002,60 @@ fn push_branch_lane(
         Err(error) => {
             lane.push_detail = Some(format!("failed to push {}: {error}", lane.branch.as_str()));
         }
+    }
+    Ok(())
+}
+
+/// Previews mirrors from local refs only: a mirror whose recorded tip
+/// differs from the upstream tracking ref would be pushed. Contacts no
+/// mirror, so its own state may differ.
+fn preview_mirrors(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    report: &mut GitSyncReport,
+) -> Result<(), GitSyncError> {
+    if options.mirrors.is_empty() {
+        return Ok(());
+    }
+    let repository = report.repository.clone();
+    let Some(lane) = report.branch.as_mut() else {
+        return Ok(());
+    };
+    let (Some(primary), Some(merge_ref), Some(tracking)) = (
+        lane.remote.clone(),
+        lane.upstream.clone(),
+        lane.tracking.clone(),
+    ) else {
+        return Ok(());
+    };
+    let Some(tip) = engine.read_ref(&repository, &tracking)? else {
+        return Ok(());
+    };
+    let branch = merge_ref
+        .as_str()
+        .strip_prefix("refs/heads/")
+        .unwrap_or(merge_ref.as_str());
+    for mirror in &options.mirrors {
+        let mut entry = GitMirrorPush {
+            remote: mirror.clone(),
+            outcome: GitMirrorOutcome::Planned,
+            commit: Some(tip.clone()),
+            detail: None,
+        };
+        if mirror == &primary {
+            entry.outcome = GitMirrorOutcome::Failed;
+            entry.detail = Some(format!(
+                "`{mirror}` is the branch's own upstream remote, not a mirror"
+            ));
+        } else {
+            let seen = GitRefName::parse(format!("refs/remotes/{mirror}/{branch}"))?;
+            if engine.read_ref(&repository, &seen)?.as_ref() == Some(&tip) {
+                entry.outcome = GitMirrorOutcome::UpToDate;
+            } else {
+                entry.detail = Some(format!("would push `{branch}` to `{mirror}`"));
+            }
+        }
+        lane.mirrors.push(entry);
     }
     Ok(())
 }
@@ -3775,6 +3832,40 @@ mod tests {
         assert_ne!(
             remote_main(&writer, &mirror),
             git_stdout(&writer, &["rev-parse", "HEAD"])
+        );
+    }
+
+    #[test]
+    fn a_dry_run_previews_mirrors_from_local_refs() {
+        let (temporary, _remote, writer) = setup_tracked_branch();
+        let mirror = add_mirror(&temporary, &writer);
+        let engine = GitCliEngine::default();
+        let options = mirror_options(&["backup"]);
+        let preview = GitSyncOptions {
+            dry_run: true,
+            ..options.clone()
+        };
+
+        let report = sync_git_once(&engine, &writer, &preview).expect("preview");
+        assert_eq!(
+            mirror_outcomes(&report),
+            [("backup".to_string(), GitMirrorOutcome::Planned)]
+        );
+        assert!(
+            remote_main(&writer, &mirror).is_empty(),
+            "a preview pushes nothing"
+        );
+
+        sync_git_once(&engine, &writer, &options).expect("sync");
+        // The preview contacts no mirror, so an unreachable one still reports.
+        run_git(
+            &writer,
+            &["remote", "set-url", "backup", "/nonexistent/mirror.git"],
+        );
+        let report = sync_git_once(&engine, &writer, &preview).expect("second preview");
+        assert_eq!(
+            mirror_outcomes(&report),
+            [("backup".to_string(), GitMirrorOutcome::UpToDate)]
         );
     }
 

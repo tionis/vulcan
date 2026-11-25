@@ -285,7 +285,9 @@ commits it just pushed, or else the upstream as fetched. Commits the primary has
 reach a mirror, and a mirror is never force-pushed: one with commits of its own reports `rejected`.
 Pushes run Git's hooks, so Git LFS uploads its objects. Sync records
 what it last sent in `refs/remotes/<mirror>/<branch>`, so an unchanged cycle costs no round trip to
-the mirror. A mirror failure does not fail the cycle: `vulcan sync run` prints each mirror's
+the mirror. `vulcan sync status` shows which mirrors would be pushed, judged from those refs without
+contacting them, and `vulcan sync doctor` flags a listed mirror the clone has no remote for. A
+mirror failure does not fail the cycle: `vulcan sync run` prints each mirror's
 outcome, and the daemon alerts (`sync_mirror_behind`) once a mirror has missed the branch for 30
 minutes. Every device that syncs the repository may mirror it; a mirror another device has just
 moved ahead catches up on the next cycle.

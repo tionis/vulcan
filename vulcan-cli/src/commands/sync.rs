@@ -1878,11 +1878,10 @@ fn print_registered_sync_report(
                 eprintln!("warning: {}: {warning}", item.wiki_id);
             }
             if let Some(branch) = sync.sync.branch.as_ref() {
-                for mirror in branch
-                    .mirrors
-                    .iter()
-                    .filter(|mirror| !mirror.outcome.is_current())
-                {
+                for mirror in branch.mirrors.iter().filter(|mirror| {
+                    !mirror.outcome.is_current()
+                        && mirror.outcome != vulcan_app::sync::GitMirrorOutcome::Planned
+                }) {
                     eprintln!(
                         "warning: {}: mirror {} was not updated: {}",
                         item.wiki_id,
@@ -2153,6 +2152,9 @@ fn mirror_messages(branch: &GitBranchSync) -> Vec<String> {
             vulcan_app::sync::GitMirrorOutcome::Pushed => {
                 Some(format!("Mirrored branch {name} to {}.", mirror.remote))
             }
+            vulcan_app::sync::GitMirrorOutcome::Planned => {
+                Some(format!("Would mirror branch {name} to {}.", mirror.remote))
+            }
             _ => Some(format!(
                 "Mirror {} was not updated: {}.",
                 mirror.remote,
@@ -2332,12 +2334,14 @@ mod sync_report_tests {
                 vulcan_app::sync::GitMirrorOutcome::Failed,
                 Some("unreachable"),
             ),
+            mirror("later", vulcan_app::sync::GitMirrorOutcome::Planned, None),
         ];
         assert_eq!(
             mirror_messages(&pushed),
             [
                 "Mirrored branch main to backup.".to_string(),
                 "Mirror gone was not updated: unreachable.".to_string(),
+                "Would mirror branch main to later.".to_string(),
             ]
         );
     }
