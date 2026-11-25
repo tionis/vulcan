@@ -2,7 +2,7 @@
 
 **Status:** Design contract for Roadmap Phase 9.42. 9.42.1 (shared scope), 9.42.2 (CustomJS), and
 9.42.4 (Numerals) are implemented. 9.42.3 (Meta Bind) renders fields and has `list`, `set`, and
-`apply`; button presses, editor code actions, and JS views are still planned.
+`apply` and editor code actions; button presses and JS views are still planned.
 
 SilverBullet's Space Lua and Ink & Switch's Potluck make a note a small live program: values
 defined in one place, computed inline elsewhere, edited in place, with helpers defined in the
