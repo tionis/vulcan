@@ -6,10 +6,10 @@ use serde_json::{json, Value};
 use vulcan_core::{PermissionGuard, ProfilePermissionGuard, VaultPaths};
 
 use crate::changesets::{self, ChangesetLandCommit};
+use crate::mcp_authority::McpClientAttribution;
 use crate::mcp_protocol::{
     McpChangesetBeginArgs, McpChangesetIdArgs, McpChangesetLandArgs, McpMethodError,
 };
-use crate::mcp_session::McpClientAttribution;
 
 fn tool_error(error: impl std::fmt::Display) -> McpMethodError {
     McpMethodError::tool(error.to_string())

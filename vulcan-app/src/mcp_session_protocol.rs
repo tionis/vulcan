@@ -1,28 +1,29 @@
-//! Transport-neutral MCP protocol methods over one vault session.
+//! The host-facing MCP adapter: the stateless core plus, for legacy
+//! clients, the `initialize` connection. stdio and HTTP hosts feed it one
+//! JSON-RPC message at a time.
 
-use serde_json::{Map, Value};
-use vulcan_core::{PermissionError, VaultPaths};
+use serde_json::Value;
+use vulcan_core::{PermissionError, ResolvedPermissionProfile, VaultPaths};
 
+use crate::mcp_authority::{McpAuthority, McpClientAttribution};
+pub use crate::mcp_core::McpProtocolHost;
+use crate::mcp_core::{handle, modern_meta, McpEra, McpLegacyConnection, McpRequestContext};
 use crate::mcp_dispatch::{
-    acquire_request_ordinary_write_gate, dispatch_protocol_method, jsonrpc_error,
-    process_http_request, process_stdio_request, request_id, McpHttpProcessResult,
-    McpMethodHandler, McpProtocolMethods,
+    acquire_request_ordinary_write_gate, jsonrpc_error, process_http_request,
+    process_stdio_request, request_id, McpHttpProcessResult, McpMethodHandler,
 };
-use crate::mcp_help::HelpTopicReport;
-use crate::mcp_protocol::{self, McpCompletionParams, McpMethodError, McpMethodOutcome};
-use crate::mcp_session::McpSessionState;
+use crate::mcp_protocol::{McpMethodError, McpMethodOutcome};
 
-#[derive(Debug, Clone, Copy)]
-pub struct McpProtocolHost {
-    pub command_help: fn(&[String]) -> Result<HelpTopicReport, String>,
-    pub help_candidates: fn(&str) -> Vec<String>,
-    pub server_version: &'static str,
-}
-
-/// Persistent, transport-neutral protocol state for one MCP client session.
+/// One client of one vault: the authority it acts under, the authenticated
+/// OAuth client when there is one, and the legacy connection state that a
+/// 2025 client's `initialize` creates. Modern requests use none of the
+/// latter: each carries its own client information.
 #[derive(Debug, Clone)]
 pub struct McpProtocolCore {
-    pub session: McpSessionState,
+    authority: McpAuthority,
+    legacy: McpLegacyConnection,
+    oauth_client_id: Option<String>,
+    subject: Option<String>,
     host: McpProtocolHost,
 }
 
@@ -32,27 +33,60 @@ impl McpProtocolCore {
         requested_profile: Option<&str>,
         host: McpProtocolHost,
     ) -> Result<Self, PermissionError> {
+        let authority = McpAuthority::new(paths, requested_profile)?;
         Ok(Self {
-            session: McpSessionState::new(paths, requested_profile)?,
+            legacy: McpLegacyConnection::new(&authority),
+            authority,
+            oauth_client_id: None,
+            subject: None,
             host,
         })
     }
 
     #[must_use]
-    pub fn protocol(&mut self) -> McpSessionProtocol<'_> {
-        McpSessionProtocol::new(
-            &mut self.session,
-            self.host.command_help,
-            self.host.help_candidates,
-            self.host.server_version,
-        )
+    pub fn paths(&self) -> &VaultPaths {
+        self.authority.paths()
+    }
+
+    #[must_use]
+    pub fn selection(&self) -> &ResolvedPermissionProfile {
+        self.authority.selection()
+    }
+
+    #[must_use]
+    pub fn authority(&self) -> &McpAuthority {
+        &self.authority
+    }
+
+    /// Re-read the profile; it may narrow, never widen.
+    pub fn attenuate_profile(&mut self) -> Result<(), String> {
+        self.authority.attenuate_profile()
+    }
+
+    /// Attribute requests to an authenticated remote client.
+    pub fn set_authenticated_client(&mut self, client_id: Option<String>, subject: Option<String>) {
+        self.oauth_client_id = client_id;
+        self.subject = subject;
+    }
+
+    /// The legacy connection's negotiated version, once `initialize` ran.
+    #[must_use]
+    pub fn legacy_version(&self) -> Option<&str> {
+        self.legacy.version()
+    }
+
+    fn client(&self, self_reported: &McpClientAttribution) -> McpClientAttribution {
+        McpClientAttribution {
+            oauth_client_id: self.oauth_client_id.clone(),
+            subject: self.subject.clone(),
+            ..self_reported.clone()
+        }
     }
 
     /// Process a local request while excluding cooperating writers from reads
     /// and refusing canonical state with an unfinished ordinary-write journal.
     pub fn process_request(&mut self, request: Value) -> Vec<Value> {
-        let _read_guard = match acquire_request_ordinary_write_gate(self.session.paths(), &request)
-        {
+        let _read_guard = match acquire_request_ordinary_write_gate(self.paths(), &request) {
             Ok(guard) => guard,
             Err(message) => {
                 return request_id(&request)
@@ -64,7 +98,7 @@ impl McpProtocolCore {
 
     /// Apply the same canonical read barrier before HTTP protocol dispatch.
     pub fn process_http_request(&mut self, request: &Value) -> Result<McpHttpProcessResult, Value> {
-        let _read_guard = match acquire_request_ordinary_write_gate(self.session.paths(), request) {
+        let _read_guard = match acquire_request_ordinary_write_gate(self.paths(), request) {
             Ok(guard) => guard,
             Err(message) => {
                 return if let Some(id) = request_id(request) {
@@ -89,113 +123,64 @@ impl McpMethodHandler for McpProtocolCore {
         method: &str,
         params: Option<&Value>,
     ) -> Result<McpMethodOutcome, McpMethodError> {
-        self.protocol().handle_method(method, params)
-    }
-
-    fn list_changed_notifications(&mut self) -> Vec<Value> {
-        self.protocol().list_changed_notifications()
-    }
-}
-
-/// CLI and daemon adapters inject only host-specific help and reserved names.
-/// Discovery, tool execution, and method routing remain in the app layer.
-pub struct McpSessionProtocol<'a> {
-    session: &'a mut McpSessionState,
-    command_help: fn(&[String]) -> Result<HelpTopicReport, String>,
-    help_candidates: fn(&str) -> Vec<String>,
-    server_version: &'static str,
-}
-
-impl<'a> McpSessionProtocol<'a> {
-    pub fn new(
-        session: &'a mut McpSessionState,
-        command_help: fn(&[String]) -> Result<HelpTopicReport, String>,
-        help_candidates: fn(&str) -> Vec<String>,
-        server_version: &'static str,
-    ) -> Self {
-        Self {
-            session,
-            command_help,
-            help_candidates,
-            server_version,
+        if let Some(meta) = modern_meta(params)? {
+            let mut reported = McpClientAttribution::default();
+            reported.record_implementation(meta.client_info.as_ref());
+            let client = self.client(&reported);
+            let response = handle(
+                &McpRequestContext {
+                    authority: &self.authority,
+                    client: &client,
+                    era: McpEra::Modern,
+                    host: &self.host,
+                },
+                method,
+                params,
+            )?;
+            // Modern clients learn of list changes by subscribing, not
+            // through notifications piggybacked on responses.
+            return Ok(McpMethodOutcome {
+                response,
+                emit_list_notifications: false,
+            });
         }
-    }
-}
-
-impl McpProtocolMethods for McpSessionProtocol<'_> {
-    fn record_initialize(&mut self, params: Option<&Value>) {
-        self.session.record_client_info(params);
-    }
-
-    fn initialize_result(&self) -> Value {
-        mcp_protocol::initialization_result(&self.session.active_tool_names(), self.server_version)
-    }
-
-    fn visible_tool_items(&self) -> Result<Vec<Value>, McpMethodError> {
-        self.session.discovery().visible_tool_items()
-    }
-
-    fn call_tool(
-        &mut self,
-        name: &str,
-        arguments: &Map<String, Value>,
-    ) -> Result<Value, McpMethodError> {
-        self.session.call_tool(name, arguments)
-    }
-
-    fn visible_prompt_items(&self) -> Result<Vec<Value>, McpMethodError> {
-        self.session.discovery().visible_prompt_items()
-    }
-
-    fn get_prompt(
-        &self,
-        name: &str,
-        arguments: &Map<String, Value>,
-    ) -> Result<Value, McpMethodError> {
-        self.session.discovery().get_prompt(name, arguments)
-    }
-
-    fn visible_resources(&self) -> Result<Vec<Value>, McpMethodError> {
-        self.session.discovery().visible_resources()
-    }
-
-    fn visible_resource_templates(&self) -> Vec<Value> {
-        self.session.discovery().visible_resource_templates()
-    }
-
-    fn read_resource(&self, uri: &str) -> Result<Value, McpMethodError> {
-        self.session
-            .discovery()
-            .read_resource(uri, self.command_help)
-    }
-
-    fn complete(&self, params: &McpCompletionParams) -> Result<Value, McpMethodError> {
-        self.session
-            .discovery()
-            .complete(params, &(self.help_candidates)(""))
-    }
-}
-
-impl McpMethodHandler for McpSessionProtocol<'_> {
-    fn handle_method(
-        &mut self,
-        method: &str,
-        params: Option<&Value>,
-    ) -> Result<McpMethodOutcome, McpMethodError> {
-        dispatch_protocol_method(self, method, params)
+        let response = match method {
+            "initialize" => Some(self.legacy.initialize(&self.authority, &self.host, params)),
+            "ping" => Some(Value::Object(serde_json::Map::new())),
+            "notifications/initialized" => None,
+            _ => {
+                let client = self.client(self.legacy.client());
+                handle(
+                    &McpRequestContext {
+                        authority: &self.authority,
+                        client: &client,
+                        era: McpEra::Legacy,
+                        host: &self.host,
+                    },
+                    method,
+                    params,
+                )?
+            }
+        };
+        Ok(McpMethodOutcome {
+            response,
+            emit_list_notifications: !matches!(
+                method,
+                "initialize" | "notifications/initialized" | "notifications/cancelled"
+            ),
+        })
     }
 
     fn list_changed_notifications(&mut self) -> Vec<Value> {
-        self.session.list_changed_notifications()
+        self.legacy.list_changed_notifications(&self.authority)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{McpProtocolCore, McpProtocolHost, McpSessionProtocol};
+    use super::{McpProtocolCore, McpProtocolHost};
     use crate::mcp_dispatch::McpMethodHandler;
     use crate::mcp_help::HelpTopicReport;
-    use crate::mcp_session::McpSessionState;
     use vulcan_core::VaultPaths;
 
     fn no_command_help(_: &[String]) -> Result<HelpTopicReport, String> {
@@ -207,23 +192,51 @@ mod tests {
     }
 
     #[test]
-    fn shared_session_adapter_routes_initialize_and_tool_discovery() {
+    fn one_core_serves_legacy_and_modern_requests() {
         let vault = tempfile::tempdir().unwrap();
         let paths = VaultPaths::new(vault.path());
-        let mut session = McpSessionState::new(&paths, Some("readonly")).unwrap();
-        let mut protocol = McpSessionProtocol::new(
-            &mut session,
-            no_command_help,
-            no_help_candidates,
-            "test-version",
+        let mut core = McpProtocolCore::new(
+            &paths,
+            Some("readonly"),
+            McpProtocolHost {
+                command_help: no_command_help,
+                help_candidates: no_help_candidates,
+                server_version: "test-version",
+            },
+        )
+        .unwrap();
+
+        // A modern request needs no handshake and carries its own client.
+        let meta = serde_json::json!({"_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {},
+        }});
+        let modern = core.handle_method("tools/list", Some(&meta)).unwrap();
+        assert!(!modern.emit_list_notifications);
+        let listed = modern.response.unwrap();
+        assert_eq!(listed["resultType"], "complete");
+        assert!(listed["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "note_get"));
+        assert_eq!(core.legacy_version(), None);
+
+        // A legacy client still negotiates through initialize.
+        let initialize = core
+            .handle_method(
+                "initialize",
+                Some(&serde_json::json!({"protocolVersion": "2025-11-25"})),
+            )
+            .unwrap();
+        assert_eq!(
+            initialize.response.unwrap()["protocolVersion"],
+            "2025-11-25"
         );
-        let initialize = protocol.handle_method("initialize", None).unwrap();
-        let initial = initialize.response.unwrap();
-        assert_eq!(initial["serverInfo"]["version"], "test-version");
-        let tools = protocol.handle_method("tools/list", None).unwrap();
-        let items = tools.response.unwrap()["tools"].as_array().unwrap().clone();
-        assert!(items.iter().any(|tool| tool["name"] == "note_get"));
-        assert!(!items.iter().any(|tool| tool["name"] == "note_create"));
+        assert_eq!(core.legacy_version(), Some("2025-11-25"));
+        let legacy = core.handle_method("tools/list", None).unwrap();
+        assert!(legacy.response.unwrap().get("resultType").is_none());
+        assert!(core.handle_method("ping", None).unwrap().response.is_some());
     }
 
     #[test]

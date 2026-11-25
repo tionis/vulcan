@@ -76,7 +76,7 @@ pub fn validate_mcp_protocol_version(request: &McpHttpRequest) -> Result<(), Mcp
     let Some(version) = request.headers.get("mcp-protocol-version") else {
         return Ok(());
     };
-    if version == vulcan_app::mcp_protocol::MCP_PROTOCOL_VERSION {
+    if vulcan_app::mcp_core::is_supported_version(version) {
         Ok(())
     } else {
         Err(McpHttpReadError::bad_request(format!(

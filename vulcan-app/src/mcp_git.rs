@@ -4,10 +4,10 @@ use serde_json::Value;
 use vulcan_core::{PermissionGuard, ProfilePermissionGuard, VaultPaths, Verbosity};
 
 use crate::git_ops;
+use crate::mcp_authority::McpClientAttribution;
 use crate::mcp_protocol::{
     McpGitBlameArgs, McpGitCommitArgs, McpGitDiffArgs, McpGitLogArgs, McpMethodError,
 };
-use crate::mcp_session::McpClientAttribution;
 
 const DEFAULT_LOG_LIMIT: usize = 20;
 const MAX_LOG_LIMIT: usize = 200;

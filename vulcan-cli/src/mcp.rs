@@ -41,7 +41,7 @@ use vulcan_app::execution::{ExecutionContext, ExecutionDeadline};
 use vulcan_app::mcp_assistant;
 use vulcan_app::mcp_dispatch::{jsonrpc_error, McpHttpProcessResult, McpMethodHandler};
 use vulcan_app::mcp_help;
-use vulcan_app::mcp_protocol::{McpMethodError, McpMethodOutcome, MCP_PROTOCOL_VERSION};
+use vulcan_app::mcp_protocol::{McpMethodError, McpMethodOutcome};
 use vulcan_app::mcp_session_protocol::{McpProtocolCore, McpProtocolHost};
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_core::pkce_s256_challenge;
@@ -252,7 +252,7 @@ pub(crate) fn build_mcp_tool_definitions(
         .collect::<Vec<_>>();
 
     Ok(McpToolsReport {
-        protocol_version: MCP_PROTOCOL_VERSION.to_string(),
+        protocol_version: vulcan_app::mcp_core::MCP_MODERN_VERSION.to_string(),
         tools,
     })
 }
@@ -1106,7 +1106,6 @@ fn mcp_http_driver(
             let mut core = McpServerCore::new(&config.paths, config.permission_profile.as_deref())
                 .map_err(|error| error.to_string())?;
             core.inner
-                .session
                 .set_authenticated_client(config.client_id, config.subject);
             Ok(core)
         },
@@ -1273,15 +1272,15 @@ impl McpMethodHandler for McpServerCore {
 
 impl vulcan_daemon::mcp_execution::McpRequestCore for McpServerCore {
     fn vault_paths(&self) -> &VaultPaths {
-        self.session.paths()
+        self.inner.paths()
     }
 
     fn permission_grant(&self) -> vulcan_core::PermissionGrant {
-        self.session.selection().grant.clone()
+        self.inner.selection().grant.clone()
     }
 
     fn attenuate_profile(&mut self) -> Result<(), String> {
-        self.session.attenuate_profile()
+        self.inner.attenuate_profile()
     }
 
     fn list_changed_notifications(&mut self) -> Vec<Value> {

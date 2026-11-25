@@ -26,7 +26,7 @@ pub struct McpToolExecution<'a> {
     pub guard: &'a ProfilePermissionGuard,
     pub profile_name: &'a str,
     pub profile: &'a PermissionProfile,
-    pub client: &'a crate::mcp_session::McpClientAttribution,
+    pub client: &'a crate::mcp_authority::McpClientAttribution,
 }
 
 impl McpToolExecution<'_> {
@@ -553,7 +553,7 @@ mod tests {
             guard: &guard,
             profile_name: &selection.name,
             profile: &selection.profile,
-            client: &crate::mcp_session::McpClientAttribution::default(),
+            client: &crate::mcp_authority::McpClientAttribution::default(),
         };
         let status = executor.call_tool("status", &Map::new()).unwrap();
         assert_eq!(
@@ -620,7 +620,7 @@ mod tests {
                 guard: &guard,
                 profile_name: &selection.name,
                 profile: &selection.profile,
-                client: &crate::mcp_session::McpClientAttribution::default(),
+                client: &crate::mcp_authority::McpClientAttribution::default(),
             };
             let result = executor
                 .call_tool(name, arguments.as_object().unwrap())
@@ -676,7 +676,7 @@ mod tests {
             guard: &guard,
             profile_name: &selection.name,
             profile: &selection.profile,
-            client: &crate::mcp_session::McpClientAttribution::default(),
+            client: &crate::mcp_authority::McpClientAttribution::default(),
         };
         let arguments = Map::from_iter([
             ("note".to_string(), json!("Home.md")),
@@ -699,7 +699,7 @@ mod tests {
             guard: &guard,
             profile_name: &selection.name,
             profile: &selection.profile,
-            client: &crate::mcp_session::McpClientAttribution::default(),
+            client: &crate::mcp_authority::McpClientAttribution::default(),
         };
         let arguments = arguments.as_object().cloned().unwrap_or_default();
         executor
@@ -819,15 +819,14 @@ mod tests {
         git(root, &["commit", "--quiet", "-m", "seed"]);
         vulcan_core::scan_vault(&paths, vulcan_core::ScanMode::Full).unwrap();
 
-        let mut session =
-            crate::mcp_session::McpSessionState::new(&paths, Some("unrestricted")).unwrap();
-        session.record_client_info(Some(
-            &json!({"clientInfo": {"name": "Agent\nX", "version": "2"}}),
-        ));
-        session.set_authenticated_client(Some("https://client.example/".into()), None);
-        let mut call = |name: &str, arguments: Value| {
-            session
-                .call_tool(name, arguments.as_object().unwrap())
+        let authority =
+            crate::mcp_authority::McpAuthority::new(&paths, Some("unrestricted")).unwrap();
+        let mut client = crate::mcp_authority::McpClientAttribution::default();
+        client.record_implementation(Some(&json!({"name": "Agent\nX", "version": "2"})));
+        client.oauth_client_id = Some("https://client.example/".into());
+        let call = |name: &str, arguments: Value| {
+            authority
+                .call_tool(&client, name, arguments.as_object().unwrap())
                 .map(|result| result["structuredContent"].clone())
         };
 

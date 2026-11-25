@@ -6,7 +6,6 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 /// The most note or file content a read returns inline; the rest is reached
 /// through the note's or file's resource.
 pub const MCP_CONTENT_INLINE_LIMIT: usize = 64 * 1024;
@@ -69,7 +68,7 @@ const INSTRUCTION_FAMILIES: &[(&[&str], &str)] = &[
 ];
 
 /// What the server is and how to route a request, for the `instructions` of
-/// `initialize`. The first paragraph stands alone (some clients read only the
+/// `initialize` and `server/discover`. The first paragraph stands alone (some clients read only the
 /// start); then one line per tool family the caller can use.
 #[must_use]
 pub fn server_instructions(active_tool_names: &[String]) -> String {
@@ -95,25 +94,6 @@ pub fn server_instructions(active_tool_names: &[String]) -> String {
         " Workflow guides for Vulcan are available as skill resources; read one before an unfamiliar multi-step task.",
     );
     text
-}
-
-#[must_use]
-pub fn initialization_result(active_tool_names: &[String], server_version: &str) -> Value {
-    serde_json::json!({
-        "protocolVersion": MCP_PROTOCOL_VERSION,
-        "capabilities": {
-            "tools": { "listChanged": true },
-            "resources": { "listChanged": true },
-            "prompts": { "listChanged": true },
-            "completions": {},
-        },
-        "serverInfo": {
-            "name": "vulcan",
-            "title": "Vulcan",
-            "version": server_version,
-        },
-        "instructions": server_instructions(active_tool_names),
-    })
 }
 
 /// Shape a built-in tool result: `structuredContent` always, plus the
@@ -1017,12 +997,7 @@ mod tests {
             "search".to_string(),
             "task_query".to_string(),
         ];
-        let result = initialization_result(&readonly, "1.2.3");
-        assert_eq!(result["protocolVersion"], MCP_PROTOCOL_VERSION);
-        assert_eq!(result["serverInfo"]["version"], "1.2.3");
-        assert_eq!(result["serverInfo"]["title"], "Vulcan");
-        assert_eq!(result["capabilities"]["tools"]["listChanged"], true);
-        let instructions = result["instructions"].as_str().unwrap();
+        let instructions = server_instructions(&readonly);
         assert!(instructions.contains("Tasks: task_query"));
         assert!(!instructions.contains("Edit notes"));
         assert!(!instructions.contains("Web:"));

@@ -588,7 +588,7 @@ mod tests {
 
     fn initialize() -> Value {
         json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{
-            "protocolVersion":vulcan_app::mcp_protocol::MCP_PROTOCOL_VERSION,
+            "protocolVersion":"2025-11-25",
             "clientInfo":{"name":"driver-test","version":"1"}, "capabilities":{}
         }})
     }

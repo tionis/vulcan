@@ -1,4 +1,5 @@
-//! Transport-neutral MCP session authority and discovery snapshots.
+//! Who an MCP request acts as: the vault, the permission profile, and the
+//! client. No connection state: the stateless core resolves this per request.
 
 use serde_json::{Map, Value};
 use vulcan_core::{
@@ -6,17 +7,15 @@ use vulcan_core::{
     VaultPaths,
 };
 
-use crate::mcp_assistant::{
-    prompt_files_fingerprint, resource_files_fingerprint, tool_catalog_fingerprint,
-};
 use crate::mcp_catalog::active_tool_names;
 use crate::mcp_discovery::McpDiscovery;
-use crate::mcp_protocol::{McpListSnapshot, McpMethodError};
+use crate::mcp_protocol::McpMethodError;
 use crate::mcp_tool_exec::McpToolExecution;
 
-/// Who is on the other end of a session, as far as Vulcan can tell. The
-/// client name and version are self-reported in `initialize`; the OAuth
-/// client and subject come from an authenticated remote grant.
+/// Who is on the other end, as far as Vulcan can tell. The client name and
+/// version are self-reported (per request in `_meta`, or in a legacy
+/// `initialize`); the OAuth client and subject come from an authenticated
+/// remote grant.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct McpClientAttribution {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -32,7 +31,11 @@ pub struct McpClientAttribution {
 impl McpClientAttribution {
     /// Record `clientInfo` from an `initialize` request.
     pub fn record_client_info(&mut self, params: Option<&Value>) {
-        let info = params.and_then(|params| params.get("clientInfo"));
+        self.record_implementation(params.and_then(|params| params.get("clientInfo")));
+    }
+
+    /// Record a client `Implementation` object (`name`, `version`).
+    pub fn record_implementation(&mut self, info: Option<&Value>) {
         let field = |name: &str| {
             info.and_then(|info| info.get(name))
                 .and_then(Value::as_str)
@@ -66,59 +69,31 @@ impl McpClientAttribution {
     }
 }
 
+/// The vault and permission profile a request acts under.
 #[derive(Debug, Clone)]
-pub struct McpSessionState {
+pub struct McpAuthority {
     paths: VaultPaths,
     selection: ResolvedPermissionProfile,
     guard: ProfilePermissionGuard,
-    snapshot: McpListSnapshot,
-    client: McpClientAttribution,
 }
 
-impl McpSessionState {
+impl McpAuthority {
     pub fn new(
         paths: &VaultPaths,
         requested_profile: Option<&str>,
     ) -> Result<Self, PermissionError> {
         let selection = resolve_permission_profile(paths, requested_profile)?;
         let guard = ProfilePermissionGuard::new(paths, selection.clone());
-        let snapshot = McpListSnapshot {
-            tools: tool_catalog_fingerprint(
-                paths,
-                Some(selection.name.as_str()),
-                &selection.profile,
-            ),
-            prompts: prompt_files_fingerprint(paths, &guard),
-            resources: resource_files_fingerprint(paths, &guard),
-        };
         Ok(Self {
             paths: paths.clone(),
             selection,
             guard,
-            snapshot,
-            client: McpClientAttribution::default(),
         })
     }
 
     #[must_use]
     pub fn paths(&self) -> &VaultPaths {
         &self.paths
-    }
-
-    #[must_use]
-    pub fn client(&self) -> &McpClientAttribution {
-        &self.client
-    }
-
-    /// Record `clientInfo` from the session's `initialize` request.
-    pub fn record_client_info(&mut self, params: Option<&Value>) {
-        self.client.record_client_info(params);
-    }
-
-    /// Attribute the session to an authenticated remote client.
-    pub fn set_authenticated_client(&mut self, client_id: Option<String>, subject: Option<String>) {
-        self.client.oauth_client_id = client_id;
-        self.client.subject = subject;
     }
 
     #[must_use]
@@ -136,12 +111,13 @@ impl McpSessionState {
         active_tool_names(&self.selection.profile)
     }
 
-    /// Existing sessions can narrow to current profile policy, never widen.
+    /// Re-read the profile from the vault's configuration: it may narrow
+    /// what the caller was granted, never widen it.
     pub fn attenuate_profile(&mut self) -> Result<(), String> {
         let current = resolve_permission_profile(&self.paths, Some(&self.selection.name))
             .map_err(|error| error.to_string())?;
         if !current.grant.is_subset_of(&self.selection.grant) {
-            return Err("MCP permission profile widened after session initialization".to_string());
+            return Err("MCP permission profile widened after it was granted".to_string());
         }
         self.guard = ProfilePermissionGuard::new(&self.paths, current.clone());
         self.selection = current;
@@ -159,7 +135,8 @@ impl McpSessionState {
     }
 
     pub fn call_tool(
-        &mut self,
+        &self,
+        client: &McpClientAttribution,
         name: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Value, McpMethodError> {
@@ -168,22 +145,9 @@ impl McpSessionState {
             guard: &self.guard,
             profile_name: self.selection.name.as_str(),
             profile: &self.selection.profile,
-            client: &self.client,
+            client,
         }
         .call_tool(name, arguments)
-    }
-
-    pub fn list_changed_notifications(&mut self) -> Vec<Value> {
-        let current = McpListSnapshot {
-            tools: tool_catalog_fingerprint(
-                &self.paths,
-                Some(self.selection.name.as_str()),
-                &self.selection.profile,
-            ),
-            prompts: prompt_files_fingerprint(&self.paths, &self.guard),
-            resources: resource_files_fingerprint(&self.paths, &self.guard),
-        };
-        self.snapshot.changed_notifications(current)
     }
 }
 
@@ -192,11 +156,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sessions_list_the_profile_tools_and_keep_no_result_store() {
+    fn authority_lists_the_profile_tools_and_keeps_no_result_store() {
         let temporary = tempfile::tempdir().unwrap();
         let paths = VaultPaths::new(temporary.path());
-        let mut first = McpSessionState::new(&paths, Some("readonly")).unwrap();
-        let mut second = McpSessionState::new(&paths, Some("readonly")).unwrap();
+        let mut first = McpAuthority::new(&paths, Some("readonly")).unwrap();
         assert!(first.active_tool_names().contains(&"note_get".to_string()));
         assert!(first
             .active_tool_names()
@@ -217,7 +180,6 @@ mod tests {
                 ..
             })
         ));
-        assert!(second.list_changed_notifications().is_empty());
     }
 
     #[test]
@@ -251,17 +213,21 @@ mod tests {
         git(root, &["commit", "--quiet", "-m", "seed"]);
         vulcan_core::scan_vault(&paths, vulcan_core::ScanMode::Full).unwrap();
 
-        let mut session = McpSessionState::new(&paths, Some("unrestricted")).unwrap();
-        let call = |session: &mut McpSessionState, name: &str, arguments: Value| {
+        let session = McpAuthority::new(&paths, Some("unrestricted")).unwrap();
+        let call = |session: &McpAuthority, name: &str, arguments: Value| {
             let result = session
-                .call_tool(name, arguments.as_object().unwrap())
+                .call_tool(
+                    &McpClientAttribution::default(),
+                    name,
+                    arguments.as_object().unwrap(),
+                )
                 .unwrap();
             assert_eq!(result["isError"], false, "{name}: {result}");
             result["structuredContent"].clone()
         };
 
         let begun = call(
-            &mut session,
+            &session,
             "changeset_begin",
             serde_json::json!({"title": "Grow home"}),
         );
@@ -270,7 +236,7 @@ mod tests {
         // Writes naming the changeset go to its worktree; the vault does not
         // change, and the vault's own reads do not see them.
         let appended = call(
-            &mut session,
+            &session,
             "note_append",
             serde_json::json!({"note": "Home.md", "text": "Staged.", "changeset": id}),
         );
@@ -280,30 +246,30 @@ mod tests {
             "# Home\n"
         );
         let staged = call(
-            &mut session,
+            &session,
             "note_get",
             serde_json::json!({"note": "Home.md", "changeset": id}),
         );
         assert!(staged["content"].as_str().unwrap().contains("Staged."));
-        let vault = call(
-            &mut session,
-            "note_get",
-            serde_json::json!({"note": "Home.md"}),
-        );
+        let vault = call(&session, "note_get", serde_json::json!({"note": "Home.md"}));
         assert!(!vault["content"].as_str().unwrap().contains("Staged."));
-        let listed = call(&mut session, "changeset_list", serde_json::json!({}));
+        let listed = call(&session, "changeset_list", serde_json::json!({}));
         assert_eq!(listed["changesets"][0]["uncommitted"][0], "Home.md");
 
         // In a changeset, a bare commit takes everything in it; in the vault
         // it must name what it commits.
         call(
-            &mut session,
+            &session,
             "git_commit",
             serde_json::json!({"message": "Stage", "changeset": id}),
         );
-        let parameter = |name: &str, arguments: Value, session: &mut McpSessionState| {
+        let parameter = |name: &str, arguments: Value, session: &McpAuthority| {
             let error = session
-                .call_tool(name, arguments.as_object().unwrap())
+                .call_tool(
+                    &McpClientAttribution::default(),
+                    name,
+                    arguments.as_object().unwrap(),
+                )
                 .unwrap_err();
             let McpMethodError::Tool {
                 structured: Some(structured),
@@ -314,18 +280,10 @@ mod tests {
             };
             structured["error"].clone()
         };
-        let bare = parameter(
-            "git_commit",
-            serde_json::json!({"message": "x"}),
-            &mut session,
-        );
+        let bare = parameter("git_commit", serde_json::json!({"message": "x"}), &session);
         assert_eq!(bare["parameter"], "paths", "{bare}");
 
-        let landed = call(
-            &mut session,
-            "changeset_land",
-            serde_json::json!({"id": id}),
-        );
+        let landed = call(&session, "changeset_land", serde_json::json!({"id": id}));
         assert_eq!(landed["landed"], true, "{landed}");
         assert!(std::fs::read_to_string(root.join("Home.md"))
             .unwrap()
@@ -339,12 +297,12 @@ mod tests {
         let gone = parameter(
             "note_get",
             serde_json::json!({"note": "Home.md", "changeset": id}),
-            &mut session,
+            &session,
         );
         assert_eq!(gone["code"], "not_found");
         assert_eq!(gone["parameter"], "changeset");
         // Tools outside the changeset families reject the argument.
-        let status = parameter("status", serde_json::json!({"changeset": id}), &mut session);
+        let status = parameter("status", serde_json::json!({"changeset": id}), &session);
         assert_eq!(status["code"], "invalid_argument", "{status}");
 
         match previous {

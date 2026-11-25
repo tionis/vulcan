@@ -8,7 +8,6 @@ use std::net::TcpListener;
 #[cfg(feature = "oauth")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use vulcan_app::mcp_dispatch::McpProtocolMethods;
 #[cfg(feature = "oauth")]
 use vulcan_app::mcp_protocol::McpWebFetchArgs;
 use vulcan_app::mcp_read_tools;
@@ -4388,7 +4387,6 @@ fn named_consent_routes_each_grant_to_its_selected_vault() {
             .core
             .lock()
             .expect("core")
-            .session
             .paths()
             .vault_root(),
         second.vault_root()
@@ -4432,7 +4430,6 @@ fn named_consent_routes_each_grant_to_its_selected_vault() {
             .core
             .lock()
             .expect("core")
-            .session
             .paths()
             .vault_root(),
         first.vault_root()
@@ -4781,7 +4778,7 @@ fn hosted_mcp_cancelled_while_queued_never_dispatches_a_write() {
         .expect("runtime");
     let scheduler =
         Arc::new(MutationScheduler::new(MutationSchedulerConfig::default()).expect("scheduler"));
-    let grant = core.session.selection().grant.clone();
+    let grant = core.selection().grant.clone();
     let blocker = ExecutionContext::new(
         ExecutionVaultIdentity::resolve(paths.vault_root(), None, None).expect("vault"),
         ExecutionAuthority::Caller {
@@ -4901,7 +4898,7 @@ fn hosted_mcp_http_cancellation_stops_a_queued_write_before_dispatch() {
         .expect("runtime");
     let scheduler =
         Arc::new(MutationScheduler::new(MutationSchedulerConfig::default()).expect("scheduler"));
-    let grant = core.session.selection().grant.clone();
+    let grant = core.selection().grant.clone();
     let blocker = ExecutionContext::new(
         ExecutionVaultIdentity::resolve(paths.vault_root(), None, None).expect("vault"),
         ExecutionAuthority::Caller {
@@ -5291,7 +5288,7 @@ fn named_mcp_session_profile_can_narrow_but_never_widen_without_reconsent() {
     )
     .expect("writable profile");
     let mut core = McpServerCore::new(&paths, Some("agent")).expect("MCP core");
-    assert!(core.session.guard().check_write_path("Note.md").is_ok());
+    assert!(core.authority().guard().check_write_path("Note.md").is_ok());
 
     fs::write(
         paths.config_file(),
@@ -5299,7 +5296,11 @@ fn named_mcp_session_profile_can_narrow_but_never_widen_without_reconsent() {
     )
     .expect("narrow profile");
     attenuate_mcp_core_profile(&mut core).expect("narrowed profile");
-    assert!(core.session.guard().check_write_path("Note.md").is_err());
+    assert!(core
+        .authority()
+        .guard()
+        .check_write_path("Note.md")
+        .is_err());
 
     fs::write(
         paths.config_file(),
@@ -5309,7 +5310,11 @@ fn named_mcp_session_profile_can_narrow_but_never_widen_without_reconsent() {
     assert!(attenuate_mcp_core_profile(&mut core)
         .expect_err("existing session cannot widen")
         .contains("widened"));
-    assert!(core.session.guard().check_write_path("Note.md").is_err());
+    assert!(core
+        .authority()
+        .guard()
+        .check_write_path("Note.md")
+        .is_err());
 }
 
 #[test]
@@ -5375,10 +5380,14 @@ fn sync_tools_require_full_read_and_git_and_only_triggers_mutate() {
 
     let tmp = tempfile::tempdir().expect("tempdir should be created");
     let paths = VaultPaths::new(tmp.path());
-    let mut core = McpServerCore::new(&paths, None).expect("MCP core should initialize");
+    let core = McpServerCore::new(&paths, None).expect("MCP core should initialize");
     let result = core
-        .protocol()
-        .call_tool("sync_doctor", &Map::new())
+        .authority()
+        .call_tool(
+            &vulcan_app::mcp_authority::McpClientAttribution::default(),
+            "sync_doctor",
+            &Map::new(),
+        )
         .expect("read-only sync doctor should execute");
     assert_eq!(result["isError"].as_bool(), Some(false));
     assert_eq!(result["structuredContent"]["healthy"], false);
@@ -5392,17 +5401,25 @@ fn daily_wiki_agent_can_use_index_scan_when_index_pack_is_selected() {
     let paths = VaultPaths::new(tmp.path());
     vulcan_core::initialize_vulcan_dir(&paths).expect("vault should initialize");
     fs::write(tmp.path().join("Home.md"), "# Home\n").expect("note should write");
-    let mut core =
+    let core =
         McpServerCore::new(&paths, Some("daily-wiki-agent")).expect("MCP core should initialize");
 
-    let tools = core.protocol().visible_tool_items().expect("visible tools");
+    let tools = core
+        .authority()
+        .discovery()
+        .visible_tool_items()
+        .expect("visible tools");
     assert!(
         tools.iter().any(|tool| tool["name"] == "index_scan"),
         "index pack should expose index_scan under daily-wiki-agent"
     );
     let result = core
-        .protocol()
-        .call_tool("index_scan", &Map::new())
+        .authority()
+        .call_tool(
+            &vulcan_app::mcp_authority::McpClientAttribution::default(),
+            "index_scan",
+            &Map::new(),
+        )
         .expect("daily-wiki-agent should be allowed to scan");
     assert_eq!(result["isError"].as_bool(), Some(false));
     assert_eq!(result["structuredContent"]["added"].as_u64(), Some(1));
@@ -5413,7 +5430,7 @@ fn mcp_config_tools_preserve_dry_run_apply_and_show_report_shapes() {
     let temporary = tempfile::tempdir().expect("temporary vault");
     let paths = VaultPaths::new(temporary.path());
     vulcan_core::initialize_vulcan_dir(&paths).expect("initialize vault");
-    let mut core = McpServerCore::new(&paths, Some("unrestricted")).expect("MCP core");
+    let core = McpServerCore::new(&paths, Some("unrestricted")).expect("MCP core");
     let mut set = Map::from_iter([
         (
             "key".to_string(),
@@ -5427,8 +5444,12 @@ fn mcp_config_tools_preserve_dry_run_apply_and_show_report_shapes() {
         ("no_commit".to_string(), Value::Bool(true)),
     ]);
     let preview = core
-        .protocol()
-        .call_tool("config_set", &set)
+        .authority()
+        .call_tool(
+            &vulcan_app::mcp_authority::McpClientAttribution::default(),
+            "config_set",
+            &set,
+        )
         .expect("config preview");
     assert_eq!(preview["isError"], false);
     assert_eq!(preview["structuredContent"]["dry_run"], true);
@@ -5436,15 +5457,20 @@ fn mcp_config_tools_preserve_dry_run_apply_and_show_report_shapes() {
 
     set.insert("dry_run".to_string(), Value::Bool(false));
     let applied = core
-        .protocol()
-        .call_tool("config_set", &set)
+        .authority()
+        .call_tool(
+            &vulcan_app::mcp_authority::McpClientAttribution::default(),
+            "config_set",
+            &set,
+        )
         .expect("config apply");
     assert_eq!(applied["isError"], false);
     assert_eq!(applied["structuredContent"]["updated"], true);
     assert!(paths.config_file().exists());
     let show = core
-        .protocol()
+        .authority()
         .call_tool(
+            &vulcan_app::mcp_authority::McpClientAttribution::default(),
             "config_get",
             &Map::from_iter([(
                 "section".to_string(),

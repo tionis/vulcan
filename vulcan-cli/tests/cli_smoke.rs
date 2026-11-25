@@ -34647,6 +34647,53 @@ fn mcp_rejects_the_removed_tool_pack_flags_with_an_explanation() {
 }
 
 #[test]
+fn mcp_server_serves_modern_requests_without_a_handshake() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    let meta = serde_json::json!({
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {},
+        "io.modelcontextprotocol/clientInfo": { "name": "modern", "version": "1" }
+    });
+
+    let mut session = McpSession::start(&vault_root, &[]);
+    let discover = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "server/discover",
+        "params": { "_meta": meta }
+    }));
+    let discover = &discover.last().expect("discover response")["result"];
+    assert_eq!(discover["resultType"], "complete");
+    assert_eq!(discover["supportedVersions"][0], "2026-07-28");
+    assert_eq!(
+        discover["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+        "vulcan"
+    );
+
+    let called = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": { "_meta": meta, "name": "note_get", "arguments": { "note": "Home" } }
+    }));
+    // No list-change notifications ride along with modern responses.
+    assert_eq!(called.len(), 1, "{called:?}");
+    let result = &called[0]["result"];
+    assert_eq!(result["resultType"], "complete");
+    assert_eq!(result["isError"], false, "{result}");
+
+    let old = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 3, "method": "tools/list",
+        "params": { "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "1900-01-01",
+            "io.modelcontextprotocol/clientCapabilities": {}
+        } }
+    }));
+    let error = &old.last().expect("version error")["error"];
+    assert_eq!(error["code"], -32022);
+    assert_eq!(error["data"]["requested"], "1900-01-01");
+}
+
+#[test]
 fn mcp_server_surfaces_prompts_resources_and_completions() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

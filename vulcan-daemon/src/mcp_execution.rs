@@ -38,13 +38,13 @@ pub trait McpRequestCore: Clone + Send + 'static {
 
 impl McpRequestCore for McpProtocolCore {
     fn vault_paths(&self) -> &VaultPaths {
-        self.session.paths()
+        self.paths()
     }
     fn permission_grant(&self) -> PermissionGrant {
-        self.session.selection().grant.clone()
+        self.selection().grant.clone()
     }
     fn attenuate_profile(&mut self) -> Result<(), String> {
-        self.session.attenuate_profile()
+        McpProtocolCore::attenuate_profile(self)
     }
     fn process_request(&mut self, request: Value) -> Vec<Value> {
         McpProtocolCore::process_request(self, request)
