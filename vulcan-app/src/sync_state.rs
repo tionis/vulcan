@@ -17,6 +17,19 @@ use vulcan_sync::GitSyncDeviceId;
 pub const SYNC_JOURNAL_VERSION: u32 = 2;
 const MAX_SYNC_JOURNAL_BYTES: u64 = 1024 * 1024;
 pub const SYNC_APPLY_MARKER_VERSION: u32 = 2;
+pub const SYNC_ATTEMPT_RECORD_VERSION: u32 = 1;
+const MAX_SYNC_ATTEMPT_RECORD_BYTES: u64 = 4 * 1024;
+
+/// How the most recent finished sync of a repository on this device ended,
+/// whichever process ran it: the daemon or a direct `vulcan sync`. Status
+/// uses it so a direct sync that succeeds after a failed daemon job is not
+/// reported as still failing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncAttemptRecord {
+    pub version: u32,
+    pub finished_unix_ms: u64,
+    pub succeeded: bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -367,6 +380,58 @@ impl SyncStateStore {
         let mut bytes = serde_json::to_vec_pretty(journal).map_err(AppError::operation)?;
         bytes.push(b'\n');
         durable_file::replace(&path, &bytes)
+    }
+
+    /// Records how the latest sync of `repository_key` ended.
+    pub fn record_attempt(&self, repository_key: &str, succeeded: bool) -> Result<(), AppError> {
+        let path = self.attempt_path(repository_key)?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| AppError::operation("sync attempt path has no parent directory"))?;
+        fs::create_dir_all(parent).map_err(AppError::operation)?;
+        let finished_unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(AppError::operation)?
+            .as_millis();
+        let record = SyncAttemptRecord {
+            version: SYNC_ATTEMPT_RECORD_VERSION,
+            finished_unix_ms: u64::try_from(finished_unix_ms).unwrap_or(u64::MAX),
+            succeeded,
+        };
+        let mut bytes = serde_json::to_vec_pretty(&record).map_err(AppError::operation)?;
+        bytes.push(b'\n');
+        durable_file::replace(&path, &bytes)
+    }
+
+    /// How the latest recorded sync of `repository_key` ended, if any.
+    pub fn last_attempt(
+        &self,
+        repository_key: &str,
+    ) -> Result<Option<SyncAttemptRecord>, AppError> {
+        let path = self.attempt_path(repository_key)?;
+        let metadata = match fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(AppError::operation(error)),
+        };
+        if metadata.len() > MAX_SYNC_ATTEMPT_RECORD_BYTES {
+            return Err(AppError::operation(format!(
+                "sync attempt record at {} is too large",
+                path.display()
+            )));
+        }
+        let record: SyncAttemptRecord =
+            serde_json::from_slice(&fs::read(&path).map_err(AppError::operation)?)
+                .map_err(AppError::operation)?;
+        if record.version != SYNC_ATTEMPT_RECORD_VERSION {
+            return Ok(None);
+        }
+        Ok(Some(record))
+    }
+
+    fn attempt_path(&self, repository_key: &str) -> Result<PathBuf, AppError> {
+        validate_repository_key(repository_key)?;
+        Ok(self.root.join(repository_key).join("last-attempt.json"))
     }
 
     pub fn clear(&self, repository_key: &str) -> Result<(), AppError> {

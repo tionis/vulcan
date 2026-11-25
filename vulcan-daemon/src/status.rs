@@ -202,7 +202,9 @@ fn reconstruct_sync_status(
         ));
     }
     if let Some(job) = relevant_jobs.last() {
-        return Ok(report_from_terminal_job(registration, job));
+        if !superseded_by_later_success(job, state_store, &repository_key) {
+            return Ok(report_from_terminal_job(registration, job));
+        }
     }
     Ok(base_report(
         registration,
@@ -211,6 +213,28 @@ fn reconstruct_sync_status(
         0,
         None,
     ))
+}
+
+/// A failed daemon job no longer describes the wiki once a sync that started
+/// later (for example a direct `vulcan sync run`) succeeded. Every finished
+/// sync overwrites the attempt record, so a success newer than the job's
+/// creation means no failure followed it.
+fn superseded_by_later_success(
+    job: &SupervisedSyncJob,
+    state_store: &SyncStateStore,
+    repository_key: &str,
+) -> bool {
+    if job.job.error.is_none() {
+        return false;
+    }
+    let Ok(created) = ulid::Ulid::from_string(&job.job.id).map(|id| id.timestamp_ms()) else {
+        return false;
+    };
+    state_store
+        .last_attempt(repository_key)
+        .ok()
+        .flatten()
+        .is_some_and(|attempt| attempt.succeeded && attempt.finished_unix_ms > created)
 }
 
 fn report_from_active_job(
@@ -798,5 +822,47 @@ mod tests {
         assert_eq!(report.status.state, SyncState::Offline);
         assert!(report.recovery_required);
         assert_eq!(report.status.detail.as_deref(), Some("remote unavailable"));
+    }
+
+    #[test]
+    fn a_later_direct_sync_success_clears_a_failed_daemon_job() {
+        let (_temporary, registry, supervisor, state_store, id) = setup();
+        let registration = registry.show(&id).expect("registration").registration;
+        let key = repository_state_key(&registration.path);
+        // A success recorded before the job was queued does not hide it.
+        state_store.record_attempt(&key, true).expect("record");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let queued = supervisor
+            .enqueue(id.as_str(), &registration.path, SyncJobTrigger::Manual)
+            .expect("enqueue");
+        supervisor.claim_next().expect("claim").expect("job");
+        supervisor
+            .complete(
+                &queued.job.job.id,
+                SyncJobState::Failed,
+                None,
+                Some(SyncError::new(
+                    SyncErrorCategory::Network,
+                    "remote unavailable",
+                    true,
+                )),
+            )
+            .expect("complete");
+        let report =
+            wiki_sync_status(&registry, &supervisor, &state_store, &id).expect("sync status");
+        assert!(report.recovery_required);
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        state_store.record_attempt(&key, true).expect("record");
+        let report =
+            wiki_sync_status(&registry, &supervisor, &state_store, &id).expect("sync status");
+        assert_eq!(report.status.state, SyncState::Clean);
+        assert!(!report.recovery_required);
+
+        // A later failure, from either process, shows again.
+        state_store.record_attempt(&key, false).expect("record");
+        let report =
+            wiki_sync_status(&registry, &supervisor, &state_store, &id).expect("sync status");
+        assert!(report.recovery_required);
     }
 }

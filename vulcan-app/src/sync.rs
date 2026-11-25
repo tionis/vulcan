@@ -1568,6 +1568,8 @@ fn sync_git_vault_cycle(
             let classified = vulcan_sync::classify_git_sync_error(&error);
             if !options.dry_run {
                 journal.error = Some(error.to_string());
+                // Best effort: status falls back to the retained journal.
+                let _ = state_store.record_attempt(&journal.repository_key, false);
                 if let Err(state_error) = state_store.save(&journal) {
                     return Err(AppError::operation(format!(
                         "{error}; additionally failed to retain the recovery journal: {state_error}"
@@ -1800,6 +1802,9 @@ fn retain_sync_journal(
         Some(journal)
     } else {
         state_store.clear(&repository_key)?;
+        // Best effort: the sync itself succeeded; a missing record only means
+        // status keeps showing an older failed daemon job.
+        let _ = state_store.record_attempt(&repository_key, true);
         None
     };
     Ok((repository_key, retained))
@@ -3068,6 +3073,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // One recovery scenario, checked step by step.
     fn direct_sync_recovers_and_clears_an_interrupted_journal() {
         let (temporary, _remote, writer) = {
             let temporary = tempdir().expect("temporary directory");
@@ -3146,6 +3152,13 @@ mod tests {
                 .expect("no identity yet"),
             None
         );
+        assert_eq!(
+            store
+                .last_attempt(&interrupted.repository_key)
+                .expect("attempt record"),
+            None,
+            "a dry run records no attempt"
+        );
 
         fs::write(writer.join("Home.md"), "changed before recovery\n").expect("changed note");
 
@@ -3165,6 +3178,13 @@ mod tests {
                 .load(&report.state.repository_key)
                 .expect("load cleared journal"),
             None
+        );
+        assert!(
+            store
+                .last_attempt(&report.state.repository_key)
+                .expect("attempt record")
+                .expect("recorded success")
+                .succeeded
         );
         let device_id = store
             .load_or_create_device_id(false)
@@ -3200,6 +3220,13 @@ mod tests {
             .expect("retained error journal");
         assert_eq!(journal.phase, SyncJournalPhase::Preparing);
         assert!(journal.error.is_some());
+        assert!(
+            !store
+                .last_attempt(&key)
+                .expect("attempt record")
+                .expect("recorded failure")
+                .succeeded
+        );
     }
 
     #[test]
