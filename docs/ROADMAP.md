@@ -6857,6 +6857,7 @@ Use this subphase only when an entire SilverBullet space should behave as a file
 - [x] Per-mirror outcomes (`pushed`, `up_to_date`, `rejected`, `failed`) in `branch.mirrors`, human output, and daemon logs; a mirror never fails the cycle; `sync_mirror_behind` alerts once per 30-minute streak.
 - [x] Committed submodules and their remotes are never fetched implicitly (`submodule.recurse` and `fetch.recurseSubmodules` off for every Vulcan Git command), so neither the primary nor a mirror needs submodule credentials.
 - [x] Show mirror lag in `sync status` (`planned` or `up_to_date`, from local refs without contacting mirrors) and `git.mirrors` in doctor (a listed name with no remote, or the primary remote, is an error).
+- [x] In a clone with Git LFS set up (`filter.lfs.process` or `filter.lfs.smudge`), fetch from the primary the LFS objects of the commits new to the mirror before pushing (every ref's history for a new mirror or a range over 500 commits), since a pull downloads only the checked-out version's; a failed fetch is a failed mirror push.
 - [ ] Optionally mirror the device backup ref and tags.
 
 ## Phase 13: WebUI — Admin and Browse

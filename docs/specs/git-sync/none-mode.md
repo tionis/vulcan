@@ -35,7 +35,11 @@ rely on.
 5. **Mirror** the branch, when `sync.mirrors` names remotes of the clone and the cycle neither
    failed nor paused: each mirror receives the tip the primary remote has (the pushed head, or else
    the upstream tracking ref) on the same branch, as a plain fast-forward push with hooks, never
-   forced. The tip is recorded in `refs/remotes/<mirror>/<branch>` after a successful push, and a
+   forced. Where the clone has Git LFS set up (`filter.lfs.process` or `filter.lfs.smudge`), the
+   LFS objects of the commits new to the mirror are first fetched from the primary (every ref's
+   history when the mirror has no recorded tip or the range exceeds 500 commits); a failed fetch
+   reports the mirror `failed` without pushing. The tip is recorded in
+   `refs/remotes/<mirror>/<branch>` after a successful push, and a
    mirror already at the tip costs no round trip. Each mirror reports `pushed`, `up_to_date`,
    `rejected` (it has commits the primary lacks), or `failed` in `branch.mirrors`; none of them fails
    the cycle, and the daemon alerts `sync_mirror_behind` once some mirror has not been current for

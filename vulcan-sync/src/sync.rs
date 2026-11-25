@@ -2097,6 +2097,7 @@ fn push_mirrors(
         .as_str()
         .strip_prefix("refs/heads/")
         .unwrap_or(merge_ref.as_str());
+    let lane = report.branch.as_mut().expect("branch lane");
     for mirror in &options.mirrors {
         let mut entry = GitMirrorPush {
             remote: mirror.clone(),
@@ -2112,8 +2113,19 @@ fn push_mirrors(
             continue;
         }
         let seen = GitRefName::parse(format!("refs/remotes/{mirror}/{branch}"))?;
-        if engine.read_ref(&repository, &seen)?.as_ref() == Some(&tip) {
+        let mirrored = engine.read_ref(&repository, &seen)?;
+        if mirrored.as_ref() == Some(&tip) {
             entry.outcome = GitMirrorOutcome::UpToDate;
+            lane.mirrors.push(entry);
+            continue;
+        }
+        // The push uploads the LFS objects of every commit new to the
+        // mirror; a checkout only downloads those of the commits it lands on.
+        if let Err(error) = engine.fetch_lfs_objects(&repository, &primary, &tip, mirrored.as_ref())
+        {
+            entry.detail = Some(format!(
+                "cannot fetch the Git LFS objects `{mirror}` needs from `{primary}`: {error}"
+            ));
             lane.mirrors.push(entry);
             continue;
         }
@@ -3832,6 +3844,75 @@ mod tests {
         assert_ne!(
             remote_main(&writer, &mirror),
             git_stdout(&writer, &["rev-parse", "HEAD"])
+        );
+    }
+
+    #[test]
+    fn mirrors_get_the_lfs_objects_of_commits_a_fast_forward_skipped() {
+        if !Command::new("git")
+            .args(["lfs", "version"])
+            .output()
+            .is_ok_and(|output| output.status.success())
+        {
+            eprintln!("skipping: git-lfs is not installed");
+            return;
+        }
+        let (temporary, remote, writer) = setup_tracked_branch();
+        run_git(&writer, &["lfs", "install", "--local"]);
+        let mirror = add_mirror(&temporary, &writer);
+        let engine = GitCliEngine::default();
+        let options = mirror_options(&["backup"]);
+        sync_git_once(&engine, &writer, &options).expect("seed the mirror");
+
+        // Another clone publishes two versions of an LFS file; the writer
+        // fast-forwards past the first and only ever checks out the second.
+        let other = temporary.path().join("lfs-work");
+        run_git(
+            temporary.path(),
+            &[
+                "clone",
+                "--quiet",
+                remote.to_str().expect("remote path"),
+                other.to_str().expect("clone path"),
+            ],
+        );
+        run_git(&other, &["config", "user.name", "Vulcan Test"]);
+        run_git(&other, &["config", "user.email", "vulcan@example.invalid"]);
+        run_git(&other, &["lfs", "install", "--local"]);
+        run_git(&other, &["lfs", "track", "*.bin"]);
+        fs::write(other.join("Scan.bin"), "first version\n").expect("first version");
+        commit_all(&other, "first scan");
+        fs::write(other.join("Scan.bin"), "second version\n").expect("second version");
+        commit_all(&other, "second scan");
+        run_git(&other, &["push", "--quiet", "origin", "main"]);
+        let first = git_stdout(&other, &["rev-parse", "HEAD~1:Scan.bin"]);
+        let first_oid = git_stdout(&other, &["cat-file", "-p", &first])
+            .lines()
+            .find_map(|line| line.strip_prefix("oid sha256:").map(str::to_string))
+            .expect("pointer oid");
+        let stored = |root: &Path| {
+            root.join("lfs")
+                .join("objects")
+                .join(&first_oid[..2])
+                .join(&first_oid[2..4])
+                .join(&first_oid)
+        };
+
+        let report = sync_git_once(&engine, &writer, &options).expect("pull sync");
+        assert_eq!(
+            fs::read_to_string(writer.join("Scan.bin")).expect("checked out"),
+            "second version\n"
+        );
+        assert_eq!(
+            mirror_outcomes(&report),
+            [("backup".to_string(), GitMirrorOutcome::Pushed)],
+            "{:?}",
+            report.branch.as_ref().map(|lane| &lane.mirrors)
+        );
+        assert_eq!(remote_main(&writer, &mirror), remote_main(&writer, &remote));
+        assert!(
+            stored(&mirror).is_file(),
+            "the mirror lacks the skipped version's LFS object"
         );
     }
 

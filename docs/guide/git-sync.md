@@ -283,7 +283,10 @@ vulcan config set sync.mirrors '["backup"]' --target local
 After each healthy cycle, sync pushes to every mirror the branch tip the primary remote has: the
 commits it just pushed, or else the upstream as fetched. Commits the primary has not received never
 reach a mirror, and a mirror is never force-pushed: one with commits of its own reports `rejected`.
-Pushes run Git's hooks, so Git LFS uploads its objects. Sync records
+Pushes run Git's hooks, so Git LFS uploads its objects. In a clone with Git LFS set up, sync first
+downloads from the primary the LFS objects of every commit the mirror is about to receive, since a
+pull only downloads those of the version it checks out; a new mirror gets the whole history's, as
+`git lfs fetch --all` would. A download that fails counts as a failed mirror push. Sync records
 what it last sent in `refs/remotes/<mirror>/<branch>`, so an unchanged cycle costs no round trip to
 the mirror. `vulcan sync status` shows which mirrors would be pushed, judged from those refs without
 contacting them, and `vulcan sync doctor` flags a listed mirror the clone has no remote for. A

@@ -483,6 +483,19 @@ pub trait GitEngine: Send + Sync {
         expected: Option<&GitOid>,
     ) -> Result<GitPushResult, GitEngineError>;
 
+    /// Downloads from `remote` the Git LFS objects that the commits reachable
+    /// from `tip` but not from `since` reference and this repository lacks;
+    /// without `since`, those of every ref's history. Present objects cost
+    /// nothing. A mirror push of those commits needs every one of them. A
+    /// repository without Git LFS configured has nothing to fetch.
+    fn fetch_lfs_objects(
+        &self,
+        repository: &GitRepository,
+        remote: &GitRemote,
+        tip: &GitOid,
+        since: Option<&GitOid>,
+    ) -> Result<(), GitEngineError>;
+
     /// Pushes `source` to `destination` on `remote` only as a fast-forward:
     /// no lease and no force. A destination that is not an ancestor of
     /// `source` reports `Rejected`. Hooks run, so Git LFS uploads objects.
@@ -1540,6 +1553,10 @@ impl From<std::io::Error> for GitEngineError {
         Self::Io(error)
     }
 }
+
+/// The most commits whose Git LFS objects a mirror fetch names one by one;
+/// a longer range fetches every ref's history instead.
+const MAX_LFS_FETCH_COMMITS: usize = 500;
 
 /// The longest any Git command may run, however steadily it reports
 /// progress; the command timeout bounds silence, not duration.
@@ -3903,6 +3920,59 @@ impl GitEngine for GitCliEngine {
             return Ok(GitPushResult::Rejected);
         }
         Err(command_failed("push a sync ref", &output))
+    }
+
+    fn fetch_lfs_objects(
+        &self,
+        repository: &GitRepository,
+        remote: &GitRemote,
+        tip: &GitOid,
+        since: Option<&GitOid>,
+    ) -> Result<(), GitEngineError> {
+        const OPERATION: &str = "fetch the Git LFS objects a mirror needs";
+        // Git LFS uploads on push only where its filter, and so its pre-push
+        // hook, is set up; the tracked attributes may arrive with the very
+        // commits being mirrored, so they cannot decide this.
+        let mut probe = self.repository_command(repository);
+        probe.args(["config", "--get-regexp", r"^filter\.lfs\.(process|smudge)$"]);
+        if !self.execute(probe)?.status.success() {
+            return Ok(());
+        }
+        // A long or unknown range falls back to every ref's history, which
+        // keeps the command line bounded.
+        let commits = match since {
+            Some(since) => {
+                let mut command = self.repository_command(repository);
+                command
+                    .args(["rev-list", tip.as_str()])
+                    .arg(format!("^{}", since.as_str()))
+                    .arg("--");
+                let output = self.execute(command)?;
+                output.status.success().then(|| {
+                    String::from_utf8_lossy(&output.stdout)
+                        .split_whitespace()
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+            }
+            None => None,
+        }
+        .filter(|commits| commits.len() <= MAX_LFS_FETCH_COMMITS);
+        if commits.as_ref().is_some_and(Vec::is_empty) {
+            return Ok(());
+        }
+        let mut command = self.repository_command(repository);
+        command.args(["lfs", "fetch"]);
+        match commits {
+            Some(commits) => {
+                command.arg(remote.as_str()).args(commits);
+            }
+            None => {
+                command.arg("--all").arg(remote.as_str());
+            }
+        }
+        ensure_success(OPERATION, self.execute(command)?)?;
+        Ok(())
     }
 
     fn push_fast_forward(
