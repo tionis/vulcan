@@ -5,8 +5,12 @@ use std::collections::BTreeSet;
 use std::io::BufRead as _;
 #[cfg(feature = "oauth")]
 use std::io::Read;
+#[cfg(feature = "oauth")]
 use std::io::Write;
+#[cfg(feature = "oauth")]
 use std::net::TcpListener;
+#[cfg(feature = "oauth")]
+use std::net::TcpStream;
 #[cfg(feature = "oauth")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -17,8 +21,6 @@ use vulcan_core::resolve_permission_profile;
 #[cfg(feature = "oauth")]
 use vulcan_core::Verbosity;
 use vulcan_core::{PermissionProfile, ProfilePermissionGuard, TasksQueryResult};
-use vulcan_daemon::mcp_http_codec::read_mcp_http_request;
-use vulcan_daemon::mcp_http_codec::MAX_MCP_HTTP_BODY_BYTES;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_http_routes::classify_mcp_http_route;
 
@@ -155,28 +157,6 @@ fn restricted_mcp_read_reports_exclude_denied_task_paths() {
     assert_eq!(report.result_count, 1);
     assert_eq!(report.tasks[0]["path"], "Public/Task.md");
     assert_eq!(report.groups[0].tasks.len(), 1);
-}
-
-#[test]
-fn http_parser_rejects_oversized_content_length_before_body_read() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
-    let address = listener.local_addr().expect("listener address");
-    let client = thread::spawn(move || {
-        let mut stream = TcpStream::connect(address).expect("client should connect");
-        write!(
-            stream,
-            "POST /mcp HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\n\r\n",
-            MAX_MCP_HTTP_BODY_BYTES + 1
-        )
-        .expect("request headers should write");
-    });
-    let (mut stream, _) = listener.accept().expect("server should accept");
-
-    let error = read_mcp_http_request(&mut stream).expect_err("oversized body should fail");
-    client.join().expect("client thread should finish");
-
-    assert_eq!(error.status, 413);
-    assert!(error.message.contains("exceeds maximum size"));
 }
 
 #[test]
@@ -1068,11 +1048,12 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         .revoke_grant(foreground_revocable_grant, current_unix_timestamp(), false)
         .expect("revoke foreground-only grant");
     let mut revoked_stream_tail = String::new();
-    assert_eq!(
-        revoked_foreground_sse
-            .read_line(&mut revoked_stream_tail)
-            .expect("revoked foreground SSE should close"),
-        0,
+    revoked_foreground_sse
+        .read_to_string(&mut revoked_stream_tail)
+        .expect("revoked foreground SSE should close");
+    // Only the end of the chunked body may follow.
+    assert!(
+        !revoked_stream_tail.contains("data:"),
         "revoked foreground SSE emitted data: {revoked_stream_tail}"
     );
     assert!(named_listener_tools(
@@ -1202,20 +1183,20 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         ("/oauth/authorize", &foreground_invalid_authorize),
         ("/oauth/consent", &foreground_invalid_consent),
     ] {
-        let resident_response = named_listener_get(address, path);
+        let resident_response = without_date_header(&named_listener_get(address, path));
         assert_eq!(
             resident_response
                 .split_once("\r\n\r\n")
                 .expect("resident OAuth response"),
-            expected
+            without_date_header(expected)
                 .split_once("\r\n\r\n")
                 .expect("foreground OAuth response"),
             "OAuth rejection changed between foreground and resident hosting at {path}"
         );
     }
     assert_eq!(
-        named_listener_auth_challenge(address, "parity"),
-        foreground_challenge,
+        without_date_header(&named_listener_auth_challenge(address, "parity")),
+        without_date_header(&foreground_challenge),
         "OAuth bearer challenge changed between foreground and resident hosting"
     );
     named_listener_assert_consented_tools(address, &foreground_consent_token);
@@ -1571,11 +1552,12 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         .revoke_grant(foreground_consent_grant, current_unix_timestamp(), false)
         .expect("revoke foreground consent grant");
     let mut revoked_stream_tail = String::new();
-    assert_eq!(
-        revoked_resident_sse
-            .read_line(&mut revoked_stream_tail)
-            .expect("revoked resident SSE should close"),
-        0,
+    revoked_resident_sse
+        .read_to_string(&mut revoked_stream_tail)
+        .expect("revoked resident SSE should close");
+    // Only the end of the chunked body may follow.
+    assert!(
+        !revoked_stream_tail.contains("data:"),
         "revoked resident SSE emitted data: {revoked_stream_tail}"
     );
     assert!(named_listener_tools(
@@ -2454,6 +2436,16 @@ fn named_listener_post(address: SocketAddr, path: &str, content_type: &str, body
 }
 
 #[cfg(feature = "oauth")]
+/// The response without its `Date` header, which differs between requests.
+fn without_date_header(response: &str) -> String {
+    response
+        .split("\r\n")
+        .filter(|line| !line.to_ascii_lowercase().starts_with("date:"))
+        .collect::<Vec<_>>()
+        .join("\r\n")
+}
+
+#[cfg(feature = "oauth")]
 fn named_listener_header(response: &str, name: &str) -> String {
     response
         .split_once("\r\n\r\n")
@@ -2549,8 +2541,15 @@ fn named_listener_complete_browser_consent(
         ),
     );
     assert!(callback.starts_with("HTTP/1.1 200"), "{callback}");
-    assert!(callback.contains("Cache-Control: no-store"), "{callback}");
-    assert!(callback.contains("X-Frame-Options: DENY"), "{callback}");
+    let callback_head = callback.to_ascii_lowercase();
+    assert!(
+        callback_head.contains("cache-control: no-store"),
+        "{callback}"
+    );
+    assert!(
+        callback_head.contains("x-frame-options: deny"),
+        "{callback}"
+    );
     assert!(callback.contains("personal"), "{callback}");
     assert!(callback.contains("team"), "{callback}");
     let transaction = named_listener_hidden_value(&callback, "transaction");
@@ -3440,28 +3439,38 @@ fn shutting_down_http_sessions_closes_live_sse_streams() {
         .admit(session_id.clone(), Arc::clone(&session))
         .expect("register SSE session");
 
-    let listener = TcpListener::bind("127.0.0.1:0").expect("SSE listener");
-    let address = listener.local_addr().expect("listener address");
+    let listener =
+        vulcan_daemon::mcp_transport::McpHttpListener::bind("127.0.0.1:0".parse().unwrap())
+            .expect("SSE listener");
+    let address = listener.local_addr();
     let server_context = context.clone();
+    let stop = Arc::new(ShutdownSignal::new(false));
+    let server_stop = Arc::clone(&stop);
+    let (ended_sender, ended) = std::sync::mpsc::channel();
+    let ended_sender = std::sync::Mutex::new(ended_sender);
     let server = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("SSE connection");
-        let request = McpHttpRequest {
-            method: "GET".to_string(),
-            path: "/mcp".to_string(),
-            query: String::new(),
-            headers: BTreeMap::from([
-                ("accept".to_string(), "text/event-stream".to_string()),
-                ("mcp-session-id".to_string(), session_id),
-            ]),
-            body: Vec::new(),
-        };
-        handle_mcp_http_sse(&server_context, &request, &authority, &mut stream)
-            .expect("SSE should close cleanly");
+        listener.serve(Some(&server_stop), move |_inbound, stream| {
+            let request = McpHttpRequest {
+                method: "GET".to_string(),
+                path: "/mcp".to_string(),
+                query: String::new(),
+                headers: BTreeMap::from([
+                    ("accept".to_string(), "text/event-stream".to_string()),
+                    ("mcp-session-id".to_string(), session_id.clone()),
+                ]),
+                body: Vec::new(),
+            };
+            let result = handle_mcp_http_sse(&server_context, &request, &authority, stream);
+            ended_sender.lock().unwrap().send(result.is_ok()).unwrap();
+        })
     });
-    let stream = TcpStream::connect(address).expect("SSE client");
+    let mut stream = TcpStream::connect(address).expect("SSE client");
     stream
         .set_read_timeout(Some(LISTENER_RESPONSE_TIMEOUT))
         .expect("read timeout");
+    stream
+        .write_all(b"GET /mcp HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .expect("SSE request");
     let mut client = io::BufReader::new(stream);
     let mut header = String::new();
     loop {
@@ -3478,7 +3487,14 @@ fn shutting_down_http_sessions_closes_live_sse_streams() {
     client
         .read_to_end(&mut remaining)
         .expect("SSE stream should end");
-    server.join().expect("SSE handler");
+    assert!(ended
+        .recv_timeout(LISTENER_RESPONSE_TIMEOUT)
+        .expect("SSE handler should end"));
+    stop.cancel();
+    server
+        .join()
+        .expect("SSE listener")
+        .expect("SSE listener stops");
     assert!(session.is_closed());
     assert!(context.sessions.is_empty());
 }

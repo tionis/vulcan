@@ -1244,8 +1244,10 @@ impl McpHttpSession {
             .set_read_timeout(Some(std::time::Duration::from_secs(5)))
             .expect("read timeout should be configurable");
         let request = format!(
-            "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Length: 1048577\r\nConnection: close\r\n\r\n",
-            self.endpoint, self.bind_addr
+            "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            self.endpoint,
+            self.bind_addr,
+            4 * 1024 * 1024 + 1
         );
         stream
             .write_all(request.as_bytes())

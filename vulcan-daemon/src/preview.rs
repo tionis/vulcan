@@ -10,12 +10,12 @@ use crate::host::{
     HostStatusHandle, HostSupervisor, RestartPolicy, ServiceDefinition, ServiceId,
     ServiceLifecycleState, ServiceRegistration, ServiceScope,
 };
-use crate::mcp_http_codec::{write_mcp_http_response, McpHttpRequest, McpHttpResponse};
-use crate::mcp_transport::McpHttpListener;
+use crate::mcp_http_codec::{McpHttpRequest, McpHttpResponse};
+use crate::mcp_transport::{McpHttpConnection, McpHttpListener};
 use crate::shutdown::ShutdownSignal;
 use serde_json::{json, Value};
 use std::io::{self, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -168,13 +168,18 @@ impl<B: PreviewBuilder> Preview<B> {
         path == root || path == deployed
     }
 
-    fn handle(&self, request: &McpHttpRequest, stream: &mut TcpStream, stop: &ShutdownSignal) {
+    fn handle(
+        &self,
+        request: &McpHttpRequest,
+        stream: &mut McpHttpConnection,
+        stop: &ShutdownSignal,
+    ) {
         let path = percent_decode(&request.path);
         if request.method == "GET" && self.is_endpoint(&path, "live-reload.events") {
             let _ = self.stream_live_reload(stream, stop);
             return;
         }
-        let _ = write_mcp_http_response(stream, &self.route(&request.method, &path));
+        let _ = stream.respond(self.route(&request.method, &path));
     }
 
     fn route(&self, method: &str, path: &str) -> McpHttpResponse {
@@ -222,11 +227,12 @@ impl<B: PreviewBuilder> Preview<B> {
         }
     }
 
-    fn stream_live_reload(&self, stream: &mut TcpStream, stop: &ShutdownSignal) -> io::Result<()> {
-        stream.write_all(
-            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
-        )?;
-        stream.flush()?;
+    fn stream_live_reload(
+        &self,
+        stream: &mut McpHttpConnection,
+        stop: &ShutdownSignal,
+    ) -> io::Result<()> {
+        stream.start_event_stream()?;
         let mut last_sent = String::new();
         while !stop.is_cancelled() {
             let payload = serde_json::to_string(&self.live_reload())
@@ -234,9 +240,8 @@ impl<B: PreviewBuilder> Preview<B> {
             if payload == last_sent {
                 stream.write_all(b": keep-alive\r\n\r\n")?;
             } else {
-                stream.write_all(b"event: update\r\ndata: ")?;
-                stream.write_all(payload.as_bytes())?;
-                stream.write_all(b"\r\n\r\n")?;
+                // One write per event, so it travels as one chunk.
+                stream.write_all(format!("event: update\r\ndata: {payload}\r\n\r\n").as_bytes())?;
                 last_sent = payload;
             }
             stream.flush()?;
@@ -528,6 +533,7 @@ pub fn percent_decode(value: &str) -> String {
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Read};
+    use std::net::TcpStream;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::thread;
 

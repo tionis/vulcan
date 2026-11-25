@@ -5,7 +5,7 @@ use crate::mcp_execution::{process_http_request_with_timeout, HostedMcpExecution
 use crate::mcp_http_auth::McpHttpAuthError;
 #[cfg(feature = "oauth")]
 use crate::mcp_http_auth::McpOAuthMode;
-use crate::mcp_http_codec::{write_mcp_http_response, McpHttpRequest, McpHttpResponse};
+use crate::mcp_http_codec::{McpHttpRequest, McpHttpResponse};
 use crate::mcp_http_host::{McpHttpHost, McpHttpProtocolConfig};
 use crate::mcp_http_routes::{
     dispatch_mcp_http_request, McpHttpRoute, McpHttpRouteHandler, McpHttpRouteOptions,
@@ -17,9 +17,9 @@ use crate::mcp_session::{
     SessionAdmissionError, SessionLookupError, SessionResolutionError,
 };
 use crate::mcp_sse::{serve_mcp_sse, McpSseEnd};
+use crate::mcp_transport::McpHttpConnection;
 use serde_json::Value;
 use std::io;
-use std::net::TcpStream;
 use std::ops::Deref;
 use std::sync::Arc;
 use vulcan_app::mcp_dispatch::{jsonrpc_error, request_id};
@@ -90,7 +90,7 @@ fn session_lookup_response(error: SessionLookupError) -> McpHttpResponse {
 pub fn handle_mcp_http_connection<C: McpRequestCore>(
     context: &McpHttpDriver<'_, C>,
     request: &McpHttpRequest,
-    stream: &mut TcpStream,
+    stream: &mut McpHttpConnection,
 ) -> io::Result<()> {
     #[cfg(feature = "oauth")]
     let oauth_enabled = context.oauth.is_some();
@@ -172,7 +172,7 @@ impl<C: McpRequestCore> McpHttpRouteHandler for McpHttpDriver<'_, C> {
         &self,
         request: &McpHttpRequest,
         authority: &Self::Authority,
-        stream: &mut TcpStream,
+        stream: &mut McpHttpConnection,
     ) -> io::Result<()> {
         handle_mcp_http_sse(self, request, authority, stream)
     }
@@ -376,7 +376,7 @@ pub fn handle_mcp_http_sse<C: McpRequestCore>(
     context: &McpHttpDriver<'_, C>,
     request: &McpHttpRequest,
     authority: &McpSessionAuthority,
-    stream: &mut TcpStream,
+    stream: &mut McpHttpConnection,
 ) -> io::Result<()> {
     let session_id = request
         .headers
@@ -385,8 +385,7 @@ pub fn handle_mcp_http_sse<C: McpRequestCore>(
     let session = match authorized_mcp_http_session(context, session_id, authority, true) {
         Ok(session) => session,
         Err(response) => {
-            write_mcp_http_response(stream, &response)?;
-            return Ok(());
+            return stream.respond(response);
         }
     };
 

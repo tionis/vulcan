@@ -44,7 +44,7 @@ Decisions taken with this spec:
 |---|---|---|
 | Core | `vulcan-app::mcp` | Envelope parsing and validation, version and era handling, `server/discover`, method dispatch, catalog and tool handlers, resources, prompts, skills, completion, tasks, input requests, result and error shaping. Synchronous. No transport or session types. |
 | Legacy adapter | `vulcan-app::mcp::legacy` | The `initialize` handshake and what a 2025 client expects of a connection: negotiated version, client info, `list_changed` delivery. A thin wrapper over the core. |
-| HTTP | `vulcan-daemon::mcp_http` | axum router for the MCP endpoint (POST; legacy GET and DELETE), `subscriptions/listen`, Origin and Host policy, auth extraction, OAuth and metadata routes for named remotes. Used by the resident daemon and by foreground `vulcan mcp --transport http` (which starts a tokio runtime). Core calls go through `spawn_blocking`. |
+| HTTP | `vulcan-daemon::mcp_transport` and `mcp_http_*` | hyper listener and routing for the MCP endpoint (POST; legacy GET and DELETE), `subscriptions/listen`, Origin and Host policy, auth extraction, OAuth and metadata routes for named remotes. Used by the resident daemon and by foreground `vulcan mcp --transport http` (which starts a tokio runtime). Core calls go through `spawn_blocking`. |
 | stdio | `vulcan-cli::mcp` | Flag parsing; a reader thread that dispatches each request to a worker, so reads run in parallel and `notifications/cancelled` works. |
 
 The core entry point is one function:

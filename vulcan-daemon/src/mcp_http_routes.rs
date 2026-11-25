@@ -4,12 +4,12 @@
 //! protocol operations are supplied by the host behind this transport boundary.
 
 use crate::mcp_http_codec::{
-    parse_mcp_http_post, validate_mcp_protocol_version, validate_mcp_sse_accept,
-    write_mcp_http_response, McpHttpRequest, McpHttpResponse,
+    parse_mcp_http_post, validate_mcp_protocol_version, validate_mcp_sse_accept, McpHttpRequest,
+    McpHttpResponse,
 };
+use crate::mcp_transport::McpHttpConnection;
 use serde_json::Value;
 use std::io;
-use std::net::TcpStream;
 use vulcan_app::mcp_dispatch::jsonrpc_error;
 use vulcan_app::mcp_protocol::required_scope_for_request;
 
@@ -55,7 +55,7 @@ pub trait McpHttpRouteHandler {
         &self,
         request: &McpHttpRequest,
         authority: &Self::Authority,
-        stream: &mut TcpStream,
+        stream: &mut McpHttpConnection,
     ) -> io::Result<()>;
     fn delete(&self, request: &McpHttpRequest, authority: &Self::Authority) -> McpHttpResponse;
 }
@@ -65,7 +65,7 @@ pub trait McpHttpRouteHandler {
 /// both preserve the existing hosted HTTP contract.
 pub fn dispatch_mcp_http_request<H: McpHttpRouteHandler>(
     request: &McpHttpRequest,
-    stream: &mut TcpStream,
+    stream: &mut McpHttpConnection,
     options: &McpHttpRouteOptions<'_>,
     handler: &H,
 ) -> io::Result<()> {
@@ -95,7 +95,7 @@ pub fn dispatch_mcp_http_request<H: McpHttpRouteHandler>(
         McpHttpRoute::McpEndpoint => {
             let authority = match handler.authenticate(request) {
                 Ok(authority) => authority,
-                Err(response) => return write_mcp_http_response(stream, &response),
+                Err(response) => return stream.respond(response),
             };
             match request.method.as_str() {
                 "POST" => dispatch_mcp_post(request, &authority, handler),
@@ -111,7 +111,7 @@ pub fn dispatch_mcp_http_request<H: McpHttpRouteHandler>(
             }
         }
     };
-    write_mcp_http_response(stream, &response)
+    stream.respond(response)
 }
 
 fn preflight_mcp_sse(request: &McpHttpRequest) -> Result<(), McpHttpResponse> {
@@ -218,8 +218,6 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::collections::BTreeMap;
-    use std::io::Read;
-    use std::net::TcpListener;
 
     fn request(method: &str, path: &str) -> McpHttpRequest {
         McpHttpRequest {
@@ -366,9 +364,14 @@ mod tests {
             route_error(200, "post")
         }
 
-        fn sse(&self, _: &McpHttpRequest, (): &(), stream: &mut TcpStream) -> io::Result<()> {
+        fn sse(
+            &self,
+            _: &McpHttpRequest,
+            (): &(),
+            stream: &mut McpHttpConnection,
+        ) -> io::Result<()> {
             self.calls.borrow_mut().push("sse");
-            write_mcp_http_response(stream, &route_error(200, "sse"))
+            stream.respond(route_error(200, "sse"))
         }
 
         fn delete(&self, _: &McpHttpRequest, (): &()) -> McpHttpResponse {
@@ -400,9 +403,7 @@ mod tests {
             ("GET", "/mcp", 200, &["authenticate", "sse"][..]),
             ("DELETE", "/mcp", 200, &["authenticate", "delete"][..]),
         ] {
-            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-            let (mut server, _) = listener.accept().unwrap();
+            let (mut server, capture) = McpHttpConnection::for_test();
             let handler = RecordingHandler::default();
             let mut inbound = if method == "POST" && path == "/mcp" {
                 post_request("tools/list")
@@ -420,13 +421,8 @@ mod tests {
                     .insert("accept".to_string(), "text/event-stream".to_string());
             }
             dispatch_mcp_http_request(&inbound, &mut server, &options, &handler).unwrap();
-            drop(server);
-            let mut response = String::new();
-            client.read_to_string(&mut response).unwrap();
-            assert!(
-                response.starts_with(&format!("HTTP/1.1 {status} ")),
-                "{response}"
-            );
+            let (answered, _, response) = capture.response();
+            assert_eq!(answered, status, "{response}");
             assert_eq!(*handler.calls.borrow(), calls, "{method} {path}");
         }
     }
@@ -468,9 +464,7 @@ mod tests {
             ("GET", Some("text/event-stream")),
             ("DELETE", None),
         ] {
-            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-            let (mut server, _) = listener.accept().unwrap();
+            let (mut server, capture) = McpHttpConnection::for_test();
             let mut inbound = request(method, "/mcp");
             if let Some(accept) = accept {
                 inbound
@@ -479,18 +473,13 @@ mod tests {
             }
             let handler = RecordingHandler::default();
             dispatch_mcp_http_request(&inbound, &mut server, &options, &handler).unwrap();
-            drop(server);
-            let mut response = String::new();
-            client.read_to_string(&mut response).unwrap();
+            let (answered, _, response) = capture.response();
             let status = if method == "GET" && accept.is_none() {
                 405
             } else {
                 400
             };
-            assert!(
-                response.starts_with(&format!("HTTP/1.1 {status} ")),
-                "{response}"
-            );
+            assert_eq!(answered, status, "{response}");
             assert_eq!(*handler.calls.borrow(), ["authenticate"]);
             let expected = if method == "GET" && accept.is_none() {
                 "MCP GET requests require Accept: text/event-stream"
@@ -503,9 +492,7 @@ mod tests {
 
     #[test]
     fn endpoint_denies_unauthenticated_requests_before_method_dispatch() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        let (mut server, _) = listener.accept().unwrap();
+        let (mut server, capture) = McpHttpConnection::for_test();
         let handler = RecordingHandler {
             deny_auth: true,
             ..RecordingHandler::default()
@@ -522,10 +509,8 @@ mod tests {
             &handler,
         )
         .unwrap();
-        drop(server);
-        let mut response = String::new();
-        client.read_to_string(&mut response).unwrap();
-        assert!(response.starts_with("HTTP/1.1 401 "), "{response}");
+        let (answered, _, response) = capture.response();
+        assert_eq!(answered, 401, "{response}");
         assert_eq!(*handler.calls.borrow(), ["authenticate"]);
     }
 }

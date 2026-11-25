@@ -3,10 +3,9 @@
 //! The host supplies live authorization and protocol-list snapshots; the daemon
 //! owns polling, scope-filtered event writes, keepalives, and close decisions.
 
-use crate::mcp_http_codec::{
-    write_mcp_http_sse_event, write_mcp_http_sse_headers, write_mcp_http_sse_keepalive,
-};
+use crate::mcp_http_codec::{write_mcp_http_sse_event, write_mcp_http_sse_keepalive};
 use crate::mcp_session::{mcp_notification_scope, McpHttpSession};
+use crate::mcp_transport::McpHttpConnection;
 use serde_json::Value;
 use std::io::{self, Write};
 use std::sync::mpsc;
@@ -25,7 +24,7 @@ pub enum McpSseEnd {
 
 pub fn serve_mcp_sse<C>(
     session: &McpHttpSession<C>,
-    stream: &mut impl Write,
+    stream: &mut McpHttpConnection,
     authority_valid: impl FnMut() -> bool,
     list_changes: impl FnMut() -> Vec<Value>,
 ) -> io::Result<McpSseEnd> {
@@ -41,13 +40,13 @@ pub fn serve_mcp_sse<C>(
 
 fn serve_mcp_sse_with_timing<C>(
     session: &McpHttpSession<C>,
-    stream: &mut impl Write,
+    stream: &mut McpHttpConnection,
     authority_valid: impl FnMut() -> bool,
     list_changes: impl FnMut() -> Vec<Value>,
     poll_interval: Duration,
     keepalive_interval: Duration,
 ) -> io::Result<McpSseEnd> {
-    write_mcp_http_sse_headers(stream)?;
+    stream.start_event_stream()?;
     let receiver = session.register_subscriber();
     run_mcp_sse(
         session,
@@ -138,7 +137,6 @@ mod tests {
             "jsonrpc": "2.0", "method": "notifications/tools/list_changed"
         })]);
         let mut output = Vec::new();
-        write_mcp_http_sse_headers(&mut output).unwrap();
         let end = run_mcp_sse(
             &session,
             &mut output,
@@ -150,15 +148,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(end, McpSseEnd::RetireSession);
-        let output = String::from_utf8(output).unwrap();
-        assert!(output.starts_with("HTTP/1.1 200 OK"));
-        assert!(!output.contains("data: "));
+        assert!(output.is_empty());
     }
 
     #[test]
     fn polling_filters_catalog_events_and_emits_keepalive() {
         let session = session(&["mcp:tools"]);
-        let mut output = Vec::new();
+        let (mut output, capture) = McpHttpConnection::for_test();
         let mut polls = 0;
         let end = serve_mcp_sse_with_timing(
             &session,
@@ -178,7 +174,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(end, McpSseEnd::RetireSession);
-        let output = String::from_utf8(output).unwrap();
+        let (status, content_type, output) = capture.response();
+        assert_eq!((status, content_type), (200, Some("text/event-stream")));
         assert!(output.contains("notifications/tools/list_changed"));
         assert!(!output.contains("notifications/resources/list_changed"));
         assert!(output.contains(": keepalive"));

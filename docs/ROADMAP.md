@@ -8824,7 +8824,9 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 
 ### 9.43.8 axum HTTP transport
 
-- [ ] MCP endpoint on axum for resident and foreground hosts; legacy GET/DELETE; streamed responses; Origin and Host policy with the public URL; remove the hand-written codec, transport and SSE poller.
+- [x] hyper listener (`vulcan-daemon::mcp_transport`) for resident and foreground MCP hosts and previews, replacing the hand-written HTTP/1.1 codec and TCP listener: keep-alive, half-close, a 10 s request deadline, 4 MiB bodies, 64 requests at once (503 beyond), 256 connections, ambiguous repeated headers refused, streamed responses (`X-Accel-Buffering: no`) through `McpHttpConnection`.
+- [ ] Modern stateless requests on HTTP (no session), `Mcp-Method`/`Mcp-Name` and `MCP-Protocol-Version` checks (-32020, -32022); Origin and Host policy with the public URL.
+- [ ] Change watcher on HTTP: legacy GET streams and modern `subscriptions/listen` fed by a server-level watcher; remove the per-stream SSE poller.
 
 ### 9.43.9 Authorization
 

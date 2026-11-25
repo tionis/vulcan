@@ -17,13 +17,13 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fs;
 use std::io;
-use std::net::{SocketAddr, TcpStream};
+use std::net::SocketAddr;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 #[cfg(feature = "oauth")]
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-#[cfg(any(test, feature = "oauth"))]
+#[cfg(feature = "oauth")]
 use std::thread;
 use std::time::Duration;
 #[cfg(feature = "oauth")]
@@ -80,9 +80,9 @@ use vulcan_daemon::mcp_execution::{
 use vulcan_daemon::mcp_hosted::scheduled_operation;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_http_auth::McpOAuthMode;
+use vulcan_daemon::mcp_http_codec::McpHttpRequest;
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_daemon::mcp_http_codec::McpHttpResponse;
-use vulcan_daemon::mcp_http_codec::{write_mcp_http_response, McpHttpRequest};
 use vulcan_daemon::mcp_http_driver::mcp_http_json_error_response;
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_daemon::mcp_http_driver::session_admission_response;
@@ -136,6 +136,7 @@ use vulcan_daemon::mcp_session::{McpHttpSession as HostedMcpHttpSession, McpSess
 use vulcan_daemon::mcp_session::{MAX_MCP_HTTP_SESSIONS, MCP_HTTP_SESSION_IDLE_TIMEOUT};
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mcp_state::McpAuthorizationStore;
+use vulcan_daemon::mcp_transport::McpHttpConnection;
 #[cfg(feature = "oauth")]
 use vulcan_daemon::mutation_scheduler::MutationScheduler;
 #[cfg(feature = "oauth")]
@@ -893,7 +894,7 @@ fn serve_mcp_http(
     let result = listener.serve(stop, move |request, stream| {
         if let Err(error) = handle_mcp_http_connection(&handler_context, request, stream) {
             let response = mcp_http_json_error_response(500, error.to_string(), Value::Null);
-            let _ = write_mcp_http_response(stream, &response);
+            let _ = stream.respond(response);
         }
     });
     close_mcp_http_sessions(&context);
@@ -1100,7 +1101,7 @@ fn mcp_http_driver(
 fn handle_mcp_http_connection(
     context: &McpHttpServerContext,
     request: &McpHttpRequest,
-    stream: &mut TcpStream,
+    stream: &mut McpHttpConnection,
 ) -> Result<(), CliError> {
     vulcan_daemon::mcp_http_driver::handle_mcp_http_connection(
         &mcp_http_driver(context),
@@ -1158,7 +1159,7 @@ fn handle_mcp_http_sse(
     context: &McpHttpServerContext,
     request: &McpHttpRequest,
     authority: &McpSessionAuthority,
-    stream: &mut TcpStream,
+    stream: &mut McpHttpConnection,
 ) -> Result<(), CliError> {
     vulcan_daemon::mcp_http_driver::handle_mcp_http_sse(
         &mcp_http_driver(context),
