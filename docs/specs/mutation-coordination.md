@@ -39,13 +39,24 @@ step 2 where possible. The apply phase reacquires the scheduler/filesystem locks
 current permission grant, configuration revision, source hashes or Git frontier, and durable
 operation identity. Existing sync transaction scope is not narrowed merely to increase throughput.
 
+Finite sync is the one holder that releases and reacquires the vault lock while it keeps the
+repository lock. Fetches and pushes change only Git objects and refs, which vault writers never
+touch, and a remote that hangs until ssh times out would otherwise block every vault write for the
+length of each attempt. The sync therefore leaves the vault lock for each remote round trip and
+waits for it again before it reads or changes the work tree; the repository lock it keeps excludes
+auto-commit and other Vulcan Git writers, so the branch cannot move meanwhile. That reacquisition
+inverts the ordering above, which cannot deadlock because every vault-lock holder that then needs
+the repository lock waits for it only boundedly: a second sync steps out of the vault lock and
+retries until the first ends, and other workflows fail with the repository-lock error after the
+bounded wait.
+
 ## Inventory
 
 | Surface | Current cross-process boundary | Scope and contention | Hosted requirement |
 | --- | --- | --- | --- |
 | Core/app note, property, Bases, refactor, import, maintenance, vector, and scan writes | `vulcan_core::write_lock` | Exclusive/shared advisory lock at `.vulcan/write.lock`; acquisition currently waits in the OS | Use canonical vault identity and enter the scheduler first; retain the same file lock |
 | mdbase managed writes | Vault write lock plus durable mdbase journal | Plan/apply revalidates revisions while holding the vault lock; cooperative reads use the shared side | Preserve journal and stale-plan checks; do not treat queue admission as authorization |
-| Finite sync | Vault write lock outside `vulcan_sync::RepositoryLock` for initialized vaults | Exclusive vault coordination plus bounded repository wait across capture, fetch, branch pull, and push; uninitialized plain Git vaults have no `.vulcan` application lock yet | Retain the full repository transaction scope and the vault-before-repository order |
+| Finite sync | Vault write lock outside `vulcan_sync::RepositoryLock` for initialized vaults | Repository lock across capture, fetch, branch pull, and push; the vault lock across capture and branch pull, released for each fetch and push (see above); a second sync waiting for the repository leaves the vault lock between tries; uninitialized plain Git vaults have no `.vulcan` application lock yet | Retain the full repository transaction scope and take the vault lock first on entry |
 | Branch replay apply (conflict worker) | Vault write lock outside the repository lock when `.vulcan/` exists | Serializes the two-way checkout and the compare-and-swap of the branch ref; preparation holds neither lock | Retain the lease and refuse-to-overwrite checks |
 | Devices, legacy conflict archive, advertisements | Repository lock | Serializes metadata/ref changes that do not apply a new tree to the materialized vault | Share the repository scheduler/lock across worktrees using the same Git directory |
 | CLI/MCP auto-commit and explicit Git commit | Vulcan repository lock outside Git's index/ref locks | Runs after the originating vault mutation lock has normally been released; serializes with finite sync and other Vulcan Git writers | Enter the repository scheduler and revalidate the candidate path set after acquisition |

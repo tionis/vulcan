@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, tune how often the daemon checks remotes, inspect daemon or direct-mode state, diagnose Git-backed sync, inspect retained conflict records, recover detached Android layouts, or recover another device's backup. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, how quickly other devices' changes arrive, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, paused branches, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 40
+version: 41
 metadata:
   vulcan:
     managed: true
@@ -195,6 +195,9 @@ Pass `--id`, `--git-dir`, or `--platform` only when those defaults are not appro
 - Direct and daemon sync of an initialized vault use the same vault-write and repository locks as
   ordinary Vulcan mutations and Git/auto-commit commands. A competing writer may therefore wait or
   report bounded repository contention; do not bypass the lock with raw Git while sync is active.
+  Sync holds the vault-write lock only while it touches the work tree, not while it fetches or
+  pushes, so note and task writes proceed during a slow or unreachable remote; there is no need to
+  pause sync before writing.
   On Android, Vulcan keeps its vault-write lock and rebuildable SQLite cache in private device
   state because Android shared storage does not support the required file locking and SQLite WAL
   behavior. The detached Git directory and sync journal must also remain in private storage.

@@ -64,12 +64,12 @@ pub use refs::{
 
 pub use sync::{
     classify_git_sync_error, git_published_branch_tip, sync_git_once, sync_git_once_with_control,
-    BranchPullPolicy, GitBranchPause, GitBranchSync, GitBranchSyncAction, GitConflictClass,
-    GitConflictClassification, GitConflictProjection, GitConflictRefs, GitConflictScope,
-    GitDeviceBackup, GitDeviceBackupOutcome, GitMirrorOutcome, GitMirrorPush, GitSyncAction,
-    GitSyncBackend, GitSyncConflict, GitSyncDeviceId, GitSyncDeviceIdKind, GitSyncError,
-    GitSyncObserver, GitSyncObserverError, GitSyncOptions, GitSyncOutcome, GitSyncPause,
-    GitSyncPauseReason, GitSyncPhase, GitSyncProgress, GitSyncRefs, GitSyncReport,
-    IgnoreGitSyncProgress, SyncCancellationToken,
+    sync_git_once_with_write_gate, BranchPullPolicy, GitBranchPause, GitBranchSync,
+    GitBranchSyncAction, GitConflictClass, GitConflictClassification, GitConflictProjection,
+    GitConflictRefs, GitConflictScope, GitDeviceBackup, GitDeviceBackupOutcome, GitMirrorOutcome,
+    GitMirrorPush, GitSyncAction, GitSyncBackend, GitSyncConflict, GitSyncDeviceId,
+    GitSyncDeviceIdKind, GitSyncError, GitSyncObserver, GitSyncObserverError, GitSyncOptions,
+    GitSyncOutcome, GitSyncPause, GitSyncPauseReason, GitSyncPhase, GitSyncProgress, GitSyncRefs,
+    GitSyncReport, IgnoreGitSyncProgress, SyncCancellationToken, VaultWriteGate,
 };
 pub use tree_ignore::{tree_ignores, worktree_ignores, OBSIDIAN_DEVICE_FILES};

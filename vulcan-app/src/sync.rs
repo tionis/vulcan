@@ -1561,7 +1561,7 @@ fn sync_git_vault_cycle(
         &effective_options,
         cancellation,
         &mut observer,
-    )?;
+    );
     let sync = match sync_result {
         Ok(sync) => sync,
         Err(error) => {
@@ -1672,23 +1672,34 @@ fn run_sync_backend_with_vault_lock(
     options: &GitSyncOptions,
     cancellation: &SyncCancellationToken,
     observer: &mut dyn GitSyncObserver,
-) -> Result<Result<vulcan_sync::GitSyncReport, vulcan_sync::GitSyncError>, AppError> {
-    // The backend acquires the repository lock inside this guard, preserving
-    // vault-before-repository ordering. Uninitialized plain Git vaults have no
-    // application lock yet and remain supported.
-    let vault_lock = (!options.dry_run && paths.vulcan_dir().is_dir())
-        .then(|| vulcan_core::write_lock::acquire_write_lock(paths))
-        .transpose()
-        .map_err(AppError::operation)?;
-    let result = vulcan_sync::sync_git_once_with_control(
+) -> Result<vulcan_sync::GitSyncReport, vulcan_sync::GitSyncError> {
+    // The backend enters the vault write lock before the repository lock,
+    // preserving vault-before-repository ordering, and leaves it during
+    // fetches and pushes so an unreachable remote never blocks vault writes.
+    // Uninitialized plain Git vaults have no application lock yet and remain
+    // supported.
+    let gate = VaultWriteLockGate(paths);
+    let gate = (!options.dry_run && paths.vulcan_dir().is_dir())
+        .then_some(&gate as &dyn vulcan_sync::VaultWriteGate);
+    vulcan_sync::sync_git_once_with_write_gate(
         engine,
         paths.vault_root(),
         options,
         cancellation,
         observer,
-    );
-    drop(vault_lock);
-    Ok(result)
+        gate,
+    )
+}
+
+/// Vulcan's vault write lock as the sync backend's writer exclusion.
+struct VaultWriteLockGate<'a>(&'a VaultPaths);
+
+impl vulcan_sync::VaultWriteGate for VaultWriteLockGate<'_> {
+    fn enter(&self) -> std::io::Result<Box<dyn std::any::Any>> {
+        Ok(Box::new(vulcan_core::write_lock::acquire_write_lock(
+            self.0,
+        )?))
+    }
 }
 
 fn validate_unattended_files_only_repository(

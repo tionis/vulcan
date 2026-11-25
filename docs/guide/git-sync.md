@@ -24,6 +24,8 @@ Authentication over SSH uses this installation's device key by default and is se
 
 This is device synchronization. It replicates the repository's committed history rather than selecting or translating notes for an external wiki.
 
+A sync blocks Vulcan's own writes (note edits, task changes, captures) only while it reads or changes the files in the work tree. While it waits on the remote during a fetch or push, those writes go ahead, so a slow or unreachable remote doesn't hold them up.
+
 On graceful daemon shutdown, Vulcan queues a final retained sync for every active Git-backed wiki
 before stopping its workers. This covers `vulcan daemon stop`, foreground Ctrl-C, and normal
 service-manager termination, including the termination signal normally sent during an orderly OS

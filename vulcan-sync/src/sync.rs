@@ -993,6 +993,103 @@ pub fn sync_git_once_with_control(
     cancellation: &SyncCancellationToken,
     observer: &mut dyn GitSyncObserver,
 ) -> Result<GitSyncReport, GitSyncError> {
+    sync_git_once_with_write_gate(engine, vault_path, options, cancellation, observer, None)
+}
+
+/// How long a cycle that found the repository busy leaves the vault gate
+/// to the cycle holding it before trying again.
+const REPOSITORY_LOCK_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// The application's exclusion of its own writers, such as Vulcan's vault
+/// write lock. Sync holds it while it reads or changes the work tree.
+pub trait VaultWriteGate {
+    /// Blocks until the application's writers are excluded; dropping the
+    /// returned guard admits them again.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error that prevented acquiring the exclusion.
+    fn enter(&self) -> std::io::Result<Box<dyn std::any::Any>>;
+}
+
+/// Holds a [`VaultWriteGate`] while sync works on the work tree and lets it go
+/// for the length of each remote round trip, so a slow or unreachable remote
+/// never blocks the application's writers. Fetches and pushes change only Git
+/// objects and refs, which those writers never touch, and the repository lock
+/// stays held throughout, so nothing else moves the branch meanwhile.
+struct WriteGateHold<'a> {
+    gate: Option<&'a dyn VaultWriteGate>,
+    held: Option<Box<dyn std::any::Any>>,
+}
+
+impl<'a> WriteGateHold<'a> {
+    fn enter(gate: Option<&'a dyn VaultWriteGate>) -> Result<Self, GitSyncError> {
+        let held = gate.map(VaultWriteGate::enter).transpose()?;
+        Ok(Self { gate, held })
+    }
+
+    /// Runs `remote` with the gate released, entering it again afterwards.
+    fn remote<T>(&mut self, remote: impl FnOnce() -> T) -> Result<T, GitSyncError> {
+        let Some(gate) = self.gate.filter(|_| self.held.is_some()) else {
+            return Ok(remote());
+        };
+        self.held = None;
+        let result = remote();
+        self.held = Some(gate.enter()?);
+        Ok(result)
+    }
+
+    /// Takes the repository lock while holding the gate. Another cycle may
+    /// hold the repository lock while it waits to re-enter the gate after a
+    /// round trip, so with a gate this steps aside and retries until that
+    /// cycle ends, as waiting for the gate alone used to, instead of failing.
+    fn acquire_repository_lock(
+        &mut self,
+        git_dir: &Path,
+        cancellation: &SyncCancellationToken,
+    ) -> Result<crate::RepositoryLock, GitSyncError> {
+        let classify = |error| match error {
+            crate::RepositoryLockError::Locked => GitSyncError::Locked,
+            crate::RepositoryLockError::Io(error) => GitSyncError::Io(error),
+        };
+        let Some(gate) = self.gate.filter(|_| self.held.is_some()) else {
+            return crate::RepositoryLock::acquire(git_dir).map_err(classify);
+        };
+        loop {
+            match crate::RepositoryLock::try_acquire(git_dir) {
+                Err(crate::RepositoryLockError::Locked) => {
+                    self.held = None;
+                    cancellation.check()?;
+                    std::thread::sleep(REPOSITORY_LOCK_RETRY_DELAY);
+                    cancellation.check()?;
+                    self.held = Some(gate.enter()?);
+                }
+                result => return result.map_err(classify),
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn is_held(&self) -> bool {
+        self.held.is_some()
+    }
+}
+
+/// [`sync_git_once_with_control`] that excludes the application's writers
+/// with `gate` while it reads or changes the work tree, and admits them
+/// during fetches and pushes.
+///
+/// # Errors
+///
+/// Returns the sync failure, or the error that prevented entering `gate`.
+pub fn sync_git_once_with_write_gate(
+    engine: &dyn GitEngine,
+    vault_path: &Path,
+    options: &GitSyncOptions,
+    cancellation: &SyncCancellationToken,
+    observer: &mut dyn GitSyncObserver,
+    gate: Option<&dyn VaultWriteGate>,
+) -> Result<GitSyncReport, GitSyncError> {
     cancellation.check()?;
     let installation = engine.installation()?;
     require_git_version(&installation)?;
@@ -1039,28 +1136,33 @@ pub fn sync_git_once_with_control(
         emit_progress(observer, GitSyncPhase::Completed, 0, &report, None)?;
         return Ok(report);
     }
-    let _lock =
-        crate::RepositoryLock::acquire(&report.repository.git_dir).map_err(
-            |error| match error {
-                crate::RepositoryLockError::Locked => GitSyncError::Locked,
-                crate::RepositoryLockError::Io(error) => GitSyncError::Io(error),
-            },
-        )?;
+    // Entered before the repository lock, keeping vault-before-repository
+    // ordering for the first acquisition.
+    let mut hold = WriteGateHold::enter(gate)?;
+    let _lock = hold.acquire_repository_lock(&report.repository.git_dir, cancellation)?;
+    let mut first_hold = Some(hold);
     sweep_stale_sync_locks(&report.repository);
     engine.persist_repository_requirements_cache(&report.repository)?;
     let attempts = options.max_retries.max(1);
     for attempt in 0..attempts {
         cancellation.check()?;
         report.retries = attempt;
+        let hold = match first_hold.take() {
+            Some(hold) => hold,
+            None => WriteGateHold::enter(gate)?,
+        };
         let mut control = AttemptControl {
             attempt,
             cancellation,
             observer,
+            gate: hold,
         };
         if run_attempt(engine, options, &mut report, &mut control)? == AttemptResult::Finished {
             return Ok(report);
         }
         if attempt + 1 < attempts {
+            // Writers may proceed during the backoff.
+            control.gate = WriteGateHold::enter(None)?;
             control.check()?;
             std::thread::sleep(retry_backoff(attempt));
             control.check()?;
@@ -1141,6 +1243,7 @@ struct AttemptControl<'a> {
     attempt: usize,
     cancellation: &'a SyncCancellationToken,
     observer: &'a mut dyn GitSyncObserver,
+    gate: WriteGateHold<'a>,
 }
 
 impl AttemptControl<'_> {
@@ -1456,6 +1559,7 @@ fn pull_branch_lane(
     engine: &dyn GitEngine,
     report: &mut GitSyncReport,
     remote: &mut AttemptRemote,
+    gate: &mut WriteGateHold<'_>,
     capture: &GitOid,
     policy: BranchPullPolicy,
 ) -> Result<(), GitSyncError> {
@@ -1500,7 +1604,7 @@ fn pull_branch_lane(
         push_detail: None,
         mirrors: Vec::new(),
     };
-    let fetched = fetch_upstream_tip(engine, repository, &upstream, remote)?;
+    let fetched = gate.remote(|| fetch_upstream_tip(engine, repository, &upstream, remote))??;
     let fetched = match fetched {
         Ok(tip) => tip,
         Err(error) => {
@@ -2234,7 +2338,9 @@ fn run_attempt(
         Some(_) => {}
     }
     control.check()?;
-    push_mirrors(engine, options, report)?;
+    control
+        .gate
+        .remote(|| push_mirrors(engine, options, report))??;
     let lane = report.branch.as_ref().expect("branch lane");
     report.outcome = if matches!(
         lane.action,
@@ -2292,8 +2398,11 @@ fn capture_and_publish_device_backup(
         return Ok(Some(capture));
     }
     control.emit(GitSyncPhase::BackingUp, report, Some(capture.tree.clone()))?;
-    remote.ensure_observed(engine, options, report)?;
-    if publish_device_backup(engine, options, report, &capture, &mut remote.device)? {
+    let published = control.gate.remote(|| {
+        remote.ensure_observed(engine, options, report)?;
+        publish_device_backup(engine, options, report, &capture, &mut remote.device)
+    })??;
+    if published {
         Ok(Some(capture))
     } else {
         Ok(None)
@@ -2311,10 +2420,19 @@ fn pull_branch_and_refresh_device_backup(
 ) -> Result<Option<crate::GitCapture>, GitSyncError> {
     control.check()?;
     control.emit(GitSyncPhase::Fetching, report, Some(capture.tree.clone()))?;
-    pull_branch_lane(engine, report, remote, &capture.commit, options.branch_pull)?;
+    pull_branch_lane(
+        engine,
+        report,
+        remote,
+        &mut control.gate,
+        &capture.commit,
+        options.branch_pull,
+    )?;
     control.check()?;
     control.emit(GitSyncPhase::Pushing, report, Some(capture.tree.clone()))?;
-    push_branch_lane(engine, options, report)?;
+    control
+        .gate
+        .remote(|| push_branch_lane(engine, options, report))??;
     let may_have_rewritten_worktree = report.branch.as_ref().is_some_and(|branch| {
         matches!(
             branch.action,
@@ -2984,6 +3102,162 @@ mod tests {
         run_git(&reader, &["config", "user.email", "vulcan@example.invalid"]);
         run_git(&reader, &["config", "core.autocrlf", "false"]);
         reader
+    }
+
+    /// A gate whose guard marks `held` by the existence of a file, so the
+    /// wrapper Git sees whether sync holds it.
+    struct FileGate {
+        held: PathBuf,
+        entries: std::cell::Cell<usize>,
+    }
+
+    struct FileGuard(PathBuf);
+
+    impl Drop for FileGuard {
+        fn drop(&mut self) {
+            fs::remove_file(&self.0).expect("release the gate");
+        }
+    }
+
+    impl VaultWriteGate for FileGate {
+        fn enter(&self) -> std::io::Result<Box<dyn std::any::Any>> {
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&self.held)?;
+            self.entries.set(self.entries.get() + 1);
+            Ok(Box::new(FileGuard(self.held.clone())))
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sync_admits_vault_writers_during_fetches_and_pushes() {
+        use std::os::unix::fs::PermissionsExt;
+        let (temporary, remote, writer) = setup_tracked_branch();
+        let held = temporary.path().join("gate-held");
+        let log = temporary.path().join("git-while-held.log");
+        let wrapper = temporary.path().join("git-wrapper.sh");
+        fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\nif test -e '{held}'; then\n  for argument in \"$@\"; do\n    case \"$argument\" in\n      fetch|push|ls-remote|fetch-pack|send-pack) echo \"remote $argument\" >> '{log}' ;;\n    esac\n  done\n  echo held >> '{log}'\nfi\nexec git \"$@\"\n",
+                held = held.display(),
+                log = log.display(),
+            ),
+        )
+        .expect("wrapper");
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).expect("executable");
+        let engine = GitCliEngine::new(&wrapper);
+        let gate = FileGate {
+            held: held.clone(),
+            entries: std::cell::Cell::new(0),
+        };
+        let options = GitSyncOptions::default();
+        let sync = || {
+            sync_git_once_with_write_gate(
+                &engine,
+                &writer,
+                &options,
+                &SyncCancellationToken::default(),
+                &mut IgnoreGitSyncProgress,
+                Some(&gate),
+            )
+        };
+        // Publish the device backup, then pull a remote advance and push a
+        // local commit: every kind of round trip a cycle makes.
+        sync().expect("bootstrap");
+        advance_remote_branch(&temporary, &remote, "upstream\n");
+        let pulled = sync().expect("pull");
+        assert_eq!(branch_action(&pulled).0, GitBranchSyncAction::FastForwarded);
+        fs::write(writer.join("Other.md"), "local\n").expect("local note");
+        commit_all(&writer, "local");
+        let pushed = sync().expect("push");
+        assert!(pushed.branch.as_ref().is_some_and(|lane| lane.pushed));
+
+        let while_held = fs::read_to_string(&log).unwrap_or_default();
+        assert!(
+            !while_held.contains("remote "),
+            "remote Git ran while the gate was held:\n{while_held}"
+        );
+        assert!(
+            while_held.contains("held"),
+            "local Git ran with the gate held"
+        );
+        assert!(
+            gate.entries.get() > 3,
+            "the gate is entered again after each round trip"
+        );
+        assert!(!held.exists(), "the gate is released when sync ends");
+    }
+
+    #[test]
+    fn a_cycle_waits_for_a_busy_repository_without_holding_the_gate() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        let git_dir = temporary.path().join(".git");
+        let gate = FileGate {
+            held: temporary.path().join("held"),
+            entries: std::cell::Cell::new(0),
+        };
+        let busy = crate::RepositoryLock::acquire(&git_dir).expect("busy repository");
+        let (released, waiting) = std::sync::mpsc::channel();
+        let held_path = gate.held.clone();
+        let holder = std::thread::spawn(move || {
+            // The other cycle needs the gate back before it can finish.
+            let mut seen_free = false;
+            for _ in 0..100 {
+                if !held_path.exists() {
+                    seen_free = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            drop(busy);
+            released.send(seen_free).expect("report");
+        });
+        let mut hold = WriteGateHold::enter(Some(&gate)).expect("enter");
+
+        let lock = hold
+            .acquire_repository_lock(&git_dir, &SyncCancellationToken::default())
+            .expect("waits for the repository");
+
+        assert!(
+            waiting.recv().expect("holder"),
+            "the gate was let go while waiting"
+        );
+        holder.join().expect("holder thread");
+        assert!(hold.is_held(), "held again once the repository is acquired");
+        drop(lock);
+        let cancelled = SyncCancellationToken::default();
+        cancelled.cancel();
+        let _busy = crate::RepositoryLock::acquire(&git_dir).expect("busy again");
+        assert!(matches!(
+            hold.acquire_repository_lock(&git_dir, &cancelled),
+            Err(GitSyncError::Cancelled)
+        ));
+    }
+
+    #[test]
+    fn write_gate_hold_releases_only_for_the_remote_step() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let gate = FileGate {
+            held: temporary.path().join("held"),
+            entries: std::cell::Cell::new(0),
+        };
+        let mut hold = WriteGateHold::enter(Some(&gate)).expect("enter");
+        assert!(hold.is_held() && gate.held.exists());
+        let inside = hold.remote(|| gate.held.exists()).expect("remote step");
+        assert!(!inside, "released during the remote step");
+        assert!(
+            hold.is_held() && gate.held.exists(),
+            "held again afterwards"
+        );
+        drop(hold);
+        assert!(!gate.held.exists());
+        let mut without = WriteGateHold::enter(None).expect("no gate");
+        assert!(!without.is_held());
+        assert!(without.remote(|| true).expect("remote step"));
     }
 
     #[test]
