@@ -19,6 +19,12 @@ pub struct ParsedDocument {
     /// Inline `DataviewJS` expressions (`` `$= ...` ``), whose text is the
     /// JavaScript after the prefix.
     pub inline_js_expressions: Vec<RawInlineExpression>,
+    /// Numerals calculator blocks (` ```math `, `math-plain`, `math-tex`,
+    /// `math-highlight`).
+    pub numerals_blocks: Vec<RawNumeralsBlock>,
+    /// Inline Numerals calculations (`` `#: 2 + 2` ``), by the configured
+    /// triggers.
+    pub inline_numerals: Vec<RawInlineNumerals>,
     /// Byte ranges of Obsidian comments (`%% ... %%`), hidden when rendered.
     pub comment_regions: Vec<std::ops::Range<usize>>,
     pub chunk_texts: Vec<ChunkText>,
@@ -135,6 +141,37 @@ pub struct RawDataviewBlock {
     pub language: String,
     pub text: String,
     pub block_index: usize,
+    pub byte_range: Range<usize>,
+    pub line_number: usize,
+}
+
+/// A Numerals block: its fence language and the source between the fences.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawNumeralsBlock {
+    pub language: String,
+    pub text: String,
+    pub byte_range: Range<usize>,
+    pub line_number: usize,
+}
+
+/// What an inline Numerals trigger shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InlineNumeralsMode {
+    /// `#:` the result.
+    Result,
+    /// `#=:` the expression and its result.
+    Equation,
+    /// `#$:` the result as TeX.
+    TexResult,
+    /// `#$=:` the expression and its result as TeX.
+    TexEquation,
+}
+
+/// An inline Numerals calculation: the expression after the trigger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawInlineNumerals {
+    pub mode: InlineNumeralsMode,
+    pub expression: String,
     pub byte_range: Range<usize>,
     pub line_number: usize,
 }

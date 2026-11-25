@@ -4816,6 +4816,7 @@ fn importer_registry_dispatches_existing_importers_in_priority_order() {
             "dataview",
             "folder-notes",
             "kanban",
+            "numerals",
             "periodic-notes",
             "quickadd",
             "tasknotes",
@@ -5576,4 +5577,57 @@ fn customjs_import_splits_files_and_reports_unsupported_settings() {
     assert!(all_importers()
         .iter()
         .any(|importer| importer.name() == "customjs"));
+}
+
+#[test]
+fn numerals_import_maps_settings_enables_rendering_and_skips_editor_ones() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path();
+    fs::create_dir_all(vault_root.join(".obsidian/plugins/numerals"))
+        .expect("plugin dir should exist");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+    fs::write(
+        vault_root.join(".obsidian/plugins/numerals/data.json"),
+        r#"{
+          "resultSeparator": " = ",
+          "defaultRenderStyle": "TeX",
+          "numberFormat": "Format_Indian",
+          "currencyDisplayMode": "symbol",
+          "dollarSymbolCurrency": {"symbol": "$", "currency": "CAD"},
+          "customCurrencySymbol": {"symbol": "₿", "unicode": "x20BF", "name": "bitcoin", "currency": "BTC"},
+          "inlineResultTrigger": "=:",
+          "layoutStyle": "AnswerRight",
+          "enableGreekAutoComplete": true
+        }"#,
+    )
+    .expect("plugin config should be written");
+    let paths = VaultPaths::new(vault_root);
+    assert!(!load_vault_config(&paths).config.numerals.enabled);
+
+    let report = NumeralsImporter
+        .import(&paths, ImportTarget::Shared)
+        .expect("import should succeed");
+    assert_eq!(report.plugin, "numerals");
+    let skipped = report
+        .skipped
+        .iter()
+        .map(|skipped| skipped.source.as_str())
+        .collect::<Vec<_>>();
+    assert!(skipped.contains(&"layoutStyle"));
+    assert!(skipped.contains(&"enableGreekAutoComplete"));
+
+    let numerals = load_vault_config(&paths).config.numerals;
+    assert!(numerals.enabled);
+    assert_eq!(numerals.result_separator, " = ");
+    assert_eq!(numerals.render_style, NumeralsRenderStyle::Tex);
+    assert_eq!(numerals.number_format, NumeralsNumberFormat::Indian);
+    assert_eq!(numerals.currency_display, NumeralsCurrencyDisplay::Symbol);
+    assert_eq!(numerals.dollar_currency, "CAD");
+    assert_eq!(numerals.custom_currency_symbol, "₿");
+    assert_eq!(numerals.custom_currency_code, "BTC");
+    assert_eq!(numerals.inline_result_trigger, "=:");
+    assert_eq!(
+        numerals.inline_equation_trigger, "#=:",
+        "unset keys keep defaults"
+    );
 }

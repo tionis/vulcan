@@ -583,6 +583,42 @@ pub(super) struct ObsidianCustomJsConfig {
     pub(super) registered_invocable_script_names: Option<Vec<String>>,
 }
 
+/// `.obsidian/plugins/numerals/data.json`.
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_field_names)]
+pub(super) struct ObsidianNumeralsConfig {
+    pub(super) result_separator: Option<String>,
+    pub(super) default_render_style: Option<String>,
+    pub(super) hide_lines_without_markup_when_emitting: Option<bool>,
+    pub(super) hide_emitter_markup_in_input: Option<bool>,
+    pub(super) dollar_symbol_currency: Option<ObsidianNumeralsCurrency>,
+    pub(super) yen_symbol_currency: Option<ObsidianNumeralsCurrency>,
+    pub(super) number_format: Option<String>,
+    pub(super) currency_precision_mode: Option<String>,
+    pub(super) currency_display_mode: Option<String>,
+    pub(super) custom_currency_decimal_places: Option<u8>,
+    pub(super) force_process_all_frontmatter: Option<bool>,
+    /// Absent, or `null` for no custom currency.
+    #[allow(clippy::option_option)]
+    pub(super) custom_currency_symbol: Option<Option<ObsidianNumeralsCurrency>>,
+    pub(super) enable_inline_numerals: Option<bool>,
+    pub(super) inline_result_trigger: Option<String>,
+    pub(super) inline_equation_trigger: Option<String>,
+    pub(super) inline_tex_result_trigger: Option<String>,
+    pub(super) inline_tex_equation_trigger: Option<String>,
+    pub(super) inline_equation_separator: Option<String>,
+    pub(super) enable_cross_note_references: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+pub(super) struct ObsidianNumeralsCurrency {
+    #[serde(default)]
+    pub(super) symbol: String,
+    #[serde(default)]
+    pub(super) currency: String,
+}
+
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct ObsidianKanbanConfig {
     #[serde(rename = "date-trigger")]

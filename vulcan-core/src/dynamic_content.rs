@@ -133,6 +133,8 @@ pub(crate) enum DynamicOutcome {
     DataviewJs(DataviewJsResult),
     Tasks(TasksQueryResult),
     Base(BasesEvalReport),
+    /// A Numerals calculator block or inline calculation.
+    Numerals(crate::numerals::NumeralsOutcome),
     Disabled {
         title: String,
         message: String,
@@ -153,6 +155,7 @@ pub(crate) struct DynamicRegion {
 pub(crate) fn evaluate_dynamic_regions(
     ctx: &DynamicContentContext<'_>,
     source_path: Option<&str>,
+    source: &str,
     parsed: &ParsedDocument,
     diagnostics: &mut Vec<RenderDiagnostic>,
 ) -> Vec<DynamicRegion> {
@@ -206,6 +209,14 @@ pub(crate) fn evaluate_dynamic_regions(
     }
 
     push_script_regions(ctx, source_path, parsed, diagnostics, &mut regions);
+
+    push_numerals_regions(
+        ctx,
+        note.map(|(note, _)| note),
+        source,
+        parsed,
+        &mut regions,
+    );
 
     for block in &parsed.tasks_blocks {
         regions.push(DynamicRegion {
@@ -321,6 +332,8 @@ fn has_dynamic_content(parsed: &ParsedDocument) -> bool {
         || !parsed.comment_regions.is_empty()
         || !parsed.dataview_blocks.is_empty()
         || !parsed.tasks_blocks.is_empty()
+        || !parsed.numerals_blocks.is_empty()
+        || !parsed.inline_numerals.is_empty()
         || parsed.links.iter().any(|link| {
             link.link_kind == LinkKind::Embed
                 && (link.is_note_embed
@@ -400,6 +413,31 @@ fn push_script_regions(
                 ),
             }),
         }
+    }
+}
+
+/// Evaluate the note's Numerals blocks and inline calculations, where the
+/// vault enables Numerals; see [`crate::numerals::evaluate_numerals_in_source`].
+fn push_numerals_regions(
+    ctx: &DynamicContentContext<'_>,
+    note: Option<&NoteRecord>,
+    source: &str,
+    parsed: &ParsedDocument,
+    regions: &mut Vec<DynamicRegion>,
+) {
+    let source_path = note.map(|note| note.document_path.as_str());
+    for region in crate::numerals::evaluate_numerals_in_source(
+        ctx.config,
+        ctx.note_index,
+        source_path,
+        source,
+        parsed,
+    ) {
+        regions.push(DynamicRegion {
+            start: region.byte_range.start,
+            end: region.byte_range.end,
+            outcome: DynamicOutcome::Numerals(region.outcome),
+        });
     }
 }
 
@@ -937,7 +975,7 @@ impl EvaluatedMarkdownRenderer {
         };
         let mut diagnostics = Vec::new();
         let mut regions =
-            evaluate_dynamic_regions(&ctx, options.source_path, &parsed, &mut diagnostics)
+            evaluate_dynamic_regions(&ctx, options.source_path, source, &parsed, &mut diagnostics)
                 .into_iter()
                 .filter_map(|region| {
                     let source = match &region.outcome {
@@ -950,6 +988,7 @@ impl EvaluatedMarkdownRenderer {
                         DynamicOutcome::DataviewJs(_) => "dataviewjs",
                         DynamicOutcome::Tasks(_) => "tasks",
                         DynamicOutcome::Base(_) => "base",
+                        DynamicOutcome::Numerals(_) => "numerals",
                         DynamicOutcome::Disabled { .. } | DynamicOutcome::Error { .. } => "notice",
                     };
                     let (kind, markdown) = match outcome_markdown(
@@ -1099,7 +1138,7 @@ impl EvaluatedMarkdownRenderer {
             })
             .collect::<Vec<_>>();
         replacements.extend(
-            evaluate_dynamic_regions(&ctx, source_path, &parsed, &mut diagnostics)
+            evaluate_dynamic_regions(&ctx, source_path, source, &parsed, &mut diagnostics)
                 .into_iter()
                 .filter_map(|region| {
                     outcome_markdown(&region.outcome, self.config.dataview.display_result_count)
@@ -1332,6 +1371,10 @@ fn outcome_markdown(
         }
         DynamicOutcome::Tasks(result) => MarkdownReplacement::Block(tasks_markdown(result)),
         DynamicOutcome::Base(report) => MarkdownReplacement::Block(bases_markdown(report)),
+        DynamicOutcome::Numerals(outcome) => match crate::numerals::outcome_markdown(outcome) {
+            (true, markdown) => MarkdownReplacement::Block(markdown),
+            (false, markdown) => MarkdownReplacement::Inline(markdown),
+        },
         DynamicOutcome::Disabled { title, message } => {
             MarkdownReplacement::Block(callout("info", title, message))
         }
@@ -2349,6 +2392,28 @@ mod tests {
         .expect("config should write");
         assert!(render(DataviewJsRenderPolicy::On).contains("JS: draft"));
         assert!(render(DataviewJsRenderPolicy::Off).contains("JS: *(DataviewJS disabled)*"));
+    }
+
+    #[cfg(feature = "js_runtime")]
+    #[test]
+    fn numerals_blocks_render_only_where_the_vault_enables_them() {
+        let (_temp_dir, paths, _) = build_vault();
+        let source = "```math\nx = 2\nx * 3 # six\n```\n\nTotal `#=: 1,000 + 1`\n";
+        let options = EvaluatedMarkdownOptions {
+            source_path: Some("Home.md"),
+            ..EvaluatedMarkdownOptions::default()
+        };
+        let off = render_evaluated_markdown(&paths, source, &options).markdown;
+        assert!(off.contains("```math"), "{off}");
+
+        std::fs::write(
+            paths.vault_root().join(".vulcan/config.toml"),
+            "[numerals]\nenabled = true\n",
+        )
+        .expect("config should write");
+        let on = render_evaluated_markdown(&paths, source, &options).markdown;
+        assert!(on.contains("x = 2 → 2\nx * 3 → 6  # six"), "{on}");
+        assert!(on.contains("Total 1,000 + 1 = 1,001"), "{on}");
     }
 
     #[cfg(feature = "js_runtime")]

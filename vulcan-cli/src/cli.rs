@@ -3271,6 +3271,8 @@ pub enum ConfigImportCommand {
     Quickadd,
     #[command(about = "Import Obsidian Kanban plugin settings")]
     Kanban,
+    #[command(about = "Import Obsidian Numerals plugin settings")]
+    Numerals,
     #[command(about = "Import Obsidian Daily Notes and Periodic Notes settings")]
     PeriodicNotes,
     #[command(
@@ -3699,6 +3701,22 @@ pub enum PluginCommand {
     Customjs {
         #[command(subcommand)]
         command: CustomJsCommand,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum NumeralsCommand {
+    #[command(about = "Show a note's evaluated Numerals blocks and inline calculations")]
+    Eval {
+        #[arg(help = "Note path, filename, or alias")]
+        note: String,
+    },
+    #[command(about = "Write the results of a note's @[name::result] insertion lines")]
+    Apply {
+        #[arg(help = "Note path, filename, or alias")]
+        note: String,
+        #[arg(long, help = "Show the changes without writing them")]
+        dry_run: bool,
     },
 }
 
@@ -8402,6 +8420,14 @@ pub enum Command {
     Kanban {
         #[command(subcommand)]
         command: KanbanCommand,
+    },
+    #[command(
+        about = "Evaluate Numerals calculator blocks and write their @[name::result] values",
+        long_about = "Numerals-compatible calculator blocks (```math, math-plain, math-tex, math-highlight) and inline calculations (`#: 2 + 2`), evaluated with the bundled mathjs as the Obsidian Numerals plugin does. Turn them on with `[numerals] enabled = true` or `vulcan config import numerals`. Rendering shows results but never writes; `apply` writes the values of `@[name::result]` insertion lines."
+    )]
+    Numerals {
+        #[command(subcommand)]
+        command: NumeralsCommand,
     },
     #[command(
         about = "Evaluate and maintain Bases views",

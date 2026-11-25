@@ -358,6 +358,18 @@ impl<'a> SemanticProcessor<'a> {
             return;
         }
 
+        if let Some((mode, expression)) = inline_numerals_trigger(&self.config.numerals, text) {
+            self.parsed
+                .inline_numerals
+                .push(crate::parser::types::RawInlineNumerals {
+                    mode,
+                    expression: expression.to_string(),
+                    byte_range: range.clone(),
+                    line_number: line_number_for_offset(self.source, range.start),
+                });
+            return;
+        }
+
         // The JS prefix goes first: with the defaults neither prefix starts
         // the other, but a configured pair may.
         let inline_js_prefix = self.config.dataview.inline_js_query_prefix.as_str();
@@ -653,6 +665,7 @@ impl<'a> SemanticProcessor<'a> {
             self.parsed.tasks = dataview.tasks;
             self.parsed.dataview_blocks = dataview.dataview_blocks;
             self.parsed.tasks_blocks = dataview.tasks_blocks;
+            self.parsed.numerals_blocks = dataview.numerals_blocks;
             for property_range in dataview.property_value_ranges {
                 for link in &mut self.parsed.links {
                     if property_range.start <= link.byte_offset
@@ -976,6 +989,45 @@ fn sized_image_regex() -> &'static Regex {
     REGEX.get_or_init(|| {
         Regex::new(r"!\[[^\]\n]*\]\([^()\s]+\s+=\d*%?x\d*%?\)")
             .expect("sized image regex should compile")
+    })
+}
+
+/// The inline Numerals calculation `text` holds, by the configured triggers
+/// (longest first, as the plugin matches them); `None` when Numerals or its
+/// inline calculations are off.
+fn inline_numerals_trigger<'t>(
+    config: &crate::config::NumeralsConfig,
+    text: &'t str,
+) -> Option<(crate::parser::types::InlineNumeralsMode, &'t str)> {
+    use crate::parser::types::InlineNumeralsMode;
+    if !config.enabled || !config.inline {
+        return None;
+    }
+    let mut triggers = [
+        (
+            config.inline_result_trigger.as_str(),
+            InlineNumeralsMode::Result,
+        ),
+        (
+            config.inline_equation_trigger.as_str(),
+            InlineNumeralsMode::Equation,
+        ),
+        (
+            config.inline_tex_result_trigger.as_str(),
+            InlineNumeralsMode::TexResult,
+        ),
+        (
+            config.inline_tex_equation_trigger.as_str(),
+            InlineNumeralsMode::TexEquation,
+        ),
+    ];
+    triggers.sort_by_key(|(trigger, _)| std::cmp::Reverse(trigger.len()));
+    triggers.into_iter().find_map(|(trigger, mode)| {
+        if trigger.is_empty() {
+            return None;
+        }
+        let expression = text.strip_prefix(trigger)?.trim();
+        (!expression.is_empty()).then_some((mode, expression))
     })
 }
 

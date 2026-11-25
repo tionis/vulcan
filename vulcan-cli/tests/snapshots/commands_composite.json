@@ -3464,6 +3464,63 @@
         ]
       },
       {
+        "about": "Evaluate Numerals calculator blocks and write their @[name::result] values",
+        "name": "numerals",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "Show a note's evaluated Numerals blocks and inline calculations",
+            "name": "eval",
+            "options": [
+              {
+                "help": "Note path, filename, or alias",
+                "id": "note",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NOTE"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Write the results of a note's @[name::result] insertion lines",
+            "name": "apply",
+            "options": [
+              {
+                "help": "Note path, filename, or alias",
+                "id": "note",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NOTE"
+                ]
+              },
+              {
+                "help": "Show the changes without writing them",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
         "about": "Evaluate and maintain Bases views",
         "after_help": "Notes:\n  view-* commands rewrite the parsed .base model instead of patching YAML text blindly.\n  Mutating bases commands support --dry-run and --no-commit.\n  `create` derives folder and equality frontmatter from the first view; the TUI `n` hotkey uses the current view.\n\nExamples:\n  vulcan bases eval release.base\n  vulcan bases create release.base --title \"Launch Plan\"\n  vulcan bases tui release.base\n  vulcan bases view-add release.base Inbox --filter 'status = idea' --column file.name",
         "name": "bases",
@@ -8763,6 +8820,12 @@
               {
                 "about": "Import Obsidian Kanban plugin settings",
                 "name": "kanban",
+                "options": [],
+                "subcommands": []
+              },
+              {
+                "about": "Import Obsidian Numerals plugin settings",
+                "name": "numerals",
                 "options": [],
                 "subcommands": []
               },

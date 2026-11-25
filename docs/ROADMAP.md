@@ -8757,10 +8757,10 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 
 ### 9.42.4 Numerals calculator blocks
 
-- [ ] Vendor mathjs 15.2.0 (Apache-2.0) and run it in a vault-isolated QuickJS context behind `js_runtime`.
-- [ ] `math*` blocks and `#:`/`#=:` inline triggers with Numerals' rewrites, `@prev`/`@total`, emitters, directives, currency units, metadata scope, and `$` note globals.
-- [ ] Rendering in Markdown, HTML, and editor regions; `vulcan numerals apply` for `@[name]` insertion lines with `--dry-run`.
-- [ ] `[numerals]` config and settings import; guide, skills, tests against Numerals' own examples.
+- [x] Vendor mathjs 15.2.0 (Apache-2.0) and run it in a vault-isolated QuickJS context behind `js_runtime`.
+- [x] `math*` blocks and `#:`/`#=:`/`#$:`/`#$=:` inline triggers with Numerals' rewrites, `@prev`/`@total`, emitters, directives, currency units, metadata scope, cross-note references, and `$` note globals (a port of the plugin's MIT processing in `numerals_prelude.js`).
+- [x] Rendering in Markdown, HTML, and editor regions; `vulcan numerals eval` and `vulcan numerals apply` for `@[name]` insertion lines with `--dry-run`.
+- [x] `[numerals]` config (off by default) and settings import; `docs/guide/live-documents.md`, skills, tests.
 
 ---
 

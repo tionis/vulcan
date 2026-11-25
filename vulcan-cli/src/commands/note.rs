@@ -1120,9 +1120,9 @@ pub(crate) fn run_note_doctor_command(
 }
 
 #[derive(Debug, Clone)]
-struct ExistingMarkdownSource {
-    target: ExistingMarkdownTarget,
-    source: String,
+pub(crate) struct ExistingMarkdownSource {
+    pub(crate) target: ExistingMarkdownTarget,
+    pub(crate) source: String,
 }
 
 pub(crate) fn resolve_existing_markdown_target(
@@ -1138,7 +1138,7 @@ pub(crate) fn resolve_existing_markdown_target(
     })
 }
 
-fn read_existing_markdown_source(
+pub(crate) fn read_existing_markdown_source(
     paths: &VaultPaths,
     note: &str,
 ) -> Result<ExistingMarkdownSource, CliError> {
@@ -1218,7 +1218,7 @@ fn note_append_input_text(text: &str) -> Result<String, CliError> {
     Ok(buffer)
 }
 
-fn dispatch_note_write_plugin_hooks(
+pub(crate) fn dispatch_note_write_plugin_hooks(
     paths: &VaultPaths,
     permission_profile: Option<&str>,
     relative_path: &str,

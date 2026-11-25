@@ -363,6 +363,7 @@ fn js_runtime_usage_stays_in_js_gated_modules() {
         workspace_root.join("vulcan-core/src/dataview_js.rs"),
         workspace_root.join("vulcan-core/src/js_transform.rs"),
         workspace_root.join("vulcan-core/src/customjs.rs"),
+        workspace_root.join("vulcan-core/src/numerals.rs"),
         workspace_root.join("vulcan-app/src/templates.rs"),
     ];
 

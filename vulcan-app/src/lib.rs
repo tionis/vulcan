@@ -93,6 +93,7 @@ pub mod mdbase;
 pub mod mdbase_conformance;
 pub mod note_writes;
 pub mod notes;
+pub mod numerals;
 pub mod obsidian_companion;
 pub mod outline_markdown;
 pub mod periodic;

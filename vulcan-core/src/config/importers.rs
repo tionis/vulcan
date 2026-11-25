@@ -210,6 +210,9 @@ pub struct FolderNotesImporter;
 pub struct KanbanImporter;
 
 #[derive(Debug, Clone, Copy, Default)]
+pub struct NumeralsImporter;
+
+#[derive(Debug, Clone, Copy, Default)]
 pub struct PeriodicNotesImporter;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -232,6 +235,7 @@ pub fn all_importers() -> Vec<Box<dyn PluginImporter>> {
         Box::new(DataviewImporter),
         Box::new(FolderNotesImporter),
         Box::new(KanbanImporter),
+        Box::new(NumeralsImporter),
         Box::new(PeriodicNotesImporter),
         Box::new(QuickAddImporter),
         Box::new(TaskNotesImporter),
@@ -1242,6 +1246,288 @@ fn customjs_config_import_mappings(
             "registeredInvocableScriptNames",
             "customjs.invocable_scripts",
             names,
+        )?;
+    }
+    Ok(mappings)
+}
+
+/// Numerals settings that only shape Obsidian's editor and its CSS layout.
+const NUMERALS_EDITOR_ONLY_SETTINGS: &[&str] = &[
+    "layoutStyle",
+    "alternateRowColor",
+    "provideSuggestions",
+    "suggestionsIncludeMathjsSymbols",
+    "enableGreekAutoComplete",
+    "provideInlineSuggestions",
+];
+
+impl PluginImporter for NumeralsImporter {
+    fn name(&self) -> &'static str {
+        "numerals"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Obsidian Numerals plugin"
+    }
+
+    fn source_paths(&self, paths: &VaultPaths) -> Vec<PathBuf> {
+        vec![importer_source_path(
+            paths,
+            ".obsidian/plugins/numerals/data.json",
+        )]
+    }
+
+    fn import_with_mode(
+        &self,
+        paths: &VaultPaths,
+        target: ImportTarget,
+        dry_run: bool,
+    ) -> Result<ConfigImportReport, ConfigImportError> {
+        let source_path = self
+            .source_paths(paths)
+            .into_iter()
+            .next()
+            .expect("source path");
+        if !source_path.exists() {
+            return Err(ConfigImportError::MissingSource(source_path));
+        }
+
+        let raw = serde_json::from_str::<Value>(&fs::read_to_string(&source_path)?)?;
+        let schema_mappings = numerals_config_import_mappings(&numerals_schema())?;
+        let (obsidian, accepted, mut skipped) =
+            tolerant_plugin_config::<ObsidianNumeralsConfig>(&raw, &schema_mappings)?;
+        let mut mappings = numerals_config_import_mappings(&obsidian)?;
+        retain_present_mappings(&accepted, &mut mappings);
+        // The plugin is installed, so its blocks should render.
+        push_config_import_mapping(
+            &mut mappings,
+            "(plugin installed)",
+            "numerals.enabled",
+            &true,
+        )?;
+        for key in NUMERALS_EDITOR_ONLY_SETTINGS {
+            if raw.get(*key).is_some() {
+                skipped.push(ImportSkippedSetting {
+                    source: (*key).to_string(),
+                    reason: "an Obsidian editor or layout setting with no Vulcan equivalent"
+                        .to_string(),
+                });
+            }
+        }
+        let settings = import_settings_from_mappings(mappings);
+        let mut report = apply_import_settings(
+            paths,
+            self.name(),
+            source_path.clone(),
+            vec![source_path],
+            &settings,
+            target,
+            dry_run,
+        )?;
+        report.skipped = skipped;
+        Ok(report)
+    }
+}
+
+/// Every Numerals setting Vulcan imports, with placeholder values, so the
+/// tolerant reader knows which keys map.
+fn numerals_schema() -> ObsidianNumeralsConfig {
+    let currency = Some(ObsidianNumeralsCurrency::default());
+    ObsidianNumeralsConfig {
+        result_separator: Some(String::new()),
+        default_render_style: Some("Plain".to_string()),
+        hide_lines_without_markup_when_emitting: Some(true),
+        hide_emitter_markup_in_input: Some(true),
+        dollar_symbol_currency: currency.clone(),
+        yen_symbol_currency: currency.clone(),
+        number_format: Some("System".to_string()),
+        currency_precision_mode: Some("currency-standard".to_string()),
+        currency_display_mode: Some("code".to_string()),
+        custom_currency_decimal_places: Some(2),
+        force_process_all_frontmatter: Some(false),
+        custom_currency_symbol: Some(currency),
+        enable_inline_numerals: Some(true),
+        inline_result_trigger: Some(String::new()),
+        inline_equation_trigger: Some(String::new()),
+        inline_tex_result_trigger: Some(String::new()),
+        inline_tex_equation_trigger: Some(String::new()),
+        inline_equation_separator: Some(String::new()),
+        enable_cross_note_references: Some(true),
+    }
+}
+
+/// Numerals stores enum names (`Format_PeriodThousands_CommaDecimal`);
+/// Vulcan's config uses the plugin's block-directive names.
+fn numerals_number_format(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "System" => "system",
+        "Fixed" => "fixed",
+        "Exponential" => "exponential",
+        "Engineering" => "engineering",
+        "Format_CommaThousands_PeriodDecimal" => "comma-period",
+        "Format_PeriodThousands_CommaDecimal" => "period-comma",
+        "Format_SpaceThousands_CommaDecimal" => "space-comma",
+        "Format_Indian" => "indian",
+        _ => return None,
+    })
+}
+
+#[allow(clippy::too_many_lines)] // one mapping per plugin setting
+fn numerals_config_import_mappings(
+    obsidian: &ObsidianNumeralsConfig,
+) -> Result<Vec<ConfigImportMapping>, ConfigImportError> {
+    let mut mappings = Vec::new();
+    let mut push = |source: &str, target: &str, value: Value| {
+        push_config_import_mapping(&mut mappings, source, target, &value)
+    };
+    if let Some(value) = &obsidian.result_separator {
+        push(
+            "resultSeparator",
+            "numerals.result_separator",
+            serde_json::json!(value),
+        )?;
+    }
+    if let Some(style) = obsidian.default_render_style.as_deref() {
+        let style = match style {
+            "TeX" => "tex",
+            "SyntaxHighlight" => "highlight",
+            _ => "plain",
+        };
+        push(
+            "defaultRenderStyle",
+            "numerals.render_style",
+            serde_json::json!(style),
+        )?;
+    }
+    if let Some(value) = obsidian.hide_lines_without_markup_when_emitting {
+        push(
+            "hideLinesWithoutMarkupWhenEmitting",
+            "numerals.hide_non_emitters",
+            serde_json::json!(value),
+        )?;
+    }
+    if let Some(value) = obsidian.hide_emitter_markup_in_input {
+        push(
+            "hideEmitterMarkupInInput",
+            "numerals.hide_emitter_markup",
+            serde_json::json!(value),
+        )?;
+    }
+    if let Some(currency) = &obsidian.dollar_symbol_currency {
+        push(
+            "dollarSymbolCurrency",
+            "numerals.dollar_currency",
+            serde_json::json!(currency.currency),
+        )?;
+    }
+    if let Some(currency) = &obsidian.yen_symbol_currency {
+        push(
+            "yenSymbolCurrency",
+            "numerals.yen_currency",
+            serde_json::json!(currency.currency),
+        )?;
+    }
+    if let Some(format) = obsidian
+        .number_format
+        .as_deref()
+        .and_then(numerals_number_format)
+    {
+        push(
+            "numberFormat",
+            "numerals.number_format",
+            serde_json::json!(format),
+        )?;
+    }
+    if let Some(mode) = obsidian.currency_precision_mode.as_deref() {
+        let mode = if mode == "follow-number-format" {
+            "follow-number-format"
+        } else {
+            "currency-standard"
+        };
+        push(
+            "currencyPrecisionMode",
+            "numerals.currency_precision",
+            serde_json::json!(mode),
+        )?;
+    }
+    if let Some(mode) = obsidian.currency_display_mode.as_deref() {
+        let mode = if mode == "symbol" { "symbol" } else { "code" };
+        push(
+            "currencyDisplayMode",
+            "numerals.currency_display",
+            serde_json::json!(mode),
+        )?;
+    }
+    if let Some(places) = obsidian.custom_currency_decimal_places {
+        push(
+            "customCurrencyDecimalPlaces",
+            "numerals.custom_currency_decimal_places",
+            serde_json::json!(places.min(20)),
+        )?;
+    }
+    if let Some(value) = obsidian.force_process_all_frontmatter {
+        push(
+            "forceProcessAllFrontmatter",
+            "numerals.force_all_frontmatter",
+            serde_json::json!(value),
+        )?;
+    }
+    if let Some(custom) = &obsidian.custom_currency_symbol {
+        let custom = custom.clone().unwrap_or_default();
+        push(
+            "customCurrencySymbol",
+            "numerals.custom_currency_symbol",
+            serde_json::json!(custom.symbol),
+        )?;
+        push(
+            "customCurrencySymbol",
+            "numerals.custom_currency_code",
+            serde_json::json!(custom.currency),
+        )?;
+    }
+    if let Some(value) = obsidian.enable_inline_numerals {
+        push(
+            "enableInlineNumerals",
+            "numerals.inline",
+            serde_json::json!(value),
+        )?;
+    }
+    for (source, target, value) in [
+        (
+            "inlineResultTrigger",
+            "numerals.inline_result_trigger",
+            &obsidian.inline_result_trigger,
+        ),
+        (
+            "inlineEquationTrigger",
+            "numerals.inline_equation_trigger",
+            &obsidian.inline_equation_trigger,
+        ),
+        (
+            "inlineTexResultTrigger",
+            "numerals.inline_tex_result_trigger",
+            &obsidian.inline_tex_result_trigger,
+        ),
+        (
+            "inlineTexEquationTrigger",
+            "numerals.inline_tex_equation_trigger",
+            &obsidian.inline_tex_equation_trigger,
+        ),
+        (
+            "inlineEquationSeparator",
+            "numerals.inline_equation_separator",
+            &obsidian.inline_equation_separator,
+        ),
+    ] {
+        if let Some(value) = value {
+            push(source, target, serde_json::json!(value))?;
+        }
+    }
+    if let Some(value) = obsidian.enable_cross_note_references {
+        push(
+            "enableCrossNoteReferences",
+            "numerals.cross_note_references",
+            serde_json::json!(value),
         )?;
     }
     Ok(mappings)

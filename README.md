@@ -155,7 +155,7 @@ That integration is planned. The current mdbase query path still performs collec
 | --- | --- |
 | Install, upgrade, or run a service | [Installation](docs/installation.md) |
 | Learn commands and selection syntax | [CLI reference](docs/cli.md), [queries](docs/guide/query-dsl.md), [filters](docs/guide/filters.md) |
-| Write scripts or extend automation | [Scripting](docs/guide/scripting.md), [JS API](docs/reference/js-api/index.md), [custom tools](docs/assistant/custom_tools.md), [skill commands](docs/assistant/skill_commands.md) |
+| Write scripts or extend automation | [Scripting](docs/guide/scripting.md), [live documents](docs/guide/live-documents.md), [JS API](docs/reference/js-api/index.md), [custom tools](docs/assistant/custom_tools.md), [skill commands](docs/assistant/skill_commands.md) |
 | Configure permissions and script access | [Configuration](docs/reference/config.md), [sandboxing](docs/guide/sandbox.md), [MCP setup](docs/guide/chatgpt-mcp.md) |
 | Publish or exchange knowledge | [Static sites](docs/guide/static-sites.md), [Outline](docs/guide/outline-publishing.md), [external wikis](docs/guide/information-hub.md) |
 | Edit notes in Neovim, Vim, or Helix | [Editors](docs/guide/editors.md) |

@@ -19,6 +19,7 @@ pub(super) struct PartialVulcanConfig {
     pub(super) kanban: Option<PartialKanbanConfig>,
     pub(super) dataview: Option<PartialDataviewConfig>,
     pub(super) customjs: Option<PartialCustomJsConfig>,
+    pub(super) numerals: Option<PartialNumeralsConfig>,
     pub(super) js_runtime: Option<PartialJsRuntimeConfig>,
     pub(super) templates: Option<PartialTemplatesConfig>,
     pub(super) quickadd: Option<PartialQuickAddConfig>,
@@ -173,6 +174,31 @@ pub(super) struct PartialCustomJsConfig {
     pub(super) startup_scripts: Option<Vec<String>>,
     pub(super) invocable_scripts: Option<Vec<String>>,
     pub(super) dql_functions: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct PartialNumeralsConfig {
+    pub(super) enabled: Option<bool>,
+    pub(super) render_style: Option<super::NumeralsRenderStyle>,
+    pub(super) result_separator: Option<String>,
+    pub(super) number_format: Option<super::NumeralsNumberFormat>,
+    pub(super) currency_precision: Option<super::NumeralsCurrencyPrecision>,
+    pub(super) currency_display: Option<super::NumeralsCurrencyDisplay>,
+    pub(super) dollar_currency: Option<String>,
+    pub(super) yen_currency: Option<String>,
+    pub(super) custom_currency_symbol: Option<String>,
+    pub(super) custom_currency_code: Option<String>,
+    pub(super) custom_currency_decimal_places: Option<u8>,
+    pub(super) force_all_frontmatter: Option<bool>,
+    pub(super) hide_non_emitters: Option<bool>,
+    pub(super) hide_emitter_markup: Option<bool>,
+    pub(super) inline: Option<bool>,
+    pub(super) inline_result_trigger: Option<String>,
+    pub(super) inline_equation_trigger: Option<String>,
+    pub(super) inline_tex_result_trigger: Option<String>,
+    pub(super) inline_tex_equation_trigger: Option<String>,
+    pub(super) inline_equation_separator: Option<String>,
+    pub(super) cross_note_references: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]

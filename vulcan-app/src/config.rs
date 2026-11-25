@@ -1932,6 +1932,11 @@ fn category_descriptor(display_segments: &[String]) -> CategoryDescriptor {
             title: "Dataview",
             description: "Dataview compatibility flags, rendering behavior, and JS limits.",
         },
+        Some("numerals") => CategoryDescriptor {
+            key: "numerals",
+            title: "Numerals",
+            description: "Numerals-compatible calculator blocks (```math) and inline calculations, evaluated with the bundled mathjs.",
+        },
         Some("customjs") => CategoryDescriptor {
             key: "customjs",
             title: "CustomJS",
@@ -2017,6 +2022,7 @@ fn sync_path_description(path: &str) -> Option<&'static str> {
     })
 }
 
+#[allow(clippy::too_many_lines)] // one description per key
 fn config_path_description(path: &str) -> String {
     if let Some(description) = sync_path_description(path) {
         return description.to_string();
@@ -2034,6 +2040,27 @@ fn config_path_description(path: &str) -> String {
         "editor.inlay_hints" => "Show editor inlay hints, such as how far off an open task's due date is.".to_string(),
         "editor.semantic_tokens" => "Provide editor semantic tokens for links, embeds, tags, inline fields, and block ids (unresolved links are marked).".to_string(),
         "dataview.render_dataview_js" => "DataviewJS policy for `render`, `note get`, `daily show`, browse previews, editors, MCP `note_get`, and evaluated exports when no explicit `--dataviewjs` is given: `off` leaves a notice, `static` runs blocks in the strict sandbox (deterministic, without wall-clock time, only for static sites and evaluated exports), `on` uses the configured sandbox tier but only in a vault trusted with `vulcan trust` (else `static`). Unset: `on` in trusted vaults, `static` elsewhere. Rendering never writes.".to_string(),
+        "numerals.enabled" => "Render ` ```math ` blocks (and `math-plain`, `math-tex`, `math-highlight`) and inline calculations as the Numerals plugin does. Off by default, since other tools use `math` blocks for LaTeX; `vulcan config import numerals` turns it on.".to_string(),
+        "numerals.render_style" => "How a ` ```math ` block shows its lines: `plain`, `tex` (display math), or `highlight` (plain in Vulcan). The `math-plain`, `math-tex`, and `math-highlight` languages choose a style per block.".to_string(),
+        "numerals.result_separator" => "Text between a line and its result in plain blocks.".to_string(),
+        "numerals.number_format" => "Result number format: `system` (comma thousands, period decimal), `fixed`, `exponential`, `engineering`, `comma-period`, `period-comma`, `space-comma`, or `indian`. A block can override it with `@format`.".to_string(),
+        "numerals.currency_precision" => "Decimals of currency results: `currency-standard` (the currency's minor units, such as 2 for USD and 0 for JPY) or `follow-number-format`.".to_string(),
+        "numerals.currency_display" => "Show currency results with their `code` (`12.50 USD`) or `symbol` (`$12.50`).".to_string(),
+        "numerals.dollar_currency" => "The currency `$` stands for, as an ISO 4217 code.".to_string(),
+        "numerals.yen_currency" => "The currency `¥` stands for: `JPY` or `CNY`.".to_string(),
+        "numerals.custom_currency_symbol" => "An extra currency symbol, used with `numerals.custom_currency_code`.".to_string(),
+        "numerals.custom_currency_code" => "The ISO 4217 code of `numerals.custom_currency_symbol`.".to_string(),
+        "numerals.custom_currency_decimal_places" => "Decimals of the custom currency (0 to 20).".to_string(),
+        "numerals.force_all_frontmatter" => "Expose every frontmatter property to blocks, not only `$`-prefixed ones and those the note's `numerals` property names.".to_string(),
+        "numerals.hide_non_emitters" => "When a block marks lines with `=>`, show only those lines.".to_string(),
+        "numerals.hide_emitter_markup" => "Hide the `=>` markers in shown lines.".to_string(),
+        "numerals.inline" => "Evaluate inline calculations such as `` `#: 2 + 2` ``.".to_string(),
+        "numerals.inline_result_trigger" => "Inline code prefix that shows only the result.".to_string(),
+        "numerals.inline_equation_trigger" => "Inline code prefix that shows the expression and its result.".to_string(),
+        "numerals.inline_tex_result_trigger" => "Inline code prefix that shows the result as TeX.".to_string(),
+        "numerals.inline_tex_equation_trigger" => "Inline code prefix that shows the expression and its result as TeX.".to_string(),
+        "numerals.inline_equation_separator" => "Text between the expression and its result for equation triggers.".to_string(),
+        "numerals.cross_note_references" => "Allow `[[Note]].property` references to other notes' exposed properties.".to_string(),
         "customjs.js_files" => "Class files to load as `customJS.<ClassName>`, as vault paths; each file holds one class expression, as in the CustomJS plugin.".to_string(),
         "customjs.js_folder" => "Load every vault `.js` file whose path starts with this prefix (a plain prefix, so it is recursive). Files load in file-name order.".to_string(),
         "customjs.startup_scripts" => "Classes whose `invoke()` method `vulcan plugin customjs startup` runs, in order.".to_string(),

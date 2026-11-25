@@ -88,6 +88,7 @@ pub mod note;
 pub mod note_lookup;
 pub mod note_session;
 pub mod note_store;
+pub mod numerals;
 #[cfg(feature = "oauth")]
 pub mod oauth;
 pub mod ordinary_write;
@@ -158,21 +159,22 @@ pub use config::{
     FolderNotesImporter, GitBatchMessages, GitCommitStrategy, GitConfig, GitScope, GitTrigger,
     ImportConflict, ImportMigratedFile, ImportMigratedFileAction, ImportSkippedSetting,
     ImportTarget, InboxConfig, JsRuntimeConfig, JsRuntimeSandbox, KanbanConfig, KanbanImporter,
-    LinkResolutionMode, LinkStylePreference, NetworkPermissionConfig, PathPermissionConfig,
-    PathPermissionKeyword, PathPermissionRules, PeriodicCadenceUnit, PeriodicConfig,
-    PeriodicNoteConfig, PeriodicNotesImporter, PeriodicStartOfWeek, PermissionLimit,
-    PermissionLimitKeyword, PermissionMode, PermissionProfile, PermissionProfilesLoadResult,
-    PermissionsConfig, PluginEvent, PluginImporter, PluginRegistration, ScanConfig,
-    SearchBackendKind, SyncConfig, TaskNotesConfig, TaskNotesDateDefault, TaskNotesFieldMapping,
-    TaskNotesFilenameFormat, TaskNotesIdentificationMethod, TaskNotesImporter,
-    TaskNotesNlpTriggerConfig, TaskNotesPriorityConfig, TaskNotesRecurrenceDefault,
-    TaskNotesSavedViewCondition, TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue,
-    TaskNotesSavedViewGroup, TaskNotesSavedViewNode, TaskNotesSavedViewOptionValue,
-    TaskNotesSavedViewQuery, TaskNotesStatusConfig, TaskNotesTaskCreationDefaults,
-    TaskNotesUserFieldConfig, TaskNotesUserFieldType, TasksImporter, TemplaterCommandPairConfig,
-    TemplaterFileCreationMode, TemplaterFileTemplateConfig, TemplaterFolderTemplateConfig,
-    TemplaterIgnoredFolderConfig, TemplaterImporter, TemplatesConfig, VaultConfig,
-    DEFAULT_GIT_BATCH_INTERVAL_SECONDS,
+    LinkResolutionMode, LinkStylePreference, NetworkPermissionConfig, NumeralsConfig,
+    NumeralsCurrencyDisplay, NumeralsCurrencyPrecision, NumeralsImporter, NumeralsNumberFormat,
+    NumeralsRenderStyle, PathPermissionConfig, PathPermissionKeyword, PathPermissionRules,
+    PeriodicCadenceUnit, PeriodicConfig, PeriodicNoteConfig, PeriodicNotesImporter,
+    PeriodicStartOfWeek, PermissionLimit, PermissionLimitKeyword, PermissionMode,
+    PermissionProfile, PermissionProfilesLoadResult, PermissionsConfig, PluginEvent,
+    PluginImporter, PluginRegistration, ScanConfig, SearchBackendKind, SyncConfig, TaskNotesConfig,
+    TaskNotesDateDefault, TaskNotesFieldMapping, TaskNotesFilenameFormat,
+    TaskNotesIdentificationMethod, TaskNotesImporter, TaskNotesNlpTriggerConfig,
+    TaskNotesPriorityConfig, TaskNotesRecurrenceDefault, TaskNotesSavedViewCondition,
+    TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue, TaskNotesSavedViewGroup,
+    TaskNotesSavedViewNode, TaskNotesSavedViewOptionValue, TaskNotesSavedViewQuery,
+    TaskNotesStatusConfig, TaskNotesTaskCreationDefaults, TaskNotesUserFieldConfig,
+    TaskNotesUserFieldType, TasksImporter, TemplaterCommandPairConfig, TemplaterFileCreationMode,
+    TemplaterFileTemplateConfig, TemplaterFolderTemplateConfig, TemplaterIgnoredFolderConfig,
+    TemplaterImporter, TemplatesConfig, VaultConfig, DEFAULT_GIT_BATCH_INTERVAL_SECONDS,
 };
 pub use content_transforms::apply_content_transforms;
 pub use dataview_js::{
@@ -274,9 +276,10 @@ pub use oauth::{
     OAuthResourceServer, OAuthResourceServerConfig, OAuthTokenIdentity,
 };
 pub use parser::{
-    parse_document, ChunkText, LinkKind, OriginContext, ParseDiagnostic, ParseDiagnosticKind,
-    ParsedDocument, RawBlockRef, RawDataviewBlock, RawHeading, RawInlineExpression, RawInlineField,
-    RawLink, RawListItem, RawTag, RawTask, RawTaskField, RawTasksBlock,
+    parse_document, ChunkText, InlineNumeralsMode, LinkKind, OriginContext, ParseDiagnostic,
+    ParseDiagnosticKind, ParsedDocument, RawBlockRef, RawDataviewBlock, RawHeading,
+    RawInlineExpression, RawInlineField, RawInlineNumerals, RawLink, RawListItem, RawNumeralsBlock,
+    RawTag, RawTask, RawTaskField, RawTasksBlock,
 };
 pub use paths::{
     ensure_vulcan_dir, initialize_vulcan_dir, trusted_vaults_file, user_config_dir, user_data_dir,

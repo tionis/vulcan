@@ -76,6 +76,7 @@ Examples:
       templater        Import Obsidian Templater plugin settings
       quickadd         Import Obsidian QuickAdd plugin settings
       kanban           Import Obsidian Kanban plugin settings
+      numerals         Import Obsidian Numerals plugin settings
       periodic-notes   Import Obsidian Daily Notes and Periodic Notes settings
       tasknotes        Import Obsidian TaskNotes plugin settings
       tasks            Import Obsidian Tasks plugin settings
@@ -1384,6 +1385,74 @@ The named MCP remote this vault describes; devices opt in to serve it from daemo
 - `mcp_remote.tool_packs` — type: `array`; target: `shared|local|device`; default: `[3 items]`
   Tool packs a remote connection may choose; they select tools, the ceiling bounds authority.
   Example: `vulcan config set mcp_remote.tool_packs <value>`
+
+### Numerals
+
+Numerals-compatible calculator blocks (```math) and inline calculations, evaluated with the bundled mathjs.
+
+- `numerals.cross_note_references` — type: `boolean`; target: `shared|local|device`; default: `true`
+  Allow `[[Note]].property` references to other notes' exposed properties.
+  Example: `vulcan config set numerals.cross_note_references <value>`
+- `numerals.currency_display` — type: `string`; target: `shared|local|device`; default: `code`
+  Show currency results with their `code` (`12.50 USD`) or `symbol` (`$12.50`).
+  Example: `vulcan config set numerals.currency_display <value>`
+- `numerals.currency_precision` — type: `string`; target: `shared|local|device`; default: `currency-standard`
+  Decimals of currency results: `currency-standard` (the currency's minor units, such as 2 for USD and 0 for JPY) or `follow-number-format`.
+  Example: `vulcan config set numerals.currency_precision <value>`
+- `numerals.custom_currency_code` — type: `string`; target: `shared|local|device`; default: ``
+  The ISO 4217 code of `numerals.custom_currency_symbol`.
+  Example: `vulcan config set numerals.custom_currency_code <value>`
+- `numerals.custom_currency_decimal_places` — type: `integer`; target: `shared|local|device`; default: `2`
+  Decimals of the custom currency (0 to 20).
+  Example: `vulcan config set numerals.custom_currency_decimal_places <value>`
+- `numerals.custom_currency_symbol` — type: `string`; target: `shared|local|device`; default: ``
+  An extra currency symbol, used with `numerals.custom_currency_code`.
+  Example: `vulcan config set numerals.custom_currency_symbol <value>`
+- `numerals.dollar_currency` — type: `string`; target: `shared|local|device`; default: `USD`
+  The currency `$` stands for, as an ISO 4217 code.
+  Example: `vulcan config set numerals.dollar_currency <value>`
+- `numerals.enabled` — type: `boolean`; target: `shared|local|device`; default: `false`
+  Render ` ```math ` blocks (and `math-plain`, `math-tex`, `math-highlight`) and inline calculations as the Numerals plugin does. Off by default, since other tools use `math` blocks for LaTeX; `vulcan config import numerals` turns it on.
+  Example: `vulcan config set numerals.enabled <value>`
+- `numerals.force_all_frontmatter` — type: `boolean`; target: `shared|local|device`; default: `false`
+  Expose every frontmatter property to blocks, not only `$`-prefixed ones and those the note's `numerals` property names.
+  Example: `vulcan config set numerals.force_all_frontmatter <value>`
+- `numerals.hide_emitter_markup` — type: `boolean`; target: `shared|local|device`; default: `true`
+  Hide the `=>` markers in shown lines.
+  Example: `vulcan config set numerals.hide_emitter_markup <value>`
+- `numerals.hide_non_emitters` — type: `boolean`; target: `shared|local|device`; default: `true`
+  When a block marks lines with `=>`, show only those lines.
+  Example: `vulcan config set numerals.hide_non_emitters <value>`
+- `numerals.inline` — type: `boolean`; target: `shared|local|device`; default: `true`
+  Evaluate inline calculations such as `` `#: 2 + 2` ``.
+  Example: `vulcan config set numerals.inline <value>`
+- `numerals.inline_equation_separator` — type: `string`; target: `shared|local|device`; default: ` = `
+  Text between the expression and its result for equation triggers.
+  Example: `vulcan config set numerals.inline_equation_separator <value>`
+- `numerals.inline_equation_trigger` — type: `string`; target: `shared|local|device`; default: `#=:`
+  Inline code prefix that shows the expression and its result.
+  Example: `vulcan config set numerals.inline_equation_trigger <value>`
+- `numerals.inline_result_trigger` — type: `string`; target: `shared|local|device`; default: `#:`
+  Inline code prefix that shows only the result.
+  Example: `vulcan config set numerals.inline_result_trigger <value>`
+- `numerals.inline_tex_equation_trigger` — type: `string`; target: `shared|local|device`; default: `#$=:`
+  Inline code prefix that shows the expression and its result as TeX.
+  Example: `vulcan config set numerals.inline_tex_equation_trigger <value>`
+- `numerals.inline_tex_result_trigger` — type: `string`; target: `shared|local|device`; default: `#$:`
+  Inline code prefix that shows the result as TeX.
+  Example: `vulcan config set numerals.inline_tex_result_trigger <value>`
+- `numerals.number_format` — type: `string`; target: `shared|local|device`; default: `system`
+  Result number format: `system` (comma thousands, period decimal), `fixed`, `exponential`, `engineering`, `comma-period`, `period-comma`, `space-comma`, or `indian`. A block can override it with `@format`.
+  Example: `vulcan config set numerals.number_format <value>`
+- `numerals.render_style` — type: `string`; target: `shared|local|device`; default: `plain`
+  How a ` ```math ` block shows its lines: `plain`, `tex` (display math), or `highlight` (plain in Vulcan). The `math-plain`, `math-tex`, and `math-highlight` languages choose a style per block.
+  Example: `vulcan config set numerals.render_style <value>`
+- `numerals.result_separator` — type: `string`; target: `shared|local|device`; default: ` → `
+  Text between a line and its result in plain blocks.
+  Example: `vulcan config set numerals.result_separator <value>`
+- `numerals.yen_currency` — type: `string`; target: `shared|local|device`; default: `JPY`
+  The currency `¥` stands for: `JPY` or `CNY`.
+  Example: `vulcan config set numerals.yen_currency <value>`
 
 ### Publishing
 

@@ -453,21 +453,22 @@ pub use cli::{
     IntegrationCommand, KanbanCommand, LoginModeArg, McpCommand, McpConnectionsCommand,
     McpRemoteCommand, McpToolPackArg, McpToolPackModeArg, McpTransportArg, MdbaseCommand,
     MdbaseWriteRepairCommand, NoteAppendPeriodicArg, NoteCheckboxState, NoteCommand, NoteGetMode,
-    OrdinaryWriteRepairCommand, OutlineBlockReferencePolicyArg, OutlineCollectionPermissionArg,
-    OutlineCollectionsCommand, OutlineCommand, OutlineExcludedTargetPolicyArg,
-    OutlinePullConflictOperationArg, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand,
-    PinTargetArg, PluginCommand, PluginEventArg, PluginSandboxArg, PropertySortArg, PublishCommand,
-    PullCommand, QueryEngineArg, QueryFormatArg, RefactorCommand, RefreshMode, RenderArgs,
-    RenderMode, RepairCommand, SavedCommand, SavedCreateCommand, ScheduleCommand, SearchBackendArg,
-    SearchMode, SearchSortArg, SiteCommand, SkillCommand, SuggestCommand, SuggestLinkStatusArg,
-    SyncCommand, SyncDeviceCommand, SyncForgeCommand, SyncScheduleCommand, SyncSelectionArgs,
-    SyncTargetArgs, SyncTransportCommand, TagSortArg, TasksCommand, TasksListSourceArg,
-    TasksPomodoroCommand, TasksReminderCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg,
-    TasksViewCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TermuxNetworkArg,
-    TextBundleCommand, ToolCommand, ToolInitTemplateArg, TransportPolicyArg, TrustCommand,
-    UpdateChannelArg, UpdateChannelArgs, UpdateCommand, UpdateNetworkArg, UpdatePolicyArgs,
-    UpdateScheduleCommand, VaultCommand, VectorQueueCommand, VectorsCommand, WebCommand,
-    WebFetchMode, WikiPackageCommand, WikiSourceLocatorsArg,
+    NumeralsCommand, OrdinaryWriteRepairCommand, OutlineBlockReferencePolicyArg,
+    OutlineCollectionPermissionArg, OutlineCollectionsCommand, OutlineCommand,
+    OutlineExcludedTargetPolicyArg, OutlinePullConflictOperationArg, OutputFormat,
+    PeriodicOpenArgs, PeriodicSubcommand, PinTargetArg, PluginCommand, PluginEventArg,
+    PluginSandboxArg, PropertySortArg, PublishCommand, PullCommand, QueryEngineArg, QueryFormatArg,
+    RefactorCommand, RefreshMode, RenderArgs, RenderMode, RepairCommand, SavedCommand,
+    SavedCreateCommand, ScheduleCommand, SearchBackendArg, SearchMode, SearchSortArg, SiteCommand,
+    SkillCommand, SuggestCommand, SuggestLinkStatusArg, SyncCommand, SyncDeviceCommand,
+    SyncForgeCommand, SyncScheduleCommand, SyncSelectionArgs, SyncTargetArgs, SyncTransportCommand,
+    TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksReminderCommand,
+    TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg,
+    TemplateRenderArgs, TemplateSubcommand, TermuxNetworkArg, TextBundleCommand, ToolCommand,
+    ToolInitTemplateArg, TransportPolicyArg, TrustCommand, UpdateChannelArg, UpdateChannelArgs,
+    UpdateCommand, UpdateNetworkArg, UpdatePolicyArgs, UpdateScheduleCommand, VaultCommand,
+    VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode, WikiPackageCommand,
+    WikiSourceLocatorsArg,
 };
 use vulcan_core::Verbosity;
 
@@ -3834,6 +3835,7 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
         | Command::Dataview { .. }
         | Command::Tasks { .. }
         | Command::Kanban { .. }
+        | Command::Numerals { .. }
         | Command::Update { .. }
         | Command::Unset { .. }
         | Command::Search { .. }
@@ -5739,6 +5741,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             stdout_is_tty,
             use_stdout_color,
         ),
+        Command::Numerals { ref command } => {
+            commands::numerals::handle_numerals_command(cli, &paths, command)
+        }
         Command::Search {
             ref query,
             ref regex,

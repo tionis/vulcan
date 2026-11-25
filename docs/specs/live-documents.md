@@ -1,7 +1,7 @@
 # Live documents: shared scope, vault functions, bound inputs, and calculator blocks
 
-**Status:** Design contract for Roadmap Phase 9.42. 9.42.1 (shared scope) and 9.42.2 (CustomJS)
-are implemented; the rest is planned.
+**Status:** Design contract for Roadmap Phase 9.42. 9.42.1 (shared scope), 9.42.2 (CustomJS), and
+9.42.4 (Numerals) are implemented; 9.42.3 (Meta Bind) is planned.
 
 SilverBullet's Space Lua and Ink & Switch's Potluck make a note a small live program: values
 defined in one place, computed inline elsewhere, edited in place, with helpers defined in the
@@ -246,12 +246,17 @@ report "runs in Obsidian" diagnostics.
 (false), `ignore_code_block_restrictions` (false), `excluded_folders` (`["templates"]`),
 `input_field_templates` (`[{name, declaration}]`), `button_templates`.
 
-## 9.42.4 Numerals calculator blocks
+## 9.42.4 Numerals calculator blocks (implemented)
 
 Numerals evaluates with mathjs; Vulcan bundles mathjs 15.2.0 (Apache-2.0, vendored under
-`vulcan-core/vendor/mathjs/` with its license) into a dedicated QuickJS context with no vault
-access, so calculator blocks evaluate in every vault, trusted or not, whenever `js_runtime` is
-compiled in.
+`vulcan-core/vendor/mathjs/` with its license) and a port of the plugin's processing
+(`vulcan-core/src/numerals_prelude.js`, MIT, from Numerals 1.10.2) into a dedicated QuickJS engine
+with no vault access, so calculator blocks evaluate in every vault, trusted or not, whenever
+`js_runtime` is compiled in. The engine starts once per rendered note that has Numerals regions;
+the note's metadata and the metadata of the notes its references name are passed in as data.
+
+Numerals is off until configured (`[numerals] enabled = true`, or `vulcan config import numerals`,
+which turns it on): other tools render ` ```math ` blocks as LaTeX.
 
 ### Blocks and inline triggers
 
@@ -262,8 +267,9 @@ compiled in.
 | `math-tex`, `math-TeX` | TeX |
 | `math-highlight` | syntax-highlighted |
 
-Inline code `` `#: expr` `` renders the result; `` `#=: expr` `` renders `expr = result`. Triggers
-are configurable and matched longest first.
+Inline code `` `#: expr` `` renders the result; `` `#=: expr` `` renders `expr = result`;
+`` `#$: expr` `` and `` `#$=: expr` `` render the same as TeX. Triggers are configurable and
+matched longest first.
 
 ### Evaluation (per block, one mathjs scope)
 
@@ -286,27 +292,49 @@ are configurable and matched longest first.
    the same note.
 
 Currency units: `$`→USD, `€`→EUR, `£`→GBP, `¥`→JPY, `₹`→INR (remappable), created with
-`createUnit`, with the currency symbols accepted as identifier letters as Numerals patches them.
+`createUnit` with the code, its lowercase form, and the symbol as aliases, as Numerals creates
+them.
 
 ### Output
 
-Each line renders `input → result` (`result_separator`). Hidden lines are dropped, and when a block
-has emitter lines only those render (`hide_lines_without_markup_when_emitting`). Number format
-defaults to `system`, which Vulcan resolves from `LANG`/`LC_NUMERIC` and falls back to
-`comma-period`; deterministic renders (publication) use `comma-period` unless a format is
-configured. Currency follows Numerals 1.10.2: the plain number format followed by the code.
+Markdown renders a plain or highlight block as a `text` code block of aligned
+`input → result  # comment` lines (`result_separator`), and a TeX block as a display-math
+`aligned` environment of `input \to result` rows. HTML renders the plugin's structure
+(`numerals-line`, `numerals-input`, `numerals-result`), with TeX parts as math spans. Hidden lines
+are dropped, and when a block has emitter lines only those render (`hide_non_emitters`). Errors
+render as a final `input → Name: message` line; frontmatter and reference warnings follow the
+block as callouts. Inline results render as text, or inline math for the TeX triggers; inline
+errors render `*(Numerals error: …)*`.
+
+QuickJS has no `Intl`, so the locale formats are written out: `system` is the comma-thousands,
+period-decimal format (as `comma-period`), which also keeps renders deterministic. Without a
+`@decimalPlaces` directive, locale formats show at most three decimals, as `Intl.NumberFormat`
+does, falling back to 15 significant digits (or exponential notation) for small nonzero values.
+Currency follows Numerals 1.10.2: with `currency_precision = "currency-standard"` the currency's
+minor units (ISO 4217: two for most, zero for JPY), followed by the code, or preceded by the
+symbol with `currency_display = "symbol"`.
+
+Consecutive inline calculations in one paragraph share `@prev`; a blank line or a block starts a
+new section, as the plugin's per-section rendering does.
 
 ### Writing results
 
 `@[name]` insertion lines are rewritten to `@[name::result]` only by
-`vulcan numerals apply <note>` (`--dry-run`), never by rendering.
+`vulcan numerals apply <note>` (`--dry-run`), never by rendering. `vulcan numerals eval <note>`
+shows the evaluated regions (`--output json` for the structured form).
 
 ### Settings
 
 `[numerals]` in `.vulcan/config.toml`, importable from `.obsidian/plugins/numerals/data.json`:
-`result_separator` (`" → "`), `default_render_style`, `number_format`, `dollar_currency`,
-`yen_currency`, `custom_currency`, `force_process_all_frontmatter`, `enable_inline`,
-`inline_result_trigger` (`#:`), `inline_equation_trigger` (`#=:`), `inline_equation_separator`
-(`" = "`), `enable_cross_note_references` (true).
+`enabled` (false), `render_style` (`plain`, `tex`, `highlight`), `result_separator` (`" → "`),
+`number_format` (`system`, `fixed`, `exponential`, `engineering`, `comma-period`,
+`period-comma`, `space-comma`, `indian`), `currency_precision`, `currency_display`,
+`dollar_currency` (`USD`), `yen_currency` (`JPY`), `custom_currency_symbol`,
+`custom_currency_code`, `custom_currency_decimal_places` (2), `force_all_frontmatter`,
+`hide_non_emitters` (true), `hide_emitter_markup` (true), `inline` (true),
+`inline_result_trigger` (`#:`), `inline_equation_trigger` (`#=:`), `inline_tex_result_trigger`
+(`#$:`), `inline_tex_equation_trigger` (`#$=:`), `inline_equation_separator` (`" = "`), and
+`cross_note_references` (true). The plugin's layout, row-color, suggestion, and autocomplete
+settings shape Obsidian's editor only; the importer reports them as skipped.
 
 Meta Bind's `math` views use the same bundled mathjs context.

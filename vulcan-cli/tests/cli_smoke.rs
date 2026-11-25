@@ -2509,6 +2509,88 @@ fn customjs_settings_import_and_class_listing() {
     );
 }
 
+#[cfg(feature = "js_runtime")]
+#[test]
+fn numerals_import_eval_and_apply_round_trip() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".obsidian/plugins/numerals"))
+        .expect("plugin dir should be created");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan should be created");
+    fs::write(
+        vault_root.join(".obsidian/plugins/numerals/data.json"),
+        r#"{"numberFormat": "Format_PeriodThousands_CommaDecimal", "layoutStyle": "TwoPanes"}"#,
+    )
+    .expect("plugin settings should write");
+    let note = "---\n$rate: 1000\n---\n```math\nhours = 2\n@[cost::0] = $rate * hours\n```\n\nInline: `#: $rate / 4`\n";
+    fs::write(vault_root.join("Bill.md"), note).expect("note should write");
+    let vault = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--vault", &vault, "config", "import", "numerals", "--apply"])
+        .assert()
+        .success();
+    run_scan(&vault_root);
+
+    let eval = parse_stdout_json(
+        &Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault", &vault, "--output", "json", "numerals", "eval", "Bill",
+            ])
+            .assert()
+            .success(),
+    );
+    assert_eq!(eval["enabled"], serde_json::json!(true));
+    assert_eq!(
+        eval["regions"][0]["outcome"]["output"]["lines"][1]["result"],
+        serde_json::json!("2.000")
+    );
+    assert_eq!(
+        eval["regions"][1]["outcome"]["text"],
+        serde_json::json!("250")
+    );
+
+    let dry_run = parse_stdout_json(
+        &Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                &vault,
+                "--output",
+                "json",
+                "numerals",
+                "apply",
+                "Bill",
+                "--dry-run",
+            ])
+            .assert()
+            .success(),
+    );
+    assert_eq!(dry_run["changes"][0]["line"], serde_json::json!(6));
+    assert_eq!(
+        dry_run["changes"][0]["after"],
+        serde_json::json!("@[cost::2.000] = $rate * hours")
+    );
+    assert_eq!(
+        fs::read_to_string(vault_root.join("Bill.md")).expect("note should read"),
+        note,
+        "a dry run writes nothing"
+    );
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--vault", &vault, "numerals", "apply", "Bill"])
+        .assert()
+        .success();
+    assert!(fs::read_to_string(vault_root.join("Bill.md"))
+        .expect("note should read")
+        .contains("@[cost::2.000] = $rate * hours"));
+}
+
 #[test]
 fn plugin_set_and_delete_manage_full_registration_surface() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
@@ -12145,6 +12227,7 @@ fn bases_evaluation_applies_read_and_policy_scope() {
     assert!(bases_skill.contains("share one scope, run top to bottom"));
     assert!(bases_skill.contains("vulcan plugin customjs list"));
     assert!(bases_skill.contains("[customjs.dql_functions]"));
+    assert!(bases_skill.contains("vulcan numerals apply <note> --dry-run"));
     assert!(bases_skill.contains("full evaluation (the configured sandbox tier, still read-only) in a vault trusted with `vulcan trust`"));
     let task_skill =
         fs::read_to_string(root.join(".agents/skills/task-management/SKILL.md")).unwrap();

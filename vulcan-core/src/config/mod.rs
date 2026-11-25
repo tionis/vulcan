@@ -49,7 +49,7 @@ pub use importers::{
     import_tasknotes_plugin_config, import_tasks_plugin_config, import_templater_plugin_config,
     ConfigImportError, ConfigImportMapping, ConfigImportReport, CoreImporter, CustomJsImporter,
     DataviewImporter, FolderNotesImporter, ImportConflict, ImportMigratedFile,
-    ImportMigratedFileAction, ImportSkippedSetting, ImportTarget, KanbanImporter,
+    ImportMigratedFileAction, ImportSkippedSetting, ImportTarget, KanbanImporter, NumeralsImporter,
     PeriodicNotesImporter, PluginImporter, QuickAddImporter, TaskNotesImporter, TasksImporter,
     TemplaterImporter,
 };
@@ -75,10 +75,11 @@ use partial::{
 
 use obsidian::{
     ObsidianAppConfig, ObsidianCustomJsConfig, ObsidianDailyNotesConfig, ObsidianDataviewConfig,
-    ObsidianKanbanConfig, ObsidianPeriodicCalendarSet, ObsidianPeriodicNoteSettings,
-    ObsidianPeriodicNotesConfig, ObsidianQuickAddAiConfig, ObsidianQuickAddAiProviderConfig,
-    ObsidianQuickAddChoice, ObsidianQuickAddConfig, ObsidianQuickAddFormatConfig,
-    ObsidianTaskNotesConfig, ObsidianTaskNotesCreationDefaults, ObsidianTaskNotesDefaultReminder,
+    ObsidianKanbanConfig, ObsidianNumeralsConfig, ObsidianNumeralsCurrency,
+    ObsidianPeriodicCalendarSet, ObsidianPeriodicNoteSettings, ObsidianPeriodicNotesConfig,
+    ObsidianQuickAddAiConfig, ObsidianQuickAddAiProviderConfig, ObsidianQuickAddChoice,
+    ObsidianQuickAddConfig, ObsidianQuickAddFormatConfig, ObsidianTaskNotesConfig,
+    ObsidianTaskNotesCreationDefaults, ObsidianTaskNotesDefaultReminder,
     ObsidianTaskNotesFieldMapping, ObsidianTasksConfig, ObsidianTemplaterConfig,
     ObsidianTemplaterFolderTemplateConfig, ObsidianTemplaterHotkey, ObsidianTemplatesConfig,
 };
@@ -412,6 +413,108 @@ pub struct CustomJsConfig {
     /// DQL function name to the `Class.method` that implements it.
     #[serde(default)]
     pub dql_functions: BTreeMap<String, String>,
+}
+
+/// How a Numerals block shows its lines.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NumeralsRenderStyle {
+    #[default]
+    Plain,
+    Tex,
+    Highlight,
+}
+
+/// The number format of Numerals results.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NumeralsNumberFormat {
+    #[default]
+    System,
+    Fixed,
+    Exponential,
+    Engineering,
+    CommaPeriod,
+    PeriodComma,
+    SpaceComma,
+    Indian,
+}
+
+/// How many decimals a Numerals currency result shows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NumeralsCurrencyPrecision {
+    #[default]
+    CurrencyStandard,
+    FollowNumberFormat,
+}
+
+/// Whether a Numerals currency result shows its code or its symbol.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NumeralsCurrencyDisplay {
+    #[default]
+    Code,
+    Symbol,
+}
+
+/// Numerals-compatible calculator blocks and inline calculations
+/// (`[numerals]`). See `docs/specs/live-documents.md`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)] // independent switches, as in the plugin
+#[serde(default)]
+pub struct NumeralsConfig {
+    /// Render `math` blocks and inline triggers; off unless configured,
+    /// since other tools use `math` blocks for LaTeX.
+    pub enabled: bool,
+    pub render_style: NumeralsRenderStyle,
+    pub result_separator: String,
+    pub number_format: NumeralsNumberFormat,
+    pub currency_precision: NumeralsCurrencyPrecision,
+    pub currency_display: NumeralsCurrencyDisplay,
+    pub dollar_currency: String,
+    pub yen_currency: String,
+    pub custom_currency_symbol: String,
+    pub custom_currency_code: String,
+    pub custom_currency_decimal_places: u8,
+    pub force_all_frontmatter: bool,
+    pub hide_non_emitters: bool,
+    pub hide_emitter_markup: bool,
+    pub inline: bool,
+    pub inline_result_trigger: String,
+    pub inline_equation_trigger: String,
+    pub inline_tex_result_trigger: String,
+    pub inline_tex_equation_trigger: String,
+    pub inline_equation_separator: String,
+    pub cross_note_references: bool,
+}
+
+impl Default for NumeralsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            render_style: NumeralsRenderStyle::Plain,
+            result_separator: " → ".to_string(),
+            number_format: NumeralsNumberFormat::System,
+            currency_precision: NumeralsCurrencyPrecision::CurrencyStandard,
+            currency_display: NumeralsCurrencyDisplay::Code,
+            dollar_currency: "USD".to_string(),
+            yen_currency: "JPY".to_string(),
+            custom_currency_symbol: String::new(),
+            custom_currency_code: String::new(),
+            custom_currency_decimal_places: 2,
+            force_all_frontmatter: false,
+            hide_non_emitters: true,
+            hide_emitter_markup: true,
+            inline: true,
+            inline_result_trigger: "#:".to_string(),
+            inline_equation_trigger: "#=:".to_string(),
+            inline_tex_result_trigger: "#$:".to_string(),
+            inline_tex_equation_trigger: "#$=:".to_string(),
+            inline_equation_separator: " = ".to_string(),
+            cross_note_references: true,
+        }
+    }
 }
 
 /// Defaults for editors connected through `vulcan lsp`.
@@ -2792,6 +2895,8 @@ pub struct VaultConfig {
     pub dataview: DataviewConfig,
     #[serde(default)]
     pub customjs: CustomJsConfig,
+    #[serde(default)]
+    pub numerals: NumeralsConfig,
     pub js_runtime: JsRuntimeConfig,
     pub templates: TemplatesConfig,
     pub quickadd: QuickAddConfig,
@@ -3006,6 +3111,7 @@ impl Default for VaultConfig {
             kanban: KanbanConfig::default(),
             dataview: DataviewConfig::default(),
             customjs: CustomJsConfig::default(),
+            numerals: NumeralsConfig::default(),
             js_runtime: JsRuntimeConfig::default(),
             templates: TemplatesConfig::default(),
             quickadd: QuickAddConfig::default(),
@@ -4932,6 +5038,71 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
         if let Some(value) = customjs.dql_functions {
             config.customjs.dql_functions.extend(value);
+        }
+    }
+    if let Some(numerals) = overrides.numerals {
+        if let Some(value) = numerals.enabled {
+            config.numerals.enabled = value;
+        }
+        if let Some(value) = numerals.render_style {
+            config.numerals.render_style = value;
+        }
+        if let Some(value) = numerals.result_separator {
+            config.numerals.result_separator = value;
+        }
+        if let Some(value) = numerals.number_format {
+            config.numerals.number_format = value;
+        }
+        if let Some(value) = numerals.currency_precision {
+            config.numerals.currency_precision = value;
+        }
+        if let Some(value) = numerals.currency_display {
+            config.numerals.currency_display = value;
+        }
+        if let Some(value) = numerals.dollar_currency {
+            config.numerals.dollar_currency = value;
+        }
+        if let Some(value) = numerals.yen_currency {
+            config.numerals.yen_currency = value;
+        }
+        if let Some(value) = numerals.custom_currency_symbol {
+            config.numerals.custom_currency_symbol = value;
+        }
+        if let Some(value) = numerals.custom_currency_code {
+            config.numerals.custom_currency_code = value;
+        }
+        if let Some(value) = numerals.custom_currency_decimal_places {
+            config.numerals.custom_currency_decimal_places = value;
+        }
+        if let Some(value) = numerals.force_all_frontmatter {
+            config.numerals.force_all_frontmatter = value;
+        }
+        if let Some(value) = numerals.hide_non_emitters {
+            config.numerals.hide_non_emitters = value;
+        }
+        if let Some(value) = numerals.hide_emitter_markup {
+            config.numerals.hide_emitter_markup = value;
+        }
+        if let Some(value) = numerals.inline {
+            config.numerals.inline = value;
+        }
+        if let Some(value) = numerals.inline_result_trigger {
+            config.numerals.inline_result_trigger = value;
+        }
+        if let Some(value) = numerals.inline_equation_trigger {
+            config.numerals.inline_equation_trigger = value;
+        }
+        if let Some(value) = numerals.inline_tex_result_trigger {
+            config.numerals.inline_tex_result_trigger = value;
+        }
+        if let Some(value) = numerals.inline_tex_equation_trigger {
+            config.numerals.inline_tex_equation_trigger = value;
+        }
+        if let Some(value) = numerals.inline_equation_separator {
+            config.numerals.inline_equation_separator = value;
+        }
+        if let Some(value) = numerals.cross_note_references {
+            config.numerals.cross_note_references = value;
         }
     }
     if let Some(editor) = overrides.editor {

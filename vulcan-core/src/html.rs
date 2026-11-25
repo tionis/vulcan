@@ -342,7 +342,7 @@ fn render_markdown_with_replacements(
         dataview_js: env.dataview_js_policy,
         deterministic: env.deterministic,
     };
-    for region in evaluate_dynamic_regions(&ctx, source_path, parsed, diagnostics) {
+    for region in evaluate_dynamic_regions(&ctx, source_path, source, parsed, diagnostics) {
         let replacement = render_dynamic_outcome_html(
             paths,
             &region.outcome,
@@ -431,6 +431,7 @@ fn render_dynamic_outcome_html(
             render_tasks_query_html(paths, result, source_path, env, state, diagnostics)
         }
         DynamicOutcome::Base(report) => render_bases_report_html(report),
+        DynamicOutcome::Numerals(outcome) => render_numerals_html(outcome),
         DynamicOutcome::Disabled { title, message } | DynamicOutcome::Error { title, message } => {
             render_message_html(title, message)
         }
@@ -1644,6 +1645,74 @@ fn is_safe_render_url(destination: &str) -> bool {
         destination[..colon_index].to_ascii_lowercase().as_str(),
         "http" | "https" | "mailto" | "tel" | "obsidian"
     )
+}
+
+/// A Numerals block as lines of input and result spans, the structure the
+/// plugin renders; TeX parts become math spans for the page's math renderer.
+fn render_numerals_html(outcome: &crate::numerals::NumeralsOutcome) -> String {
+    use crate::numerals::{NumeralsOutcome, NumeralsStyle};
+    use std::fmt::Write as _;
+    let math = |tex: &str| {
+        format!(
+            "<span class=\"math math-inline\">{}</span>",
+            escape_html_text(tex)
+        )
+    };
+    match outcome {
+        NumeralsOutcome::Inline { text, tex: true } => math(text),
+        NumeralsOutcome::Inline { text, tex: false } => escape_html_text(text),
+        NumeralsOutcome::Error { message, .. } => render_message_html("Numerals error:", message),
+        NumeralsOutcome::Block { style, output, .. } => {
+            let style_class = match style {
+                NumeralsStyle::Plain => "numerals-plain",
+                NumeralsStyle::Tex => "numerals-tex",
+                NumeralsStyle::Highlight => "numerals-syntax",
+            };
+            let mut html = format!("<div class=\"numerals-block {style_class}\">");
+            for line in &output.lines {
+                let class = if line.emitter {
+                    "numerals-line numerals-emitter"
+                } else {
+                    "numerals-line"
+                };
+                let comment = line.comment.as_deref().map_or_else(String::new, |comment| {
+                    format!(
+                        "<span class=\"numerals-inline-comment\">{}</span>",
+                        escape_html_text(comment)
+                    )
+                });
+                let (input, result) = match (&line.tex_input, &line.tex_result, &line.result) {
+                    (Some(input), Some(result), _) => (math(input), math(result)),
+                    (_, _, Some(result)) => {
+                        (escape_html_text(&line.input), escape_html_text(result))
+                    }
+                    _ => (escape_html_text(&line.input), String::new()),
+                };
+                let _ = write!(
+                    html,
+                    "<div class=\"{class}\"><span class=\"numerals-input\">{input}{comment}</span><span class=\"numerals-result\">{result}</span></div>"
+                );
+            }
+            if let Some(error) = &output.error {
+                let _ = write!(
+                    html,
+                    "<div class=\"numerals-line numerals-error-line\"><span class=\"numerals-input\">{}</span><span class=\"numerals-result\"><span class=\"numerals-error-name\">{}:</span> <span class=\"numerals-error-message\">{}</span></span></div>",
+                    escape_html_text(&error.input),
+                    escape_html_text(&error.name),
+                    escape_html_text(&error.message)
+                );
+            }
+            for warning in &output.warnings {
+                let _ = write!(
+                    html,
+                    "<div class=\"numerals-warning\">{}</div>",
+                    escape_html_text(warning)
+                );
+            }
+            html.push_str("</div>");
+            html
+        }
+    }
 }
 
 fn render_message_html(title: &str, message: &str) -> String {
