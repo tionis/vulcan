@@ -13,8 +13,8 @@ rely on.
 - `[sync] worktree = "none"` is still accepted, in either layer, and does nothing. `"all"` and
   `"paths"`, and the removed keys `sync.paths`, `sync.merge_policy`, `sync.merge_automation`,
   `sync.agent_auto_accept`, and `sync.tree_validation`, are ignored with a config diagnostic.
-- `sync.branch_pull`, `sync.branch_push`, `sync.publish_device_backup`, `sync.poll_min_seconds`,
-  and `sync.poll_max_seconds` shape the cycle described below.
+- `sync.branch_pull`, `sync.branch_push`, `sync.publish_device_backup`, `sync.mirrors`,
+  `sync.poll_min_seconds`, and `sync.poll_max_seconds` shape the cycle described below.
 
 ## What a cycle does
 
@@ -32,6 +32,15 @@ rely on.
 4. **Push** local commits when the branch is strictly ahead of its upstream, with the observed
    tracking ref as an exact lease and never with force. `sync.branch_push = false` (either layer)
    leaves pushing to the user.
+5. **Mirror** the branch, when `sync.mirrors` names remotes of the clone and the cycle neither
+   failed nor paused: each mirror receives the tip the primary remote has (the pushed head, or else
+   the upstream tracking ref) on the same branch, as a plain fast-forward push with hooks, never
+   forced. The tip is recorded in `refs/remotes/<mirror>/<branch>` after a successful push, and a
+   mirror already at the tip costs no round trip. Each mirror reports `pushed`, `up_to_date`,
+   `rejected` (it has commits the primary lacks), or `failed` in `branch.mirrors`; none of them fails
+   the cycle, and the daemon alerts `sync_mirror_behind` once some mirror has not been current for
+   30 minutes. Naming the upstream's own remote is reported as a failed mirror. Dry runs do not
+   contact mirrors.
 
 Device-registration refs are observed in the same remote query as the device backup and upstream
 tips, so an unchanged cycle costs one remote round trip.
@@ -52,6 +61,7 @@ instead of silently doing nothing.
   snapshots, merges, conflict records, checkpoints, epochs, or semantic proposals. Remote live refs
   and conflict refs left by the removed mode are ignored; nothing deletes them.
 - Uncommitted text does not leave the device unless `publish_device_backup` is set.
+- A mirror only ever receives commits the primary remote already has, and only by fast-forward.
 - Sync rewrites commits only under the `rebase` and `guarded-rebase` policies, and never commits
   another branch or worktree builds on.
 - A dry run takes no lock, writes nothing, and previews the remote refs and the branch lane.

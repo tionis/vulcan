@@ -1877,6 +1877,20 @@ fn print_registered_sync_report(
             {
                 eprintln!("warning: {}: {warning}", item.wiki_id);
             }
+            if let Some(branch) = sync.sync.branch.as_ref() {
+                for mirror in branch
+                    .mirrors
+                    .iter()
+                    .filter(|mirror| !mirror.outcome.is_current())
+                {
+                    eprintln!(
+                        "warning: {}: mirror {} was not updated: {}",
+                        item.wiki_id,
+                        mirror.remote,
+                        mirror.detail.as_deref().unwrap_or("no detail")
+                    );
+                }
+            }
             if let Some(hint) = device_files_hint(&sync.device_files, Some(item.wiki_id.as_str())) {
                 eprintln!("hint: {}: {hint}", item.wiki_id);
             }
@@ -1909,6 +1923,9 @@ fn print_sync_report(
                     println!("{line}");
                 }
                 if let Some(line) = branch_push_message(branch) {
+                    println!("{line}");
+                }
+                for line in mirror_messages(branch) {
                     println!("{line}");
                 }
             }
@@ -2120,6 +2137,31 @@ fn branch_lane_message(branch: &GitBranchSync) -> Option<String> {
     }
 }
 
+/// One line per mirror that moved or failed; mirrors already current stay
+/// quiet.
+fn mirror_messages(branch: &GitBranchSync) -> Vec<String> {
+    let name = branch
+        .branch
+        .as_str()
+        .strip_prefix("refs/heads/")
+        .unwrap_or(branch.branch.as_str());
+    branch
+        .mirrors
+        .iter()
+        .filter_map(|mirror| match mirror.outcome {
+            vulcan_app::sync::GitMirrorOutcome::UpToDate => None,
+            vulcan_app::sync::GitMirrorOutcome::Pushed => {
+                Some(format!("Mirrored branch {name} to {}.", mirror.remote))
+            }
+            _ => Some(format!(
+                "Mirror {} was not updated: {}.",
+                mirror.remote,
+                mirror.detail.as_deref().unwrap_or("no detail")
+            )),
+        })
+        .collect()
+}
+
 /// Renders a branch publication success or failure. A lane that did not need
 /// publication stays quiet.
 fn branch_push_message(branch: &GitBranchSync) -> Option<String> {
@@ -2230,6 +2272,7 @@ mod sync_report_tests {
             detail: detail.map(str::to_string),
             pushed: false,
             push_detail: None,
+            mirrors: Vec::new(),
         }
     }
 
@@ -2268,6 +2311,34 @@ mod sync_report_tests {
         assert_eq!(
             branch_push_message(&pushed),
             Some("Branch main was not pushed: remote advanced first; retry later.".to_string())
+        );
+
+        let mirror =
+            |remote: &str, outcome, detail: Option<&str>| vulcan_app::sync::GitMirrorPush {
+                remote: GitRemote::parse(remote).expect("remote"),
+                outcome,
+                commit: None,
+                detail: detail.map(str::to_string),
+            };
+        pushed.mirrors = vec![
+            mirror("backup", vulcan_app::sync::GitMirrorOutcome::Pushed, None),
+            mirror(
+                "crucible",
+                vulcan_app::sync::GitMirrorOutcome::UpToDate,
+                None,
+            ),
+            mirror(
+                "gone",
+                vulcan_app::sync::GitMirrorOutcome::Failed,
+                Some("unreachable"),
+            ),
+        ];
+        assert_eq!(
+            mirror_messages(&pushed),
+            [
+                "Mirrored branch main to backup.".to_string(),
+                "Mirror gone was not updated: unreachable.".to_string(),
+            ]
         );
     }
 

@@ -2399,6 +2399,7 @@ mod tests {
                 detail: Some("boom".to_string()),
                 pushed: false,
                 push_detail: None,
+                mirrors: Vec::new(),
             }
         }
 

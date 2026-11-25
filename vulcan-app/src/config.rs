@@ -2005,6 +2005,7 @@ fn sync_path_description(path: &str) -> Option<&'static str> {
         "sync.branch_pull" => "How sync reconciles the checked-out branch with its upstream: `git` (default) follows each device's `pull.rebase`/`pull.ff` settings; `ff-only`, `merge`, or `rebase` fixes the strategy for every device, and `guarded-rebase` rebases only when the replayed commits are on no other branch, tag, remote-tracking ref, or worktree and include no merges, pausing otherwise. Set it in the shared config so it travels with the repository.",
         "sync.publish_device_backup" => "Also push this device's safety snapshot of uncommitted edits to its private remote branch. Off by default, so uncommitted text never leaves the device.",
         "sync.poll_min_seconds" => "Shortest interval, in seconds, between the daemon's remote checks of an active wiki (default 15, never below 5). Activity resets polling to this interval.",
+        "sync.mirrors" => "Git remotes of this clone (`git remote add <name> <url>`) that receive the branch tip the primary remote has after each healthy cycle: fast-forward only, never forced, and never commits the primary lacks. A failing mirror is reported without failing the cycle. Set it in the local config, since remote names belong to each clone.",
         "sync.poll_max_seconds" => "Longest interval, in seconds, between the daemon's remote checks of an idle wiki (default 900). Each quiet check doubles the interval up to this ceiling.",
         _ => return None,
     })

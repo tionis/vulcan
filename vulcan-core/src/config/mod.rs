@@ -312,6 +312,11 @@ pub struct SyncConfig {
         skip_serializing_if = "sync_poll_max_seconds_is_default"
     )]
     pub poll_max_seconds: u64,
+    /// Git remotes of the clone that receive the branch tip the primary
+    /// remote has after each healthy cycle, by fast-forward only. The local
+    /// layer's list replaces the shared one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mirrors: Vec<String>,
 }
 
 pub const DEFAULT_SYNC_POLL_MIN_SECONDS: u64 = 15;
@@ -348,6 +353,7 @@ impl Default for SyncConfig {
             publish_device_backup: false,
             poll_min_seconds: DEFAULT_SYNC_POLL_MIN_SECONDS,
             poll_max_seconds: DEFAULT_SYNC_POLL_MAX_SECONDS,
+            mirrors: Vec::new(),
         }
     }
 }
@@ -4881,6 +4887,9 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
         if let Some(seconds) = sync.poll_max_seconds {
             config.sync.poll_max_seconds = seconds;
+        }
+        if let Some(mirrors) = sync.mirrors {
+            config.sync.mirrors = mirrors;
         }
     }
     if let Some(editor) = overrides.editor {

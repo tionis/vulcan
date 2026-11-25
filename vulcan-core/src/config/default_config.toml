@@ -92,6 +92,7 @@ name = "{{folder_name}}"   # note stem; examples: index, README, readme, {{folde
 # publish_device_backup = false # also push the safety snapshot of uncommitted edits to the remote
 # poll_min_seconds = 15 # daemon: remote check interval after activity (floor 5; local may override)
 # poll_max_seconds = 900 # daemon: idle remote checks back off up to this interval
+# mirrors = [] # Git remotes that receive the branch tip the primary remote has (fast-forward only; set per clone in the local config)
 
 # [inbox]
 # path = "Inbox.md"

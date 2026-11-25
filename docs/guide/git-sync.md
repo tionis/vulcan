@@ -268,6 +268,29 @@ file, the agent's answer still has conflict markers, or uncommitted edits would 
 declined replay is not sent to the agent again until either side moves, and the branch stays
 paused with its alert.
 
+### Mirror remotes
+
+A repository can keep backup copies on other Git remotes: a second forge, or a bare repository on a
+server you own. Add the remote to the clone and list it in `sync.mirrors`, in the local config,
+since remote names belong to each clone:
+
+```sh
+git remote add backup git@backup.example:me/wiki.git
+git push backup main          # seed it by hand, especially a large Git LFS repository
+vulcan config set sync.mirrors '["backup"]' --target local
+```
+
+After each healthy cycle, sync pushes to every mirror the branch tip the primary remote has: the
+commits it just pushed, or else the upstream as fetched. Commits the primary has not received never
+reach a mirror, and a mirror is never force-pushed: one with commits of its own reports `rejected`.
+Pushes run Git's hooks, so Git LFS uploads its objects, and they keep the normal Git command
+timeout, which is why a large repository's first copy belongs to a manual `git push`. Sync records
+what it last sent in `refs/remotes/<mirror>/<branch>`, so an unchanged cycle costs no round trip to
+the mirror. A mirror failure does not fail the cycle: `vulcan sync run` prints each mirror's
+outcome, and the daemon alerts (`sync_mirror_behind`) once a mirror has missed the branch for 30
+minutes. Every device that syncs the repository may mirror it; a mirror another device has just
+moved ahead catches up on the next cycle.
+
 ## Conflicts and recovery
 
 Sync no longer records conflicts: a diverged branch it cannot reconcile pauses with an alert that

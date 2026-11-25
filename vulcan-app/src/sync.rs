@@ -13,11 +13,12 @@ use vulcan_sync::GitEngine;
 pub use vulcan_sync::{
     GitBranchSync, GitBranchSyncAction, GitCloneRequest, GitDetachedRecoveryReport,
     GitDetachedRecoveryRequest, GitDeviceBackup, GitDeviceBackupOutcome, GitInstallation,
-    GitObjectFormat, GitPlatformPolicy, GitPlatformPreflight, GitPlatformProfile, GitRefName,
-    GitRemote, GitRepository, GitRepositoryLayout, GitRepositoryRequirements, GitSyncAction,
-    GitSyncConflict, GitSyncDeviceId, GitSyncObserver, GitSyncObserverError, GitSyncOptions,
-    GitSyncOutcome, GitSyncPause, GitSyncPauseReason, GitSyncPhase, GitSyncProgress, GitSyncRefs,
-    GitSyncReport, GitUnattendedRepositoryState, SyncCancellationToken, SyncJobState,
+    GitMirrorOutcome, GitMirrorPush, GitObjectFormat, GitPlatformPolicy, GitPlatformPreflight,
+    GitPlatformProfile, GitRefName, GitRemote, GitRepository, GitRepositoryLayout,
+    GitRepositoryRequirements, GitSyncAction, GitSyncConflict, GitSyncDeviceId, GitSyncObserver,
+    GitSyncObserverError, GitSyncOptions, GitSyncOutcome, GitSyncPause, GitSyncPauseReason,
+    GitSyncPhase, GitSyncProgress, GitSyncRefs, GitSyncReport, GitUnattendedRepositoryState,
+    SyncCancellationToken, SyncJobState,
 };
 
 /// Controls whether a finite file synchronization cycle composes Markdown
@@ -1862,6 +1863,20 @@ pub fn configured_git_sync_options(
     if !config.sync.branch_pull.is_git() {
         effective.branch_pull = config.sync.branch_pull;
     }
+    if effective.mirrors.is_empty() {
+        effective.mirrors = config
+            .sync
+            .mirrors
+            .iter()
+            .map(|name| {
+                vulcan_sync::GitRemote::parse(name.clone()).map_err(|_| {
+                    AppError::operation(format!(
+                        "sync.mirrors names an invalid Git remote: {name:?}"
+                    ))
+                })
+            })
+            .collect::<Result<_, _>>()?;
+    }
     Ok(effective)
 }
 
@@ -2381,6 +2396,44 @@ mod tests {
         .expect("subdirectory sync");
         assert_eq!(report.state.repository_key, expected_key);
         drop(fixture);
+    }
+
+    #[test]
+    fn configured_mirrors_reach_the_sync_options() {
+        let temporary = tempdir().expect("temporary directory");
+        fs::create_dir(temporary.path().join(".vulcan")).expect("Vulcan directory");
+        let paths = VaultPaths::new(temporary.path());
+        assert!(
+            configured_git_sync_options(&paths, &GitSyncOptions::default())
+                .expect("default options")
+                .mirrors
+                .is_empty()
+        );
+
+        fs::write(
+            temporary.path().join(".vulcan/config.local.toml"),
+            "[sync]\nmirrors = [\"backup\"]\n",
+        )
+        .expect("local config");
+        let configured = configured_git_sync_options(&paths, &GitSyncOptions::default())
+            .expect("configured options");
+        assert_eq!(
+            configured
+                .mirrors
+                .iter()
+                .map(vulcan_sync::GitRemote::as_str)
+                .collect::<Vec<_>>(),
+            ["backup"]
+        );
+
+        fs::write(
+            temporary.path().join(".vulcan/config.local.toml"),
+            "[sync]\nmirrors = [\"-oops\"]\n",
+        )
+        .expect("local config");
+        let error = configured_git_sync_options(&paths, &GitSyncOptions::default())
+            .expect_err("an option-like remote name is refused");
+        assert!(error.to_string().contains("invalid Git remote"));
     }
 
     #[test]

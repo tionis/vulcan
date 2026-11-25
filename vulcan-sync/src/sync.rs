@@ -122,6 +122,9 @@ pub struct GitSyncOptions {
     /// Whether cycles push the device safety head; without it the snapshot
     /// of uncommitted edits stays in this repository.
     pub publish_device_backup: bool,
+    /// Remotes that receive the branch tip the primary remote has, after
+    /// each healthy cycle, by fast-forward only.
+    pub mirrors: Vec<GitRemote>,
 }
 
 /// How the branch lane reconciles the checked-out branch with its upstream.
@@ -201,6 +204,7 @@ impl Default for GitSyncOptions {
             device_id: GitSyncDeviceId::anonymous(),
             platform: GitPlatformProfile::native(),
             branch_push: true,
+            mirrors: Vec::new(),
             branch_pull: BranchPullPolicy::Git,
             publish_device_backup: true,
         }
@@ -525,6 +529,43 @@ pub struct GitBranchSync {
     /// Push detail: rejection or transport/policy failure summary.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub push_detail: Option<String>,
+    /// What each configured mirror remote received in this cycle.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mirrors: Vec<GitMirrorPush>,
+}
+
+/// One mirror remote's share of a cycle: it receives the branch tip the
+/// primary remote has, by fast-forward only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitMirrorPush {
+    pub remote: GitRemote,
+    pub outcome: GitMirrorOutcome,
+    /// The branch tip the mirror was brought to, or should have been.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit: Option<GitOid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitMirrorOutcome {
+    /// The mirror's branch moved to the primary's tip.
+    Pushed,
+    /// This clone last brought the mirror to that tip; nothing was sent.
+    UpToDate,
+    /// The mirror's branch is not an ancestor of the tip; it is never forced.
+    Rejected,
+    /// The push failed, for example on transport or authentication.
+    Failed,
+}
+
+impl GitMirrorOutcome {
+    /// Whether the mirror holds, as far as this clone knows, the tip.
+    #[must_use]
+    pub fn is_current(self) -> bool {
+        matches!(self, Self::Pushed | Self::UpToDate)
+    }
 }
 
 /// Why the branch lane paused.
@@ -1317,6 +1358,7 @@ fn inert_branch_lane(
         detail: Some(detail.to_string()),
         pushed: false,
         push_detail: None,
+        mirrors: Vec::new(),
     }
 }
 
@@ -1451,6 +1493,7 @@ fn pull_branch_lane(
         detail: None,
         pushed: false,
         push_detail: None,
+        mirrors: Vec::new(),
     };
     let fetched = fetch_upstream_tip(engine, repository, &upstream, remote)?;
     let fetched = match fetched {
@@ -1501,6 +1544,7 @@ fn pull_branch_lane(
                 detail: Some(error.to_string()),
                 pushed: false,
                 push_detail: None,
+                mirrors: Vec::new(),
             });
             return Ok(());
         }
@@ -1854,6 +1898,7 @@ fn preview_branch_pull(
                         detail: Some(error.to_string()),
                         pushed: false,
                         push_detail: None,
+                        mirrors: Vec::new(),
                     });
                     return Ok(());
                 }
@@ -1891,6 +1936,7 @@ fn preview_branch_pull(
         detail,
         pushed: false,
         push_detail: None,
+        mirrors: Vec::new(),
     });
     Ok(())
 }
@@ -1953,6 +1999,83 @@ fn push_branch_lane(
         Err(error) => {
             lane.push_detail = Some(format!("failed to push {}: {error}", lane.branch.as_str()));
         }
+    }
+    Ok(())
+}
+
+/// Brings each mirror remote's copy of the branch to the tip the primary
+/// remote has: the pushed head, or else the upstream tracking ref. Never
+/// unpushed commits, and never by force. A mirror that this clone already
+/// brought to that tip, by its `refs/remotes/<mirror>/<branch>` ref, costs no
+/// round trip. Mirror failures are reported, never fatal to the cycle.
+fn push_mirrors(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    report: &mut GitSyncReport,
+) -> Result<(), GitSyncError> {
+    if options.mirrors.is_empty() {
+        return Ok(());
+    }
+    let repository = report.repository.clone();
+    let head_before = report.head_before.clone();
+    let Some(lane) = report.branch.as_mut() else {
+        return Ok(());
+    };
+    let (Some(primary), Some(merge_ref), Some(tracking)) = (
+        lane.remote.clone(),
+        lane.upstream.clone(),
+        lane.tracking.clone(),
+    ) else {
+        return Ok(());
+    };
+    let tip = if lane.pushed {
+        lane.after.clone().or(head_before)
+    } else {
+        engine.read_ref(&repository, &tracking)?
+    };
+    let Some(tip) = tip else {
+        return Ok(());
+    };
+    let branch = merge_ref
+        .as_str()
+        .strip_prefix("refs/heads/")
+        .unwrap_or(merge_ref.as_str());
+    for mirror in &options.mirrors {
+        let mut entry = GitMirrorPush {
+            remote: mirror.clone(),
+            outcome: GitMirrorOutcome::Failed,
+            commit: Some(tip.clone()),
+            detail: None,
+        };
+        if mirror == &primary {
+            entry.detail = Some(format!(
+                "`{mirror}` is the branch's own upstream remote, not a mirror"
+            ));
+            lane.mirrors.push(entry);
+            continue;
+        }
+        let seen = GitRefName::parse(format!("refs/remotes/{mirror}/{branch}"))?;
+        if engine.read_ref(&repository, &seen)?.as_ref() == Some(&tip) {
+            entry.outcome = GitMirrorOutcome::UpToDate;
+            lane.mirrors.push(entry);
+            continue;
+        }
+        match engine.push_fast_forward(&repository, mirror, &tip, &merge_ref) {
+            Ok(GitPushResult::Updated) => {
+                engine.update_ref(&repository, &seen, &tip)?;
+                entry.outcome = GitMirrorOutcome::Pushed;
+            }
+            Ok(GitPushResult::Rejected) => {
+                entry.outcome = GitMirrorOutcome::Rejected;
+                entry.detail = Some(format!(
+                    "`{mirror}` has commits on `{branch}` that `{primary}` lacks; mirrors are never force-pushed"
+                ));
+            }
+            Err(error) => {
+                entry.detail = Some(format!("failed to push `{branch}` to `{mirror}`: {error}"));
+            }
+        }
+        lane.mirrors.push(entry);
     }
     Ok(())
 }
@@ -2039,7 +2162,9 @@ fn run_attempt(
         }
         Some(_) => {}
     }
-    let lane = lane.expect("branch lane");
+    control.check()?;
+    push_mirrors(engine, options, report)?;
+    let lane = report.branch.as_ref().expect("branch lane");
     report.outcome = if matches!(
         lane.action,
         GitBranchSyncAction::FastForwarded
@@ -3528,6 +3653,186 @@ mod tests {
             remote_tip.starts_with(&head),
             "remote main should equal the published head"
         );
+    }
+
+    /// A bare mirror registered as remote `backup`, seeded with `main`.
+    fn add_mirror(temporary: &TempDir, writer: &Path) -> PathBuf {
+        let mirror = temporary.path().join("mirror.git");
+        run_git(
+            temporary.path(),
+            &[
+                "init",
+                "--quiet",
+                "--bare",
+                mirror.to_str().expect("mirror path"),
+            ],
+        );
+        run_git(
+            writer,
+            &[
+                "remote",
+                "add",
+                "backup",
+                mirror.to_str().expect("mirror path"),
+            ],
+        );
+        mirror
+    }
+
+    fn mirror_options(mirrors: &[&str]) -> GitSyncOptions {
+        GitSyncOptions {
+            mirrors: mirrors
+                .iter()
+                .map(|name| GitRemote::parse(*name).expect("remote name"))
+                .collect(),
+            ..GitSyncOptions::default()
+        }
+    }
+
+    fn remote_main(writer: &Path, remote: &Path) -> String {
+        git_stdout(
+            writer,
+            &[
+                "ls-remote",
+                remote.to_str().expect("remote path"),
+                "refs/heads/main",
+            ],
+        )
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_string()
+    }
+
+    fn mirror_outcomes(report: &GitSyncReport) -> Vec<(String, GitMirrorOutcome)> {
+        report
+            .branch
+            .as_ref()
+            .expect("branch lane report")
+            .mirrors
+            .iter()
+            .map(|mirror| (mirror.remote.as_str().to_string(), mirror.outcome))
+            .collect()
+    }
+
+    #[test]
+    fn mirrors_receive_what_the_primary_has_and_only_that() {
+        let (temporary, remote, writer) = setup_tracked_branch();
+        let mirror = add_mirror(&temporary, &writer);
+        let engine = GitCliEngine::default();
+        let options = mirror_options(&["backup"]);
+
+        // A new mirror is seeded with the published branch.
+        let report = sync_git_once(&engine, &writer, &options).expect("first sync");
+        assert_eq!(
+            mirror_outcomes(&report),
+            [("backup".to_string(), GitMirrorOutcome::Pushed)]
+        );
+        assert_eq!(remote_main(&writer, &mirror), remote_main(&writer, &remote));
+
+        // Unchanged: no push, and no round trip to the mirror either.
+        run_git(
+            &writer,
+            &["remote", "set-url", "backup", "/nonexistent/mirror.git"],
+        );
+        let report = sync_git_once(&engine, &writer, &options).expect("unchanged sync");
+        assert_eq!(
+            mirror_outcomes(&report),
+            [("backup".to_string(), GitMirrorOutcome::UpToDate)]
+        );
+        run_git(
+            &writer,
+            &[
+                "remote",
+                "set-url",
+                "backup",
+                mirror.to_str().expect("mirror"),
+            ],
+        );
+
+        // Pushed local commits and pulled upstream commits both follow.
+        fs::write(writer.join("Local.md"), "local\n").expect("local note");
+        commit_all(&writer, "local");
+        let report = sync_git_once(&engine, &writer, &options).expect("push sync");
+        assert!(report.branch.as_ref().expect("lane").pushed);
+        assert_eq!(
+            remote_main(&writer, &mirror),
+            git_stdout(&writer, &["rev-parse", "HEAD"])
+        );
+        advance_remote_branch(&temporary, &remote, "upstream\n");
+        sync_git_once(&engine, &writer, &options).expect("pull sync");
+        assert_eq!(remote_main(&writer, &mirror), remote_main(&writer, &remote));
+
+        // Commits the primary has not received never reach a mirror.
+        fs::write(writer.join("Unpushed.md"), "unpushed\n").expect("unpushed note");
+        commit_all(&writer, "unpushed");
+        let held = GitSyncOptions {
+            branch_push: false,
+            ..options.clone()
+        };
+        sync_git_once(&engine, &writer, &held).expect("sync without pushing");
+        assert_eq!(remote_main(&writer, &mirror), remote_main(&writer, &remote));
+        assert_ne!(
+            remote_main(&writer, &mirror),
+            git_stdout(&writer, &["rev-parse", "HEAD"])
+        );
+    }
+
+    #[test]
+    fn a_failing_mirror_is_reported_without_failing_the_cycle() {
+        let (temporary, remote, writer) = setup_tracked_branch();
+        let mirror = add_mirror(&temporary, &writer);
+        let engine = GitCliEngine::default();
+        // The mirror diverged: someone pushed straight to it.
+        let stray = temporary.path().join("stray");
+        run_git(
+            temporary.path(),
+            &[
+                "clone",
+                "--quiet",
+                mirror.to_str().expect("mirror"),
+                stray.to_str().expect("stray"),
+            ],
+        );
+        run_git(&stray, &["config", "user.name", "Vulcan Test"]);
+        run_git(&stray, &["config", "user.email", "vulcan@example.invalid"]);
+        run_git(&stray, &["checkout", "--quiet", "-b", "main"]);
+        fs::write(stray.join("Stray.md"), "stray\n").expect("stray note");
+        commit_all(&stray, "stray");
+        run_git(&stray, &["push", "--quiet", "origin", "main"]);
+        let stray_tip = remote_main(&writer, &mirror);
+        run_git(
+            &writer,
+            &["remote", "add", "gone", "/nonexistent/mirror.git"],
+        );
+
+        let report = sync_git_once(
+            &engine,
+            &writer,
+            &mirror_options(&["backup", "gone", "origin"]),
+        )
+        .expect("the cycle succeeds although its mirrors do not");
+
+        assert_eq!(report.outcome, GitSyncOutcome::UpToDate);
+        assert_eq!(
+            mirror_outcomes(&report),
+            [
+                ("backup".to_string(), GitMirrorOutcome::Rejected),
+                ("gone".to_string(), GitMirrorOutcome::Failed),
+                ("origin".to_string(), GitMirrorOutcome::Failed),
+            ]
+        );
+        let lane = report.branch.as_ref().expect("lane");
+        assert!(lane.mirrors[2]
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("upstream remote")));
+        assert_eq!(
+            remote_main(&writer, &mirror),
+            stray_tip,
+            "a mirror is never forced"
+        );
+        assert_ne!(remote_main(&writer, &remote), stray_tip);
     }
 
     #[test]

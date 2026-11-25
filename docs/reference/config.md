@@ -1571,6 +1571,9 @@ How Git sync integrates and publishes the checked-out branch, the device backup,
 - `sync.branch_push` — type: `boolean`; target: `shared|local|device`; default: `true`
   Edit `sync.branch_push` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
   Example: `vulcan config set sync.branch_push <value>`
+- `sync.mirrors` — type: `array`; target: `shared|local|device`; default: `[0 items]`
+  Git remotes of this clone (`git remote add <name> <url>`) that receive the branch tip the primary remote has after each healthy cycle: fast-forward only, never forced, and never commits the primary lacks. A failing mirror is reported without failing the cycle. Set it in the local config, since remote names belong to each clone.
+  Example: `vulcan config set sync.mirrors <value>`
 - `sync.poll_max_seconds` — type: `integer`; target: `shared|local|device`; default: `900`
   Longest interval, in seconds, between the daemon's remote checks of an idle wiki (default 900). Each quiet check doubles the interval up to this ceiling.
   Example: `vulcan config set sync.poll_max_seconds <value>`

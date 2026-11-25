@@ -485,6 +485,17 @@ pub trait GitEngine: Send + Sync {
         expected: Option<&GitOid>,
     ) -> Result<GitPushResult, GitEngineError>;
 
+    /// Pushes `source` to `destination` on `remote` only as a fast-forward:
+    /// no lease and no force. A destination that is not an ancestor of
+    /// `source` reports `Rejected`. Hooks run, so Git LFS uploads objects.
+    fn push_fast_forward(
+        &self,
+        repository: &GitRepository,
+        remote: &GitRemote,
+        source: &GitOid,
+        destination: &GitRefName,
+    ) -> Result<GitPushResult, GitEngineError>;
+
     /// Deletes several remote refs, each only while it still names its
     /// expected commit. The CLI engine sends one push; the outcomes follow
     /// the input order, and a ref already gone may be reported as `Stale`.
@@ -3748,6 +3759,35 @@ impl GitEngine for GitCliEngine {
             return Ok(GitPushResult::Rejected);
         }
         Err(command_failed("push a sync ref", &output))
+    }
+
+    fn push_fast_forward(
+        &self,
+        repository: &GitRepository,
+        remote: &GitRemote,
+        source: &GitOid,
+        destination: &GitRefName,
+    ) -> Result<GitPushResult, GitEngineError> {
+        let refspec = format!("{}:{}", source.as_str(), destination.as_str());
+        let mut command = self.repository_command(repository);
+        command
+            .args(["push", "--porcelain", "--"])
+            .arg(remote.as_str())
+            .arg(refspec);
+        let output = self.execute(command)?;
+        if output.status.success() {
+            return Ok(GitPushResult::Updated);
+        }
+        // Porcelain marks a refused ref `!`; a non-fast-forward reads
+        // `[rejected] (non-fast-forward)` or `(fetch first)`.
+        let rejected = bounded_lossy(&output.stdout).lines().any(|line| {
+            line.starts_with('!')
+                && (line.contains("non-fast-forward") || line.contains("fetch first"))
+        });
+        if rejected {
+            return Ok(GitPushResult::Rejected);
+        }
+        Err(command_failed("push a branch to a mirror remote", &output))
     }
 
     fn delete_remote_refs(

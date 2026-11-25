@@ -5050,6 +5050,26 @@ fn sync_worktree_none_is_accepted_without_a_diagnostic() {
 }
 
 #[test]
+fn sync_mirrors_default_empty_and_the_local_layer_replaces_the_shared_list() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let paths = VaultPaths::new(temporary.path());
+    fs::create_dir(paths.vulcan_dir()).expect("Vulcan directory");
+    assert!(load_vault_config(&paths).config.sync.mirrors.is_empty());
+
+    fs::write(
+        paths.config_file(),
+        "[sync]\nmirrors = [\"backup\", \"crucible\"]\n",
+    )
+    .expect("shared config");
+    let loaded = load_vault_config(&paths);
+    assert_eq!(loaded.config.sync.mirrors, ["backup", "crucible"]);
+    assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+
+    fs::write(paths.local_config_file(), "[sync]\nmirrors = []\n").expect("local config");
+    assert!(load_vault_config(&paths).config.sync.mirrors.is_empty());
+}
+
+#[test]
 fn removed_sync_worktree_modes_and_their_keys_are_reported_and_ignored() {
     let temporary = TempDir::new().expect("temporary directory");
     let paths = VaultPaths::new(temporary.path());

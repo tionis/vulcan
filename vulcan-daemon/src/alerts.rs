@@ -62,7 +62,15 @@ pub enum SyncAlertReason {
     /// This device's remote safety head kept receiving history another
     /// checkout wrote: two checkouts or installations share its identity.
     SharedDeviceIdentity,
+    /// A mirror remote has not received the primary's branch tip for longer
+    /// than [`MIRROR_BEHIND_ALERT`].
+    MirrorBehind,
 }
+
+/// How long a mirror remote may keep failing or refusing the branch tip
+/// before the wiki needs someone; a mirror another device just moved ahead
+/// catches up within a cycle or two.
+pub const MIRROR_BEHIND_ALERT: std::time::Duration = std::time::Duration::from_mins(30);
 
 /// How many foreign bridges of a wiki's device backup, within one daemon
 /// run, raise [`SyncAlertReason::SharedDeviceIdentity`]; a single one can be
@@ -195,6 +203,9 @@ impl SyncAlert {
         if self.reason == Some(SyncAlertReason::SharedDeviceIdentity) {
             return "Vulcan sync: two checkouts share a device identity";
         }
+        if self.reason == Some(SyncAlertReason::MirrorBehind) {
+            return "Vulcan sync: a mirror remote is falling behind";
+        }
         match self.state {
             SyncJobState::Failed => "Vulcan sync failed",
             SyncJobState::Conflicted => "Vulcan sync needs resolution",
@@ -243,6 +254,13 @@ impl SyncAlert {
                 wiki = self.wiki_id
             );
         }
+        if self.reason == Some(SyncAlertReason::MirrorBehind) {
+            return format!(
+                "Wiki `{wiki}`: a mirror remote has not received the branch for over {minutes} minutes; the primary remote is unaffected. Run `vulcan sync run {wiki}` to see each mirror's error; a mirror with commits of its own is never force-pushed.",
+                wiki = self.wiki_id,
+                minutes = MIRROR_BEHIND_ALERT.as_secs() / 60
+            );
+        }
         if self.reason == Some(SyncAlertReason::BranchDeferred) {
             return format!(
                 "Wiki `{wiki}`: upstream commits have waited over {minutes} minutes because uncommitted edits in the checkout overlap them. Commit or discard those edits (`git status` in the wiki); sync then continues by itself.",
@@ -269,6 +287,9 @@ pub struct SyncAlertTracker {
     deferred_since: BTreeMap<String, (Instant, bool)>,
     /// Foreign bridges of each wiki's device backup in this daemon run.
     foreign_bridges: BTreeMap<String, u32>,
+    /// When each wiki's mirrors started falling behind, and whether that
+    /// streak has been reported.
+    mirror_behind_since: BTreeMap<String, (Instant, bool)>,
 }
 
 impl SyncAlertTracker {
@@ -310,7 +331,8 @@ impl SyncAlertTracker {
                     && backup.foreign_history
             });
         let shared = self.foreign_bridge_alert(&execution.job.job, foreign);
-        let deferred = self.deferral_alert(execution, now).or(shared);
+        let mirror = self.mirror_alert(execution, now);
+        let deferred = self.deferral_alert(execution, now).or(shared).or(mirror);
         let wiki = execution
             .job
             .job
@@ -346,6 +368,59 @@ impl SyncAlertTracker {
             .and_then(|report| report.sync.branch.as_ref())
             .is_some_and(|branch| branch.action == vulcan_app::sync::GitBranchSyncAction::Deferred);
         self.deferral_alert_for(&execution.job.job, deferred, now)
+    }
+
+    /// Reports once when some mirror of a wiki has not been current for
+    /// longer than [`MIRROR_BEHIND_ALERT`]. A cycle that brings every mirror
+    /// up to date ends the streak; one that reports no mirrors (a failed or
+    /// paused cycle, or none configured) leaves it as it is.
+    fn mirror_alert(&mut self, execution: &DaemonSyncExecution, now: Instant) -> Option<SyncAlert> {
+        let mirrors = execution
+            .report
+            .as_ref()
+            .and_then(|report| report.sync.branch.as_ref())
+            .map_or(&[][..], |branch| branch.mirrors.as_slice());
+        let current =
+            (!mirrors.is_empty()).then(|| mirrors.iter().all(|mirror| mirror.outcome.is_current()));
+        self.mirror_alert_for(&execution.job.job, current, now)
+    }
+
+    /// `current` is `None` when the cycle reported no mirrors.
+    fn mirror_alert_for(
+        &mut self,
+        job: &vulcan_sync::SyncJob,
+        current: Option<bool>,
+        now: Instant,
+    ) -> Option<SyncAlert> {
+        let current = current?;
+        let wiki = job
+            .wiki_id
+            .clone()
+            .unwrap_or_else(|| "<unregistered>".to_string());
+        if current {
+            self.mirror_behind_since.remove(&wiki);
+            return None;
+        }
+        let (since, reported) = self
+            .mirror_behind_since
+            .entry(wiki.clone())
+            .or_insert((now, false));
+        if *reported || now.duration_since(*since) < MIRROR_BEHIND_ALERT {
+            return None;
+        }
+        *reported = true;
+        Some(SyncAlert {
+            version: 1,
+            event: "sync_mirror_behind".to_string(),
+            severity: AlertSeverity::Warning,
+            job_id: job.id.clone(),
+            wiki_id: wiki,
+            state: job.state,
+            category: None,
+            retryable: true,
+            reason: Some(SyncAlertReason::MirrorBehind),
+            branch_pause: None,
+        })
     }
 
     /// Counts foreign bridges per wiki and reports once when they reach
@@ -873,6 +948,32 @@ mod tests {
         assert!(tracker.deferral_alert_for(&job, true, late).is_none());
         assert!(tracker
             .deferral_alert_for(&job, true, late + BRANCH_DEFERRAL_ALERT)
+            .is_some());
+    }
+
+    #[test]
+    fn a_mirror_behind_for_half_an_hour_alerts_once_per_streak() {
+        let job = execution(SyncJobState::Succeeded, None).job.job;
+        let mut tracker = SyncAlertTracker::default();
+        let start = Instant::now();
+        let late = start + MIRROR_BEHIND_ALERT;
+        assert!(tracker.mirror_alert_for(&job, Some(false), start).is_none());
+        // A cycle that reports no mirrors neither alerts nor ends the streak.
+        assert!(tracker.mirror_alert_for(&job, None, late).is_none());
+        let alert = tracker
+            .mirror_alert_for(&job, Some(false), late)
+            .expect("mirror alert");
+        assert_eq!(alert.event, "sync_mirror_behind");
+        assert_eq!(alert.reason, Some(SyncAlertReason::MirrorBehind));
+        assert!(alert.desktop_body().contains("never force-pushed"));
+        assert!(tracker
+            .mirror_alert_for(&job, Some(false), late + MIRROR_BEHIND_ALERT)
+            .is_none());
+        // Every mirror current ends the streak; a new one waits again.
+        assert!(tracker.mirror_alert_for(&job, Some(true), late).is_none());
+        assert!(tracker.mirror_alert_for(&job, Some(false), late).is_none());
+        assert!(tracker
+            .mirror_alert_for(&job, Some(false), late + MIRROR_BEHIND_ALERT)
             .is_some());
     }
 

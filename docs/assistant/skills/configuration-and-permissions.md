@@ -42,7 +42,9 @@ permission profiles, or diagnoses permission and trust failures.
 16. How often the daemon checks a Git wiki's remote is vault configuration:
     `sync.poll_min_seconds` (default 15, floor 5) after activity and `sync.poll_max_seconds`
     (default 900) when idle, in shared `.vulcan/config.toml` or a device's
-    `.vulcan/config.local.toml`. There is no forge-side setup.
+    `.vulcan/config.local.toml`. There is no forge-side setup. `sync.mirrors` lists Git remotes of
+    the clone that receive the branch after each healthy cycle; set it in
+    `.vulcan/config.local.toml`, since remote names belong to each clone.
 17. Operational sync alerts are a separate daemon-owned concern. Warning/error logs are always on.
     Preview `vulcan daemon config set-notifications --desktop true --dry-run`, apply it, and restart
     the daemon to opt into native desktop delivery. This setting contains no credential and a

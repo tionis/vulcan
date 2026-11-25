@@ -6839,10 +6839,24 @@ Use this subphase only when an entire SilverBullet space should behave as a file
 - [ ] Decide what end-to-end covers: in transit only (iroh connections are encrypted between node keys and relays cannot read them), or also at rest on a hub or backup remote, which would need encrypted objects and refs (as git-remote-gcrypt does) since the forge backup holds plaintext today.
 - [ ] Serve Git from `vulcan-daemon` over one iroh endpoint: `upload-pack`/`receive-pack` for registered repositories, per-device grants for reads as well as writes, ref restrictions, and waiting for the connection to close after `receive-pack`; a Vulcan-specific `git-remote-*` helper and URL scheme (`iroh://` is claimed by two projects).
 - [ ] Use the device key's ed25519 seed as the iroh secret key (Data Platform decision 7). One node ID cannot run two endpoints, so the helper relays through the daemon instead of dialing itself.
-- [ ] Choose ordering: a designated always-on hub that serializes pushes (simplest) or peer-to-peer with per-peer merge using the existing branch-pull policies; keep the forge as a second, backup remote (Vulcan pushes to one remote today).
+- [ ] Choose ordering: a designated always-on hub that serializes pushes (simplest) or peer-to-peer with per-peer merge using the existing branch-pull policies; keep the forge as a backup remote through `sync.mirrors` (12.25).
 - [ ] Near realtime: announce new commits over open iroh connections so online peers fetch at once; keep adaptive polling as the fallback; check reachability before dialing (an offline peer costs a 31 s timeout today).
 - [ ] Self-hosted iroh relay, shared with geth; n0's public relays are for development only.
 - [ ] Revisit Radicle once 2.0 on iroh ships and private repositories are declared safe, as an alternative or interoperation target.
+
+### 12.25 Mirror remotes (implemented)
+
+**Goal:** a Git-synced repository keeps backup copies on further remotes (a second forge, a bare repository on a server) without anyone pushing to them, and 12.24 can later make a peer the primary with the forge as a mirror.
+
+**Contract:** `docs/specs/git-sync/none-mode.md` (cycle step 5) and `docs/guide/git-sync.md` (Mirror remotes).
+
+- [x] `sync.mirrors`: Git remote names of the clone, in either config layer (the local list replaces the shared one); invalid names fail the cycle's configuration.
+- [x] After a cycle that neither failed nor paused, push each mirror the tip the primary remote has (the pushed head, else the upstream tracking ref) on the same branch: fast-forward only, hooks on (Git LFS), never forced, never commits the primary lacks; the upstream's own remote is refused.
+- [x] Record the tip in `refs/remotes/<mirror>/<branch>`, so an unchanged cycle makes no round trip to a mirror.
+- [x] Per-mirror outcomes (`pushed`, `up_to_date`, `rejected`, `failed`) in `branch.mirrors`, human output, and daemon logs; a mirror never fails the cycle; `sync_mirror_behind` alerts once per 30-minute streak.
+- [x] Committed submodules and their remotes are never fetched implicitly (`submodule.recurse` and `fetch.recurseSubmodules` off for every Vulcan Git command), so neither the primary nor a mirror needs submodule credentials.
+- [ ] Show mirror lag in `sync status` (a dry run, which does not contact mirrors today) and in doctor, including a mirror name with no configured remote.
+- [ ] Optionally mirror the device backup ref and tags.
 
 ## Phase 13: WebUI — Admin and Browse
 

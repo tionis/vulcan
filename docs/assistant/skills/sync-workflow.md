@@ -299,6 +299,12 @@ left on a remote by older versions are ignored harmlessly.
   failure is terminally `failed`, with status `error`, which keeps aggregate status and companion
   failure notices truthful. Human output prints `push_detail` whenever branch publication was
   rejected or failed.
+- `sync.mirrors` (a list of Git remote names, set in the local config) keeps backup remotes up to
+  date: after a healthy cycle each receives the tip the primary remote has, fast-forward only and
+  never forced. `branch.mirrors` reports `pushed`, `up_to_date`, `rejected` (the mirror has commits
+  of its own; reconcile it by hand), or `failed` per mirror without failing the cycle, and the
+  daemon alerts `sync_mirror_behind` after 30 minutes. Seed a large mirror with a manual
+  `git push <mirror> <branch>` first, since mirror pushes keep the normal Git timeout.
 - Caveats: `rebase.autostash` is neutralized (automation never stashes implicitly); a
   `commit.gpgsign` setup needs a working agent or unattended merges fail loudly; triangular push
   remotes (`branch.<name>.pushremote`, `remote.pushdefault`) are not honored — the pull upstream

@@ -135,10 +135,27 @@ pub fn format_branch_diagnostic(wiki_id: Option<&str>, branch: &GitBranchSync) -
             branch.detail.as_deref().unwrap_or("unknown reason"),
         ));
     }
-    branch
+    let mut problems: Vec<String> = branch
         .push_detail
         .as_deref()
         .map(|detail| format!("branch `{name}` (wiki `{wiki}`) push failed: {detail}"))
+        .into_iter()
+        .collect();
+    problems.extend(
+        branch
+            .mirrors
+            .iter()
+            .filter(|mirror| !mirror.outcome.is_current())
+            .map(|mirror| {
+                format!(
+                    "branch `{name}` (wiki `{wiki}`) mirror `{}` {:?}: {}",
+                    mirror.remote,
+                    mirror.outcome,
+                    mirror.detail.as_deref().unwrap_or("no detail")
+                )
+            }),
+    );
+    (!problems.is_empty()).then(|| problems.join("; "))
 }
 
 /// Renders the watcher trigger metadata of a supervised job, so a repeating
@@ -1008,6 +1025,7 @@ mod tests {
             detail: detail.map(str::to_string),
             pushed,
             push_detail: push_detail.map(str::to_string),
+            mirrors: Vec::new(),
         }
     }
 
