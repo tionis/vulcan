@@ -8788,7 +8788,7 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 
 ### 9.43.1 `destructive` permission
 
-- [ ] `destructive` profile setting (default deny; allow in `writer`, `maintainer`, `unrestricted`), guard method, profile docs, permissions tests.
+- [x] `destructive` profile setting (default deny; allow in `writer`, `maintainer`, `unrestricted`), guard method, profile docs, permissions tests. Enforced for CLI `note set`/`note delete`, MCP `note_set`, `note_delete`, `changeset_abandon`, `task_reminder_remove`, `config_set` and `file_put` overwrite; grants stored without it keep what their write allowed.
 
 ### 9.43.2 Remove tool packs
 

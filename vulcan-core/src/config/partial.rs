@@ -281,6 +281,7 @@ pub(super) struct PartialPermissionProfile {
     pub(super) git: Option<PermissionMode>,
     pub(super) network: Option<NetworkPermissionConfig>,
     pub(super) index: Option<PermissionMode>,
+    pub(super) destructive: Option<PermissionMode>,
     pub(super) config: Option<ConfigPermissionMode>,
     pub(super) execute: Option<PermissionMode>,
     pub(super) shell: Option<PermissionMode>,

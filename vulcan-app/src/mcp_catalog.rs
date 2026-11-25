@@ -206,6 +206,8 @@ pub struct McpToolCatalogEntry {
     pub description: &'static str,
     pub packs: &'static [McpToolPack],
     pub visibility: McpVisibilityRequirement,
+    /// Also needs the profile's `destructive` permission (overwrite or delete).
+    pub destructive: bool,
     pub annotations: McpToolAnnotations,
     pub input_schema: fn() -> Value,
     pub output_schema: Option<fn() -> Value>,
@@ -252,6 +254,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Read one note or markdown file, optionally selecting a section, heading, block, or line range.",
         packs: PACK_NOTES_READ,
         visibility: McpVisibilityRequirement::Read,
+        destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: note_get_input_schema,
         output_schema: Some(note_get_output_schema),
@@ -267,6 +270,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Inspect a note's semantic sections and block references for scoped follow-up reads and patches.",
         packs: PACK_NOTES_READ,
         visibility: McpVisibilityRequirement::Read,
+        destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: note_outline_input_schema,
         output_schema: Some(note_outline_output_schema),
@@ -282,6 +286,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Run full-text or hybrid search across the vault and return structured hits with snippets and section metadata.",
         packs: PACK_SEARCH,
         visibility: McpVisibilityRequirement::Read,
+        destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: search_input_schema,
         output_schema: Some(search_output_schema),
@@ -297,6 +302,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Run the structured Vulcan query surface. Use this for property, tag, path, and DQL-style note queries instead of raw full-text search.",
         packs: PACK_SEARCH,
         visibility: McpVisibilityRequirement::Read,
+        destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: query_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -312,6 +318,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Return a vault overview with note counts, cache size, last scan time, and git status.",
         packs: PACK_STATUS,
         visibility: McpVisibilityRequirement::Read,
+        destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: empty_object_schema,
         output_schema: Some(status_output_schema),
@@ -324,6 +331,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Return compact routing guidance, active tools, startup-pinned and optional packs, and result-size limits for this MCP session.",
         packs: PACK_STATUS,
         visibility: McpVisibilityRequirement::None,
+        destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: empty_object_schema,
         output_schema: Some(generic_report_output_schema),
@@ -336,6 +344,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Read structurally known daily notes. Use operation=latest for the newest existing daily note, operation=today only for today's date, show for a known date, and list/range for windows. Prefer this over search or generic query for journal requests.",
         packs: PACK_DAILY_READ,
         visibility: McpVisibilityRequirement::Read,
+        destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: daily_input_schema,
         output_schema: Some(daily_output_schema),
@@ -348,6 +357,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Read one daily note with its resolved periodic metadata and structured schedule events. Use this before generic note reads for daily-routine questions.",
         packs: PACK_DAILY,
         visibility: McpVisibilityRequirement::Read,
+        destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: daily_show_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -360,6 +370,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "List daily notes in a date window with event counts and extracted schedule events.",
         packs: PACK_DAILY,
         visibility: McpVisibilityRequirement::Read,
+        destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: daily_list_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -372,6 +383,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Compute note-graph communities, orphan placement hints, and bridge notes.",
         packs: PACK_GRAPH,
         visibility: McpVisibilityRequirement::Read,
+        destructive: false,
         annotations: mcp_annotations(false, false, false, false),
         input_schema: graph_communities_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -384,6 +396,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Read ranked link suggestions, or accept/reject one suggestion when write permissions are available.",
         packs: PACK_GRAPH,
         visibility: McpVisibilityRequirement::Read,
+        destructive: false,
         annotations: mcp_annotations(false, false, false, false),
         input_schema: suggest_links_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -396,6 +409,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "List open or filtered tasks through Vulcan's task model. Use this for task summaries instead of raw note search.",
         packs: PACK_TASKS,
         visibility: McpVisibilityRequirement::Read,
+        destructive: false,
         annotations: mcp_annotations(true, false, false, false),
         input_schema: task_list_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -408,6 +422,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Run a Tasks plugin query source and return shaped task results. Use this when the user gives task-query semantics directly.",
         packs: PACK_TASKS,
         visibility: McpVisibilityRequirement::Read,
+        destructive: false,
         annotations: mcp_annotations(true, false, false, false),
         input_schema: task_query_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -420,6 +435,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Create a task using the configured task system. Prefer this over raw note edits for new tasks.",
         packs: PACK_TASKS,
         visibility: McpVisibilityRequirement::Write,
+        destructive: false,
         annotations: mcp_annotations(false, true, false, false),
         input_schema: task_create_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -432,6 +448,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Mark one resolved task complete using task-aware mutation rules. Prefer this over raw note patching for task completion.",
         packs: PACK_TASKS,
         visibility: McpVisibilityRequirement::Write,
+        destructive: false,
         annotations: mcp_annotations(false, true, false, false),
         input_schema: task_complete_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -444,6 +461,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Update a task due date using task-aware mutation rules. Prefer this over raw note patching for due-date changes.",
         packs: PACK_TASKS,
         visibility: McpVisibilityRequirement::Write,
+        destructive: false,
         annotations: mcp_annotations(false, true, false, false),
         input_schema: task_reschedule_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -456,6 +474,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Add one reminder to a TaskNotes task. Relative reminders follow the task's due (else scheduled) date, so they move with a recurring task.",
         packs: PACK_TASKS,
         visibility: McpVisibilityRequirement::Write,
+        destructive: false,
         annotations: mcp_annotations(false, false, false, false),
         input_schema: task_reminder_add_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -468,6 +487,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Remove one reminder from a TaskNotes task by its id.",
         packs: PACK_TASKS,
         visibility: McpVisibilityRequirement::Write,
+        destructive: true,
         annotations: mcp_annotations(false, true, true, false),
         input_schema: task_reminder_remove_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -480,6 +500,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Create a new note from explicit body text, optional template, and optional frontmatter properties.",
         packs: PACK_NOTES_WRITE,
         visibility: McpVisibilityRequirement::Write,
+        destructive: false,
         annotations: mcp_annotations(false, true, false, false),
         input_schema: note_create_input_schema,
         output_schema: Some(note_create_output_schema),
@@ -494,6 +515,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Append text to a note, prepend it, or insert it below a heading; periodic targets are also supported.",
         packs: PACK_NOTES_WRITE,
         visibility: McpVisibilityRequirement::Write,
+        destructive: false,
         annotations: mcp_annotations(false, true, false, false),
         input_schema: note_append_input_schema,
         output_schema: Some(note_append_output_schema),
@@ -509,6 +531,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Perform a guarded find-and-replace inside one note or one selected note scope.",
         packs: PACK_NOTES_WRITE,
         visibility: McpVisibilityRequirement::Write,
+        destructive: false,
         annotations: mcp_annotations(false, true, false, false),
         input_schema: note_patch_input_schema,
         output_schema: Some(note_patch_output_schema),
@@ -521,6 +544,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Return summary metadata and graph counts for one resolved note.",
         packs: PACK_NOTES_MANAGE,
         visibility: McpVisibilityRequirement::Read,
+        destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: note_info_input_schema,
         output_schema: Some(note_info_output_schema),
@@ -533,6 +557,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Replace one note's body content with supplied text, optionally preserving the existing frontmatter block.",
         packs: PACK_NOTES_MANAGE,
         visibility: McpVisibilityRequirement::Write,
+        destructive: true,
         annotations: mcp_annotations(false, true, false, false),
         input_schema: note_set_input_schema,
         output_schema: Some(note_set_output_schema),
@@ -545,6 +570,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Delete one note and report the backlinks that would become unresolved.",
         packs: PACK_NOTES_MANAGE,
         visibility: McpVisibilityRequirement::Write,
+        destructive: true,
         annotations: mcp_annotations(false, true, false, false),
         input_schema: note_delete_input_schema,
         output_schema: Some(note_delete_output_schema),
@@ -557,6 +583,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Query the configured web search backend and return structured result rows.",
         packs: PACK_WEB,
         visibility: McpVisibilityRequirement::Network,
+        destructive: false,
         annotations: mcp_annotations(true, false, false, true),
         input_schema: web_search_input_schema,
         output_schema: Some(web_search_output_schema),
@@ -569,6 +596,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Fetch one URL as markdown, html, or raw content.",
         packs: PACK_WEB,
         visibility: McpVisibilityRequirement::Network,
+        destructive: false,
         annotations: mcp_annotations(true, false, false, true),
         input_schema: web_fetch_input_schema,
         output_schema: Some(web_fetch_output_schema),
@@ -581,6 +609,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Read the effective Vulcan config, optionally narrowed to one section.",
         packs: PACK_CONFIG,
         visibility: McpVisibilityRequirement::ConfigRead,
+        destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: config_show_input_schema,
         output_schema: Some(config_show_output_schema),
@@ -593,6 +622,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Write one shared config value to `.vulcan/config.toml` using the same parser and auto-commit behavior as the CLI.",
         packs: PACK_CONFIG,
         visibility: McpVisibilityRequirement::ConfigWrite,
+        destructive: true,
         annotations: mcp_annotations(false, true, false, false),
         input_schema: config_set_input_schema,
         output_schema: Some(config_set_output_schema),
@@ -605,6 +635,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Run an incremental or full vault scan and return the resulting scan summary.",
         packs: PACK_INDEX,
         visibility: McpVisibilityRequirement::Index,
+        destructive: false,
         annotations: mcp_annotations(false, false, false, false),
         input_schema: index_scan_input_schema,
         output_schema: Some(index_scan_output_schema),
@@ -617,6 +648,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Inspect the selected vault's Git sync state and exact remote live ref without capturing, publishing, or applying files.",
         packs: PACK_SYNC,
         visibility: McpVisibilityRequirement::GitReadAll,
+        destructive: false,
         annotations: mcp_annotations(true, false, true, true),
         input_schema: sync_status_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -629,6 +661,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Build the same mutation-free finite-cycle preview as `vulcan sync run --dry-run` for the selected vault.",
         packs: PACK_SYNC,
         visibility: McpVisibilityRequirement::GitReadAll,
+        destructive: false,
         annotations: mcp_annotations(true, false, true, true),
         input_schema: sync_plan_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -641,6 +674,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Run read-only Git layout, ref, journal, filter, cache, and target-platform synchronization diagnostics.",
         packs: PACK_SYNC,
         visibility: McpVisibilityRequirement::GitReadAll,
+        destructive: false,
         annotations: mcp_annotations(true, false, true, true),
         input_schema: sync_doctor_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -653,6 +687,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "List unresolved preserved conflicts or inspect one immutable conflict record; this tool never resolves a conflict.",
         packs: PACK_SYNC,
         visibility: McpVisibilityRequirement::GitReadAll,
+        destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: sync_conflicts_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -665,6 +700,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Read a bounded slice of any vault file, such as an attachment, as UTF-8 text or base64, with the whole file's content hash.",
         packs: PACK_NOTES_READ,
         visibility: McpVisibilityRequirement::Read,
+        destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: file_get_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -677,6 +713,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Create or replace a non-Markdown vault file, such as an attachment, from text or base64 (at most 10 MiB).",
         packs: PACK_NOTES_WRITE,
         visibility: McpVisibilityRequirement::Write,
+        destructive: false,
         annotations: mcp_annotations(false, true, false, false),
         input_schema: file_put_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -689,6 +726,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Start a synchronization of this registered vault now: through the daemon when it runs, otherwise directly. Returns the queued job or the cycle's report.",
         packs: PACK_SYNC,
         visibility: McpVisibilityRequirement::GitCommit,
+        destructive: false,
         annotations: mcp_annotations(false, false, false, true),
         input_schema: empty_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -701,6 +739,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Clear a paused registration so automatic synchronization runs again, and start a synchronization.",
         packs: PACK_SYNC,
         visibility: McpVisibilityRequirement::GitCommit,
+        destructive: false,
         annotations: mcp_annotations(false, false, true, true),
         input_schema: empty_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -713,6 +752,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Move or rename one note and rewrite every link and embed that points at it.",
         packs: PACK_NOTES_MANAGE,
         visibility: McpVisibilityRequirement::Refactor,
+        destructive: false,
         annotations: mcp_annotations(false, true, false, false),
         input_schema: note_move_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -725,6 +765,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "List staged, unstaged, and untracked vault paths.",
         packs: PACK_GIT,
         visibility: McpVisibilityRequirement::GitReadAll,
+        destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: git_status_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -737,6 +778,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Return the unified diff of uncommitted vault changes, optionally for one path.",
         packs: PACK_GIT,
         visibility: McpVisibilityRequirement::GitReadAll,
+        destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: git_diff_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -749,6 +791,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "List the most recent commits that touched the vault.",
         packs: PACK_GIT,
         visibility: McpVisibilityRequirement::GitReadAll,
+        destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: git_log_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -761,6 +804,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Show which commit last changed each line of one vault file.",
         packs: PACK_GIT,
         visibility: McpVisibilityRequirement::GitReadAll,
+        destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: git_blame_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -773,6 +817,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Commit the files this session changed (or every change with scope `all`), running pre-commit hooks; the commit names the client in Vulcan-MCP-* trailers.",
         packs: PACK_GIT,
         visibility: McpVisibilityRequirement::GitCommit,
+        destructive: false,
         annotations: mcp_annotations(false, false, false, false),
         input_schema: git_commit_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -785,6 +830,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Start a changeset: a branch and worktree outside the vault, indexed, that this session's tools then read and write until it lands or is abandoned. Other writers, sync, and auto-commit do not see it meanwhile.",
         packs: PACK_GIT,
         visibility: McpVisibilityRequirement::GitCommit,
+        destructive: false,
         annotations: mcp_annotations(false, false, false, false),
         input_schema: changeset_begin_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -797,6 +843,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Attach this session to an existing changeset, or with no `id` return it to the vault itself.",
         packs: PACK_GIT,
         visibility: McpVisibilityRequirement::GitCommit,
+        destructive: false,
         annotations: mcp_annotations(false, false, true, false),
         input_schema: changeset_switch_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -809,6 +856,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "List the vault's changesets with their commits ahead, uncommitted paths, and which one this session is attached to.",
         packs: PACK_GIT,
         visibility: McpVisibilityRequirement::GitReadAll,
+        destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: changeset_list_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -821,6 +869,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Land a changeset on the vault's branch: commit leftovers with `message`, rebase if the branch moved, fast-forward, re-index, and remove the changeset. A rebase conflict keeps the changeset unchanged and names the paths.",
         packs: PACK_GIT,
         visibility: McpVisibilityRequirement::GitCommit,
+        destructive: false,
         annotations: mcp_annotations(false, false, false, false),
         input_schema: changeset_land_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -833,6 +882,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "Delete a changeset, its branch, and its worktree without landing anything.",
         packs: PACK_GIT,
         visibility: McpVisibilityRequirement::GitCommit,
+        destructive: true,
         annotations: mcp_annotations(false, true, false, false),
         input_schema: changeset_id_input_schema,
         output_schema: Some(generic_report_output_schema),
@@ -845,6 +895,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         description: "List or change optional packs for this session. Startup-selected packs are pinned; registry changes require the client to refresh tools/list.",
         packs: PACK_TOOL_PACKS,
         visibility: McpVisibilityRequirement::None,
+        destructive: false,
         annotations: mcp_annotations(false, false, true, false),
         input_schema: tool_pack_mutation_input_schema,
         output_schema: Some(tool_pack_state_output_schema),
@@ -909,10 +960,21 @@ pub fn authorize_builtin_tool_call<'a>(
         )));
     }
     if !tool_visible(tool, profile, selected_packs) {
+        let requirement = if tool.destructive
+            && tool_allowed_by_profile(
+                &McpToolCatalogEntry {
+                    destructive: false,
+                    ..*tool
+                },
+                profile,
+            ) {
+            "destructive access (overwrite or delete)"
+        } else {
+            visibility_requirement_name(tool.visibility)
+        };
         return Err(McpMethodError::tool(format!(
-            "permission denied: tool `{}` requires {} under profile `{profile_name}`",
+            "permission denied: tool `{}` requires {requirement} under profile `{profile_name}`",
             tool.name,
-            visibility_requirement_name(tool.visibility),
         )));
     }
     let arguments = if let Some(operation) = legacy_operation {
@@ -1117,6 +1179,9 @@ pub fn tool_visible(
 }
 
 pub fn tool_allowed_by_profile(tool: &McpToolCatalogEntry, profile: &PermissionProfile) -> bool {
+    if tool.destructive && !matches!(profile.destructive, PermissionMode::Allow) {
+        return false;
+    }
     match tool.visibility {
         McpVisibilityRequirement::None => true,
         McpVisibilityRequirement::Read => !profile.read.is_none(),
@@ -1153,6 +1218,37 @@ pub fn tool_names_for_pack(pack: McpToolPack, profile: &PermissionProfile) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn destructive_tools_need_the_destructive_permission() {
+        let daily = PermissionProfile::daily_wiki_agent();
+        let writer = PermissionProfile::writer();
+        let packs = BTreeSet::from([McpToolPack::NotesWrite, McpToolPack::NotesManage]);
+        for name in ["note_set", "note_delete"] {
+            let tool = tool_by_name(name).unwrap();
+            assert!(tool.destructive, "{name}");
+            assert!(!tool_visible(tool, &daily, &packs), "{name}");
+            assert!(tool_visible(tool, &writer, &packs), "{name}");
+        }
+        assert!(tool_visible(
+            tool_by_name("note_append").unwrap(),
+            &daily,
+            &packs
+        ));
+        let no_arguments = Map::new();
+        let denied = authorize_builtin_tool_call(
+            "note_delete",
+            &no_arguments,
+            &packs,
+            &daily,
+            "daily-wiki-agent",
+        );
+        assert!(matches!(
+            denied,
+            Err(McpMethodError::Tool { ref message, .. })
+                if message.contains("destructive access")
+        ));
+    }
 
     #[test]
     fn builtin_call_authorization_preserves_alias_and_visibility_boundaries() {

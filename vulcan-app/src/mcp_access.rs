@@ -46,6 +46,14 @@ pub fn check_write_path_access(
         .map_err(|error| McpMethodError::tool(error.to_string()))
 }
 
+/// Overwriting or deleting: the profile's `destructive` permission, checked
+/// in addition to write access for the path.
+pub fn check_destructive_access(guard: &ProfilePermissionGuard) -> Result<(), McpMethodError> {
+    guard
+        .check_destructive()
+        .map_err(|error| McpMethodError::tool(error.to_string()))
+}
+
 pub fn check_write_markdown_source_access(
     paths: &VaultPaths,
     guard: &ProfilePermissionGuard,

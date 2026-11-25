@@ -10,7 +10,7 @@ use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::{PermissionGuard, ProfilePermissionGuard, VaultPaths, Verbosity};
 
 use crate::commit::AutoCommitPolicy;
-use crate::mcp_access::check_write_path_access;
+use crate::mcp_access::{check_destructive_access, check_write_path_access};
 use crate::mcp_protocol::{McpFileGetArgs, McpFilePutArgs, McpMethodError};
 
 pub const FILE_GET_DEFAULT_BYTES: usize = 256 * 1024;
@@ -186,6 +186,7 @@ pub fn file_put(
                 "`{path}` exists; pass overwrite (ideally with expected_hash) to replace it"
             )));
         }
+        (Some(_), _) => check_destructive_access(guard)?,
         _ => {}
     }
     let report = FilePutReport {

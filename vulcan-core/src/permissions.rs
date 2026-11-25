@@ -41,6 +41,7 @@ pub struct ResourceLimits {
 
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "PermissionGrantRecord")]
 pub struct PermissionGrant {
     pub read: PathPermission,
     pub write: PathPermission,
@@ -50,11 +51,56 @@ pub struct PermissionGrant {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub network_domains: Vec<String>,
     pub index: bool,
+    pub destructive: bool,
     pub config_read: bool,
     pub config_write: bool,
     pub execute: bool,
     pub shell: bool,
     pub limits: ResourceLimits,
+}
+
+/// The stored form of a [`PermissionGrant`]. Grants recorded before
+/// `destructive` existed let any write overwrite or delete, so a missing
+/// value follows whether the grant could write at all.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Deserialize)]
+struct PermissionGrantRecord {
+    read: PathPermission,
+    write: PathPermission,
+    refactor: PathPermission,
+    git: bool,
+    network: bool,
+    #[serde(default)]
+    network_domains: Vec<String>,
+    index: bool,
+    #[serde(default)]
+    destructive: Option<bool>,
+    config_read: bool,
+    config_write: bool,
+    execute: bool,
+    shell: bool,
+    limits: ResourceLimits,
+}
+
+impl From<PermissionGrantRecord> for PermissionGrant {
+    fn from(record: PermissionGrantRecord) -> Self {
+        let destructive = record.destructive.unwrap_or(!record.write.allow.is_empty());
+        Self {
+            read: record.read,
+            write: record.write,
+            refactor: record.refactor,
+            git: record.git,
+            network: record.network,
+            network_domains: record.network_domains,
+            index: record.index,
+            destructive,
+            config_read: record.config_read,
+            config_write: record.config_write,
+            execute: record.execute,
+            shell: record.shell,
+            limits: record.limits,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -333,6 +379,26 @@ pub trait PermissionGuard {
             Err(PermissionError::CapabilityDenied {
                 profile: self.profile_name().to_string(),
                 capability: "index access",
+            })
+        }
+    }
+
+    /// Overwriting or deleting existing content at `path`: needs write access
+    /// to the path and the profile's `destructive` permission.
+    fn check_destructive_path(&self, path: &str) -> Result<(), PermissionError> {
+        self.check_write_path(path)?;
+        self.check_destructive()
+    }
+
+    /// Destructive operations that are not tied to one path, such as
+    /// abandoning a changeset or rewriting configuration.
+    fn check_destructive(&self) -> Result<(), PermissionError> {
+        if self.grant().destructive {
+            self.check_policy_decision("destructive", None)
+        } else {
+            Err(PermissionError::CapabilityDenied {
+                profile: self.profile_name().to_string(),
+                capability: "destructive access (overwrite or delete)",
             })
         }
     }
@@ -657,6 +723,7 @@ impl PermissionGrant {
             network: profile.network.is_allowed(),
             network_domains: profile.network.domain_allowlist().to_vec(),
             index: matches!(profile.index, PermissionMode::Allow),
+            destructive: matches!(profile.destructive, PermissionMode::Allow),
             config_read: !matches!(profile.config, ConfigPermissionMode::None),
             config_write: matches!(profile.config, ConfigPermissionMode::Write),
             execute: matches!(profile.execute, PermissionMode::Allow),
@@ -682,6 +749,7 @@ impl PermissionGrant {
                 &active.network_domains,
             )
             && capability_is_subset(self.index, active.index)
+            && capability_is_subset(self.destructive, active.destructive)
             && capability_is_subset(self.config_read, active.config_read)
             && capability_is_subset(self.config_write, active.config_write)
             && capability_is_subset(self.execute, active.execute)
@@ -1401,6 +1469,7 @@ fn policy_hook_profile() -> PermissionProfile {
         git: PermissionMode::Deny,
         network: crate::config::NetworkPermissionConfig::Mode(PermissionMode::Deny),
         index: PermissionMode::Deny,
+        destructive: PermissionMode::Deny,
         config: ConfigPermissionMode::None,
         execute: PermissionMode::Allow,
         shell: PermissionMode::Deny,
@@ -1943,6 +2012,7 @@ mod tests {
                 domains: vec!["example.com".to_string()],
             }),
             index: PermissionMode::Deny,
+            destructive: PermissionMode::Deny,
             config: ConfigPermissionMode::Read,
             execute: PermissionMode::Allow,
             shell: PermissionMode::Deny,
@@ -2051,6 +2121,62 @@ mod tests {
     }
 
     #[test]
+    fn destructive_permission_follows_builtin_profiles_and_bounds_grants() {
+        let profiles = crate::config::builtin_permission_profiles();
+        for (name, allowed) in [
+            ("readonly", false),
+            ("researcher", false),
+            ("daily-wiki-agent", false),
+            ("writer", true),
+            ("maintainer", true),
+            ("unrestricted", true),
+        ] {
+            let grant = PermissionGrant::from_profile(&profiles[name]);
+            assert_eq!(grant.destructive, allowed, "{name}");
+        }
+        assert!(!PermissionGrant::from_profile(&PermissionProfile::default()).destructive);
+
+        let writer = PermissionGrant::from_profile(&profiles["writer"]);
+        let daily = PermissionGrant::from_profile(&profiles["daily-wiki-agent"]);
+        assert!(!writer.is_subset_of(&PermissionGrant {
+            destructive: false,
+            ..writer.clone()
+        }));
+        assert!(PermissionGrant {
+            destructive: false,
+            ..writer.clone()
+        }
+        .is_subset_of(&writer));
+        assert!(!daily.destructive);
+    }
+
+    #[test]
+    fn stored_grants_without_destructive_keep_what_their_write_allowed() {
+        let writer = PermissionGrant::from_profile(&PermissionProfile::writer());
+        let mut stored = serde_json::to_value(&writer).unwrap();
+        stored.as_object_mut().unwrap().remove("destructive");
+        let restored: PermissionGrant = serde_json::from_value(stored).unwrap();
+        assert!(restored.destructive);
+        assert_eq!(restored, writer);
+
+        let readonly = PermissionGrant::from_profile(&PermissionProfile::readonly());
+        let mut stored = serde_json::to_value(&readonly).unwrap();
+        stored.as_object_mut().unwrap().remove("destructive");
+        let restored: PermissionGrant = serde_json::from_value(stored).unwrap();
+        assert!(!restored.destructive);
+
+        let explicit: PermissionGrant = serde_json::from_value(
+            serde_json::to_value(PermissionGrant {
+                destructive: false,
+                ..writer
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(!explicit.destructive);
+    }
+
+    #[test]
     fn permission_grants_compare_capabilities_domains_and_limits() {
         let active = PermissionGrant {
             read: PathPermission::from_config(&PathPermissionConfig::Keyword(
@@ -2065,6 +2191,7 @@ mod tests {
             network: true,
             network_domains: vec!["example.com".to_string()],
             index: false,
+            destructive: false,
             config_read: true,
             config_write: false,
             execute: true,
@@ -2086,6 +2213,7 @@ mod tests {
             network: false,
             network_domains: vec![],
             index: false,
+            destructive: false,
             config_read: false,
             config_write: false,
             execute: true,

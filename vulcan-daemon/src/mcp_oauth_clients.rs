@@ -1143,6 +1143,7 @@ mod tests {
                 network: false,
                 network_domains: Vec::new(),
                 index: false,
+                destructive: false,
                 config_read: false,
                 config_write: false,
                 execute: false,

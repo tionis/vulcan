@@ -2373,6 +2373,11 @@ pub struct PermissionProfile {
     pub network: NetworkPermissionConfig,
     #[serde(default)]
     pub index: PermissionMode,
+    /// Overwriting or deleting existing content (replacing a whole note,
+    /// deleting a note, overwriting a file, abandoning a changeset). Requires
+    /// `write` for the path as well; denied when unset.
+    #[serde(default)]
+    pub destructive: PermissionMode,
     #[serde(default)]
     pub config: ConfigPermissionMode,
     #[serde(default)]
@@ -2398,6 +2403,7 @@ impl Default for PermissionProfile {
             git: PermissionMode::Deny,
             network: NetworkPermissionConfig::Mode(PermissionMode::Deny),
             index: PermissionMode::Deny,
+            destructive: PermissionMode::Deny,
             config: ConfigPermissionMode::None,
             execute: PermissionMode::Deny,
             shell: PermissionMode::Deny,
@@ -2419,6 +2425,7 @@ impl PermissionProfile {
             git: PermissionMode::Allow,
             network: NetworkPermissionConfig::Mode(PermissionMode::Allow),
             index: PermissionMode::Allow,
+            destructive: PermissionMode::Allow,
             config: ConfigPermissionMode::Write,
             execute: PermissionMode::Allow,
             shell: PermissionMode::Allow,
@@ -2468,6 +2475,7 @@ impl PermissionProfile {
         Self {
             refactor: PathPermissionConfig::Keyword(PathPermissionKeyword::All),
             git: PermissionMode::Allow,
+            destructive: PermissionMode::Allow,
             ..Self::daily_wiki_agent()
         }
     }
@@ -5869,6 +5877,9 @@ fn apply_partial_permission_profile(
     }
     if let Some(index) = overrides.index {
         profile.index = index;
+    }
+    if let Some(destructive) = overrides.destructive {
+        profile.destructive = destructive;
     }
     if let Some(config) = overrides.config {
         profile.config = config;

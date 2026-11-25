@@ -86,6 +86,19 @@ fn check_refactor_note_access(cli: &Cli, paths: &VaultPaths, note: &str) -> Resu
         .map_err(CliError::operation)
 }
 
+/// Replacing or deleting a note: write access to it and the profile's
+/// `destructive` permission.
+fn check_destructive_note_access(
+    cli: &Cli,
+    paths: &VaultPaths,
+    note: &str,
+) -> Result<(), CliError> {
+    check_write_note_access(cli, paths, note)?;
+    selected_permission_guard(cli, paths)?
+        .check_destructive()
+        .map_err(CliError::operation)
+}
+
 fn check_read_markdown_source_access(
     cli: &Cli,
     paths: &VaultPaths,
@@ -224,7 +237,7 @@ pub(crate) fn handle_note_command(
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
-            check_write_note_access(cli, paths, note)?;
+            check_destructive_note_access(cli, paths, note)?;
             let report = run_note_set_command(
                 paths,
                 note,
@@ -423,7 +436,11 @@ pub(crate) fn handle_note_command(
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.verbosity());
-            check_write_note_access(cli, paths, note)?;
+            if *dry_run {
+                check_write_note_access(cli, paths, note)?;
+            } else {
+                check_destructive_note_access(cli, paths, note)?;
+            }
             let report = run_note_delete_command(
                 paths,
                 note,

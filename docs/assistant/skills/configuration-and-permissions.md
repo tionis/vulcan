@@ -1,7 +1,7 @@
 ---
 name: configuration-and-permissions
 description: Configure Vulcan safely, manage device-local wiki registrations and groups, inspect settings, manage permission profiles, schedule vault jobs, and understand trust boundaries. Use when the user asks about registered vaults, daemon.toml, setting up a device (`daemon plan`/`apply`), config, permissions, profiles, access control, sandboxing, trust, scheduled or recurring jobs, the Telegram chat bot, setup, or why a command/tool is denied.
-version: 38
+version: 39
 tools:
   - config_show
   - config_get
@@ -110,6 +110,7 @@ permission profiles, or diagnoses permission and trust failures.
   arguments.
 - Never copy a revealed companion token into vault content, `.obsidian/plugins/*/data.json`, logs, shell history, or source control.
 - Keep assistant-facing profiles narrow. Add only the read/write/network/execute capabilities required by the workflow.
+- `destructive = "allow"` is what lets a profile replace whole notes, delete notes, overwrite files, or abandon changesets; `write` alone covers create, append and patch. Leave it denied for agents that should only add to the vault; "requires destructive access" errors mean exactly this.
 - A skill command can narrow authority with `permission_profile`; it cannot widen the caller's profile.
 - Managed mdbase writes can require scope-complete read access for uniqueness and incoming link constraints declared by other types, even when editing an untyped note. `permission_denied` does not imply that a hidden conflicting record exists. Do not probe hidden paths, silently borrow an unrestricted grant, or bypass validation with a raw edit; request an explicit authorized grant change if needed.
 - A profile that may write anywhere reads the mdbase controls (`mdbase.yaml`, `mdbase.lock.yaml`, the type and contract folders, and referenced schemas) implicitly for routing and validation, even where its read `allow` list stops, so a folder-scoped writer needs no control grants. It still cannot list or `note get` those files. An explicit `folder:` or `note:` read deny on a control wins and refuses mdbase-governed writes with "permission denied for required mdbase controls"; tag denies do not apply to controls. Read-only profiles get no implicit control reads. Dynamic-policy profiles still fail closed at this boundary; do not disable their hooks or switch profiles to force a write through.

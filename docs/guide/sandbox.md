@@ -53,14 +53,19 @@ explicit profile.
 
 ### Built-in profiles
 
-| Profile | Reads | Writes | Refactor | Git | Index | Config | Network | Host execution |
-|---|---|---|---|---|---|---|---|---|
-| `readonly` | all | none | none | deny | deny | read | deny | deny |
-| `researcher` | all | none | none | deny | deny | read | allow | deny |
-| `daily-wiki-agent` | all | all | none | deny | allow | read | deny | deny |
-| `writer` | all | all | all | allow | allow | read | deny | deny |
-| `maintainer` | all | all | all | allow | allow | write | allow | deny |
-| `unrestricted` | all | all | all | allow | allow | write | allow | allow |
+| Profile | Reads | Writes | Destructive | Refactor | Git | Index | Config | Network | Host execution |
+|---|---|---|---|---|---|---|---|---|---|
+| `readonly` | all | none | deny | none | deny | deny | read | deny | deny |
+| `researcher` | all | none | deny | none | deny | deny | read | allow | deny |
+| `daily-wiki-agent` | all | all | deny | none | deny | allow | read | deny | deny |
+| `writer` | all | all | allow | all | allow | allow | read | deny | deny |
+| `maintainer` | all | all | allow | all | allow | allow | write | allow | deny |
+| `unrestricted` | all | all | allow | all | allow | allow | write | allow | allow |
+
+`destructive` (`"allow"` or `"deny"`, denied when unset) governs overwriting or deleting existing
+content: replacing a whole note (`note set`), deleting a note, overwriting a file, abandoning a
+changeset, and over MCP `config_set` and `task_reminder_remove`. It adds to `write`, which must
+still allow the path. Creating, appending and patching notes need only `write`.
 
 All but `readonly` and `unrestricted` cap JavaScript at 5 s CPU, 64 MB memory and a 256 KB stack.
 `vulcan config permissions profile show <name>` prints one in full. A profile with a built-in's name

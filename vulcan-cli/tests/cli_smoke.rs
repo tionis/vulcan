@@ -33750,7 +33750,7 @@ fn mcp_note_delete_preview_hides_unreadable_backlinks() {
     initialize_vulcan_dir(&vault_root);
     fs::write(
         vault_root.join(".vulcan/config.toml"),
-        "[permissions.profiles.public]\nread = { allow = [\"note:Target.md\", \"note:Public.md\", \"note:mdbase.yaml\"] }\nwrite = { allow = [\"note:Target.md\"] }\n",
+        "[permissions.profiles.public]\nread = { allow = [\"note:Target.md\", \"note:Public.md\", \"note:mdbase.yaml\"] }\nwrite = { allow = [\"note:Target.md\"] }\ndestructive = \"allow\"\n",
     )
     .expect("config");
     pin_profiles(&vault_root);
@@ -40379,4 +40379,46 @@ fn sync_transport_test_runs_with_and_without_show_commands() {
         assert!(!stderr.contains("panicked"), "{extra:?}: {stderr}");
         assert_ne!(output.status.code(), Some(101), "{extra:?}: {stderr}");
     }
+}
+
+#[test]
+fn note_set_and_delete_need_the_destructive_permission() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join(".vulcan")).unwrap();
+    fs::write(root.join("Note.md"), "# Note\n\nKeep me.\n").unwrap();
+    let vulcan = |profile: &str, args: &[&str]| {
+        let mut command = Command::cargo_bin("vulcan").unwrap();
+        command
+            .args(["--vault", root.to_str().unwrap(), "--permissions", profile])
+            .args(args);
+        command
+    };
+    for args in [
+        &["note", "delete", "Note", "--no-commit"][..],
+        &["note", "set", "Note", "--no-commit"][..],
+    ] {
+        vulcan("daily-wiki-agent", args)
+            .write_stdin("replaced\n")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("destructive access"));
+        assert_eq!(
+            fs::read_to_string(root.join("Note.md")).unwrap(),
+            "# Note\n\nKeep me.\n"
+        );
+    }
+    vulcan("daily-wiki-agent", &["note", "delete", "Note", "--dry-run"])
+        .assert()
+        .success();
+    vulcan(
+        "daily-wiki-agent",
+        &["note", "append", "Note", "More.", "--no-commit"],
+    )
+    .assert()
+    .success();
+    vulcan("writer", &["note", "delete", "Note", "--no-commit"])
+        .assert()
+        .success();
+    assert!(!root.join("Note.md").exists());
 }
