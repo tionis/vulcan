@@ -7,8 +7,9 @@ use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
-pub const MCP_INLINE_TEXT_LIMIT: usize = 4_096;
-pub const MCP_STRUCTURED_CONTENT_LIMIT: usize = 65_536;
+/// The most note or file content a read returns inline; the rest is reached
+/// through the note's or file's resource.
+pub const MCP_CONTENT_INLINE_LIMIT: usize = 64 * 1024;
 pub const MCP_PAGE_SIZE: usize = 100;
 pub const MCP_RESOURCE_NOT_FOUND: i64 = -32002;
 pub const MCP_QUERY_DEFAULT_LIMIT: usize = 50;
@@ -115,131 +116,28 @@ pub fn initialization_result(active_tool_names: &[String], server_version: &str)
     })
 }
 
-#[derive(Debug, Clone)]
-struct McpStoredResource {
-    uri: String,
-    mime_type: &'static str,
-    text: String,
+/// Shape a built-in tool result: `structuredContent` always, plus the
+/// compact JSON of it as text for clients that read only text content.
+#[must_use]
+pub fn tool_result(structured: Value) -> Value {
+    let structured = wrap_tool_result(structured);
+    let text = serde_json::to_string(&structured).unwrap_or_default();
+    serde_json::json!({
+        "content": [{"type": "text", "text": text}],
+        "structuredContent": structured,
+        "isError": false,
+    })
 }
 
-/// Ephemeral large tool results owned by a single MCP session.
-#[derive(Debug, Clone)]
-pub struct McpToolResourceStore {
-    resources: BTreeMap<String, McpStoredResource>,
-    next_id: u64,
-}
-
-impl Default for McpToolResourceStore {
-    fn default() -> Self {
-        Self {
-            resources: BTreeMap::new(),
-            next_id: 1,
-        }
+/// Shape a custom tool result: its own display text when it has one,
+/// otherwise the compact JSON, and `structuredContent` always.
+#[must_use]
+pub fn custom_tool_result(structured: Value, text: Option<&str>) -> Value {
+    let mut result = tool_result(structured);
+    if let Some(text) = text {
+        result["content"] = serde_json::json!([{"type": "text", "text": text}]);
     }
-}
-
-impl McpToolResourceStore {
-    /// Shape a built-in tool result, storing large JSON in this session.
-    pub fn success_response(&mut self, tool_name: &str, structured: Value) -> Value {
-        let structured = wrap_tool_result(structured);
-        let serialized = serde_json::to_string_pretty(&structured).unwrap_or_default();
-        let content = if serialized.len() <= MCP_INLINE_TEXT_LIMIT {
-            vec![serde_json::json!({"type": "text", "text": serialized})]
-        } else {
-            vec![
-                serde_json::json!({
-                    "type": "text",
-                    "text": tool_summary_text(tool_name, &structured),
-                }),
-                self.store_json(tool_name, &serialized),
-            ]
-        };
-        tool_success_content(content, structured, serialized.len())
-    }
-
-    /// Shape a custom tool result, preserving its optional display text.
-    pub fn custom_success_response(
-        &mut self,
-        tool_name: &str,
-        structured: Value,
-        text: Option<&str>,
-    ) -> Value {
-        let structured = wrap_tool_result(structured);
-        let serialized = serde_json::to_string_pretty(&structured).unwrap_or_default();
-        let mut content = Vec::new();
-        if let Some(text) = text {
-            if text.len() <= MCP_INLINE_TEXT_LIMIT {
-                content.push(serde_json::json!({"type": "text", "text": text}));
-            } else {
-                content.push(serde_json::json!({
-                    "type": "text",
-                    "text": format!("`{tool_name}` returned text too large to inline; read the linked resource."),
-                }));
-                content.push(self.store_text(tool_name, text));
-            }
-        }
-        if serialized.len() <= MCP_INLINE_TEXT_LIMIT {
-            if text.is_none() {
-                content.push(serde_json::json!({"type": "text", "text": serialized}));
-            }
-        } else {
-            if text.is_none() {
-                content.push(serde_json::json!({
-                    "type": "text",
-                    "text": tool_summary_text(tool_name, &structured),
-                }));
-            }
-            content.push(self.store_json(tool_name, &serialized));
-        }
-        tool_success_content(content, structured, serialized.len())
-    }
-
-    #[must_use]
-    pub fn read(&self, uri: &str) -> Option<Value> {
-        let resource = self.resources.get(uri)?;
-        Some(serde_json::json!({
-            "contents": [{
-                "uri": resource.uri,
-                "mimeType": resource.mime_type,
-                "text": resource.text,
-            }]
-        }))
-    }
-
-    pub fn store_json(&mut self, tool_name: &str, text: &str) -> Value {
-        self.store(tool_name, text, "json", "application/json", "structured")
-    }
-
-    pub fn store_text(&mut self, tool_name: &str, text: &str) -> Value {
-        self.store(tool_name, text, "txt", "text/plain", "text")
-    }
-
-    fn store(
-        &mut self,
-        tool_name: &str,
-        text: &str,
-        extension: &str,
-        mime_type: &'static str,
-        kind: &str,
-    ) -> Value {
-        let uri = format!("vulcan://tool-results/{}.{}", self.next_id, extension);
-        self.next_id += 1;
-        self.resources.insert(
-            uri.clone(),
-            McpStoredResource {
-                uri: uri.clone(),
-                mime_type,
-                text: text.to_string(),
-            },
-        );
-        serde_json::json!({
-            "type": "resource_link",
-            "uri": uri,
-            "name": format!("{tool_name}-result.{extension}"),
-            "description": format!("Full {kind} result for `{tool_name}`"),
-            "mimeType": mime_type,
-        })
-    }
+    result
 }
 
 fn wrap_tool_result(structured: Value) -> Value {
@@ -250,29 +148,90 @@ fn wrap_tool_result(structured: Value) -> Value {
     }
 }
 
-fn tool_success_content(content: Vec<Value>, structured: Value, serialized_len: usize) -> Value {
-    let mut response = serde_json::json!({"isError": false});
-    response
-        .as_object_mut()
-        .expect("tool response is an object")
-        .insert("content".to_string(), Value::Array(content));
-    if serialized_len <= MCP_STRUCTURED_CONTENT_LIMIT {
-        response
-            .as_object_mut()
-            .expect("tool response is an object")
-            .insert("structuredContent".to_string(), structured);
-    }
-    response
+/// Stable codes for tool errors, so an agent can branch on the kind of
+/// failure rather than parse the message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpToolErrorCode {
+    InvalidArgument,
+    NotFound,
+    Ambiguous,
+    Conflict,
+    PermissionDenied,
+    IndexMissing,
+    Timeout,
+    Indeterminate,
+    Failed,
 }
 
-fn tool_summary_text(tool_name: &str, structured: &Value) -> String {
-    if let Some(path) = structured.get("path").and_then(Value::as_str) {
-        return format!("Tool `{tool_name}` completed for `{path}`. Read the linked resource for the full JSON payload.");
+impl McpToolErrorCode {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidArgument => "invalid_argument",
+            Self::NotFound => "not_found",
+            Self::Ambiguous => "ambiguous",
+            Self::Conflict => "conflict",
+            Self::PermissionDenied => "permission_denied",
+            Self::IndexMissing => "index_missing",
+            Self::Timeout => "timeout",
+            Self::Indeterminate => "indeterminate",
+            Self::Failed => "failed",
+        }
     }
-    if let Some(query) = structured.get("query").and_then(Value::as_str) {
-        return format!("Tool `{tool_name}` completed for query `{query}`. Read the linked resource for the full JSON payload.");
+
+    /// The code and a next step for an error raised from shared workflows,
+    /// which report failures as messages.
+    #[must_use]
+    pub fn classify(message: &str) -> (Self, Option<&'static str>) {
+        let lower = message.to_ascii_lowercase();
+        if lower.starts_with("permission denied") || lower.contains("requires destructive access") {
+            (Self::PermissionDenied, None)
+        } else if lower.starts_with("stale_content") {
+            (
+                Self::Conflict,
+                Some("Read it again and retry with the new content_hash."),
+            )
+        } else if lower.contains("cache is missing") || lower.contains("run `vulcan scan`") {
+            (
+                Self::IndexMissing,
+                Some("The vault has no index yet: call index_scan, then retry."),
+            )
+        } else if lower.contains("ambiguous") {
+            (Self::Ambiguous, None)
+        } else if lower.contains("not found") || lower.contains("no longer exists") {
+            (Self::NotFound, None)
+        } else if lower.contains("timed out") {
+            (Self::Timeout, None)
+        } else {
+            (Self::Failed, None)
+        }
     }
-    format!("Tool `{tool_name}` completed. Read the linked resource for the full JSON payload.")
+}
+
+/// The structured body of a tool error: `{"error": {"code", "message",
+/// "parameter"?, "hint"?}}`, merged into any extra fields already present.
+#[must_use]
+pub fn tool_error_structured(message: &str, structured: Option<Value>) -> Value {
+    let mut body = structured.unwrap_or_else(|| serde_json::json!({}));
+    if !body.is_object() {
+        body = serde_json::json!({ "detail": body });
+    }
+    let existing = body.get("error").cloned();
+    if existing.as_ref().is_some_and(Value::is_object) {
+        return body;
+    }
+    let message = existing
+        .as_ref()
+        .and_then(Value::as_str)
+        .unwrap_or(message)
+        .to_string();
+    let (code, hint) = McpToolErrorCode::classify(&message);
+    let mut error = serde_json::json!({ "code": code.as_str(), "message": message });
+    if let Some(hint) = hint {
+        error["hint"] = Value::String(hint.to_string());
+    }
+    body["error"] = error;
+    body
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -355,6 +314,29 @@ impl McpMethodError {
             message: message.into(),
             structured: None,
         }
+    }
+
+    /// A tool error with a stable code, optionally naming the argument at fault.
+    pub fn tool_coded(
+        code: McpToolErrorCode,
+        message: impl Into<String>,
+        parameter: Option<String>,
+    ) -> Self {
+        let message = message.into();
+        let mut error = serde_json::json!({ "code": code.as_str(), "message": message });
+        if let Some(parameter) = parameter {
+            error["parameter"] = Value::String(parameter);
+        }
+        Self::Tool {
+            message,
+            structured: Some(serde_json::json!({ "error": error })),
+        }
+    }
+
+    /// The model sent arguments a tool cannot use: a tool error the model
+    /// sees and can correct, never a protocol error.
+    pub fn invalid_argument(message: impl Into<String>, parameter: Option<String>) -> Self {
+        Self::tool_coded(McpToolErrorCode::InvalidArgument, message, parameter)
     }
 }
 
@@ -1065,76 +1047,45 @@ mod tests {
     }
 
     #[test]
-    fn tool_resource_store_is_session_local_and_preserves_link_contract() {
-        let mut first = McpToolResourceStore::default();
-        let mut second = McpToolResourceStore::default();
-        let json_link = first.store_json("note_get", "{\"content\":1}");
-        assert_eq!(json_link["uri"], "vulcan://tool-results/1.json");
-        assert_eq!(json_link["name"], "note_get-result.json");
-        assert_eq!(
-            json_link["description"],
-            "Full structured result for `note_get`"
-        );
-        assert_eq!(json_link["mimeType"], "application/json");
-        assert_eq!(
-            first.read("vulcan://tool-results/1.json").unwrap()["contents"][0]["text"],
-            "{\"content\":1}"
-        );
-        assert!(second.read("vulcan://tool-results/1.json").is_none());
-        let text_link = first.store_text("custom", "large text");
-        assert_eq!(text_link["uri"], "vulcan://tool-results/2.txt");
-        assert_eq!(text_link["name"], "custom-result.txt");
-        assert_eq!(text_link["description"], "Full text result for `custom`");
-        assert_eq!(text_link["mimeType"], "text/plain");
-        assert_eq!(
-            first.read("vulcan://tool-results/2.txt").unwrap()["contents"][0]["text"],
-            "large text"
-        );
-        assert_eq!(
-            second.store_json("other", "{}")["uri"],
-            "vulcan://tool-results/1.json"
-        );
-    }
-
-    #[test]
-    fn tool_success_responses_preserve_inline_and_resource_limits() {
-        let mut store = McpToolResourceStore::default();
-        let small = store.success_response("count", json!(3));
+    fn tool_results_always_carry_structured_content_and_compact_text() {
+        let small = tool_result(json!(3));
         assert_eq!(small["structuredContent"], json!({"result": 3}));
-        assert_eq!(small["content"][0]["text"], "{\n  \"result\": 3\n}");
+        assert_eq!(small["content"][0]["text"], "{\"result\":3}");
+        assert_eq!(small["isError"], false);
 
-        let large = store.success_response(
-            "note_get",
-            json!({
-                "path": "Large.md",
-                "content": "x".repeat(MCP_STRUCTURED_CONTENT_LIMIT),
-            }),
-        );
-        assert!(large.get("structuredContent").is_none());
-        assert_eq!(large["content"][0]["text"], "Tool `note_get` completed for `Large.md`. Read the linked resource for the full JSON payload.");
-        assert_eq!(large["content"][1]["uri"], "vulcan://tool-results/1.json");
-        assert!(store.read("vulcan://tool-results/1.json").is_some());
+        let large = tool_result(json!({"path": "Large.md", "content": "x".repeat(200_000)}));
+        assert_eq!(large["structuredContent"]["path"], "Large.md");
+        assert_eq!(large["content"].as_array().unwrap().len(), 1);
+
+        let custom = custom_tool_result(json!({"ok": true}), Some("Done."));
+        assert_eq!(custom["content"][0]["text"], "Done.");
+        assert_eq!(custom["structuredContent"], json!({"ok": true}));
     }
 
     #[test]
-    fn custom_success_response_preserves_display_text_and_large_links() {
-        let mut store = McpToolResourceStore::default();
-        let response = store.custom_success_response(
-            "custom",
-            json!({"query": "large", "value": "x".repeat(MCP_STRUCTURED_CONTENT_LIMIT)}),
-            Some(&"y".repeat(MCP_INLINE_TEXT_LIMIT + 1)),
+    fn tool_errors_carry_stable_codes_and_hints() {
+        let classified = tool_error_structured("note not found: Nope", None);
+        assert_eq!(classified["error"]["code"], "not_found");
+        let missing =
+            tool_error_structured("cache is missing; run `vulcan scan` before searching", None);
+        assert_eq!(missing["error"]["code"], "index_missing");
+        assert!(missing["error"]["hint"]
+            .as_str()
+            .unwrap()
+            .contains("index_scan"));
+        let stale = tool_error_structured(
+            "stale_content: `A.md` changed since it was read",
+            Some(json!({"timed_out": false})),
         );
-        assert!(response.get("structuredContent").is_none());
-        assert_eq!(
-            response["content"][0]["text"],
-            "`custom` returned text too large to inline; read the linked resource."
-        );
-        assert_eq!(response["content"][1]["uri"], "vulcan://tool-results/1.txt");
-        assert_eq!(
-            response["content"][2]["uri"],
-            "vulcan://tool-results/2.json"
-        );
-        assert!(store.read("vulcan://tool-results/1.txt").is_some());
-        assert!(store.read("vulcan://tool-results/2.json").is_some());
+        assert_eq!(stale["error"]["code"], "conflict");
+        assert_eq!(stale["timed_out"], false);
+        let McpMethodError::Tool { structured, .. } =
+            McpMethodError::invalid_argument("bad", Some("limit".to_string()))
+        else {
+            panic!("tool error");
+        };
+        let coded = tool_error_structured("bad", structured);
+        assert_eq!(coded["error"]["code"], "invalid_argument");
+        assert_eq!(coded["error"]["parameter"], "limit");
     }
 }

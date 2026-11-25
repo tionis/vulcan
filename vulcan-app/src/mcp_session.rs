@@ -13,7 +13,7 @@ use crate::mcp_assistant::{
 use crate::mcp_catalog::active_tool_names;
 use crate::mcp_changesets::{McpChangesetBinding, McpChangesetSwitch};
 use crate::mcp_discovery::McpDiscovery;
-use crate::mcp_protocol::{McpListSnapshot, McpMethodError, McpToolResourceStore};
+use crate::mcp_protocol::{McpListSnapshot, McpMethodError};
 use crate::mcp_tool_exec::McpToolExecution;
 
 /// Who is on the other end of a session, as far as Vulcan can tell. The
@@ -73,7 +73,6 @@ pub struct McpSessionState {
     paths: VaultPaths,
     selection: ResolvedPermissionProfile,
     guard: ProfilePermissionGuard,
-    resources: McpToolResourceStore,
     snapshot: McpListSnapshot,
     client: McpClientAttribution,
     /// Vault-relative paths this session's writes changed and that no
@@ -105,7 +104,6 @@ impl McpSessionState {
             paths: paths.clone(),
             selection,
             guard,
-            resources: McpToolResourceStore::default(),
             snapshot,
             client: McpClientAttribution::default(),
             written_paths: BTreeSet::new(),
@@ -176,7 +174,6 @@ impl McpSessionState {
             guard: &self.guard,
             profile_name: self.selection.name.as_str(),
             profile: &self.selection.profile,
-            resources: &self.resources,
         }
     }
 
@@ -201,7 +198,6 @@ impl McpSessionState {
             guard: &self.guard,
             profile_name: self.selection.name.as_str(),
             profile: &self.selection.profile,
-            resources: &mut self.resources,
             client: &self.client,
             written_paths: &mut self.written_paths,
             changeset: &mut self.changeset,
@@ -259,7 +255,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn session_keeps_result_resources_private() {
+    fn sessions_list_the_profile_tools_and_keep_no_result_store() {
         let temporary = tempfile::tempdir().unwrap();
         let paths = VaultPaths::new(temporary.path());
         let mut first = McpSessionState::new(&paths, Some("readonly")).unwrap();
@@ -273,18 +269,12 @@ mod tests {
             .contains(&"note_create".to_string()));
         assert_eq!(first.selection().name, "readonly");
         assert!(first.attenuate_profile().is_ok());
-        let uri = first.resources.store_json("test", "{\"private\":true}")["uri"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        assert!(first
-            .discovery()
-            .read_resource(&uri, |_| Err("unknown".to_string()))
-            .is_ok());
         assert!(matches!(
-            second
+            first
                 .discovery()
-                .read_resource(&uri, |_| Err("unknown".to_string())),
+                .read_resource("vulcan://tool-results/1.json", |_| Err(
+                    "unknown".to_string()
+                )),
             Err(McpMethodError::JsonRpc {
                 code: crate::mcp_protocol::MCP_RESOURCE_NOT_FOUND,
                 ..

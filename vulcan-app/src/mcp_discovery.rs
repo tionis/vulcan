@@ -9,9 +9,7 @@ use crate::mcp_assistant;
 use crate::mcp_catalog::{visible_tool_catalog, ALWAYS_LOADED_TOOLS};
 use crate::mcp_completion;
 use crate::mcp_help::{self, HelpTopicReport};
-use crate::mcp_protocol::{
-    McpCompletionParams, McpMethodError, McpToolResourceStore, MCP_RESOURCE_NOT_FOUND,
-};
+use crate::mcp_protocol::{McpCompletionParams, McpMethodError, MCP_RESOURCE_NOT_FOUND};
 use crate::tools::CustomToolDescriptor;
 
 pub struct McpDiscovery<'a> {
@@ -19,7 +17,6 @@ pub struct McpDiscovery<'a> {
     pub guard: &'a ProfilePermissionGuard,
     pub profile_name: &'a str,
     pub profile: &'a PermissionProfile,
-    pub resources: &'a McpToolResourceStore,
 }
 
 impl McpDiscovery<'_> {
@@ -106,8 +103,8 @@ impl McpDiscovery<'_> {
         uri: &str,
         resolve_command_help: impl FnOnce(&[String]) -> Result<HelpTopicReport, String>,
     ) -> Result<Value, McpMethodError> {
-        if let Some(stored) = self.resources.read(uri) {
-            return Ok(stored);
+        if let Some(result) = crate::mcp_files::read_vault_resource(self.paths, self.guard, uri) {
+            return result;
         }
         if let Some(result) = mcp_assistant::read_resource(self.paths, self.guard, uri) {
             return result;
@@ -156,13 +153,11 @@ mod tests {
         let paths = VaultPaths::new(temporary.path());
         let selection = resolve_permission_profile(&paths, Some("readonly")).unwrap();
         let guard = ProfilePermissionGuard::new(&paths, selection.clone());
-        let resources = McpToolResourceStore::default();
         let discovery = McpDiscovery {
             paths: &paths,
             guard: &guard,
             profile_name: &selection.name,
             profile: &selection.profile,
-            resources: &resources,
         };
         let tools = discovery.visible_tool_items().unwrap();
         let note_get = tools

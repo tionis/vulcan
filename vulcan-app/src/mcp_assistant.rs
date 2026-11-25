@@ -377,6 +377,19 @@ pub fn visible_resource_templates(
 
     if !guard.selection().profile.read.is_none() {
         templates.push(serde_json::json!({
+            "uriTemplate": "vulcan://note/{path}",
+            "name": "Notes",
+            "title": "Vault Note",
+            "description": "The Markdown source of one note, by vault-relative path such as `Projects/Alpha.md`.",
+            "mimeType": "text/markdown",
+        }));
+        templates.push(serde_json::json!({
+            "uriTemplate": "vulcan://file/{path}",
+            "name": "Files",
+            "title": "Vault File",
+            "description": "One vault file by vault-relative path: text, or base64 for binary files (16 MiB at most).",
+        }));
+        templates.push(serde_json::json!({
             "uriTemplate": "vulcan://assistant/skills/{name}",
             "name": "Assistant Skills",
             "title": "Assistant Skill Resource",

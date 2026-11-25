@@ -5173,6 +5173,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_json_canonicalizer",
+ "serde_path_to_error",
  "sha2",
  "ssh-key",
  "tar",

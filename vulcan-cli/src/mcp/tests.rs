@@ -11,8 +11,6 @@ use std::sync::mpsc;
 use vulcan_app::mcp_dispatch::McpProtocolMethods;
 #[cfg(feature = "oauth")]
 use vulcan_app::mcp_protocol::McpWebFetchArgs;
-#[cfg(feature = "oauth")]
-use vulcan_app::mcp_protocol::MCP_RESOURCE_NOT_FOUND;
 use vulcan_app::mcp_read_tools;
 use vulcan_core::resolve_permission_profile;
 #[cfg(feature = "oauth")]
@@ -877,7 +875,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         .as_str()
         .expect("resource text")
         .contains("\"summary\""));
-    assert_named_listener_large_resources_are_session_scoped(address, &token);
+    assert_named_listener_large_notes_link_their_resource(address, &token);
     let denied_foreground = named_listener_create_note(
         address,
         "parity",
@@ -1409,7 +1407,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
             "{method} changed between foreground and resident hosting"
         );
     }
-    assert_named_listener_large_resources_are_session_scoped(address, &token);
+    assert_named_listener_large_notes_link_their_resource(address, &token);
     assert!(named_listener_method(
         address,
         "parity",
@@ -1778,7 +1776,7 @@ fn assert_named_listener_rejects_foreign_credential(
 }
 
 #[cfg(feature = "oauth")]
-fn assert_named_listener_large_resources_are_session_scoped(address: SocketAddr, token: &str) {
+fn assert_named_listener_large_notes_link_their_resource(address: SocketAddr, token: &str) {
     let owner = named_listener_session_id(&named_listener_initialize(address, "parity", token));
     let peer = named_listener_session_id(&named_listener_initialize(address, "parity", token));
     assert_ne!(owner, peer);
@@ -1796,7 +1794,7 @@ fn assert_named_listener_large_resources_are_session_scoped(address: SocketAddr,
         let body: serde_json::Value =
             serde_json::from_str(response.split_once("\r\n\r\n").expect("tool body").1)
                 .expect("tool JSON");
-        assert!(body["result"].get("structuredContent").is_none());
+        assert_eq!(body["result"]["structuredContent"]["truncated"], true);
         body["result"]["content"]
             .as_array()
             .expect("tool content")
@@ -1822,14 +1820,15 @@ fn assert_named_listener_large_resources_are_session_scoped(address: SocketAddr,
         .expect("resource JSON")
     };
 
+    // A long note links to its own resource, which any session with the same
+    // grant can read: there is no per-session result store.
     let owner_uri = tool_result(&owner, "LargeOwner.md");
-    assert_eq!(owner_uri, "vulcan://tool-results/1.json");
-    assert_eq!(
-        read(&peer, &owner_uri)["error"]["code"],
-        MCP_RESOURCE_NOT_FOUND
-    );
+    assert_eq!(owner_uri, "vulcan://note/LargeOwner.md");
     let peer_uri = tool_result(&peer, "LargePeer.md");
-    assert_eq!(peer_uri, owner_uri);
+    assert_eq!(peer_uri, "vulcan://note/LargePeer.md");
+    assert!(read(&peer, &owner_uri)["result"]["contents"][0]["text"]
+        .as_str()
+        .is_some_and(|text| text.contains(&"x".repeat(70_000))));
     assert!(read(&owner, &owner_uri)["result"]["contents"][0]["text"]
         .as_str()
         .is_some_and(|text| text.contains(&"x".repeat(70_000))));

@@ -14,7 +14,7 @@ use crate::mcp_protocol::{
     McpNoteOutlineArgs, McpNotePatchArgs, McpNoteSetArgs, McpQueryArgs, McpSearchArgs,
     McpSyncConflictsArgs, McpSyncDoctorArgs, McpSyncTargetArgs, McpTaskCompleteArgs,
     McpTaskCreateArgs, McpTaskQueryArgs, McpTaskReminderAddArgs, McpTaskReminderRemoveArgs,
-    McpTaskRescheduleArgs, McpToolResourceStore, McpWebFetchArgs, McpWebSearchArgs,
+    McpTaskRescheduleArgs, McpWebFetchArgs, McpWebSearchArgs,
 };
 use crate::{
     browse, mcp_changesets, mcp_config, mcp_custom, mcp_files, mcp_git, mcp_graph, mcp_notes,
@@ -27,7 +27,6 @@ pub struct McpToolExecution<'a> {
     pub guard: &'a ProfilePermissionGuard,
     pub profile_name: &'a str,
     pub profile: &'a PermissionProfile,
-    pub resources: &'a mut McpToolResourceStore,
     pub client: &'a crate::mcp_session::McpClientAttribution,
     /// Paths this session wrote and has not committed; `git_commit` takes
     /// these by default.
@@ -50,8 +49,7 @@ impl McpToolExecution<'_> {
         let Some(tool) = authorize_builtin_tool_call(name, self.profile, self.profile_name)? else {
             let report =
                 mcp_custom::call_custom_tool(self.paths, self.profile_name, name, arguments)?;
-            return Ok(self.resources.custom_success_response(
-                &report.name,
+            return Ok(crate::mcp_protocol::custom_tool_result(
                 report.result,
                 report.text.as_deref(),
             ));
@@ -66,10 +64,11 @@ impl McpToolExecution<'_> {
         let (structured, written) = crate::commit::record_written_paths(|| match tool.id {
             McpToolId::NoteGet => {
                 let args: McpNoteGetArgs = parse(arguments)?;
-                self.report(
-                    tool.name,
-                    &mcp_read_tools::note_get(self.paths, self.guard, &args)?,
-                )
+                let report = mcp_read_tools::note_get(self.paths, self.guard, &args)?;
+                let mut value = serde_json::to_value(report)
+                    .map_err(|error| McpMethodError::internal(error.to_string()))?;
+                cap_note_content(&mut value);
+                Ok(value)
             }
             McpToolId::NoteOutline => {
                 let args: McpNoteOutlineArgs = parse(arguments)?;
@@ -361,7 +360,16 @@ impl McpToolExecution<'_> {
                 )
             }
         });
-        let structured = structured?;
+        // Arguments the handler could not use are the model's to correct: a
+        // tool error, never a protocol error.
+        let structured = structured.map_err(|error| match error {
+            McpMethodError::JsonRpc {
+                code: -32602,
+                message,
+                ..
+            } => McpMethodError::invalid_argument(message, None),
+            other => other,
+        })?;
         crate::write_attribution::record_batched_writes(
             self.paths,
             &written,
@@ -378,7 +386,22 @@ impl McpToolExecution<'_> {
                 serde_json::to_value(outcome).unwrap_or(Value::Null),
             );
         }
-        Ok(self.resources.success_response(tool.name, structured))
+        let note_link = (tool.id == McpToolId::NoteGet)
+            .then(|| structured.get("content_resource").cloned())
+            .flatten();
+        let mut result = crate::mcp_protocol::tool_result(structured);
+        if let Some(Value::String(uri)) = note_link {
+            if let Some(content) = result["content"].as_array_mut() {
+                content.push(json!({
+                    "type": "resource_link",
+                    "uri": uri,
+                    "name": uri.trim_start_matches("vulcan://note/"),
+                    "mimeType": "text/markdown",
+                    "description": "The whole note; this result holds only its beginning.",
+                }));
+            }
+        }
+        Ok(result)
     }
 
     fn report<T: Serialize>(
@@ -427,9 +450,65 @@ fn wrap_structured(structured: Value) -> Value {
     }
 }
 
+/// Keep a long note's content inline only up to the cap, at a line break,
+/// and point at the note's resource for the rest.
+fn cap_note_content(value: &mut Value) {
+    let limit = crate::mcp_protocol::MCP_CONTENT_INLINE_LIMIT;
+    let Some(content) = value.get("content").and_then(Value::as_str) else {
+        return;
+    };
+    if content.len() <= limit {
+        return;
+    }
+    let mut end = limit;
+    while !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    let end = content[..end].rfind('\n').map_or(end, |line| line + 1);
+    let head = content[..end].to_string();
+    let path = value
+        .get("path")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    value["content"] = Value::String(head);
+    value["truncated"] = Value::Bool(true);
+    value["content_resource"] =
+        Value::String(crate::mcp_files::vault_path_uri("vulcan://note/", &path));
+}
+
+/// Decode tool arguments; a failure is an `invalid_argument` tool error that
+/// names the argument at fault.
 fn parse<T: DeserializeOwned>(arguments: &Map<String, Value>) -> Result<T, McpMethodError> {
-    serde_json::from_value(Value::Object(arguments.clone()))
-        .map_err(|error| McpMethodError::invalid_params(error.to_string()))
+    serde_path_to_error::deserialize(Value::Object(arguments.clone())).map_err(|error| {
+        let path = error.path().to_string();
+        let inner = error.into_inner().to_string();
+        // Serde reports positions within the argument object, which mean
+        // nothing to a caller; drop them.
+        let inner = inner
+            .split(" at line ")
+            .next()
+            .unwrap_or(&inner)
+            .to_string();
+        let missing = inner
+            .strip_prefix("missing field `")
+            .and_then(|rest| rest.split('`').next())
+            .map(ToString::to_string);
+        let unknown = inner
+            .strip_prefix("unknown field `")
+            .and_then(|rest| rest.split('`').next())
+            .map(ToString::to_string);
+        let parameter = missing
+            .or(unknown)
+            .or_else(|| (path != ".").then(|| path.clone()));
+        let message = match &parameter {
+            Some(name) if !inner.contains(&format!("`{name}`")) => {
+                format!("argument `{name}`: {inner}")
+            }
+            _ => inner,
+        };
+        McpMethodError::invalid_argument(message, parameter)
+    })
 }
 
 #[cfg(test)]
@@ -445,13 +524,11 @@ mod tests {
         vulcan_core::scan_vault(&paths, vulcan_core::ScanMode::Full).unwrap();
         let selection = resolve_permission_profile(&paths, Some("readonly")).unwrap();
         let guard = ProfilePermissionGuard::new(&paths, selection.clone());
-        let mut resources = McpToolResourceStore::default();
         let mut executor = McpToolExecution {
             paths: &paths,
             guard: &guard,
             profile_name: &selection.name,
             profile: &selection.profile,
-            resources: &mut resources,
             client: &crate::mcp_session::McpClientAttribution::default(),
             written_paths: &mut BTreeSet::new(),
             changeset: &mut crate::mcp_changesets::McpChangesetBinding::new(&paths),
@@ -495,13 +572,11 @@ mod tests {
         let paths = VaultPaths::new(root);
         let selection = resolve_permission_profile(&paths, Some("unrestricted")).unwrap();
         let guard = ProfilePermissionGuard::new(&paths, selection.clone());
-        let mut resources = McpToolResourceStore::default();
         let mut executor = McpToolExecution {
             paths: &paths,
             guard: &guard,
             profile_name: &selection.name,
             profile: &selection.profile,
-            resources: &mut resources,
             client: &crate::mcp_session::McpClientAttribution::default(),
             written_paths: &mut BTreeSet::new(),
             changeset: &mut crate::mcp_changesets::McpChangesetBinding::new(&paths),
@@ -522,13 +597,11 @@ mod tests {
         let paths = VaultPaths::new(root);
         let selection = resolve_permission_profile(&paths, Some(profile)).unwrap();
         let guard = ProfilePermissionGuard::new(&paths, selection.clone());
-        let mut resources = McpToolResourceStore::default();
         let mut executor = McpToolExecution {
             paths: &paths,
             guard: &guard,
             profile_name: &selection.name,
             profile: &selection.profile,
-            resources: &mut resources,
             client: &crate::mcp_session::McpClientAttribution::default(),
             written_paths: &mut BTreeSet::new(),
             changeset: &mut crate::mcp_changesets::McpChangesetBinding::new(&paths),

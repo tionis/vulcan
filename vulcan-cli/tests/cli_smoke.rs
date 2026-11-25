@@ -34183,7 +34183,7 @@ read = { allow = ["folder:Journal/Daily/**"], deny = ["note:Journal/Daily/2026-0
 }
 
 #[test]
-fn mcp_large_structured_results_are_resource_backed_not_duplicated() {
+fn mcp_long_notes_return_their_beginning_and_link_the_whole_note() {
     let temp_dir = TempDir::new().expect("temp dir");
     let vault_root = temp_dir.path().join("vault");
     initialize_vulcan_dir(&vault_root);
@@ -34199,7 +34199,10 @@ fn mcp_large_structured_results_are_resource_backed_not_duplicated() {
         "params": { "name": "note_get", "arguments": { "note": "Large.md" } }
     }));
     let result = &response.last().expect("large note response")["result"];
-    assert!(result.get("structuredContent").is_none());
+    assert_eq!(result["structuredContent"]["truncated"], true);
+    assert!(result["structuredContent"]["content"]
+        .as_str()
+        .is_some_and(|content| content.len() <= 64 * 1024));
     let uri = result["content"]
         .as_array()
         .and_then(|items| items.iter().find(|item| item["type"] == "resource_link"))
@@ -34213,7 +34216,7 @@ fn mcp_large_structured_results_are_resource_backed_not_duplicated() {
     assert!(
         resource.last().expect("resource response")["result"]["contents"][0]["text"]
             .as_str()
-            .is_some_and(|text| text.len() > 70_000)
+            .is_some_and(|text| text.len() == 70_000)
     );
     assert!(session.finish().is_empty());
 }
@@ -34327,11 +34330,15 @@ fn mcp_query_defaults_to_bounded_compact_results_and_supports_structural_filters
             "query": "LIST", "engine": "dql", "path_prefix": "Journal/Daily"
         }}
     }));
-    assert!(
-        dql_rejection.last().expect("DQL rejection")["error"]["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("DQL supports only"))
+    let dql_rejection = &dql_rejection.last().expect("DQL rejection")["result"];
+    assert_eq!(dql_rejection["isError"], true);
+    assert_eq!(
+        dql_rejection["structuredContent"]["error"]["code"],
+        "invalid_argument"
     );
+    assert!(dql_rejection["structuredContent"]["error"]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("DQL supports only")));
 
     let ctime = session.send(serde_json::json!({
         "jsonrpc": "2.0", "id": 8, "method": "tools/call",

@@ -1278,7 +1278,7 @@ Protocols:
 Supported methods:
   initialize               Negotiate protocol version and report server capabilities
   tools/list               Return the curated headless MCP tool registry
-  tools/call               Execute one MCP tool with bounded structured content or a resource link
+  tools/call               Execute one MCP tool; results are typed structured content
   prompts/list|get         Discover and render vault prompt files
   resources/list|read      Read help docs, AGENTS.md, assistant summaries, and skill content
   resources/templates/list Enumerate parameterized help and skill resource URIs
@@ -1299,7 +1299,8 @@ Notes:
   External OAuth mode validates bearer tokens from an external OIDC provider such as Authentik.
   The permission profile (`--permissions`) alone decides which tools are listed: every tool it allows, nothing else.
   Interactive commands such as browse, edit, open, TUI surfaces, and nested MCP helpers are never exposed.
-  Tool output uses structured JSON reports up to a fixed byte budget; larger results are returned as readable MCP resource links.
+  Tool results always carry structured content; list tools page, and long notes return their beginning with a link to `vulcan://note/{path}`.
+  Input problems come back as tool errors with a stable `error.code` and the argument at fault, so the model can correct them.
 
 Examples:
   vulcan mcp --vault ~/notes

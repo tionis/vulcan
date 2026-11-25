@@ -8799,12 +8799,12 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 
 - [x] Target tool set (spec §6): merges, splits (`link_suggestions`/`link_suggestion_resolve`), renames (`config_get`), removal of `capabilities` (now in `status`), `daily_show`, `daily_list`, `task_list` (merged into `task_query`), `sync_plan`; `graph_communities` no longer persists. `changeset_switch` goes with the stateless core (9.43.6).
 - [ ] Argument conventions (`note`/`path`, `dry_run`, `expected_hash`, `idempotency_key`, `limit`/`cursor`, `detail`, `sort`/`order`), annotations, typed output schemas, `alwaysLoad`.
-- [ ] Results: always `structuredContent`, compact text, no spill store; tool errors with stable codes and parameter names; input validation as tool errors.
+- [x] Results: always `structuredContent`, compact text, no spill store; tool errors with stable codes and parameter names; input validation as tool errors. Long notes return their first 64 KiB and link `vulcan://note/{path}`.
 - [x] Generated instructions (tool-family map), `serverInfo.title`, corrected annotations, `anthropic/alwaysLoad` on the core tools (also in `describe --format mcp`).
 
 ### 9.43.4 Resources, prompts and help
 
-- [ ] `vulcan://note/{path}`, `vulcan://file/{path}`, MCP-terms help as `text/markdown`, `vulcan://agents`; remove `vulcan://assistant/*` and `vulcan://tool-results/*`; standard prompt arguments.
+- [ ] `vulcan://note/{path}` and `vulcan://file/{path}` (done, with path completion; `vulcan://tool-results/*` removed), MCP-terms help as `text/markdown`, `vulcan://agents`; remove `vulcan://assistant/*`; standard prompt arguments.
 
 ### 9.43.5 MCP-aware bundled skills
 

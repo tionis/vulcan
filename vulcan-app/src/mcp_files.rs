@@ -127,6 +127,126 @@ pub fn file_get(
     })
 }
 
+/// The largest file a `vulcan://file/{path}` read returns.
+const FILE_RESOURCE_MAX_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Encode a vault path for a `vulcan://note/` or `vulcan://file/` URI:
+/// everything but unreserved characters and `/` is percent-encoded.
+#[must_use]
+pub fn vault_path_uri(scheme_prefix: &str, path: &str) -> String {
+    use std::fmt::Write as _;
+
+    let mut uri = String::from(scheme_prefix);
+    for byte in path.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/') {
+            uri.push(char::from(byte));
+        } else {
+            let _ = write!(uri, "%{byte:02X}");
+        }
+    }
+    uri
+}
+
+fn decode_uri_path(encoded: &str) -> Option<String> {
+    let bytes = encoded.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hex = encoded.get(index + 1..index + 3)?;
+            decoded.push(u8::from_str_radix(hex, 16).ok()?);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+/// Read a `vulcan://note/{path}` or `vulcan://file/{path}` resource under the
+/// caller's read permission. `None` when the URI is neither.
+#[must_use]
+pub fn read_vault_resource(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    uri: &str,
+) -> Option<Result<serde_json::Value, McpMethodError>> {
+    let (note, encoded) = if let Some(rest) = uri.strip_prefix("vulcan://note/") {
+        (true, rest)
+    } else {
+        (false, uri.strip_prefix("vulcan://file/")?)
+    };
+    Some(read_vault_resource_at(paths, guard, uri, note, encoded))
+}
+
+fn read_vault_resource_at(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    uri: &str,
+    note: bool,
+    encoded: &str,
+) -> Result<serde_json::Value, McpMethodError> {
+    let not_found = || McpMethodError::JsonRpc {
+        code: crate::mcp_protocol::MCP_RESOURCE_NOT_FOUND,
+        message: format!("Resource not found: {uri}"),
+        data: Some(serde_json::json!({ "uri": uri })),
+    };
+    let path = decode_uri_path(encoded).ok_or_else(not_found)?;
+    let path = vault_file_path(&path).map_err(|_| not_found())?;
+    if note
+        && Path::new(&path)
+            .extension()
+            .is_none_or(|extension| extension != "md")
+    {
+        return Err(not_found());
+    }
+    // A path the caller may not read looks like one that does not exist.
+    guard.check_read_path(&path).map_err(|_| not_found())?;
+    let mut file = vulcan_core::paths::secure_open_read(paths.vault_root(), Path::new(&path))
+        .map_err(|_| not_found())?;
+    let metadata = file.metadata().map_err(tool_error)?;
+    if !metadata.is_file() {
+        return Err(not_found());
+    }
+    if metadata.len() > FILE_RESOURCE_MAX_BYTES {
+        return Err(McpMethodError::tool(format!(
+            "`{path}` is larger than {FILE_RESOURCE_MAX_BYTES} bytes; read it in parts with file_get"
+        )));
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(tool_error)?;
+    let content = match String::from_utf8(bytes) {
+        Ok(text) => serde_json::json!({
+            "uri": uri,
+            "mimeType": if note { "text/markdown" } else { text_mime_type(&path) },
+            "text": text,
+        }),
+        Err(error) => serde_json::json!({
+            "uri": uri,
+            "mimeType": "application/octet-stream",
+            "blob": base64::engine::general_purpose::STANDARD.encode(error.as_bytes()),
+        }),
+    };
+    Ok(serde_json::json!({ "contents": [content] }))
+}
+
+fn text_mime_type(path: &str) -> &'static str {
+    match Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("md" | "markdown") => "text/markdown",
+        Some("json" | "base" | "canvas") => "application/json",
+        Some("yaml" | "yml") => "application/yaml",
+        Some("csv") => "text/csv",
+        Some("html" | "htm") => "text/html",
+        _ => "text/plain",
+    }
+}
+
 pub fn file_put(
     paths: &VaultPaths,
     guard: &ProfilePermissionGuard,
@@ -217,6 +337,54 @@ pub fn file_put(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vault_resources_read_notes_and_files_under_the_read_permission() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        let paths = VaultPaths::new(root);
+        vulcan_core::paths::initialize_vulcan_dir(&paths).unwrap();
+        std::fs::write(
+            paths.config_file(),
+            "[permissions.profiles.scoped]\nread = { allow = [\"folder:Public/**\"] }\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("Public")).unwrap();
+        std::fs::write(root.join("Public/My Note.md"), "# Mine\n").unwrap();
+        std::fs::write(root.join("Public/data.bin"), [0_u8, 159, 146, 150]).unwrap();
+        std::fs::write(root.join("Secret.md"), "# Secret\n").unwrap();
+        let guard = |profile: &str| {
+            ProfilePermissionGuard::new(
+                &paths,
+                vulcan_core::resolve_permission_profile(&paths, Some(profile)).unwrap(),
+            )
+        };
+        let scoped = guard("scoped");
+        let uri = vault_path_uri("vulcan://note/", "Public/My Note.md");
+        assert_eq!(uri, "vulcan://note/Public/My%20Note.md");
+        let note = read_vault_resource(&paths, &scoped, &uri).unwrap().unwrap();
+        assert_eq!(note["contents"][0]["mimeType"], "text/markdown");
+        assert_eq!(note["contents"][0]["text"], "# Mine\n");
+        let binary = read_vault_resource(&paths, &scoped, "vulcan://file/Public/data.bin")
+            .unwrap()
+            .unwrap();
+        assert!(binary["contents"][0]["blob"].is_string());
+        for hidden in [
+            "vulcan://note/Secret.md",
+            "vulcan://note/Public/data.bin",
+            "vulcan://file/.vulcan/config.toml",
+            "vulcan://note/../outside.md",
+        ] {
+            assert!(
+                matches!(
+                    read_vault_resource(&paths, &scoped, hidden),
+                    Some(Err(McpMethodError::JsonRpc { .. }))
+                ),
+                "{hidden}"
+            );
+        }
+        assert!(read_vault_resource(&paths, &scoped, "vulcan://help/overview").is_none());
+    }
     use vulcan_core::paths::initialize_vulcan_dir;
     use vulcan_core::resolve_permission_profile;
 

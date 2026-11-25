@@ -392,7 +392,7 @@ pub fn jsonrpc_error(id: Value, code: i64, message: String, data: Option<Value>)
 }
 
 pub fn tool_error_response(id: Value, message: String, structured: Option<Value>) -> Value {
-    let structured = structured.unwrap_or_else(|| serde_json::json!({ "error": message }));
+    let structured = crate::mcp_protocol::tool_error_structured(&message, structured);
     jsonrpc_result(
         id,
         serde_json::json!({

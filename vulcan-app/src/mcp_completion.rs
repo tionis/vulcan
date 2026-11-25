@@ -71,6 +71,22 @@ pub fn complete(
                 .filter(|name| name.starts_with(prefix))
                 .collect()
         }
+        McpCompletionReference::Resource { uri } if uri == "vulcan://note/{path}" => {
+            if params.argument.name != "path" {
+                return Err(McpMethodError::invalid_params(format!(
+                    "resource template `{uri}` does not define argument `{}`",
+                    params.argument.name
+                )));
+            }
+            note_candidates(paths, guard, prefix)
+                .into_iter()
+                .filter(|candidate| {
+                    std::path::Path::new(candidate)
+                        .extension()
+                        .is_some_and(|extension| extension == "md")
+                })
+                .collect()
+        }
         McpCompletionReference::Resource { uri } => {
             return Err(McpMethodError::invalid_params(format!(
                 "unknown completion reference `{uri}`"

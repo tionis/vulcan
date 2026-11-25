@@ -31,6 +31,7 @@ rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_json_canonicalizer.workspace = true
+serde_path_to_error.workspace = true
 semver.workspace = true
 sha2.workspace = true
 ssh-key.workspace = true
