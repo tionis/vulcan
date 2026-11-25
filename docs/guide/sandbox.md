@@ -67,6 +67,37 @@ All but `readonly` and `unrestricted` cap JavaScript at 5 s CPU, 64 MB memory an
 in a vault or device file changes only the fields it sets; the rest keep the built-in's values, so
 give a tailored profile its own name.
 
+### Path rules
+
+`read`, `write` and `refactor` are each either `"all"`, `"none"`, or a table of `allow` and
+`deny` lists. A path is allowed when an `allow` entry matches it and no `deny` entry does:
+
+```toml
+[permissions.profiles.worldbuilder]
+read = { allow = ["folder:Worlds/**"], deny = ["tag:rating/explicit"] }
+write = { allow = ["folder:Worlds/**"], deny = ["tag:rating/explicit"] }
+```
+
+- `folder:<glob>` matches paths under the glob (`folder:Worlds/**`, `folder:Journal/2026-*/**`);
+  `folder:**` matches every path.
+- `note:<path>` matches one file, such as `note:Inbox.md`.
+- `tag:<tag>` matches notes carrying the tag or one nested under it (`tag:rating/explicit` also
+  matches `rating/explicit/gore`), from frontmatter or inline `#tags`.
+
+`"all"` and `"none"` are only keywords as the whole value. Inside a list, write `folder:**`: a bare
+`all` there names a note called `all`.
+
+Tag rules apply everywhere a profile is checked: listings, search and queries, and direct reads,
+writes and refactors of a path. Direct checks read the note's tags from the file as it is now, not
+from the index, so an unscanned or stale index never lifts a tag deny. A new note has no tags until
+it is written, so a tag deny does not stop creating one in an allowed folder.
+
+A profile whose reads are limited to some folders must also be able to read the mdbase control
+files before it can write, even in a vault without an mdbase collection: Vulcan has to see
+`mdbase.yaml` and every type under `_types/` to know which schema a write must satisfy. Without
+them writes fail with "permission denied for required mdbase controls". Add
+`"note:mdbase.yaml"` and `"folder:_types/**"` to the profile's read `allow` list.
+
 ### Whose profile it is
 
 A profile you select on this device is your limit, so it must be one this device defines: a

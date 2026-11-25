@@ -221,8 +221,26 @@ pub trait PermissionGuard {
         Ok(())
     }
 
+    /// The tags of the note at `path` as it is now, for rules that select
+    /// notes by tag; `None` when they cannot be determined, which a rule
+    /// naming a tag treats as denied. Guards without a vault see no tags.
+    fn path_tags(&self, _path: &str) -> Option<Vec<String>> {
+        Some(Vec::new())
+    }
+
+    /// Whether `permission` allows `path`, with the note's tags when a rule
+    /// names one: a tag deny then applies to direct reads and writes as it
+    /// does to listings, and a tag allow can grant them.
+    fn path_is_allowed(&self, permission: &PathPermission, path: &str) -> bool {
+        if !permission.mentions_tags() {
+            return permission.is_allowed(path);
+        }
+        self.path_tags(path)
+            .is_some_and(|tags| permission.is_allowed_with_tags(path, &tags))
+    }
+
     fn check_read_path(&self, path: &str) -> Result<(), PermissionError> {
-        if self.read_filter().is_allowed(path) {
+        if self.path_is_allowed(&self.grant().read, path) {
             self.check_policy_decision("read", Some(path))
         } else {
             Err(PermissionError::PathDenied {
@@ -234,7 +252,7 @@ pub trait PermissionGuard {
     }
 
     fn check_write_path(&self, path: &str) -> Result<(), PermissionError> {
-        if self.write_filter().is_allowed(path) {
+        if self.path_is_allowed(&self.grant().write, path) {
             self.check_policy_decision("write", Some(path))
         } else {
             Err(PermissionError::PathDenied {
@@ -246,7 +264,7 @@ pub trait PermissionGuard {
     }
 
     fn check_refactor_path(&self, path: &str) -> Result<(), PermissionError> {
-        if self.refactor_filter().is_allowed(path) {
+        if self.path_is_allowed(&self.grant().refactor, path) {
             self.check_policy_decision("refactor", Some(path))
         } else {
             Err(PermissionError::PathDenied {
@@ -577,6 +595,38 @@ impl PermissionGuard for ProfilePermissionGuard {
     fn has_policy_hook(&self) -> bool {
         self.enable_policy_hooks && self.selection.profile.policy_hook.is_some()
     }
+
+    /// Tags parsed from the file on disk, not the index, so a stale or
+    /// missing cache cannot lift a tag deny. A path with no file yet (a note
+    /// being created) has no tags; a file that exists but cannot be read is
+    /// `None`.
+    fn path_tags(&self, path: &str) -> Option<Vec<String>> {
+        let normalized = normalize_permission_path(path);
+        if !std::path::Path::new(&normalized)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+        {
+            return Some(Vec::new());
+        }
+        let source = match crate::paths::secure_read_to_string(
+            self.paths.vault_root(),
+            Path::new(&normalized),
+        ) {
+            Ok(source) => source,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Some(Vec::new());
+            }
+            Err(_) => return None,
+        };
+        let config = crate::config::load_vault_config(&self.paths).config;
+        Some(
+            crate::parser::parse_document(&source, &config)
+                .tags
+                .into_iter()
+                .map(|tag| tag.tag_text)
+                .collect(),
+        )
+    }
 }
 
 impl PermissionGrant {
@@ -650,6 +700,15 @@ impl PathPermission {
     #[must_use]
     pub fn is_unrestricted(&self) -> bool {
         self.allow == [ResourceSpecifier::All] && self.deny.is_empty()
+    }
+
+    /// Whether an allow or deny rule selects notes by tag.
+    #[must_use]
+    pub fn mentions_tags(&self) -> bool {
+        self.allow
+            .iter()
+            .chain(&self.deny)
+            .any(|specifier| matches!(specifier, ResourceSpecifier::Tag(_)))
     }
 
     #[must_use]
@@ -1359,6 +1418,75 @@ fn extract_network_host(target: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A tag deny applies to direct path reads, writes and refactors, not
+    /// only to listings, whatever kind of allow grants the folder. The tags
+    /// come from the file itself, so an unscanned or stale index cannot lift
+    /// the deny.
+    #[test]
+    fn tag_denies_apply_to_direct_paths_under_a_folder_allow() {
+        use super::PermissionGuard as _;
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        std::fs::create_dir_all(root.join(".vulcan")).unwrap();
+        std::fs::create_dir_all(root.join("Worlds/Saga")).unwrap();
+        std::fs::write(
+            root.join(".vulcan/config.toml"),
+            concat!(
+                "[permissions.profiles.worlds]\n",
+                "read = { allow = [\"folder:Worlds/**\"], deny = [\"tag:rating/explicit\"] }\n",
+                "write = { allow = [\"folder:Worlds/**\"], deny = [\"tag:rating/explicit\"] }\n",
+                "refactor = { allow = [\"folder:Worlds/**\"], deny = [\"tag:rating/explicit\"] }\n",
+                "[permissions.profiles.tagged]\n",
+                "read = { allow = [\"tag:public\"] }\n",
+            ),
+        )
+        .unwrap();
+        let note = |name: &str, contents: &str| std::fs::write(root.join(name), contents).unwrap();
+        note(
+            "Worlds/Saga/front.md",
+            "---\ntags: [rating/explicit]\n---\nsecret\n",
+        );
+        note("Worlds/Saga/inline.md", "A scene #rating/explicit\n");
+        note(
+            "Worlds/Saga/nested.md",
+            "---\ntags: [rating/explicit/gore]\n---\n",
+        );
+        note("Worlds/Saga/fine.md", "---\ntags: [rating/general]\n---\n");
+        note("Worlds/Saga/public.md", "#public\n");
+        let paths = crate::VaultPaths::new(root);
+        let guard = |name: &str| {
+            super::ProfilePermissionGuard::new(
+                &paths,
+                super::resolve_permission_profile(&paths, Some(name)).unwrap(),
+            )
+        };
+
+        let worlds = guard("worlds");
+        for denied in [
+            "Worlds/Saga/front.md",
+            "Worlds/Saga/inline.md",
+            "Worlds/Saga/nested.md",
+        ] {
+            assert!(worlds.check_read_path(denied).is_err(), "read {denied}");
+            assert!(worlds.check_write_path(denied).is_err(), "write {denied}");
+            assert!(
+                worlds.check_refactor_path(denied).is_err(),
+                "refactor {denied}"
+            );
+        }
+        assert!(worlds.check_read_path("Worlds/Saga/fine.md").is_ok());
+        assert!(
+            worlds.check_write_path("Worlds/Saga/new.md").is_ok(),
+            "new notes have no tags"
+        );
+        assert!(worlds.check_read_path("Elsewhere.md").is_err());
+
+        // A tag allow grants direct reads too.
+        let tagged = guard("tagged");
+        assert!(tagged.check_read_path("Worlds/Saga/public.md").is_ok());
+        assert!(tagged.check_read_path("Worlds/Saga/fine.md").is_err());
+    }
 
     #[test]
     fn glob_fast_paths_match_the_backtracking_matcher() {
