@@ -1259,18 +1259,15 @@ pub fn git_commit_input_schema() -> Value {
         vec![
             ("message", schema_string("Commit message.")),
             (
-                "scope",
-                schema_string_enum(
-                    "What to commit: `session` (default) commits only the files this session's writes changed, `all` every uncommitted vault change, `paths` the listed `paths`.",
-                    &["session", "all", "paths"],
-                ),
-            ),
-            (
                 "paths",
                 schema_array(
                     schema_string("Vault-relative file path."),
-                    "Vault-relative files to commit (implies scope `paths`).",
+                    "Files to commit. In the vault, name them or pass `all`; in a `changeset`, everything is committed when omitted.",
                 ),
+            ),
+            (
+                "all",
+                schema_boolean("Commit every uncommitted change in the vault, including other writers' edits; check `git_status` first."),
             ),
         ],
         &["message"],
@@ -1291,19 +1288,9 @@ pub fn changeset_id_input_schema() -> Value {
     schema_object(
         vec![(
             "id",
-            schema_string("Changeset id; defaults to the changeset attached to this session."),
+            schema_string("Changeset id, as `changeset_begin` returned it."),
         )],
-        &[],
-    )
-}
-
-pub fn changeset_switch_input_schema() -> Value {
-    schema_object(
-        vec![(
-            "id",
-            schema_string("Changeset to work in; omit to return to the vault itself."),
-        )],
-        &[],
+        &["id"],
     )
 }
 
@@ -1314,10 +1301,7 @@ pub fn changeset_list_input_schema() -> Value {
 pub fn changeset_land_input_schema() -> Value {
     schema_object(
         vec![
-            (
-                "id",
-                schema_string("Changeset id; defaults to the changeset attached to this session."),
-            ),
+            ("id", schema_string("Changeset id, as `changeset_begin` returned it.")),
             (
                 "message",
                 schema_string(
@@ -1325,8 +1309,21 @@ pub fn changeset_land_input_schema() -> Value {
                 ),
             ),
         ],
-        &[],
+        &["id"],
     )
+}
+
+/// Add the optional `changeset` argument to a tool's input schema.
+pub fn with_changeset_argument(mut schema: Value) -> Value {
+    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        properties.insert(
+            "changeset".to_string(),
+            schema_string(
+                "Work in this changeset (an id from `changeset_begin`) instead of the vault.",
+            ),
+        );
+    }
+    schema
 }
 
 #[cfg(test)]

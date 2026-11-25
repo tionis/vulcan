@@ -1,7 +1,7 @@
 ---
 name: git-workflow
 description: Inspect vault changes, review history, create intentional commits, or synchronize a Git-backed vault's committed history with `vulcan sync`.
-version: 69
+version: 70
 tools:
   - git_status
   - git_diff
@@ -9,7 +9,6 @@ tools:
   - git_blame
   - git_commit
   - changeset_begin
-  - changeset_switch
   - changeset_list
   - changeset_land
   - changeset_abandon
@@ -34,22 +33,21 @@ A vault can be one directory of a larger Git repository, such as the `docs/` dir
 ## Recommended Flow
 
 <!-- vulcan:mcp -->
-- With Git access, the profile gives you `git_status`, `git_diff`, `git_log`, `git_blame`, and `git_commit`. `git_log` and `git_blame` page with `cursor` and are concise unless you pass `detail: "full"` (blame then lists every line instead of ranges per commit). Commit your own work unless auto-commit already did, since sync carries only commits. `git_commit` commits only the files your session's writes changed (including every file a `note_move` rewrote), so other writers' edits stay out of your commit; its result lists anything of yours still uncommitted as `session_uncommitted`. Use `scope: "all"` only after `git_status` shows every change is meant to go in, or `paths` to name files changed outside MCP writes. The commit records your client in `Vulcan-MCP-*` trailers, and so does a batched auto-commit that takes writes you left uncommitted.
+- With Git access, the profile gives you `git_status`, `git_diff`, `git_log`, `git_blame`, and `git_commit`. `git_log` and `git_blame` page with `cursor` and are concise unless you pass `detail: "full"` (blame then lists every line instead of ranges per commit). Commit your own work unless auto-commit already did, since sync carries only commits. Name what you commit in `paths`: the notes you wrote, and for a `note_move` every file in its `rewritten_files`, so other writers' edits stay out of your commit. Pass `all: true` instead only after `git_status` shows every change is meant to go in. The commit records your client in `Vulcan-MCP-*` trailers, and so does a batched auto-commit that takes writes you left uncommitted.
 
 - For a larger or multi-step change that should not be half-visible (a restructure, many linked
-  edits), start a changeset with `changeset_begin`. Your session's tools then work in a separate
+  edits), start a changeset with `changeset_begin` and keep its `id`. Pass it as `changeset` to
+  note, file, search, query, daily, task, and git tools: those calls then work in a separate
   worktree outside the vault, on branch `vulcan/changeset/<id>`, which other writers, sync, and
-  auto-commit do not see; write results report `uncommitted` there. Commit steps with
-  `git_commit` as usual, then `changeset_land` (with `message` to commit leftovers) fast-forwards
-  the vault's branch, rebasing first if it moved. A rebase conflict keeps the changeset unchanged
-  and names the paths: `changeset_switch {}` back to the vault, look, and either fix the vault
-  side or `changeset_abandon` and redo the change. `changeset_list` shows open changesets;
-  `changeset_switch {"id": …}` resumes one. Inside a changeset the vault's skill tools (and
-  their device grants) work as long as you have not edited the skill or its permission profile
-  there; they run in the changeset's worktree, so a check tool checks your staged work. Edited
-  tools are refused until landed. If someone lands or abandons your changeset meanwhile, your
-  next call fails once with "no longer exists" and the session is back on the vault: check
-  `git_log` before repeating the call. Empty changesets idle for a day are removed
+  auto-commit do not see; calls without it still see the vault. Write results report
+  `uncommitted` there. `git_commit` with `changeset` commits everything in it (no `paths`
+  needed). `changeset_land` with `id` (and `message` to commit leftovers) fast-forwards the
+  vault's branch, rebasing first if it moved. A rebase conflict keeps the changeset unchanged and
+  names the paths: look at the vault side (calls without `changeset`), then fix it or
+  `changeset_abandon` and redo the change. `changeset_list` shows open changesets. Custom skill
+  tools always run on the vault. If someone lands or abandons your changeset meanwhile, a call
+  naming it fails with `not_found` on `changeset`: check `git_log` before repeating the work.
+  Empty changesets idle for a day are removed
   automatically; land or abandon yours rather than leaving them.
 <!-- /vulcan:mcp -->
 <!-- vulcan:cli -->

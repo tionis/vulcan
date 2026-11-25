@@ -3,10 +3,9 @@
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
-use std::collections::BTreeSet;
 use vulcan_core::{PermissionProfile, ProfilePermissionGuard, VaultPaths};
 
-use crate::mcp_catalog::{authorize_builtin_tool_call, McpToolId};
+use crate::mcp_catalog::{accepts_changeset, authorize_builtin_tool_call, tool_by_name, McpToolId};
 use crate::mcp_protocol::{
     self, McpConfigGetArgs, McpConfigSetArgs, McpDailyArgs, McpGraphCommunitiesArgs,
     McpIndexScanArgs, McpLinkSuggestionResolveArgs, McpLinkSuggestionsArgs, McpMethodError,
@@ -28,19 +27,51 @@ pub struct McpToolExecution<'a> {
     pub profile_name: &'a str,
     pub profile: &'a PermissionProfile,
     pub client: &'a crate::mcp_session::McpClientAttribution,
-    /// Paths this session wrote and has not committed; `git_commit` takes
-    /// these by default.
-    pub written_paths: &'a mut BTreeSet<String>,
-    /// The vault and the changeset this session works in.
-    pub changeset: &'a mut crate::mcp_changesets::McpChangesetBinding,
 }
 
 impl McpToolExecution<'_> {
-    #[allow(clippy::too_many_lines)]
+    /// Run one tool call. A `changeset` argument on a tool that takes one
+    /// runs the call in that changeset's worktree instead of the vault.
     pub fn call_tool(
-        &mut self,
+        &self,
         name: &str,
         arguments: &Map<String, Value>,
+    ) -> Result<Value, McpMethodError> {
+        let builtin = tool_by_name(name);
+        let Some(changeset) = arguments.get("changeset").filter(|_| builtin.is_some()) else {
+            return self.call_tool_in_tree(name, arguments, false);
+        };
+        // Authorize first, so a hidden tool stays unknown.
+        authorize_builtin_tool_call(name, self.profile, self.profile_name)?;
+        if builtin.is_some_and(|tool| !accepts_changeset(tool.id)) {
+            return Err(McpMethodError::invalid_argument(
+                format!("`{name}` does not work in a changeset; call it without `changeset`"),
+                Some("changeset".to_string()),
+            ));
+        }
+        let Some(id) = changeset.as_str() else {
+            return Err(McpMethodError::invalid_argument(
+                "`changeset` is a changeset id string",
+                Some("changeset".to_string()),
+            ));
+        };
+        let (paths, guard) = mcp_changesets::changeset_worktree(self.paths, self.guard, id)?;
+        let mut arguments = arguments.clone();
+        arguments.remove("changeset");
+        McpToolExecution {
+            paths: &paths,
+            guard: &guard,
+            ..*self
+        }
+        .call_tool_in_tree(name, &arguments, true)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn call_tool_in_tree(
+        &self,
+        name: &str,
+        arguments: &Map<String, Value>,
+        in_changeset: bool,
     ) -> Result<Value, McpMethodError> {
         // As the CLI does before each command: finish an interrupted mdbase
         // write this connection may touch, so it does not block the call. A
@@ -292,29 +323,24 @@ impl McpToolExecution<'_> {
                     self.guard,
                     self.profile_name,
                     self.client,
-                    self.written_paths,
+                    in_changeset,
                     &args,
                 )?;
                 self.value(tool.name, report)
             }
             McpToolId::ChangesetBegin => {
                 let args: mcp_protocol::McpChangesetBeginArgs = parse(arguments)?;
-                let report = mcp_changesets::changeset_begin(self.changeset, self.guard, &args)?;
-                self.value(tool.name, report)
-            }
-            McpToolId::ChangesetSwitch => {
-                let args: mcp_protocol::McpChangesetIdArgs = parse(arguments)?;
-                let report = mcp_changesets::changeset_switch(self.changeset, self.guard, &args)?;
+                let report = mcp_changesets::changeset_begin(self.paths, self.guard, &args)?;
                 self.value(tool.name, report)
             }
             McpToolId::ChangesetList => {
-                let report = mcp_changesets::changeset_list(self.changeset, self.guard)?;
+                let report = mcp_changesets::changeset_list(self.paths, self.guard)?;
                 self.value(tool.name, report)
             }
             McpToolId::ChangesetLand => {
                 let args: mcp_protocol::McpChangesetLandArgs = parse(arguments)?;
                 let report = mcp_changesets::changeset_land(
-                    self.changeset,
+                    self.paths,
                     self.guard,
                     self.profile_name,
                     self.client,
@@ -324,7 +350,7 @@ impl McpToolExecution<'_> {
             }
             McpToolId::ChangesetAbandon => {
                 let args: mcp_protocol::McpChangesetIdArgs = parse(arguments)?;
-                let report = mcp_changesets::changeset_abandon(self.changeset, self.guard, &args)?;
+                let report = mcp_changesets::changeset_abandon(self.paths, self.guard, &args)?;
                 self.value(tool.name, report)
             }
             McpToolId::WebSearch => {
@@ -370,12 +396,14 @@ impl McpToolExecution<'_> {
             } => McpMethodError::invalid_argument(message, None),
             other => other,
         })?;
-        crate::write_attribution::record_batched_writes(
-            self.paths,
-            &written,
-            &self.client.trailers(self.profile_name),
-        );
-        self.written_paths.extend(written);
+        // Nothing auto-commits a changeset worktree.
+        if !in_changeset {
+            crate::write_attribution::record_batched_writes(
+                self.paths,
+                &written,
+                &self.client.trailers(self.profile_name),
+            );
+        }
         let mut structured = wrap_structured(structured);
         if let (Some((before, no_commit)), Some(object)) =
             (commit_probe, structured.as_object_mut())
@@ -404,11 +432,7 @@ impl McpToolExecution<'_> {
         Ok(result)
     }
 
-    fn report<T: Serialize>(
-        &mut self,
-        tool_name: &str,
-        report: &T,
-    ) -> Result<Value, McpMethodError> {
+    fn report<T: Serialize>(&self, tool_name: &str, report: &T) -> Result<Value, McpMethodError> {
         let value = serde_json::to_value(report).map_err(|error| {
             McpMethodError::internal(format!("failed to serialize `{tool_name}` report: {error}"))
         })?;
@@ -416,7 +440,7 @@ impl McpToolExecution<'_> {
     }
 
     #[allow(clippy::unnecessary_wraps, clippy::unused_self)] // Keeps infallible response branches uniform with fallible workflow arms.
-    fn value(&mut self, _tool_name: &str, value: Value) -> Result<Value, McpMethodError> {
+    fn value(&self, _tool_name: &str, value: Value) -> Result<Value, McpMethodError> {
         Ok(value)
     }
 }
@@ -524,14 +548,12 @@ mod tests {
         vulcan_core::scan_vault(&paths, vulcan_core::ScanMode::Full).unwrap();
         let selection = resolve_permission_profile(&paths, Some("readonly")).unwrap();
         let guard = ProfilePermissionGuard::new(&paths, selection.clone());
-        let mut executor = McpToolExecution {
+        let executor = McpToolExecution {
             paths: &paths,
             guard: &guard,
             profile_name: &selection.name,
             profile: &selection.profile,
             client: &crate::mcp_session::McpClientAttribution::default(),
-            written_paths: &mut BTreeSet::new(),
-            changeset: &mut crate::mcp_changesets::McpChangesetBinding::new(&paths),
         };
         let status = executor.call_tool("status", &Map::new()).unwrap();
         assert_eq!(
@@ -593,14 +615,12 @@ mod tests {
                 .unwrap_or_else(|| panic!("{name} declares an output schema")))(
             );
             let validator = jsonschema::draft202012::new(&schema).unwrap();
-            let mut executor = McpToolExecution {
+            let executor = McpToolExecution {
                 paths: &paths,
                 guard: &guard,
                 profile_name: &selection.name,
                 profile: &selection.profile,
                 client: &crate::mcp_session::McpClientAttribution::default(),
-                written_paths: &mut BTreeSet::new(),
-                changeset: &mut crate::mcp_changesets::McpChangesetBinding::new(&paths),
             };
             let result = executor
                 .call_tool(name, arguments.as_object().unwrap())
@@ -651,14 +671,12 @@ mod tests {
         let paths = VaultPaths::new(root);
         let selection = resolve_permission_profile(&paths, Some("unrestricted")).unwrap();
         let guard = ProfilePermissionGuard::new(&paths, selection.clone());
-        let mut executor = McpToolExecution {
+        let executor = McpToolExecution {
             paths: &paths,
             guard: &guard,
             profile_name: &selection.name,
             profile: &selection.profile,
             client: &crate::mcp_session::McpClientAttribution::default(),
-            written_paths: &mut BTreeSet::new(),
-            changeset: &mut crate::mcp_changesets::McpChangesetBinding::new(&paths),
         };
         let arguments = Map::from_iter([
             ("note".to_string(), json!("Home.md")),
@@ -676,14 +694,12 @@ mod tests {
         let paths = VaultPaths::new(root);
         let selection = resolve_permission_profile(&paths, Some(profile)).unwrap();
         let guard = ProfilePermissionGuard::new(&paths, selection.clone());
-        let mut executor = McpToolExecution {
+        let executor = McpToolExecution {
             paths: &paths,
             guard: &guard,
             profile_name: &selection.name,
             profile: &selection.profile,
             client: &crate::mcp_session::McpClientAttribution::default(),
-            written_paths: &mut BTreeSet::new(),
-            changeset: &mut crate::mcp_changesets::McpChangesetBinding::new(&paths),
         };
         let arguments = arguments.as_object().cloned().unwrap_or_default();
         executor
@@ -749,7 +765,7 @@ mod tests {
             root,
             "unrestricted",
             "git_commit",
-            &json!({"message": "Move the idea", "scope": "all"}),
+            &json!({"message": "Move the idea", "all": true}),
         )
         .unwrap();
         assert_eq!(committed["committed"], true, "{committed}");
@@ -775,8 +791,20 @@ mod tests {
         assert_eq!(full["lines"].as_array().unwrap().len(), 1, "{full}");
     }
 
+    pub(crate) fn error_parameter(error: &McpMethodError) -> Option<String> {
+        match error {
+            McpMethodError::Tool {
+                structured: Some(structured),
+                ..
+            } => structured["error"]["parameter"]
+                .as_str()
+                .map(str::to_string),
+            _ => None,
+        }
+    }
+
     #[test]
-    fn git_commit_takes_only_this_sessions_writes_and_names_the_client() {
+    fn git_commit_takes_named_paths_or_everything_and_names_the_client() {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path();
         git(root, &["init", "--quiet"]);
@@ -803,8 +831,8 @@ mod tests {
                 .map(|result| result["structuredContent"].clone())
         };
 
-        let nothing = call("git_commit", json!({"message": "Nothing yet"})).unwrap();
-        assert_eq!(nothing["committed"], false, "{nothing}");
+        let unnamed = call("git_commit", json!({"message": "What?"})).unwrap_err();
+        assert_eq!(error_parameter(&unnamed).as_deref(), Some("paths"));
 
         // The move changes three files; another writer changes a fourth.
         call(
@@ -814,9 +842,12 @@ mod tests {
         .unwrap();
         std::fs::write(root.join("Other.md"), "# Other, edited elsewhere\n").unwrap();
 
-        let committed = call("git_commit", json!({"message": "Move the idea"})).unwrap();
+        let committed = call(
+            "git_commit",
+            json!({"message": "Move the idea", "paths": ["Home.md", "Inbox/Idea.md", "Projects/Idea.md"]}),
+        )
+        .unwrap();
         assert_eq!(committed["committed"], true, "{committed}");
-        assert_eq!(committed["scope"], "session");
         assert_eq!(
             committed["files"],
             json!(["Home.md", "Inbox/Idea.md", "Projects/Idea.md"]),
@@ -835,22 +866,14 @@ mod tests {
             git_stdout(root, &["status", "--porcelain"]).trim(),
             "M Other.md"
         );
-        assert!(session.written_paths().is_empty());
-
-        let mut call = |name: &str, arguments: Value| {
-            session
-                .call_tool(name, arguments.as_object().unwrap())
-                .map(|result| result["structuredContent"].clone())
-        };
-        let again = call("git_commit", json!({"message": "Again"})).unwrap();
-        assert_eq!(again["committed"], false, "{again}");
-        let rest = call("git_commit", json!({"message": "The rest", "scope": "all"})).unwrap();
+        let rest = call("git_commit", json!({"message": "The rest", "all": true})).unwrap();
         assert_eq!(rest["files"], json!(["Other.md"]), "{rest}");
-        assert!(call(
+        let both = call(
             "git_commit",
-            json!({"message": "x", "scope": "all", "paths": ["a.md"]})
+            json!({"message": "x", "all": true, "paths": ["a.md"]}),
         )
-        .is_err());
+        .unwrap_err();
+        assert_eq!(error_parameter(&both).as_deref(), Some("all"));
     }
 
     #[test]

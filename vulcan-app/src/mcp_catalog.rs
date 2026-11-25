@@ -9,23 +9,22 @@ use vulcan_core::{ConfigPermissionMode, PermissionMode, PermissionProfile};
 use crate::mcp_protocol::McpMethodError;
 use crate::mcp_schemas::{
     changeset_begin_input_schema, changeset_id_input_schema, changeset_land_input_schema,
-    changeset_list_input_schema, changeset_switch_input_schema, config_get_input_schema,
-    config_get_output_schema, config_set_input_schema, config_set_output_schema,
-    daily_input_schema, daily_output_schema, empty_object_schema, git_blame_input_schema,
-    git_commit_input_schema, git_diff_input_schema, git_log_input_schema, git_status_input_schema,
-    graph_communities_input_schema, index_scan_input_schema, index_scan_output_schema,
-    link_suggestion_resolve_input_schema, link_suggestions_input_schema, note_append_input_schema,
-    note_append_output_schema, note_create_input_schema, note_create_output_schema,
-    note_delete_input_schema, note_delete_output_schema, note_get_input_schema,
-    note_get_output_schema, note_info_input_schema, note_info_output_schema,
-    note_move_input_schema, note_outline_input_schema, note_outline_output_schema,
-    note_patch_input_schema, note_patch_output_schema, note_set_input_schema,
-    note_set_output_schema, query_input_schema, search_input_schema, search_output_schema,
-    status_output_schema, sync_conflicts_input_schema, sync_doctor_input_schema,
-    sync_status_input_schema, task_complete_input_schema, task_create_input_schema,
-    task_query_input_schema, task_reminder_add_input_schema, task_reminder_remove_input_schema,
-    task_reschedule_input_schema, web_fetch_input_schema, web_fetch_output_schema,
-    web_search_input_schema, web_search_output_schema,
+    changeset_list_input_schema, config_get_input_schema, config_get_output_schema,
+    config_set_input_schema, config_set_output_schema, daily_input_schema, daily_output_schema,
+    empty_object_schema, git_blame_input_schema, git_commit_input_schema, git_diff_input_schema,
+    git_log_input_schema, git_status_input_schema, graph_communities_input_schema,
+    index_scan_input_schema, index_scan_output_schema, link_suggestion_resolve_input_schema,
+    link_suggestions_input_schema, note_append_input_schema, note_append_output_schema,
+    note_create_input_schema, note_create_output_schema, note_delete_input_schema,
+    note_delete_output_schema, note_get_input_schema, note_get_output_schema,
+    note_info_input_schema, note_info_output_schema, note_move_input_schema,
+    note_outline_input_schema, note_outline_output_schema, note_patch_input_schema,
+    note_patch_output_schema, note_set_input_schema, note_set_output_schema, query_input_schema,
+    search_input_schema, search_output_schema, status_output_schema, sync_conflicts_input_schema,
+    sync_doctor_input_schema, sync_status_input_schema, task_complete_input_schema,
+    task_create_input_schema, task_query_input_schema, task_reminder_add_input_schema,
+    task_reminder_remove_input_schema, task_reschedule_input_schema, web_fetch_input_schema,
+    web_fetch_output_schema, web_search_input_schema, web_search_output_schema,
 };
 use crate::mcp_schemas::{empty_input_schema, file_get_input_schema, file_put_input_schema};
 
@@ -84,7 +83,6 @@ pub enum McpToolId {
     GitBlame,
     GitCommit,
     ChangesetBegin,
-    ChangesetSwitch,
     ChangesetList,
     ChangesetLand,
     ChangesetAbandon,
@@ -613,19 +611,19 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         id: McpToolId::GitCommit,
         name: "git_commit",
         title: "Commit Vault Changes",
-        description: "Commit the files this session changed (or every change with scope `all`), running pre-commit hooks; the commit names the client in Vulcan-MCP-* trailers.",
+        description: "Commit named `paths`, every vault change (`all: true`), or everything in a `changeset`, running pre-commit hooks; the commit names the client in Vulcan-MCP-* trailers.",
         visibility: McpVisibilityRequirement::GitCommit,
         destructive: false,
         annotations: mcp_annotations(false, false, false, false),
         input_schema: git_commit_input_schema,
         output_schema: None,
-        examples: &["git_commit {\"message\":\"Plan the release\"}"],
+        examples: &["git_commit {\"message\":\"Plan the release\",\"paths\":[\"Plans/Release.md\"]}"],
     },
     McpToolCatalogEntry {
         id: McpToolId::ChangesetBegin,
         name: "changeset_begin",
         title: "Begin A Changeset",
-        description: "Start a changeset: a branch and worktree outside the vault, indexed, that this session's tools then read and write until it lands or is abandoned. Other writers, sync, and auto-commit do not see it meanwhile.",
+        description: "Start a changeset: a branch and worktree outside the vault, indexed. Pass its `id` as `changeset` to note, file, search, query, task, and git tools to work in it until it lands or is abandoned; other writers, sync, and auto-commit do not see it meanwhile.",
         visibility: McpVisibilityRequirement::GitCommit,
         destructive: false,
         annotations: mcp_annotations(false, false, false, false),
@@ -634,22 +632,10 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         examples: &["changeset_begin {\"title\":\"Restructure the guides\"}"],
     },
     McpToolCatalogEntry {
-        id: McpToolId::ChangesetSwitch,
-        name: "changeset_switch",
-        title: "Switch Changeset",
-        description: "Attach this session to an existing changeset, or with no `id` return it to the vault itself.",
-        visibility: McpVisibilityRequirement::GitCommit,
-        destructive: false,
-        annotations: mcp_annotations(false, false, true, false),
-        input_schema: changeset_switch_input_schema,
-        output_schema: None,
-        examples: &["changeset_switch {}"],
-    },
-    McpToolCatalogEntry {
         id: McpToolId::ChangesetList,
         name: "changeset_list",
         title: "List Changesets",
-        description: "List the vault's changesets with their commits ahead, uncommitted paths, and which one this session is attached to.",
+        description: "List the vault's changesets with their commits ahead and uncommitted paths.",
         visibility: McpVisibilityRequirement::GitReadAll,
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
@@ -667,7 +653,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         annotations: mcp_annotations(false, false, false, false),
         input_schema: changeset_land_input_schema,
         output_schema: None,
-        examples: &["changeset_land {\"message\":\"Restructure the guides\"}"],
+        examples: &["changeset_land {\"id\":\"01J…\",\"message\":\"Restructure the guides\"}"],
     },
     McpToolCatalogEntry {
         id: McpToolId::ChangesetAbandon,
@@ -679,9 +665,56 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         annotations: mcp_annotations(false, true, false, false),
         input_schema: changeset_id_input_schema,
         output_schema: None,
-        examples: &["changeset_abandon {}"],
+        examples: &["changeset_abandon {\"id\":\"01J…\"}"],
     },
 ];
+
+/// Tools that take an optional `changeset` argument and then run in that
+/// changeset's worktree instead of the vault. Custom tools always run on the
+/// vault: their arguments are their own.
+pub fn accepts_changeset(id: McpToolId) -> bool {
+    matches!(
+        id,
+        McpToolId::NoteGet
+            | McpToolId::NoteOutline
+            | McpToolId::NoteInfo
+            | McpToolId::NoteCreate
+            | McpToolId::NoteAppend
+            | McpToolId::NotePatch
+            | McpToolId::NoteSet
+            | McpToolId::NoteDelete
+            | McpToolId::NoteMove
+            | McpToolId::FileGet
+            | McpToolId::FilePut
+            | McpToolId::Search
+            | McpToolId::Query
+            | McpToolId::Daily
+            | McpToolId::TaskQuery
+            | McpToolId::TaskCreate
+            | McpToolId::TaskComplete
+            | McpToolId::TaskReschedule
+            | McpToolId::TaskReminderAdd
+            | McpToolId::TaskReminderRemove
+            | McpToolId::GitStatus
+            | McpToolId::GitDiff
+            | McpToolId::GitLog
+            | McpToolId::GitBlame
+            | McpToolId::GitCommit
+    )
+}
+
+/// A built-in tool's input schema as `profile` sees it: with the `changeset`
+/// argument where the tool takes one and the profile may use changesets.
+pub fn tool_input_schema(tool: &McpToolCatalogEntry, profile: &PermissionProfile) -> Value {
+    let schema = (tool.input_schema)();
+    if accepts_changeset(tool.id)
+        && requirement_met(McpVisibilityRequirement::GitCommit, false, profile)
+    {
+        crate::mcp_schemas::with_changeset_argument(schema)
+    } else {
+        schema
+    }
+}
 
 /// Tools a client should load up front even when it defers the rest behind
 /// tool search (`_meta["anthropic/alwaysLoad"]`): the core navigation reads
@@ -796,6 +829,22 @@ pub fn requirement_met(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_changeset_argument_is_offered_where_changesets_can_be_used() {
+        let note_get = tool_by_name("note_get").unwrap();
+        let status = tool_by_name("status").unwrap();
+        let has = |tool, profile: &PermissionProfile| {
+            tool_input_schema(tool, profile)["properties"]
+                .get("changeset")
+                .is_some()
+        };
+        let unrestricted = PermissionProfile::unrestricted();
+        assert!(has(note_get, &unrestricted));
+        assert!(!has(status, &unrestricted));
+        // Without Git access there are no changesets to name.
+        assert!(!has(note_get, &PermissionProfile::daily_wiki_agent()));
+    }
 
     #[test]
     fn destructive_tools_need_the_destructive_permission() {

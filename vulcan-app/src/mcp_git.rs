@@ -1,7 +1,5 @@
 //! Permission-checked MCP access to vault Git history and commits.
 
-use std::collections::BTreeSet;
-
 use serde_json::Value;
 use vulcan_core::{PermissionGuard, ProfilePermissionGuard, VaultPaths, Verbosity};
 
@@ -164,44 +162,47 @@ fn blame_ranges(lines: &[Value]) -> Vec<Value> {
     ranges
 }
 
-/// Commit this session's writes (the default), the named `paths`, or with
-/// `scope: "all"` every vault change, attributed to the MCP client.
+/// Commit the named `paths`, every vault change (`all`), or everything in a
+/// changeset worktree, attributed to the MCP client.
 pub fn git_commit(
     paths: &VaultPaths,
     guard: &ProfilePermissionGuard,
     profile_name: &str,
     client: &McpClientAttribution,
-    written_paths: &mut BTreeSet<String>,
+    in_changeset: bool,
     args: &McpGitCommitArgs,
 ) -> Result<Value, McpMethodError> {
     guard.check_git().map_err(tool_error)?;
-    let scope = args.scope.as_deref().unwrap_or(if args.paths.is_some() {
-        "paths"
-    } else {
-        "session"
-    });
-    let only =
-        match (scope, &args.paths) {
-            ("session", None) => Some(written_paths.iter().cloned().collect::<Vec<_>>()),
-            ("paths", Some(named)) => Some(
-                named
-                    .iter()
-                    .map(|path| path.trim().trim_start_matches("./").to_string())
-                    .collect(),
-            ),
-            ("all", None) => None,
-            _ => return Err(McpMethodError::invalid_params(
-                "`git_commit.scope` is \"session\" (default), \"all\", or \"paths\" with `paths`",
-            )),
-        };
-    if only.as_ref().is_some_and(Vec::is_empty) {
-        return Ok(serde_json::json!({
-            "committed": false,
-            "scope": scope,
-            "message": "this session has no uncommitted writes; pass scope \"all\" to commit every vault change",
-            "files": [],
-        }));
-    }
+    let only = match (&args.paths, args.all) {
+        (Some(_), true) => {
+            return Err(McpMethodError::invalid_argument(
+                "pass `paths` or `all`, not both",
+                Some("all".to_string()),
+            ))
+        }
+        (Some(named), false) => {
+            let named = named
+                .iter()
+                .map(|path| path.trim().trim_start_matches("./").to_string())
+                .collect::<Vec<_>>();
+            if named.is_empty() {
+                return Err(McpMethodError::invalid_argument(
+                    "`paths` names no file",
+                    Some("paths".to_string()),
+                ));
+            }
+            Some(named)
+        }
+        (None, true) => None,
+        // A changeset worktree is private to whoever works in it.
+        (None, false) if in_changeset => None,
+        (None, false) => {
+            return Err(McpMethodError::invalid_argument(
+                "name the files to commit in `paths`, or pass `all: true` to commit every vault change (check `git_status` first: it includes other writers' edits)",
+                Some("paths".to_string()),
+            ))
+        }
+    };
     let trailers = client.trailers(profile_name);
     let report = git_ops::commit_request_with_hooks(
         paths,
@@ -214,20 +215,5 @@ pub fn git_commit(
         Verbosity::Quiet,
     )
     .map_err(tool_error)?;
-    // Forget writes that are committed now, by this or any other commit.
-    let changed = vulcan_core::git_status(paths.vault_root())
-        .map(|status| status.changed_paths().into_iter().collect::<BTreeSet<_>>())
-        .map_err(tool_error)?;
-    written_paths.retain(|path| changed.contains(path));
-    let mut value = to_value(report)?;
-    if let Some(object) = value.as_object_mut() {
-        object.insert("scope".to_string(), Value::from(scope));
-        if !written_paths.is_empty() {
-            object.insert(
-                "session_uncommitted".to_string(),
-                Value::from(written_paths.iter().cloned().collect::<Vec<_>>()),
-            );
-        }
-    }
-    Ok(value)
+    to_value(report)
 }

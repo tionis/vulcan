@@ -8812,7 +8812,9 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 
 ### 9.43.6 Stateless core
 
-- [ ] `handle(request, ctx)` core without session state; `changeset` argument; `git_commit` by changeset, paths or all; per-request client attribution; legacy adapter for `initialize`; server-level change watcher for `list_changed`.
+- [x] Tool calls keep no connection state: `changeset` argument on note, file, search, query, daily, task and git tools (shown to profiles that may use changesets; rejected by other tools; custom tools run on the vault), `changeset_switch` removed, `changeset_land`/`changeset_abandon` take `id`; `git_commit` commits `paths`, `all: true`, or everything in a changeset, and refuses to guess.
+- [ ] `handle(request, ctx)` core without session state; per-request client attribution; modern-era envelope (`_meta`, `server/discover`, `resultType`, `ttlMs`/`cacheScope`); legacy adapter for `initialize`.
+- [ ] Server-level change watcher for `list_changed`.
 
 ### 9.43.7 Operations, timeouts and stdio
 

@@ -1927,7 +1927,7 @@ fn build_mcp_tool_registry_entries(
         .map_err(permission_error_to_cli)?;
     let mut tools = visible_tool_catalog(&selection.profile)
         .into_iter()
-        .map(mcp_tool_registry_entry)
+        .map(|tool| mcp_tool_registry_entry(tool, &selection.profile))
         .collect::<Vec<_>>();
     tools.extend(
         mcp_assistant::visible_custom_tools(paths, requested_profile)

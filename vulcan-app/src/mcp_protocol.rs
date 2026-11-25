@@ -862,20 +862,17 @@ pub struct McpChangesetBeginArgs {
     pub title: Option<String>,
 }
 
-/// A changeset id; omitted, the attached changeset (or, for
-/// `changeset_switch`, the vault itself).
+/// A changeset id, as `changeset_begin` returned it.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpChangesetIdArgs {
-    #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpChangesetLandArgs {
-    #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Commit message for uncommitted changeset changes before landing.
     #[serde(default)]
     pub message: Option<String>,
@@ -885,12 +882,12 @@ pub struct McpChangesetLandArgs {
 #[serde(deny_unknown_fields)]
 pub struct McpGitCommitArgs {
     pub message: String,
-    /// `session` (default): this session's uncommitted writes; `all`: every
-    /// vault change; `paths`: the listed `paths`.
-    #[serde(default)]
-    pub scope: Option<String>,
+    /// The files to commit; in a changeset, everything when omitted.
     #[serde(default)]
     pub paths: Option<Vec<String>>,
+    /// Every uncommitted vault change.
+    #[serde(default)]
+    pub all: bool,
 }
 
 #[derive(Debug, Deserialize)]

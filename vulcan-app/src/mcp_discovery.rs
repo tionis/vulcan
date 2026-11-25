@@ -6,7 +6,7 @@ use vulcan_core::{
 };
 
 use crate::mcp_assistant;
-use crate::mcp_catalog::{visible_tool_catalog, ALWAYS_LOADED_TOOLS};
+use crate::mcp_catalog::{tool_input_schema, visible_tool_catalog, ALWAYS_LOADED_TOOLS};
 use crate::mcp_completion;
 use crate::mcp_help::{self, HelpTopicReport};
 use crate::mcp_protocol::{McpCompletionParams, McpMethodError, MCP_RESOURCE_NOT_FOUND};
@@ -32,7 +32,7 @@ impl McpDiscovery<'_> {
                     "name": tool.name,
                     "title": tool.title,
                     "description": tool.description,
-                    "inputSchema": (tool.input_schema)(),
+                    "inputSchema": tool_input_schema(tool, self.profile),
                     "annotations": tool.annotations,
                 });
                 if let Some(schema) = tool.output_schema {

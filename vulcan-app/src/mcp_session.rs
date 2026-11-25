@@ -1,7 +1,6 @@
 //! Transport-neutral MCP session authority and discovery snapshots.
 
 use serde_json::{Map, Value};
-use std::collections::{BTreeMap, BTreeSet};
 use vulcan_core::{
     resolve_permission_profile, PermissionError, ProfilePermissionGuard, ResolvedPermissionProfile,
     VaultPaths,
@@ -11,7 +10,6 @@ use crate::mcp_assistant::{
     prompt_files_fingerprint, resource_files_fingerprint, tool_catalog_fingerprint,
 };
 use crate::mcp_catalog::active_tool_names;
-use crate::mcp_changesets::{McpChangesetBinding, McpChangesetSwitch};
 use crate::mcp_discovery::McpDiscovery;
 use crate::mcp_protocol::{McpListSnapshot, McpMethodError};
 use crate::mcp_tool_exec::McpToolExecution;
@@ -75,13 +73,6 @@ pub struct McpSessionState {
     guard: ProfilePermissionGuard,
     snapshot: McpListSnapshot,
     client: McpClientAttribution,
-    /// Vault-relative paths this session's writes changed and that no
-    /// session-scoped commit has taken yet.
-    written_paths: BTreeSet<String>,
-    /// The vault, the attached changeset, and the writes each tree's
-    /// session state left uncommitted while the session worked elsewhere.
-    changeset: McpChangesetBinding,
-    parked_written_paths: BTreeMap<Option<String>, BTreeSet<String>>,
 }
 
 impl McpSessionState {
@@ -106,9 +97,6 @@ impl McpSessionState {
             guard,
             snapshot,
             client: McpClientAttribution::default(),
-            written_paths: BTreeSet::new(),
-            changeset: McpChangesetBinding::new(paths),
-            parked_written_paths: BTreeMap::new(),
         })
     }
 
@@ -134,11 +122,6 @@ impl McpSessionState {
     }
 
     #[must_use]
-    pub fn written_paths(&self) -> &BTreeSet<String> {
-        &self.written_paths
-    }
-
-    #[must_use]
     pub fn selection(&self) -> &ResolvedPermissionProfile {
         &self.selection
     }
@@ -155,9 +138,7 @@ impl McpSessionState {
 
     /// Existing sessions can narrow to current profile policy, never widen.
     pub fn attenuate_profile(&mut self) -> Result<(), String> {
-        // The vault's configuration decides, never a changeset's copy of it,
-        // which the session itself may have edited.
-        let current = resolve_permission_profile(&self.changeset.vault, Some(&self.selection.name))
+        let current = resolve_permission_profile(&self.paths, Some(&self.selection.name))
             .map_err(|error| error.to_string())?;
         if !current.grant.is_subset_of(&self.selection.grant) {
             return Err("MCP permission profile widened after session initialization".to_string());
@@ -182,58 +163,14 @@ impl McpSessionState {
         name: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Value, McpMethodError> {
-        // Someone else landed or abandoned the attached changeset: return to
-        // the vault rather than run the tool against a missing worktree.
-        if let Some(id) = self.changeset.active.clone() {
-            if !self.paths.vault_root().is_dir() {
-                self.apply_changeset_switch(McpChangesetSwitch::Detach);
-                self.parked_written_paths.remove(&Some(id.clone()));
-                return Err(McpMethodError::tool(format!(
-                    "changeset `{id}` no longer exists (it was landed or abandoned elsewhere); this session works on the vault again, so check `git_log` and repeat the call if it still applies"
-                )));
-            }
-        }
-        let result = McpToolExecution {
+        McpToolExecution {
             paths: &self.paths,
             guard: &self.guard,
             profile_name: self.selection.name.as_str(),
             profile: &self.selection.profile,
             client: &self.client,
-            written_paths: &mut self.written_paths,
-            changeset: &mut self.changeset,
         }
-        .call_tool(name, arguments);
-        if let Some(switch) = self.changeset.pending.take() {
-            self.apply_changeset_switch(switch);
-        }
-        result
-    }
-
-    /// The changeset this session works in, if any.
-    #[must_use]
-    pub fn active_changeset(&self) -> Option<&str> {
-        self.changeset.active.as_deref()
-    }
-
-    /// Point the session's tools at a changeset worktree or back at the
-    /// vault, keeping the same permission selection; each tree keeps its own
-    /// record of this session's uncommitted writes.
-    fn apply_changeset_switch(&mut self, switch: McpChangesetSwitch) {
-        let (active, paths) = match switch {
-            McpChangesetSwitch::Attach { id, worktree } => (Some(id), VaultPaths::new(worktree)),
-            McpChangesetSwitch::Detach => (None, self.changeset.vault.clone()),
-        };
-        let previous = std::mem::replace(&mut self.changeset.active, active.clone());
-        let written = std::mem::take(&mut self.written_paths);
-        if !written.is_empty() {
-            self.parked_written_paths.insert(previous, written);
-        }
-        self.written_paths = self
-            .parked_written_paths
-            .remove(&active)
-            .unwrap_or_default();
-        self.guard = ProfilePermissionGuard::new(&paths, self.selection.clone());
-        self.paths = paths;
+        .call_tool(name, arguments)
     }
 
     pub fn list_changed_notifications(&mut self) -> Vec<Value> {
@@ -285,7 +222,7 @@ mod tests {
 
     #[test]
     #[allow(clippy::too_many_lines)]
-    fn a_session_stages_work_in_a_changeset_and_lands_it() {
+    fn tools_work_in_a_changeset_named_per_call_and_land_it() {
         let _lock = crate::trust::test_env_lock()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -329,44 +266,67 @@ mod tests {
             serde_json::json!({"title": "Grow home"}),
         );
         let id = begun["id"].as_str().unwrap().to_string();
-        assert_eq!(session.active_changeset(), Some(id.as_str()));
-        assert_ne!(session.paths().vault_root(), root);
 
-        // Writes go to the worktree; the vault does not change.
+        // Writes naming the changeset go to its worktree; the vault does not
+        // change, and the vault's own reads do not see them.
         let appended = call(
             &mut session,
             "note_append",
-            serde_json::json!({"note": "Home.md", "text": "Staged."}),
+            serde_json::json!({"note": "Home.md", "text": "Staged.", "changeset": id}),
         );
         assert_eq!(appended["commit"]["status"], "uncommitted", "{appended}");
         assert_eq!(
             std::fs::read_to_string(root.join("Home.md")).unwrap(),
             "# Home\n"
         );
+        let staged = call(
+            &mut session,
+            "note_get",
+            serde_json::json!({"note": "Home.md", "changeset": id}),
+        );
+        assert!(staged["content"].as_str().unwrap().contains("Staged."));
+        let vault = call(
+            &mut session,
+            "note_get",
+            serde_json::json!({"note": "Home.md"}),
+        );
+        assert!(!vault["content"].as_str().unwrap().contains("Staged."));
         let listed = call(&mut session, "changeset_list", serde_json::json!({}));
-        assert_eq!(listed["attached"], id.as_str());
         assert_eq!(listed["changesets"][0]["uncommitted"][0], "Home.md");
 
-        // Back on the vault the session sees the vault; it can return.
-        call(&mut session, "changeset_switch", serde_json::json!({}));
-        assert_eq!(session.paths().vault_root(), root);
-        assert!(session.written_paths().is_empty());
+        // In a changeset, a bare commit takes everything in it; in the vault
+        // it must name what it commits.
         call(
             &mut session,
-            "changeset_switch",
-            serde_json::json!({"id": id}),
+            "git_commit",
+            serde_json::json!({"message": "Stage", "changeset": id}),
         );
-        assert!(session.written_paths().contains("Home.md"));
+        let parameter = |name: &str, arguments: Value, session: &mut McpSessionState| {
+            let error = session
+                .call_tool(name, arguments.as_object().unwrap())
+                .unwrap_err();
+            let McpMethodError::Tool {
+                structured: Some(structured),
+                ..
+            } = error
+            else {
+                panic!("{name}: {error:?}");
+            };
+            structured["error"].clone()
+        };
+        let bare = parameter(
+            "git_commit",
+            serde_json::json!({"message": "x"}),
+            &mut session,
+        );
+        assert_eq!(bare["parameter"], "paths", "{bare}");
 
         let landed = call(
             &mut session,
             "changeset_land",
-            serde_json::json!({"message": "Grow home"}),
+            serde_json::json!({"id": id}),
         );
         assert_eq!(landed["landed"], true, "{landed}");
-        assert_eq!(landed["attached"], Value::Null);
-        assert_eq!(session.active_changeset(), None);
-        assert_eq!(session.paths().vault_root(), root);
         assert!(std::fs::read_to_string(root.join("Home.md"))
             .unwrap()
             .contains("Staged."));
@@ -374,22 +334,18 @@ mod tests {
             git(root, &["log", "-1", "--format=%B"]).contains("Vulcan-MCP-Profile: unrestricted")
         );
 
-        // A changeset landed or abandoned elsewhere returns the session to
-        // the vault with an explanation.
-        let begun = call(&mut session, "changeset_begin", serde_json::json!({}));
-        let id = begun["id"].as_str().unwrap().to_string();
-        crate::changesets::abandon_changeset(&paths, &id).unwrap();
-        let error = session
-            .call_tool("changeset_list", serde_json::json!({}).as_object().unwrap())
-            .unwrap_err();
-        assert!(
-            format!("{error:?}").contains("no longer exists"),
-            "{error:?}"
+        // A changeset that no longer exists is a correctable error naming
+        // the argument.
+        let gone = parameter(
+            "note_get",
+            serde_json::json!({"note": "Home.md", "changeset": id}),
+            &mut session,
         );
-        assert_eq!(session.active_changeset(), None);
-        assert_eq!(session.paths().vault_root(), root);
-        let listed = call(&mut session, "changeset_list", serde_json::json!({}));
-        assert_eq!(listed["attached"], Value::Null);
+        assert_eq!(gone["code"], "not_found");
+        assert_eq!(gone["parameter"], "changeset");
+        // Tools outside the changeset families reject the argument.
+        let status = parameter("status", serde_json::json!({"changeset": id}), &mut session);
+        assert_eq!(status["code"], "invalid_argument", "{status}");
 
         match previous {
             Some(value) => std::env::set_var("XDG_STATE_HOME", value),

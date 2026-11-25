@@ -116,10 +116,11 @@ the `none` sandbox, environment overrides are refused, and read-only renders can
 change to a file in the skill directory, including one a synced commit brings, makes the grant
 stale until it is granted again.
 
-Inside a changeset (an MCP agent's staged worktree), a skill command runs with its vault's trust
-and grants only while it is the vault's own: its skill directory is byte-identical to the vault's,
-and its effective permission profile grants no more there than in the vault. It runs in the
-changeset's worktree, so `host.exec(["mise", "run", "check"])` checks the staged work. A session
-that edits the skill, or the permission profile it runs under, in its changeset gets a refusal
-until the change is landed and, for host commands, granted again.
+Run from inside a changeset worktree (where MCP agents stage work; `vulcan git changeset show`
+names it), a skill command runs with its vault's trust and grants only while it is the vault's
+own: its skill directory is byte-identical to the vault's, and its effective permission profile
+grants no more there than in the vault. It runs in the changeset's worktree, so
+`host.exec(["mise", "run", "check"])` checks the staged work. A changeset that edits the skill, or
+the permission profile it runs under, gets a refusal until the change is landed and, for host
+commands, granted again. Over MCP, custom tools always run on the vault.
 
