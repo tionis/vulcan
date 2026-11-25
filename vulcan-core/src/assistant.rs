@@ -480,12 +480,22 @@ fn parse_skill_file(root: &Path, path: &Path) -> Result<AssistantSkill, Assistan
         .map_err(|error| AssistantError::io(path, error))?;
     let source = secure_read_to_string(root, relative_path)
         .map_err(|error| AssistantError::io(path, error))?;
-    let (frontmatter, body) = split_markdown_frontmatter(&source, path)?;
+    parse_assistant_skill_source(&source, &relative)
+}
+
+/// Parse a skill's `SKILL.md` text; `relative` is its path under the skills
+/// folder (`name/SKILL.md`), which also gives the default name.
+pub fn parse_assistant_skill_source(
+    source: &str,
+    relative: &str,
+) -> Result<AssistantSkill, AssistantError> {
+    let path = Path::new(relative);
+    let (frontmatter, body) = split_markdown_frontmatter(source, path)?;
     let frontmatter = frontmatter
         .map(parse_yaml_frontmatter::<SkillFrontmatter>)
         .transpose()?
         .unwrap_or_default();
-    let default_name = normalize_identifier(directory_name(&relative));
+    let default_name = normalize_identifier(directory_name(relative));
     let skill = AssistantSkill {
         summary: AssistantSkillSummary {
             name: normalize_optional(frontmatter.name).unwrap_or(default_name),
@@ -498,7 +508,7 @@ fn parse_skill_file(root: &Path, path: &Path) -> Result<AssistantSkill, Assistan
             tags: normalize_list(frontmatter.tags),
             tools: normalize_list(frontmatter.tools),
             output_file: normalize_optional(frontmatter.output_file),
-            path: relative,
+            path: relative.to_string(),
         },
         body: body.trim().to_string(),
     };

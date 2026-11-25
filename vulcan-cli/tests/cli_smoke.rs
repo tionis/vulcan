@@ -17960,10 +17960,16 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     let note_operations =
         fs::read_to_string(vault_root.join(".agents/skills/note-operations/SKILL.md"))
             .expect("bundled skill should be readable");
+    // Installed skills are the CLI rendering of the bundled source.
     assert_eq!(
         note_operations,
-        include_str!("../../docs/assistant/skills/note-operations.md")
+        vulcan_app::bundled_skills::render_skill(
+            include_str!("../../docs/assistant/skills/note-operations.md"),
+            vulcan_app::bundled_skills::SkillTarget::Cli,
+        )
     );
+    assert!(!note_operations.contains("<!-- vulcan:"));
+    assert!(note_operations.contains("note outline"));
     assert!(note_operations.contains("managed: true"));
     assert!(note_operations.contains("- note_info"));
     assert!(note_operations.contains("Do not edit a note the user is actively editing"));
@@ -17995,7 +18001,10 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         .expect("JS API skill should be readable");
     assert_eq!(
         js_api,
-        include_str!("../../docs/assistant/skills/js-api-guide.md")
+        vulcan_app::bundled_skills::render_skill(
+            include_str!("../../docs/assistant/skills/js-api-guide.md"),
+            vulcan_app::bundled_skills::SkillTarget::Cli,
+        )
     );
     assert!(js_api.contains("Use `--sandbox none` only for a trusted local script"));
     assert!(js_api.contains("projected skill commands cannot declare"));
@@ -18007,7 +18016,10 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         .expect("mdbase skill should be installed");
     assert_eq!(
         mdbase,
-        include_str!("../../docs/assistant/skills/mdbase-collections.md")
+        vulcan_app::bundled_skills::render_skill(
+            include_str!("../../docs/assistant/skills/mdbase-collections.md"),
+            vulcan_app::bundled_skills::SkillTarget::Cli,
+        )
     );
     assert!(mdbase.contains("managed: true"));
     for (command, flag) in [
@@ -18044,7 +18056,10 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         .expect("vault query skill should be readable");
     assert_eq!(
         vault_query,
-        include_str!("../../docs/assistant/skills/vault-query.md")
+        vulcan_app::bundled_skills::render_skill(
+            include_str!("../../docs/assistant/skills/vault-query.md"),
+            vulcan_app::bundled_skills::SkillTarget::Cli,
+        )
     );
     assert!(vault_query.contains("run from the index without loading note bodies"));
     assert!(vault_query.contains("VULCAN_ROUTE=auto"));
@@ -18440,7 +18455,10 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     .expect("configuration skill should be readable");
     assert_eq!(
         configuration_skill,
-        include_str!("../../docs/assistant/skills/configuration-and-permissions.md")
+        vulcan_app::bundled_skills::render_skill(
+            include_str!("../../docs/assistant/skills/configuration-and-permissions.md"),
+            vulcan_app::bundled_skills::SkillTarget::Cli,
+        )
     );
     assert!(configuration_skill.contains("vulcan vault clone/add/list/show/set/remove"));
     assert!(configuration_skill.contains("sync.publish_device_backup"));
@@ -34726,7 +34744,7 @@ Use this skill to review the day.
     for uri in [
         "vulcan://help/overview",
         "vulcan://help/tools",
-        "vulcan://assistant/skills/index",
+        "skill://note-operations/SKILL.md",
         "vulcan://agents",
     ] {
         assert!(
@@ -34749,7 +34767,16 @@ Use this skill to review the day.
         .any(|template| template["uriTemplate"] == "vulcan://help/{topic}"));
     assert!(templates
         .iter()
-        .any(|template| template["uriTemplate"] == "vulcan://assistant/skills/{name}"));
+        .any(|template| template["uriTemplate"] == "vulcan://note/{path}"));
+    let skill = session.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 51, "method": "resources/read",
+        "params": { "uri": "skill://note-operations/SKILL.md" }
+    }));
+    let skill = skill.last().expect("skill read")["result"]["contents"][0]["text"]
+        .as_str()
+        .expect("skill text")
+        .to_string();
+    assert!(skill.contains("`note_outline`") && !skill.contains("<!-- vulcan:"));
 
     let help = session.send(serde_json::json!({
         "jsonrpc": "2.0",
@@ -34939,12 +34966,14 @@ Summarize {{note}}.
         .filter_map(|resource| resource["uri"].as_str())
         .collect::<Vec<_>>();
     assert!(resource_uris.contains(&"vulcan://help/overview"));
-    for hidden in ["vulcan://agents", "vulcan://assistant/skills/index"] {
-        assert!(
-            !resource_uris.contains(&hidden),
-            "blind profile should hide `{hidden}`"
-        );
-    }
+    assert!(
+        !resource_uris.contains(&"vulcan://agents"),
+        "blind profile should hide AGENTS.md"
+    );
+    assert!(
+        !resource_uris.iter().any(|uri| uri.starts_with("skill://")),
+        "blind profile should hide skills that need reading"
+    );
 
     let note_get = session.send(serde_json::json!({
         "jsonrpc": "2.0",

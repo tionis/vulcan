@@ -8,9 +8,9 @@ use std::fs;
 use std::path::Path;
 use vulcan_core::{
     assistant_prompts_root, assistant_skills_root, list_assistant_prompts, list_assistant_skills,
-    load_assistant_prompt, load_assistant_skill, load_vault_config, read_vault_agents_file,
-    render_assistant_prompt, AssistantPromptSummary, AssistantSkillSummary, PermissionGuard,
-    PermissionProfile, ProfilePermissionGuard, VaultPaths,
+    load_assistant_prompt, load_vault_config, read_vault_agents_file, render_assistant_prompt,
+    AssistantPromptSummary, AssistantSkillSummary, PermissionGuard, PermissionProfile,
+    ProfilePermissionGuard, VaultPaths,
 };
 
 use crate::mcp_catalog::visible_tool_catalog;
@@ -208,7 +208,8 @@ pub fn visible_skills(
 }
 
 /// List stable MCP resources for one effective authority: the help index,
-/// the MCP tool reference, the vault's AGENTS.md, and the skill index.
+/// the MCP tool reference, and the vault's AGENTS.md. Skills are listed by
+/// [`crate::mcp_skills`].
 pub fn visible_resources(
     paths: &VaultPaths,
     guard: &ProfilePermissionGuard,
@@ -230,27 +231,19 @@ pub fn visible_resources(
         }),
     ];
 
-    if !guard.selection().profile.read.is_none() {
-        resources.push(serde_json::json!({
-            "uri": "vulcan://assistant/skills/index",
-            "name": "Assistant Skill Index",
-            "title": "Vault Skill Index",
-            "description": "Visible skills loaded from the configured assistant skills folder.",
-            "mimeType": "application/json",
-        }));
-        if read_vault_agents_file(paths)
+    if !guard.selection().profile.read.is_none()
+        && read_vault_agents_file(paths)
             .map_err(|error| McpMethodError::internal(error.to_string()))?
             .is_some()
-            && can_read_relative_path(guard, "AGENTS.md")
-        {
-            resources.push(serde_json::json!({
-                "uri": "vulcan://agents",
-                "name": "AGENTS.md",
-                "title": "Vault Agent Instructions",
-                "description": "The vault's root AGENTS.md instructions.",
-                "mimeType": "text/markdown",
-            }));
-        }
+        && can_read_relative_path(guard, "AGENTS.md")
+    {
+        resources.push(serde_json::json!({
+            "uri": "vulcan://agents",
+            "name": "AGENTS.md",
+            "title": "Vault Agent Instructions",
+            "description": "The vault's root AGENTS.md instructions.",
+            "mimeType": "text/markdown",
+        }));
     }
     Ok(resources)
 }
@@ -277,13 +270,6 @@ pub fn visible_resource_templates(guard: &ProfilePermissionGuard) -> Vec<Value> 
             "name": "Files",
             "title": "Vault File",
             "description": "One vault file by vault-relative path: text, or base64 for binary files (16 MiB at most).",
-        }));
-        templates.push(serde_json::json!({
-            "uriTemplate": "vulcan://assistant/skills/{name}",
-            "name": "Assistant Skills",
-            "title": "Assistant Skill Resource",
-            "description": "Read one visible assistant skill as structured JSON.",
-            "mimeType": "application/json",
         }));
     }
     templates
@@ -372,9 +358,6 @@ pub fn read_resource(
     uri: &str,
 ) -> Option<Result<Value, McpMethodError>> {
     let result = match uri {
-        "vulcan://assistant/skills/index" => {
-            visible_skills(paths, guard).and_then(|skills| json_resource(uri, &skills))
-        }
         "vulcan://agents" => {
             if can_read_relative_path(guard, "AGENTS.md") {
                 match read_vault_agents_file(paths) {
@@ -401,22 +384,7 @@ pub fn read_resource(
                 ))
             }
         }
-        _ => {
-            let name = uri.strip_prefix("vulcan://assistant/skills/")?;
-            match load_assistant_skill(paths, name) {
-                Ok(skill) if skill_visible(paths, guard, &skill.summary) => {
-                    json_resource(uri, &skill)
-                }
-                Ok(_) => Err(resource_not_found_error(
-                    uri,
-                    format!(
-                        "permission denied: resource `{uri}` is not available under profile `{}`",
-                        guard.selection().name
-                    ),
-                )),
-                Err(error) => Err(resource_not_found_error(uri, error.to_string())),
-            }
-        }
+        _ => return None,
     };
     Some(result)
 }
@@ -426,18 +394,6 @@ fn can_read_relative_path(guard: &ProfilePermissionGuard, relative_path: &str) -
         return true;
     }
     guard.check_read_path(relative_path).is_ok()
-}
-
-fn json_resource<T: serde::Serialize>(uri: &str, value: &T) -> Result<Value, McpMethodError> {
-    let text = serde_json::to_string_pretty(value)
-        .map_err(|error| McpMethodError::internal(error.to_string()))?;
-    Ok(serde_json::json!({
-        "contents": [{
-            "uri": uri,
-            "mimeType": "application/json",
-            "text": text,
-        }]
-    }))
 }
 
 fn resource_not_found_error(uri: &str, message: String) -> McpMethodError {

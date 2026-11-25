@@ -1,7 +1,7 @@
 ---
 name: web-research
 description: Search the web and fetch article content into a vault-oriented workflow.
-version: 1
+version: 2
 tools:
   - web_search
   - web_fetch
@@ -21,10 +21,17 @@ Use this skill when external web material needs to be summarized or incorporated
 
 ## Recommended Flow
 
+<!-- vulcan:cli -->
 - Start with `web search` to narrow the candidate set.
 - Fetch only the pages that matter instead of crawling broadly.
 - Use article extraction when the page is readable prose; fall back to raw or generic fetch modes for technical content.
 - Save the synthesis into a note instead of leaving the result ephemeral.
+<!-- /vulcan:cli -->
+<!-- vulcan:mcp -->
+- Start with `web_search` to narrow the candidates.
+- Fetch only the pages that matter with `web_fetch`; use article extraction for readable prose and raw or generic modes for technical content.
+- Save the synthesis into a note with `note_create` or `note_append` instead of leaving it in the conversation.
+<!-- /vulcan:mcp -->
 
 ## Guardrails
 

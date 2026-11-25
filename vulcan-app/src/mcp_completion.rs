@@ -58,19 +58,6 @@ pub fn complete(
             }
             matching_help_topics(help_topics, prefix)
         }
-        McpCompletionReference::Resource { uri } if uri == "vulcan://assistant/skills/{name}" => {
-            if params.argument.name != "name" {
-                return Err(McpMethodError::invalid_params(format!(
-                    "resource template `{uri}` does not define argument `{}`",
-                    params.argument.name
-                )));
-            }
-            visible_skills(paths, guard)?
-                .into_iter()
-                .map(|skill| skill.name)
-                .filter(|name| name.starts_with(prefix))
-                .collect()
-        }
         McpCompletionReference::Resource { uri } if uri == "vulcan://note/{path}" => {
             if params.argument.name != "path" {
                 return Err(McpMethodError::invalid_params(format!(

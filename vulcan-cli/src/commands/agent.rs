@@ -46,172 +46,19 @@ const BUNDLED_AGENT_TEMPLATE: BundledTextFile = BundledTextFile {
     target: BundledFileTarget::VaultRoot,
 };
 
-const BUNDLED_SKILL_FILES: &[BundledTextFile] = &[
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "note-operations/SKILL.md",
-        contents: include_str!("../../../docs/assistant/skills/note-operations.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "vault-query/SKILL.md",
-        contents: include_str!("../../../docs/assistant/skills/vault-query.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "js-api-guide/SKILL.md",
-        contents: include_str!("../../../docs/assistant/skills/js-api-guide.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "skill-creator/SKILL.md",
-        contents: include_str!("../../../docs/assistant/skills/skill-creator.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "graph-exploration/SKILL.md",
-        contents: include_str!("../../../docs/assistant/skills/graph-exploration.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "link-curation/SKILL.md",
-        contents: include_str!("../../../docs/assistant/skills/link-curation.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "daily-notes/SKILL.md",
-        contents: include_str!("../../../docs/assistant/skills/daily-notes.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "properties-and-tags/SKILL.md",
-        contents: include_str!("../../../docs/assistant/skills/properties-and-tags.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "refactoring/SKILL.md",
-        contents: include_str!("../../../docs/assistant/skills/refactoring.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "artifact-import/SKILL.md",
-        contents: include_str!("../../../docs/assistant/skills/artifact-import.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "portable-exchange/SKILL.md",
-        contents: include_str!("../../../docs/assistant/skills/portable-exchange.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "web-research/SKILL.md",
-        contents: include_str!("../../../docs/assistant/skills/web-research.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "git-workflow/SKILL.md",
-        contents: include_str!("../../../docs/assistant/skills/git-workflow.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "sync-workflow/SKILL.md",
-        contents: include_str!("../../../docs/assistant/skills/sync-workflow.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "task-management/SKILL.md",
-        contents: include_str!("../../../docs/assistant/skills/task-management.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "configuration-and-permissions/SKILL.md",
-        contents: include_str!("../../../docs/assistant/skills/configuration-and-permissions.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "mcp-setup/SKILL.md",
-        contents: include_str!("../../../docs/assistant/skills/mcp-setup.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "editor-integration/SKILL.md",
-        contents: include_str!("../../../docs/assistant/skills/editor-integration.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "index-maintenance/SKILL.md",
-        contents: include_str!("../../../docs/assistant/skills/index-maintenance.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "dataview-and-bases/SKILL.md",
-        contents: include_str!("../../../docs/assistant/skills/dataview-and-bases.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "templates-and-capture/SKILL.md",
-        contents: include_str!("../../../docs/assistant/skills/templates-and-capture.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "mdbase-collections/SKILL.md",
-        contents: include_str!("../../../docs/assistant/skills/mdbase-collections.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "publishing-and-export/SKILL.md",
-        contents: include_str!("../../../docs/assistant/skills/publishing-and-export.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "plugin-authoring/SKILL.md",
-        contents: include_str!("../../../docs/assistant/skills/plugin-authoring.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "diagnostics-and-repair/SKILL.md",
-        contents: include_str!("../../../docs/assistant/skills/diagnostics-and-repair.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "conversation-export/SKILL.md",
-        contents: include_str!("../../../docs/assistant/skills/conversation-export.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "conversation-export/scripts/export-conversation.js",
-        contents: include_str!(
-            "../../../docs/assistant/skills/conversation-export/export-conversation.js"
-        ),
-        target: BundledFileTarget::SkillsFolder,
-    },
-];
+/// The bundled skills, from the table the MCP server serves too.
+static BUNDLED_SKILL_FILES: std::sync::LazyLock<Vec<BundledTextFile>> =
+    std::sync::LazyLock::new(|| {
+        vulcan_app::bundled_skills::BUNDLED_SKILL_FILES
+            .iter()
+            .map(|file| BundledTextFile {
+                kind: "skill",
+                relative_path: file.path,
+                contents: file.contents,
+                target: BundledFileTarget::SkillsFolder,
+            })
+            .collect()
+    });
 
 const BUNDLED_PROMPT_FILES: &[BundledTextFile] = &[
     BundledTextFile {
@@ -573,7 +420,7 @@ fn write_bundled_support_files(
     reset_skills: &[String],
     include_example_tool: bool,
 ) -> Result<Vec<SupportFileReport>, CliError> {
-    validate_reset_skills(BUNDLED_SKILL_FILES, reset_skills)?;
+    validate_reset_skills(&BUNDLED_SKILL_FILES, reset_skills)?;
     let mut reports = Vec::new();
     // AGENTS.md and prompt files are user-editable scaffolds, not managed packages.
     reports.push(write_bundled_text_file(
@@ -583,7 +430,7 @@ fn write_bundled_support_files(
     )?);
     reports.extend(write_bundled_skill_packages(
         paths,
-        BUNDLED_SKILL_FILES,
+        &BUNDLED_SKILL_FILES,
         overwrite,
         reset_skills,
     )?);
@@ -792,7 +639,18 @@ fn write_bundled_text_file(
     overwrite: bool,
 ) -> Result<SupportFileReport, CliError> {
     let destination = bundled_text_file_destination(paths, file);
-    let status = write_bundled_text_contents(&destination, file.contents, overwrite)?;
+    // Installed skills are read by agents with a shell: the CLI rendering.
+    let contents = if file.target == BundledFileTarget::SkillsFolder
+        && file.relative_path.ends_with("/SKILL.md")
+    {
+        std::borrow::Cow::Owned(vulcan_app::bundled_skills::render_skill(
+            file.contents,
+            vulcan_app::bundled_skills::SkillTarget::Cli,
+        ))
+    } else {
+        std::borrow::Cow::Borrowed(file.contents)
+    };
+    let status = write_bundled_text_contents(&destination, &contents, overwrite)?;
     #[cfg(unix)]
     if bundled_text_file_should_be_executable(file, cfg!(target_os = "android"))
         && destination.exists()

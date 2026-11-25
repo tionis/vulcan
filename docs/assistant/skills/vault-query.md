@@ -1,7 +1,7 @@
 ---
 name: vault-query
 description: Choose between search, native queries, canonical mdbase collection queries and saved views, filters, and structured note listing.
-version: 15
+version: 16
 tools:
   - search
   - query
@@ -21,6 +21,7 @@ Use this skill when the task depends on metadata, frontmatter, tags, paths, or p
 
 ## Recommended Flow
 
+<!-- vulcan:cli -->
 - Use `search` when the question is about note text, snippets, or ranked content matches.
 - Use `query` when the answer depends on typed metadata, computed fields, or explicit sorting.
 - For a collection governed by `mdbase.yaml`, use `vulcan mdbase query --file query.yaml --output json` for canonical mdbase queries. Native `query` and DQL are not interchangeable with that query format. Inspect `vulcan mdbase query --help` for input options.
@@ -35,13 +36,23 @@ Use this skill when the task depends on metadata, frontmatter, tags, paths, or p
 - Reach for `help filters` and `help query-dsl` when the predicate grammar is unclear.
 - Native query DSL starts with `from notes`, combines predicates with `and`, and uses `order by`;
   tag and folder selection are predicates, not alternate native sources.
+<!-- /vulcan:cli -->
+<!-- vulcan:mcp -->
+- Use `search` when the question is about note text: it returns ranked hits with path, section, heading, and snippet. Pass `detail: "full"` for chunk ids, line spans, and ranks, and `path_prefix`, `tag`, or `filters` to narrow it.
+- Use `query` when the answer depends on typed metadata, computed fields, or explicit sorting. Give it a native DSL `query` (`from notes where status = "open" order by file.mtime desc`), JSON, structured `filters`, or `engine: "dql"` with a Dataview query.
+- Use `path_prefix`, `filename_pattern`, `sort`/`desc`, and `limit` for structural navigation. Rows are compact (path, name, dates, size, tags); add `fields` or `include_properties: true` only when you need more.
+- Every list tool returns one page: pass `page.next_cursor` back unchanged as `cursor` for the next instead of raising `limit`. Embedded query limits and offsets bound the whole selection; `limit` is the page size.
+- Prefer explicit `file.*` fields for filesystem metadata and `properties.<key>` for frontmatter and inline properties.
+- When the predicate grammar is unclear, read `vulcan://help/query-dsl` or `vulcan://help/filters`. Native query DSL starts with `from notes`, combines predicates with `and`, and uses `order by`; tag and folder selection are predicates, not alternate sources.
+- An `invalid_argument` error names the argument and what was wrong with it; fix that one argument rather than rewriting the query.
+<!-- /vulcan:mcp -->
 
 ## Guardrails
 
 - Do not use text search when a property filter would be exact.
 - Do not use query or search when a domain API such as `daily` or `task_query` already identifies the resource.
 - Limits above 200 MCP rows require `allow_large_results: true`; 1000 is the hard per-call maximum.
-- DQL accepts only `query`, `engine`, `limit`, and `offset`; use structural query mode for path, filename, field projection, or property inclusion controls.
+- DQL accepts only `query`, `engine`, `limit`, and `cursor`; use structural query mode for path, filename, field projection, or property inclusion controls.
 - Default rows use a compact allowlist and omit properties, frontmatter, links, tasks, and inline-expression payloads unless explicitly projected.
 - Regex predicates live in the query/filter world as `matches` and `matches_i`; they are not the same as FTS search syntax.
 - A `--where` value is one predicate (`status != done`) or one expression
@@ -49,12 +60,14 @@ Use this skill when the task depends on metadata, frontmatter, tags, paths, or p
   a missing property is null, so `status != done` includes notes without a status, and a key set
   by both frontmatter and an inline field is a list.
 - If the result set is surprising, inspect the filter first before adding more conditions.
+<!-- vulcan:cli -->
 - When running many queries or searches against a large vault that a running daemon hosts
   (`vulcan vault add` plus `vulcan daemon start`), set `VULCAN_ROUTE=auto`, pass `--route auto`, or make it the device default with `vulcan device config set-route auto`:
   `query` (DSL, JSON, or DQL), keyword `search`, `ls`, `tasks query`, and `graph stats|hubs|path` are answered by the daemon after it
   confirms every earlier change is indexed, and print exactly what a direct run prints. `auto`
   runs the read directly whenever the daemon cannot answer; `--route daemon` fails with
   `daemon_unavailable` instead. Hybrid search, writes, and other commands always run directly.
+<!-- /vulcan:cli -->
 - When a note query is slow or selects unexpectedly, add `--explain` (`query`, `query --language dql`, `bases eval`) or the Tasks `explain` instruction: the note plan reports how candidates were selected (SQL source, predicate atoms, or every note), how many the shared atoms decided or excluded, how many the frontend evaluated, how many rows loaded stored fields only and how many notes were hydrated (DQL page queries that never read `file.tags`, links, tasks, lists, or whole rows skip hydration), and per-stage timings. Timings make it unsuitable for snapshot comparisons.
 - MDB queries never return results from records that changed on disk. A cached record is reused only when its file identity and change time match the bytes that were indexed; otherwise readable sources are reconciled before returning. In an initialized vault, unrestricted queries may populate or repair the rebuildable cache without changing notes. Uninitialized collections remain source-only and are not initialized as a query side effect. Restricted queries reuse matching cached records or read authorized sources without publishing a partial collection. A `stale_state` error means records changed during preparation: retry after the edit finishes, rather than trusting the previous cache. `--refresh off` does not bypass this MDB check.
 - Simple metadata queries run from the index without loading note bodies: type selection, `where` conjunctions (`&&`) of field or `file.path` comparisons and `startsWith` against literals, field selections, ordering, and limits. Expression selections, projections, grouping, summaries, `include_body`, `||`, and other filter forms still evaluate every visible record. Prefer the simple shape for frequent list queries rather than assuming a small response is cheap.

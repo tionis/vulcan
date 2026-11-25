@@ -8808,7 +8808,7 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 
 ### 9.43.5 MCP-aware bundled skills
 
-- [ ] `<!-- vulcan:cli -->`/`<!-- vulcan:mcp -->` target blocks, rendering for `agent install` and the server, all bundled skills rewritten for the new catalog, `skill://` resources for legacy clients, visibility by the skill's `tools:`.
+- [x] `<!-- vulcan:cli -->`/`<!-- vulcan:mcp -->` target blocks, rendered for `agent install` (CLI) and the server (MCP); one bundled skill table in `vulcan-app` for both; `skill://{name}/…` resources with supporting files, bundled skills overridden by vault skills of the same name, listed when the caller can call a tool the skill names. MCP renderings written for note-operations, vault-query, daily-notes, task-management, git-workflow, graph-exploration, link-curation and web-research; the other bundled skills are CLI-centric and stay CLI-only until they get one.
 
 ### 9.43.6 Stateless core
 

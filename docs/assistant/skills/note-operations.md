@@ -25,6 +25,7 @@ Use this skill when the task is centered on one note or a small set of notes and
 
 ## Recommended Flow
 
+<!-- vulcan:cli -->
 1. Start with `note outline` when the note might be long or structurally complex, then use `note get --section <id>` or `note get --heading <name>` to narrow the read.
 2. Use `note info` for a quick metadata and link-count summary, or read the target with `note get` before patching so the agent is editing the right content.
    - `note get` returns the note source, which is what patches must match. Add `--evaluate` only to see dynamic content (Dataview, Tasks, Bases embeds) as results; never patch against evaluated output.
@@ -34,6 +35,18 @@ Use this skill when the task is centered on one note or a small set of notes and
    - A hosted client that may retry a lost response should give `note_append` an `idempotency_key`; repeating the same append with the same key returns the first result (`replayed: true`) without appending twice. Reusing a key for a different append is an error.
 5. Switch to a vault-relative path when note names or aliases are ambiguous.
 6. For attachments and other non-Markdown files over MCP, use `file_get` (bounded slices as UTF-8 or base64, with the whole file's `content_hash`; follow `next_offset`) and `file_put` (text or base64, at most 10 MiB; refuses Markdown, which belongs to the note tools, and refuses to replace an existing file unless `overwrite` is set, ideally with `expected_hash`). Embed a stored attachment in a note with `![[path]]`.
+<!-- /vulcan:cli -->
+<!-- vulcan:mcp -->
+1. Call `note_outline` when the note might be long or structured, then `note_get` with `section_id` (from the outline), `heading`, `block_ref`, or `lines` to read only what you need. A long note comes back truncated with a `vulcan://note/{path}` link; read that resource only when you need the whole text.
+2. `note_info` gives metadata and link counts. Read the target with `note_get` before editing: it returns the note source, which is what patches must match, and its `content_hash`. Pass `evaluate: true` only to see Dataview, Tasks, or Bases results; never patch against evaluated output.
+3. Prefer `note_append` for additions and `note_patch` (with `find`, `replace`, and a `section_id`, `heading`, `block_ref`, or `lines` scope) for surgical edits. `dry_run: true` shows the result without writing; `check: true` adds diagnostics.
+4. Use `note_set` only to replace a whole note on purpose (it needs the profile's `destructive` permission). To move or rename, use `note_move` with `note` and `destination` (`dry_run: true` first): links to it are rewritten in the same operation.
+   - Pass the `content_hash` from your read as `expected_hash` on `note_set`, `note_patch`, `note_append`, or `note_delete`. A `conflict` error (`stale_content`) means someone changed the note since: read it again and rebuild the edit.
+   - If a response may be lost and retried, give `note_append` an `idempotency_key`; a repeat with the same key returns the first result (`replayed: true`) without appending twice.
+5. Use a vault-relative path in `note` when a name or alias is ambiguous.
+6. For attachments and other non-Markdown files use `file_get` (byte slices as UTF-8 or base64, with the file's `content_hash`; follow `next_offset`) and `file_put` (text or base64, at most 10 MiB; refuses Markdown, and replaces an existing file only with `overwrite`, ideally with `expected_hash`). Embed an attachment in a note with `![[path]]`.
+7. Errors carry `error.code`: `invalid_argument` names the argument to fix, `not_found` and `ambiguous` mean the note reference needs a path, `permission_denied` means the profile does not allow it.
+<!-- /vulcan:mcp -->
 
 ## Guardrails
 

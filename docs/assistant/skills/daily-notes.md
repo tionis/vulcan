@@ -1,7 +1,7 @@
 ---
 name: daily-notes
 description: Work with daily and periodic notes, including event extraction.
-version: 7
+version: 8
 tools:
   - daily
   - daily_latest
@@ -23,6 +23,7 @@ Use this skill for daily note creation, review, journaling, and event-oriented w
 
 ## Recommended Flow
 
+<!-- vulcan:cli -->
 - For “latest daily note,” use MCP `daily` with `operation: latest` or CLI `daily latest`. This means the newest existing configured daily note, not today.
 - For a read of today, use MCP `daily` with `operation: today`; `exists: false` means today is absent and never falls back to latest.
 - Use CLI `today`/`daily today` only when the intent is to open or create today’s note. Use `daily show` for a read-only known-date lookup.
@@ -32,6 +33,14 @@ Use this skill for daily note creation, review, journaling, and event-oriented w
 - Use `daily list` when reviewing several days at once.
 - MCP `daily` list/range defaults to 20 newest-first items, omits full event objects, and returns `page.next_cursor` for the next page; set `include_events: true` only when event details are needed.
 - Use `daily export-ics` only when the events need to leave the vault.
+<!-- /vulcan:cli -->
+<!-- vulcan:mcp -->
+- For "the latest daily note", call `daily` with `operation: "latest"`: the newest existing daily note, not necessarily today. Add `include_content: false` when you only need its path.
+- For today, call `daily` with `operation: "today"`; `exists: false` means there is no note for today yet, and it never falls back to the latest one.
+- For a known date, call `daily` with `operation: "show"` and `date` (`YYYY-MM-DD`, `today`, `yesterday`, or an offset such as `-1`). Prefer an explicit `YYYY-MM-DD` when the user named a date.
+- To review several days, call `daily` with `operation: "list"` (with `from`/`to`, or `week`/`month`) or `"range"`. Lists are newest first, 20 per page, without event objects unless you pass `include_events: true`; follow `page.next_cursor`.
+- To add to a day's note, use `note_append` with `periodic: "daily"` (and `date` for another day) and, for a section, `heading`. A missing note is created from the configured daily template. `dry_run: true` shows the result first.
+<!-- /vulcan:mcp -->
 
 ## Guardrails
 

@@ -1,7 +1,7 @@
 ---
 name: graph-exploration
 description: Explore backlinks, hubs, paths, and connectivity in the vault graph.
-version: 2
+version: 3
 tools:
   - backlinks
   - links
@@ -25,6 +25,7 @@ Use this skill when note relationships matter more than raw content matching.
 
 ## Recommended Flow
 
+<!-- vulcan:cli -->
 - Start with `links` or `backlinks` for one note before jumping to vault-wide analytics.
 - Use graph path when the task is about how two notes connect.
 - Use hubs, dead ends, or components when the task is about structure across the vault.
@@ -32,6 +33,13 @@ Use this skill when note relationships matter more than raw content matching.
 - Use `graph communities` when the task is about topic clusters, orphan placement, or bridge notes at vault scale.
 - Use `suggest links` when a note feels isolated and you need a ranked review queue before creating inferred links.
 - Combine graph inspection with `query` when topology alone is not enough.
+<!-- /vulcan:cli -->
+<!-- vulcan:mcp -->
+- Start with one note: `note_info` gives its link and backlink counts, and `note_get` its outgoing links in context.
+- Use `graph_communities` for topic clusters across the vault, with `orphans: true` for placement hints for unlinked notes and `bridges: true` for notes that connect clusters. It computes without changing anything.
+- Use `link_suggestions` when a note feels isolated: a ranked queue of links it could have, optionally for one `note` or one `status`.
+- Combine graph tools with `query` when topology alone is not enough.
+<!-- /vulcan:mcp -->
 
 ## Guardrails
 

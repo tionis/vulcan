@@ -287,8 +287,10 @@ and the legacy stdio connection. No per-request fingerprinting.
 **Sources:** bundled skills compiled into the binary, and vault skills in
 `assistant.skills_folder`; a vault skill overrides a bundled one with the same name.
 
-**Visibility:** a skill is listed only if every tool in its `tools:` frontmatter is visible to the
-caller.
+**Visibility:** a bundled skill is served over MCP only when it has an MCP rendering (an
+`<!-- vulcan:mcp -->` block). Any skill is listed only if it names no built-in MCP tool in its
+`tools:` frontmatter or at least one the caller may call (names that are CLI commands or custom
+tools do not count), so a read-only connection still gets the note skill for its reading half.
 
 **Modern clients:** the `io.modelcontextprotocol/skills` extension. `skills/list` and
 `skills/get` return entries with `uri` (`skill://{name}/SKILL.md`), the frontmatter verbatim,

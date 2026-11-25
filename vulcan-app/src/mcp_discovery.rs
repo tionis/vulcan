@@ -102,7 +102,13 @@ impl McpDiscovery<'_> {
     }
 
     pub fn visible_resources(&self) -> Result<Vec<Value>, McpMethodError> {
-        mcp_assistant::visible_resources(self.paths, self.guard)
+        let mut resources = mcp_assistant::visible_resources(self.paths, self.guard)?;
+        resources.extend(crate::mcp_skills::skill_resources(&self.visible_skills()?));
+        Ok(resources)
+    }
+
+    fn visible_skills(&self) -> Result<Vec<crate::mcp_skills::McpSkill>, McpMethodError> {
+        crate::mcp_skills::visible_skills(self.paths, self.guard, self.profile)
     }
 
     #[must_use]
@@ -117,6 +123,12 @@ impl McpDiscovery<'_> {
     ) -> Result<Value, McpMethodError> {
         if let Some(result) = crate::mcp_files::read_vault_resource(self.paths, self.guard, uri) {
             return result;
+        }
+        if uri.starts_with("skill://") {
+            let skills = self.visible_skills()?;
+            if let Some(result) = crate::mcp_skills::read_skill_resource(&skills, uri) {
+                return result;
+            }
         }
         if let Some(result) = mcp_assistant::read_resource(self.paths, self.guard, uri) {
             return result;

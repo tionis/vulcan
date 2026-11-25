@@ -1,7 +1,7 @@
 ---
 name: mcp-setup
 description: Set up, debug, and operate Vulcan's MCP server for ChatGPT or other MCP clients. Use when the user asks about MCP transport, OAuth/IndieAuth, which tools a connection sees, remote HTTPS setup, credential migration, ChatGPT Developer Mode, or MCP tool/resource visibility.
-version: 13
+version: 14
 tools:
   - mcp
   - describe
@@ -43,6 +43,7 @@ debugging, and which tools a connection sees (its permission profile).
 - For private development, OpenAI Secure MCP Tunnel is an alternative to exposing a public endpoint. Treat it as a separate OpenAI connection path, not as a Vulcan authentication flag.
 - `--tool-pack` and `--tool-pack-mode` no longer exist and are refused; drop them from client configurations and pick a profile instead.
 - The vault's skill commands are listed once the vault is trusted on the serving device (`vulcan trust add`). A sandboxed command (`strict`, `fs`, `net`) is callable under any profile its declared profile fits, `writer` included, and runs under that profile; nothing needs `execute`. Check a command as a remote agent will see it with `vulcan tool ci --profile <profile>`.
+- Workflow skills appear as `skill://{name}/SKILL.md` resources (with any supporting files beside them): Vulcan's bundled skills in their MCP form, written for MCP tool names, and the vault's own `.agents/skills` as written. A vault skill overrides a bundled one with the same name, and a skill is listed only if the connection can call a tool it names.
 - `vulcan://help/tools` lists every tool the connection may call with its arguments, custom tools included; `vulcan://note/{path}` and `vulcan://file/{path}` read vault content under the profile's read permission; `vulcan://agents` is the vault's AGENTS.md.
 - [OpenAI's MCP guide](https://developers.openai.com/api/docs/mcp) documents remote MCP behavior and authentication. ChatGPT does not pick up tool changes on its own: use the connection's Refresh action after metadata changes, and retest in a new conversation.
 - The sync tools require Git permission and full-vault read permission because its safety reports may name paths anywhere in the repository. A path-filtered read profile intentionally sees no sync tools; use scoped note/search tools or a separately reviewed full-read Git profile.

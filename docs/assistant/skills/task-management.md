@@ -1,7 +1,7 @@
 ---
 name: task-management
 description: Query task state across notes and periodic workflows.
-version: 21
+version: 22
 tools:
   - tasks_query
   - query
@@ -20,6 +20,7 @@ Use this skill when the task depends on extracting, filtering, reviewing, or upd
 
 ## Recommended Flow
 
+<!-- vulcan:cli -->
 - Use `tasks query` or `tasks list` to inspect existing task state before mutating anything.
 - Add the Tasks `explain` instruction to a `tasks query` to see the parsed query and, as `note_plan`, how many notes were scanned and hydrated to load the tasks.
 - For repeated `tasks query` runs against a large vault that a running daemon hosts, set `VULCAN_ROUTE=auto` (or `--route auto`): the daemon answers from its retained index after confirming every earlier change is indexed and prints exactly what a direct run prints. With a TaskNotes status that auto-archives, the query runs directly so the archive upkeep sees a fresh cache.
@@ -30,6 +31,15 @@ Use this skill when the task depends on extracting, filtering, reviewing, or upd
 - `tasks blocked` and `tasks graph` resolve TaskNotes `blockedBy` links by path or unique basename, ignoring aliases; a done blocker no longer blocks, and an `unresolved` blocker names a missing, ambiguous, or unreadable task note.
 - Combine task views with daily note review when date-based workflows matter.
 - Use `help` when the Tasks query syntax or recurrence behavior is unclear.
+<!-- /vulcan:cli -->
+<!-- vulcan:mcp -->
+- Inspect task state with `task_query` before changing anything. Give it either a Tasks plugin `query` (`not done`, `due before tomorrow`, `path includes Projects`, one condition per line) or structured filters (`status`, `priority`, `due_before`, `due_after`, `project`, `context`, `source`, `group_by`, `sort_by`), not both. Rows are concise (path, line, text, status, dates, priority, tags); pass `detail: "full"` for every field, and follow `page.next_cursor` for more than 50.
+- Add `explain` as a line of the Tasks query to see how it was parsed.
+- Create a task with `task_create` (`text`, optionally `note`, `due`, `priority`); without `note` it becomes a TaskNotes task or goes to the configured inbox. Pass an `idempotency_key` when a retry could repeat it.
+- Complete a task with `task_complete` (`task` is a TaskNotes path or an inline task's `path:line` from `task_query`), move it with `task_reschedule` (`task`, `due`), and manage reminders with `task_reminder_add` (`task`, `reminder` such as `-15m` or `due-1h` or a date-time, optional `description`) and `task_reminder_remove` (`task`, `id`). All of them take `dry_run: true`.
+- Completing a recurring task also inserts its next occurrence; read the note afterwards instead of adding it by hand.
+- Combine tasks with the `daily` tool when the work is date-based.
+<!-- /vulcan:mcp -->
 
 ## Guardrails
 
