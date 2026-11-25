@@ -1075,6 +1075,47 @@ fn toggling_a_task_edits_the_open_buffer_and_inserts_the_next_occurrence() {
     assert_eq!(closed["data"]["kind"], "not_found");
 }
 
+#[test]
+fn meta_bind_inputs_offer_values_and_set_prompted_ones() {
+    let text = "---\ndone: false\nhp: 3\n---\n`INPUT[toggle:done]` `INPUT[number:hp]`\n";
+    let dir = vault(&[("Hero.md", text)]);
+    let (mut client, _) = Client::start(dir.path(), &editing_client());
+    client.open("Hero.md", text);
+    let _ = client.diagnostics("Hero.md");
+
+    let actions = code_actions(&mut client, "Hero.md", 4, 3, None);
+    assert_eq!(actions[0]["title"], "Turn done on");
+    let change = &actions[0]["edit"]["documentChanges"][0];
+    // The minimal edit turns `false` into `true`, keeping the shared `e`.
+    assert_eq!(change["edits"][0]["newText"], "tru");
+
+    let actions = code_actions(&mut client, "Hero.md", 4, 25, None);
+    let command = &actions[0]["command"];
+    assert_eq!(command["command"], "vulcan.metabind.set");
+    assert_eq!(command["arguments"][0]["current"], 3);
+    let mut arguments = command["arguments"].clone();
+    arguments[0]["value"] = json!("abc");
+    let refused = client.request(
+        "workspace/executeCommand",
+        json!({ "command": "vulcan.metabind.set", "arguments": arguments.clone() }),
+    );
+    assert_eq!(refused["data"]["kind"], "invalid_request");
+    arguments[0]["value"] = json!("12");
+    let result = client.request(
+        "workspace/executeCommand",
+        json!({ "command": "vulcan.metabind.set", "arguments": arguments }),
+    );
+    assert_eq!(result["action"], "metabind_set");
+    assert_eq!(result["report"]["value"], 12);
+    let edits = applied_edits(&client);
+    assert_eq!(edits[0][0]["edits"][0]["newText"], "12");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("Hero.md")).unwrap(),
+        text,
+        "the open buffer is edited, not the file"
+    );
+}
+
 const DASHBOARD: &str = "---\nstatus: draft\n---\nStatus: `= this.status`\n\n```dataviewjs\ndv.paragraph(\"ran\")\n```\n\n```tasks\nnot done\n```\n";
 
 #[test]

@@ -34,6 +34,7 @@ pub(crate) const COMMANDS: &[&str] = &[
     "vulcan.template.insert",
     "vulcan.capture",
     "vulcan.section.extract",
+    "vulcan.metabind.set",
 ];
 
 /// Server-to-client requests whose responses someone awaits.
@@ -287,6 +288,7 @@ fn will_rename(
     Ok(json!({ "documentChanges": changes }))
 }
 
+#[allow(clippy::too_many_lines)] // one arm per command
 fn execute_command(
     context: &MutationContext,
     session: &EditorSession,
@@ -354,6 +356,14 @@ fn execute_command(
             session.plan_extract_section(&path, position)?
         }
         "vulcan.capture" => session.plan_capture(&text("text")?)?,
+        "vulcan.metabind.set" => {
+            let value = text("value").map_err(|_| {
+                invalid(format!(
+                    "{command} needs a `value`; vulcan.nvim and vulcan.vim ask for one"
+                ))
+            })?;
+            session.plan_metabind_set(&document("path")?, &text("target")?, &value)?
+        }
         "vulcan.task.toggle" => {
             let line = argument["line"]
                 .as_u64()

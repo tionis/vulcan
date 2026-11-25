@@ -40,6 +40,13 @@ pub enum EditorAction {
         path: String,
         position: TextPosition,
     },
+    /// Ask for a value for a Meta Bind input, then run `vulcan.metabind.set`.
+    MetaBindPrompt {
+        path: String,
+        target: String,
+        input_type: String,
+        current: serde_json::Value,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +107,7 @@ impl EditorSession {
                 },
             });
         }
+        self.metabind_actions(path, offset, &mut actions);
         if self.extractable_heading(path, position).is_some() {
             actions.push(EditorCodeAction {
                 title: "Extract section into a new note".to_string(),

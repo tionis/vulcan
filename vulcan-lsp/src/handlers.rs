@@ -388,6 +388,7 @@ fn code_actions(session: &EditorSession, params: &lsp::CodeActionParams) -> Answ
     Ok(to_value(actions))
 }
 
+#[allow(clippy::too_many_lines)] // one arm per editor action
 fn code_action(
     session: &EditorSession,
     params: &lsp::CodeActionParams,
@@ -460,6 +461,24 @@ fn code_action(
                 arguments: Some(vec![serde_json::json!({
                     "path": uri(session, &path)?.to_string(),
                     "position": convert::lsp_position(position),
+                })]),
+            }),
+        ),
+        EditorAction::MetaBindPrompt {
+            path,
+            target,
+            input_type,
+            current,
+        } => (
+            None,
+            Some(lsp::Command {
+                title: action.title.clone(),
+                command: "vulcan.metabind.set".to_string(),
+                arguments: Some(vec![serde_json::json!({
+                    "path": uri(session, &path)?.to_string(),
+                    "target": target,
+                    "inputType": input_type,
+                    "current": current,
                 })]),
             }),
         ),

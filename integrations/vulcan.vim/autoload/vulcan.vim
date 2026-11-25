@@ -25,7 +25,7 @@ export const defaults = {
   init_options: {},
   render: {
     enabled: true,
-    sources: ['inline', 'dataview', 'dataviewjs', 'tasks', 'base', 'notice'],
+    sources: ['inline', 'dataview', 'dataviewjs', 'tasks', 'base', 'numerals', 'metabind', 'notice'],
     max_lines: 30,
   },
   popup: {width: 0.9, height: 0.85},
@@ -97,7 +97,27 @@ export def Register()
   g:LspRegisterCmdHandler('vulcan.showBacklinks', (_) => {
     execute 'LspShowReferences'
   })
+  # Meta Bind inputs without a fixed set of values: ask, then set.
+  g:LspRegisterCmdHandler('vulcan.metabind.set', (command) => {
+    MetaBindSet(get(command, 'arguments', [{}])[0])
+  })
   registered = true
+enddef
+
+# Prompt for a Meta Bind input's value and send `vulcan.metabind.set`.
+export def MetaBindSet(argument: dict<any>)
+  var current = get(argument, 'current', v:null)
+  var default = current == v:null ? ''
+    : type(current) == v:t_list ? current->mapnew((_, v) => string(v))->join(', ')
+    : type(current) == v:t_string ? current : string(current)
+  var value = input($'{get(argument, "target", "")} ({get(argument, "inputType", "")}): ', default)
+  if value == '' && default != ''
+    return
+  endif
+  var request = copy(argument)
+  request.value = value
+  remove(request, 'current')
+  Execute('vulcan.metabind.set', request)
 enddef
 
 # The Vulcan server for the current buffer, or {} when none is attached.

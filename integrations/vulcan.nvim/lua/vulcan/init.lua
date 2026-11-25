@@ -23,8 +23,9 @@ M.defaults = {
   init_options = {},
   render = {
     enabled = true,
-    -- Region sources to show: inline, dataview, dataviewjs, tasks, base, notice.
-    sources = { 'inline', 'dataview', 'dataviewjs', 'tasks', 'base', 'notice' },
+    -- Region sources to show: inline, dataview, dataviewjs, tasks, base,
+    -- numerals, metabind, notice.
+    sources = { 'inline', 'dataview', 'dataviewjs', 'tasks', 'base', 'numerals', 'metabind', 'notice' },
     max_lines = 30,
   },
   float = { width = 0.9, height = 0.85, border = 'rounded' },
@@ -204,6 +205,22 @@ function M.setup(opts)
   -- The backlink lens runs this client-side command.
   vim.lsp.commands['vulcan.showBacklinks'] = function()
     vim.lsp.buf.references({ includeDeclaration = false })
+  end
+  -- Meta Bind inputs without a fixed set of values: ask, then set.
+  vim.lsp.commands['vulcan.metabind.set'] = function(command, ctx)
+    local argument = vim.deepcopy((command.arguments or {})[1] or {})
+    local current = argument.current
+    local default = (current == nil or current == vim.NIL) and ''
+      or type(current) == 'table' and table.concat(vim.tbl_map(tostring, current), ', ')
+      or tostring(current)
+    vim.ui.input({ prompt = ('%s (%s): '):format(argument.target, argument.inputType), default = default }, function(value)
+      if value == nil then
+        return
+      end
+      argument.value = value
+      argument.current = nil
+      M.execute('vulcan.metabind.set', argument, nil, ctx and ctx.bufnr)
+    end)
   end
   local function adopt(bufnr, client)
     set_keymaps(bufnr)

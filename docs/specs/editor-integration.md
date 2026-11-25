@@ -333,6 +333,14 @@ with template mutations disabled and follows the existing template trust rules.
   twice. A note reported before and now clean or open gets an empty report. Because Neovim re-pulls
   the whole vault on `workspace/diagnostic/refresh`, the server sends that refresh only after the
   client has pulled workspace diagnostics once.
+- Meta Bind inputs (`vulcan.metabind.set` with `{ "path", "target", "value", "dryRun"? }`): on an
+  `INPUT[...]` field bound to the note's own frontmatter, toggles offer the other state and selects
+  one action per option as `refactor.rewrite` edits to the open buffer; other input types offer a
+  command whose arguments carry `target`, `inputType`, and `current` but no `value`. vulcan.nvim and
+  vulcan.vim register a client handler for it that asks for the value and sends the command with
+  it; other clients get an `invalid_request` naming the missing value. The value is checked against
+  every input in the note bound to the target, and the edit goes to the open buffer (or the file
+  when closed), changing only that property's lines.
 - Extract section (`vulcan.section.extract` with `{ "path", "position", "dryRun"? }`, offered as a
   `refactor.extract` code action on a heading line): the heading's section, up to the next heading
   of the same or a higher level, becomes a note named after the heading in the source note's

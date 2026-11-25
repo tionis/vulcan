@@ -15,6 +15,7 @@ mod diagnostics;
 mod edits;
 mod extract;
 mod hints;
+mod metabind;
 mod navigation;
 mod render;
 mod tokens;
