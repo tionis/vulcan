@@ -1002,6 +1002,29 @@ impl McpSession {
         }
     }
 
+    /// Collect what the server sends while pinging it, until every method
+    /// in `methods` was among the notifications or ten seconds pass. The
+    /// change watcher announces list changes on its own schedule.
+    fn wait_for_notifications(&mut self, methods: &[&str]) -> Vec<Value> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut seen = Vec::new();
+        let mut id = 9_000;
+        while std::time::Instant::now() < deadline {
+            id += 1;
+            seen.extend(
+                self.send(serde_json::json!({"jsonrpc": "2.0", "id": id, "method": "ping"})),
+            );
+            if methods
+                .iter()
+                .all(|method| seen.iter().any(|message| message["method"] == *method))
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        seen
+    }
+
     fn send_notification(&mut self, notification: Value) {
         writeln!(self.stdin, "{notification}").expect("notification should write");
         self.stdin.flush().expect("notification should flush");
@@ -35169,11 +35192,10 @@ Summarize {{note}} with new instructions.
     .expect("updated prompt should write");
     fs::write(vault_root.join("AGENTS.md"), "# Updated\n").expect("agents file should update");
 
-    let messages = session.send(serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 3,
-        "method": "prompts/list"
-    }));
+    let messages = session.wait_for_notifications(&[
+        "notifications/prompts/list_changed",
+        "notifications/resources/list_changed",
+    ]);
     assert!(
         messages
             .iter()
@@ -35245,11 +35267,10 @@ Updated summary tool documentation.
     )
     .expect("updated manifest should write");
 
-    let messages = session.send(serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 3,
-        "method": "tools/list"
-    }));
+    let messages = session.wait_for_notifications(&[
+        "notifications/tools/list_changed",
+        "notifications/resources/list_changed",
+    ]);
     assert!(
         messages
             .iter()

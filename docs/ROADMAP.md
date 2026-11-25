@@ -8814,11 +8814,12 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 
 - [x] Tool calls keep no connection state: `changeset` argument on note, file, search, query, daily, task and git tools (shown to profiles that may use changesets; rejected by other tools; custom tools run on the vault), `changeset_switch` removed, `changeset_land`/`changeset_abandon` take `id`; `git_commit` commits `paths`, `all: true`, or everything in a changeset, and refuses to guess.
 - [x] Stateless core (`vulcan-app::mcp_core::handle`) over an `McpAuthority` (vault and profile), with client attribution per request; 2026-07-28 requests recognized by `_meta`, validated (-32602, -32022 with `supported`/`requested`), and answered with `resultType`, `_meta` server info, and `ttlMs`/`cacheScope` on lists and reads; `server/discover`; resource-not-found as -32602 for modern requests; legacy adapter (`McpLegacyConnection`) for `initialize` negotiating 2025-11-25 or 2025-06-18, `ping`, and legacy `list_changed`. Works over stdio now; HTTP still requires its session until 9.43.8. Skills and tasks extensions are not yet advertised.
-- [ ] Server-level change watcher for `list_changed`.
+- [x] Change watcher for `list_changed` on stdio: a watcher thread polls the lists every 2 s and notifies an initialized legacy connection; responses no longer carry them. HTTP keeps per-request checks until 9.43.8; modern `subscriptions/listen` comes with it.
 
 ### 9.43.7 Operations, timeouts and stdio
 
-- [ ] Operation ledger for every long or mutating call on every transport; timeouts become `indeterminate` with an operation id; `operation_get`; concurrent stdio with working cancellation.
+- [x] Concurrent stdio: a reader dispatches tool calls to four workers (queue of 64) while other requests are answered in order; one writer; `notifications/cancelled` skips a queued call and suppresses a running call's response; end of input drains for up to 5 s.
+- [ ] Operation ledger for every long or mutating call on every transport; timeouts become `indeterminate` with an operation id; `operation_get`.
 
 ### 9.43.8 axum HTTP transport
 

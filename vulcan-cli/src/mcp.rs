@@ -1,6 +1,7 @@
 #![allow(clippy::needless_pass_by_value, clippy::struct_excessive_bools)]
 
 mod catalog;
+mod stdio;
 
 use crate::{
     cli_command_tree, collect_help_command_topics, custom_tool_registry_entry,
@@ -15,7 +16,7 @@ use std::collections::BTreeMap;
 #[cfg(feature = "oauth")]
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::{self, BufRead};
+use std::io;
 use std::net::{SocketAddr, TcpStream};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
@@ -39,7 +40,7 @@ use vulcan_app::execution::{
 #[cfg(all(test, feature = "oauth"))]
 use vulcan_app::execution::{ExecutionContext, ExecutionDeadline};
 use vulcan_app::mcp_assistant;
-use vulcan_app::mcp_dispatch::{jsonrpc_error, McpHttpProcessResult, McpMethodHandler};
+use vulcan_app::mcp_dispatch::{McpHttpProcessResult, McpMethodHandler};
 use vulcan_app::mcp_help;
 use vulcan_app::mcp_protocol::{McpMethodError, McpMethodOutcome};
 use vulcan_app::mcp_session_protocol::{McpProtocolCore, McpProtocolHost};
@@ -743,32 +744,14 @@ fn run_mcp_stdio_server(
     request_timeout: Duration,
 ) -> Result<(), CliError> {
     let _sync_host = install_mcp_sync_host();
-    let mut server = McpServerCore::new(paths, requested_profile)?;
-    let stdin = io::stdin();
-
-    for line in stdin.lock().lines() {
-        let line = line.map_err(CliError::operation)?;
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let request = match serde_json::from_str::<Value>(trimmed) {
-            Ok(value) => value,
-            Err(error) => {
-                let response =
-                    jsonrpc_error(Value::Null, -32700, format!("Parse error: {error}"), None);
-                println!("{}", serde_json::to_string(&response).unwrap_or_default());
-                continue;
-            }
-        };
-
-        for message in server.process_request_with_timeout(request, request_timeout) {
-            println!("{}", serde_json::to_string(&message).unwrap_or_default());
-        }
-    }
-
-    Ok(())
+    let server = McpServerCore::new(paths, requested_profile)?;
+    stdio::serve(
+        server,
+        request_timeout,
+        io::stdin().lock(),
+        Box::new(io::stdout()),
+    )
+    .map_err(CliError::operation)
 }
 
 fn run_mcp_http_server(

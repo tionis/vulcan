@@ -2,6 +2,8 @@ use super::*;
 use serde_json::Map;
 use std::collections::BTreeSet;
 #[cfg(feature = "oauth")]
+use std::io::BufRead as _;
+#[cfg(feature = "oauth")]
 use std::io::Read;
 use std::io::Write;
 use std::net::TcpListener;

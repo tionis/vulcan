@@ -25,6 +25,9 @@ pub struct McpProtocolCore {
     oauth_client_id: Option<String>,
     subject: Option<String>,
     host: McpProtocolHost,
+    /// Whether legacy list changes ride along with responses. A host with
+    /// its own change watcher turns this off and polls instead.
+    list_changes_on_responses: bool,
 }
 
 impl McpProtocolCore {
@@ -40,6 +43,7 @@ impl McpProtocolCore {
             oauth_client_id: None,
             subject: None,
             host,
+            list_changes_on_responses: true,
         })
     }
 
@@ -67,6 +71,21 @@ impl McpProtocolCore {
     pub fn set_authenticated_client(&mut self, client_id: Option<String>, subject: Option<String>) {
         self.oauth_client_id = client_id;
         self.subject = subject;
+    }
+
+    /// Deliver legacy list changes through [`Self::poll_list_changes`] from a
+    /// change watcher instead of with responses.
+    pub fn watch_list_changes(&mut self) {
+        self.list_changes_on_responses = false;
+    }
+
+    /// `list_changed` notifications for a legacy connection that has
+    /// initialized, for what changed since the last poll.
+    pub fn poll_list_changes(&mut self) -> Vec<Value> {
+        if self.legacy.version().is_none() {
+            return Vec::new();
+        }
+        self.legacy.list_changed_notifications(&self.authority)
     }
 
     /// The legacy connection's negotiated version, once `initialize` ran.
@@ -172,7 +191,11 @@ impl McpMethodHandler for McpProtocolCore {
     }
 
     fn list_changed_notifications(&mut self) -> Vec<Value> {
-        self.legacy.list_changed_notifications(&self.authority)
+        if self.list_changes_on_responses {
+            self.legacy.list_changed_notifications(&self.authority)
+        } else {
+            Vec::new()
+        }
     }
 }
 
@@ -237,6 +260,42 @@ mod tests {
         let legacy = core.handle_method("tools/list", None).unwrap();
         assert!(legacy.response.unwrap().get("resultType").is_none());
         assert!(core.handle_method("ping", None).unwrap().response.is_some());
+    }
+
+    #[test]
+    fn a_watching_host_polls_list_changes_once_the_client_initialized() {
+        let vault = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(vault.path());
+        vulcan_core::initialize_vulcan_dir(&paths).unwrap();
+        let mut core = McpProtocolCore::new(
+            &paths,
+            Some("unrestricted"),
+            McpProtocolHost {
+                command_help: no_command_help,
+                help_candidates: no_help_candidates,
+                server_version: "watch",
+            },
+        )
+        .unwrap();
+        core.watch_list_changes();
+        let prompts = vault.path().join("AI/Prompts");
+        std::fs::create_dir_all(&prompts).unwrap();
+        std::fs::write(prompts.join("one.md"), "---\nname: one\n---\nOne.\n").unwrap();
+        // Nothing is announced before the client initialized.
+        assert!(core.poll_list_changes().is_empty());
+        core.handle_method("initialize", None).unwrap();
+        // Responses no longer carry list changes; the poll does.
+        let listed = core.handle_method("prompts/list", None).unwrap();
+        assert!(listed.emit_list_notifications);
+        assert!(core.list_changed_notifications().is_empty());
+        let changes = core.poll_list_changes();
+        assert!(
+            changes
+                .iter()
+                .any(|change| change["method"] == "notifications/prompts/list_changed"),
+            "{changes:?}"
+        );
+        assert!(core.poll_list_changes().is_empty());
     }
 
     #[test]
