@@ -18,8 +18,8 @@ This document describes both the implemented baseline and the planned architectu
 | Multi-vault daemon lifecycle, registry, Git sync supervisor, direct Git sync, and companion protocol | Implemented |
 | General daemon REST API/client mode and non-Git sync backends | Planned follow-on work in Phases 10 and 12 |
 | Named, authority-aware Outline routes, exact document bindings, route validation/status/history, and interval-driven direct CLI execution | Implemented |
-| Connector-neutral frontmatter bindings, HedgeDoc routes, Git-wiki routes, and selective SilverBullet routes | Planned first connector wave |
-| Full-Space SilverBullet protocol peer, SilverBullet plug, and optional runtime adapter | Planned optional capabilities after their daemon/sync boundaries exist |
+| Connector-neutral frontmatter bindings, HedgeDoc routes, Git-wiki routes, and SilverBullet 3.0 pull, push, and reviewed two-way subtree routes | Planned first connector wave |
+| Full-space SilverBullet mirror, SilverBullet plug, and optional runtime adapter | Planned optional capabilities; the SilverBullet server peer is deferred |
 
 The focused Outline publisher remains strictly one-way, and the focused pull command remains an explicit inbound operation. Named Outline routes safely compose those primitives through declared direction and authority; they do not introduce implicit last-writer-wins behavior.
 

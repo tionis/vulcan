@@ -147,24 +147,34 @@ Add to the inventory:
   tags are no longer indexed by SB.
 - Preserve `share.*` frontmatter (see the discrepancy above).
 
-## Proposed roadmap changes (not yet applied)
+## Decision and roadmap changes (2026-11-25)
 
-1. In the SB appendix header and SB.1, re-pin to 3.0.0 and replace the 2.x TypeScript file
-   references with the documented HTTP API, the ETag contract, `/.ping`, and the Rust server.
-2. Add a new item before SB.4: **SB.0 Shared-Git coexistence.** It covers the conflict-marker
-   guard, the `Library/` layout policy, the fixture tests, and the guide (option A). Without the
-   numbering, the marker guard alone is a Phase 12 item.
-3. Rewrite SB.5 around ETag-based conditional reconciliation and API-token auth, and point the
-   15.8 SilverBullet connector at it.
-4. Move SB.4 to "Deferred SilverBullet work".
-5. Narrow SB.7 to Vulcan-only capabilities in a dockable panel.
-6. Add `silverbullet publish` as a named 9.41 and SB.3 target.
+Eric keeps Obsidian as the local editor, so options A (shared directory or Git remote) and E (plug)
+are not planned workflows. Push and pull (option B) is the focus, with C (publication) as an
+independent slice. The SB appendix in `docs/ROADMAP.md` was rewritten accordingly:
+
+- SB.1 is re-pinned to 3.0.0 and builds a mock `/.fs` server plus an opt-in upstream conformance
+  job.
+- SB.2 models 3.0 link resolution, Library-only scripts, page variables, baked sections, mentions,
+  and `share.*` preservation.
+- SB.3 shares one Obsidian-to-SilverBullet transform set with push routes, and adds
+  `silverbullet publish` as a target.
+- SB.4 (server peer) is deferred.
+- SB.5 is the 15.8 connector, built on the Outline route machinery:
+  - SB.5.1 connector foundation (HTTP client, API token, version gate, durable ETag and
+    base-snapshot state);
+  - SB.5.2 pull routes;
+  - SB.5.3 push routes with `If-Match` / `If-None-Match: *` and the 9.41 audience gate;
+  - SB.5.4 reviewed two-way subtree routes (diff3 loses nothing between identical Markdown
+    dialects);
+  - SB.5.5 an optional full-space mirror for 12.10.
+- SB.6 (runtime via the official `sb` CLI) and SB.7 (a narrowed plug) stay optional.
+- The delivery-horizons list, 12.10, and 15.8 point at the new items.
 
 ## Open questions
 
-- Does Eric run SB 3.0 Server, Desktop, or both? Desktop's MCP listener and `sb` CLI target local
-  folder spaces, which suits a single-machine setup (variant of option A).
-- Should SB's `Library/` sync through Vulcan's Git remote at all, or stay SB-local?
-- Is SB meant to be an editor over a Vulcan vault (option A), or a separate system Vulcan pulls
-  selected pages from (option B)? The answer decides whether Phase 15's SilverBullet connector is
-  needed at all.
+- Is a SilverBullet player wiki an interim for, or an alternative to, the rpg-engine wiki route
+  (15.8)? This decides whether 9.41's audience binding is exercised first on SilverBullet or on
+  Outline.
+- Should pull routes adopt `$anchor` to block-ref conversion, or keep anchors verbatim and only
+  index them? The decision needs fixture evidence from SB.2.
