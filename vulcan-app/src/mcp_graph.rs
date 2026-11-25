@@ -7,7 +7,9 @@ use vulcan_core::{
     PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
 
-use crate::mcp_protocol::{McpGraphCommunitiesArgs, McpMethodError, McpSuggestLinksArgs};
+use crate::mcp_protocol::{
+    McpGraphCommunitiesArgs, McpLinkSuggestionResolveArgs, McpLinkSuggestionsArgs, McpMethodError,
+};
 
 /// Preserve the MCP graph report's selection fields beside core graph analytics.
 pub fn graph_communities(
@@ -15,9 +17,8 @@ pub fn graph_communities(
     guard: &ProfilePermissionGuard,
     args: &McpGraphCommunitiesArgs,
 ) -> Result<Value, McpMethodError> {
-    let report =
-        query_graph_communities_with_filter(paths, Some(&guard.read_filter()), !args.dry_run)
-            .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    let report = query_graph_communities_with_filter(paths, Some(&guard.read_filter()), false)
+        .map_err(|error| McpMethodError::tool(error.to_string()))?;
     let mut value =
         serde_json::to_value(report).map_err(|error| McpMethodError::tool(error.to_string()))?;
     if let Value::Object(object) = &mut value {
@@ -28,37 +29,12 @@ pub fn graph_communities(
     Ok(value)
 }
 
-/// Validate, execute, and read-filter link suggestions for one MCP authority.
+/// List link suggestions for one MCP authority, read-filtered on both ends.
 pub fn link_suggestions(
     paths: &VaultPaths,
     guard: &ProfilePermissionGuard,
-    args: &McpSuggestLinksArgs,
+    args: &McpLinkSuggestionsArgs,
 ) -> Result<LinkSuggestionsReport, McpMethodError> {
-    if args.accept.is_some() && args.reject.is_some() {
-        return Err(McpMethodError::invalid_params(
-            "`suggest_links` accepts either `accept` or `reject`, not both",
-        ));
-    }
-    if let Some(id) = args.accept.as_deref() {
-        guard
-            .check_write_path(".vulcan/cache.db")
-            .map_err(|error| McpMethodError::tool(error.to_string()))?;
-        let suggestion = accept_link_suggestion_with_guard(paths, id, guard)
-            .map_err(|error| McpMethodError::tool(error.to_string()))?;
-        return Ok(LinkSuggestionsReport {
-            suggestions: vec![suggestion],
-        });
-    }
-    if let Some(id) = args.reject.as_deref() {
-        guard
-            .check_write_path(".vulcan/cache.db")
-            .map_err(|error| McpMethodError::tool(error.to_string()))?;
-        let suggestion = reject_link_suggestion_with_guard(paths, id, guard)
-            .map_err(|error| McpMethodError::tool(error.to_string()))?;
-        return Ok(LinkSuggestionsReport {
-            suggestions: vec![suggestion],
-        });
-    }
     let status = args.status.as_deref().map(parse_status).transpose()?;
     let mut report = suggest_links(
         paths,
@@ -75,13 +51,38 @@ pub fn link_suggestions(
     Ok(report)
 }
 
+/// Accept or reject one link suggestion.
+pub fn link_suggestion_resolve(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    args: &McpLinkSuggestionResolveArgs,
+) -> Result<LinkSuggestionsReport, McpMethodError> {
+    let resolve = match args.action.as_str() {
+        "accept" => accept_link_suggestion_with_guard,
+        "reject" => reject_link_suggestion_with_guard,
+        other => {
+            return Err(McpMethodError::invalid_params(format!(
+                "unsupported `link_suggestion_resolve.action`: {other}; use `accept` or `reject`"
+            )))
+        }
+    };
+    guard
+        .check_write_path(".vulcan/cache.db")
+        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    let suggestion =
+        resolve(paths, &args.id, guard).map_err(|error| McpMethodError::tool(error.to_string()))?;
+    Ok(LinkSuggestionsReport {
+        suggestions: vec![suggestion],
+    })
+}
+
 fn parse_status(value: &str) -> Result<LinkSuggestionStatus, McpMethodError> {
     match value {
         "pending" => Ok(LinkSuggestionStatus::Pending),
         "accepted" => Ok(LinkSuggestionStatus::Accepted),
         "rejected" => Ok(LinkSuggestionStatus::Rejected),
         other => Err(McpMethodError::invalid_params(format!(
-            "unsupported `suggest_links.status`: {other}"
+            "unsupported `link_suggestions.status`: {other}"
         ))),
     }
 }
@@ -93,28 +94,33 @@ mod tests {
     use std::fs;
     use vulcan_core::{resolve_permission_profile, scan_vault, ScanMode};
 
-    fn args(value: Value) -> McpSuggestLinksArgs {
-        serde_json::from_value(value).unwrap()
-    }
-
     #[test]
-    fn link_suggestions_validate_mutation_and_status_before_cache_access() {
+    fn link_suggestion_tools_validate_status_action_and_write_access_before_cache_access() {
         let temporary = tempfile::tempdir().unwrap();
         let paths = VaultPaths::new(temporary.path());
         let guard = ProfilePermissionGuard::new(
             &paths,
             resolve_permission_profile(&paths, Some("readonly")).unwrap(),
         );
+        let list =
+            |value: Value| -> McpLinkSuggestionsArgs { serde_json::from_value(value).unwrap() };
+        let resolve = |value: Value| -> McpLinkSuggestionResolveArgs {
+            serde_json::from_value(value).unwrap()
+        };
         assert!(matches!(
-            link_suggestions(&paths, &guard, &args(json!({"accept":"a", "reject":"b"}))),
+            link_suggestions(&paths, &guard, &list(json!({"status":"unsupported"}))),
             Err(McpMethodError::JsonRpc { code: -32602, .. })
         ));
         assert!(matches!(
-            link_suggestions(&paths, &guard, &args(json!({"status":"unsupported"}))),
+            link_suggestion_resolve(&paths, &guard, &resolve(json!({"id":"a","action":"maybe"}))),
             Err(McpMethodError::JsonRpc { code: -32602, .. })
         ));
         assert!(matches!(
-            link_suggestions(&paths, &guard, &args(json!({"accept":"a"}))),
+            link_suggestion_resolve(
+                &paths,
+                &guard,
+                &resolve(json!({"id":"a","action":"accept"}))
+            ),
             Err(McpMethodError::Tool { .. })
         ));
     }
@@ -141,7 +147,7 @@ mod tests {
         );
         let graph_args = || {
             serde_json::from_value(json!({
-                "community": 1, "orphans": true, "bridges": true, "dry_run": true
+                "community": 1, "orphans": true, "bridges": true
             }))
             .unwrap()
         };

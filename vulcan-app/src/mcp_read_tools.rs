@@ -14,9 +14,8 @@ use vulcan_core::{
 
 use crate::mcp_access;
 use crate::mcp_protocol::{
-    McpDailyArgs, McpDailyListArgs, McpDailyShowArgs, McpMethodError, McpNoteGetArgs,
-    McpNoteInfoArgs, McpNoteOutlineArgs, McpQueryArgs, McpSearchArgs, McpTaskListArgs,
-    McpTaskQueryArgs,
+    McpDailyArgs, McpMethodError, McpNoteGetArgs, McpNoteInfoArgs, McpNoteOutlineArgs,
+    McpQueryArgs, McpSearchArgs, McpTaskQueryArgs,
 };
 use crate::notes::{
     build_note_info_report,
@@ -26,7 +25,7 @@ use crate::notes::{
 };
 use crate::periodic::{
     current_local_date_string, list_daily_notes, normalize_date_argument, read_daily_note,
-    read_latest_daily_note_where, show_periodic_note, DailyNoteReadReport, DailyReadTarget,
+    read_latest_daily_note_where, DailyNoteReadReport, DailyReadTarget,
 };
 use crate::tasks::{
     build_tasks_list_report_with_guard, build_tasks_query_result_with_guard, TaskListRequest,
@@ -51,12 +50,33 @@ pub fn filter_tasks_query_report(guard: &ProfilePermissionGuard, report: &mut Ta
     report.result_count = report.tasks.len();
 }
 
-/// Execute the MCP task-list read with authority applied before evaluation.
-pub fn task_list(
+/// Execute the MCP task query, by Tasks query source or by structured
+/// filters, with authority applied before evaluation.
+pub fn task_query(
     paths: &VaultPaths,
     guard: &ProfilePermissionGuard,
-    args: McpTaskListArgs,
+    args: McpTaskQueryArgs,
 ) -> Result<TasksQueryResult, McpMethodError> {
+    if let Some(query) = args.query.as_deref() {
+        let has_filters = args.filter.is_some()
+            || args.source.is_some()
+            || args.status.is_some()
+            || args.priority.is_some()
+            || args.due_before.is_some()
+            || args.due_after.is_some()
+            || args.project.is_some()
+            || args.context.is_some()
+            || args.group_by.is_some()
+            || args.sort_by.is_some()
+            || args.include_archived;
+        if has_filters {
+            return Err(McpMethodError::invalid_params(
+                "`task_query` takes either `query` or structured filters, not both; put the conditions in the query source",
+            ));
+        }
+        return build_tasks_query_result_with_guard(paths, query, guard)
+            .map_err(|error| McpMethodError::tool(error.to_string()));
+    }
     build_tasks_list_report_with_guard(
         paths,
         &TaskListRequest {
@@ -75,16 +95,6 @@ pub fn task_list(
         guard,
     )
     .map_err(|error| McpMethodError::tool(error.to_string()))
-}
-
-/// Execute the MCP task query over the caller's authorized note universe.
-pub fn task_query(
-    paths: &VaultPaths,
-    guard: &ProfilePermissionGuard,
-    args: &McpTaskQueryArgs,
-) -> Result<TasksQueryResult, McpMethodError> {
-    build_tasks_query_result_with_guard(paths, &args.query, guard)
-        .map_err(|error| McpMethodError::tool(error.to_string()))
 }
 
 fn parse_tasks_default_source(
@@ -241,44 +251,6 @@ pub fn daily(
             "unsupported `daily.operation`: {other}"
         ))),
     }
-}
-
-/// Read a single daily note through the same scoped MCP access check.
-pub fn daily_show(
-    paths: &VaultPaths,
-    guard: &ProfilePermissionGuard,
-    args: &McpDailyShowArgs,
-) -> Result<Value, McpMethodError> {
-    let report = show_periodic_note(paths, args.date.as_deref(), "daily")
-        .map_err(|error| McpMethodError::tool(error.to_string()))?;
-    mcp_access::check_read_note_access(paths, guard, &report.path)?;
-    serde_json::to_value(report).map_err(|error| McpMethodError::internal(error.to_string()))
-}
-
-/// List readable daily notes with the legacy MCP pagination contract.
-pub fn daily_list(
-    paths: &VaultPaths,
-    guard: &ProfilePermissionGuard,
-    args: &McpDailyListArgs,
-) -> Result<Value, McpMethodError> {
-    let items = list_daily_notes(
-        paths,
-        args.from.as_deref(),
-        args.to.as_deref(),
-        args.week,
-        args.month,
-    )
-    .map_err(|error| McpMethodError::tool(error.to_string()))?
-    .into_iter()
-    .filter(|item| guard.check_read_path(&item.path).is_ok())
-    .collect::<Vec<_>>();
-    bounded_daily_list(
-        items,
-        args.limit,
-        args.offset,
-        args.order.as_deref(),
-        args.include_events,
-    )
 }
 
 /// Apply the note-source permission boundary before any MCP note read.
@@ -816,21 +788,19 @@ mod tests {
         assert_eq!(shown["path"], "Journal/Daily/2026-04-03.md");
         assert!(shown["content"].is_null());
         assert!(daily(&paths, &blind, show_args()).is_err());
-        let list_args =
-            || serde_json::from_value::<McpDailyListArgs>(json!({"from": "2026-04-03"})).unwrap();
+        let list_args = || {
+            serde_json::from_value::<McpDailyArgs>(
+                json!({"operation": "list", "from": "2026-04-03"}),
+            )
+            .unwrap()
+        };
         assert_eq!(
-            daily_list(&paths, &readable, &list_args()).unwrap()["page"]["total_count"],
+            daily(&paths, &readable, list_args()).unwrap()["page"]["total_count"],
             1
         );
         assert_eq!(
-            daily_list(&paths, &blind, &list_args()).unwrap()["page"]["total_count"],
+            daily(&paths, &blind, list_args()).unwrap()["page"]["total_count"],
             0
-        );
-        let legacy_show =
-            serde_json::from_value::<McpDailyShowArgs>(json!({"date": "2026-04-03"})).unwrap();
-        assert_eq!(
-            daily_show(&paths, &readable, &legacy_show).unwrap()["path"],
-            shown["path"]
         );
     }
 
@@ -885,9 +855,9 @@ mod tests {
             &paths,
             resolve_permission_profile(&paths, Some("scoped")).unwrap(),
         );
-        let query_args = serde_json::from_value(json!({"query": "not done"})).unwrap();
+        let query_args = || serde_json::from_value(json!({"query": "not done"})).unwrap();
         assert_eq!(
-            task_query(&paths, &guard, &query_args)
+            task_query(&paths, &guard, query_args())
                 .unwrap()
                 .result_count,
             1
@@ -898,20 +868,20 @@ mod tests {
         )
         .unwrap();
         let list_args = || serde_json::from_value(json!({"source": "inline"})).unwrap();
-        assert!(task_query(&paths, &guard, &query_args).is_err());
-        assert!(task_list(&paths, &guard, list_args()).is_err());
+        assert!(task_query(&paths, &guard, query_args()).is_err());
+        assert!(task_query(&paths, &guard, list_args()).is_err());
         let current = ProfilePermissionGuard::new(
             &paths,
             resolve_permission_profile(&paths, Some("scoped")).unwrap(),
         );
         assert_eq!(
-            task_query(&paths, &current, &query_args)
+            task_query(&paths, &current, query_args())
                 .unwrap()
                 .result_count,
             0
         );
         assert_eq!(
-            task_list(&paths, &current, list_args())
+            task_query(&paths, &current, list_args())
                 .unwrap()
                 .result_count,
             0
@@ -951,12 +921,12 @@ mod tests {
         .unwrap();
         assert_eq!(selected.result_count, 1);
         assert_eq!(selected.tasks[0]["path"], "CVisible.md");
-        let query_args = serde_json::from_value(json!({"query": source})).unwrap();
+        let query_args = || serde_json::from_value(json!({"query": source})).unwrap();
         let list_args =
             serde_json::from_value(json!({"source": "inline", "filter": source})).unwrap();
         for report in [
-            task_query(&paths, &guard, &query_args).unwrap(),
-            task_list(&paths, &guard, list_args).unwrap(),
+            task_query(&paths, &guard, query_args()).unwrap(),
+            task_query(&paths, &guard, list_args).unwrap(),
         ] {
             assert_eq!(report.result_count, 1);
             assert_eq!(report.tasks[0]["path"], "CVisible.md");
@@ -988,12 +958,12 @@ mod tests {
         let source = "not done\ngroup by path\nlimit 1";
         let unfiltered = crate::tasks::build_tasks_query_result(&paths, source).unwrap();
         assert_eq!(unfiltered.tasks[0]["path"], "Hidden/Hidden.md");
-        let query_args = serde_json::from_value(json!({"query": source})).unwrap();
+        let query_args = || serde_json::from_value(json!({"query": source})).unwrap();
         let list_args =
             serde_json::from_value(json!({"source": "inline", "filter": source})).unwrap();
         for report in [
-            task_query(&paths, &guard, &query_args).unwrap(),
-            task_list(&paths, &guard, list_args).unwrap(),
+            task_query(&paths, &guard, query_args()).unwrap(),
+            task_query(&paths, &guard, list_args).unwrap(),
         ] {
             assert_eq!(report.result_count, 1);
             assert_eq!(report.tasks[0]["path"], "Public/Public.md");
@@ -1023,37 +993,32 @@ mod tests {
             &paths,
             resolve_permission_profile(&paths, Some("blind")).unwrap(),
         );
-        let list_args =
-            || serde_json::from_value::<McpTaskListArgs>(json!({"source": "inline"})).unwrap();
-        assert_eq!(
-            task_list(&paths, &readable, list_args())
-                .unwrap()
-                .result_count,
-            1
-        );
-        assert_eq!(
-            task_list(&paths, &blind, list_args()).unwrap().result_count,
-            0
-        );
-        let query_args = serde_json::from_value::<McpTaskQueryArgs>(json!({"query": ""})).unwrap();
-        assert_eq!(
-            task_query(&paths, &readable, &query_args)
-                .unwrap()
-                .result_count,
-            1
-        );
-        assert_eq!(
-            task_query(&paths, &blind, &query_args)
-                .unwrap()
-                .result_count,
-            0
-        );
-        let invalid =
-            serde_json::from_value::<McpTaskListArgs>(json!({"source": "unknown"})).unwrap();
-        assert!(matches!(
-            task_list(&paths, &readable, invalid),
-            Err(McpMethodError::JsonRpc { code: -32602, .. })
-        ));
+        let args = |value: Value| serde_json::from_value::<McpTaskQueryArgs>(value).unwrap();
+        for arguments in [json!({"source": "inline"}), json!({"query": ""})] {
+            assert_eq!(
+                task_query(&paths, &readable, args(arguments.clone()))
+                    .unwrap()
+                    .result_count,
+                1,
+                "{arguments}"
+            );
+            assert_eq!(
+                task_query(&paths, &blind, args(arguments.clone()))
+                    .unwrap()
+                    .result_count,
+                0,
+                "{arguments}"
+            );
+        }
+        for invalid in [
+            json!({"source": "unknown"}),
+            json!({"query": "not done", "status": "open"}),
+        ] {
+            assert!(matches!(
+                task_query(&paths, &readable, args(invalid)),
+                Err(McpMethodError::JsonRpc { code: -32602, .. })
+            ));
+        }
     }
 
     #[test]

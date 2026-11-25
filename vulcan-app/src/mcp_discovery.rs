@@ -6,7 +6,7 @@ use vulcan_core::{
 };
 
 use crate::mcp_assistant;
-use crate::mcp_catalog::visible_tool_catalog;
+use crate::mcp_catalog::{visible_tool_catalog, ALWAYS_LOADED_TOOLS};
 use crate::mcp_completion;
 use crate::mcp_help::{self, HelpTopicReport};
 use crate::mcp_protocol::{
@@ -31,14 +31,18 @@ impl McpDiscovery<'_> {
         let mut tools = visible_tool_catalog(self.profile)
             .into_iter()
             .map(|tool| {
-                json!({
+                let mut item = json!({
                     "name": tool.name,
                     "title": tool.title,
                     "description": tool.description,
                     "inputSchema": (tool.input_schema)(),
                     "outputSchema": tool.output_schema.map(|schema| schema()),
                     "annotations": tool.annotations,
-                })
+                });
+                if ALWAYS_LOADED_TOOLS.contains(&tool.name) {
+                    item["_meta"] = json!({ "anthropic/alwaysLoad": true });
+                }
+                item
             })
             .collect::<Vec<_>>();
         tools.extend(self.visible_custom_tools()?.iter().map(|tool| {

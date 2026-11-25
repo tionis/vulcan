@@ -806,7 +806,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         foreground_tools.starts_with("HTTP/1.1 200"),
         "{foreground_tools}"
     );
-    assert!(foreground_tools.contains("\"name\":\"task_list\""));
+    assert!(foreground_tools.contains("\"name\":\"task_query\""));
     assert!(!foreground_tools.contains("\"name\":\"task_create\""));
     let foreground_resources = named_listener_method(
         address,
@@ -1279,7 +1279,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         "{resident_tools}"
     );
     assert!(resident_tools.contains("\"name\":\"note_get\""));
-    assert!(resident_tools.contains("\"name\":\"task_list\""));
+    assert!(resident_tools.contains("\"name\":\"task_query\""));
     assert!(!resident_tools.contains("\"name\":\"note_create\""));
     assert!(!resident_tools.contains("\"name\":\"task_create\""));
     let denied_resident = named_listener_create_note(
@@ -5255,33 +5255,13 @@ fn hosted_mcp_scheduling_uses_catalog_read_hints_and_conservative_custom_mutatio
     );
     assert_eq!(
         scheduled_operation(&call("graph_communities")),
-        ScheduledOperation::Mutation,
-        "the default graph call persists derived clusters"
+        ScheduledOperation::Read,
+        "graph communities are computed without persisting"
     );
     assert_eq!(
-        scheduled_operation(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": "graph_communities",
-                "arguments": {"dry_run": true}
-            }
-        })),
-        ScheduledOperation::Read
-    );
-    assert_eq!(
-        scheduled_operation(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": "graph_communities",
-                "arguments": {"dry_run": "true"}
-            }
-        })),
+        scheduled_operation(&call("link_suggestions")),
         ScheduledOperation::Mutation,
-        "malformed dry-run values must stay on the conservative lane"
+        "listing suggestions refreshes their cache rows"
     );
     assert_eq!(
         scheduled_operation(&call("web_fetch")),
@@ -5384,7 +5364,6 @@ fn sync_tools_require_full_read_and_git_and_only_triggers_mutate() {
         visible,
         vec![
             "sync_status",
-            "sync_plan",
             "sync_doctor",
             "sync_conflicts",
             "sync_refresh",
@@ -5467,7 +5446,7 @@ fn mcp_config_tools_preserve_dry_run_apply_and_show_report_shapes() {
     let show = core
         .protocol()
         .call_tool(
-            "config_show",
+            "config_get",
             &Map::from_iter([(
                 "section".to_string(),
                 Value::String("periodic.daily".to_string()),

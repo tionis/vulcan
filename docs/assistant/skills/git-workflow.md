@@ -1,7 +1,7 @@
 ---
 name: git-workflow
 description: Inspect vault changes, review history, create intentional commits, or synchronize a Git-backed vault's committed history with `vulcan sync`.
-version: 67
+version: 68
 tools:
   - git_status
   - git_diff
@@ -79,7 +79,7 @@ A vault can be one directory of a larger Git repository, such as the `docs/` dir
 - `vulcan sync conflicts` lists conflict records retained from the removed whole-worktree mode, and `vulcan sync conflicts <id>` shows one (add `--wiki <id>` for a registered wiki; page large records with `--path-offset <n> --path-limit <1-256>` until `path_page.next_offset` is absent). Current sync creates no new records, and retained ones can be read and archived but no longer resolved. Recover any wanted bytes from their preserved refs with ordinary Git and commit them.
 - Inspect JSON sync reports: `state.recovered_from` means Vulcan found an interruption-sensitive device-local transaction and recaptured before continuing; `state.retained` identifies the exact paused, cancelled, or failed phase and any captured object IDs available for follow-up.
 - Use `vulcan sync run --dry-run` to inspect the selected remote and branch without creating objects, refs, or files; use `vulcan sync run` for one finite direct-mode cycle.
-- Agent clients may request the MCP `sync` pack for `sync_status`, mutation-free `sync_plan`, `sync_doctor`, `sync_conflicts`, `sync_refresh`, and `sync_resume`. The pack deliberately has no resolver or generic Git shell and is visible only with Git plus full-vault read permission.
+- Agents whose profile allows Git with full-vault read get the MCP tools `sync_status`, `sync_doctor`, `sync_conflicts`, `sync_refresh`, and `sync_resume`. The pack deliberately has no resolver or generic Git shell and is visible only with Git plus full-vault read permission.
 - `vulcan sync run --max-retries <n>` bounds rejected compare-and-swap push attempts. Retries re-fetch with capped exponential backoff and remain cancellable; do not replace them with unconditional force pushes.
 - Use `vulcan sync run <wiki>`, `--group <name>`, or `--all` for registered selections. Group/all results are independent per-wiki transactions with aggregate counts, never one atomic cross-repository operation.
 - Use `vulcan daemon status` to verify the authenticated background service before diagnosing automatic sync. Start it in the foreground with `vulcan daemon start` or explicitly choose `--detach`; use `vulcan daemon stop` for graceful cross-platform shutdown. A stopped or stale daemon does not prevent direct `vulcan sync run`, and runtime PID metadata alone is not proof that the service is live.

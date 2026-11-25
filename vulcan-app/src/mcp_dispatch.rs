@@ -35,13 +35,10 @@ pub fn request_is_read_only(payload: &Value) -> bool {
     else {
         return false;
     };
-    if name == "graph_communities" {
-        return payload
-            .get("params")
-            .and_then(|params| params.get("arguments"))
-            .and_then(|arguments| arguments.get("dry_run"))
-            .and_then(Value::as_bool)
-            == Some(true);
+    // Listing suggestions reads the vault but refreshes their cache rows, so
+    // it is scheduled like a write.
+    if name == "link_suggestions" {
+        return false;
     }
     tool_by_name(name).is_some_and(|tool| tool.annotations.read_only_hint)
 }
@@ -528,14 +525,12 @@ mod tests {
         assert!(request_is_read_only(&call("web_fetch", json!({}))));
         assert!(!request_is_read_only(&call("note_create", json!({}))));
         assert!(!request_is_read_only(&call("custom_tool", json!({}))));
-        assert!(!request_is_read_only(&call("graph_communities", json!({}))));
-        assert!(request_is_read_only(&call(
-            "graph_communities",
-            json!({"dry_run": true})
-        )));
+        assert!(request_is_read_only(&call("graph_communities", json!({}))));
+        // Listing suggestions refreshes their cache rows.
+        assert!(!request_is_read_only(&call("link_suggestions", json!({}))));
         assert!(!request_is_read_only(&call(
-            "graph_communities",
-            json!({"dry_run": "true"})
+            "link_suggestion_resolve",
+            json!({})
         )));
         assert!(!request_is_read_only(&json!({"method": "tools/call"})));
     }

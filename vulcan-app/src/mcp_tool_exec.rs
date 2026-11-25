@@ -6,18 +6,16 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use vulcan_core::{PermissionProfile, ProfilePermissionGuard, VaultPaths};
 
-use crate::mcp_catalog::{active_tool_names, authorize_builtin_tool_call, McpToolId};
+use crate::mcp_catalog::{authorize_builtin_tool_call, McpToolId};
 use crate::mcp_protocol::{
-    self, McpConfigSetArgs, McpConfigShowArgs, McpDailyArgs, McpDailyListArgs, McpDailyShowArgs,
-    McpGraphCommunitiesArgs, McpIndexScanArgs, McpMethodError, McpNoteAppendArgs,
-    McpNoteCreateArgs, McpNoteDeleteArgs, McpNoteGetArgs, McpNoteInfoArgs, McpNoteOutlineArgs,
-    McpNotePatchArgs, McpNoteSetArgs, McpQueryArgs, McpSearchArgs, McpSuggestLinksArgs,
+    self, McpConfigGetArgs, McpConfigSetArgs, McpDailyArgs, McpGraphCommunitiesArgs,
+    McpIndexScanArgs, McpLinkSuggestionResolveArgs, McpLinkSuggestionsArgs, McpMethodError,
+    McpNoteAppendArgs, McpNoteCreateArgs, McpNoteDeleteArgs, McpNoteGetArgs, McpNoteInfoArgs,
+    McpNoteOutlineArgs, McpNotePatchArgs, McpNoteSetArgs, McpQueryArgs, McpSearchArgs,
     McpSyncConflictsArgs, McpSyncDoctorArgs, McpSyncTargetArgs, McpTaskCompleteArgs,
-    McpTaskCreateArgs, McpTaskListArgs, McpTaskQueryArgs, McpTaskReminderAddArgs,
-    McpTaskReminderRemoveArgs, McpTaskRescheduleArgs, McpToolResourceStore, McpWebFetchArgs,
-    McpWebSearchArgs, MCP_INLINE_TEXT_LIMIT, MCP_QUERY_DEFAULT_LIMIT, MCP_STRUCTURED_CONTENT_LIMIT,
+    McpTaskCreateArgs, McpTaskQueryArgs, McpTaskReminderAddArgs, McpTaskReminderRemoveArgs,
+    McpTaskRescheduleArgs, McpToolResourceStore, McpWebFetchArgs, McpWebSearchArgs,
 };
-use crate::mcp_read_tools::MCP_QUERY_HARD_MAX;
 use crate::{
     browse, mcp_changesets, mcp_config, mcp_custom, mcp_files, mcp_git, mcp_graph, mcp_notes,
     mcp_read_tools, mcp_scan, mcp_sync, mcp_tasks, mcp_web,
@@ -97,25 +95,15 @@ impl McpToolExecution<'_> {
             McpToolId::Status => {
                 let report = browse::build_vault_status_report(self.paths)
                     .map_err(|error| McpMethodError::tool(error.to_string()))?;
-                self.report(tool.name, &report)
+                let mut status = serde_json::to_value(report)
+                    .map_err(|error| McpMethodError::internal(error.to_string()))?;
+                status["permissions"] = json!({
+                    "profile": self.profile_name,
+                    "grant": self.guard.selection().grant,
+                });
+                self.value(tool.name, status)
             }
-            McpToolId::Capabilities => {
-                let names = active_tool_names(self.profile);
-                self.value(
-                    tool.name,
-                    json!({
-                        "routing": mcp_protocol::routing_guidance(&names),
-                        "activeTools": names,
-                        "resultLimits": {
-                            "inlineTextBytes": MCP_INLINE_TEXT_LIMIT,
-                            "structuredContentBytes": MCP_STRUCTURED_CONTENT_LIMIT,
-                            "queryDefaultRows": MCP_QUERY_DEFAULT_LIMIT,
-                            "queryMaximumRows": MCP_QUERY_HARD_MAX,
-                        },
-                    }),
-                )
-            }
-            McpToolId::SyncStatus | McpToolId::SyncPlan => {
+            McpToolId::SyncStatus => {
                 let args: McpSyncTargetArgs = parse(arguments)?;
                 self.value(
                     tool.name,
@@ -143,20 +131,6 @@ impl McpToolExecution<'_> {
                     mcp_read_tools::daily(self.paths, self.guard, args)?,
                 )
             }
-            McpToolId::DailyShow => {
-                let args: McpDailyShowArgs = parse(arguments)?;
-                self.value(
-                    tool.name,
-                    mcp_read_tools::daily_show(self.paths, self.guard, &args)?,
-                )
-            }
-            McpToolId::DailyList => {
-                let args: McpDailyListArgs = parse(arguments)?;
-                self.value(
-                    tool.name,
-                    mcp_read_tools::daily_list(self.paths, self.guard, &args)?,
-                )
-            }
             McpToolId::GraphCommunities => {
                 let args: McpGraphCommunitiesArgs = parse(arguments)?;
                 self.value(
@@ -164,25 +138,25 @@ impl McpToolExecution<'_> {
                     mcp_graph::graph_communities(self.paths, self.guard, &args)?,
                 )
             }
-            McpToolId::SuggestLinks => {
-                let args: McpSuggestLinksArgs = parse(arguments)?;
+            McpToolId::LinkSuggestions => {
+                let args: McpLinkSuggestionsArgs = parse(arguments)?;
                 self.report(
                     tool.name,
                     &mcp_graph::link_suggestions(self.paths, self.guard, &args)?,
                 )
             }
-            McpToolId::TaskList => {
-                let args: McpTaskListArgs = parse(arguments)?;
+            McpToolId::LinkSuggestionResolve => {
+                let args: McpLinkSuggestionResolveArgs = parse(arguments)?;
                 self.report(
                     tool.name,
-                    &mcp_read_tools::task_list(self.paths, self.guard, args)?,
+                    &mcp_graph::link_suggestion_resolve(self.paths, self.guard, &args)?,
                 )
             }
             McpToolId::TaskQuery => {
                 let args: McpTaskQueryArgs = parse(arguments)?;
                 self.report(
                     tool.name,
-                    &mcp_read_tools::task_query(self.paths, self.guard, &args)?,
+                    &mcp_read_tools::task_query(self.paths, self.guard, args)?,
                 )
             }
             McpToolId::TaskCreate => {
@@ -365,8 +339,8 @@ impl McpToolExecution<'_> {
                 let args: McpWebFetchArgs = parse(arguments)?;
                 self.value(tool.name, mcp_web::web_fetch(self.paths, self.guard, args)?)
             }
-            McpToolId::ConfigShow => {
-                let args: McpConfigShowArgs = parse(arguments)?;
+            McpToolId::ConfigGet => {
+                let args: McpConfigGetArgs = parse(arguments)?;
                 self.report(
                     tool.name,
                     &mcp_config::config_show(self.paths, self.guard, self.profile_name, &args)?,
@@ -467,6 +441,8 @@ mod tests {
     fn shared_executor_lists_profile_tools_and_denies_readonly_writes() {
         let temporary = tempfile::tempdir().unwrap();
         let paths = VaultPaths::new(temporary.path());
+        vulcan_core::paths::initialize_vulcan_dir(&paths).unwrap();
+        vulcan_core::scan_vault(&paths, vulcan_core::ScanMode::Full).unwrap();
         let selection = resolve_permission_profile(&paths, Some("readonly")).unwrap();
         let guard = ProfilePermissionGuard::new(&paths, selection.clone());
         let mut resources = McpToolResourceStore::default();
@@ -480,12 +456,15 @@ mod tests {
             written_paths: &mut BTreeSet::new(),
             changeset: &mut crate::mcp_changesets::McpChangesetBinding::new(&paths),
         };
-        let capabilities = executor.call_tool("capabilities", &Map::new()).unwrap();
-        assert!(capabilities["structuredContent"]["activeTools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|name| name == "note_get"));
+        let status = executor.call_tool("status", &Map::new()).unwrap();
+        assert_eq!(
+            status["structuredContent"]["permissions"]["profile"],
+            "readonly"
+        );
+        assert_eq!(
+            status["structuredContent"]["permissions"]["grant"]["destructive"],
+            false
+        );
         assert!(matches!(
             executor.call_tool("note_create", &Map::new()),
             Err(McpMethodError::Tool { .. })

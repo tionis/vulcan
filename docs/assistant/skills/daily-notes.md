@@ -1,14 +1,12 @@
 ---
 name: daily-notes
 description: Work with daily and periodic notes, including event extraction.
-version: 5
+version: 6
 tools:
   - daily
   - daily_latest
   - daily_today
   - daily_open
-  - daily_show
-  - daily_list
   - daily_append
   - daily_export_ics
 metadata:

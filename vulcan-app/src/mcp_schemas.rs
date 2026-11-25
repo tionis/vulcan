@@ -77,10 +77,6 @@ pub fn sync_status_input_schema() -> Value {
     schema_object(sync_target_properties(), &[])
 }
 
-pub fn sync_plan_input_schema() -> Value {
-    schema_object(sync_target_properties(), &[])
-}
-
 pub fn sync_doctor_input_schema() -> Value {
     let mut properties = sync_target_properties();
     properties.push((
@@ -301,16 +297,6 @@ pub fn query_input_schema() -> Value {
     )
 }
 
-pub fn daily_show_input_schema() -> Value {
-    schema_object(
-        vec![(
-            "date",
-            schema_string("Reference date such as today, tomorrow, or YYYY-MM-DD."),
-        )],
-        &[],
-    )
-}
-
 pub fn daily_input_schema() -> Value {
     schema_object(
         vec![
@@ -360,40 +346,15 @@ pub fn daily_output_schema() -> Value {
     })
 }
 
-pub fn daily_list_input_schema() -> Value {
+pub fn task_query_input_schema() -> Value {
     schema_object(
         vec![
             (
-                "from",
-                schema_string("Start date for the daily-note window."),
+                "query",
+                schema_string(
+                    "Tasks plugin query source such as `not done` or `due before tomorrow`. Leave the structured filters unset when using it.",
+                ),
             ),
-            ("to", schema_string("End date for the daily-note window.")),
-            (
-                "week",
-                schema_boolean("Use the current configured week window."),
-            ),
-            (
-                "month",
-                schema_boolean("Use the current configured month window."),
-            ),
-            (
-                "limit",
-                schema_integer("Maximum items; defaults to 20 and cannot exceed 200."),
-            ),
-            ("offset", schema_integer("Zero-based result offset.")),
-            ("order", schema_string_enum("Date order.", &["asc", "desc"])),
-            (
-                "include_events",
-                schema_boolean("Include full event objects; false by default."),
-            ),
-        ],
-        &[],
-    )
-}
-
-pub fn task_list_input_schema() -> Value {
-    schema_object(
-        vec![
             (
                 "filter",
                 schema_string("Optional Tasks query or DQL fallback filter."),
@@ -428,13 +389,6 @@ pub fn task_list_input_schema() -> Value {
             ),
         ],
         &[],
-    )
-}
-
-pub fn task_query_input_schema() -> Value {
-    schema_object(
-        vec![("query", schema_string("Tasks plugin query source."))],
-        &["query"],
     )
 }
 
@@ -791,7 +745,7 @@ pub fn web_fetch_input_schema() -> Value {
     )
 }
 
-pub fn config_show_input_schema() -> Value {
+pub fn config_get_input_schema() -> Value {
     schema_object(
         vec![(
             "section",
@@ -844,16 +798,12 @@ pub fn graph_communities_input_schema() -> Value {
             ),
             ("orphans", schema_boolean("Include orphan placement hints.")),
             ("bridges", schema_boolean("Include bridge-note rankings.")),
-            (
-                "dry_run",
-                schema_boolean("Compute communities without persisting assignments."),
-            ),
         ],
         &[],
     )
 }
 
-pub fn suggest_links_input_schema() -> Value {
+pub fn link_suggestions_input_schema() -> Value {
     schema_object(
         vec![
             (
@@ -878,84 +828,25 @@ pub fn suggest_links_input_schema() -> Value {
                     &["pending", "accepted", "rejected"],
                 ),
             ),
-            ("accept", schema_string("Suggestion id to accept.")),
-            ("reject", schema_string("Suggestion id to reject.")),
         ],
         &[],
     )
 }
 
-pub fn tool_pack_mutation_input_schema() -> Value {
+pub fn link_suggestion_resolve_input_schema() -> Value {
     schema_object(
         vec![
             (
-                "operation",
-                schema_string_enum(
-                    "Pack operation. `list` is read-only.",
-                    &["list", "enable", "disable", "set"],
-                ),
+                "id",
+                schema_string("Suggestion id from `link_suggestions`."),
             ),
             (
-                "packs",
-                serde_json::json!({
-                    "type": "array",
-                    "description": "Tool-pack selectors for enable, disable, or set.",
-                    "items": {
-                        "type": "string",
-                        "enum": [
-                            "notes-read",
-                            "search",
-                            "status",
-                            "graph",
-                            "custom",
-                            "daily",
-                            "tasks",
-                            "notes-write",
-                            "notes-manage",
-                            "web",
-                            "config",
-                            "index",
-                            "sync",
-                            "git",
-                        ],
-                    },
-                }),
+                "action",
+                schema_string_enum("Accept or reject the suggestion.", &["accept", "reject"]),
             ),
         ],
-        &[],
+        &["id", "action"],
     )
-}
-
-pub fn tool_pack_state_output_schema() -> Value {
-    serde_json::json!({
-        "type": "object",
-        "properties": {
-            "mode": {
-                "type": "string",
-                "enum": ["static", "adaptive"],
-                "description": "Current MCP tool-pack session mode.",
-            },
-            "selectedToolPacks": {
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "Canonical tool packs currently selected for this session.",
-            },
-            "pinnedToolPacks": {
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "Startup-selected packs that adaptive calls cannot remove.",
-            },
-            "activeTools": {
-                "type": "array",
-                "items": { "type": "string" },
-            },
-            "availableToolPacks": {
-                "type": "array",
-                "description": "Available canonical packs with visibility information under the current permission profile.",
-            },
-        },
-        "required": ["mode", "selectedToolPacks", "pinnedToolPacks", "activeTools", "availableToolPacks"],
-    })
 }
 
 pub fn note_get_output_schema() -> Value {
@@ -1052,7 +943,7 @@ pub fn web_fetch_output_schema() -> Value {
     generic_report_output_schema()
 }
 
-pub fn config_show_output_schema() -> Value {
+pub fn config_get_output_schema() -> Value {
     generic_report_output_schema()
 }
 
@@ -1259,15 +1150,15 @@ mod tests {
     fn shared_schemas_keep_required_fields_and_closed_inputs() {
         let note = note_get_input_schema();
         let search = search_input_schema();
-        let packs = tool_pack_mutation_input_schema();
+        let tasks = task_query_input_schema();
 
         assert_eq!(note["additionalProperties"], json!(false));
         assert_eq!(note["required"], json!(["note"]));
         assert_eq!(search["required"], json!(["query"]));
         assert_eq!(search["properties"]["limit"]["type"], "integer");
-        assert_eq!(
-            packs["properties"]["packs"]["items"]["enum"][0],
-            "notes-read"
-        );
+        assert!(tasks
+            .get("required")
+            .is_none_or(|required| required == &json!([])));
+        assert_eq!(tasks["properties"]["query"]["type"], "string");
     }
 }

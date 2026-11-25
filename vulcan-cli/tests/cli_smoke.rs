@@ -18145,8 +18145,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan sync devices prune-backup <device-id> --dry-run"));
     assert!(git_skill.contains("does not revoke device, Git, or vault access"));
     assert!(git_skill.contains("remote fields are unknown"));
-    assert!(git_skill.contains("MCP `sync` pack"));
-    assert!(git_skill.contains("mutation-free `sync_plan`"));
+    assert!(git_skill.contains("get the MCP tools `sync_status`"));
     assert!(git_skill.contains("vulcan daemon status"));
     assert!(git_skill.contains("vulcan daemon auto-commit-status"));
     assert!(git_skill.contains("vulcan git batch-commit --dry-run"));
@@ -28546,7 +28545,6 @@ fn describe_mcp_sync_pack_exposes_bounded_reads_and_two_triggers() {
             .collect::<Vec<_>>(),
         vec![
             "sync_status",
-            "sync_plan",
             "sync_doctor",
             "sync_conflicts",
             "sync_refresh",
@@ -32827,7 +32825,7 @@ fn mcp_http_transport_lists_profile_tools_and_streams_list_changes() {
         "note_create",
         "web_search",
         "git_status",
-        "task_list",
+        "task_query",
     ] {
         assert!(
             tools.iter().any(|tool| tool["name"] == expected),
@@ -33038,7 +33036,6 @@ fn mcp_server_exposes_default_read_search_status_tools_and_structured_results() 
         "query",
         "daily",
         "status",
-        "capabilities",
     ] {
         assert!(
             tools.iter().any(|tool| tool["name"] == expected),
@@ -33067,19 +33064,13 @@ fn mcp_server_exposes_default_read_search_status_tools_and_structured_results() 
         "note_get should advertise an output schema"
     );
 
-    let capabilities = session.send(serde_json::json!({
+    let status = session.send(serde_json::json!({
         "jsonrpc": "2.0", "id": 21, "method": "tools/call",
-        "params": { "name": "capabilities", "arguments": {} }
+        "params": { "name": "status", "arguments": {} }
     }));
-    let capabilities =
-        &capabilities.last().expect("capabilities response")["result"]["structuredContent"];
-    assert!(capabilities["activeTools"]
-        .as_array()
-        .is_some_and(|tools| tools.iter().any(|tool| tool == "daily")));
-    assert_eq!(
-        capabilities["resultLimits"]["structuredContentBytes"],
-        65_536
-    );
+    let status = &status.last().expect("status response")["result"]["structuredContent"];
+    assert_eq!(status["permissions"]["profile"], "unrestricted");
+    assert_eq!(status["permissions"]["grant"]["destructive"], true);
 
     let messages = session.send(serde_json::json!({
         "jsonrpc": "2.0",
@@ -33559,7 +33550,7 @@ fn mcp_server_lists_every_tool_the_profile_allows() {
         "web_search",
         "web_fetch",
         "graph_communities",
-        "suggest_links",
+        "link_suggestions",
     ] {
         assert!(
             tools.iter().any(|tool| tool["name"] == expected),
@@ -33569,7 +33560,7 @@ fn mcp_server_lists_every_tool_the_profile_allows() {
 
     let graph = session.send(serde_json::json!({
         "jsonrpc": "2.0", "id": 200, "method": "tools/call",
-        "params": {"name": "graph_communities", "arguments": {"dry_run": true, "orphans": true}}
+        "params": {"name": "graph_communities", "arguments": {"orphans": true}}
     }));
     let graph = &graph.last().expect("graph response")["result"];
     assert_eq!(graph["isError"], false);
@@ -33578,7 +33569,7 @@ fn mcp_server_lists_every_tool_the_profile_allows() {
 
     let suggestions = session.send(serde_json::json!({
         "jsonrpc": "2.0", "id": 201, "method": "tools/call",
-        "params": {"name": "suggest_links", "arguments": {"status": "pending", "limit": 5}}
+        "params": {"name": "link_suggestions", "arguments": {"status": "pending", "limit": 5}}
     }));
     let suggestions = &suggestions.last().expect("suggestions response")["result"];
     assert_eq!(suggestions["isError"], false);
@@ -34386,9 +34377,7 @@ fn mcp_daily_tasks_and_query_tools_support_wiki_workflows() {
     for expected in [
         "search",
         "query",
-        "daily_show",
-        "daily_list",
-        "task_list",
+        "task_query",
         "task_query",
         "task_create",
         "task_complete",
@@ -34407,39 +34396,27 @@ fn mcp_daily_tasks_and_query_tools_support_wiki_workflows() {
         "id": 3,
         "method": "tools/call",
         "params": {
-            "name": "daily_show",
-            "arguments": { "date": "2026-05-08" }
+            "name": "daily",
+            "arguments": { "operation": "show", "date": "2026-05-08" }
         }
     }));
-    let daily = &daily.last().expect("daily_show response")["result"]["structuredContent"];
+    let daily = &daily.last().expect("daily show response")["result"]["structuredContent"];
     assert_eq!(daily["path"].as_str(), Some("Journal/Daily/2026-05-08.md"));
     assert!(
         daily["content"]
             .as_str()
             .is_some_and(|content| content.contains("Review open tasks")),
-        "daily_show should return daily note content"
+        "daily show should return daily note content"
     );
-    let cli_show = cargo_vulcan_fixed_now()
-        .args([
-            "--vault",
-            vault_root.to_str().expect("utf-8 vault"),
-            "--output",
-            "json",
-            "daily",
-            "show",
-            "2026-05-08",
-        ])
-        .assert()
-        .success();
-    assert_eq!(*daily, parse_stdout_json(&cli_show));
 
     let daily_list = session.send(serde_json::json!({
         "jsonrpc": "2.0",
         "id": 31,
         "method": "tools/call",
         "params": {
-            "name": "daily_list",
+            "name": "daily",
             "arguments": {
+                "operation": "list",
                 "from": "2026-05-08",
                 "to": "2026-05-08",
                 "include_events": true
@@ -34447,7 +34424,7 @@ fn mcp_daily_tasks_and_query_tools_support_wiki_workflows() {
         }
     }));
     let daily_list =
-        &daily_list.last().expect("daily_list response")["result"]["structuredContent"];
+        &daily_list.last().expect("daily list response")["result"]["structuredContent"];
     let cli_list = cargo_vulcan_fixed_now()
         .args([
             "--vault",
@@ -34490,16 +34467,16 @@ fn mcp_daily_tasks_and_query_tools_support_wiki_workflows() {
         "id": 5,
         "method": "tools/call",
         "params": {
-            "name": "task_list",
+            "name": "task_query",
             "arguments": { "source": "tasknotes" }
         }
     }));
-    let tasks = &tasks.last().expect("task_list response")["result"]["structuredContent"];
+    let tasks = &tasks.last().expect("task_query response")["result"]["structuredContent"];
     assert!(
         tasks["tasks"]
             .as_array()
             .is_some_and(|tasks| !tasks.is_empty()),
-        "task_list should return task rows"
+        "task_query should return task rows"
     );
 
     let complete = session.send(serde_json::json!({
@@ -34555,9 +34532,9 @@ fn mcp_task_mutations_refresh_the_cache_for_following_reads() {
 
     let listed = session.send(serde_json::json!({
         "jsonrpc": "2.0", "id": 3, "method": "tools/call",
-        "params": { "name": "task_list", "arguments": { "source": "inline" } }
+        "params": { "name": "task_query", "arguments": { "source": "inline" } }
     }));
-    let listed = &listed.last().expect("task_list")["result"]["structuredContent"];
+    let listed = &listed.last().expect("task_query")["result"]["structuredContent"];
     assert_eq!(listed["result_count"], 1);
 
     let rescheduled = session.send(serde_json::json!({
@@ -34948,7 +34925,7 @@ Summarize {{note}}.
         .last()
         .and_then(|response| response["result"]["tools"].as_array())
         .expect("tools/list should return tools");
-    for hidden in ["note_get", "note_create", "web_search", "config_show"] {
+    for hidden in ["note_get", "note_create", "web_search", "config_get"] {
         assert!(
             !tools.iter().any(|tool| tool["name"] == hidden),
             "blind profile should hide `{hidden}`"
@@ -35338,6 +35315,14 @@ fn mcp_structured_outputs_match_cli_json_reports() {
             .stdout,
     )
     .expect("cli status json should parse");
+    // MCP adds the caller's effective permissions to the shared report.
+    let mut mcp_status = mcp_status;
+    let permissions = mcp_status
+        .as_object_mut()
+        .expect("status object")
+        .remove("permissions")
+        .expect("MCP status reports permissions");
+    assert_eq!(permissions["profile"], "unrestricted");
     assert_eq!(mcp_status, cli_status);
     assert!(session.finish().is_empty());
 }
@@ -35356,7 +35341,7 @@ fn mcp_config_tools_share_app_reports_with_cli() {
 
     let shown = session.send(serde_json::json!({
         "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-        "params": { "name": "config_show", "arguments": { "section": "git" } }
+        "params": { "name": "config_get", "arguments": { "section": "git" } }
     }));
     let mcp_report = &shown.last().expect("config_show response")["result"]["structuredContent"];
     let cli_report: Value = serde_json::from_slice(
@@ -35811,14 +35796,18 @@ fn describe_mcp_matches_live_registry_for_the_same_profile() {
         .expect("describe should return a tool array")
         .iter()
         .map(|tool| {
-            serde_json::json!({
+            let mut entry = serde_json::json!({
                 "name": tool["name"],
                 "title": tool["title"],
                 "description": tool["description"],
                 "inputSchema": tool["inputSchema"],
                 "outputSchema": tool["outputSchema"],
                 "annotations": tool["annotations"],
-            })
+            });
+            if let Some(meta) = tool.get("_meta") {
+                entry["_meta"] = meta.clone();
+            }
+            entry
         })
         .collect::<Vec<_>>();
     describe_tools.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
@@ -36333,13 +36322,13 @@ fn task_read_policy_precedes_limits_and_backlink_expressions_in_cli_and_mcp() {
         ),
         (
             3,
-            "task_list",
+            "task_query",
             serde_json::json!({"source": "inline", "filter": source}),
             vec!["tasks", "list", "--source", "inline", "--filter", source],
         ),
         (
             4,
-            "task_list",
+            "task_query",
             serde_json::json!({"source": "inline", "filter": "length(file.inlinks) = 1"}),
             vec![
                 "tasks",

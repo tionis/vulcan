@@ -1,11 +1,11 @@
 ---
 name: plugin-authoring
 description: Create, inspect, and troubleshoot Vulcan JavaScript lifecycle plugins. Use when the user asks about plugins, event hooks, on_note_write, on_pre_commit, plugin permissions, plugin trust, or when to use a plugin instead of a skill command.
-version: 2
+version: 3
 tools:
   - plugin
   - trust
-  - config_show
+  - config_get
   - help
 metadata:
   vulcan:

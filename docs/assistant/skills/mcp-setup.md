@@ -1,12 +1,12 @@
 ---
 name: mcp-setup
 description: Set up, debug, and operate Vulcan's MCP server for ChatGPT or other MCP clients. Use when the user asks about MCP transport, OAuth/IndieAuth, which tools a connection sees, remote HTTPS setup, credential migration, ChatGPT Developer Mode, or MCP tool/resource visibility.
-version: 11
+version: 12
 tools:
   - mcp
   - describe
   - help
-  - config_show
+  - config_get
 metadata:
   vulcan:
     managed: true
@@ -28,9 +28,9 @@ debugging, and which tools a connection sees (its permission profile).
 4. Sign in with IndieAuth, then review and explicitly approve Vulcan's separate consent page. For a remote exposing multiple vaults, explicitly select one vault and its profile; each grant and MCP session stays bound to that selection. Pick the shortest expiry that fits (1 hour up to 1 year, or a last day at most a year ahead); a longer connection is approved again rather than extended. IndieAuth login alone grants no vault authority.
 5. Inspect or revoke durable approvals with `vulcan mcp connections list|show|revoke`. Use `vulcan mcp remote set` for deployment changes and `remote remove` to revoke its grants and remove only the device-global definition.
 6. The permission profile alone decides which tools are listed: every tool it allows, nothing else. Use `vulcan --permissions <profile> describe --format mcp` to see exactly what a connection with that profile gets, and MCP resources to inspect prompts, skills, and skill commands from the client. To expose fewer tools (a small local model, a read-only connector), choose a narrower profile or a second named remote with one; clients can also switch individual tools off.
-7. The `sync_*` tools serve repository-wide Git synchronization diagnostics and appear when the profile has Git access with full-vault read. They are `sync_status`, mutation-free `sync_plan`, `sync_doctor`, and `sync_conflicts`, plus `sync_refresh` (start a cycle now: queued on the daemon when it runs, otherwise run directly) and `sync_resume` (clear a paused registration and start a cycle), which need Git access with full-vault read and write. It does not expose conflict resolution or arbitrary Git commands.
+7. The `sync_*` tools serve repository-wide Git synchronization diagnostics and appear when the profile has Git access with full-vault read. They are `sync_status`, `sync_doctor`, and `sync_conflicts`, plus `sync_refresh` (start a cycle now: queued on the daemon when it runs, otherwise run directly) and `sync_resume` (clear a paused registration and start a cycle), which need Git access with full-vault read and write. It does not expose conflict resolution or arbitrary Git commands.
 8. The Git tools let an agent that works through MCP alone review or commit its own changes. They are `git_status`, `git_diff`, `git_log`, and `git_blame` (Git access plus full-vault read) and `git_commit` (also full-vault write, because it can commit any vault change and runs pre-commit plugin hooks). By default `git_commit` commits only the files this session's writes changed, leaving other writers' edits alone; `scope: "all"` commits every change and `paths` a named list. Its commits carry `Vulcan-MCP-Client` (the self-reported `clientInfo`), `Vulcan-MCP-Client-Id` and `Vulcan-MCP-Subject` (an authenticated remote's OAuth client and owner), and `Vulcan-MCP-Profile` trailers. Writes an agent leaves uncommitted in a vault with batched auto-commit get the same trailers on the batched commit that takes them. Changesets come with them: `changeset_begin` creates a branch and a worktree in Vulcan's user state directory and points the session's tools at it, `changeset_switch` attaches to one or returns to the vault, `changeset_list` lists them, `changeset_land` lands one on the vault's branch (rebase if it moved, fast-forward, re-index) under the vault write lock that sync also takes, and `changeset_abandon` deletes one. Permissions always come from the vault's configuration, never the changeset's copy. Skill tools run inside a changeset with the vault's trust and device grants only while the changeset's copy of the skill is byte-identical to the vault's and the tool's permission profile grants no more there. `note_move` moves or renames a note and rewrites links to it under the profile's refactor grant.
-8. `note_set`, `note_delete`, `changeset_abandon`, `task_reminder_remove`, `config_set`, and `file_put` with `overwrite` also need the profile's `destructive` permission. Use `capabilities` for a compact active-tool and limit summary.
+8. `note_set`, `note_delete`, `changeset_abandon`, `task_reminder_remove`, `config_set`, and `file_put` with `overwrite` also need the profile's `destructive` permission. `status` reports the vault, the index, and the connection's effective permissions.
 9. In ChatGPT, enable Developer Mode under Settings → Security and login, add the endpoint from ChatGPT Plugins, review the discovered tools, and use the connection's Refresh action after metadata changes. Developer Mode availability depends on account and workspace policy.
 
 ## Guardrails
@@ -47,7 +47,7 @@ debugging, and which tools a connection sees (its permission profile).
 - [OpenAI's MCP guide](https://developers.openai.com/api/docs/mcp) documents remote MCP behavior and authentication. ChatGPT does not pick up tool changes on its own: use the connection's Refresh action after metadata changes, and retest in a new conversation.
 - The sync tools require Git permission and full-vault read permission because its safety reports may name paths anywhere in the repository. A path-filtered read profile intentionally sees no sync tools; use scoped note/search tools or a separately reviewed full-read Git profile.
 - `graph_communities` normally persists derived cluster rows and is scheduled as a mutation; set `dry_run: true` for a read-only calculation.
-- For `suggest_links` accept/reject, the connection must be allowed to read both endpoint notes and write the suggestion cache. A denied endpoint does not change suggestion state or disclose that note's path.
+- For `link_suggestion_resolve`, the connection must be allowed to read both endpoint notes and write the suggestion cache. A denied endpoint does not change suggestion state or disclose that note's path.
 - If ChatGPT cannot start auth, check issuer metadata, redirect URI, PKCE, allowed principals, and public URL consistency before changing tool permissions.
 - If code exchange returns `invalid_grant` after consent, check that the remote still exposes the selected vault and that its profile remains within the ceiling. Correct the policy and start a fresh authorization; do not retry a consumed code.
 - An authorization-code response of HTTP 503 `temporarily_unavailable` means the listener has reached its pending-code limit. Wait for unfinished attempts to expire, then restart authorization and consent; do not retry an undisclosed or consumed code or widen vault permissions.

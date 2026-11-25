@@ -11,13 +11,13 @@ use crate::config::{
     apply_config_set_report, build_config_show_report, config_set_changed_files,
     plan_config_set_report, ConfigSetReport, ConfigShowReport,
 };
-use crate::mcp_protocol::{McpConfigSetArgs, McpConfigShowArgs, McpMethodError};
+use crate::mcp_protocol::{McpConfigGetArgs, McpConfigSetArgs, McpMethodError};
 
 pub fn config_show(
     paths: &VaultPaths,
     guard: &ProfilePermissionGuard,
     profile_name: &str,
-    args: &McpConfigShowArgs,
+    args: &McpConfigGetArgs,
 ) -> Result<ConfigShowReport, McpMethodError> {
     guard
         .check_config_read()
@@ -131,7 +131,7 @@ mod tests {
             &paths,
             &unrestricted,
             "unrestricted",
-            &McpConfigShowArgs {
+            &McpConfigGetArgs {
                 section: Some("periodic.daily".to_string()),
             },
         )

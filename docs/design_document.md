@@ -1534,7 +1534,7 @@ The CLI serves three audiences simultaneously: human users in the terminal, exte
 
 ### Command hierarchy
 
-Commands are organized into a two-level hierarchy using clap nested subcommand enums. The 9.18 redesign was a pre-alpha clean break: the old flat command names were removed without aliases. Since then, a renamed command or tool may keep a hidden compatibility alias (for example `sync devices remove` for `prune-backup`, legacy MCP `daily_show`/`daily_list`). MCP tool names follow the 9.43 clean break instead (`docs/specs/mcp.md`). Such aliases are undocumented in help, map to exactly the new behavior, and are listed in the changelog.
+Commands are organized into a two-level hierarchy using clap nested subcommand enums. The 9.18 redesign was a pre-alpha clean break: the old flat command names were removed without aliases. Since then, a renamed command or tool may keep a hidden compatibility alias (for example `sync devices remove` for `prune-backup`). MCP tool names follow the 9.43 clean break instead (`docs/specs/mcp.md`). Such aliases are undocumented in help, map to exactly the new behavior, and are listed in the changelog.
 
 **Grouping principles:**
 - **`note`** groups single-note CRUD operations (get, set, create, append, patch) and single-note inspection (doctor, links, backlinks, diff). These are the primary tools for AI integrations.
@@ -1551,7 +1551,7 @@ The CLI's tool surface is designed for gradual discovery rather than loading all
 
 **Core tools (always in the runtime's initial prompt, ~10):** The initial prompt for an external runtime such as `pi` should include full schemas for the most frequently used commands: `note get`, `note outline`, `note create`, `note set`, `note append`, `note patch`, `note update`, `note unset`, `search`, `query`, and `inbox`. These cover the vast majority of vault interactions. MCP exposes the same operations under snake_case tool names (for example `note_get` and `note_patch`); see *MCP-specific discovery boundary* for how the profile decides which MCP tools are listed.
 
-For generic MCP clients, the stable read/navigation surface also includes a compact high-level `daily` tool. It owns `latest`, `today`, `show`, `list`, and `range` operations; `latest` returns the newest existing note from the configured daily-note convention and can include content in one response. Legacy `daily_show` and `daily_list` remain until the 9.43 catalog redesign removes them. Common navigation must not depend on a host honoring dynamic tool-list changes.
+For generic MCP clients, the stable read/navigation surface also includes a compact high-level `daily` tool. It owns `latest`, `today`, `show`, `list`, and `range` operations; `latest` returns the newest existing note from the configured daily-note convention and can include content in one response. Common navigation must not depend on a host honoring dynamic tool-list changes.
 
 **Discovery commands (always available on the CLI):**
 - **`describe`** — returns a compact listing of all commands with one-line descriptions. Cheap to call, gives the LLM a map of what exists.
@@ -1560,7 +1560,7 @@ For generic MCP clients, the stable read/navigation surface also includes a comp
 - **`skill list`** — returns all available skills with names and descriptions.
 - **`skill get <name>`** — returns the full skill content (prompt, tool list, examples, patterns).
 
-Over MCP, discovery goes through the `help` and `capabilities` tools and through `resources` and `prompts` rather than these commands; MCP currently has no JavaScript escape-hatch tool.
+Over MCP, discovery goes through the `status` tool and through `resources` and `prompts` rather than these commands; MCP currently has no JavaScript escape-hatch tool.
 
 **Gradual discovery flow:** When the LLM needs to do something not covered by core tools, it calls `describe` to see what's available, then `help("graph path")` to get the full parameter schema, then calls the tool by name. This mirrors how humans use a CLI: know the basics, run `--help` when you need something else, write a script when it gets complex.
 
@@ -1904,7 +1904,7 @@ The implementation agent should treat the following as mandatory:
 - **Single-note CRUD (`note get/set/create/append/patch`)** — **P1** — Required for AI integrations to read/write individual notes without shell access.
 - **`note patch` single-match safety** — **P1** — Fail on multiple matches by default to prevent unintended bulk edits from agent tool calls.
 - **JS runtime sandbox enforcement** — **P1** — Tiered sandbox (strict/fs/net/none) with resource limits must be correct and tested.
-- **CLI-to-tool parity** — **P1** — Every agent-facing tool that performs a vault operation maps to a CLI command with the same behavior and output format. MCP-only protocol and discovery tools (`capabilities` and compound navigation tools such as `daily`, whose operations each map to a CLI subcommand) are the documented exceptions.
+- **CLI-to-tool parity** — **P1** — Every agent-facing tool that performs a vault operation maps to a CLI command with the same behavior and output format. MCP-only compound navigation tools such as `daily`, whose operations each map to a CLI subcommand) are the documented exceptions.
 
 ## References
 

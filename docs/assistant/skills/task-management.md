@@ -1,11 +1,10 @@
 ---
 name: task-management
 description: Query task state across notes and periodic workflows.
-version: 20
+version: 21
 tools:
   - tasks_query
   - query
-  - daily_list
   - help
 metadata:
   vulcan:

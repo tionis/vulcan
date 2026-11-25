@@ -30,31 +30,74 @@ pub fn required_scope_for_request(payload: &Value) -> Option<&'static str> {
     }
 }
 
+/// Tool families the instructions describe, each shown when the caller has
+/// any of its tools.
+const INSTRUCTION_FAMILIES: &[(&[&str], &str)] = &[
+    (
+        &["note_create", "note_append", "note_patch", "note_set", "note_delete", "note_move"],
+        "Edit notes with note_append and note_patch (pass expected_hash from a read when editing existing text); note_create makes new notes; note_move renames and rewrites links.",
+    ),
+    (
+        &["file_get", "file_put"],
+        "Read or write non-Markdown files with file_get and file_put.",
+    ),
+    (
+        &["task_query", "task_create", "task_complete", "task_reschedule"],
+        "Tasks: task_query lists them (Tasks query source or filters); task_create, task_complete, task_reschedule, and the reminder tools change them.",
+    ),
+    (
+        &["graph_communities", "link_suggestions"],
+        "Graph: graph_communities clusters notes; link_suggestions proposes missing links.",
+    ),
+    (
+        &["web_search", "web_fetch"],
+        "Web: web_search and web_fetch reach outside the vault.",
+    ),
+    (
+        &["git_status", "git_commit", "changeset_begin"],
+        "History: git_status, git_diff, git_log, git_blame, and git_commit; changesets stage larger changes on a branch until changeset_land.",
+    ),
+    (
+        &["sync_status", "sync_refresh"],
+        "Sync: sync_status, sync_doctor, and sync_conflicts report on Git sync; sync_refresh and sync_resume start it.",
+    ),
+    (
+        &["config_get", "config_set", "index_scan"],
+        "Maintenance: config_get and config_set for settings, index_scan to refresh the index.",
+    ),
+];
+
+/// What the server is and how to route a request, for the `instructions` of
+/// `initialize`. The first paragraph stands alone (some clients read only the
+/// start); then one line per tool family the caller can use.
 #[must_use]
-pub fn routing_guidance(active_tool_names: &[String]) -> Vec<&'static str> {
+pub fn server_instructions(active_tool_names: &[String]) -> String {
     let active = active_tool_names
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
-    let mut routes = Vec::new();
-    if active.contains("daily") {
-        routes.push("Daily/journal intent: use daily; latest means newest existing, not today.");
+    let mut text = String::from(
+        "Vulcan serves one Markdown vault (an Obsidian vault or a plain folder of notes). \
+         Read a known note with note_get, or note_outline first when it is long; select notes by \
+         property, tag, or path with query; find them by content with search; use daily for \
+         daily notes (\"latest\" means the newest existing note). The tools listed are exactly \
+         what this connection's permission profile allows. Results are bounded: follow paging \
+         instead of asking for everything.",
+    );
+    for (tools, line) in INSTRUCTION_FAMILIES {
+        if tools.iter().any(|tool| active.contains(tool)) {
+            text.push(' ');
+            text.push_str(line);
+        }
     }
-    if active.contains("note_get") {
-        routes.push("Known note/path/title: use note_get or note_outline.");
-    }
-    if active.contains("query") {
-        routes.push("Metadata/property/path selection: use query.");
-    }
-    if active.contains("search") {
-        routes.push("Subject/content discovery: use search after structural routes.");
-    }
-    routes
+    text.push_str(
+        " Workflow guides for Vulcan are available as skill resources; read one before an unfamiliar multi-step task.",
+    );
+    text
 }
 
 #[must_use]
 pub fn initialization_result(active_tool_names: &[String], server_version: &str) -> Value {
-    let routes = routing_guidance(active_tool_names);
     serde_json::json!({
         "protocolVersion": MCP_PROTOCOL_VERSION,
         "capabilities": {
@@ -65,9 +108,10 @@ pub fn initialization_result(active_tool_names: &[String], server_version: &str)
         },
         "serverInfo": {
             "name": "vulcan",
+            "title": "Vulcan",
             "version": server_version,
         },
-        "instructions": format!("Routing: {} Prefer domain APIs, then exact reads, structured query, full-text search, and only then semantic/general fallback. Results are bounded by default.", routes.join(" "))
+        "instructions": server_instructions(active_tool_names),
     })
 }
 
@@ -506,34 +550,6 @@ pub struct McpQueryArgs {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct McpDailyShowArgs {
-    #[serde(default)]
-    pub date: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct McpDailyListArgs {
-    #[serde(default)]
-    pub from: Option<String>,
-    #[serde(default)]
-    pub to: Option<String>,
-    #[serde(default)]
-    pub week: bool,
-    #[serde(default)]
-    pub month: bool,
-    #[serde(default = "default_daily_list_limit")]
-    pub limit: usize,
-    #[serde(default)]
-    pub offset: usize,
-    #[serde(default)]
-    pub order: Option<String>,
-    #[serde(default)]
-    pub include_events: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct McpDailyArgs {
     pub operation: String,
     #[serde(default)]
@@ -560,7 +576,10 @@ pub struct McpDailyArgs {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct McpTaskListArgs {
+pub struct McpTaskQueryArgs {
+    /// Tasks plugin query source; when set, the structured filters must be unset.
+    #[serde(default)]
+    pub query: Option<String>,
     #[serde(default)]
     pub filter: Option<String>,
     #[serde(default)]
@@ -583,12 +602,6 @@ pub struct McpTaskListArgs {
     pub sort_by: Option<String>,
     #[serde(default)]
     pub include_archived: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct McpTaskQueryArgs {
-    pub query: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -663,13 +676,11 @@ pub struct McpGraphCommunitiesArgs {
     pub orphans: bool,
     #[serde(default)]
     pub bridges: bool,
-    #[serde(default)]
-    pub dry_run: bool,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct McpSuggestLinksArgs {
+pub struct McpLinkSuggestionsArgs {
     #[serde(default)]
     pub note: Option<String>,
     #[serde(default = "default_suggest_min_score")]
@@ -678,10 +689,13 @@ pub struct McpSuggestLinksArgs {
     pub limit: Option<usize>,
     #[serde(default)]
     pub status: Option<String>,
-    #[serde(default)]
-    pub accept: Option<String>,
-    #[serde(default)]
-    pub reject: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpLinkSuggestionResolveArgs {
+    pub id: String,
+    pub action: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -907,7 +921,7 @@ pub struct McpWebFetchArgs {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct McpConfigShowArgs {
+pub struct McpConfigGetArgs {
     #[serde(default)]
     pub section: Option<String>,
 }
@@ -932,15 +946,6 @@ pub struct McpIndexScanArgs {
     pub no_commit: bool,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct McpToolPackMutationArgs {
-    #[serde(default = "default_tool_pack_operation")]
-    pub operation: String,
-    #[serde(default)]
-    pub packs: Vec<String>,
-}
-
 fn default_search_limit() -> usize {
     20
 }
@@ -949,9 +954,6 @@ fn default_query_limit() -> usize {
 }
 fn default_daily_list_limit() -> usize {
     MCP_DAILY_LIST_DEFAULT_LIMIT
-}
-fn default_tool_pack_operation() -> String {
-    "list".to_string()
 }
 fn default_true() -> bool {
     true
@@ -1005,18 +1007,30 @@ mod tests {
     }
 
     #[test]
-    fn initialization_routes_only_through_active_tools() {
-        let active = vec!["daily".to_string(), "search".to_string()];
-        let result = initialization_result(&active, "1.2.3");
+    fn instructions_describe_only_the_tool_families_the_caller_has() {
+        let readonly = vec![
+            "note_get".to_string(),
+            "search".to_string(),
+            "task_query".to_string(),
+        ];
+        let result = initialization_result(&readonly, "1.2.3");
         assert_eq!(result["protocolVersion"], MCP_PROTOCOL_VERSION);
         assert_eq!(result["serverInfo"]["version"], "1.2.3");
+        assert_eq!(result["serverInfo"]["title"], "Vulcan");
         assert_eq!(result["capabilities"]["tools"]["listChanged"], true);
         let instructions = result["instructions"].as_str().unwrap();
-        assert!(instructions.contains("Daily/journal intent: use daily"));
-        assert!(instructions.contains("Subject/content discovery: use search"));
-        assert!(!instructions.contains("Known note/path/title"));
-        assert!(!instructions.contains("Metadata/property/path selection"));
-        assert_eq!(routing_guidance(&[]), Vec::<&str>::new());
+        assert!(instructions.contains("Tasks: task_query"));
+        assert!(!instructions.contains("Edit notes"));
+        assert!(!instructions.contains("Web:"));
+
+        let everything =
+            crate::mcp_catalog::active_tool_names(&vulcan_core::PermissionProfile::unrestricted());
+        let full = server_instructions(&everything);
+        assert!(full.len() <= 2_000, "{} characters", full.len());
+        // The opening stands alone for clients that read only the start.
+        let opening = &full[..full.find(" Edit notes").unwrap()];
+        assert!(opening.len() <= 512, "{} characters", opening.len());
+        assert!(opening.contains("note_get") && opening.contains("search"));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 ---
 name: publishing-and-export
 description: Build static sites, export or package vault content, and operate Outline collection setup, publication, pull, exact document bindings, or named subtree routes. Use when the user asks about site builds, export profiles, EPUB/ZIP/SQLite/JSON/CSV output, Outline ZIP, collection or wiki discovery/creation, API publishing or pull, wiki synchronization, local/remote document identity, graph-based publication scope, reconciliation conflicts, render diagnostics, publish filters, content transforms, or route/link policy.
-version: 5
+version: 6
 tools:
   - site
   - export
@@ -9,7 +9,7 @@ tools:
   - render
   - query
   - graph
-  - config_show
+  - config_get
   - help
 metadata:
   vulcan:

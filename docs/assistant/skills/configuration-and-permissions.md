@@ -1,9 +1,9 @@
 ---
 name: configuration-and-permissions
 description: Configure Vulcan safely, manage device-local wiki registrations and groups, inspect settings, manage permission profiles, schedule vault jobs, and understand trust boundaries. Use when the user asks about registered vaults, daemon.toml, setting up a device (`daemon plan`/`apply`), config, permissions, profiles, access control, sandboxing, trust, scheduled or recurring jobs, the Telegram chat bot, setup, or why a command/tool is denied.
-version: 40
+version: 41
 tools:
-  - config_show
+  - config_get
   - config_get
   - config_set
   - config_list

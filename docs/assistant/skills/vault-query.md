@@ -1,7 +1,7 @@
 ---
 name: vault-query
 description: Choose between search, native queries, canonical mdbase collection queries and saved views, filters, and structured note listing.
-version: 13
+version: 14
 tools:
   - search
   - query
@@ -39,7 +39,7 @@ Use this skill when the task depends on metadata, frontmatter, tags, paths, or p
 ## Guardrails
 
 - Do not use text search when a property filter would be exact.
-- Do not use query or search when a domain API such as `daily` or `task_list` already identifies the resource.
+- Do not use query or search when a domain API such as `daily` or `task_query` already identifies the resource.
 - Limits above 200 MCP rows require `allow_large_results: true`; 1000 is the hard per-call maximum.
 - DQL accepts only `query`, `engine`, `limit`, and `offset`; use structural query mode for path, filename, field projection, or property inclusion controls.
 - Default rows use a compact allowlist and omit properties, frontmatter, links, tasks, and inline-expression payloads unless explicitly projected.

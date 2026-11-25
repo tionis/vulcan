@@ -264,6 +264,8 @@ pub(crate) struct McpToolDefinition {
     #[serde(rename = "outputSchema", skip_serializing_if = "Option::is_none")]
     pub(crate) output_schema: Option<Value>,
     pub(crate) annotations: McpToolAnnotations,
+    #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub(crate) meta: Option<Value>,
     pub(crate) examples: Vec<String>,
 }
 
@@ -277,6 +279,8 @@ pub(crate) struct ToolRegistryEntry {
     pub(crate) input_schema: Value,
     pub(crate) output_schema: Option<Value>,
     pub(crate) annotations: McpToolAnnotations,
+    /// Loaded up front even by clients that defer tools behind search.
+    pub(crate) always_load: bool,
     pub(crate) examples: Vec<String>,
 }
 
@@ -301,6 +305,9 @@ impl ToolRegistryEntry {
             input_schema: self.input_schema.clone(),
             output_schema: self.output_schema.clone(),
             annotations: self.annotations,
+            meta: self
+                .always_load
+                .then(|| serde_json::json!({ "anthropic/alwaysLoad": true })),
             examples: self.examples.clone(),
         }
     }
@@ -938,6 +945,7 @@ fn command_to_openai_helper_entry(
         input_schema: command_input_schema(command),
         output_schema: None,
         annotations: McpToolAnnotations::default(),
+        always_load: false,
         examples: extract_examples(command),
     })
 }
@@ -959,6 +967,7 @@ pub(crate) fn custom_tool_registry_entry(tool: &tools::CustomToolDescriptor) -> 
             idempotent_hint: tool.summary.read_only && !tool.summary.destructive,
             open_world_hint: matches!(tool.summary.sandbox, vulcan_core::JsRuntimeSandbox::Net),
         },
+        always_load: false,
         examples: Vec::new(),
     }
 }

@@ -1,9 +1,10 @@
 ---
 name: link-curation
 description: Review, rank, accept, and reject inferred link suggestions safely.
-version: 1
+version: 2
 tools:
-  - suggest_links
+  - link_suggestions
+  - link_suggestion_resolve
   - graph_communities
   - graph_path
   - backlinks

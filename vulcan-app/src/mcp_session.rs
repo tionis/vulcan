@@ -265,7 +265,9 @@ mod tests {
         let mut first = McpSessionState::new(&paths, Some("readonly")).unwrap();
         let mut second = McpSessionState::new(&paths, Some("readonly")).unwrap();
         assert!(first.active_tool_names().contains(&"note_get".to_string()));
-        assert!(first.active_tool_names().contains(&"task_list".to_string()));
+        assert!(first
+            .active_tool_names()
+            .contains(&"task_query".to_string()));
         assert!(!first
             .active_tool_names()
             .contains(&"note_create".to_string()));

@@ -6843,6 +6843,7 @@ fn tool_registry_entry_converts_to_openai_and_mcp_shapes() {
             idempotent_hint: true,
             open_world_hint: false,
         },
+        always_load: false,
         examples: vec!["demo_tool {\"note\":\"Projects/Alpha.md\"}".to_string()],
     };
 

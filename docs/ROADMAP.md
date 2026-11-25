@@ -8797,10 +8797,10 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 
 ### 9.43.3 Catalog redesign
 
-- [ ] Target tool set (spec §6): merges, splits (`link_suggestions`/`link_suggestion_resolve`), renames, removal of `capabilities`, `daily_show`, `daily_list`, `task_list`, `sync_plan`, `changeset_switch`.
+- [x] Target tool set (spec §6): merges, splits (`link_suggestions`/`link_suggestion_resolve`), renames (`config_get`), removal of `capabilities` (now in `status`), `daily_show`, `daily_list`, `task_list` (merged into `task_query`), `sync_plan`; `graph_communities` no longer persists. `changeset_switch` goes with the stateless core (9.43.6).
 - [ ] Argument conventions (`note`/`path`, `dry_run`, `expected_hash`, `idempotency_key`, `limit`/`cursor`, `detail`, `sort`/`order`), annotations, typed output schemas, `alwaysLoad`.
 - [ ] Results: always `structuredContent`, compact text, no spill store; tool errors with stable codes and parameter names; input validation as tool errors.
-- [ ] Generated instructions (tool-family map).
+- [x] Generated instructions (tool-family map), `serverInfo.title`, corrected annotations, `anthropic/alwaysLoad` on the core tools (also in `describe --format mcp`).
 
 ### 9.43.4 Resources, prompts and help
 
