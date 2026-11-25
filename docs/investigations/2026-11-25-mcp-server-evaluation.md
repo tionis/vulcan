@@ -139,9 +139,11 @@ Facts:
   the GET SSE stream polls under the same mutex, so it stalls with no keepalives for the duration
   of any long request on that session. `list_changed` raised by a POST is lost if no GET stream
   is open, because the snapshot has already advanced.
-- `Origin` is validated only when present and **ignores the port**; **no `Host` header is
-  validated anywhere**. DNS-rebinding protection for a loopback listener depends on the Origin
-  check.
+- `Origin` is validated only when present, and only localhost or the bind IP are accepted
+  (`vulcan-daemon/src/http_policy.rs:73-97`; the port is deliberately not compared, for local
+  harnesses). **No `Host` header is validated anywhere.** Behind the usual HTTPS reverse proxy,
+  server-side clients (claude.ai, ChatGPT) send no `Origin` and pass; a browser-based client on
+  the public domain would be refused, because the public URL's origin is not on the list.
 - Transport-level failures all map to -32600 with id null; client notifications the server does
   not know (`notifications/roots/list_changed`, `notifications/progress`) get HTTP 400.
 - `McpServerCore` in `vulcan-cli/src/mcp.rs:1280-1401` duplicates the `McpRequestCore` impl in
@@ -154,7 +156,8 @@ request-stream close as cancellation. Building that on a `Connection: close` thr
 codec is the wrong investment. **Move the MCP endpoint onto axum** in `vulcan-daemon`, mounted
 both by the resident daemon and by foreground `vulcan mcp --transport http` (the CLI already
 depends on tokio; the core stays synchronous behind `spawn_blocking`, as the constraints
-require). Add `Host` validation and port-exact `Origin` matching. With no sessions, per-session
+require). Validate `Host` and accept as `Origin` either a loopback origin or the configured public
+URL's origin, so the proxy deployment and DNS-rebinding protection both hold. With no sessions, per-session
 serialization disappears and the existing per-vault mutation scheduler remains the
 write-ordering point.
 
@@ -193,10 +196,9 @@ Packs were built to keep context small on clients that load every tool up front.
   where selection accuracy degrades, so the catalog should also shrink (below).
 
 Recommendation: **remove adaptive mode, the `tool_packs` tool and its hidden `tool_pack_*`
-aliases.** Keep packs as a static selection per instance and per grant (an authorization-scoped
-variation the spec allows), and default to a broader set once the catalog is consolidated. Mark
-the three or four most-used tools with `_meta["anthropic/alwaysLoad"]` so they are never
-deferred. Move the non-standard top-level `toolPacks` field on each tool into `_meta`.
+aliases**, and expose the whole consolidated catalog by default. §5a sets out how other servers
+and clients handle this and why. Move the non-standard top-level `toolPacks` field on each tool
+into `_meta`.
 
 ### Consolidation
 
@@ -229,6 +231,77 @@ rather than by inspection.
   prefix scheme; not urgent.
 - Custom skill-command tools take the skill's description rather than the command's, and send
   `"outputSchema": null` (**verified**), which a strict client rejects. Omit it.
+
+## 5a. Progressive disclosure: what others do
+
+Two further research passes covered how prominent servers and the main clients handle large
+tool sets as of 2026-11 (sources at the end).
+
+### Servers
+
+| Pattern | Who | 2026-07-28 | Without client tool search |
+|---|---|---|---|
+| Static groups chosen by config, URL path, header or credential scope | GitHub (`--toolsets`, `/x/{toolset}`, `/readonly`, scope filtering), Supabase (`--features`), Grafana, Playwright (`--caps`), Notion (admin picks per connection) | Allowed: a separate endpoint, or variation by authorization | Every enabled tool costs context on every turn |
+| Meta tool enables a group, then `list_changed` | GitHub (**removed** in PR #2512, 2026-05: local-only, complex, unused), Pipedream full-config (dropped in `/v3`), Vulcan adaptive mode | **Forbidden**: the list varies as a side effect of a request | Works only if the client refreshes, and most do not |
+| Fixed gateway: `discover`/`search`, `describe`, `execute_read`/`execute_write` | Atlassian Rovo v2, Stripe `stripe_api_*`, AWS `call_aws`, Azure `--mode single`, Composio, Zapier | Allowed | Cheapest up front; an extra round trip per action; hides per-tool annotations and schemas |
+| Code mode: one or two tools that run model-written code against a typed API | Cloudflare (two tools over 2,500+ endpoints, about 1k tokens against 1.17M) | Allowed | Cheap; needs a sandbox; approval becomes "run this code?" |
+| Consolidation into workflow-shaped tools | GitHub Projects (merged into three tools, about 50% fewer tokens), Azure `consolidated` mode, Anthropic guidance | Allowed | Fewer, larger tools |
+| Skills as the workflow layer | Shopify, Stripe, HubSpot, Zapier; MCP skills extension | Allowed | Ignored if unsupported |
+
+The gateway and code-mode servers are all API surfaces with hundreds or thousands of operations.
+None is a 45-tool server.
+
+### Clients
+
+| Client | Defers tools behind search? | Hard cap | Honors `tools/list_changed`? | Protocol |
+|---|---|---|---|---|
+| Claude Code | Yes, by default; `_meta["anthropic/alwaysLoad"]` exempts a tool | None | Yes | 2026-07-28 (v2 runtime) |
+| claude.ai, Desktop, mobile | Yes: per-chat "Tool access" Auto (default) / On demand / Always | None published | Unverified | 2026-07-28 rolling out |
+| Codex CLI, Copilot CLI, Cursor | Yes (Copilot CLI from about 30 tools) | Cursor's old 40 appears lifted (unverified) | Codex: off by default; Cursor: no | 2025-11-25 or unpublished |
+| OpenAI Responses / Agents API | Opt-in `tool_search`, gpt-5.4+; Agents API automatic | None | n/a | Unpublished |
+| ChatGPT (developer mode, apps) | **No** documented deferral | None documented | **No**; tool updates need a manual refresh | 2025-11-25 in practice |
+| VS Code chat | "Virtual tools" grouping past a threshold | 128 per request | Yes | 2025-11-25 |
+| Windsurf/Devin, Gemini CLI, Goose, local-model hosts | No | Windsurf 100; Goose reportedly best under 25 | Gemini CLI yes; others unverified | Mixed |
+
+Two client behaviors make per-tool annotations load-bearing: ChatGPT treats every tool without
+`readOnlyHint` as a write that needs confirmation, and Claude's connector review rejects tools
+that mix reads and writes and requires a `title` plus a read-only or destructive hint on every tool.
+Most clients also let users switch individual tools off: Claude per tool or group, ChatGPT in
+developer mode, Codex `enabled_tools`, Gemini `includeTools`, the VS Code picker.
+
+Evidence on count: Anthropic's tool-search docs say selection degrades past 30 to 50 tools; tool
+search raised MCP-eval accuracy from 49% to 74% (Opus 4) while cutting definition tokens by 85%;
+GitHub Copilot gained 2 to 5 points going from 40 to 13 core tools. No published benchmark
+compares a server-side gateway against client-side tool search.
+
+### Recommendation for Vulcan
+
+1. **One flat, stable list per endpoint: the consolidated catalog, filtered by the permission
+   profile and grant.** About 43 tools after consolidation. The clients that matter most (Claude
+   Code, claude.ai, Codex, Copilot CLI, Cursor) defer and search, so the count costs little
+   there; it is under every hard cap; and one tool per action keeps the annotations that drive
+   ChatGPT confirmations and Claude permissions. Return tools in a deterministic order.
+2. **Packs stay, as authorization and configuration, never as runtime state.** A named remote's
+   consent already picks packs into the durable grant, which is exactly the "vary by
+   authorization" the spec allows. For stdio and direct HTTP, `--tool-pack` stays as a static
+   selection, with its default changed to everything the profile allows. A small set for small
+   local models or a read-only connector is a second named remote with fewer packs or a
+   narrower profile, which works already and needs no new mechanism.
+3. **Help deferral do its job.** Mark three to five core tools with
+   `_meta["anthropic/alwaysLoad"]` (candidates: `search`, `query`, `note_get`, `note_outline`,
+   `note_append`). Put search terms at the start of each description. Rewrite the server
+   instructions as a short map of tool families and when to search for each, computed from the
+   whole visible catalog rather than from the "active" packs: the first 512 characters
+   self-contained for ChatGPT, the whole under 4,096 for Claude Code.
+4. **No gateway and no code mode.** Both answer a scale problem Vulcan does not have, and a
+   gateway would hide the per-tool annotations that ChatGPT and Claude rely on. The one place it
+   could become relevant is vault skill commands, the only set that can grow without bound;
+   revisit if a vault ever exposes dozens of them.
+5. **Workflows go in skills**, not in more tools or longer descriptions (§7).
+6. **Watch** the Progressive Disclosure working group (renamed from Primitive Grouping in
+   2026-09; only a proposed grouping convention so far) and `experimental-ext-variants`
+   (SEP-2053, a server offering variants of itself). A standard for server-declared groups would
+   be the legitimate successor to tool packs; nothing is ready.
 
 ## 6. Results and errors
 
@@ -414,12 +487,14 @@ protection; monotonic grant attenuation; no token passthrough anywhere.
 
 1. **Fixes that stand alone** (small, no design change): stdio orphaned-write timeout; approval
    token by POST; constant-time compares; CIMD streaming cap, cache and address normalization;
-   `Host` validation and port-exact `Origin`; `structuredContent` always present; compact text
+   `Host` validation and the public URL's origin in the `Origin` check; `structuredContent` always present; compact text
    instead of pretty; `outputSchema: null`; annotation corrections; input validation as `isError`
    with parameter names; error messages that name MCP tools.
-2. **Catalog cleanup**: remove adaptive packs and aliases, fold the duplicate tools, make paging
-   and parameter names consistent, add `response_format` and slimmer rows, expose notes and files
-   as resource templates. Update `mcp-setup` and the AGENTS template.
+2. **Catalog cleanup and disclosure** (§5a): remove adaptive packs and aliases, default to the
+   whole profile-filtered catalog, fold the duplicate tools, `alwaysLoad` on the core tools,
+   instructions as a tool-family map, make paging and parameter names consistent, add
+   `response_format` and slimmer rows, expose notes and files as resource templates. Update
+   `mcp-setup` and the AGENTS template.
 3. **Transport-aware skills**: rewrite or render bundled skill bodies for MCP tool names. Useful
    immediately through the existing resources and through `vulcan agent install`.
 4. **axum transport**: move the HTTP endpoint onto axum in `vulcan-daemon` for both hosts, with
@@ -436,16 +511,26 @@ protection; monotonic grant attenuation; no token passthrough anywhere.
 Steps 1 to 3 are worth doing even if the protocol upgrade waits; 4 is the prerequisite for 5 and
 6 over HTTP, while stdio can take 5 and 6 first.
 
-## 12. Open questions
+## 12. Decisions and remaining questions
 
-- Which clients matter besides Claude Code and claude.ai: is ChatGPT still a target (it drives
-  DCR and the CIMD auth-method negotiation), and are there other legacy-only clients in use?
-- Is external RS mode or direct local OAuth used on any device today? (Retirement depends on it.)
-- Should the default pack selection become "everything the profile allows" once the catalog is
-  consolidated and adaptive mode is gone?
-- Skills over MCP is beta and gated in Claude Code (not in `claude -p`, cloud sessions or the
-  Agent SDK); is it worth implementing before it stabilizes, or after the transport-aware rewrite
-  proves the content?
+Answered by Eric (2026-11-25):
+
+- **Clients:** mostly claude.ai and others; ChatGPT remains a target. DCR and the CIMD
+  auth-method negotiation stay; CIMD becomes the documented path alongside them.
+- **Deployment:** most use OAuth through IndieAuth behind an HTTPS proxy, that is, named
+  remotes. That path is the one to optimize; the proxy shapes the `Host`/`Origin` fix (§4).
+- **Default exposure:** settled by §5a: the whole profile- and grant-filtered catalog, packs as
+  authorization and configuration only.
+- **Skills over MCP:** whenever it fits best. It needs the 2026-07-28 protocol in Claude Code, so
+  it lands in step 6, after the transport-aware skill rewrite (step 3) has proved the content
+  through the existing resources and `vulcan agent install`.
+
+Still open:
+
+- Does any device use direct local OAuth (approval token or static client, not a named remote)
+  or external RS mode? "Most" use named remotes; retirement of the other two needs a yes or no.
+- ChatGPT reportedly gives Plus and Pro accounts read-only connectors; check whether that keys on
+  `readOnlyHint` alone or on specific tool names before relying on it.
 
 ## Sources
 
@@ -463,8 +548,32 @@ Steps 1 to 3 are worth doing even if the protocol upgrade waits; 4 is the prereq
   <https://code.claude.com/docs/en/mcp>, <https://claude.com/docs/connectors/building> (review
   criteria, authentication),
   <https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool>.
-- Anthropic engineering: "Writing effective tools for agents" (2025-09) and "Code execution with
-  MCP" (2025-11).
+- Anthropic engineering: "Writing effective tools for agents" (2025-09), "Code execution with
+  MCP" (2025-11), "Advanced tool use" (2025-11).
+- Progressive disclosure, servers: github/github-mcp-server (`docs/remote-server.md`, discussion
+  #1182, PR #2512, changelog 2026-01-28 and 2026-07-23); <https://blog.cloudflare.com/code-mode/>,
+  <https://blog.cloudflare.com/code-mode-mcp/>;
+  <https://developer.atlassian.com/cloud/rovo-mcp/guides/supported-tools/>;
+  <https://docs.stripe.com/mcp>; <https://supabase.com/docs/guides/ai-tools/mcp>;
+  <https://github.com/getsentry/sentry-mcp>;
+  <https://learn.microsoft.com/azure/developer/azure-mcp-server/concepts>;
+  <https://docs.zapier.com/mcp/overview/how-tools-work>;
+  <https://docs.composio.dev/toolkits/meta-tools>;
+  <https://modelcontextprotocol.io/community/working-groups/progressive-disclosure>.
+- Progressive disclosure, clients:
+  <https://support.claude.com/en/articles/13730515-manage-claude-s-tool-access>,
+  <https://claude.com/docs/connectors/building/review-criteria>,
+  <https://developers.openai.com/api/docs/guides/developer-mode>,
+  <https://developers.openai.com/apps-sdk/changelog/>,
+  <https://developers.openai.com/api/docs/guides/tools-tool-search>,
+  <https://docs.github.com/en/copilot/concepts/agents/copilot-cli/tool-search>,
+  <https://code.visualstudio.com/docs/agents/run/tools>,
+  <https://cursor.com/blog/dynamic-context-discovery>,
+  <https://geminicli.com/docs/tools/mcp-server/>,
+  <https://modelcontextprotocol.io/extensions/client-matrix>; third-party compatibility notes at
+  <https://zuplo.com/learn/mcp/compatibility/clients/>.
+- Evidence: RAG-MCP (arXiv 2505.03275), LongFuncEval (arXiv 2505.10570), "How we're making GitHub
+  Copilot smarter with fewer tools" (2025-11).
 
 Caveats: the skills spec's tail and Claude Code's tasks section were read partly through
 summaries; the absence of a pre-2026-07-28 path for skills and tasks is inferred from the specs
