@@ -33707,7 +33707,7 @@ fn mcp_note_delete_preview_hides_unreadable_backlinks() {
 
     let applied = session.send(serde_json::json!({
         "jsonrpc": "2.0", "id": 3, "method": "tools/call",
-        "params": { "name": "note_delete", "arguments": { "note": "Target.md", "confirm": true } }
+        "params": { "name": "note_delete", "arguments": { "note": "Target.md" } }
     }));
     let applied = &applied.last().expect("note_delete apply response")["result"];
     assert_eq!(applied["isError"], false);
@@ -33739,7 +33739,6 @@ fn mcp_note_set_matches_cli_report_and_checks_replacement() {
                 "content": replacement,
                 "preserve_frontmatter": true,
                 "check": true,
-                "confirm": true,
                 "no_commit": true
             }
         }
@@ -34107,7 +34106,8 @@ fn mcp_daily_is_stable_and_distinguishes_latest_today_and_absence() {
     let list = &list.last().expect("daily list")["result"]["structuredContent"];
     assert_eq!(list["items"][0]["date"], "2026-09-15");
     assert_eq!(list["items"][1]["date"], "2026-09-08");
-    assert_eq!(list["page"]["next_offset"], 2);
+    assert!(list["page"]["next_cursor"].is_string());
+    assert_eq!(list["page"]["has_more"], true);
     assert!(list["items"][0].get("events").is_none());
 
     fs::remove_file(vault_root.join("Journal/Daily/2026-09-15.md")).expect("remove today");
@@ -34310,7 +34310,10 @@ fn mcp_query_defaults_to_bounded_compact_results_and_supports_structural_filters
     }));
     let first_page = &first_page.last().expect("first page")["result"]["structuredContent"];
     assert_eq!(first_page["notes"][0]["file_name"], "Note-010");
-    assert_eq!(first_page["page"]["next_offset"], 5);
+    let next_cursor = first_page["page"]["next_cursor"]
+        .as_str()
+        .expect("first page cursor")
+        .to_string();
 
     let second_page = session.send(serde_json::json!({
         "jsonrpc": "2.0", "id": 6, "method": "tools/call",
@@ -34318,7 +34321,7 @@ fn mcp_query_defaults_to_bounded_compact_results_and_supports_structural_filters
             "query": "from notes order by file.name asc limit 20 offset 10",
             "filename_pattern": "Note-*.md",
             "limit": 5,
-            "offset": 5
+            "cursor": next_cursor
         }}
     }));
     let second_page = &second_page.last().expect("second page")["result"]["structuredContent"];
@@ -35808,9 +35811,11 @@ fn describe_mcp_matches_live_registry_for_the_same_profile() {
                 "title": tool["title"],
                 "description": tool["description"],
                 "inputSchema": tool["inputSchema"],
-                "outputSchema": tool["outputSchema"],
                 "annotations": tool["annotations"],
             });
+            if let Some(schema) = tool.get("outputSchema") {
+                entry["outputSchema"] = schema.clone();
+            }
             if let Some(meta) = tool.get("_meta") {
                 entry["_meta"] = meta.clone();
             }
@@ -36324,19 +36329,19 @@ fn task_read_policy_precedes_limits_and_backlink_expressions_in_cli_and_mcp() {
         (
             2,
             "task_query",
-            serde_json::json!({"query": source}),
+            serde_json::json!({"query": source, "detail": "full"}),
             vec!["tasks", "query", source],
         ),
         (
             3,
             "task_query",
-            serde_json::json!({"source": "inline", "filter": source}),
+            serde_json::json!({"source": "inline", "filter": source, "detail": "full"}),
             vec!["tasks", "list", "--source", "inline", "--filter", source],
         ),
         (
             4,
             "task_query",
-            serde_json::json!({"source": "inline", "filter": "length(file.inlinks) = 1"}),
+            serde_json::json!({"source": "inline", "filter": "length(file.inlinks) = 1", "detail": "full"}),
             vec![
                 "tasks",
                 "list",
@@ -36356,7 +36361,10 @@ fn task_read_policy_precedes_limits_and_backlink_expressions_in_cli_and_mcp() {
         }));
         let result = &responses.last().unwrap()["result"];
         assert_eq!(result["isError"], false, "{result}");
-        assert_eq!(result["structuredContent"], report);
+        let structured = &result["structuredContent"];
+        assert_eq!(structured["result_count"], report["result_count"]);
+        assert_eq!(structured["tasks"], report["tasks"]);
+        assert_eq!(structured["groups"], report["groups"]);
     }
     // The retained MCP session must consult the current hook on the next read.
     fs::write(

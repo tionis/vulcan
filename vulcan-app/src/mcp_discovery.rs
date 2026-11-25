@@ -33,9 +33,11 @@ impl McpDiscovery<'_> {
                     "title": tool.title,
                     "description": tool.description,
                     "inputSchema": (tool.input_schema)(),
-                    "outputSchema": tool.output_schema.map(|schema| schema()),
                     "annotations": tool.annotations,
                 });
+                if let Some(schema) = tool.output_schema {
+                    item["outputSchema"] = schema();
+                }
                 if ALWAYS_LOADED_TOOLS.contains(&tool.name) {
                     item["_meta"] = json!({ "anthropic/alwaysLoad": true });
                 }

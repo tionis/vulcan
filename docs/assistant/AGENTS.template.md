@@ -28,7 +28,7 @@ Retrieval routing:
 - Metadata, property, or path selection: `query`.
 - Subject/content discovery: `search`.
 - Prefer domain operations, then exact reads, then structured query, then full-text or semantic search.
-- MCP query and daily-list pages are bounded; follow `page.next_offset` rather than requesting an unbounded result.
+- MCP list tools (`search`, `query`, `daily` lists, `task_query`, `git_log`, `git_blame`) return one page: pass `page.next_cursor` back as `cursor` for the next, rather than raising `limit`. Rows are concise; ask for `detail: "full"` only when a field is missing.
 - MCP lists every tool the connection's permission profile allows; a missing tool means the profile does not grant it, not that it needs enabling.
 
 Documentation workflow:

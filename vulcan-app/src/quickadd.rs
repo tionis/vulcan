@@ -276,7 +276,7 @@ fn create_note(
     path: &str,
     template: Option<String>,
 ) -> Result<Vec<String>, AppError> {
-    crate::mcp_notes::note_create(
+    crate::mcp_notes::note_create_report(
         paths,
         guard,
         profile,
@@ -286,6 +286,7 @@ fn create_note(
             template,
             frontmatter: BTreeMap::new(),
             check: false,
+            dry_run: false,
             no_commit: false,
         },
     )

@@ -548,6 +548,85 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn typed_tool_results_conform_to_their_output_schemas() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        let paths = VaultPaths::new(root);
+        vulcan_core::paths::initialize_vulcan_dir(&paths).unwrap();
+        std::fs::write(root.join("Home.md"), "# Home\n\nSee [[Other]].\n").unwrap();
+        std::fs::write(root.join("Other.md"), "# Other\n").unwrap();
+        vulcan_core::scan_vault(&paths, vulcan_core::ScanMode::Full).unwrap();
+        let calls = [
+            ("note_get", json!({"note": "Home"})),
+            ("note_outline", json!({"note": "Home"})),
+            ("note_info", json!({"note": "Home"})),
+            ("search", json!({"query": "Home"})),
+            ("status", json!({})),
+            ("daily", json!({"operation": "list"})),
+            ("config_get", json!({})),
+            (
+                "note_create",
+                json!({"path": "New.md", "body": "x", "no_commit": true}),
+            ),
+            (
+                "note_append",
+                json!({"note": "New", "text": "y", "no_commit": true}),
+            ),
+            (
+                "note_patch",
+                json!({"note": "New", "find": "y", "replace": "z", "no_commit": true}),
+            ),
+            (
+                "note_set",
+                json!({"note": "New", "content": "w", "no_commit": true}),
+            ),
+            ("note_delete", json!({"note": "New", "no_commit": true})),
+            ("index_scan", json!({"no_commit": true})),
+        ];
+        let selection = resolve_permission_profile(&paths, Some("unrestricted")).unwrap();
+        let guard = ProfilePermissionGuard::new(&paths, selection.clone());
+        for (name, arguments) in calls {
+            let tool = crate::mcp_catalog::tool_by_name(name).unwrap();
+            let schema = (tool
+                .output_schema
+                .unwrap_or_else(|| panic!("{name} declares an output schema")))(
+            );
+            let validator = jsonschema::draft202012::new(&schema).unwrap();
+            let mut executor = McpToolExecution {
+                paths: &paths,
+                guard: &guard,
+                profile_name: &selection.name,
+                profile: &selection.profile,
+                client: &crate::mcp_session::McpClientAttribution::default(),
+                written_paths: &mut BTreeSet::new(),
+                changeset: &mut crate::mcp_changesets::McpChangesetBinding::new(&paths),
+            };
+            let result = executor
+                .call_tool(name, arguments.as_object().unwrap())
+                .unwrap_or_else(|error| panic!("{name}: {error:?}"));
+            assert_eq!(result["isError"], false, "{name}: {result}");
+            let structured = &result["structuredContent"];
+            let errors = validator
+                .iter_errors(structured)
+                .map(|error| error.to_string())
+                .collect::<Vec<_>>();
+            assert!(errors.is_empty(), "{name}: {errors:?} in {structured}");
+        }
+        // Every built-in tool without a typed schema omits it rather than
+        // advertising a placeholder.
+        for tool in crate::mcp_catalog::MCP_TOOL_CATALOG {
+            if let Some(schema) = tool.output_schema {
+                assert_ne!(
+                    schema(),
+                    json!({"type": "object", "additionalProperties": true}),
+                    "{}",
+                    tool.name
+                );
+            }
+        }
+    }
+
     fn git(root: &std::path::Path, arguments: &[&str]) {
         let status = std::process::Command::new("git")
             .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
@@ -685,7 +764,15 @@ mod tests {
             &json!({"path": "Home.md"}),
         )
         .unwrap();
-        assert_eq!(blame["lines"].as_array().unwrap().len(), 1, "{blame}");
+        assert_eq!(blame["ranges"].as_array().unwrap().len(), 1, "{blame}");
+        let full = call(
+            root,
+            "unrestricted",
+            "git_blame",
+            &json!({"path": "Home.md", "detail": "full"}),
+        )
+        .unwrap();
+        assert_eq!(full["lines"].as_array().unwrap().len(), 1, "{full}");
     }
 
     #[test]

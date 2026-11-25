@@ -147,7 +147,7 @@ For daily workflow questions, prefer:
 - `index_scan` with `full: false` to refresh stale search/query results, or `full: true` to force a full reindex.
 - `note_append --periodic daily` as a low-risk log fallback.
 
-Use generic note edits only when the task/daily tools do not model the requested change. MCP `note_set` requires `confirm: true`, and `note_delete` requires either `dry_run: true` or `confirm: true`.
+Use generic note edits only when the task/daily tools do not model the requested change. MCP `note_set` and `note_delete` take `dry_run: true` for a preview, and need the profile's `destructive` permission to run.
 
 ## Vault Preparation
 

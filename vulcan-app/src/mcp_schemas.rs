@@ -55,6 +55,13 @@ pub fn schema_object(properties: Vec<(&str, Value)>, required: &[&str]) -> Value
     Value::Object(object)
 }
 
+/// An output schema: the listed fields, with room for the rest of a report.
+pub fn output_object(properties: Vec<(&str, Value)>, required: &[&str]) -> Value {
+    let mut schema = schema_object(properties, required);
+    schema["additionalProperties"] = Value::Bool(true);
+    schema
+}
+
 pub fn empty_object_schema() -> Value {
     schema_object(Vec::new(), &[])
 }
@@ -74,7 +81,15 @@ fn sync_target_properties() -> Vec<(&'static str, Value)> {
 }
 
 pub fn sync_status_input_schema() -> Value {
-    schema_object(sync_target_properties(), &[])
+    let mut properties = sync_target_properties();
+    properties.push((
+        "detail",
+        schema_string_enum(
+            "`concise` (default): outcome, planned actions, heads, safety. `full`: the whole report.",
+            &["concise", "full"],
+        ),
+    ));
+    schema_object(properties, &[])
 }
 
 pub fn sync_doctor_input_schema() -> Value {
@@ -233,7 +248,15 @@ pub fn search_input_schema() -> Value {
                 "match_case",
                 schema_boolean("Treat the query as case-sensitive."),
             ),
-            ("limit", schema_integer("Maximum number of hits to return.")),
+            ("limit", schema_integer("Hits per page (default 20, at most 100).")),
+            (
+                "cursor",
+                schema_string("Opaque `page.next_cursor` from the previous page; omit for the first page."),
+            ),
+            (
+                "detail",
+                schema_string_enum("`concise` (default): path, section, heading, snippet. `full`: every hit field, including chunk ids, line spans, and rank.", &["concise", "full"]),
+            ),
             (
                 "context_size",
                 schema_integer("Context line count to include in snippets."),
@@ -285,7 +308,10 @@ pub fn query_input_schema() -> Value {
                 schema_string("Glob matched against the filename including extension, for example `????-??-??.md`."),
             ),
             ("limit", schema_integer("Maximum rows to return; defaults to 50 and is capped at 200 unless allow_large_results is true.")),
-            ("offset", schema_integer("Zero-based result offset.")),
+            (
+                "cursor",
+                schema_string("Opaque `page.next_cursor` from the previous page; omit for the first page."),
+            ),
             (
                 "fields",
                 schema_array(schema_string("Projected result field."), "Fields to include in each note row."),
@@ -320,7 +346,10 @@ pub fn daily_input_schema() -> Value {
             ("week", schema_boolean("Use the current configured week window.")),
             ("month", schema_boolean("Use the current configured month window.")),
             ("limit", schema_integer("Maximum list/range items; defaults to 20 and cannot exceed 200.")),
-            ("offset", schema_integer("Zero-based list/range page offset.")),
+            (
+                "cursor",
+                schema_string("Opaque `page.next_cursor` from the previous page; omit for the first page."),
+            ),
             ("order", schema_string_enum("List/range date order.", &["asc", "desc"])),
             ("include_events", schema_boolean("Include full extracted event objects for list/range; false by default.")),
         ],
@@ -354,6 +383,18 @@ pub fn task_query_input_schema() -> Value {
                 schema_string(
                     "Tasks plugin query source such as `not done` or `due before tomorrow`. Leave the structured filters unset when using it.",
                 ),
+            ),
+            (
+                "limit",
+                schema_integer("Tasks per page (default 50, at most 500)."),
+            ),
+            (
+                "cursor",
+                schema_string("Opaque `page.next_cursor` from the previous page; omit for the first page."),
+            ),
+            (
+                "detail",
+                schema_string_enum("`concise` (default): path, line, text, status, dates, priority, tags. `full`: every task field.", &["concise", "full"]),
             ),
             (
                 "filter",
@@ -521,6 +562,12 @@ pub fn note_create_input_schema() -> Value {
                 schema_boolean("Run non-blocking diagnostics on the resulting note."),
             ),
             (
+                "dry_run",
+                schema_boolean(
+                    "Check the path, permission, and frontmatter without creating the note.",
+                ),
+            ),
+            (
                 "no_commit",
                 schema_boolean("Suppress auto-commit for this mutation."),
             ),
@@ -654,8 +701,8 @@ pub fn note_set_input_schema() -> Value {
             ("note", schema_string("Note identifier to replace.")),
             ("content", schema_string("Replacement markdown content.")),
             (
-                "confirm",
-                schema_boolean("Must be true because this replaces the full note body."),
+                "dry_run",
+                schema_boolean("Report whether the content would change, without writing."),
             ),
             (
                 "preserve_frontmatter",
@@ -685,10 +732,6 @@ pub fn note_delete_input_schema() -> Value {
             (
                 "dry_run",
                 schema_boolean("Preview deletion and backlinks without removing the file."),
-            ),
-            (
-                "confirm",
-                schema_boolean("Must be true unless dry_run is true."),
             ),
             (
                 "expected_hash",
@@ -850,7 +893,7 @@ pub fn link_suggestion_resolve_input_schema() -> Value {
 }
 
 pub fn note_get_output_schema() -> Value {
-    schema_object(
+    output_object(
         vec![
             ("path", schema_string("Resolved path that was read.")),
             ("content", schema_string("Rendered selected content.")),
@@ -869,11 +912,24 @@ pub fn note_get_output_schema() -> Value {
 }
 
 pub fn note_outline_output_schema() -> Value {
-    generic_report_output_schema()
+    output_object(
+        vec![
+            ("path", schema_string("Vault-relative note path.")),
+            (
+                "sections",
+                schema_array(
+                    generic_report_output_schema(),
+                    "Sections with ids, levels, headings, and line spans.",
+                ),
+            ),
+            ("total_lines", schema_integer("Lines in the note.")),
+        ],
+        &["path", "sections"],
+    )
 }
 
 pub fn search_output_schema() -> Value {
-    schema_object(
+    output_object(
         vec![
             ("query", schema_string("Effective query string.")),
             (
@@ -886,7 +942,7 @@ pub fn search_output_schema() -> Value {
 }
 
 pub fn status_output_schema() -> Value {
-    schema_object(
+    output_object(
         vec![
             ("vault_root", schema_string("Vault root path.")),
             ("note_count", schema_integer("Indexed note count.")),
@@ -912,47 +968,155 @@ pub fn status_output_schema() -> Value {
 }
 
 pub fn note_create_output_schema() -> Value {
-    generic_report_output_schema()
+    output_object(
+        vec![
+            (
+                "path",
+                schema_string("Vault-relative path of the new note."),
+            ),
+            ("created", schema_boolean("Whether the note was created.")),
+            ("dry_run", schema_boolean("Set when nothing was written.")),
+            ("commit", generic_report_output_schema()),
+        ],
+        &["path"],
+    )
 }
 
 pub fn note_append_output_schema() -> Value {
-    generic_report_output_schema()
+    output_object(
+        vec![
+            ("path", schema_string("Vault-relative note path.")),
+            ("appended", schema_boolean("Whether text was added.")),
+            (
+                "created",
+                schema_boolean("Whether the note was created first."),
+            ),
+            ("commit", generic_report_output_schema()),
+        ],
+        &["path"],
+    )
 }
 
 pub fn note_patch_output_schema() -> Value {
-    generic_report_output_schema()
+    output_object(
+        vec![
+            ("path", schema_string("Vault-relative note path.")),
+            ("match_count", schema_integer("Matches replaced.")),
+            ("dry_run", schema_boolean("Set when nothing was written.")),
+            ("commit", generic_report_output_schema()),
+        ],
+        &["path"],
+    )
 }
 
 pub fn note_info_output_schema() -> Value {
-    generic_report_output_schema()
+    output_object(
+        vec![
+            ("path", schema_string("Vault-relative note path.")),
+            ("word_count", schema_integer("Words in the note.")),
+            ("backlink_count", schema_integer("Notes linking here.")),
+            (
+                "outgoing_link_count",
+                schema_integer("Links out of the note."),
+            ),
+            (
+                "tags",
+                schema_array(serde_json::json!({"type": "string"}), "Tags on the note."),
+            ),
+        ],
+        &["path"],
+    )
 }
 
 pub fn note_set_output_schema() -> Value {
-    generic_report_output_schema()
+    output_object(
+        vec![
+            ("path", schema_string("Vault-relative note path.")),
+            ("dry_run", schema_boolean("Set when nothing was written.")),
+            (
+                "would_change",
+                schema_boolean("For a dry run: whether the content would change."),
+            ),
+            ("commit", generic_report_output_schema()),
+        ],
+        &["path"],
+    )
 }
 
 pub fn note_delete_output_schema() -> Value {
-    generic_report_output_schema()
+    output_object(
+        vec![
+            ("path", schema_string("Vault-relative note path.")),
+            ("deleted", schema_boolean("Whether the note was deleted.")),
+            ("dry_run", schema_boolean("Set when nothing was written.")),
+            ("backlink_count", schema_integer("Notes that linked here.")),
+        ],
+        &["path"],
+    )
 }
 
 pub fn web_search_output_schema() -> Value {
-    generic_report_output_schema()
+    output_object(
+        vec![
+            ("backend", schema_string("Search backend used.")),
+            ("query", schema_string("The query.")),
+            (
+                "results",
+                schema_array(
+                    generic_report_output_schema(),
+                    "Results with title, URL, and snippet.",
+                ),
+            ),
+        ],
+        &["query", "results"],
+    )
 }
 
 pub fn web_fetch_output_schema() -> Value {
-    generic_report_output_schema()
+    output_object(
+        vec![
+            ("url", schema_string("Fetched URL.")),
+            ("status", schema_integer("HTTP status.")),
+            ("content_type", schema_string("Response content type.")),
+            ("mode", schema_string("Extraction mode.")),
+            ("content", schema_string("Fetched content.")),
+        ],
+        &["url", "content"],
+    )
 }
 
 pub fn config_get_output_schema() -> Value {
-    generic_report_output_schema()
+    output_object(
+        vec![
+            ("config", generic_report_output_schema()),
+            ("section", serde_json::json!({"type": ["string", "null"]})),
+        ],
+        &["config"],
+    )
 }
 
 pub fn config_set_output_schema() -> Value {
-    generic_report_output_schema()
+    output_object(
+        vec![
+            ("key", schema_string("Configuration key.")),
+            ("updated", schema_boolean("Whether the value changed.")),
+            ("dry_run", schema_boolean("Set when nothing was written.")),
+        ],
+        &["key"],
+    )
 }
 
 pub fn index_scan_output_schema() -> Value {
-    generic_report_output_schema()
+    output_object(
+        vec![
+            ("mode", schema_string("Scan mode.")),
+            ("added", schema_integer("Files added to the index.")),
+            ("updated", schema_integer("Files re-indexed.")),
+            ("deleted", schema_integer("Files removed from the index.")),
+            ("unchanged", schema_integer("Files unchanged.")),
+        ],
+        &["mode"],
+    )
 }
 
 pub fn note_move_input_schema() -> Value {
@@ -1051,17 +1215,41 @@ pub fn git_diff_input_schema() -> Value {
 
 pub fn git_log_input_schema() -> Value {
     schema_object(
-        vec![(
-            "limit",
-            schema_integer("Most recent commits to list (default 20, at most 200)."),
-        )],
+        vec![
+            (
+                "limit",
+                schema_integer("Commits per page, newest first (default 20, at most 200)."),
+            ),
+            (
+                "cursor",
+                schema_string("Opaque `page.next_cursor` from the previous page; omit for the first page."),
+            ),
+            (
+                "detail",
+                schema_string_enum("`concise` (default): short commit, time, summary, author. `full`: every field.", &["concise", "full"]),
+            ),
+        ],
         &[],
     )
 }
 
 pub fn git_blame_input_schema() -> Value {
     schema_object(
-        vec![("path", schema_string("Vault-relative file to blame."))],
+        vec![
+            ("path", schema_string("Vault-relative file to blame.")),
+            (
+                "limit",
+                schema_integer("Lines per page (default 200, at most 2000)."),
+            ),
+            (
+                "cursor",
+                schema_string("Opaque `page.next_cursor` from the previous page; omit for the first page."),
+            ),
+            (
+                "detail",
+                schema_string_enum("`concise` (default): line ranges per commit. `full`: one entry per line with its text.", &["concise", "full"]),
+            ),
+        ],
         &["path"],
     )
 }

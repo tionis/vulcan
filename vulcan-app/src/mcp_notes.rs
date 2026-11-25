@@ -21,14 +21,75 @@ use crate::notes::{
     finish_note_create_report, finish_note_patch_report, finish_note_set_report,
     parse_note_frontmatter_bindings, resolve_existing_markdown_target, NoteAppendCommandReport,
     NoteAppendMode, NoteAppendRequest, NoteCreateCommandReport, NoteCreateRequest,
-    NoteDeleteReport, NoteDeleteRequest, NotePatchCommandReport, NotePatchRequest,
-    NoteSetCommandReport, NoteSetRequest,
+    NoteDeleteReport, NoteDeleteRequest, NotePatchCommandReport, NotePatchRequest, NoteSetRequest,
 };
 use crate::periodic::resolve_periodic_target;
 use crate::scan::refresh_cache_for_paths;
 use crate::templates::parse_template_var_bindings;
 
+/// What `note_set` would do: which note, whether its content would change,
+/// and the hash it has now. Nothing is written.
+fn note_set_preview(
+    paths: &VaultPaths,
+    args: &McpNoteSetArgs,
+) -> Result<serde_json::Value, McpMethodError> {
+    let path = crate::notes::resolve_existing_note_path(paths, &args.note)
+        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    let existing =
+        vulcan_core::paths::secure_read_to_string(paths.vault_root(), std::path::Path::new(&path))
+            .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    let current = crate::notes::content_hash(&existing);
+    if let Some(expected) = args.expected_hash.as_deref() {
+        if expected != current {
+            return Err(McpMethodError::tool(format!(
+                "stale_content: `{path}` changed since it was read (expected content hash {expected}, now {current})"
+            )));
+        }
+    }
+    Ok(serde_json::json!({
+        "path": path,
+        "dry_run": true,
+        "would_change": existing != args.content,
+        "content_hash": current,
+    }))
+}
+
 pub fn note_create(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    profile_name: &str,
+    args: McpNoteCreateArgs,
+) -> Result<serde_json::Value, McpMethodError> {
+    if args.dry_run {
+        let normalized_path = normalize_relative_input_path(
+            &args.path,
+            RelativePathOptions {
+                expected_extension: Some("md"),
+                append_extension_if_missing: true,
+            },
+        )
+        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+        check_write_path_access(guard, &normalized_path)?;
+        parse_note_frontmatter_bindings(&frontmatter_bindings(&args.frontmatter))
+            .map_err(|error| McpMethodError::tool(error.to_string()))?;
+        if paths.vault_root().join(&normalized_path).exists() {
+            return Err(McpMethodError::tool(format!(
+                "`{normalized_path}` already exists; note_create never overwrites"
+            )));
+        }
+        return Ok(serde_json::json!({
+            "path": normalized_path,
+            "dry_run": true,
+            "would_create": true,
+            "template": args.template,
+        }));
+    }
+    let report = note_create_report(paths, guard, profile_name, args)?;
+    serde_json::to_value(report).map_err(|error| McpMethodError::internal(error.to_string()))
+}
+
+/// Create a note and report it; the write half of [`note_create`].
+pub fn note_create_report(
     paths: &VaultPaths,
     guard: &ProfilePermissionGuard,
     profile_name: &str,
@@ -331,13 +392,11 @@ pub fn note_set(
     guard: &ProfilePermissionGuard,
     profile_name: &str,
     args: McpNoteSetArgs,
-) -> Result<NoteSetCommandReport, McpMethodError> {
-    if !args.confirm {
-        return Err(McpMethodError::invalid_params(
-            "`note_set.confirm` must be true because this replaces the full note body",
-        ));
-    }
+) -> Result<serde_json::Value, McpMethodError> {
     check_write_note_access(paths, guard, &args.note)?;
+    if args.dry_run {
+        return note_set_preview(paths, &args);
+    }
     let applied = apply_note_set_expecting(
         paths,
         &NoteSetRequest {
@@ -364,7 +423,7 @@ pub fn note_set(
             Verbosity::Quiet,
         )
         .map_err(|error| McpMethodError::tool(error.clone()))?;
-    Ok(report)
+    serde_json::to_value(report).map_err(|error| McpMethodError::internal(error.to_string()))
 }
 
 pub fn note_delete(
@@ -373,11 +432,6 @@ pub fn note_delete(
     profile_name: &str,
     args: McpNoteDeleteArgs,
 ) -> Result<NoteDeleteReport, McpMethodError> {
-    if !args.dry_run && !args.confirm {
-        return Err(McpMethodError::invalid_params(
-            "`note_delete.confirm` must be true unless `dry_run` is true",
-        ));
-    }
     check_write_note_access(paths, guard, &args.note)?;
     let mut report = apply_note_delete_expecting(
         paths,
@@ -491,7 +545,7 @@ mod tests {
         assert!(note_create(&paths, &readonly, "readonly", args()).is_err());
         assert!(!temporary.path().join("New.md").exists());
         let report = note_create(&paths, &writable, "unrestricted", args()).unwrap();
-        assert_eq!(report.path, "New.md");
+        assert_eq!(report["path"], "New.md");
         let content = fs::read_to_string(temporary.path().join("New.md")).unwrap();
         assert!(content.contains("status: draft"));
         assert!(content.contains("# New"));
@@ -600,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn set_and_delete_require_confirmation_and_writable_grant() {
+    fn set_and_delete_preview_and_need_a_writable_grant() {
         let temporary = tempfile::tempdir().unwrap();
         let paths = VaultPaths::new(temporary.path());
         initialize_vulcan_dir(&paths).unwrap();
@@ -614,41 +668,41 @@ mod tests {
             &paths,
             resolve_permission_profile(&paths, Some("unrestricted")).unwrap(),
         );
-        let set_args = |confirm| {
+        let set_args = |dry_run| {
             serde_json::from_value::<McpNoteSetArgs>(json!({
-                "note": "Home.md", "content": "# Replaced\n", "confirm": confirm,
+                "note": "Home.md", "content": "# Replaced\n", "dry_run": dry_run,
                 "no_commit": true,
             }))
             .unwrap()
         };
-        assert!(note_set(&paths, &writable, "unrestricted", set_args(false)).is_err());
-        assert!(note_set(&paths, &readonly, "readonly", set_args(true)).is_err());
+        let preview = note_set(&paths, &writable, "unrestricted", set_args(true)).unwrap();
+        assert_eq!(preview["dry_run"], true);
+        assert_eq!(preview["would_change"], true);
+        assert!(note_set(&paths, &readonly, "readonly", set_args(false)).is_err());
         assert_eq!(
             fs::read_to_string(temporary.path().join("Home.md")).unwrap(),
             "# Original\n"
         );
-        note_set(&paths, &writable, "unrestricted", set_args(true)).unwrap();
+        note_set(&paths, &writable, "unrestricted", set_args(false)).unwrap();
         assert_eq!(
             fs::read_to_string(temporary.path().join("Home.md")).unwrap(),
             "# Replaced\n"
         );
-        let delete_args = |dry_run, confirm| {
+        let delete_args = |dry_run| {
             serde_json::from_value::<McpNoteDeleteArgs>(json!({
-                "note": "Home.md", "dry_run": dry_run, "confirm": confirm,
-                "no_commit": true,
+                "note": "Home.md", "dry_run": dry_run, "no_commit": true,
             }))
             .unwrap()
         };
-        assert!(note_delete(&paths, &writable, "unrestricted", delete_args(false, false)).is_err());
-        assert!(note_delete(&paths, &readonly, "readonly", delete_args(false, true)).is_err());
+        assert!(note_delete(&paths, &readonly, "readonly", delete_args(false)).is_err());
         assert!(
-            note_delete(&paths, &writable, "unrestricted", delete_args(true, false))
+            note_delete(&paths, &writable, "unrestricted", delete_args(true))
                 .unwrap()
                 .dry_run
         );
         assert!(temporary.path().join("Home.md").exists());
         assert!(
-            note_delete(&paths, &writable, "unrestricted", delete_args(false, true))
+            note_delete(&paths, &writable, "unrestricted", delete_args(false))
                 .unwrap()
                 .deleted
         );

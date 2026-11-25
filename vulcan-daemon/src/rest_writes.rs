@@ -271,11 +271,7 @@ pub(crate) async fn set_note(
         &headers,
         &body,
         Box::new(move |request| {
-            // A PUT is an explicit replacement, so it confirms by itself.
-            let args: McpNoteSetArgs = arguments(
-                request.body,
-                &[("note", json!(note)), ("confirm", json!(true))],
-            )?;
+            let args: McpNoteSetArgs = arguments(request.body, &[("note", json!(note))])?;
             report(
                 vulcan_app::mcp_notes::note_set(
                     request.paths,
@@ -351,11 +347,7 @@ pub(crate) async fn delete_note(
         &headers,
         &body,
         Box::new(move |request| {
-            // DELETE names its target explicitly, so it confirms by itself.
-            let args: McpNoteDeleteArgs = arguments(
-                request.body,
-                &[("note", json!(note)), ("confirm", json!(true))],
-            )?;
+            let args: McpNoteDeleteArgs = arguments(request.body, &[("note", json!(note))])?;
             report(
                 vulcan_app::mcp_notes::note_delete(
                     request.paths,

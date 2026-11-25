@@ -13,6 +13,9 @@ use crate::mcp_session::McpClientAttribution;
 
 const DEFAULT_LOG_LIMIT: usize = 20;
 const MAX_LOG_LIMIT: usize = 200;
+const MAX_LOG_OFFSET: usize = 2_000;
+const DEFAULT_BLAME_LINES: usize = 200;
+const MAX_BLAME_LINES: usize = 2_000;
 
 fn tool_error(error: impl std::fmt::Display) -> McpMethodError {
     McpMethodError::tool(error.to_string())
@@ -45,11 +48,52 @@ pub fn git_log(
     args: &McpGitLogArgs,
 ) -> Result<Value, McpMethodError> {
     guard.check_git().map_err(tool_error)?;
-    let limit = args
-        .limit
-        .unwrap_or(DEFAULT_LOG_LIMIT)
-        .clamp(1, MAX_LOG_LIMIT);
-    to_value(git_ops::log_report(paths, limit).map_err(tool_error)?)
+    let limit = crate::mcp_paging::check_limit(
+        "git_log",
+        args.limit.unwrap_or(DEFAULT_LOG_LIMIT),
+        MAX_LOG_LIMIT,
+    )?;
+    let offset = crate::mcp_paging::decode_cursor("git_log", args.cursor.as_deref())?;
+    if offset > MAX_LOG_OFFSET {
+        return Err(McpMethodError::invalid_argument(
+            format!("git_log pages stop after {MAX_LOG_OFFSET} commits"),
+            Some("cursor".to_string()),
+        ));
+    }
+    let full = crate::mcp_paging::wants_full_detail("git_log", args.detail.as_deref())?;
+    // One more than the page, to learn whether another page follows.
+    let mut value = to_value(git_ops::log_report(paths, offset + limit + 1).map_err(tool_error)?)?;
+    let entries = value
+        .get_mut("entries")
+        .and_then(Value::as_array_mut)
+        .map_or_else(Vec::new, std::mem::take);
+    let (start, end) = crate::mcp_paging::page_bounds(offset, limit, entries.len());
+    let rows = entries[start..end]
+        .iter()
+        .map(|entry| {
+            if full {
+                entry.clone()
+            } else {
+                let mut row = crate::mcp_paging::concise_row(
+                    entry,
+                    &[
+                        ("commit", "commit"),
+                        ("committed_at", "committed_at"),
+                        ("summary", "summary"),
+                        ("author_name", "author"),
+                    ],
+                );
+                if let Some(commit) = row.get("commit").and_then(Value::as_str) {
+                    row["commit"] = Value::String(commit.chars().take(12).collect());
+                }
+                row
+            }
+        })
+        .collect::<Vec<_>>();
+    Ok(serde_json::json!({
+        "entries": rows,
+        "page": crate::mcp_paging::page_json(limit, start, end, None, entries.len() > end),
+    }))
 }
 
 pub fn git_blame(
@@ -60,7 +104,64 @@ pub fn git_blame(
     guard.check_git().map_err(tool_error)?;
     let path = git_ops::normalize_git_scope_path(&args.path);
     guard.check_read_path(&path).map_err(tool_error)?;
-    to_value(git_ops::blame_report(paths, &path).map_err(tool_error)?)
+    let limit = crate::mcp_paging::check_limit(
+        "git_blame",
+        args.limit.unwrap_or(DEFAULT_BLAME_LINES),
+        MAX_BLAME_LINES,
+    )?;
+    let offset = crate::mcp_paging::decode_cursor("git_blame", args.cursor.as_deref())?;
+    let full = crate::mcp_paging::wants_full_detail("git_blame", args.detail.as_deref())?;
+    let report = to_value(git_ops::blame_report(paths, &path).map_err(tool_error)?)?;
+    let lines = report
+        .get("lines")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let (start, end) = crate::mcp_paging::page_bounds(offset, limit, lines.len());
+    let page = &lines[start..end];
+    let mut value = serde_json::json!({
+        "path": path,
+        "page": crate::mcp_paging::page_json(limit, start, end, Some(lines.len()), end < lines.len()),
+    });
+    if full {
+        value["lines"] = Value::Array(page.to_vec());
+    } else {
+        value["ranges"] = Value::Array(blame_ranges(page));
+    }
+    Ok(value)
+}
+
+/// Consecutive lines from one commit folded into a range: the concise form
+/// of a blame.
+fn blame_ranges(lines: &[Value]) -> Vec<Value> {
+    let mut ranges: Vec<Value> = Vec::new();
+    for line in lines {
+        let commit = line
+            .get("commit")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let number = line
+            .get("line_number")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        if let Some(last) = ranges.last_mut() {
+            let same = last.get("commit").and_then(Value::as_str)
+                == Some(&commit.chars().take(12).collect::<String>()[..]);
+            if same && last["end_line"].as_u64() == Some(number.saturating_sub(1)) {
+                last["end_line"] = Value::from(number);
+                continue;
+            }
+        }
+        ranges.push(serde_json::json!({
+            "start_line": number,
+            "end_line": number,
+            "commit": commit.chars().take(12).collect::<String>(),
+            "author": line.get("author_name"),
+            "author_time": line.get("author_time"),
+            "summary": line.get("summary"),
+        }));
+    }
+    ranges
 }
 
 /// Commit this session's writes (the default), the named `paths`, or with

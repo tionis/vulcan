@@ -365,6 +365,8 @@ pub struct McpToolCallParams {
 pub struct McpSyncTargetArgs {
     #[serde(default)]
     pub remote: Option<String>,
+    #[serde(default)]
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -489,6 +491,10 @@ pub struct McpSearchArgs {
     pub match_case: bool,
     #[serde(default = "default_search_limit")]
     pub limit: usize,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub detail: Option<String>,
     #[serde(default = "default_search_context_size")]
     pub context_size: usize,
     #[serde(default)]
@@ -521,7 +527,7 @@ pub struct McpQueryArgs {
     #[serde(default = "default_query_limit")]
     pub limit: usize,
     #[serde(default)]
-    pub offset: usize,
+    pub cursor: Option<String>,
     #[serde(default)]
     pub fields: Vec<String>,
     #[serde(default)]
@@ -549,7 +555,7 @@ pub struct McpDailyArgs {
     #[serde(default = "default_daily_list_limit")]
     pub limit: usize,
     #[serde(default)]
-    pub offset: usize,
+    pub cursor: Option<String>,
     #[serde(default)]
     pub order: Option<String>,
     #[serde(default)]
@@ -562,6 +568,12 @@ pub struct McpTaskQueryArgs {
     /// Tasks plugin query source; when set, the structured filters must be unset.
     #[serde(default)]
     pub query: Option<String>,
+    #[serde(default = "default_task_query_limit")]
+    pub limit: usize,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub detail: Option<String>,
     #[serde(default)]
     pub filter: Option<String>,
     #[serde(default)]
@@ -693,6 +705,8 @@ pub struct McpNoteCreateArgs {
     #[serde(default)]
     pub check: bool,
     #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default)]
     pub no_commit: bool,
 }
 
@@ -762,13 +776,13 @@ pub struct McpNoteSetArgs {
     pub note: String,
     pub content: String,
     #[serde(default)]
-    pub confirm: bool,
-    #[serde(default)]
     pub preserve_frontmatter: bool,
     #[serde(default)]
     pub check: bool,
     #[serde(default)]
     pub expected_hash: Option<String>,
+    #[serde(default)]
+    pub dry_run: bool,
     #[serde(default)]
     pub no_commit: bool,
 }
@@ -823,12 +837,22 @@ pub struct McpGitDiffArgs {
 pub struct McpGitLogArgs {
     #[serde(default)]
     pub limit: Option<usize>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpGitBlameArgs {
     pub path: String,
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -875,8 +899,6 @@ pub struct McpNoteDeleteArgs {
     pub note: String,
     #[serde(default)]
     pub dry_run: bool,
-    #[serde(default)]
-    pub confirm: bool,
     #[serde(default)]
     pub expected_hash: Option<String>,
     #[serde(default)]
@@ -928,6 +950,9 @@ pub struct McpIndexScanArgs {
     pub no_commit: bool,
 }
 
+fn default_task_query_limit() -> usize {
+    50
+}
 fn default_search_limit() -> usize {
     20
 }

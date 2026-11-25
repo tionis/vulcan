@@ -80,6 +80,7 @@ pub mod mcp_git;
 pub mod mcp_graph;
 pub mod mcp_help;
 pub mod mcp_notes;
+pub mod mcp_paging;
 pub mod mcp_protocol;
 pub mod mcp_read_tools;
 pub mod mcp_scan;

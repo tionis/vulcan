@@ -8798,7 +8798,7 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 ### 9.43.3 Catalog redesign
 
 - [x] Target tool set (spec §6): merges, splits (`link_suggestions`/`link_suggestion_resolve`), renames (`config_get`), removal of `capabilities` (now in `status`), `daily_show`, `daily_list`, `task_list` (merged into `task_query`), `sync_plan`; `graph_communities` no longer persists. `changeset_switch` goes with the stateless core (9.43.6).
-- [ ] Argument conventions (`note`/`path`, `dry_run`, `expected_hash`, `idempotency_key`, `limit`/`cursor`, `detail`, `sort`/`order`), annotations, typed output schemas, `alwaysLoad`.
+- [x] Argument conventions: `limit` plus opaque `cursor` and `page.next_cursor` on `search`, `query`, `daily` lists, `task_query`, `git_log`, `git_blame`; `detail: concise|full` on `search`, `task_query`, `git_log`, `git_blame`, `sync_status`; `dry_run` on `note_create` and `note_set`; `confirm` removed. Typed output schemas (open, validated against real results by a test) where defined; tools without one omit it instead of a placeholder. Remaining naming polish (`sort`/`order` across tools) is left for live feedback.
 - [x] Results: always `structuredContent`, compact text, no spill store; tool errors with stable codes and parameter names; input validation as tool errors. Long notes return their first 64 KiB and link `vulcan://note/{path}`.
 - [x] Generated instructions (tool-family map), `serverInfo.title`, corrected annotations, `anthropic/alwaysLoad` on the core tools (also in `describe --format mcp`).
 

@@ -22,10 +22,45 @@ pub fn sync_preview(
     guard
         .check_git()
         .map_err(|error| McpMethodError::tool(error.to_string()))?;
+    let full = crate::mcp_paging::wants_full_detail("sync_status", args.detail.as_deref())?;
     let options = git_sync_options(args)?;
     let report =
         sync_git_vault(paths, &options).map_err(|error| McpMethodError::tool(error.to_string()))?;
-    report_value(report)
+    let value = report_value(report)?;
+    Ok(if full {
+        value
+    } else {
+        concise_sync_status(&value)
+    })
+}
+
+/// The parts of a sync preview an agent acts on; `detail: "full"` returns
+/// the whole report with installation, preflight, and timing data.
+fn concise_sync_status(report: &Value) -> Value {
+    let mut concise = serde_json::Map::new();
+    for key in [
+        "outcome",
+        "dry_run",
+        "remote",
+        "actions",
+        "head_before",
+        "head_ref_before",
+        "retries",
+        "safety",
+    ] {
+        if let Some(value) = report.get(key) {
+            if !value.is_null() {
+                concise.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+    if let Some(compatible) = report
+        .get("local_platform_preflight")
+        .and_then(|preflight| preflight.get("compatible"))
+    {
+        concise.insert("platform_compatible".to_string(), compatible.clone());
+    }
+    Value::Object(concise)
 }
 
 pub fn sync_doctor(
@@ -38,6 +73,7 @@ pub fn sync_doctor(
         .map_err(|error| McpMethodError::tool(error.to_string()))?;
     let target = McpSyncTargetArgs {
         remote: args.remote.clone(),
+        detail: None,
     };
     let options = git_sync_options(&target)?;
     let platform = args
@@ -218,11 +254,15 @@ mod tests {
 
     #[test]
     fn sync_options_are_dry_run_by_default_and_accept_valid_overrides() {
-        let default =
-            git_sync_options(&McpSyncTargetArgs { remote: None }).expect("default sync options");
+        let default = git_sync_options(&McpSyncTargetArgs {
+            remote: None,
+            detail: None,
+        })
+        .expect("default sync options");
         assert!(default.dry_run);
         let explicit = git_sync_options(&McpSyncTargetArgs {
             remote: Some("backup".to_string()),
+            detail: None,
         })
         .expect("explicit sync options");
         assert!(explicit.dry_run);
@@ -234,6 +274,7 @@ mod tests {
         assert!(matches!(
             git_sync_options(&McpSyncTargetArgs {
                 remote: Some("-unsafe".to_string()),
+                detail: None,
             }),
             Err(McpMethodError::JsonRpc { code: -32602, .. })
         ));

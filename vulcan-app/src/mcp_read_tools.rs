@@ -34,6 +34,24 @@ use crate::tasks::{
 const MCP_QUERY_SOFT_MAX: usize = 200;
 pub const MCP_QUERY_HARD_MAX: usize = 1_000;
 const MCP_DAILY_LIST_MAX_LIMIT: usize = 200;
+const MCP_SEARCH_MAX_LIMIT: usize = 100;
+const MCP_SEARCH_MAX_OFFSET: usize = 1_000;
+const MCP_TASK_QUERY_MAX_LIMIT: usize = 500;
+/// The fields of a concise task row, renamed to `snake_case`.
+const CONCISE_TASK_FIELDS: &[(&str, &str)] = &[
+    ("path", "path"),
+    ("line", "line"),
+    ("text", "text"),
+    ("statusName", "status"),
+    ("completed", "completed"),
+    ("due", "due"),
+    ("scheduled", "scheduled"),
+    ("start", "start"),
+    ("priority", "priority"),
+    ("tags", "tags"),
+    ("blockId", "block_id"),
+    ("taskSource", "source"),
+];
 
 /// Remove unreadable task rows from both flat and grouped task-query output.
 pub fn filter_tasks_query_report(guard: &ProfilePermissionGuard, report: &mut TasksQueryResult) {
@@ -51,8 +69,62 @@ pub fn filter_tasks_query_report(guard: &ProfilePermissionGuard, report: &mut Ta
 }
 
 /// Execute the MCP task query, by Tasks query source or by structured
-/// filters, with authority applied before evaluation.
+/// filters, with authority applied before evaluation; one page of rows,
+/// concise unless `detail: "full"`.
 pub fn task_query(
+    paths: &VaultPaths,
+    guard: &ProfilePermissionGuard,
+    args: McpTaskQueryArgs,
+) -> Result<Value, McpMethodError> {
+    let limit = crate::mcp_paging::check_limit("task_query", args.limit, MCP_TASK_QUERY_MAX_LIMIT)?;
+    let offset = crate::mcp_paging::decode_cursor("task_query", args.cursor.as_deref())?;
+    let full = crate::mcp_paging::wants_full_detail("task_query", args.detail.as_deref())?;
+    let result = task_query_result(paths, guard, args)?;
+    let total = result.tasks.len();
+    let (start, end) = crate::mcp_paging::page_bounds(offset, limit, total);
+    let row = |task: &Value| {
+        if full {
+            task.clone()
+        } else {
+            crate::mcp_paging::concise_row(task, CONCISE_TASK_FIELDS)
+        }
+    };
+    let tasks = result.tasks[start..end].iter().map(row).collect::<Vec<_>>();
+    let mut value = serde_json::json!({
+        "tasks": tasks,
+        "result_count": total,
+        "groups": [],
+        "page": crate::mcp_paging::page_json(limit, start, end, Some(total), end < total),
+    });
+    if !result.groups.is_empty() {
+        // Groups list the rows on this page only, under their group keys.
+        let on_page = result.tasks[start..end].to_vec();
+        let groups = result
+            .groups
+            .iter()
+            .filter_map(|group| {
+                let rows = group
+                    .tasks
+                    .iter()
+                    .filter(|task| on_page.contains(task))
+                    .map(row)
+                    .collect::<Vec<_>>();
+                (!rows.is_empty()).then(
+                    || serde_json::json!({ "field": group.field, "key": group.key, "tasks": rows }),
+                )
+            })
+            .collect::<Vec<_>>();
+        value["groups"] = Value::Array(groups);
+    }
+    if full {
+        if let Some(plan) = &result.plan {
+            value["plan"] = serde_json::to_value(plan).unwrap_or(Value::Null);
+        }
+    }
+    Ok(value)
+}
+
+fn task_query_result(
     paths: &VaultPaths,
     guard: &ProfilePermissionGuard,
     args: McpTaskQueryArgs,
@@ -174,19 +246,11 @@ pub fn bounded_daily_list<T: serde::Serialize>(
             item.as_object_mut().map(|object| object.remove("events"));
         }
     }
-    let total_count = items.len();
-    let start = offset.min(total_count);
-    let end = start.saturating_add(limit).min(total_count);
+    let total = items.len();
+    let (start, end) = crate::mcp_paging::page_bounds(offset, limit, total);
     Ok(serde_json::json!({
         "items": items[start..end],
-        "page": {
-            "limit": limit,
-            "offset": offset,
-            "returned": end.saturating_sub(start),
-            "total_count": total_count,
-            "has_more": end < total_count,
-            "next_offset": (end < total_count).then_some(end),
-        }
+        "page": crate::mcp_paging::page_json(limit, start, end, Some(total), end < total),
     }))
 }
 
@@ -235,10 +299,11 @@ pub fn daily(
             .into_iter()
             .filter(|item| guard.check_read_path(&item.path).is_ok())
             .collect::<Vec<_>>();
+            let start = crate::mcp_paging::decode_cursor("daily", args.cursor.as_deref())?;
             let mut page = bounded_daily_list(
                 items,
                 args.limit,
-                args.offset,
+                start,
                 args.order.as_deref(),
                 args.include_events,
             )?;
@@ -348,11 +413,15 @@ pub fn search(
     guard: &ProfilePermissionGuard,
     args: McpSearchArgs,
 ) -> Result<Value, McpMethodError> {
-    if args.limit == 0 {
-        return Err(McpMethodError::invalid_params(
-            "`search.limit` must be at least 1",
+    let limit = crate::mcp_paging::check_limit("search", args.limit, MCP_SEARCH_MAX_LIMIT)?;
+    let offset = crate::mcp_paging::decode_cursor("search", args.cursor.as_deref())?;
+    if offset > MCP_SEARCH_MAX_OFFSET {
+        return Err(McpMethodError::invalid_argument(
+            format!("search pages stop after {MCP_SEARCH_MAX_OFFSET} hits; narrow the query"),
+            Some("cursor".to_string()),
         ));
     }
+    let full = crate::mcp_paging::wants_full_detail("search", args.detail.as_deref())?;
     let report = search_vault_with_filter(
         paths,
         &SearchQuery {
@@ -365,7 +434,8 @@ pub fn search(
             mode: parse_search_mode(args.mode.as_deref())?,
             sort: parse_search_sort(args.sort.as_deref())?,
             match_case: args.match_case.then_some(true),
-            limit: Some(args.limit),
+            // One more than the page, to learn whether another page follows.
+            limit: Some(offset + limit + 1),
             context_size: args.context_size,
             raw_query: args.raw_query,
             fuzzy: args.fuzzy,
@@ -374,9 +444,42 @@ pub fn search(
         Some(&guard.read_filter()),
     )
     .map_err(|error| McpMethodError::tool(error.to_string()))?;
-    serde_json::to_value(report).map_err(|error| {
+    let mut value = serde_json::to_value(report).map_err(|error| {
         McpMethodError::internal(format!("failed to serialize `search` report: {error}"))
-    })
+    })?;
+    let hits = value
+        .get_mut("hits")
+        .and_then(Value::as_array_mut)
+        .map_or_else(Vec::new, std::mem::take);
+    let total_seen = hits.len();
+    let (start, end) = crate::mcp_paging::page_bounds(offset, limit, total_seen);
+    let page_hits = hits[start..end]
+        .iter()
+        .map(|hit| {
+            if full {
+                hit.clone()
+            } else {
+                crate::mcp_paging::concise_row(
+                    hit,
+                    &[
+                        ("document_path", "document_path"),
+                        ("section_id", "section_id"),
+                        ("heading_path", "heading_path"),
+                        ("matched_line", "matched_line"),
+                        ("snippet", "snippet"),
+                    ],
+                )
+            }
+        })
+        .collect::<Vec<_>>();
+    value["hits"] = Value::Array(page_hits);
+    value["page"] = crate::mcp_paging::page_json(limit, start, end, None, total_seen > end);
+    if !full {
+        if let Some(object) = value.as_object_mut() {
+            object.retain(|_, field| !field.is_null());
+        }
+    }
+    Ok(value)
 }
 
 #[allow(clippy::too_many_lines)] // Keep DQL and structural routing in one shared MCP contract.
@@ -419,15 +522,15 @@ pub fn query(
             || args.include_properties
         {
             return Err(McpMethodError::invalid_params(
-                "DQL supports only `query`, `engine`, `limit`, and `offset`; use structural query mode for filters, path_prefix, filename_pattern, fields, or include_properties",
+                "DQL supports only `query`, `engine`, `limit`, and `cursor`; use structural query mode for filters, path_prefix, filename_pattern, fields, or include_properties",
             ));
         }
         let mut result =
             crate::browse::build_dataview_query_report_with_guard(paths, dql, None, guard)
                 .map_err(|error| McpMethodError::tool(error.to_string()))?;
-        let total_count = result.rows.len();
-        let start = args.offset.min(total_count);
-        let end = start.saturating_add(args.limit).min(total_count);
+        let total = result.rows.len();
+        let offset = crate::mcp_paging::decode_cursor("query", args.cursor.as_deref())?;
+        let (start, end) = crate::mcp_paging::page_bounds(offset, args.limit, total);
         result.rows = result.rows[start..end].to_vec();
         result.result_count = result.rows.len();
         let mut structured = serde_json::to_value(result)
@@ -437,14 +540,7 @@ pub fn query(
             .expect("DQL result serializes as an object")
             .insert(
                 "page".to_string(),
-                serde_json::json!({
-                    "limit": args.limit,
-                    "offset": args.offset,
-                    "returned": end.saturating_sub(start),
-                    "total_count": total_count,
-                    "has_more": end < total_count,
-                    "next_offset": (end < total_count).then_some(end),
-                }),
+                crate::mcp_paging::page_json(args.limit, start, end, Some(total), end < total),
             );
         return Ok(structured);
     }
@@ -568,9 +664,9 @@ fn bounded_mcp_query_report(
     });
     let query_notes = &notes[query_start..query_end];
     let total_count = query_notes.len();
-    let start = args.offset.min(total_count);
     let limit = args.limit;
-    let end = start.saturating_add(limit).min(total_count);
+    let offset = crate::mcp_paging::decode_cursor("query", args.cursor.as_deref())?;
+    let (start, end) = crate::mcp_paging::page_bounds(offset, limit, total_count);
     let rows = query_notes[start..end]
         .iter()
         .map(|note| {
@@ -607,19 +703,13 @@ fn bounded_mcp_query_report(
             Ok(Value::Object(object))
         })
         .collect::<Result<Vec<_>, McpMethodError>>()?;
+    let mut page =
+        crate::mcp_paging::page_json(limit, start, end, Some(total_count), end < total_count);
+    page["matched"] = Value::from(matched_count);
     Ok(serde_json::json!({
         "query": report.query,
         "notes": rows,
-        "page": {
-            "limit": limit,
-            "offset": start,
-            "returned": end.saturating_sub(start),
-            "total_count": total_count,
-            "matched_count": matched_count,
-            "query_offset": query_start,
-            "has_more": end < total_count,
-            "next_offset": (end < total_count).then_some(end),
-        }
+        "page": page,
     }))
 }
 
@@ -795,11 +885,11 @@ mod tests {
             .unwrap()
         };
         assert_eq!(
-            daily(&paths, &readable, list_args()).unwrap()["page"]["total_count"],
+            daily(&paths, &readable, list_args()).unwrap()["page"]["total"],
             1
         );
         assert_eq!(
-            daily(&paths, &blind, list_args()).unwrap()["page"]["total_count"],
+            daily(&paths, &blind, list_args()).unwrap()["page"]["total"],
             0
         );
     }
@@ -857,9 +947,7 @@ mod tests {
         );
         let query_args = || serde_json::from_value(json!({"query": "not done"})).unwrap();
         assert_eq!(
-            task_query(&paths, &guard, query_args())
-                .unwrap()
-                .result_count,
+            task_query(&paths, &guard, query_args()).unwrap()["result_count"],
             1
         );
         fs::write(
@@ -875,15 +963,11 @@ mod tests {
             resolve_permission_profile(&paths, Some("scoped")).unwrap(),
         );
         assert_eq!(
-            task_query(&paths, &current, query_args())
-                .unwrap()
-                .result_count,
+            task_query(&paths, &current, query_args()).unwrap()["result_count"],
             0
         );
         assert_eq!(
-            task_query(&paths, &current, list_args())
-                .unwrap()
-                .result_count,
+            task_query(&paths, &current, list_args()).unwrap()["result_count"],
             0
         );
     }
@@ -928,11 +1012,11 @@ mod tests {
             task_query(&paths, &guard, query_args()).unwrap(),
             task_query(&paths, &guard, list_args).unwrap(),
         ] {
-            assert_eq!(report.result_count, 1);
-            assert_eq!(report.tasks[0]["path"], "CVisible.md");
-            assert_eq!(report.groups.len(), 1);
-            assert_eq!(report.groups[0].tasks.len(), 1);
-            assert_eq!(report.groups[0].tasks[0]["path"], "CVisible.md");
+            assert_eq!(report["result_count"], 1);
+            assert_eq!(report["tasks"][0]["path"], "CVisible.md");
+            assert_eq!(report["groups"].as_array().unwrap().len(), 1);
+            assert_eq!(report["groups"][0]["tasks"].as_array().unwrap().len(), 1);
+            assert_eq!(report["groups"][0]["tasks"][0]["path"], "CVisible.md");
         }
     }
 
@@ -965,11 +1049,11 @@ mod tests {
             task_query(&paths, &guard, query_args()).unwrap(),
             task_query(&paths, &guard, list_args).unwrap(),
         ] {
-            assert_eq!(report.result_count, 1);
-            assert_eq!(report.tasks[0]["path"], "Public/Public.md");
-            assert_eq!(report.groups.len(), 1);
-            assert_eq!(report.groups[0].tasks.len(), 1);
-            assert_eq!(report.groups[0].tasks[0]["path"], "Public/Public.md");
+            assert_eq!(report["result_count"], 1);
+            assert_eq!(report["tasks"][0]["path"], "Public/Public.md");
+            assert_eq!(report["groups"].as_array().unwrap().len(), 1);
+            assert_eq!(report["groups"][0]["tasks"].as_array().unwrap().len(), 1);
+            assert_eq!(report["groups"][0]["tasks"][0]["path"], "Public/Public.md");
         }
     }
 
@@ -996,16 +1080,12 @@ mod tests {
         let args = |value: Value| serde_json::from_value::<McpTaskQueryArgs>(value).unwrap();
         for arguments in [json!({"source": "inline"}), json!({"query": ""})] {
             assert_eq!(
-                task_query(&paths, &readable, args(arguments.clone()))
-                    .unwrap()
-                    .result_count,
+                task_query(&paths, &readable, args(arguments.clone())).unwrap()["result_count"],
                 1,
                 "{arguments}"
             );
             assert_eq!(
-                task_query(&paths, &blind, args(arguments.clone()))
-                    .unwrap()
-                    .result_count,
+                task_query(&paths, &blind, args(arguments.clone())).unwrap()["result_count"],
                 0,
                 "{arguments}"
             );
@@ -1031,6 +1111,20 @@ mod tests {
         );
         for arguments in [
             json!({"query": "alpha", "limit": 0}),
+            json!({"query": "alpha", "limit": 101}),
+            json!({"query": "alpha", "cursor": "not-a-cursor"}),
+            json!({"query": "alpha", "detail": "verbose"}),
+        ] {
+            let args = serde_json::from_value(arguments.clone()).unwrap();
+            assert!(
+                matches!(
+                    search(&paths, &guard, args),
+                    Err(McpMethodError::Tool { .. })
+                ),
+                "{arguments}"
+            );
+        }
+        for arguments in [
             json!({"query": "alpha", "mode": "unsupported"}),
             json!({"query": "alpha", "sort": "unsupported"}),
         ] {
@@ -1181,8 +1275,12 @@ mod tests {
         let first = bounded_daily_list(items.clone(), 1, 0, None, false).unwrap();
         assert_eq!(first["items"][0]["date"], "2026-09-03");
         assert!(first["items"][0].get("events").is_none());
-        assert_eq!(first["page"]["total_count"], 3);
-        assert_eq!(first["page"]["next_offset"], 1);
+        assert_eq!(first["page"]["total"], 3);
+        assert_eq!(
+            crate::mcp_paging::decode_cursor("daily", first["page"]["next_cursor"].as_str())
+                .unwrap(),
+            1
+        );
         let ascending = bounded_daily_list(items, 2, 1, Some("asc"), true).unwrap();
         assert_eq!(ascending["items"][0]["date"], "2026-09-02");
         assert_eq!(ascending["items"][1]["events"], json!([2]));

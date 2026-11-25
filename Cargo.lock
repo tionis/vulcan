@@ -5162,6 +5162,7 @@ dependencies = [
  "getrandom 0.3.4",
  "globset",
  "jiff",
+ "jsonschema",
  "libc",
  "pulldown-cmark",
  "regex",

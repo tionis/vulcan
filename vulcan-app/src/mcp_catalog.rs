@@ -11,13 +11,13 @@ use crate::mcp_schemas::{
     changeset_begin_input_schema, changeset_id_input_schema, changeset_land_input_schema,
     changeset_list_input_schema, changeset_switch_input_schema, config_get_input_schema,
     config_get_output_schema, config_set_input_schema, config_set_output_schema,
-    daily_input_schema, daily_output_schema, empty_object_schema, generic_report_output_schema,
-    git_blame_input_schema, git_commit_input_schema, git_diff_input_schema, git_log_input_schema,
-    git_status_input_schema, graph_communities_input_schema, index_scan_input_schema,
-    index_scan_output_schema, link_suggestion_resolve_input_schema, link_suggestions_input_schema,
-    note_append_input_schema, note_append_output_schema, note_create_input_schema,
-    note_create_output_schema, note_delete_input_schema, note_delete_output_schema,
-    note_get_input_schema, note_get_output_schema, note_info_input_schema, note_info_output_schema,
+    daily_input_schema, daily_output_schema, empty_object_schema, git_blame_input_schema,
+    git_commit_input_schema, git_diff_input_schema, git_log_input_schema, git_status_input_schema,
+    graph_communities_input_schema, index_scan_input_schema, index_scan_output_schema,
+    link_suggestion_resolve_input_schema, link_suggestions_input_schema, note_append_input_schema,
+    note_append_output_schema, note_create_input_schema, note_create_output_schema,
+    note_delete_input_schema, note_delete_output_schema, note_get_input_schema,
+    note_get_output_schema, note_info_input_schema, note_info_output_schema,
     note_move_input_schema, note_outline_input_schema, note_outline_output_schema,
     note_patch_input_schema, note_patch_output_schema, note_set_input_schema,
     note_set_output_schema, query_input_schema, search_input_schema, search_output_schema,
@@ -190,7 +190,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: query_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &[
             "query {\"filters\":[\"status = active\"],\"sort\":\"file.path\"}",
             "query {\"query\":\"TABLE file.link, status WHERE status = \\\"active\\\"\",\"engine\":\"dql\"}",
@@ -229,7 +229,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: graph_communities_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &["vulcan graph communities --output json"],
     },
     McpToolCatalogEntry {
@@ -241,7 +241,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: link_suggestions_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &["link_suggestions {\"note\":\"Projects/Alpha\",\"limit\":5}"],
     },
     McpToolCatalogEntry {
@@ -253,7 +253,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: false,
         annotations: mcp_annotations(false, false, true, false),
         input_schema: link_suggestion_resolve_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &["link_suggestion_resolve {\"id\":\"…\",\"action\":\"accept\"}"],
     },
     McpToolCatalogEntry {
@@ -265,7 +265,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: task_query_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &["task_query {\"query\":\"not done\\ndue before tomorrow\"}"],
     },
     McpToolCatalogEntry {
@@ -277,7 +277,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: false,
         annotations: mcp_annotations(false, false, false, false),
         input_schema: task_create_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &["task_create {\"text\":\"Call Alex\",\"due\":\"tomorrow\"}"],
     },
     McpToolCatalogEntry {
@@ -289,7 +289,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: false,
         annotations: mcp_annotations(false, false, true, false),
         input_schema: task_complete_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &["task_complete {\"task\":\"Tasks/Call Alex\",\"date\":\"today\"}"],
     },
     McpToolCatalogEntry {
@@ -301,7 +301,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: false,
         annotations: mcp_annotations(false, false, true, false),
         input_schema: task_reschedule_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &["task_reschedule {\"task\":\"Tasks/Call Alex\",\"due\":\"2026-05-09\"}"],
     },
     McpToolCatalogEntry {
@@ -313,7 +313,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: false,
         annotations: mcp_annotations(false, false, false, false),
         input_schema: task_reminder_add_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &["task_reminder_add {\"task\":\"Dentist\",\"reminder\":\"-1h\"}"],
     },
     McpToolCatalogEntry {
@@ -325,7 +325,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: true,
         annotations: mcp_annotations(false, true, true, false),
         input_schema: task_reminder_remove_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &["task_reminder_remove {\"task\":\"Dentist\",\"id\":\"rem_1793763587775_0\"}"],
     },
     McpToolCatalogEntry {
@@ -474,7 +474,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: false,
         annotations: mcp_annotations(true, false, true, true),
         input_schema: sync_status_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &["sync_status {}"],
     },
     McpToolCatalogEntry {
@@ -486,7 +486,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: false,
         annotations: mcp_annotations(true, false, true, true),
         input_schema: sync_doctor_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &["sync_doctor {}"],
     },
     McpToolCatalogEntry {
@@ -498,7 +498,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: sync_conflicts_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &["sync_conflicts {}", "sync_conflicts {\"conflict_id\":\"01...\"}"],
     },
     McpToolCatalogEntry {
@@ -510,7 +510,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: file_get_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &["file_get {\"path\":\"Attachments/diagram.svg\"}"],
     },
     McpToolCatalogEntry {
@@ -522,7 +522,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: false,
         annotations: mcp_annotations(false, true, false, false),
         input_schema: file_put_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &["file_put {\"path\":\"Attachments/plan.txt\",\"content\":\"draft\"}"],
     },
     McpToolCatalogEntry {
@@ -534,7 +534,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: false,
         annotations: mcp_annotations(false, false, false, true),
         input_schema: empty_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &["sync_refresh {}"],
     },
     McpToolCatalogEntry {
@@ -546,7 +546,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: false,
         annotations: mcp_annotations(false, false, true, true),
         input_schema: empty_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &["sync_resume {}"],
     },
     McpToolCatalogEntry {
@@ -558,7 +558,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: false,
         annotations: mcp_annotations(false, false, false, false),
         input_schema: note_move_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &["note_move {\"note\":\"Inbox/Idea\",\"destination\":\"Projects/Idea\",\"dry_run\":true}"],
     },
     McpToolCatalogEntry {
@@ -570,7 +570,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: git_status_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &["git_status {}"],
     },
     McpToolCatalogEntry {
@@ -582,7 +582,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: git_diff_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &["git_diff {\"path\":\"Projects/Alpha.md\"}"],
     },
     McpToolCatalogEntry {
@@ -594,7 +594,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: git_log_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &["git_log {\"limit\":10}"],
     },
     McpToolCatalogEntry {
@@ -606,7 +606,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: git_blame_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &["git_blame {\"path\":\"Home.md\"}"],
     },
     McpToolCatalogEntry {
@@ -618,7 +618,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: false,
         annotations: mcp_annotations(false, false, false, false),
         input_schema: git_commit_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &["git_commit {\"message\":\"Plan the release\"}"],
     },
     McpToolCatalogEntry {
@@ -630,7 +630,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: false,
         annotations: mcp_annotations(false, false, false, false),
         input_schema: changeset_begin_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &["changeset_begin {\"title\":\"Restructure the guides\"}"],
     },
     McpToolCatalogEntry {
@@ -642,7 +642,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: false,
         annotations: mcp_annotations(false, false, true, false),
         input_schema: changeset_switch_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &["changeset_switch {}"],
     },
     McpToolCatalogEntry {
@@ -654,7 +654,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: false,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: changeset_list_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &["changeset_list {}"],
     },
     McpToolCatalogEntry {
@@ -666,7 +666,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: false,
         annotations: mcp_annotations(false, false, false, false),
         input_schema: changeset_land_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &["changeset_land {\"message\":\"Restructure the guides\"}"],
     },
     McpToolCatalogEntry {
@@ -678,7 +678,7 @@ pub const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         destructive: true,
         annotations: mcp_annotations(false, true, false, false),
         input_schema: changeset_id_input_schema,
-        output_schema: Some(generic_report_output_schema),
+        output_schema: None,
         examples: &["changeset_abandon {}"],
     },
 ];

@@ -969,7 +969,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         "note_set",
         serde_json::json!({
             "note": "Foreground.md", "content": "Foreground replacement.\n",
-            "confirm": true, "no_commit": true
+            "no_commit": true
         }),
     );
     assert!(
@@ -988,7 +988,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         &write_token,
         &foreground_write_session,
         "note_delete",
-        serde_json::json!({"note": "Foreground.md", "confirm": true, "no_commit": true}),
+        serde_json::json!({"note": "Foreground.md", "no_commit": true}),
     );
     assert!(
         foreground_delete.contains("\"isError\":false"),
@@ -1478,7 +1478,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         "note_set",
         serde_json::json!({
             "note": "Resident.md", "content": "Resident replacement.\n",
-            "confirm": true, "no_commit": true
+            "no_commit": true
         }),
     );
     assert!(resident_set.contains("\"isError\":false"), "{resident_set}");
@@ -1494,7 +1494,7 @@ fn named_remote_foreground_and_resident_launches_enforce_the_same_grant() {
         &write_token,
         &resident_write_session,
         "note_delete",
-        serde_json::json!({"note": "Resident.md", "confirm": true, "no_commit": true}),
+        serde_json::json!({"note": "Resident.md", "no_commit": true}),
     );
     assert!(
         resident_delete.contains("\"isError\":false"),

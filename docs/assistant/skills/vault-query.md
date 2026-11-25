@@ -1,7 +1,7 @@
 ---
 name: vault-query
 description: Choose between search, native queries, canonical mdbase collection queries and saved views, filters, and structured note listing.
-version: 14
+version: 15
 tools:
   - search
   - query
@@ -29,7 +29,7 @@ Use this skill when the task depends on metadata, frontmatter, tags, paths, or p
 - To change a saved view, read it with `vulcan mdbase view-source read <path> --output json`, edit the complete document, and write it back with `vulcan mdbase view-source update <path> --file <doc> --if-revision <revision>`; `create` never replaces a file (`path_conflict`) and `delete` takes the same `--if-revision`. Invalid documents fail with `invalid_view` before anything is written. On `concurrent_modification`, re-read and reapply the edit rather than forcing it.
 - To inspect one known mdbase record's types, frontmatter, and diagnostics, prefer `vulcan mdbase read <path> --metadata --output json`; it skips body, links, and tags and is answered from the current cache. Use plain `mdbase read` (or `--source`) only when the body, links, or exact source are needed.
 - Use `path_prefix`, `filename_pattern`, explicit `sort`/`desc`, and `limit` for structural navigation. MCP query results default to 50 compact rows and report pagination metadata.
-- Treat MCP `offset` as relative to the query's own offset and reuse `next_offset` unchanged for the next page. Embedded query limits bound the whole selection; MCP `limit` is the page size.
+- MCP `query` returns one page: pass `page.next_cursor` back unchanged as `cursor` for the next. Embedded query limits and offsets bound the whole selection; MCP `limit` is the page size.
 - Prefer explicit `file.*` fields for filesystem metadata and `properties.<key>` for frontmatter/inline properties. Unprefixed property keys remain compatible but are less self-documenting.
 - Use `ls --where` for quick path-oriented listings without the full query pipeline.
 - Reach for `help filters` and `help query-dsl` when the predicate grammar is unclear.
