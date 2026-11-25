@@ -76,6 +76,7 @@ Examples:
       templater        Import Obsidian Templater plugin settings
       quickadd         Import Obsidian QuickAdd plugin settings
       kanban           Import Obsidian Kanban plugin settings
+      metabind         Import Obsidian Meta Bind plugin settings
       numerals         Import Obsidian Numerals plugin settings
       periodic-notes   Import Obsidian Daily Notes and Periodic Notes settings
       tasknotes        Import Obsidian TaskNotes plugin settings
@@ -1385,6 +1386,35 @@ The named MCP remote this vault describes; devices opt in to serve it from daemo
 - `mcp_remote.tool_packs` — type: `array`; target: `shared|local|device`; default: `[3 items]`
   Tool packs a remote connection may choose; they select tools, the ceiling bounds authority.
   Example: `vulcan config set mcp_remote.tool_packs <value>`
+
+### Meta Bind
+
+Meta Bind-compatible INPUT, VIEW, and BUTTON fields bound to note metadata; `vulcan metabind` writes their values.
+
+- `metabind.button_templates` — type: `array`; target: `shared|local|device`; default: `[0 items]`
+  Button declarations, as objects with an `id`, that `BUTTON[id]` fields in any note can use.
+  Example: `vulcan config set metabind.button_templates <value>`
+- `metabind.enable_js` — type: `boolean`; target: `shared|local|device`; default: `false`
+  Meta Bind's JavaScript switch, imported from the plugin. `meta-bind-js-view` blocks and JavaScript buttons run only in Obsidian.
+  Example: `vulcan config set metabind.enable_js <value>`
+- `metabind.enabled` — type: `boolean`; target: `shared|local|device`; default: `true`
+  Render Meta Bind `INPUT[...]`, `VIEW[...]`, and `BUTTON[...]` fields and `meta-bind*` blocks with the values they bind to. Rendering never writes; `vulcan metabind set` and `vulcan metabind apply` do.
+  Example: `vulcan config set metabind.enabled <value>`
+- `metabind.excluded_folders` — type: `array`; target: `shared|local|device`; default: `[1 item]`
+  Folders whose notes show a notice instead of their fields, such as template folders.
+  Example: `vulcan config set metabind.excluded_folders <value>`
+- `metabind.ignore_code_block_restrictions` — type: `boolean`; target: `shared|local|device`; default: `false`
+  Allow block-only input types (such as `select` and `list`) in inline fields.
+  Example: `vulcan config set metabind.ignore_code_block_restrictions <value>`
+- `metabind.input_field_templates` — type: `array`; target: `shared|local|device`; default: `[0 items]`
+  Named input declarations (`name`, `declaration`) used as `INPUT[name][...]`.
+  Example: `vulcan config set metabind.input_field_templates <value>`
+- `metabind.preferred_date_format` — type: `string`; target: `shared|local|device`; default: `YYYY-MM-DD`
+  The format `datePicker` inputs store, in Moment.js tokens.
+  Example: `vulcan config set metabind.preferred_date_format <value>`
+- `metabind.view_field_display_null_as_empty` — type: `boolean`; target: `shared|local|device`; default: `false`
+  Show missing or null values in `text` views as nothing instead of `null`.
+  Example: `vulcan config set metabind.view_field_display_null_as_empty <value>`
 
 ### Numerals
 

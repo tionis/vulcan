@@ -91,6 +91,7 @@ pub mod mcp_tool_exec;
 pub mod mcp_web;
 pub mod mdbase;
 pub mod mdbase_conformance;
+pub mod metabind;
 pub mod note_writes;
 pub mod notes;
 pub mod numerals;

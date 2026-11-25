@@ -25,6 +25,9 @@ pub struct ParsedDocument {
     /// Inline Numerals calculations (`` `#: 2 + 2` ``), by the configured
     /// triggers.
     pub inline_numerals: Vec<RawInlineNumerals>,
+    /// Meta Bind fields: `INPUT[...]`/`VIEW[...]`/`BUTTON[...]` inline code
+    /// and `meta-bind*` blocks, in document order.
+    pub meta_bind_fields: Vec<RawMetaBindField>,
     /// Byte ranges of Obsidian comments (`%% ... %%`), hidden when rendered.
     pub comment_regions: Vec<std::ops::Range<usize>>,
     pub chunk_texts: Vec<ChunkText>,
@@ -172,6 +175,30 @@ pub enum InlineNumeralsMode {
 pub struct RawInlineNumerals {
     pub mode: InlineNumeralsMode,
     pub expression: String,
+    pub byte_range: Range<usize>,
+    pub line_number: usize,
+}
+
+/// Where a Meta Bind field was written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetaBindSourceKind {
+    /// Inline code such as `` `INPUT[toggle:done]` ``.
+    Inline,
+    /// A ` ```meta-bind ` block holding one declaration.
+    Block,
+    /// A ` ```meta-bind-button ` block (YAML).
+    ButtonBlock,
+    /// A ` ```meta-bind-js-view ` block.
+    JsView,
+    /// A ` ```meta-bind-embed ` block.
+    Embed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawMetaBindField {
+    pub kind: MetaBindSourceKind,
+    /// The inline code text or the block body.
+    pub text: String,
     pub byte_range: Range<usize>,
     pub line_number: usize,
 }

@@ -49,9 +49,9 @@ pub use importers::{
     import_tasknotes_plugin_config, import_tasks_plugin_config, import_templater_plugin_config,
     ConfigImportError, ConfigImportMapping, ConfigImportReport, CoreImporter, CustomJsImporter,
     DataviewImporter, FolderNotesImporter, ImportConflict, ImportMigratedFile,
-    ImportMigratedFileAction, ImportSkippedSetting, ImportTarget, KanbanImporter, NumeralsImporter,
-    PeriodicNotesImporter, PluginImporter, QuickAddImporter, TaskNotesImporter, TasksImporter,
-    TemplaterImporter,
+    ImportMigratedFileAction, ImportSkippedSetting, ImportTarget, KanbanImporter, MetaBindImporter,
+    NumeralsImporter, PeriodicNotesImporter, PluginImporter, QuickAddImporter, TaskNotesImporter,
+    TasksImporter, TemplaterImporter,
 };
 mod obsidian;
 
@@ -75,7 +75,7 @@ use partial::{
 
 use obsidian::{
     ObsidianAppConfig, ObsidianCustomJsConfig, ObsidianDailyNotesConfig, ObsidianDataviewConfig,
-    ObsidianKanbanConfig, ObsidianNumeralsConfig, ObsidianNumeralsCurrency,
+    ObsidianKanbanConfig, ObsidianMetaBindConfig, ObsidianNumeralsConfig, ObsidianNumeralsCurrency,
     ObsidianPeriodicCalendarSet, ObsidianPeriodicNoteSettings, ObsidianPeriodicNotesConfig,
     ObsidianQuickAddAiConfig, ObsidianQuickAddAiProviderConfig, ObsidianQuickAddChoice,
     ObsidianQuickAddConfig, ObsidianQuickAddFormatConfig, ObsidianTaskNotesConfig,
@@ -413,6 +413,51 @@ pub struct CustomJsConfig {
     /// DQL function name to the `Class.method` that implements it.
     #[serde(default)]
     pub dql_functions: BTreeMap<String, String>,
+}
+
+/// A named Meta Bind input-field declaration, used as `INPUT[name][...]`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetaBindInputTemplate {
+    pub name: String,
+    pub declaration: String,
+}
+
+/// Meta Bind-compatible input fields, views, and buttons (`[metabind]`).
+/// See `docs/specs/live-documents.md`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)] // independent switches, as in the plugin
+#[serde(default)]
+pub struct MetaBindConfig {
+    /// Render `INPUT[...]`, `VIEW[...]`, and `BUTTON[...]` fields.
+    pub enabled: bool,
+    /// The format `datePicker` inputs store (Moment.js tokens).
+    pub preferred_date_format: String,
+    /// Run `meta-bind-js-view` blocks and JavaScript button actions.
+    pub enable_js: bool,
+    /// Show null values in text views as empty rather than `null`.
+    pub view_field_display_null_as_empty: bool,
+    /// Allow block-only input types inline.
+    pub ignore_code_block_restrictions: bool,
+    /// Path prefixes whose notes show a notice instead of fields.
+    pub excluded_folders: Vec<String>,
+    pub input_field_templates: Vec<MetaBindInputTemplate>,
+    /// Button declarations other notes reference by `id`, as JSON objects.
+    pub button_templates: Vec<serde_json::Value>,
+}
+
+impl Default for MetaBindConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            preferred_date_format: "YYYY-MM-DD".to_string(),
+            enable_js: false,
+            view_field_display_null_as_empty: false,
+            ignore_code_block_restrictions: false,
+            excluded_folders: vec!["templates".to_string()],
+            input_field_templates: Vec::new(),
+            button_templates: Vec::new(),
+        }
+    }
 }
 
 /// How a Numerals block shows its lines.
@@ -2897,6 +2942,8 @@ pub struct VaultConfig {
     pub customjs: CustomJsConfig,
     #[serde(default)]
     pub numerals: NumeralsConfig,
+    #[serde(default)]
+    pub metabind: MetaBindConfig,
     pub js_runtime: JsRuntimeConfig,
     pub templates: TemplatesConfig,
     pub quickadd: QuickAddConfig,
@@ -3112,6 +3159,7 @@ impl Default for VaultConfig {
             dataview: DataviewConfig::default(),
             customjs: CustomJsConfig::default(),
             numerals: NumeralsConfig::default(),
+            metabind: MetaBindConfig::default(),
             js_runtime: JsRuntimeConfig::default(),
             templates: TemplatesConfig::default(),
             quickadd: QuickAddConfig::default(),
@@ -5038,6 +5086,32 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
         if let Some(value) = customjs.dql_functions {
             config.customjs.dql_functions.extend(value);
+        }
+    }
+    if let Some(metabind) = overrides.metabind {
+        if let Some(value) = metabind.enabled {
+            config.metabind.enabled = value;
+        }
+        if let Some(value) = metabind.preferred_date_format {
+            config.metabind.preferred_date_format = value;
+        }
+        if let Some(value) = metabind.enable_js {
+            config.metabind.enable_js = value;
+        }
+        if let Some(value) = metabind.view_field_display_null_as_empty {
+            config.metabind.view_field_display_null_as_empty = value;
+        }
+        if let Some(value) = metabind.ignore_code_block_restrictions {
+            config.metabind.ignore_code_block_restrictions = value;
+        }
+        if let Some(value) = metabind.excluded_folders {
+            config.metabind.excluded_folders = value;
+        }
+        if let Some(value) = metabind.input_field_templates {
+            config.metabind.input_field_templates = value;
+        }
+        if let Some(value) = metabind.button_templates {
+            config.metabind.button_templates = value;
         }
     }
     if let Some(numerals) = overrides.numerals {

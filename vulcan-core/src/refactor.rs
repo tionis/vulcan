@@ -906,6 +906,21 @@ where
     )))
 }
 
+/// `source` with frontmatter property `key` set to `value` (removed for
+/// `None`), editing only that key where it can, as `vulcan note set-property`
+/// does; `None` when nothing changes. `path` names the note in errors.
+pub fn set_frontmatter_property_in_source(
+    source: &str,
+    path: &str,
+    key: &str,
+    value: Option<&YamlValue>,
+) -> Result<Option<String>, RefactorError> {
+    Ok(
+        plan_set_note_property_replacement(source, path, key, value)?
+            .map(|(edit, _)| apply_edits(source, &[edit])),
+    )
+}
+
 fn plan_set_note_property_replacement(
     source: &str,
     path: &str,

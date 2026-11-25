@@ -3521,6 +3521,117 @@
         ]
       },
       {
+        "about": "List and set Meta Bind input fields and write view results",
+        "name": "metabind",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "List a note's fields with their bound values and allowed values",
+            "name": "list",
+            "options": [
+              {
+                "help": "Note path, filename, or alias",
+                "id": "note",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NOTE"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Write a value to a bind target, validated by the inputs bound to it",
+            "name": "set",
+            "options": [
+              {
+                "help": "Note path, filename, or alias",
+                "id": "note",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NOTE"
+                ]
+              },
+              {
+                "help": "Bind target, as in the field (`level`, `stats.hp`, `Other Note#mood`)",
+                "id": "target",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "TARGET"
+                ]
+              },
+              {
+                "help": "Value as the input takes it: `on`/`off` for toggles, a number, an option, or a comma-separated list",
+                "id": "value",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "VALUE"
+                ]
+              },
+              {
+                "help": "Show the change without writing it",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Write the results of views with a write-back target",
+            "name": "apply",
+            "options": [
+              {
+                "help": "Note path, filename, or alias",
+                "id": "note",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NOTE"
+                ]
+              },
+              {
+                "help": "Show the changes without writing them",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
         "about": "Evaluate and maintain Bases views",
         "after_help": "Notes:\n  view-* commands rewrite the parsed .base model instead of patching YAML text blindly.\n  Mutating bases commands support --dry-run and --no-commit.\n  `create` derives folder and equality frontmatter from the first view; the TUI `n` hotkey uses the current view.\n\nExamples:\n  vulcan bases eval release.base\n  vulcan bases create release.base --title \"Launch Plan\"\n  vulcan bases tui release.base\n  vulcan bases view-add release.base Inbox --filter 'status = idea' --column file.name",
         "name": "bases",
@@ -8820,6 +8931,12 @@
               {
                 "about": "Import Obsidian Kanban plugin settings",
                 "name": "kanban",
+                "options": [],
+                "subcommands": []
+              },
+              {
+                "about": "Import Obsidian Meta Bind plugin settings",
+                "name": "metabind",
                 "options": [],
                 "subcommands": []
               },

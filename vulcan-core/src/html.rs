@@ -432,6 +432,17 @@ fn render_dynamic_outcome_html(
         }
         DynamicOutcome::Base(report) => render_bases_report_html(report),
         DynamicOutcome::Numerals(outcome) => render_numerals_html(outcome),
+        DynamicOutcome::MetaBind(field) => crate::metabind::field_html(field, escape_html_text)
+            .unwrap_or_else(|| {
+                let (block, markdown) = crate::metabind::field_markdown(field);
+                let html =
+                    render_html_internal(paths, &markdown, source_path, false, env, state).html;
+                if block {
+                    html
+                } else {
+                    strip_paragraph_wrapper(&html)
+                }
+            }),
         DynamicOutcome::Disabled { title, message } | DynamicOutcome::Error { title, message } => {
             render_message_html(title, message)
         }

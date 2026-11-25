@@ -452,10 +452,10 @@ pub use cli::{
     GitChangesetCommand, GitCommand, GraphCommand, GraphExportFormat, IndexCommand, InitArgs,
     IntegrationCommand, KanbanCommand, LoginModeArg, McpCommand, McpConnectionsCommand,
     McpRemoteCommand, McpToolPackArg, McpToolPackModeArg, McpTransportArg, MdbaseCommand,
-    MdbaseWriteRepairCommand, NoteAppendPeriodicArg, NoteCheckboxState, NoteCommand, NoteGetMode,
-    NumeralsCommand, OrdinaryWriteRepairCommand, OutlineBlockReferencePolicyArg,
-    OutlineCollectionPermissionArg, OutlineCollectionsCommand, OutlineCommand,
-    OutlineExcludedTargetPolicyArg, OutlinePullConflictOperationArg, OutputFormat,
+    MdbaseWriteRepairCommand, MetabindCommand, NoteAppendPeriodicArg, NoteCheckboxState,
+    NoteCommand, NoteGetMode, NumeralsCommand, OrdinaryWriteRepairCommand,
+    OutlineBlockReferencePolicyArg, OutlineCollectionPermissionArg, OutlineCollectionsCommand,
+    OutlineCommand, OutlineExcludedTargetPolicyArg, OutlinePullConflictOperationArg, OutputFormat,
     PeriodicOpenArgs, PeriodicSubcommand, PinTargetArg, PluginCommand, PluginEventArg,
     PluginSandboxArg, PropertySortArg, PublishCommand, PullCommand, QueryEngineArg, QueryFormatArg,
     RefactorCommand, RefreshMode, RenderArgs, RenderMode, RepairCommand, SavedCommand,
@@ -3836,6 +3836,7 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
         | Command::Tasks { .. }
         | Command::Kanban { .. }
         | Command::Numerals { .. }
+        | Command::Metabind { .. }
         | Command::Update { .. }
         | Command::Unset { .. }
         | Command::Search { .. }
@@ -5743,6 +5744,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         ),
         Command::Numerals { ref command } => {
             commands::numerals::handle_numerals_command(cli, &paths, command)
+        }
+        Command::Metabind { ref command } => {
+            commands::metabind::handle_metabind_command(cli, &paths, command)
         }
         Command::Search {
             ref query,

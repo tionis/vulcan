@@ -358,6 +358,18 @@ impl<'a> SemanticProcessor<'a> {
             return;
         }
 
+        if is_meta_bind_inline(text) {
+            self.parsed
+                .meta_bind_fields
+                .push(crate::parser::types::RawMetaBindField {
+                    kind: crate::parser::types::MetaBindSourceKind::Inline,
+                    text: text.to_string(),
+                    byte_range: range.clone(),
+                    line_number: line_number_for_offset(self.source, range.start),
+                });
+            return;
+        }
+
         if let Some((mode, expression)) = inline_numerals_trigger(&self.config.numerals, text) {
             self.parsed
                 .inline_numerals
@@ -666,6 +678,13 @@ impl<'a> SemanticProcessor<'a> {
             self.parsed.dataview_blocks = dataview.dataview_blocks;
             self.parsed.tasks_blocks = dataview.tasks_blocks;
             self.parsed.numerals_blocks = dataview.numerals_blocks;
+            // Blocks and inline fields together, in document order.
+            self.parsed
+                .meta_bind_fields
+                .extend(dataview.meta_bind_blocks);
+            self.parsed
+                .meta_bind_fields
+                .sort_by_key(|field| field.byte_range.start);
             for property_range in dataview.property_value_ranges {
                 for link in &mut self.parsed.links {
                     if property_range.start <= link.byte_offset
@@ -995,6 +1014,13 @@ fn sized_image_regex() -> &'static Regex {
 /// The inline Numerals calculation `text` holds, by the configured triggers
 /// (longest first, as the plugin matches them); `None` when Numerals or its
 /// inline calculations are off.
+/// Inline code Meta Bind reads as a field: untrimmed text that starts with
+/// `INPUT[`, `VIEW[`, or `BUTTON[` and ends with `]`.
+fn is_meta_bind_inline(text: &str) -> bool {
+    (text.starts_with("INPUT[") || text.starts_with("VIEW[") || text.starts_with("BUTTON["))
+        && text.ends_with(']')
+}
+
 fn inline_numerals_trigger<'t>(
     config: &crate::config::NumeralsConfig,
     text: &'t str,

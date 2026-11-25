@@ -21,8 +21,9 @@ use vulcan_core::Verbosity;
 use vulcan_core::{
     all_importers, annotate_import_conflicts, load_permission_profiles, ConfigImportReport,
     CoreImporter, CustomJsImporter, DataviewImporter, FolderNotesImporter, ImportTarget,
-    KanbanImporter, NumeralsImporter, PeriodicNotesImporter, PermissionGuard, PermissionProfile,
-    PluginImporter, TaskNotesImporter, TasksImporter, TemplaterImporter, VaultPaths,
+    KanbanImporter, MetaBindImporter, NumeralsImporter, PeriodicNotesImporter, PermissionGuard,
+    PermissionProfile, PluginImporter, TaskNotesImporter, TasksImporter, TemplaterImporter,
+    VaultPaths,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -253,6 +254,7 @@ fn importer_for_command(command: &ConfigImportCommand) -> Box<dyn PluginImporter
         ConfigImportCommand::Templater => Box::new(TemplaterImporter),
         ConfigImportCommand::Quickadd => Box::new(QuickAddImporter),
         ConfigImportCommand::Kanban => Box::new(KanbanImporter),
+        ConfigImportCommand::Metabind => Box::new(MetaBindImporter),
         ConfigImportCommand::Numerals => Box::new(NumeralsImporter),
         ConfigImportCommand::PeriodicNotes => Box::new(PeriodicNotesImporter),
         ConfigImportCommand::TaskNotes => Box::new(TaskNotesImporter),

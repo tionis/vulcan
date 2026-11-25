@@ -20,6 +20,7 @@ pub(super) struct PartialVulcanConfig {
     pub(super) dataview: Option<PartialDataviewConfig>,
     pub(super) customjs: Option<PartialCustomJsConfig>,
     pub(super) numerals: Option<PartialNumeralsConfig>,
+    pub(super) metabind: Option<PartialMetaBindConfig>,
     pub(super) js_runtime: Option<PartialJsRuntimeConfig>,
     pub(super) templates: Option<PartialTemplatesConfig>,
     pub(super) quickadd: Option<PartialQuickAddConfig>,
@@ -174,6 +175,18 @@ pub(super) struct PartialCustomJsConfig {
     pub(super) startup_scripts: Option<Vec<String>>,
     pub(super) invocable_scripts: Option<Vec<String>>,
     pub(super) dql_functions: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct PartialMetaBindConfig {
+    pub(super) enabled: Option<bool>,
+    pub(super) preferred_date_format: Option<String>,
+    pub(super) enable_js: Option<bool>,
+    pub(super) view_field_display_null_as_empty: Option<bool>,
+    pub(super) ignore_code_block_restrictions: Option<bool>,
+    pub(super) excluded_folders: Option<Vec<String>>,
+    pub(super) input_field_templates: Option<Vec<super::MetaBindInputTemplate>>,
+    pub(super) button_templates: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Deserialize, Default)]

@@ -1,11 +1,68 @@
 # Live documents
 
 Notes can compute: Dataview queries and inline expressions, DataviewJS that shares one scope per
-note, CustomJS helper classes (see the [scripting guide](scripting.md)), and Numerals calculator
-blocks. Vulcan renders all of them as their Obsidian plugins do, in `vulcan render`, `note get
+note, CustomJS helper classes (see the [scripting guide](scripting.md)), Meta Bind input fields and
+views, and Numerals calculator blocks. Vulcan renders all of them as their Obsidian plugins do, in `vulcan render`, `note get
 --evaluate`, the editor's virtual text, HTML publication, and the web views. Rendering only reads;
 values are written back to notes by explicit commands. The full contract is
 [`docs/specs/live-documents.md`](../specs/live-documents.md).
+
+## Meta Bind fields
+
+[Meta Bind](https://github.com/mProjectsCode/obsidian-meta-bind-plugin) fields bind inputs and
+computed views to a note's properties. Vulcan reads the same syntax and shows each field with the
+value it binds to; Meta Bind fields are on by default (`metabind.enabled`), and
+`vulcan config import metabind` imports the plugin's templates, excluded folders, and options.
+
+````markdown
+---
+hp: 7
+max_hp: 10
+alive: true
+class: rogue
+---
+Alive `INPUT[toggle:alive]` · HP `INPUT[slider(maxValue(10)):hp]` / `VIEW[{max_hp}]`
+Class `INPUT[inlineSelect(option(rogue, Rogue), option(mage, Mage)):class]`
+Health `VIEW[round({hp} / {max_hp} * 100)][math:pct]`%
+````
+
+renders as
+
+```text
+Alive [x] · HP 7 / 10 / 10
+Class Rogue
+Health 70%
+```
+
+- **Inputs** show their current value: `[x]`/`[ ]` for toggles, `7 / 10` for sliders and
+  progress bars, the option's label for selects and suggesters, and a comma list for lists. HTML
+  output shows disabled form controls. Missing or mistyped values show the input's default
+  (`defaultValue`, or the type's own), which is not written.
+- **Views** (`VIEW[template][type:target]`): `math` (the default) evaluates the template with
+  mathjs, `text` joins the values, `link` and `image` turn them into links and embeds, and
+  `hidden` shows nothing. A view with a target passes its result on: later views in the note see
+  it.
+- **Bind targets**: `name`, `stats.hp`, `list[0]`, `["name with spaces"]`, and `Other Note#prop`
+  for another note's frontmatter. `memory^name` and `globalMemory^name` hold values only while the
+  note renders, as they hold them only while Obsidian has it open.
+- **Buttons** show their labels; their actions run in Obsidian. `meta-bind-embed` blocks embed
+  the note they name, and `meta-bind-js-view` blocks show a notice.
+- Fields in `metabind.excluded_folders` (`templates` by default) show a notice, so templates keep
+  their declarations.
+
+Rendering never writes. Change values with
+
+```sh
+vulcan metabind list Hero                     # each field, its target, value, and diagnostics
+vulcan metabind set Hero hp 3 --dry-run       # checked against every input bound to `hp`
+vulcan metabind set Hero class mage
+vulcan metabind apply Hero                    # writes view results, such as pct: 70
+```
+
+`set` refuses a value an input bound to the target would not accept (a slider's range, a select's
+options, a list's limit) and targets no input binds. Both commands change only the properties they
+write, keep the rest of the frontmatter as written, and run the vault's write hooks and
+auto-commit.
 
 ## Numerals calculator blocks
 

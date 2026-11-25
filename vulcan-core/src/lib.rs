@@ -83,6 +83,7 @@ pub mod knowledge;
 mod link_feedback;
 pub mod maintenance;
 pub mod mdbase;
+pub mod metabind;
 pub mod move_rewrite;
 pub mod note;
 pub mod note_lookup;
@@ -159,13 +160,14 @@ pub use config::{
     FolderNotesImporter, GitBatchMessages, GitCommitStrategy, GitConfig, GitScope, GitTrigger,
     ImportConflict, ImportMigratedFile, ImportMigratedFileAction, ImportSkippedSetting,
     ImportTarget, InboxConfig, JsRuntimeConfig, JsRuntimeSandbox, KanbanConfig, KanbanImporter,
-    LinkResolutionMode, LinkStylePreference, NetworkPermissionConfig, NumeralsConfig,
-    NumeralsCurrencyDisplay, NumeralsCurrencyPrecision, NumeralsImporter, NumeralsNumberFormat,
-    NumeralsRenderStyle, PathPermissionConfig, PathPermissionKeyword, PathPermissionRules,
-    PeriodicCadenceUnit, PeriodicConfig, PeriodicNoteConfig, PeriodicNotesImporter,
-    PeriodicStartOfWeek, PermissionLimit, PermissionLimitKeyword, PermissionMode,
-    PermissionProfile, PermissionProfilesLoadResult, PermissionsConfig, PluginEvent,
-    PluginImporter, PluginRegistration, ScanConfig, SearchBackendKind, SyncConfig, TaskNotesConfig,
+    LinkResolutionMode, LinkStylePreference, MetaBindConfig, MetaBindImporter,
+    MetaBindInputTemplate, NetworkPermissionConfig, NumeralsConfig, NumeralsCurrencyDisplay,
+    NumeralsCurrencyPrecision, NumeralsImporter, NumeralsNumberFormat, NumeralsRenderStyle,
+    PathPermissionConfig, PathPermissionKeyword, PathPermissionRules, PeriodicCadenceUnit,
+    PeriodicConfig, PeriodicNoteConfig, PeriodicNotesImporter, PeriodicStartOfWeek,
+    PermissionLimit, PermissionLimitKeyword, PermissionMode, PermissionProfile,
+    PermissionProfilesLoadResult, PermissionsConfig, PluginEvent, PluginImporter,
+    PluginRegistration, ScanConfig, SearchBackendKind, SyncConfig, TaskNotesConfig,
     TaskNotesDateDefault, TaskNotesFieldMapping, TaskNotesFilenameFormat,
     TaskNotesIdentificationMethod, TaskNotesImporter, TaskNotesNlpTriggerConfig,
     TaskNotesPriorityConfig, TaskNotesRecurrenceDefault, TaskNotesSavedViewCondition,
@@ -276,10 +278,10 @@ pub use oauth::{
     OAuthResourceServer, OAuthResourceServerConfig, OAuthTokenIdentity,
 };
 pub use parser::{
-    parse_document, ChunkText, InlineNumeralsMode, LinkKind, OriginContext, ParseDiagnostic,
-    ParseDiagnosticKind, ParsedDocument, RawBlockRef, RawDataviewBlock, RawHeading,
-    RawInlineExpression, RawInlineField, RawInlineNumerals, RawLink, RawListItem, RawNumeralsBlock,
-    RawTag, RawTask, RawTaskField, RawTasksBlock,
+    parse_document, ChunkText, InlineNumeralsMode, LinkKind, MetaBindSourceKind, OriginContext,
+    ParseDiagnostic, ParseDiagnosticKind, ParsedDocument, RawBlockRef, RawDataviewBlock,
+    RawHeading, RawInlineExpression, RawInlineField, RawInlineNumerals, RawLink, RawListItem,
+    RawMetaBindField, RawNumeralsBlock, RawTag, RawTask, RawTaskField, RawTasksBlock,
 };
 pub use paths::{
     ensure_vulcan_dir, initialize_vulcan_dir, trusted_vaults_file, user_config_dir, user_data_dir,

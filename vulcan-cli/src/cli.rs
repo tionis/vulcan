@@ -3271,6 +3271,8 @@ pub enum ConfigImportCommand {
     Quickadd,
     #[command(about = "Import Obsidian Kanban plugin settings")]
     Kanban,
+    #[command(about = "Import Obsidian Meta Bind plugin settings")]
+    Metabind,
     #[command(about = "Import Obsidian Numerals plugin settings")]
     Numerals,
     #[command(about = "Import Obsidian Daily Notes and Periodic Notes settings")]
@@ -3712,6 +3714,36 @@ pub enum NumeralsCommand {
         note: String,
     },
     #[command(about = "Write the results of a note's @[name::result] insertion lines")]
+    Apply {
+        #[arg(help = "Note path, filename, or alias")]
+        note: String,
+        #[arg(long, help = "Show the changes without writing them")]
+        dry_run: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum MetabindCommand {
+    #[command(about = "List a note's fields with their bound values and allowed values")]
+    List {
+        #[arg(help = "Note path, filename, or alias")]
+        note: String,
+    },
+    #[command(about = "Write a value to a bind target, validated by the inputs bound to it")]
+    Set {
+        #[arg(help = "Note path, filename, or alias")]
+        note: String,
+        #[arg(help = "Bind target, as in the field (`level`, `stats.hp`, `Other Note#mood`)")]
+        target: String,
+        #[arg(
+            help = "Value as the input takes it: `on`/`off` for toggles, a number, an option, or a comma-separated list",
+            allow_hyphen_values = true
+        )]
+        value: String,
+        #[arg(long, help = "Show the change without writing it")]
+        dry_run: bool,
+    },
+    #[command(about = "Write the results of views with a write-back target")]
     Apply {
         #[arg(help = "Note path, filename, or alias")]
         note: String,
@@ -8428,6 +8460,14 @@ pub enum Command {
     Numerals {
         #[command(subcommand)]
         command: NumeralsCommand,
+    },
+    #[command(
+        about = "List and set Meta Bind input fields and write view results",
+        long_about = "Meta Bind-compatible fields: `INPUT[type(args):target]` inputs, `VIEW[template][type:target]` views, and `BUTTON[id]` buttons, which `vulcan render`, `note get --evaluate`, and editors show with the values they bind to. Rendering never writes. `set` writes one bound value after checking it against every input bound to it, and `apply` writes the results of views that name a write-back target."
+    )]
+    Metabind {
+        #[command(subcommand)]
+        command: MetabindCommand,
     },
     #[command(
         about = "Evaluate and maintain Bases views",

@@ -4816,6 +4816,7 @@ fn importer_registry_dispatches_existing_importers_in_priority_order() {
             "dataview",
             "folder-notes",
             "kanban",
+            "metabind",
             "numerals",
             "periodic-notes",
             "quickadd",
@@ -5630,4 +5631,43 @@ fn numerals_import_maps_settings_enables_rendering_and_skips_editor_ones() {
         numerals.inline_equation_trigger, "#=:",
         "unset keys keep defaults"
     );
+}
+
+#[test]
+fn metabind_import_maps_settings_and_skips_ui_ones() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path();
+    fs::create_dir_all(vault_root.join(".obsidian/plugins/obsidian-meta-bind-plugin"))
+        .expect("plugin dir should exist");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+    fs::write(
+        vault_root.join(".obsidian/plugins/obsidian-meta-bind-plugin/data.json"),
+        r#"{
+          "devMode": false,
+          "preferredDateFormat": "DD.MM.YYYY",
+          "viewFieldDisplayNullAsEmpty": true,
+          "excludedFolders": ["templates", "archive"],
+          "inputFieldTemplates": [{"name": "mood", "declaration": "INPUT[inlineSelect(option(1), option(2))]"}],
+          "buttonTemplates": [{"id": "done", "label": "Done", "actions": []}]
+        }"#,
+    )
+    .expect("plugin config should be written");
+    let paths = VaultPaths::new(vault_root);
+    let defaults = load_vault_config(&paths).config.metabind;
+    assert!(defaults.enabled);
+    assert_eq!(defaults.excluded_folders, vec!["templates".to_string()]);
+
+    let report = MetaBindImporter
+        .import(&paths, ImportTarget::Shared)
+        .expect("import should succeed");
+    assert!(report
+        .skipped
+        .iter()
+        .any(|skipped| skipped.source == "devMode"));
+    let metabind = load_vault_config(&paths).config.metabind;
+    assert_eq!(metabind.preferred_date_format, "DD.MM.YYYY");
+    assert!(metabind.view_field_display_null_as_empty);
+    assert_eq!(metabind.excluded_folders, vec!["templates", "archive"]);
+    assert_eq!(metabind.input_field_templates[0].name, "mood");
+    assert_eq!(metabind.button_templates[0]["label"], "Done");
 }

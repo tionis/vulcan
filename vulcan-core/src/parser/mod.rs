@@ -10,10 +10,10 @@ pub mod types;
 pub(crate) use options::fragment_parser_options;
 pub use options::parser_options;
 pub use types::{
-    ChunkText, InlineNumeralsMode, LinkKind, OriginContext, ParseDiagnostic, ParseDiagnosticKind,
-    ParsedDocument, RawBlockRef, RawDataviewBlock, RawHeading, RawInlineExpression, RawInlineField,
-    RawInlineNumerals, RawLink, RawListItem, RawNumeralsBlock, RawTag, RawTask, RawTaskField,
-    RawTasksBlock,
+    ChunkText, InlineNumeralsMode, LinkKind, MetaBindSourceKind, OriginContext, ParseDiagnostic,
+    ParseDiagnosticKind, ParsedDocument, RawBlockRef, RawDataviewBlock, RawHeading,
+    RawInlineExpression, RawInlineField, RawInlineNumerals, RawLink, RawListItem, RawMetaBindField,
+    RawNumeralsBlock, RawTag, RawTask, RawTaskField, RawTasksBlock,
 };
 
 use crate::config::VaultConfig;
@@ -42,6 +42,7 @@ pub(crate) fn parse_document_fragment(
     parsed.inline_js_expressions.clear();
     parsed.numerals_blocks.clear();
     parsed.inline_numerals.clear();
+    parsed.meta_bind_fields.clear();
     shift_parsed_document_offsets(&mut parsed, base_offset);
     parsed
 }

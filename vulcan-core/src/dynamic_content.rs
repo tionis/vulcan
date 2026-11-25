@@ -135,6 +135,8 @@ pub(crate) enum DynamicOutcome {
     Base(BasesEvalReport),
     /// A Numerals calculator block or inline calculation.
     Numerals(crate::numerals::NumeralsOutcome),
+    /// A Meta Bind input, view, or button.
+    MetaBind(Box<crate::metabind::MetaBindField>),
     Disabled {
         title: String,
         message: String,
@@ -217,6 +219,19 @@ pub(crate) fn evaluate_dynamic_regions(
         parsed,
         &mut regions,
     );
+
+    for field in crate::metabind::evaluate_note_fields(
+        ctx.config,
+        ctx.note_index,
+        note.map(|(note, _)| note.document_path.as_str()),
+        parsed,
+    ) {
+        regions.push(DynamicRegion {
+            start: field.byte_range.start,
+            end: field.byte_range.end,
+            outcome: DynamicOutcome::MetaBind(Box::new(field)),
+        });
+    }
 
     for block in &parsed.tasks_blocks {
         regions.push(DynamicRegion {
@@ -334,6 +349,7 @@ fn has_dynamic_content(parsed: &ParsedDocument) -> bool {
         || !parsed.tasks_blocks.is_empty()
         || !parsed.numerals_blocks.is_empty()
         || !parsed.inline_numerals.is_empty()
+        || !parsed.meta_bind_fields.is_empty()
         || parsed.links.iter().any(|link| {
             link.link_kind == LinkKind::Embed
                 && (link.is_note_embed
@@ -989,6 +1005,7 @@ impl EvaluatedMarkdownRenderer {
                         DynamicOutcome::Tasks(_) => "tasks",
                         DynamicOutcome::Base(_) => "base",
                         DynamicOutcome::Numerals(_) => "numerals",
+                        DynamicOutcome::MetaBind(_) => "metabind",
                         DynamicOutcome::Disabled { .. } | DynamicOutcome::Error { .. } => "notice",
                     };
                     let (kind, markdown) = match outcome_markdown(
@@ -1372,6 +1389,10 @@ fn outcome_markdown(
         DynamicOutcome::Tasks(result) => MarkdownReplacement::Block(tasks_markdown(result)),
         DynamicOutcome::Base(report) => MarkdownReplacement::Block(bases_markdown(report)),
         DynamicOutcome::Numerals(outcome) => match crate::numerals::outcome_markdown(outcome) {
+            (true, markdown) => MarkdownReplacement::Block(markdown),
+            (false, markdown) => MarkdownReplacement::Inline(markdown),
+        },
+        DynamicOutcome::MetaBind(field) => match crate::metabind::field_markdown(field) {
             (true, markdown) => MarkdownReplacement::Block(markdown),
             (false, markdown) => MarkdownReplacement::Inline(markdown),
         },
@@ -2392,6 +2413,29 @@ mod tests {
         .expect("config should write");
         assert!(render(DataviewJsRenderPolicy::On).contains("JS: draft"));
         assert!(render(DataviewJsRenderPolicy::Off).contains("JS: *(DataviewJS disabled)*"));
+    }
+
+    #[cfg(feature = "js_runtime")]
+    #[test]
+    fn meta_bind_fields_render_values_and_math_views() {
+        let (_temp_dir, paths, _) = build_vault();
+        let source = concat!(
+            "---\nhp: 7\nmax_hp: 10\nalive: true\n---\n",
+            "Alive `INPUT[toggle:alive]`, HP `INPUT[slider(maxValue(10)):hp]`, ",
+            "ratio `VIEW[{hp} / {max_hp} * 100][math:memory^pct]`%, ",
+            "left `VIEW[100 - {memory^pct}]`.\n\n",
+            "```meta-bind-button\nlabel: Heal\nid: heal\nstyle: primary\nactions: []\n```\n",
+        );
+        let options = EvaluatedMarkdownOptions {
+            source_path: Some("Home.md"),
+            ..EvaluatedMarkdownOptions::default()
+        };
+        let rendered = render_evaluated_markdown(&paths, source, &options).markdown;
+        assert!(
+            rendered.contains("Alive [x], HP 7 / 10, ratio 70%, left 30."),
+            "{rendered}"
+        );
+        assert!(rendered.contains("[Heal]"), "{rendered}");
     }
 
     #[cfg(feature = "js_runtime")]

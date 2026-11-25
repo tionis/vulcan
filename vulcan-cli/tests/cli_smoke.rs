@@ -2592,6 +2592,85 @@ fn numerals_import_eval_and_apply_round_trip() {
 }
 
 #[test]
+fn metabind_list_set_and_apply_round_trip() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan should be created");
+    let note = concat!(
+        "---\ntitle: \"Kept  as is\"\nlevel: 2\n---\n",
+        "Level `INPUT[slider(minValue(1), maxValue(5)):level]` ",
+        "label `VIEW[Level {level}][text:label]`\n",
+    );
+    fs::write(vault_root.join("Hero.md"), note).expect("note should write");
+    let vault = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+    run_scan(&vault_root);
+    let vulcan = || Command::cargo_bin("vulcan").expect("binary should build");
+
+    let list = parse_stdout_json(
+        &vulcan()
+            .args([
+                "--vault", &vault, "--output", "json", "metabind", "list", "Hero",
+            ])
+            .assert()
+            .success(),
+    );
+    assert_eq!(
+        list["fields"][0]["outcome"]["display"],
+        serde_json::json!("2 / 5")
+    );
+    assert_eq!(
+        list["fields"][1]["outcome"]["text"],
+        serde_json::json!("Level 2")
+    );
+
+    vulcan()
+        .args(["--vault", &vault, "metabind", "set", "Hero", "level", "9"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("between 1 and 5"));
+    let dry_run = parse_stdout_json(
+        &vulcan()
+            .args([
+                "--vault",
+                &vault,
+                "--output",
+                "json",
+                "metabind",
+                "set",
+                "Hero",
+                "level",
+                "4",
+                "--dry-run",
+            ])
+            .assert()
+            .success(),
+    );
+    assert_eq!(dry_run["changes"][0]["after"], serde_json::json!(4));
+    assert_eq!(
+        fs::read_to_string(vault_root.join("Hero.md")).expect("note should read"),
+        note
+    );
+
+    vulcan()
+        .args(["--vault", &vault, "metabind", "set", "Hero", "level", "4"])
+        .assert()
+        .success();
+    vulcan()
+        .args(["--vault", &vault, "metabind", "apply", "Hero"])
+        .assert()
+        .success();
+    let updated = fs::read_to_string(vault_root.join("Hero.md")).expect("note should read");
+    assert!(
+        updated.contains("title: \"Kept  as is\"\nlevel: 4\n"),
+        "{updated}"
+    );
+    assert!(updated.contains("label: Level 4"), "{updated}");
+}
+
+#[test]
 fn plugin_set_and_delete_manage_full_registration_surface() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -12228,6 +12307,7 @@ fn bases_evaluation_applies_read_and_policy_scope() {
     assert!(bases_skill.contains("vulcan plugin customjs list"));
     assert!(bases_skill.contains("[customjs.dql_functions]"));
     assert!(bases_skill.contains("vulcan numerals apply <note> --dry-run"));
+    assert!(bases_skill.contains("vulcan metabind set <note> <target> <value>"));
     assert!(bases_skill.contains("full evaluation (the configured sandbox tier, still read-only) in a vault trusted with `vulcan trust`"));
     let task_skill =
         fs::read_to_string(root.join(".agents/skills/task-management/SKILL.md")).unwrap();

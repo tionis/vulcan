@@ -1,7 +1,7 @@
 use crate::parser::comment_scanner::{overlaps_comment, visible_subranges};
 use crate::parser::types::{
-    InlineFieldKind, LinkKind, RawDataviewBlock, RawInlineField, RawListItem, RawNumeralsBlock,
-    RawTask, RawTaskField, RawTasksBlock, SemanticBlock, SemanticBlockKind,
+    InlineFieldKind, LinkKind, RawDataviewBlock, RawInlineField, RawListItem, RawMetaBindField,
+    RawNumeralsBlock, RawTask, RawTaskField, RawTasksBlock, SemanticBlock, SemanticBlockKind,
 };
 use crate::VaultConfig;
 use regex::Regex;
@@ -17,6 +17,7 @@ pub struct DataviewExtraction {
     pub dataview_blocks: Vec<RawDataviewBlock>,
     pub tasks_blocks: Vec<RawTasksBlock>,
     pub numerals_blocks: Vec<RawNumeralsBlock>,
+    pub meta_bind_blocks: Vec<RawMetaBindField>,
     pub property_value_ranges: Vec<Range<usize>>,
 }
 
@@ -66,6 +67,20 @@ pub fn extract_dataview_metadata(
             continue;
         }
 
+        if let Some(kind) = block
+            .code_language
+            .as_deref()
+            .and_then(meta_bind_block_kind)
+        {
+            extraction.meta_bind_blocks.push(RawMetaBindField {
+                kind,
+                text: block.text.clone(),
+                byte_range: block.byte_offset_start..block.byte_offset_end,
+                line_number: line_number_for_offset(source, block.byte_offset_start),
+            });
+            continue;
+        }
+
         if matches!(
             block.block_kind,
             SemanticBlockKind::CodeBlock | SemanticBlockKind::HtmlBlock
@@ -85,6 +100,19 @@ pub fn extract_dataview_metadata(
     }
 
     extraction
+}
+
+/// The Meta Bind block a fence language introduces.
+#[must_use]
+pub fn meta_bind_block_kind(language: &str) -> Option<crate::parser::types::MetaBindSourceKind> {
+    use crate::parser::types::MetaBindSourceKind;
+    Some(match language {
+        "meta-bind" => MetaBindSourceKind::Block,
+        "meta-bind-button" => MetaBindSourceKind::ButtonBlock,
+        "meta-bind-js-view" => MetaBindSourceKind::JsView,
+        "meta-bind-embed" => MetaBindSourceKind::Embed,
+        _ => return None,
+    })
 }
 
 /// The fence languages the Numerals plugin renders.

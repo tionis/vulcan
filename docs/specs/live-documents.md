@@ -1,7 +1,8 @@
 # Live documents: shared scope, vault functions, bound inputs, and calculator blocks
 
 **Status:** Design contract for Roadmap Phase 9.42. 9.42.1 (shared scope), 9.42.2 (CustomJS), and
-9.42.4 (Numerals) are implemented; 9.42.3 (Meta Bind) is planned.
+9.42.4 (Numerals) are implemented. 9.42.3 (Meta Bind) renders fields and has `list`, `set`, and
+`apply`; button presses, editor code actions, and JS views are still planned.
 
 SilverBullet's Space Lua and Ink & Switch's Potluck make a note a small live program: values
 defined in one place, computed inline elsewhere, edited in place, with helpers defined in the
@@ -121,7 +122,7 @@ fmt = "Util.fmt"        # = fmt(this.price) calls customJS.Util.fmt(price)
 Obsidian difference: in Obsidian these calls fail as unknown functions; use them only in vaults
 read mainly through Vulcan, or keep a DataviewJS fallback.
 
-## 9.42.3 Meta Bind inputs and views
+## 9.42.3 Meta Bind inputs and views (implemented)
 
 ### Where fields appear
 
@@ -165,18 +166,22 @@ spaces must be written `["a b"]`.
 | `select`, `multiSelect` | literal / list | null / `[]` | block only |
 | `inlineSelect` | literal | null | yes |
 | `suggester`, `imageSuggester` | literal | null | yes |
-| `date` | `YYYY-MM-DD` | today | yes |
-| `time` | `HH:mm` | `00:00` | yes |
-| `dateTime` | `YYYY-MM-DDTHH:mm` | today | yes |
-| `datePicker` | string in `preferred_date_format` (`YYYY-MM-DD`) | today | yes |
+| `date` | `YYYY-MM-DD` | none | yes |
+| `time` | `HH:mm` | none | yes |
+| `dateTime` | `YYYY-MM-DDTHH:mm` | none | yes |
+| `datePicker` | string in `preferred_date_format` (`YYYY-MM-DD`) | none | yes |
 | `editor` | string | `""` | block only |
 | `list`, `listSuggester`, `imageListSuggester` | list | `[]` | block only |
 | `inlineList`, `inlineListSuggester` | list | `[]` | yes |
 
+Meta Bind's date inputs default to today. Vulcan's library takes no clock, so a missing date
+shows empty.
+
 Arguments: `class` (multi), `defaultValue`, `title`, `showcase`, `addLabels`, `minValue`,
 `maxValue`, `stepSize`, `onValue`, `offValue`, `option(value[, label])` (multi), `optionQuery`
-(multi, a Dataview source), `optionSource` (multi: `file|folder|tag` with `from:`, `ext:`, `tag:`
-filters), `placeholder`, `limit`, `multiLine`, `useLinks` (`true` → `[[path|name]]`, `partial` →
+(multi, a Dataview source) and `optionSource` (multi: `file|folder|tag` with `from:`, `ext:`,
+`tag:` filters), both of which Vulcan reports as Obsidian-only with an informational diagnostic
+and leaves out of the offered values, `placeholder`, `limit`, `multiLine`, `useLinks` (`true` → `[[path|name]]`, `partial` →
 `[[name]]`, `false` → `name`), `allowOther`.
 
 Diagnostics follow Meta Bind's levels. Errors (the field renders as an error): unknown input or view
@@ -196,8 +201,11 @@ number, unknown template.
 - Reading a missing or wrongly typed value shows the type's default (or `defaultValue`). The
   default is not written.
 - Writing creates missing intermediate objects or lists and writes typed YAML values (numbers,
-  booleans, null, lists), keeping the rest of the frontmatter byte-for-byte, through Vulcan's
-  existing frontmatter mutation path.
+  booleans, null, lists). It rewrites only the lines of the top-level property it changes and
+  keeps the rest of the frontmatter byte-for-byte, falling back to Vulcan's frontmatter round
+  trip only when that edit would not read back correctly.
+- `set` refuses targets no input in the note binds (`vulcan note set-property` covers those) and
+  memory targets.
 
 ### Rendering
 
@@ -211,8 +219,8 @@ number, unknown template.
   wikilink or URL; `image` embeds one target. `hidden` suppresses output.
 - `BUTTON` and ` meta-bind-button ` render the label with a "buttons run in Obsidian" notice,
   except the button actions listed under "Buttons" below.
-- ` meta-bind-js-view ` runs only where Meta Bind's `enableJs` is imported as true, under the
-  render's DataviewJS policy, with each `{target} as name` bound as a variable.
+- ` meta-bind-js-view ` blocks render a "runs in Obsidian" notice. `enable_js` is imported so a
+  later slice can run them under the render's DataviewJS policy.
 - ` meta-bind-embed ` transcludes the linked note like a note embed (max depth 8).
 
 ### Editing in place

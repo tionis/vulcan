@@ -583,6 +583,19 @@ pub(super) struct ObsidianCustomJsConfig {
     pub(super) registered_invocable_script_names: Option<Vec<String>>,
 }
 
+/// `.obsidian/plugins/obsidian-meta-bind-plugin/data.json`.
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ObsidianMetaBindConfig {
+    pub(super) preferred_date_format: Option<String>,
+    pub(super) enable_js: Option<bool>,
+    pub(super) view_field_display_null_as_empty: Option<bool>,
+    pub(super) ignore_code_block_restrictions: Option<bool>,
+    pub(super) excluded_folders: Option<Vec<String>>,
+    pub(super) input_field_templates: Option<Vec<super::MetaBindInputTemplate>>,
+    pub(super) button_templates: Option<Vec<serde_json::Value>>,
+}
+
 /// `.obsidian/plugins/numerals/data.json`.
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]

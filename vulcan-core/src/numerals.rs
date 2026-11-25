@@ -543,6 +543,27 @@ pub fn outcome_markdown(outcome: &NumeralsOutcome) -> (bool, String) {
 pub(crate) const RUNTIME_REQUIRED: &str =
     "Numerals calculations need Vulcan built with the `js_runtime` feature";
 
+/// A mathjs engine for one render's Meta Bind math views, started on
+/// first use; see [`crate::metabind`].
+pub struct MathEvaluator {
+    engine: engine::MathEngine,
+}
+
+impl MathEvaluator {
+    #[must_use]
+    pub fn start(config: &crate::config::VaultConfig) -> Self {
+        Self {
+            engine: engine::MathEngine::start(config),
+        }
+    }
+
+    /// Evaluates `expression` with `scope`'s variables: the result as text
+    /// and as a JSON value (a number where mathjs gives one).
+    pub fn evaluate(&mut self, expression: &str, scope: &Value) -> Result<(String, Value), String> {
+        self.engine.evaluate(expression, scope)
+    }
+}
+
 #[cfg(feature = "js_runtime")]
 mod engine {
     use std::time::{Duration, Instant};
@@ -624,6 +645,44 @@ mod engine {
             )?;
             let inline: Inline = serde_json::from_str(&json).map_err(|error| error.to_string())?;
             Ok((inline.text, inline.tex))
+        }
+    }
+
+    /// mathjs alone, for Meta Bind views.
+    pub(super) struct MathEngine {
+        engine: Result<Engine, String>,
+    }
+
+    impl MathEngine {
+        pub(super) fn start(config: &VaultConfig) -> Self {
+            Self {
+                engine: Engine::new(config),
+            }
+        }
+
+        pub(super) fn evaluate(
+            &mut self,
+            expression: &str,
+            scope: &serde_json::Value,
+        ) -> Result<(String, serde_json::Value), String> {
+            let engine = self.engine.as_ref().map_err(Clone::clone)?;
+            let scope = serde_json::to_string(scope).map_err(|error| error.to_string())?;
+            let json = engine.call(
+                "(function (expression, scope) {\
+                   var result = math.evaluate(expression, JSON.parse(scope));\
+                   var text = typeof result === 'string' ? result : math.format(result, { precision: 14 });\
+                   var value = typeof result === 'number' && isFinite(result) ? result\
+                     : typeof result === 'boolean' ? result : text;\
+                   return JSON.stringify({ text: text, value: value });\
+                 })",
+                &[expression.to_string(), scope],
+            )?;
+            let parsed: serde_json::Value =
+                serde_json::from_str(&json).map_err(|error| error.to_string())?;
+            Ok((
+                parsed["text"].as_str().unwrap_or_default().to_string(),
+                parsed["value"].clone(),
+            ))
         }
     }
 
@@ -776,6 +835,23 @@ mod engine {
             _mode: InlineNumeralsMode,
             _continues: bool,
         ) -> Result<(String, bool), String> {
+            Err(super::RUNTIME_REQUIRED.to_string())
+        }
+    }
+
+    pub(super) struct MathEngine;
+
+    impl MathEngine {
+        pub(super) fn start(_config: &crate::config::VaultConfig) -> Self {
+            Self
+        }
+
+        #[allow(clippy::unused_self)]
+        pub(super) fn evaluate(
+            &mut self,
+            _expression: &str,
+            _scope: &serde_json::Value,
+        ) -> Result<(String, serde_json::Value), String> {
             Err(super::RUNTIME_REQUIRED.to_string())
         }
     }

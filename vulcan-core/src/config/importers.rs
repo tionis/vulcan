@@ -210,6 +210,9 @@ pub struct FolderNotesImporter;
 pub struct KanbanImporter;
 
 #[derive(Debug, Clone, Copy, Default)]
+pub struct MetaBindImporter;
+
+#[derive(Debug, Clone, Copy, Default)]
 pub struct NumeralsImporter;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -235,6 +238,7 @@ pub fn all_importers() -> Vec<Box<dyn PluginImporter>> {
         Box::new(DataviewImporter),
         Box::new(FolderNotesImporter),
         Box::new(KanbanImporter),
+        Box::new(MetaBindImporter),
         Box::new(NumeralsImporter),
         Box::new(PeriodicNotesImporter),
         Box::new(QuickAddImporter),
@@ -1246,6 +1250,143 @@ fn customjs_config_import_mappings(
             "registeredInvocableScriptNames",
             "customjs.invocable_scripts",
             names,
+        )?;
+    }
+    Ok(mappings)
+}
+
+/// Meta Bind settings about Obsidian's UI, sync, or developer tooling.
+const METABIND_EDITOR_ONLY_SETTINGS: &[&str] = &[
+    "devMode",
+    "syncInterval",
+    "minSyncInterval",
+    "maxSyncInterval",
+    "firstWeekday",
+    "enableEditorRightClickMenu",
+    "disableCodeBlockRestrictions",
+    "enableSyntaxHighlighting",
+];
+
+impl PluginImporter for MetaBindImporter {
+    fn name(&self) -> &'static str {
+        "metabind"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Obsidian Meta Bind plugin"
+    }
+
+    fn source_paths(&self, paths: &VaultPaths) -> Vec<PathBuf> {
+        vec![importer_source_path(
+            paths,
+            ".obsidian/plugins/obsidian-meta-bind-plugin/data.json",
+        )]
+    }
+
+    fn import_with_mode(
+        &self,
+        paths: &VaultPaths,
+        target: ImportTarget,
+        dry_run: bool,
+    ) -> Result<ConfigImportReport, ConfigImportError> {
+        let source_path = self
+            .source_paths(paths)
+            .into_iter()
+            .next()
+            .expect("source path");
+        if !source_path.exists() {
+            return Err(ConfigImportError::MissingSource(source_path));
+        }
+        let raw = serde_json::from_str::<Value>(&fs::read_to_string(&source_path)?)?;
+        let schema_mappings = metabind_config_import_mappings(&ObsidianMetaBindConfig {
+            preferred_date_format: Some(String::new()),
+            enable_js: Some(false),
+            view_field_display_null_as_empty: Some(false),
+            ignore_code_block_restrictions: Some(false),
+            excluded_folders: Some(Vec::new()),
+            input_field_templates: Some(Vec::new()),
+            button_templates: Some(Vec::new()),
+        })?;
+        let (obsidian, accepted, mut skipped) =
+            tolerant_plugin_config::<ObsidianMetaBindConfig>(&raw, &schema_mappings)?;
+        let mut mappings = metabind_config_import_mappings(&obsidian)?;
+        retain_present_mappings(&accepted, &mut mappings);
+        for key in METABIND_EDITOR_ONLY_SETTINGS {
+            if raw.get(*key).is_some() {
+                skipped.push(ImportSkippedSetting {
+                    source: (*key).to_string(),
+                    reason: "an Obsidian UI or sync setting with no Vulcan equivalent".to_string(),
+                });
+            }
+        }
+        let settings = import_settings_from_mappings(mappings);
+        let mut report = apply_import_settings(
+            paths,
+            self.name(),
+            source_path.clone(),
+            vec![source_path],
+            &settings,
+            target,
+            dry_run,
+        )?;
+        report.skipped = skipped;
+        Ok(report)
+    }
+}
+
+fn metabind_config_import_mappings(
+    obsidian: &ObsidianMetaBindConfig,
+) -> Result<Vec<ConfigImportMapping>, ConfigImportError> {
+    let mut mappings = Vec::new();
+    if let Some(value) = &obsidian.preferred_date_format {
+        push_config_import_mapping(
+            &mut mappings,
+            "preferredDateFormat",
+            "metabind.preferred_date_format",
+            value,
+        )?;
+    }
+    if let Some(value) = obsidian.enable_js {
+        push_config_import_mapping(&mut mappings, "enableJs", "metabind.enable_js", &value)?;
+    }
+    if let Some(value) = obsidian.view_field_display_null_as_empty {
+        push_config_import_mapping(
+            &mut mappings,
+            "viewFieldDisplayNullAsEmpty",
+            "metabind.view_field_display_null_as_empty",
+            &value,
+        )?;
+    }
+    if let Some(value) = obsidian.ignore_code_block_restrictions {
+        push_config_import_mapping(
+            &mut mappings,
+            "ignoreCodeBlockRestrictions",
+            "metabind.ignore_code_block_restrictions",
+            &value,
+        )?;
+    }
+    if let Some(value) = &obsidian.excluded_folders {
+        push_config_import_mapping(
+            &mut mappings,
+            "excludedFolders",
+            "metabind.excluded_folders",
+            value,
+        )?;
+    }
+    if let Some(value) = &obsidian.input_field_templates {
+        push_config_import_mapping(
+            &mut mappings,
+            "inputFieldTemplates",
+            "metabind.input_field_templates",
+            value,
+        )?;
+    }
+    if let Some(value) = &obsidian.button_templates {
+        push_config_import_mapping(
+            &mut mappings,
+            "buttonTemplates",
+            "metabind.button_templates",
+            value,
         )?;
     }
     Ok(mappings)
