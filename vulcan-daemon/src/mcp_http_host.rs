@@ -111,6 +111,19 @@ impl<C> McpHttpHost<C> {
         })
     }
 
+    /// The URL clients reach this listener at, when one is configured.
+    #[must_use]
+    pub fn public_url(&self) -> Option<&str> {
+        #[cfg(feature = "oauth")]
+        {
+            self.oauth.as_ref().map(McpOAuthMode::public_url)
+        }
+        #[cfg(not(feature = "oauth"))]
+        {
+            None
+        }
+    }
+
     pub fn authenticate(
         &self,
         headers: &BTreeMap<String, String>,

@@ -29,9 +29,11 @@ Forward the exact public MCP path, its `/operations/<id>` subpath,
 `/.well-known/oauth-protected-resource/mcp`,
 `/.well-known/oauth-authorization-server/mcp`, and `/oauth/*` to the
 listener reported by `show`. These metadata examples assume `/mcp` as the resource
-path. Forward length-delimited request bodies with a single `Content-Length`;
-chunked request transfer encoding is unsupported. HTTPS ingress supplies transport
-security; Vulcan still authenticates and authorizes each connection.
+path. Request bodies may be length-delimited or chunked, up to 4 MiB. Pass the public
+host in `Host`, or rewrite it to the listener's IP address (or `localhost` on a loopback
+bind); Vulcan refuses other host names with 421 so a web page cannot reach the listener
+through DNS rebinding. HTTPS ingress supplies transport security; Vulcan still
+authenticates and authorizes each connection.
 
 The human signs in through IndieAuth, then separately approves a vault, permission
 profile, scopes, and expiry on Vulcan's consent page. The

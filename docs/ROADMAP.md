@@ -8825,7 +8825,7 @@ Design: `docs/specs/editor-integration.md`, sections "`vulcan.vim`" and "Other e
 ### 9.43.8 axum HTTP transport
 
 - [x] hyper listener (`vulcan-daemon::mcp_transport`) for resident and foreground MCP hosts and previews, replacing the hand-written HTTP/1.1 codec and TCP listener: keep-alive, half-close, a 10 s request deadline, 4 MiB bodies, 64 requests at once (503 beyond), 256 connections, ambiguous repeated headers refused, streamed responses (`X-Accel-Buffering: no`) through `McpHttpConnection`.
-- [ ] Modern stateless requests on HTTP (no session), `Mcp-Method`/`Mcp-Name` and `MCP-Protocol-Version` checks (-32020, -32022); Origin and Host policy with the public URL.
+- [x] Modern stateless requests on HTTP: a 2026-07-28 POST is served without a session by a protocol core built for that request's authority (404 for an unknown method, 400 for request errors); `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` must match the body (-32020); an unsupported `MCP-Protocol-Version` is -32022 with `supported`/`requested`. Host policy (421): IP addresses, `localhost` on loopback or wildcard binds, the public URL's host, or anything on a wildcard bind without a public URL; Origin also accepts the public URL's origin. Cancelling a modern request by closing its stream is not detected yet.
 - [ ] Change watcher on HTTP: legacy GET streams and modern `subscriptions/listen` fed by a server-level watcher; remove the per-stream SSE poller.
 
 ### 9.43.9 Authorization

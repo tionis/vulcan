@@ -1,6 +1,7 @@
 //! One shared HTTP session/route adapter for direct, foreground, and resident MCP.
 //! The host supplies only resolved listener state and protocol-core construction.
 
+use crate::http_policy::mcp_host_allowed;
 use crate::mcp_execution::{process_http_request_with_timeout, HostedMcpExecution, McpRequestCore};
 use crate::mcp_http_auth::McpHttpAuthError;
 #[cfg(feature = "oauth")]
@@ -22,7 +23,9 @@ use serde_json::Value;
 use std::io;
 use std::ops::Deref;
 use std::sync::Arc;
-use vulcan_app::mcp_dispatch::{jsonrpc_error, request_id};
+use vulcan_app::execution::ExecutionCancellationToken;
+use vulcan_app::mcp_core::{requested_modern_version, MCP_HEADER_MISMATCH};
+use vulcan_app::mcp_dispatch::{jsonrpc_error, request_id, McpHttpProcessResult};
 
 pub type McpHttpCoreFactory<C> = fn(McpHttpProtocolConfig) -> Result<C, String>;
 
@@ -92,6 +95,15 @@ pub fn handle_mcp_http_connection<C: McpRequestCore>(
     request: &McpHttpRequest,
     stream: &mut McpHttpConnection,
 ) -> io::Result<()> {
+    if let Some(host) = request.headers.get("host") {
+        if !mcp_host_allowed(host, context.bind_addr, context.public_url()) {
+            return stream.respond(mcp_http_json_error_response(
+                421,
+                format!("this listener does not serve the host `{host}`"),
+                Value::Null,
+            ));
+        }
+    }
     #[cfg(feature = "oauth")]
     let oauth_enabled = context.oauth.is_some();
     #[cfg(not(feature = "oauth"))]
@@ -221,6 +233,9 @@ pub fn handle_mcp_http_post<C: McpRequestCore>(
     authority: &McpSessionAuthority,
     payload: &Value,
 ) -> McpHttpResponse {
+    if requested_modern_version(payload).is_some() {
+        return handle_modern_mcp_http_post(context, request, authority, payload);
+    }
     let resolved = match resolve_mcp_http_session(context, request, payload, authority) {
         Ok(resolved) => resolved,
         Err(response) => return response,
@@ -258,6 +273,114 @@ pub fn handle_mcp_http_post<C: McpRequestCore>(
 
     drop(active_request);
     context.sessions.finish_http_post(resolved, result)
+}
+
+/// A 2026-07-28 request: served on its own, without a session. The protocol
+/// core is built for this request's authority and dropped after it.
+#[must_use]
+pub fn handle_modern_mcp_http_post<C: McpRequestCore>(
+    context: &McpHttpDriver<'_, C>,
+    request: &McpHttpRequest,
+    authority: &McpSessionAuthority,
+    payload: &Value,
+) -> McpHttpResponse {
+    if let Some(mismatch) = modern_header_mismatch(request, payload) {
+        let id = request_id(payload).unwrap_or(Value::Null);
+        return mcp_http_json_response(
+            400,
+            &jsonrpc_error(id, MCP_HEADER_MISMATCH, mismatch, None),
+        );
+    }
+    let mut core = match create_mcp_http_core(context, authority) {
+        Ok(core) => core,
+        Err(response) => return response,
+    };
+    let result = process_http_request_with_timeout(
+        &mut core,
+        payload.clone(),
+        context.request_timeout,
+        context.inner,
+        request,
+        authority,
+        &ExecutionCancellationToken::default(),
+        context.hosted,
+    );
+    modern_http_response(result)
+}
+
+/// The routing headers of a modern request must agree with its body: the
+/// body is authoritative, and a contradiction is refused rather than guessed.
+fn modern_header_mismatch(request: &McpHttpRequest, payload: &Value) -> Option<String> {
+    let version = requested_modern_version(payload).and_then(Value::as_str);
+    if let Some(header) = request.headers.get("mcp-protocol-version") {
+        if Some(header.as_str()) != version {
+            return Some(format!(
+                "the MCP-Protocol-Version header `{header}` does not match the protocol version in `_meta`"
+            ));
+        }
+    }
+    let method = payload.get("method").and_then(Value::as_str);
+    if let Some(header) = request.headers.get("mcp-method") {
+        if Some(header.as_str()) != method {
+            return Some(format!(
+                "the Mcp-Method header `{header}` does not match the request's method"
+            ));
+        }
+    }
+    if let Some(header) = request.headers.get("mcp-name") {
+        let params = payload.get("params");
+        let name = match method {
+            Some("tools/call" | "prompts/get") => params.and_then(|params| params.get("name")),
+            Some("resources/read") => params.and_then(|params| params.get("uri")),
+            _ => None,
+        }
+        .and_then(Value::as_str);
+        if Some(header.as_str()) != name {
+            return Some(format!(
+                "the Mcp-Name header `{header}` does not match the request's name or URI"
+            ));
+        }
+    }
+    None
+}
+
+/// HTTP status for a modern response: errors in the request itself are 400,
+/// an unknown method 404, and anything the server answered 200.
+fn modern_http_response(result: Result<McpHttpProcessResult, Value>) -> McpHttpResponse {
+    let message = match result {
+        Ok(result) if result.accepted_notification => {
+            return McpHttpResponse {
+                status: 202,
+                content_type: None,
+                body: Vec::new(),
+                extra_headers: Vec::new(),
+            };
+        }
+        Ok(result) => result
+            .response
+            .expect("MCP HTTP requests should produce a JSON-RPC response"),
+        Err(error) => error,
+    };
+    let status = match message
+        .get("error")
+        .and_then(|error| error.get("code"))
+        .and_then(Value::as_i64)
+    {
+        Some(-32601) => 404,
+        Some(-32700 | -32600 | -32602 | -32020 | -32021 | -32022) => 400,
+        Some(-32603) => 500,
+        _ => 200,
+    };
+    mcp_http_json_response(status, &message)
+}
+
+fn mcp_http_json_response(status: u16, message: &Value) -> McpHttpResponse {
+    McpHttpResponse {
+        status,
+        content_type: Some("application/json"),
+        body: serde_json::to_vec(message).expect("JSON-RPC message should serialize"),
+        extra_headers: vec![("Cache-Control".to_string(), "no-store".to_string())],
+    }
 }
 
 pub fn handle_mcp_cancellation_notification<C: McpRequestCore>(
@@ -674,6 +797,109 @@ mod tests {
             404
         );
         assert!(host.sessions.live(second_id).is_some());
+    }
+
+    fn modern(id: u64, method: &str, params: Value) -> Value {
+        let mut params = params;
+        params["_meta"] = json!({
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {},
+            "io.modelcontextprotocol/clientInfo": {"name": "modern-test", "version": "1"},
+        });
+        json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+    }
+
+    fn body(response: &McpHttpResponse) -> Value {
+        serde_json::from_slice(&response.body).unwrap()
+    }
+
+    #[test]
+    fn modern_requests_are_served_without_a_session() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        vulcan_core::initialize_vulcan_dir(&paths).unwrap();
+        let host = host(&paths);
+        let driver = driver(&host);
+        let mut inbound = request(None);
+        let authority = authenticate_mcp_http_request(&driver, &inbound).unwrap();
+
+        let list = handle_mcp_http_post(
+            &driver,
+            &inbound,
+            &authority,
+            &modern(1, "tools/list", json!({})),
+        );
+        assert_eq!(list.status, 200);
+        assert!(list
+            .extra_headers
+            .iter()
+            .all(|(name, _)| name != "Mcp-Session-Id"));
+        let list = body(&list);
+        assert_eq!(list["result"]["resultType"], "complete");
+        assert!(list["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "note_get"));
+        assert!(host.sessions.is_empty());
+
+        let unknown = handle_mcp_http_post(
+            &driver,
+            &inbound,
+            &authority,
+            &modern(2, "no/such", json!({})),
+        );
+        assert_eq!(unknown.status, 404);
+
+        inbound
+            .headers
+            .insert("mcp-method".into(), "tools/call".into());
+        let mismatch = handle_mcp_http_post(
+            &driver,
+            &inbound,
+            &authority,
+            &modern(3, "tools/list", json!({})),
+        );
+        assert_eq!(mismatch.status, 400);
+        assert_eq!(body(&mismatch)["error"]["code"], MCP_HEADER_MISMATCH);
+
+        inbound.headers.insert("mcp-name".into(), "note_get".into());
+        let call = modern(
+            4,
+            "tools/call",
+            json!({"name": "note_get", "arguments": {"note": "Missing"}}),
+        );
+        let named = handle_mcp_http_post(&driver, &inbound, &authority, &call);
+        assert_eq!(named.status, 200, "{}", body(&named));
+        assert_eq!(body(&named)["result"]["isError"], true);
+        inbound.headers.insert("mcp-name".into(), "note_set".into());
+        assert_eq!(
+            handle_mcp_http_post(&driver, &inbound, &authority, &call).status,
+            400
+        );
+        inbound.headers.remove("mcp-name");
+        inbound.headers.remove("mcp-method");
+        inbound
+            .headers
+            .insert("mcp-protocol-version".into(), "2025-11-25".into());
+        assert_eq!(
+            handle_mcp_http_post(&driver, &inbound, &authority, &call).status,
+            400
+        );
+        assert!(host.sessions.is_empty());
+    }
+
+    #[test]
+    fn requests_for_a_foreign_host_are_refused() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = VaultPaths::new(temporary.path());
+        let host = host(&paths);
+        let driver = driver(&host);
+        let mut inbound = request(None);
+        inbound.headers.insert("host".into(), "evil.example".into());
+        let (mut connection, capture) = McpHttpConnection::for_test();
+        handle_mcp_http_connection(&driver, &inbound, &mut connection).unwrap();
+        assert_eq!(capture.response().0, 421);
     }
 
     #[test]

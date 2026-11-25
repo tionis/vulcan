@@ -10,7 +10,7 @@ use ulid::Ulid;
 #[cfg(feature = "oauth")]
 use vulcan_core::{LocalOAuthIssuer, OAuthResourceServer};
 
-use crate::http_policy::mcp_origin_allowed;
+use crate::http_policy::{mcp_origin_allowed, mcp_public_origin_allowed};
 use crate::mcp_oauth_policy::DEFAULT_MCP_OAUTH_SCOPES;
 #[cfg(feature = "oauth")]
 use crate::mcp_remote_runtime::{NamedMcpRuntime, NamedTokenRequest};
@@ -124,10 +124,14 @@ pub fn authenticate_mcp_http_request(
         }
         credential = actual.expect("validated token is present");
     }
-    if headers
-        .get("origin")
-        .is_some_and(|origin| !mcp_origin_allowed(origin, options.bind_addr))
-    {
+    #[cfg(feature = "oauth")]
+    let public_url = options.oauth.map(McpOAuthMode::public_url);
+    #[cfg(not(feature = "oauth"))]
+    let public_url = None;
+    if headers.get("origin").is_some_and(|origin| {
+        !mcp_origin_allowed(origin, options.bind_addr)
+            && !mcp_public_origin_allowed(origin, public_url)
+    }) {
         return Err(McpHttpAuthError::Http {
             status: 403,
             message: "invalid Origin header".into(),

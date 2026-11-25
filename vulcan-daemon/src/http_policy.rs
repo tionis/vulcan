@@ -96,6 +96,47 @@ pub fn mcp_origin_allowed(origin: &str, bind_addr: SocketAddr) -> bool {
     }
 }
 
+/// An Origin that is the public URL's origin, for a listener behind a proxy.
+#[must_use]
+pub fn mcp_public_origin_allowed(origin: &str, public_url: Option<&str>) -> bool {
+    public_url
+        .and_then(|public_url| Url::parse(public_url).ok())
+        .is_some_and(|public_url| public_url.origin().ascii_serialization() == origin)
+}
+
+/// Whether a request's Host names this listener, so a page on another site
+/// cannot reach it through DNS rebinding: an IP address, `localhost` on a
+/// listener that is loopback (or on every interface), or the public URL's
+/// host. A listener on every interface without a public URL cannot know its
+/// names and accepts any.
+#[must_use]
+pub fn mcp_host_allowed(host: &str, bind_addr: SocketAddr, public_url: Option<&str>) -> bool {
+    let Ok(parsed) = Url::parse(&format!("http://{host}")) else {
+        return false;
+    };
+    if parsed.path() != "/"
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || !parsed.username().is_empty()
+    {
+        return false;
+    }
+    let public_host = public_url
+        .and_then(|public_url| Url::parse(public_url).ok())
+        .and_then(|public_url| public_url.host_str().map(str::to_ascii_lowercase));
+    match parsed.host() {
+        Some(Host::Ipv4(_) | Host::Ipv6(_)) => true,
+        Some(Host::Domain(name)) => {
+            let name = name.to_ascii_lowercase();
+            (name == "localhost"
+                && (bind_addr.ip().is_loopback() || bind_addr.ip().is_unspecified()))
+                || public_host.as_deref() == Some(name.as_str())
+                || (bind_addr.ip().is_unspecified() && public_host.is_none())
+        }
+        None => false,
+    }
+}
+
 /// Where an MCP OAuth client asks for its authorization code to be sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpOAuthRedirectTarget {
@@ -434,6 +475,52 @@ mod tests {
         assert!(mcp_origin_allowed("https://192.0.2.10", remote));
         assert!(!mcp_origin_allowed("https://localhost", remote));
         assert!(!mcp_origin_allowed("https://192.0.2.11", remote));
+    }
+
+    #[test]
+    fn mcp_host_check_refuses_foreign_names() {
+        let loopback = SocketAddr::from(([127, 0, 0, 1], 8765));
+        let public = Some("https://mcp.example.test/vault");
+        for host in [
+            "localhost:8765",
+            "127.0.0.1:8765",
+            "[::1]:8765",
+            "LOCALHOST",
+        ] {
+            assert!(mcp_host_allowed(host, loopback, None), "{host}");
+        }
+        assert!(mcp_host_allowed("mcp.example.test", loopback, public));
+        assert!(mcp_host_allowed("MCP.example.test:443", loopback, public));
+        for host in [
+            "evil.example",
+            "localhost.evil",
+            "user@localhost",
+            "a/b",
+            "",
+        ] {
+            assert!(!mcp_host_allowed(host, loopback, public), "{host}");
+        }
+        let everywhere = SocketAddr::from(([0, 0, 0, 0], 8765));
+        assert!(mcp_host_allowed("nas.local", everywhere, None));
+        assert!(!mcp_host_allowed("nas.local", everywhere, public));
+        assert!(mcp_host_allowed("192.0.2.10:8765", everywhere, public));
+        let remote = SocketAddr::from(([192, 0, 2, 10], 8765));
+        assert!(!mcp_host_allowed("localhost", remote, None));
+    }
+
+    #[test]
+    fn mcp_public_origin_matches_only_the_public_url() {
+        let public = Some("https://mcp.example.test/vault");
+        assert!(mcp_public_origin_allowed(
+            "https://mcp.example.test",
+            public
+        ));
+        assert!(!mcp_public_origin_allowed("https://evil.example", public));
+        assert!(!mcp_public_origin_allowed(
+            "http://mcp.example.test",
+            public
+        ));
+        assert!(!mcp_public_origin_allowed("https://mcp.example.test", None));
     }
 
     #[test]

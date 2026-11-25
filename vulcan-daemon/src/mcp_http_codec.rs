@@ -74,19 +74,6 @@ pub fn parse_mcp_http_post(request: &McpHttpRequest) -> Result<Value, McpHttpRea
         .map_err(|error| McpHttpReadError::bad_request(format!("Parse error: {error}")))
 }
 
-pub fn validate_mcp_protocol_version(request: &McpHttpRequest) -> Result<(), McpHttpReadError> {
-    let Some(version) = request.headers.get("mcp-protocol-version") else {
-        return Ok(());
-    };
-    if vulcan_app::mcp_core::is_supported_version(version) {
-        Ok(())
-    } else {
-        Err(McpHttpReadError::bad_request(format!(
-            "unsupported MCP-Protocol-Version `{version}`"
-        )))
-    }
-}
-
 pub fn validate_mcp_sse_accept(request: &McpHttpRequest) -> Result<(), McpHttpReadError> {
     if request
         .headers
@@ -154,14 +141,6 @@ mod tests {
             .unwrap_err()
             .message
             .starts_with("Parse error:"));
-        assert!(validate_mcp_protocol_version(&request).is_ok());
-        request
-            .headers
-            .insert("mcp-protocol-version".into(), "other".into());
-        assert!(validate_mcp_protocol_version(&request)
-            .unwrap_err()
-            .message
-            .contains("unsupported MCP-Protocol-Version"));
         request
             .headers
             .insert("accept".into(), "application/json".into());

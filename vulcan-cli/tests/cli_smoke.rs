@@ -1141,8 +1141,19 @@ impl McpHttpSession {
                 "Accept".to_string(),
                 "application/json, text/event-stream".to_string(),
             ),
-            ("MCP-Protocol-Version".to_string(), "2025-06-18".to_string()),
         ];
+        // A modern request names its version in `_meta` and its method in a
+        // header; a legacy one speaks the version it negotiated.
+        if let Some(version) =
+            payload["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"].as_str()
+        {
+            headers.push(("MCP-Protocol-Version".to_string(), version.to_string()));
+            if let Some(method) = payload["method"].as_str() {
+                headers.push(("Mcp-Method".to_string(), method.to_string()));
+            }
+        } else {
+            headers.push(("MCP-Protocol-Version".to_string(), "2025-06-18".to_string()));
+        }
         if let Some(session_id) = session_id {
             headers.push(("Mcp-Session-Id".to_string(), session_id.to_string()));
         }
@@ -18399,7 +18410,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(
         mcp_skill.contains("For browser-based local HTTP harnesses, send a valid `Origin` header")
     );
-    assert!(mcp_skill.contains("one unambiguous `Content-Length`"));
+    assert!(mcp_skill.contains("refused with 421 so a web page cannot reach the listener"));
+    assert!(mcp_skill.contains("2026-07-28 clients send every request with its own `_meta`"));
     assert!(mcp_skill.contains("The permission profile alone decides which tools are listed"));
     assert!(mcp_skill.contains("`--tool-pack` and `--tool-pack-mode` no longer exist"));
     let template_skill =
@@ -32669,6 +32681,59 @@ fn mcp_http_transport_watcher_indexes_new_notes_while_serving() {
         None,
     );
     assert_eq!(initialize.status_line, "HTTP/1.1 200 OK");
+}
+
+#[test]
+fn mcp_http_transport_serves_modern_requests_without_a_session() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let session = McpHttpSession::start(&vault_root, "/mcp", None, &[]);
+    let meta = serde_json::json!({
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {},
+    });
+    let discover = session.post(
+        &serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "server/discover",
+            "params": { "_meta": meta }
+        }),
+        None,
+    );
+    assert_eq!(
+        discover.status_line,
+        "HTTP/1.1 200 OK",
+        "{}",
+        String::from_utf8_lossy(&discover.body)
+    );
+    assert!(!discover.headers.contains_key("mcp-session-id"));
+    let discover = discover.json_body();
+    assert_eq!(discover["result"]["supportedVersions"][0], "2026-07-28");
+
+    let note = session.post(
+        &serde_json::json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {
+                "name": "note_get",
+                "arguments": { "note": "Home" },
+                "_meta": meta
+            }
+        }),
+        None,
+    );
+    assert_eq!(note.status_line, "HTTP/1.1 200 OK");
+    let note = note.json_body();
+    assert_eq!(note["result"]["resultType"], "complete");
+    assert_eq!(note["result"]["isError"], false, "{note}");
+
+    // A legacy request still needs its session.
+    let legacy = session.post(
+        &serde_json::json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list"}),
+        None,
+    );
+    assert!(legacy.status_line.starts_with("HTTP/1.1 400"));
 }
 
 #[test]

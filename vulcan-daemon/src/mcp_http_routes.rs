@@ -4,13 +4,13 @@
 //! protocol operations are supplied by the host behind this transport boundary.
 
 use crate::mcp_http_codec::{
-    parse_mcp_http_post, validate_mcp_protocol_version, validate_mcp_sse_accept, McpHttpRequest,
-    McpHttpResponse,
+    parse_mcp_http_post, validate_mcp_sse_accept, McpHttpRequest, McpHttpResponse,
 };
 use crate::mcp_transport::McpHttpConnection;
 use serde_json::Value;
 use std::io;
-use vulcan_app::mcp_dispatch::jsonrpc_error;
+use vulcan_app::mcp_core::{is_supported_version, unsupported_version_error};
+use vulcan_app::mcp_dispatch::{jsonrpc_error, request_id};
 use vulcan_app::mcp_protocol::required_scope_for_request;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,8 +141,17 @@ fn dispatch_mcp_post<H: McpHttpRouteHandler>(
             return response;
         }
     }
-    if let Err(error) = validate_mcp_protocol_version(request) {
-        return route_error(error.status, &error.message);
+    if let Some(version) = request.headers.get("mcp-protocol-version") {
+        if !is_supported_version(version) {
+            let id = request_id(&payload).unwrap_or(Value::Null);
+            return McpHttpResponse {
+                status: 400,
+                content_type: Some("application/json"),
+                body: serde_json::to_vec(&unsupported_version_error(id, version))
+                    .expect("JSON-RPC error should serialize"),
+                extra_headers: Vec::new(),
+            };
+        }
     }
     handler.post(request, authority, &payload)
 }

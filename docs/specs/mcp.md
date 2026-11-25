@@ -350,8 +350,10 @@ request's stream when the client sent a progress token.
   cancels by request id. A refreshed token on the same session is accepted when it resolves to
   the same grant.
 - **Origin:** when present, must be a loopback origin on a loopback listener or the configured
-  public URL's origin; otherwise 403. **Host:** must be a loopback name on a loopback listener,
-  the bind address, or the public URL's host; otherwise 421.
+  public URL's origin; otherwise 403. **Host:** must be an IP address, `localhost` on a loopback
+  or wildcard listener, or the public URL's host; a wildcard listener without a public URL
+  accepts any. Otherwise 421. (IP addresses cannot be used for DNS rebinding, and proxies often
+  rewrite Host to the backend address.)
 - Limits: 4 MiB request bodies, 64 concurrent requests per listener, `--request-timeout`
   (default 120 s) per request, keep-alive allowed.
 

@@ -35,6 +35,29 @@ const META_SERVER_INFO: &str = "io.modelcontextprotocol/serverInfo";
 
 /// JSON-RPC error for a protocol version the server does not speak.
 pub const MCP_UNSUPPORTED_PROTOCOL_VERSION: i64 = -32022;
+/// JSON-RPC error for HTTP headers that contradict the request body.
+pub const MCP_HEADER_MISMATCH: i64 = -32020;
+
+/// The protocol version a request's `_meta` names, if it names one: such a
+/// request is modern and served without a session.
+#[must_use]
+pub fn requested_modern_version(request: &Value) -> Option<&Value> {
+    request
+        .get("params")
+        .and_then(|params| params.get("_meta"))
+        .and_then(|meta| meta.get(META_PROTOCOL_VERSION))
+}
+
+/// The JSON-RPC error for a protocol version the server does not speak.
+#[must_use]
+pub fn unsupported_version_error(id: Value, requested: &str) -> Value {
+    crate::mcp_dispatch::jsonrpc_error(
+        id,
+        MCP_UNSUPPORTED_PROTOCOL_VERSION,
+        "Unsupported protocol version".to_string(),
+        Some(unsupported_version_data(requested)),
+    )
+}
 
 /// How long a client may reuse a list: the lists depend on the vault's
 /// configuration, which changes rarely and is announced when it does.
@@ -114,11 +137,15 @@ fn unsupported_version(requested: &str) -> McpMethodError {
     McpMethodError::JsonRpc {
         code: MCP_UNSUPPORTED_PROTOCOL_VERSION,
         message: "Unsupported protocol version".to_string(),
-        data: Some(json!({
-            "supported": supported_versions(),
-            "requested": requested,
-        })),
+        data: Some(unsupported_version_data(requested)),
     }
+}
+
+fn unsupported_version_data(requested: &str) -> Value {
+    json!({
+        "supported": supported_versions(),
+        "requested": requested,
+    })
 }
 
 /// Whether the server speaks `version`, in either era.
